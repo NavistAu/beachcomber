@@ -1,3 +1,61 @@
 pub mod registry;
 pub mod hostname;
 pub mod user;
+
+use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum Value {
+    String(String),
+    Int(i64),
+    Bool(bool),
+    Float(f64),
+}
+
+impl Value {
+    pub fn as_text(&self) -> String {
+        match self {
+            Value::String(s) => s.clone(),
+            Value::Int(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Float(f) => f.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderResult {
+    pub fields: HashMap<String, Value>,
+}
+
+impl ProviderResult {
+    pub fn new() -> Self {
+        Self { fields: HashMap::new() }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.fields.get(key)
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(&self.fields).unwrap_or(serde_json::Value::Null)
+    }
+
+    pub fn to_kv_text(&self) -> String {
+        let mut lines: Vec<String> = self.fields.iter()
+            .map(|(k, v)| format!("{}={}", k, v.as_text()))
+            .collect();
+        lines.sort();
+        let mut out = lines.join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out
+    }
+
+    pub fn insert(&mut self, key: impl Into<String>, value: Value) {
+        self.fields.insert(key.into(), value);
+    }
+}
