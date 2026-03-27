@@ -6,6 +6,15 @@ use crate::provider::battery::BatteryProvider;
 use crate::provider::load::LoadProvider;
 use crate::provider::uptime::UptimeProvider;
 use crate::provider::network::NetworkProvider;
+use crate::provider::kubecontext::KubecontextProvider;
+use crate::provider::aws::AwsProvider;
+use crate::provider::gcloud::GcloudProvider;
+use crate::provider::terraform::TerraformProvider;
+use crate::provider::direnv::DirenvProvider;
+use crate::provider::python::PythonProvider;
+use crate::provider::conda::CondaProvider;
+use crate::provider::mise::MiseProvider;
+use crate::provider::asdf::AsdfProvider;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -29,6 +38,15 @@ impl ProviderRegistry {
         registry.register(Box::new(LoadProvider));
         registry.register(Box::new(UptimeProvider));
         registry.register(Box::new(NetworkProvider));
+        registry.register(Box::new(KubecontextProvider));
+        registry.register(Box::new(AwsProvider));
+        registry.register(Box::new(GcloudProvider));
+        registry.register(Box::new(TerraformProvider));
+        registry.register(Box::new(DirenvProvider));
+        registry.register(Box::new(PythonProvider));
+        registry.register(Box::new(CondaProvider));
+        registry.register(Box::new(MiseProvider));
+        registry.register(Box::new(AsdfProvider));
         registry
     }
 

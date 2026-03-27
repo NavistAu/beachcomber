@@ -6,6 +6,15 @@ pub mod battery;
 pub mod load;
 pub mod uptime;
 pub mod network;
+pub mod kubecontext;
+pub mod aws;
+pub mod gcloud;
+pub mod terraform;
+pub mod direnv;
+pub mod python;
+pub mod conda;
+pub mod mise;
+pub mod asdf;
 
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
