@@ -1,0 +1,77 @@
+use shellstate::cache::Cache;
+use shellstate::client::Client;
+use shellstate::protocol::Format;
+use shellstate::provider::registry::ProviderRegistry;
+use shellstate::provider::{ProviderResult, Value};
+use shellstate::server::Server;
+use std::sync::Arc;
+use tempfile::TempDir;
+
+async fn setup_server() -> (TempDir, std::path::PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let cache = Arc::new(Cache::new());
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+
+    // Pre-populate cache
+    let mut hostname = ProviderResult::new();
+    hostname.insert("name", Value::String("testhost.local".to_string()));
+    hostname.insert("short", Value::String("testhost".to_string()));
+    cache.put("hostname", None, hostname);
+
+    let mut user = ProviderResult::new();
+    user.insert("name", Value::String("testuser".to_string()));
+    user.insert("uid", Value::Int(501));
+    cache.put("user", None, user);
+
+    let server = Server::new(sock.clone(), cache, registry);
+    tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    (tmp, sock)
+}
+
+#[tokio::test]
+async fn client_get_full_provider() {
+    let (_tmp, sock) = setup_server().await;
+    let client = Client::new(sock);
+    let response = client.get("hostname", None, Format::Json).await.unwrap();
+    assert!(response.ok);
+    let data = response.data.unwrap();
+    assert_eq!(data["name"], "testhost.local");
+    assert_eq!(data["short"], "testhost");
+}
+
+#[tokio::test]
+async fn client_get_single_field() {
+    let (_tmp, sock) = setup_server().await;
+    let client = Client::new(sock);
+    let response = client.get("hostname.short", None, Format::Json).await.unwrap();
+    assert!(response.ok);
+    assert_eq!(response.data.unwrap(), serde_json::json!("testhost"));
+}
+
+#[tokio::test]
+async fn client_get_text_format() {
+    let (_tmp, sock) = setup_server().await;
+    let client = Client::new(sock);
+    let text = client.get_text("hostname.name", None).await.unwrap();
+    assert_eq!(text, "testhost.local");
+}
+
+#[tokio::test]
+async fn client_get_unknown_provider() {
+    let (_tmp, sock) = setup_server().await;
+    let client = Client::new(sock);
+    let response = client.get("nonexistent", None, Format::Json).await.unwrap();
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("unknown provider"));
+}
+
+#[tokio::test]
+async fn client_poke() {
+    let (_tmp, sock) = setup_server().await;
+    let client = Client::new(sock);
+    let response = client.poke("hostname", None).await.unwrap();
+    assert!(response.ok);
+}
