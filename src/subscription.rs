@@ -1,5 +1,72 @@
 use crate::scheduler::TriggerSet;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackoffStage {
+    Grace,
+    SlowPoll,
+    Frozen,
+    Evict,
+}
+
+#[derive(Debug)]
+pub struct BackoffState {
+    stage: BackoffStage,
+    started_at: Instant,
+    grace_duration: Duration,
+}
+
+impl BackoffState {
+    pub fn new(grace_duration: Duration) -> Self {
+        Self {
+            stage: BackoffStage::Grace,
+            started_at: Instant::now(),
+            grace_duration,
+        }
+    }
+
+    pub fn stage(&self) -> &BackoffStage {
+        &self.stage
+    }
+
+    pub fn advance(&mut self) {
+        self.stage = match self.stage {
+            BackoffStage::Grace => BackoffStage::SlowPoll,
+            BackoffStage::SlowPoll => BackoffStage::Frozen,
+            BackoffStage::Frozen => BackoffStage::Evict,
+            BackoffStage::Evict => BackoffStage::Evict,
+        };
+        self.started_at = Instant::now();
+    }
+
+    pub fn reset(&mut self, grace_duration: Duration) {
+        self.stage = BackoffStage::Grace;
+        self.started_at = Instant::now();
+        self.grace_duration = grace_duration;
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.started_at.elapsed()
+    }
+
+    pub fn grace_expired(&self) -> bool {
+        matches!(self.stage, BackoffStage::Grace) && self.started_at.elapsed() >= self.grace_duration
+    }
+
+    pub fn poll_multiplier(&self) -> u64 {
+        match self.stage {
+            BackoffStage::Grace => 1,
+            BackoffStage::SlowPoll => 4,
+            BackoffStage::Frozen => 0,
+            BackoffStage::Evict => 0,
+        }
+    }
+
+    pub fn should_watch(&self) -> bool {
+        matches!(self.stage, BackoffStage::Grace)
+    }
+}
 
 type SubKey = (String, Option<String>);
 
