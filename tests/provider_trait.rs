@@ -2,7 +2,6 @@ use shellstate::provider::{
     Provider, ProviderMetadata, ProviderResult, Value, FieldSchema, FieldType,
     InvalidationStrategy,
 };
-use std::collections::HashMap;
 
 struct FakeProvider;
 

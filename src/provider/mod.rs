@@ -5,6 +5,9 @@ pub mod user;
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 
+/// Note: `#[serde(untagged)]` means Float values that are whole numbers (e.g., 42.0)
+/// may deserialize as Int on a round-trip. This is acceptable for shell state values
+/// which are predominantly strings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Value {
@@ -25,7 +28,7 @@ impl Value {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderResult {
     pub fields: HashMap<String, Value>,
 }
