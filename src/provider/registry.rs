@@ -1,6 +1,7 @@
 use crate::provider::Provider;
 use crate::provider::hostname::HostnameProvider;
 use crate::provider::user::UserProvider;
+use crate::provider::git::GitProvider;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -19,6 +20,7 @@ impl ProviderRegistry {
         let mut registry = Self::new();
         registry.register(Box::new(HostnameProvider));
         registry.register(Box::new(UserProvider));
+        registry.register(Box::new(GitProvider));
         registry
     }
 

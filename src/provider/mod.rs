@@ -1,6 +1,7 @@
 pub mod registry;
 pub mod hostname;
 pub mod user;
+pub mod git;
 
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
