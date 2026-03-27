@@ -2,6 +2,10 @@ use crate::provider::Provider;
 use crate::provider::hostname::HostnameProvider;
 use crate::provider::user::UserProvider;
 use crate::provider::git::GitProvider;
+use crate::provider::battery::BatteryProvider;
+use crate::provider::load::LoadProvider;
+use crate::provider::uptime::UptimeProvider;
+use crate::provider::network::NetworkProvider;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -21,6 +25,10 @@ impl ProviderRegistry {
         registry.register(Box::new(HostnameProvider));
         registry.register(Box::new(UserProvider));
         registry.register(Box::new(GitProvider));
+        registry.register(Box::new(BatteryProvider));
+        registry.register(Box::new(LoadProvider));
+        registry.register(Box::new(UptimeProvider));
+        registry.register(Box::new(NetworkProvider));
         registry
     }
 

@@ -1,0 +1,80 @@
+use shellstate::provider::{Provider, InvalidationStrategy};
+use shellstate::provider::battery::BatteryProvider;
+use shellstate::provider::load::LoadProvider;
+use shellstate::provider::uptime::UptimeProvider;
+
+// --- Battery ---
+
+#[test]
+fn battery_provider_metadata() {
+    let p = BatteryProvider;
+    let meta = p.metadata();
+    assert_eq!(meta.name, "battery");
+    assert!(meta.global);
+    let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(fields.contains(&"percent"));
+    assert!(fields.contains(&"charging"));
+    assert!(fields.contains(&"time_remaining"));
+    match meta.invalidation {
+        InvalidationStrategy::Poll { interval_secs, floor_secs } => {
+            assert_eq!(interval_secs, 30);
+            assert_eq!(floor_secs, 5);
+        }
+        _ => panic!("Expected Poll invalidation"),
+    }
+}
+
+#[test]
+fn battery_provider_executes() {
+    let p = BatteryProvider;
+    // On macOS laptops this returns data; on desktops/CI it may return None
+    // We just verify it doesn't panic
+    let _ = p.execute(None);
+}
+
+// --- Load ---
+
+#[test]
+fn load_provider_metadata() {
+    let p = LoadProvider;
+    let meta = p.metadata();
+    assert_eq!(meta.name, "load");
+    assert!(meta.global);
+    let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(fields.contains(&"one"));
+    assert!(fields.contains(&"five"));
+    assert!(fields.contains(&"fifteen"));
+}
+
+#[test]
+fn load_provider_executes() {
+    let p = LoadProvider;
+    let result = p.execute(None).expect("Load should always succeed");
+    let one = result.get("one").unwrap().as_text();
+    let val: f64 = one.parse().expect("Load should be a number");
+    assert!(val >= 0.0, "Load average should be non-negative");
+}
+
+// --- Uptime ---
+
+#[test]
+fn uptime_provider_metadata() {
+    let p = UptimeProvider;
+    let meta = p.metadata();
+    assert_eq!(meta.name, "uptime");
+    assert!(meta.global);
+    let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(fields.contains(&"seconds"));
+    assert!(fields.contains(&"days"));
+    assert!(fields.contains(&"hours"));
+    assert!(fields.contains(&"minutes"));
+}
+
+#[test]
+fn uptime_provider_executes() {
+    let p = UptimeProvider;
+    let result = p.execute(None).expect("Uptime should always succeed");
+    let secs = result.get("seconds").unwrap().as_text();
+    let val: i64 = secs.parse().expect("Seconds should be a number");
+    assert!(val > 0, "Uptime should be positive");
+}
