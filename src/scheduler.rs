@@ -10,7 +10,7 @@ use crate::cache::Cache;
 use crate::config::Config;
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::InvalidationStrategy;
-use crate::subscription::SubscriptionManager;
+use crate::subscription::{BackoffStage, BackoffState, SubscriptionManager};
 use crate::watcher::FsWatcher;
 
 /// Messages sent from the Server to the Scheduler.
@@ -97,6 +97,56 @@ struct PollState {
     interval_secs: u64,
 }
 
+/// Start backoff for any subscription keys that currently have zero subscribers.
+/// Only starts backoff if not already in backoff for that key.
+fn start_backoff_for_empty_keys(
+    subs: &SubscriptionManager,
+    backoff: &mut HashMap<(String, Option<String>), BackoffState>,
+    grace_duration: std::time::Duration,
+) {
+    for key in subs.keys_with_no_subscribers() {
+        backoff.entry(key.clone()).or_insert_with(|| {
+            debug!("Starting backoff grace for provider={} path={:?}", key.0, key.1);
+            BackoffState::new(grace_duration)
+        });
+    }
+}
+
+/// Advance backoff states. Returns the list of keys that should be evicted from cache.
+fn check_backoff(
+    backoff: &mut HashMap<(String, Option<String>), BackoffState>,
+) -> Vec<(String, Option<String>)> {
+    let mut to_evict = Vec::new();
+    let mut to_advance = Vec::new();
+
+    for (key, state) in backoff.iter() {
+        match state.stage() {
+            BackoffStage::Grace if state.grace_expired() => {
+                to_advance.push(key.clone());
+            }
+            BackoffStage::Evict => {
+                to_evict.push(key.clone());
+            }
+            _ => {}
+        }
+    }
+
+    for key in &to_advance {
+        if let Some(state) = backoff.get_mut(key) {
+            debug!("Advancing backoff for provider={} path={:?}", key.0, key.1);
+            state.advance();
+        }
+    }
+
+    // Remove evicted keys from backoff tracking.
+    for key in &to_evict {
+        debug!("Removing backoff entry (evict) for provider={} path={:?}", key.0, key.1);
+        backoff.remove(key);
+    }
+
+    to_evict
+}
+
 /// The scheduler core loop: executes providers on demand and manages subscriptions.
 pub struct Scheduler {
     cache: Arc<Cache>,
@@ -166,6 +216,10 @@ impl Scheduler {
         // Poll states: (provider, path) -> PollState
         let mut poll_states: HashMap<(String, Option<String>), PollState> = HashMap::new();
 
+        // Backoff states for keys with no active subscribers.
+        let mut backoff: HashMap<(String, Option<String>), BackoffState> = HashMap::new();
+        let grace_duration = std::time::Duration::from_secs(self._config.lifecycle.grace_period_secs);
+
         // Watch paths that are being monitored: path -> (provider, path_arg)
         let mut watch_paths: HashMap<PathBuf, Vec<(String, Option<String>)>> = HashMap::new();
 
@@ -194,6 +248,12 @@ impl Scheduler {
 
                             let was_empty = subs.subscriber_count(&provider, path.as_deref()) == 0;
                             subs.subscribe(consumer_id, &provider, path.as_deref(), triggers.clone());
+
+                            // Cancel backoff if someone is subscribing again.
+                            let key = (provider.clone(), path.clone());
+                            if backoff.remove(&key).is_some() {
+                                debug!("Cancelled backoff for provider={} path={:?} (new subscriber)", provider, path);
+                            }
 
                             // If no one was subscribed before, set up the triggers.
                             if was_empty {
@@ -265,11 +325,13 @@ impl Scheduler {
                         Some(SchedulerMessage::Unsubscribe { consumer_id, provider, path }) => {
                             debug!("Unsubscribe: consumer={} provider={} path={:?}", consumer_id, provider, path);
                             subs.unsubscribe(consumer_id, &provider, path.as_deref());
+                            start_backoff_for_empty_keys(&subs, &mut backoff, grace_duration);
                             self.cleanup_unused_subscriptions(&mut subs, &mut poll_states, &mut watch_paths, &mut fs_watcher);
                         }
                         Some(SchedulerMessage::ConsumerDisconnected { consumer_id }) => {
                             debug!("ConsumerDisconnected: consumer={}", consumer_id);
                             subs.disconnect(consumer_id);
+                            start_backoff_for_empty_keys(&subs, &mut backoff, grace_duration);
                             self.cleanup_unused_subscriptions(&mut subs, &mut poll_states, &mut watch_paths, &mut fs_watcher);
                         }
                         Some(SchedulerMessage::FsEvent { paths }) => {
@@ -300,6 +362,13 @@ impl Scheduler {
                         if let Some(state) = poll_states.get_mut(&(provider, path)) {
                             state.last_run = Instant::now();
                         }
+                    }
+
+                    // Advance backoff states and evict cache entries when needed.
+                    let keys_to_evict = check_backoff(&mut backoff);
+                    for (provider, path) in keys_to_evict {
+                        debug!("Evicting cache for provider={} path={:?} (backoff evict)", provider, path);
+                        self.cache.remove(&provider, path.as_deref());
                     }
                 }
             }
