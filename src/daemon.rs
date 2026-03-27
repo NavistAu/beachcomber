@@ -5,6 +5,8 @@ use crate::scheduler::Scheduler;
 use crate::server::Server;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 pub fn pid_path_for_socket(socket_path: &Path) -> PathBuf {
     socket_path.with_file_name("daemon.pid")
@@ -14,29 +16,46 @@ pub fn is_daemon_running(socket_path: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket_path).is_ok()
 }
 
-pub fn start_in_process(
+pub fn start_in_process(socket_path: PathBuf, config: Config) -> tokio::task::JoinHandle<()> {
+    let cancel = CancellationToken::new();
+    start_in_process_with_cancel(socket_path, config, cancel)
+}
+
+pub fn start_in_process_with_cancel(
     socket_path: PathBuf,
     config: Config,
+    cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        run_daemon(socket_path, config).await;
+        run_daemon_with_cancel(socket_path, config, cancel).await;
     })
 }
 
-async fn run_daemon(socket_path: PathBuf, config: Config) {
+async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: CancellationToken) {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config);
-    tokio::spawn(async move { scheduler.run().await });
 
-    // Give the scheduler a moment to compute Once providers before serving clients.
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    let scheduler_handle = handle.clone();
+    let scheduler_task = tokio::spawn(async move { scheduler.run().await });
 
     let server = Server::new(socket_path, cache, registry, Some(handle));
-    if let Err(e) = server.run().await {
-        tracing::error!("Server error: {}", e);
+
+    tokio::select! {
+        result = server.run() => {
+            if let Err(e) = result {
+                tracing::error!("Server error: {}", e);
+            }
+        }
+        _ = cancel.cancelled() => {
+            info!("Shutdown signal received");
+            scheduler_handle.send(crate::scheduler::SchedulerMessage::Shutdown).await;
+        }
     }
+
+    let _ = scheduler_task.await;
+    info!("Daemon shut down cleanly");
 }
 
 pub fn fork_daemon(binary_path: &str, socket_path: &Path) -> std::io::Result<()> {

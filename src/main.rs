@@ -80,7 +80,16 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let handle = shellstate::daemon::start_in_process(socket_path, config);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("Received SIGINT, shutting down...");
+            cancel_clone.cancel();
+        });
+
+        let handle = shellstate::daemon::start_in_process_with_cancel(socket_path, config, cancel);
         handle.await.ok();
     });
 
