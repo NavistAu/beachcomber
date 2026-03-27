@@ -42,11 +42,12 @@ eviction_timeout_secs = 900
 fn parse_provider_override() {
     let toml_str = r#"
 [providers.battery]
-poll_secs = 10
+command = ""
+invalidation = { poll = "10s" }
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     let battery = config.providers.get("battery").unwrap();
-    assert_eq!(battery.poll_secs, Some(10));
+    assert_eq!(battery.invalidation.as_ref().unwrap().poll, Some("10s".to_string()));
 }
 
 #[test]

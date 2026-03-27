@@ -33,7 +33,7 @@ pub fn start_in_process_with_cancel(
 
 async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: CancellationToken) {
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(ProviderRegistry::with_config(&config));
 
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config);
 

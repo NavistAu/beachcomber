@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::provider::Provider;
 use crate::provider::hostname::HostnameProvider;
 use crate::provider::user::UserProvider;
@@ -15,6 +16,7 @@ use crate::provider::python::PythonProvider;
 use crate::provider::conda::CondaProvider;
 use crate::provider::mise::MiseProvider;
 use crate::provider::asdf::AsdfProvider;
+use crate::provider::script::ScriptProvider;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -47,6 +49,17 @@ impl ProviderRegistry {
         registry.register(Box::new(CondaProvider));
         registry.register(Box::new(MiseProvider));
         registry.register(Box::new(AsdfProvider));
+        registry
+    }
+
+    pub fn with_config(config: &Config) -> Self {
+        let mut registry = Self::with_defaults();
+
+        // Register script providers from config
+        for (name, script_config) in config.script_providers() {
+            registry.register(Box::new(ScriptProvider::new(&name, script_config)));
+        }
+
         registry
     }
 

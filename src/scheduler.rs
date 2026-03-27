@@ -57,6 +57,11 @@ impl TriggerSet {
     }
 }
 
+/// Public wrapper for parse_duration_secs, used by script provider.
+pub fn parse_duration_secs_pub(s: &str) -> Option<u64> {
+    parse_duration_secs(s)
+}
+
 /// Parse a duration string like "30s", "5m", "1h" into seconds.
 fn parse_duration_secs(s: &str) -> Option<u64> {
     let s = s.trim();

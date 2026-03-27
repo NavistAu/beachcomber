@@ -8,7 +8,7 @@ pub struct Config {
     pub daemon: DaemonConfig,
     pub lifecycle: LifecycleConfig,
     #[serde(default)]
-    pub providers: HashMap<String, ProviderOverride>,
+    pub providers: HashMap<String, ScriptProviderConfig>,
 }
 
 impl Default for Config {
@@ -55,13 +55,31 @@ impl Default for LifecycleConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-pub struct ProviderOverride {
-    pub poll_secs: Option<u64>,
-    pub poll_floor_secs: Option<u64>,
-    pub enabled: Option<bool>,
+pub struct ScriptProviderConfig {
+    #[serde(rename = "type")]
+    pub provider_type: Option<String>,
+    pub command: String,
+    pub invalidation: Option<ScriptInvalidation>,
+    pub fields: Option<HashMap<String, String>>,
+    pub output: Option<String>,
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct ScriptInvalidation {
+    pub poll: Option<String>,
+    pub watch: Option<Vec<String>>,
 }
 
 impl Config {
+    pub fn script_providers(&self) -> Vec<(String, ScriptProviderConfig)> {
+        self.providers.iter()
+            .filter(|(_, v)| v.provider_type.as_deref() == Some("script") || (!v.command.is_empty() && v.provider_type.is_none()))
+            .map(|(name, config)| (name.clone(), config.clone()))
+            .collect()
+    }
+
     pub fn load() -> Self {
         let xdg = xdg::BaseDirectories::with_prefix("shellstate");
 
