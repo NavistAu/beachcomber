@@ -61,10 +61,8 @@ fn main() -> ExitCode {
         Commands::Poke { key, path } => {
             run_poke(&config, &key, path.as_deref())
         }
-        Commands::Status | Commands::List => {
-            eprintln!("Not yet implemented (planned for a future release)");
-            ExitCode::from(2)
-        }
+        Commands::Status => run_status(&config),
+        Commands::List => run_list(&config),
     }
 }
 
@@ -159,6 +157,64 @@ fn run_poke(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
         match client.poke(key, path).await {
             Ok(response) => {
                 if response.ok {
+                    ExitCode::SUCCESS
+                } else {
+                    eprintln!("Error: {}", response.error.unwrap_or_default());
+                    ExitCode::from(2)
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                ExitCode::from(2)
+            }
+        }
+    })
+}
+
+fn run_status(config: &Config) -> ExitCode {
+    let socket_path = config.resolve_socket_path();
+
+    if let Err(e) = shellstate::daemon::ensure_daemon(&socket_path) {
+        eprintln!("Failed to start daemon: {}", e);
+        return ExitCode::from(2);
+    }
+
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    rt.block_on(async {
+        let client = shellstate::client::Client::new(socket_path);
+        match client.send_raw(serde_json::json!({"op": "status"})).await {
+            Ok(response) => {
+                if response.ok {
+                    println!("{}", serde_json::to_string_pretty(&response.data.unwrap_or(serde_json::Value::Null)).unwrap());
+                    ExitCode::SUCCESS
+                } else {
+                    eprintln!("Error: {}", response.error.unwrap_or_default());
+                    ExitCode::from(2)
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                ExitCode::from(2)
+            }
+        }
+    })
+}
+
+fn run_list(config: &Config) -> ExitCode {
+    let socket_path = config.resolve_socket_path();
+
+    if let Err(e) = shellstate::daemon::ensure_daemon(&socket_path) {
+        eprintln!("Failed to start daemon: {}", e);
+        return ExitCode::from(2);
+    }
+
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    rt.block_on(async {
+        let client = shellstate::client::Client::new(socket_path);
+        match client.send_raw(serde_json::json!({"op": "list"})).await {
+            Ok(response) => {
+                if response.ok {
+                    println!("{}", serde_json::to_string_pretty(&response.data.unwrap_or(serde_json::Value::Null)).unwrap());
                     ExitCode::SUCCESS
                 } else {
                     eprintln!("Error: {}", response.error.unwrap_or_default());

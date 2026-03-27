@@ -192,6 +192,26 @@ async fn handle_request(
 
             Response { ok: true, data: None, age_ms: None, stale: None, error: None }
         }
+        Request::List => {
+            let providers: Vec<serde_json::Value> = registry.list().into_iter()
+                .map(|name| {
+                    let meta = registry.get(&name).unwrap().metadata();
+                    serde_json::json!({
+                        "name": name,
+                        "global": meta.global,
+                        "fields": meta.fields.iter().map(|f| &f.name).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            Response::ok(serde_json::json!(providers), 0, false)
+        }
+        Request::Status => {
+            let data = serde_json::json!({
+                "cache_entries": cache.len(),
+                "providers": registry.list().len(),
+            });
+            Response::ok(data, 0, false)
+        }
     }
 }
 

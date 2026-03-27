@@ -74,6 +74,13 @@ impl Client {
         self.send_request(&request).await
     }
 
+    pub async fn send_raw(
+        &self,
+        request: serde_json::Value,
+    ) -> std::io::Result<Response> {
+        self.send_request(&request).await
+    }
+
     async fn send_request(
         &self,
         request: &serde_json::Value,

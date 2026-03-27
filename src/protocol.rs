@@ -40,6 +40,8 @@ pub enum Request {
         #[serde(default)]
         path: Option<String>,
     },
+    List,
+    Status,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
