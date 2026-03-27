@@ -23,7 +23,7 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
     user.insert("uid", Value::Int(501));
     cache.put("user", None, user);
 
-    let server = Server::new(sock.clone(), cache, registry);
+    let server = Server::new(sock.clone(), cache, registry, None);
     tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

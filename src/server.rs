@@ -1,7 +1,9 @@
 use crate::cache::Cache;
 use crate::protocol::{self, Format, Request, Response};
 use crate::provider::registry::ProviderRegistry;
+use crate::scheduler::{SchedulerHandle, SchedulerMessage, TriggerSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -11,6 +13,8 @@ pub struct Server {
     socket_path: PathBuf,
     cache: Arc<Cache>,
     registry: Arc<ProviderRegistry>,
+    scheduler: Option<SchedulerHandle>,
+    next_consumer_id: Arc<AtomicU64>,
 }
 
 impl Server {
@@ -18,8 +22,15 @@ impl Server {
         socket_path: PathBuf,
         cache: Arc<Cache>,
         registry: Arc<ProviderRegistry>,
+        scheduler: Option<SchedulerHandle>,
     ) -> Self {
-        Self { socket_path, cache, registry }
+        Self {
+            socket_path,
+            cache,
+            registry,
+            scheduler,
+            next_consumer_id: Arc::new(AtomicU64::new(1)),
+        }
     }
 
     pub async fn run(&self) -> std::io::Result<()> {
@@ -37,8 +48,10 @@ impl Server {
                 Ok((stream, _addr)) => {
                     let cache = Arc::clone(&self.cache);
                     let registry = Arc::clone(&self.registry);
+                    let scheduler = self.scheduler.clone();
+                    let consumer_id = self.next_consumer_id.fetch_add(1, Ordering::Relaxed);
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, cache, registry).await {
+                        if let Err(e) = handle_connection(stream, cache, registry, scheduler, consumer_id).await {
                             debug!("Connection error: {}", e);
                         }
                     });
@@ -55,6 +68,8 @@ async fn handle_connection(
     stream: tokio::net::UnixStream,
     cache: Arc<Cache>,
     registry: Arc<ProviderRegistry>,
+    scheduler: Option<SchedulerHandle>,
+    consumer_id: u64,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -69,7 +84,7 @@ async fn handle_connection(
 
         let response_bytes = match serde_json::from_str::<Request>(trimmed) {
             Ok(request) => {
-                let response = handle_request(&request, &cache, &registry).await;
+                let response = handle_request(&request, &cache, &registry, scheduler.as_ref(), consumer_id).await;
                 format_response(&request, &response)
             }
             Err(e) => {
@@ -84,6 +99,11 @@ async fn handle_connection(
         line.clear();
     }
 
+    // Connection closed — notify scheduler of disconnect.
+    if let Some(sched) = &scheduler {
+        sched.send(SchedulerMessage::ConsumerDisconnected { consumer_id }).await;
+    }
+
     Ok(())
 }
 
@@ -91,6 +111,8 @@ async fn handle_request(
     request: &Request,
     cache: &Cache,
     registry: &ProviderRegistry,
+    scheduler: Option<&SchedulerHandle>,
+    consumer_id: u64,
 ) -> Response {
     match request {
         Request::Get { key, path, .. } => {
@@ -121,20 +143,53 @@ async fn handle_request(
         Request::Poke { key, path } => {
             let (provider_name, _) = protocol::split_key(key);
 
-            match registry.get(provider_name) {
-                Some(provider) => {
-                    // TODO(plan2): Move provider execution to scheduler with spawn_blocking
-                    // For MVP, hostname/user are instant and don't block meaningfully.
-                    let path_clone = path.clone();
-                    if let Some(result) = provider.execute(path_clone.as_deref()) {
-                        cache.put(provider_name, path.as_deref(), result);
+            if let Some(sched) = scheduler {
+                // Route through scheduler.
+                sched.send(SchedulerMessage::Poke {
+                    provider: provider_name.to_string(),
+                    path: path.clone(),
+                }).await;
+                Response { ok: true, data: None, age_ms: None, stale: None, error: None }
+            } else {
+                // Fallback: execute directly (used by tests with None scheduler).
+                match registry.get(provider_name) {
+                    Some(provider) => {
+                        let path_clone = path.clone();
+                        if let Some(result) = provider.execute(path_clone.as_deref()) {
+                            cache.put(provider_name, path.as_deref(), result);
+                        }
+                        Response { ok: true, data: None, age_ms: None, stale: None, error: None }
                     }
-                    Response { ok: true, data: None, age_ms: None, stale: None, error: None }
+                    None => Response::error(format!("unknown provider: {}", provider_name)),
                 }
-                None => Response::error(format!("unknown provider: {}", provider_name)),
             }
         }
-        Request::Subscribe { .. } | Request::Unsubscribe { .. } => {
+        Request::Subscribe { key, path, triggers } => {
+            let (provider_name, _) = protocol::split_key(key);
+
+            if let Some(sched) = scheduler {
+                let trigger_set = TriggerSet::from_protocol(triggers);
+                sched.send(SchedulerMessage::Subscribe {
+                    consumer_id,
+                    provider: provider_name.to_string(),
+                    path: path.clone(),
+                    triggers: trigger_set,
+                }).await;
+            }
+
+            Response { ok: true, data: None, age_ms: None, stale: None, error: None }
+        }
+        Request::Unsubscribe { key, path } => {
+            let (provider_name, _) = protocol::split_key(key);
+
+            if let Some(sched) = scheduler {
+                sched.send(SchedulerMessage::Unsubscribe {
+                    consumer_id,
+                    provider: provider_name.to_string(),
+                    path: path.clone(),
+                }).await;
+            }
+
             Response { ok: true, data: None, age_ms: None, stale: None, error: None }
         }
     }

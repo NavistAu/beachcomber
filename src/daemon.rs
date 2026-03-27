@@ -1,10 +1,10 @@
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::provider::registry::ProviderRegistry;
+use crate::scheduler::Scheduler;
 use crate::server::Server;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{info, warn};
 
 pub fn pid_path_for_socket(socket_path: &Path) -> PathBuf {
     socket_path.with_file_name("daemon.pid")
@@ -23,34 +23,19 @@ pub fn start_in_process(
     })
 }
 
-async fn run_daemon(socket_path: PathBuf, _config: Config) {
+async fn run_daemon(socket_path: PathBuf, config: Config) {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
-    compute_once_providers(&registry, &cache);
+    let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config);
+    tokio::spawn(async move { scheduler.run().await });
 
-    let server = Server::new(socket_path, cache, registry);
+    // Give the scheduler a moment to compute Once providers before serving clients.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let server = Server::new(socket_path, cache, registry, Some(handle));
     if let Err(e) = server.run().await {
         tracing::error!("Server error: {}", e);
-    }
-}
-
-fn compute_once_providers(registry: &ProviderRegistry, cache: &Cache) {
-    for name in registry.list() {
-        if let Some(provider) = registry.get(&name) {
-            let meta = provider.metadata();
-            if matches!(meta.invalidation, crate::provider::InvalidationStrategy::Once) {
-                match provider.execute(None) {
-                    Some(result) => {
-                        cache.put(&name, None, result);
-                        info!("Computed initial value for provider '{}'", name);
-                    }
-                    None => {
-                        warn!("Provider '{}' returned None during initial computation", name);
-                    }
-                }
-            }
-        }
     }
 }
 

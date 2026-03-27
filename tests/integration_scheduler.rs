@@ -1,0 +1,70 @@
+use shellstate::cache::Cache;
+use shellstate::client::Client;
+use shellstate::config::Config;
+use shellstate::provider::registry::ProviderRegistry;
+use shellstate::scheduler::Scheduler;
+use shellstate::server::Server;
+use std::sync::Arc;
+use tempfile::TempDir;
+
+async fn setup_with_scheduler() -> (TempDir, std::path::PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let sock = tmp.path().join("sock");
+    let cache = Arc::new(Cache::new());
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let config = Config::default();
+
+    let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config);
+    tokio::spawn(async move { scheduler.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let server = Server::new(sock.clone(), cache, registry, Some(handle));
+    tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    (tmp, sock)
+}
+
+#[tokio::test]
+async fn poke_goes_through_scheduler() {
+    let (_tmp, sock) = setup_with_scheduler().await;
+    let client = Client::new(sock);
+
+    let response = client.poke("hostname", None).await.unwrap();
+    assert!(response.ok);
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let response = client.get("hostname", None).await.unwrap();
+    assert!(response.ok);
+    assert!(response.data.is_some());
+}
+
+#[tokio::test]
+async fn once_providers_available_via_scheduler() {
+    let (_tmp, sock) = setup_with_scheduler().await;
+    let client = Client::new(sock);
+
+    let response = client.get("hostname.name", None).await.unwrap();
+    assert!(response.ok);
+    assert!(response.data.is_some());
+}
+
+#[tokio::test]
+async fn subscribe_via_protocol() {
+    let (_tmp, sock) = setup_with_scheduler().await;
+
+    use tokio::io::{AsyncWriteExt, AsyncBufReadExt, BufReader};
+    use tokio::net::UnixStream;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let req = r#"{"op": "subscribe", "key": "hostname", "triggers": {"poll": "1s"}}"#;
+    stream.write_all(format!("{}\n", req).as_bytes()).await.unwrap();
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+
+    let resp: shellstate::protocol::Response = serde_json::from_str(&line).unwrap();
+    assert!(resp.ok, "Subscribe should return ok");
+}

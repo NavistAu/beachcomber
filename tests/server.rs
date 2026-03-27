@@ -19,7 +19,7 @@ fn setup() -> (TempDir, std::path::PathBuf, Arc<Cache>, Arc<ProviderRegistry>) {
 #[tokio::test]
 async fn server_accepts_connection() {
     let (_tmp, sock, cache, registry) = setup();
-    let server = Server::new(sock.clone(), cache, registry);
+    let server = Server::new(sock.clone(), cache, registry, None);
 
     let handle = tokio::spawn(async move { server.run().await });
 
@@ -40,7 +40,7 @@ async fn server_handles_get_global_provider() {
     result.insert("short", Value::String("testhost".to_string()));
     cache.put("hostname", None, result);
 
-    let server = Server::new(sock.clone(), cache, registry);
+    let server = Server::new(sock.clone(), cache, registry, None);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -70,7 +70,7 @@ async fn server_handles_get_single_field() {
     result.insert("short", Value::String("testhost".to_string()));
     cache.put("hostname", None, result);
 
-    let server = Server::new(sock.clone(), cache, registry);
+    let server = Server::new(sock.clone(), cache, registry, None);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -97,7 +97,7 @@ async fn server_handles_get_text_format() {
     result.insert("name", Value::String("testhost.local".to_string()));
     cache.put("hostname", None, result);
 
-    let server = Server::new(sock.clone(), cache, registry);
+    let server = Server::new(sock.clone(), cache, registry, None);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -119,7 +119,7 @@ async fn server_handles_get_text_format() {
 async fn server_handles_cache_miss() {
     let (_tmp, sock, cache, registry) = setup();
 
-    let server = Server::new(sock.clone(), cache, registry);
+    let server = Server::new(sock.clone(), cache, registry, None);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -142,7 +142,7 @@ async fn server_handles_cache_miss() {
 async fn server_handles_unknown_provider() {
     let (_tmp, sock, cache, registry) = setup();
 
-    let server = Server::new(sock.clone(), cache, registry);
+    let server = Server::new(sock.clone(), cache, registry, None);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -165,7 +165,7 @@ async fn server_handles_unknown_provider() {
 async fn server_handles_poke() {
     let (_tmp, sock, cache, registry) = setup();
 
-    let server = Server::new(sock.clone(), cache, registry);
+    let server = Server::new(sock.clone(), cache, registry, None);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
