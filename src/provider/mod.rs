@@ -59,3 +59,48 @@ impl ProviderResult {
         self.fields.insert(key.into(), value);
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldSchema {
+    pub name: String,
+    pub field_type: FieldType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FieldType {
+    String,
+    Int,
+    Bool,
+    Float,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum InvalidationStrategy {
+    Watch {
+        patterns: Vec<String>,
+        fallback_poll_secs: Option<u64>,
+    },
+    Poll {
+        interval_secs: u64,
+        floor_secs: u64,
+    },
+    WatchAndPoll {
+        patterns: Vec<String>,
+        interval_secs: u64,
+        floor_secs: u64,
+    },
+    Once,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderMetadata {
+    pub name: String,
+    pub fields: Vec<FieldSchema>,
+    pub invalidation: InvalidationStrategy,
+    pub global: bool,
+}
+
+pub trait Provider: Send + Sync {
+    fn metadata(&self) -> ProviderMetadata;
+    fn execute(&self, path: Option<&str>) -> Option<ProviderResult>;
+}
