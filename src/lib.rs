@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod watcher;
 pub mod config;
 pub mod protocol;
 pub mod provider;
