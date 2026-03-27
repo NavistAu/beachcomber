@@ -3,6 +3,7 @@ use crate::provider::hostname::HostnameProvider;
 use crate::provider::user::UserProvider;
 use std::collections::HashMap;
 
+#[derive(Default)]
 pub struct ProviderRegistry {
     providers: HashMap<String, Box<dyn Provider>>,
 }

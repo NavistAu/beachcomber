@@ -123,6 +123,8 @@ async fn handle_request(
 
             match registry.get(provider_name) {
                 Some(provider) => {
+                    // TODO(plan2): Move provider execution to scheduler with spawn_blocking
+                    // For MVP, hostname/user are instant and don't block meaningfully.
                     let path_clone = path.clone();
                     if let Some(result) = provider.execute(path_clone.as_deref()) {
                         cache.put(provider_name, path.as_deref(), result);

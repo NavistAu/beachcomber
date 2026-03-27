@@ -2,15 +2,15 @@ use crate::cache::Cache;
 use crate::config::Config;
 use crate::provider::registry::ProviderRegistry;
 use crate::server::Server;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 
-pub fn pid_path_for_socket(socket_path: &PathBuf) -> PathBuf {
+pub fn pid_path_for_socket(socket_path: &Path) -> PathBuf {
     socket_path.with_file_name("daemon.pid")
 }
 
-pub fn is_daemon_running(socket_path: &PathBuf) -> bool {
+pub fn is_daemon_running(socket_path: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket_path).is_ok()
 }
 
@@ -40,16 +40,21 @@ fn compute_once_providers(registry: &ProviderRegistry, cache: &Cache) {
         if let Some(provider) = registry.get(&name) {
             let meta = provider.metadata();
             if matches!(meta.invalidation, crate::provider::InvalidationStrategy::Once) {
-                if let Some(result) = provider.execute(None) {
-                    cache.put(&name, None, result);
-                    info!("Computed initial value for provider '{}'", name);
+                match provider.execute(None) {
+                    Some(result) => {
+                        cache.put(&name, None, result);
+                        info!("Computed initial value for provider '{}'", name);
+                    }
+                    None => {
+                        warn!("Provider '{}' returned None during initial computation", name);
+                    }
                 }
             }
         }
     }
 }
 
-pub fn fork_daemon(binary_path: &str, socket_path: &PathBuf) -> std::io::Result<()> {
+pub fn fork_daemon(binary_path: &str, socket_path: &Path) -> std::io::Result<()> {
     use std::process::Command;
 
     let pid_path = pid_path_for_socket(socket_path);
@@ -72,7 +77,7 @@ pub fn fork_daemon(binary_path: &str, socket_path: &PathBuf) -> std::io::Result<
     Ok(())
 }
 
-pub fn wait_for_daemon(socket_path: &PathBuf, max_attempts: u32) -> bool {
+pub fn wait_for_daemon(socket_path: &Path, max_attempts: u32) -> bool {
     let mut delay_ms = 10u64;
     for _ in 0..max_attempts {
         if is_daemon_running(socket_path) {
@@ -84,7 +89,7 @@ pub fn wait_for_daemon(socket_path: &PathBuf, max_attempts: u32) -> bool {
     false
 }
 
-pub fn ensure_daemon(socket_path: &PathBuf) -> std::io::Result<()> {
+pub fn ensure_daemon(socket_path: &Path) -> std::io::Result<()> {
     if is_daemon_running(socket_path) {
         return Ok(());
     }

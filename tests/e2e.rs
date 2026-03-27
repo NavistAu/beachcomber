@@ -1,7 +1,6 @@
 use shellstate::client::Client;
 use shellstate::config::Config;
 use shellstate::daemon;
-use shellstate::protocol::Format;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -14,7 +13,7 @@ async fn e2e_get_hostname_via_daemon() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let client = Client::new(sock.clone());
-    let response = client.get("hostname", None, Format::Json).await.unwrap();
+    let response = client.get("hostname", None).await.unwrap();
     assert!(response.ok, "Response should be ok");
     let data = response.data.unwrap();
     assert!(data["name"].is_string(), "hostname.name should be a string");
@@ -33,7 +32,7 @@ async fn e2e_get_hostname_single_field() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let client = Client::new(sock.clone());
-    let response = client.get("hostname.short", None, Format::Json).await.unwrap();
+    let response = client.get("hostname.short", None).await.unwrap();
     assert!(response.ok);
     let short = response.data.unwrap();
     assert!(short.is_string(), "Single field should return a string value");
@@ -68,7 +67,7 @@ async fn e2e_get_user() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let client = Client::new(sock.clone());
-    let response = client.get("user", None, Format::Json).await.unwrap();
+    let response = client.get("user", None).await.unwrap();
     assert!(response.ok);
     let data = response.data.unwrap();
     assert!(data["name"].is_string());
@@ -91,7 +90,7 @@ async fn e2e_poke_and_get() {
     let poke_resp = client.poke("hostname", None).await.unwrap();
     assert!(poke_resp.ok);
 
-    let response = client.get("hostname.name", None, Format::Json).await.unwrap();
+    let response = client.get("hostname.name", None).await.unwrap();
     assert!(response.ok);
     assert!(response.age_ms.unwrap() < 1000, "Data should be fresh after poke");
 
@@ -108,7 +107,7 @@ async fn e2e_unknown_provider() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let client = Client::new(sock.clone());
-    let response = client.get("nonexistent", None, Format::Json).await.unwrap();
+    let response = client.get("nonexistent", None).await.unwrap();
     assert!(!response.ok, "Unknown provider should return error");
 
     handle.abort();
@@ -128,7 +127,7 @@ async fn e2e_multiple_concurrent_clients() {
         let sock = sock.clone();
         handles.push(tokio::spawn(async move {
             let client = Client::new(sock);
-            let response = client.get("hostname.name", None, Format::Json).await.unwrap();
+            let response = client.get("hostname.name", None).await.unwrap();
             assert!(response.ok);
             response.data.unwrap().as_str().unwrap().to_string()
         }));

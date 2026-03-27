@@ -1,6 +1,5 @@
 use shellstate::cache::Cache;
 use shellstate::client::Client;
-use shellstate::protocol::Format;
 use shellstate::provider::registry::ProviderRegistry;
 use shellstate::provider::{ProviderResult, Value};
 use shellstate::server::Server;
@@ -35,7 +34,7 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
 async fn client_get_full_provider() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let response = client.get("hostname", None, Format::Json).await.unwrap();
+    let response = client.get("hostname", None).await.unwrap();
     assert!(response.ok);
     let data = response.data.unwrap();
     assert_eq!(data["name"], "testhost.local");
@@ -46,7 +45,7 @@ async fn client_get_full_provider() {
 async fn client_get_single_field() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let response = client.get("hostname.short", None, Format::Json).await.unwrap();
+    let response = client.get("hostname.short", None).await.unwrap();
     assert!(response.ok);
     assert_eq!(response.data.unwrap(), serde_json::json!("testhost"));
 }
@@ -63,7 +62,7 @@ async fn client_get_text_format() {
 async fn client_get_unknown_provider() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let response = client.get("nonexistent", None, Format::Json).await.unwrap();
+    let response = client.get("nonexistent", None).await.unwrap();
     assert!(!response.ok);
     assert!(response.error.unwrap().contains("unknown provider"));
 }

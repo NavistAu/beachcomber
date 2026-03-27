@@ -111,7 +111,7 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: Format) -> Ex
                 }
             }
         } else {
-            match client.get(key, path, format).await {
+            match client.get(key, path).await {
                 Ok(response) => {
                     if response.ok {
                         if response.data.is_none() {

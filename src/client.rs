@@ -1,4 +1,4 @@
-use crate::protocol::{Format, Response};
+use crate::protocol::Response;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -16,7 +16,6 @@ impl Client {
         &self,
         key: &str,
         path: Option<&str>,
-        format: Format,
     ) -> std::io::Result<Response> {
         let mut request = serde_json::json!({
             "op": "get",
@@ -25,10 +24,7 @@ impl Client {
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
         }
-        if format == Format::Text {
-            request["format"] = serde_json::json!("text");
-        }
-        self.send_request(&request, format == Format::Text).await
+        self.send_request(&request).await
     }
 
     pub async fn get_text(
@@ -53,7 +49,14 @@ impl Client {
         let mut line = String::new();
         reader.read_line(&mut line).await?;
 
-        Ok(line.trim_end_matches('\n').to_string())
+        let trimmed = line.trim_end_matches('\n').to_string();
+        if trimmed.starts_with("error:") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                trimmed,
+            ));
+        }
+        Ok(trimmed)
     }
 
     pub async fn poke(
@@ -68,13 +71,12 @@ impl Client {
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
         }
-        self.send_request(&request, false).await
+        self.send_request(&request).await
     }
 
     async fn send_request(
         &self,
         request: &serde_json::Value,
-        _text_mode: bool,
     ) -> std::io::Result<Response> {
         let mut stream = UnixStream::connect(&self.socket_path).await?;
         let msg = format!("{}\n", serde_json::to_string(request).unwrap());
