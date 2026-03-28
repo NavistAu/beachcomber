@@ -1,0 +1,19 @@
+/target
+/vendor
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Claude Code working files
+.claude/
+
+# Internal planning docs (kept in repo but not published)
+INIT.md
+docs/superpowers/
