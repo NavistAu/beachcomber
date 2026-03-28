@@ -262,6 +262,15 @@ impl Scheduler {
         let registry = Arc::clone(&self.registry);
         let failure_counts = Arc::clone(&self.failure_counts);
 
+        // Extract the poll interval from provider metadata for staleness tracking.
+        let poll_interval_secs: Option<u64> = registry.get(provider_name).map(|p| {
+            match p.metadata().invalidation {
+                InvalidationStrategy::Poll { interval_secs, .. } => Some(interval_secs),
+                InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(interval_secs),
+                _ => None,
+            }
+        }).flatten();
+
         let path_for_cache = path_owned.clone();
         let name_for_log = name_owned.clone();
         let key_for_cleanup = key.clone();
@@ -292,7 +301,7 @@ impl Scheduler {
 
             match result {
                 Ok(Ok(Some(provider_result))) => {
-                    cache.put(&name_owned, path_for_cache.as_deref(), provider_result);
+                    cache.put_with_interval(&name_owned, path_for_cache.as_deref(), provider_result, poll_interval_secs);
                     debug!("Executed provider '{}' path={:?}", name_owned, path_for_cache);
                 }
                 Ok(Ok(None)) => {

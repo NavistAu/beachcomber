@@ -18,11 +18,22 @@ pub struct CacheEntry {
     pub result: ProviderResult,
     pub created_at: Instant,
     pub generation: u64,
+    /// Expected refresh interval in seconds, used to compute staleness.
+    /// None means staleness is never reported (e.g. Once providers).
+    pub expected_interval_secs: Option<u64>,
 }
 
 impl CacheEntry {
     pub fn age_ms(&self) -> u128 {
         self.created_at.elapsed().as_millis()
+    }
+
+    /// Returns true if the entry is older than its expected refresh interval.
+    pub fn is_stale(&self) -> bool {
+        match self.expected_interval_secs {
+            Some(interval) => self.created_at.elapsed().as_secs() > interval,
+            None => false,
+        }
     }
 }
 
@@ -45,12 +56,23 @@ impl Cache {
     }
 
     pub fn put(&self, provider: &str, path: Option<&str>, result: ProviderResult) {
+        self.put_with_interval(provider, path, result, None);
+    }
+
+    pub fn put_with_interval(
+        &self,
+        provider: &str,
+        path: Option<&str>,
+        result: ProviderResult,
+        interval_secs: Option<u64>,
+    ) {
         let key = make_cache_key(provider, path);
         let current_gen = self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.entries.insert(key, CacheEntry {
             result,
             created_at: Instant::now(),
             generation: current_gen,
+            expected_interval_secs: interval_secs,
         });
     }
 

@@ -150,6 +150,7 @@ async fn handle_request(
             match cache.get(provider_name, effective_path.as_deref()) {
                 Some(entry) => {
                     let age_ms = entry.age_ms();
+                    let stale = entry.is_stale();
                     let data = if let Some(field_name) = field {
                         match entry.result.get(field_name) {
                             Some(value) => serde_json::to_value(value).unwrap(),
@@ -160,7 +161,7 @@ async fn handle_request(
                     } else {
                         entry.result.to_json()
                     };
-                    Response::ok(data, age_ms, false)
+                    Response::ok(data, age_ms, stale)
                 }
                 None => Response::miss(),
             }
