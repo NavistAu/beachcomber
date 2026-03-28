@@ -26,6 +26,7 @@ impl Default for Config {
 pub struct DaemonConfig {
     pub socket_path: Option<String>,
     pub log_level: String,
+    pub provider_timeout_secs: Option<u64>,
 }
 
 impl Default for DaemonConfig {
@@ -33,6 +34,7 @@ impl Default for DaemonConfig {
         Self {
             socket_path: None,
             log_level: "info".to_string(),
+            provider_timeout_secs: Some(10),
         }
     }
 }

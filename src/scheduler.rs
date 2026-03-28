@@ -156,7 +156,7 @@ fn check_backoff(
 pub struct Scheduler {
     cache: Arc<Cache>,
     registry: Arc<ProviderRegistry>,
-    _config: Config,
+    config: Config,
     rx: mpsc::Receiver<SchedulerMessage>,
 }
 
@@ -171,7 +171,7 @@ impl Scheduler {
         let scheduler = Scheduler {
             cache,
             registry,
-            _config: config,
+            config,
             rx,
         };
         (handle, scheduler)
@@ -188,15 +188,32 @@ impl Scheduler {
         let path_owned = path.map(|s| s.to_string());
         let name_owned = provider_name.to_string();
         let cache = Arc::clone(&self.cache);
+        let timeout_secs = self.config.daemon.provider_timeout_secs.unwrap_or(10);
 
-        tokio::task::spawn_blocking(move || {
-            match provider.execute(path_owned.as_deref()) {
-                Some(result) => {
-                    cache.put(&name_owned, path_owned.as_deref(), result);
-                    debug!("Executed provider '{}' path={:?}", name_owned, path_owned);
+        let path_for_cache = path_owned.clone();
+        let name_for_log = name_owned.clone();
+
+        tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                Duration::from_secs(timeout_secs),
+                tokio::task::spawn_blocking(move || {
+                    provider.execute(path_owned.as_deref())
+                }),
+            ).await;
+
+            match result {
+                Ok(Ok(Some(provider_result))) => {
+                    cache.put(&name_owned, path_for_cache.as_deref(), provider_result);
+                    debug!("Executed provider '{}' path={:?}", name_owned, path_for_cache);
                 }
-                None => {
-                    warn!("Provider '{}' returned None for path={:?}", name_owned, path_owned);
+                Ok(Ok(None)) => {
+                    debug!("Provider '{}' returned None for path={:?}", name_for_log, path_for_cache);
+                }
+                Ok(Err(e)) => {
+                    warn!("Provider '{}' panicked: {}", name_for_log, e);
+                }
+                Err(_) => {
+                    warn!("Provider '{}' timed out after {}s", name_for_log, timeout_secs);
                 }
             }
         });
@@ -228,7 +245,7 @@ impl Scheduler {
 
         // Backoff states for keys with no active subscribers.
         let mut backoff: HashMap<(String, Option<String>), BackoffState> = HashMap::new();
-        let grace_duration = std::time::Duration::from_secs(self._config.lifecycle.grace_period_secs);
+        let grace_duration = std::time::Duration::from_secs(self.config.lifecycle.grace_period_secs);
 
         // Watch paths that are being monitored: path -> (provider, path_arg)
         let mut watch_paths: HashMap<PathBuf, Vec<(String, Option<String>)>> = HashMap::new();
