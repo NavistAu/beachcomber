@@ -182,7 +182,16 @@ async fn handle_request(
                     };
                     Response::ok(data, age_ms, stale)
                 }
-                None => Response::miss(),
+                None => {
+                    // Trigger background computation so the next get has data
+                    if let Some(sched) = scheduler {
+                        sched.send(SchedulerMessage::Poke {
+                            provider: provider_name.to_string(),
+                            path: effective_path,
+                        }).await;
+                    }
+                    Response::miss()
+                }
             }
         }
         Request::Poke { key, path } => {
