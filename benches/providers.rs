@@ -1,7 +1,11 @@
 use criterion::{criterion_group, criterion_main, Criterion};
+use shellstate::provider::battery::BatteryProvider;
+use shellstate::provider::gcloud::GcloudProvider;
 use shellstate::provider::git::GitProvider;
 use shellstate::provider::hostname::HostnameProvider;
+use shellstate::provider::kubecontext::KubecontextProvider;
 use shellstate::provider::load::LoadProvider;
+use shellstate::provider::network::NetworkProvider;
 use shellstate::provider::uptime::UptimeProvider;
 use shellstate::provider::user::UserProvider;
 use shellstate::provider::Provider;
@@ -85,6 +89,46 @@ fn bench_git_vs_raw(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_network_execute(c: &mut Criterion) {
+    let p = NetworkProvider;
+    c.bench_function("provider_network_execute", |b| {
+        b.iter(|| {
+            let result = p.execute(None);
+            criterion::black_box(result);
+        })
+    });
+}
+
+fn bench_battery_execute(c: &mut Criterion) {
+    let p = BatteryProvider;
+    c.bench_function("provider_battery_execute", |b| {
+        b.iter(|| {
+            let result = p.execute(None);
+            criterion::black_box(result);
+        })
+    });
+}
+
+fn bench_kubecontext_execute(c: &mut Criterion) {
+    let p = KubecontextProvider;
+    c.bench_function("provider_kubecontext_execute", |b| {
+        b.iter(|| {
+            let result = p.execute(None);
+            criterion::black_box(result);
+        })
+    });
+}
+
+fn bench_gcloud_execute(c: &mut Criterion) {
+    let p = GcloudProvider;
+    c.bench_function("provider_gcloud_execute", |b| {
+        b.iter(|| {
+            let result = p.execute(None);
+            criterion::black_box(result);
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_hostname_execute,
@@ -93,5 +137,9 @@ criterion_group!(
     bench_uptime_execute,
     bench_git_execute,
     bench_git_vs_raw,
+    bench_network_execute,
+    bench_battery_execute,
+    bench_kubecontext_execute,
+    bench_gcloud_execute,
 );
 criterion_main!(benches);
