@@ -158,6 +158,10 @@ pub struct Scheduler {
     registry: Arc<ProviderRegistry>,
     config: Config,
     rx: mpsc::Receiver<SchedulerMessage>,
+    /// Tracks which (provider, path) combinations are currently executing.
+    in_flight: Arc<std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>>,
+    /// Tracks which (provider, path) need to re-run after current execution completes.
+    pending_rerun: Arc<std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>>,
 }
 
 impl Scheduler {
@@ -173,25 +177,46 @@ impl Scheduler {
             registry,
             config,
             rx,
+            in_flight: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            pending_rerun: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         };
         (handle, scheduler)
     }
 
     /// Execute a provider on the blocking thread pool and write result to cache.
     /// This is fire-and-forget: returns immediately while the provider runs in the background.
+    /// Deduplicates concurrent executions: if a provider is already running, marks it for
+    /// a single rerun after completion rather than launching another concurrent execution.
     fn execute_provider(&self, provider_name: &str, path: Option<&str>) {
         let Some(provider) = self.registry.get(provider_name) else {
             warn!("Poke for unknown provider '{}'", provider_name);
             return;
         };
 
-        let path_owned = path.map(|s| s.to_string());
-        let name_owned = provider_name.to_string();
+        let key = (provider_name.to_string(), path.map(|s| s.to_string()));
+
+        // Check if already in flight — if so, queue a rerun and return.
+        {
+            let mut in_flight = self.in_flight.lock().unwrap();
+            if in_flight.contains(&key) {
+                self.pending_rerun.lock().unwrap().insert(key);
+                debug!("Provider '{}' already in flight, queued rerun", provider_name);
+                return;
+            }
+            in_flight.insert(key.clone());
+        }
+
+        let path_owned = key.1.clone();
+        let name_owned = key.0.clone();
         let cache = Arc::clone(&self.cache);
         let timeout_secs = self.config.daemon.provider_timeout_secs.unwrap_or(10);
+        let in_flight = Arc::clone(&self.in_flight);
+        let pending_rerun = Arc::clone(&self.pending_rerun);
+        let registry = Arc::clone(&self.registry);
 
         let path_for_cache = path_owned.clone();
         let name_for_log = name_owned.clone();
+        let key_for_cleanup = key.clone();
 
         tokio::spawn(async move {
             let result = tokio::time::timeout(
@@ -214,6 +239,45 @@ impl Scheduler {
                 }
                 Err(_) => {
                     warn!("Provider '{}' timed out after {}s", name_for_log, timeout_secs);
+                }
+            }
+
+            // Clear in-flight and check for pending reruns.
+            in_flight.lock().unwrap().remove(&key_for_cleanup);
+            let should_rerun = pending_rerun.lock().unwrap().remove(&key_for_cleanup);
+
+            if should_rerun {
+                debug!("Re-running provider '{}' (was queued during previous execution)", key_for_cleanup.0);
+                if let Some(rerun_provider) = registry.get(&key_for_cleanup.0) {
+                    let rerun_path = key_for_cleanup.1.clone();
+                    let rerun_name = key_for_cleanup.0.clone();
+                    // Mark as in-flight again for this rerun.
+                    in_flight.lock().unwrap().insert(key_for_cleanup.clone());
+                    tokio::spawn(async move {
+                        let rerun_result = tokio::time::timeout(
+                            Duration::from_secs(timeout_secs),
+                            tokio::task::spawn_blocking(move || {
+                                rerun_provider.execute(rerun_path.as_deref())
+                            }),
+                        ).await;
+
+                        match rerun_result {
+                            Ok(Ok(Some(r))) => {
+                                cache.put(&rerun_name, key_for_cleanup.1.as_deref(), r);
+                                debug!("Rerun provider '{}' completed", rerun_name);
+                            }
+                            Ok(Ok(None)) => {
+                                debug!("Rerun provider '{}' returned None", rerun_name);
+                            }
+                            Ok(Err(e)) => {
+                                warn!("Rerun provider '{}' panicked: {}", rerun_name, e);
+                            }
+                            Err(_) => {
+                                warn!("Rerun provider '{}' timed out after {}s", rerun_name, timeout_secs);
+                            }
+                        }
+                        in_flight.lock().unwrap().remove(&key_for_cleanup);
+                    });
                 }
             }
         });
