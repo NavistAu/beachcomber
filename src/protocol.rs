@@ -40,6 +40,9 @@ pub enum Request {
         #[serde(default)]
         path: Option<String>,
     },
+    Context {
+        path: String,
+    },
     List,
     Status,
 }

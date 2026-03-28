@@ -75,6 +75,8 @@ async fn handle_connection(
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
+    let mut context_path: Option<String> = None;
+
     while reader.read_line(&mut line).await? > 0 {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -84,7 +86,7 @@ async fn handle_connection(
 
         let response_bytes = match serde_json::from_str::<Request>(trimmed) {
             Ok(request) => {
-                let response = handle_request(&request, &cache, &registry, scheduler.as_ref(), consumer_id).await;
+                let response = handle_request(&request, &cache, &registry, scheduler.as_ref(), consumer_id, &mut context_path).await;
                 format_response(&request, &response)
             }
             Err(e) => {
@@ -107,12 +109,33 @@ async fn handle_connection(
     Ok(())
 }
 
+/// Resolve the effective path for a request: explicit path > context path > None.
+/// Only applies the context for path-scoped (non-global) providers.
+fn resolve_path<'a>(
+    explicit: Option<&'a str>,
+    context: &'a Option<String>,
+    provider_name: &str,
+    registry: &ProviderRegistry,
+) -> Option<String> {
+    if explicit.is_some() {
+        return explicit.map(|s| s.to_string());
+    }
+    // Only apply context path for non-global (path-scoped) providers.
+    if let Some(provider) = registry.get(provider_name) {
+        if !provider.metadata().global {
+            return context.clone();
+        }
+    }
+    None
+}
+
 async fn handle_request(
     request: &Request,
     cache: &Cache,
     registry: &ProviderRegistry,
     scheduler: Option<&SchedulerHandle>,
     consumer_id: u64,
+    context_path: &mut Option<String>,
 ) -> Response {
     match request {
         Request::Get { key, path, .. } => {
@@ -122,7 +145,9 @@ async fn handle_request(
                 return Response::error(format!("unknown provider: {}", provider_name));
             }
 
-            match cache.get(provider_name, path.as_deref()) {
+            let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
+
+            match cache.get(provider_name, effective_path.as_deref()) {
                 Some(entry) => {
                     let age_ms = entry.age_ms();
                     let data = if let Some(field_name) = field {
@@ -142,21 +167,21 @@ async fn handle_request(
         }
         Request::Poke { key, path } => {
             let (provider_name, _) = protocol::split_key(key);
+            let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
 
             if let Some(sched) = scheduler {
                 // Route through scheduler.
                 sched.send(SchedulerMessage::Poke {
                     provider: provider_name.to_string(),
-                    path: path.clone(),
+                    path: effective_path,
                 }).await;
                 Response { ok: true, data: None, age_ms: None, stale: None, error: None }
             } else {
                 // Fallback: execute directly (used by tests with None scheduler).
                 match registry.get(provider_name) {
                     Some(provider) => {
-                        let path_clone = path.clone();
-                        if let Some(result) = provider.execute(path_clone.as_deref()) {
-                            cache.put(provider_name, path.as_deref(), result);
+                        if let Some(result) = provider.execute(effective_path.as_deref()) {
+                            cache.put(provider_name, effective_path.as_deref(), result);
                         }
                         Response { ok: true, data: None, age_ms: None, stale: None, error: None }
                     }
@@ -166,13 +191,14 @@ async fn handle_request(
         }
         Request::Subscribe { key, path, triggers } => {
             let (provider_name, _) = protocol::split_key(key);
+            let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
 
             if let Some(sched) = scheduler {
                 let trigger_set = TriggerSet::from_protocol(triggers);
                 sched.send(SchedulerMessage::Subscribe {
                     consumer_id,
                     provider: provider_name.to_string(),
-                    path: path.clone(),
+                    path: effective_path,
                     triggers: trigger_set,
                 }).await;
             }
@@ -181,15 +207,20 @@ async fn handle_request(
         }
         Request::Unsubscribe { key, path } => {
             let (provider_name, _) = protocol::split_key(key);
+            let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
 
             if let Some(sched) = scheduler {
                 sched.send(SchedulerMessage::Unsubscribe {
                     consumer_id,
                     provider: provider_name.to_string(),
-                    path: path.clone(),
+                    path: effective_path,
                 }).await;
             }
 
+            Response { ok: true, data: None, age_ms: None, stale: None, error: None }
+        }
+        Request::Context { path } => {
+            *context_path = Some(path.clone());
             Response { ok: true, data: None, age_ms: None, stale: None, error: None }
         }
         Request::List => {

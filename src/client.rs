@@ -25,6 +25,11 @@ impl ClientSession {
         })
     }
 
+    pub async fn set_context(&mut self, path: &str) -> std::io::Result<Response> {
+        let request = serde_json::json!({ "op": "context", "path": path });
+        self.send_request(&request).await
+    }
+
     pub async fn get(&mut self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
         let mut request = serde_json::json!({ "op": "get", "key": key });
         if let Some(p) = path {
