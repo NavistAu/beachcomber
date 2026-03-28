@@ -2,7 +2,16 @@ use crate::provider::ProviderResult;
 use dashmap::DashMap;
 use std::time::Instant;
 
-type CacheKey = (String, Option<String>);
+type CacheKey = String;
+
+/// Build a compact cache key from a provider name and optional path.
+/// Uses a null byte as separator since it cannot appear in valid paths.
+fn make_cache_key(provider: &str, path: Option<&str>) -> CacheKey {
+    match path {
+        Some(p) => format!("{}\0{}", provider, p),
+        None => provider.to_string(),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct CacheEntry {
@@ -31,12 +40,12 @@ impl Cache {
     }
 
     pub fn get(&self, provider: &str, path: Option<&str>) -> Option<CacheEntry> {
-        let key = (provider.to_string(), path.map(|s| s.to_string()));
+        let key = make_cache_key(provider, path);
         self.entries.get(&key).map(|entry| entry.clone())
     }
 
     pub fn put(&self, provider: &str, path: Option<&str>, result: ProviderResult) {
-        let key = (provider.to_string(), path.map(|s| s.to_string()));
+        let key = make_cache_key(provider, path);
         let current_gen = self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.entries.insert(key, CacheEntry {
             result,
@@ -46,7 +55,7 @@ impl Cache {
     }
 
     pub fn remove(&self, provider: &str, path: Option<&str>) {
-        let key = (provider.to_string(), path.map(|s| s.to_string()));
+        let key = make_cache_key(provider, path);
         self.entries.remove(&key);
     }
 
