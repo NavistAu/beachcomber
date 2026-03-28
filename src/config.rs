@@ -44,6 +44,7 @@ impl Default for DaemonConfig {
 pub struct LifecycleConfig {
     pub grace_period_secs: u64,
     pub eviction_timeout_secs: u64,
+    pub idle_shutdown_secs: Option<u64>,
 }
 
 impl Default for LifecycleConfig {
@@ -51,6 +52,7 @@ impl Default for LifecycleConfig {
         Self {
             grace_period_secs: 30,
             eviction_timeout_secs: 900,
+            idle_shutdown_secs: Some(300), // 5 minutes
         }
     }
 }

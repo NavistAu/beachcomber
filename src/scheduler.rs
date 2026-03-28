@@ -403,6 +403,10 @@ impl Scheduler {
         // Watch paths that are being monitored: path -> (provider, path_arg)
         let mut watch_paths: HashMap<PathBuf, Vec<(String, Option<String>)>> = HashMap::new();
 
+        // Idle shutdown tracking.
+        let mut last_activity = Instant::now();
+        let idle_shutdown_secs = self.config.lifecycle.idle_shutdown_secs;
+
         // Tick every second to check poll timers.
         let mut tick = interval(Duration::from_secs(1));
 
@@ -422,6 +426,7 @@ impl Scheduler {
                         Some(SchedulerMessage::Poke { provider, path }) => {
                             debug!("Poke: provider={} path={:?}", provider, path);
                             self.execute_provider(&provider, path.as_deref());
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::Subscribe { consumer_id, provider, path, triggers }) => {
                             debug!("Subscribe: consumer={} provider={} path={:?}", consumer_id, provider, path);
@@ -501,21 +506,25 @@ impl Scheduler {
                             if self.cache.get(&provider, path.as_deref()).is_none() {
                                 self.execute_provider(&provider, path.as_deref());
                             }
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::Unsubscribe { consumer_id, provider, path }) => {
                             debug!("Unsubscribe: consumer={} provider={} path={:?}", consumer_id, provider, path);
                             subs.unsubscribe(consumer_id, &provider, path.as_deref());
                             start_backoff_for_empty_keys(&subs, &mut backoff, grace_duration);
                             self.cleanup_unused_subscriptions(&mut subs, &mut poll_states, &mut watch_paths, &mut fs_watcher);
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::ConsumerDisconnected { consumer_id }) => {
                             debug!("ConsumerDisconnected: consumer={}", consumer_id);
                             subs.disconnect(consumer_id);
                             start_backoff_for_empty_keys(&subs, &mut backoff, grace_duration);
                             self.cleanup_unused_subscriptions(&mut subs, &mut poll_states, &mut watch_paths, &mut fs_watcher);
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::FsEvent { paths }) => {
                             self.handle_fs_event(paths, &watch_paths);
+                            last_activity = Instant::now();
                         }
                     }
                 }
@@ -550,6 +559,17 @@ impl Scheduler {
                         debug!("Evicting cache for provider={} path={:?} (backoff evict)", provider, path);
                         self.cache.remove(&provider, path.as_deref());
                     }
+
+                    // Check idle shutdown condition.
+                    if let Some(idle_secs) = idle_shutdown_secs {
+                        if self.cache.is_empty()
+                            && subs.all_keys().is_empty()
+                            && last_activity.elapsed().as_secs() >= idle_secs
+                        {
+                            info!("Idle shutdown: no cache entries, no subscriptions, idle for {}s", idle_secs);
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -563,6 +583,10 @@ impl Scheduler {
         let mut poll_states: HashMap<(String, Option<String>), PollState> = HashMap::new();
         let mut tick = interval(Duration::from_secs(1));
 
+        // Idle shutdown tracking.
+        let mut last_activity = Instant::now();
+        let idle_shutdown_secs = self.config.lifecycle.idle_shutdown_secs;
+
         loop {
             tokio::select! {
                 msg = self.rx.recv() => {
@@ -570,6 +594,7 @@ impl Scheduler {
                         None | Some(SchedulerMessage::Shutdown) => break,
                         Some(SchedulerMessage::Poke { provider, path }) => {
                             self.execute_provider(&provider, path.as_deref());
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::Subscribe { consumer_id, provider, path, triggers }) => {
                             subs.subscribe(consumer_id, &provider, path.as_deref(), triggers.clone());
@@ -583,12 +608,15 @@ impl Scheduler {
                             if self.cache.get(&provider, path.as_deref()).is_none() {
                                 self.execute_provider(&provider, path.as_deref());
                             }
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::Unsubscribe { consumer_id, provider, path }) => {
                             subs.unsubscribe(consumer_id, &provider, path.as_deref());
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::ConsumerDisconnected { consumer_id }) => {
                             subs.disconnect(consumer_id);
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::FsEvent { .. }) => {
                             // No-op without watcher.
@@ -609,6 +637,17 @@ impl Scheduler {
                         self.execute_provider(&provider, path.as_deref());
                         if let Some(state) = poll_states.get_mut(&(provider, path)) {
                             state.last_run = Instant::now();
+                        }
+                    }
+
+                    // Check idle shutdown condition.
+                    if let Some(idle_secs) = idle_shutdown_secs {
+                        if self.cache.is_empty()
+                            && subs.all_keys().is_empty()
+                            && last_activity.elapsed().as_secs() >= idle_secs
+                        {
+                            info!("Idle shutdown: no cache entries, no subscriptions, idle for {}s", idle_secs);
+                            break;
                         }
                     }
                 }
