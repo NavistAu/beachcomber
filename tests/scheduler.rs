@@ -1,13 +1,13 @@
-use shellstate::cache::Cache;
-use shellstate::provider::registry::ProviderRegistry;
-use shellstate::scheduler::{Scheduler, SchedulerMessage, TriggerSet};
+use beachcomber::cache::Cache;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::scheduler::{Scheduler, SchedulerMessage, TriggerSet};
 use std::sync::Arc;
 
 #[tokio::test]
 async fn scheduler_poke_populates_cache() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
-    let config = shellstate::config::Config::default();
+    let config = beachcomber::config::Config::default();
 
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
     let sched_task = tokio::spawn(async move { scheduler.run().await });
@@ -31,7 +31,7 @@ async fn scheduler_poke_populates_cache() {
 async fn scheduler_poke_unknown_provider() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
-    let config = shellstate::config::Config::default();
+    let config = beachcomber::config::Config::default();
 
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
     let sched_task = tokio::spawn(async move { scheduler.run().await });
@@ -51,7 +51,7 @@ async fn scheduler_poke_unknown_provider() {
 async fn scheduler_subscribe_starts_polling() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
-    let config = shellstate::config::Config::default();
+    let config = beachcomber::config::Config::default();
 
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
     let sched_task = tokio::spawn(async move { scheduler.run().await });
@@ -76,7 +76,7 @@ async fn scheduler_subscribe_starts_polling() {
 async fn scheduler_shutdown() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
-    let config = shellstate::config::Config::default();
+    let config = beachcomber::config::Config::default();
 
     let (handle, scheduler) = Scheduler::new(cache, registry, config);
     let sched_task = tokio::spawn(async move { scheduler.run().await });

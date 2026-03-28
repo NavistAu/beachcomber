@@ -1,5 +1,5 @@
-use shellstate::provider::{Provider, InvalidationStrategy};
-use shellstate::provider::network::NetworkProvider;
+use beachcomber::provider::{Provider, InvalidationStrategy};
+use beachcomber::provider::network::NetworkProvider;
 
 #[test]
 fn network_provider_metadata() {

@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use shellstate::cache::Cache;
-use shellstate::provider::{ProviderResult, Value};
+use beachcomber::cache::Cache;
+use beachcomber::provider::{ProviderResult, Value};
 use std::sync::Arc;
 use std::thread;
 

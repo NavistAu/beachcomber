@@ -1,10 +1,10 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use shellstate::cache::Cache;
-use shellstate::client::Client;
-use shellstate::config::Config;
-use shellstate::provider::registry::ProviderRegistry;
-use shellstate::scheduler::Scheduler;
-use shellstate::server::Server;
+use beachcomber::cache::Cache;
+use beachcomber::client::Client;
+use beachcomber::config::Config;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::scheduler::Scheduler;
+use beachcomber::server::Server;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;

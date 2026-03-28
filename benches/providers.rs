@@ -1,14 +1,14 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use shellstate::provider::battery::BatteryProvider;
-use shellstate::provider::gcloud::GcloudProvider;
-use shellstate::provider::git::GitProvider;
-use shellstate::provider::hostname::HostnameProvider;
-use shellstate::provider::kubecontext::KubecontextProvider;
-use shellstate::provider::load::LoadProvider;
-use shellstate::provider::network::NetworkProvider;
-use shellstate::provider::uptime::UptimeProvider;
-use shellstate::provider::user::UserProvider;
-use shellstate::provider::Provider;
+use beachcomber::provider::battery::BatteryProvider;
+use beachcomber::provider::gcloud::GcloudProvider;
+use beachcomber::provider::git::GitProvider;
+use beachcomber::provider::hostname::HostnameProvider;
+use beachcomber::provider::kubecontext::KubecontextProvider;
+use beachcomber::provider::load::LoadProvider;
+use beachcomber::provider::network::NetworkProvider;
+use beachcomber::provider::uptime::UptimeProvider;
+use beachcomber::provider::user::UserProvider;
+use beachcomber::provider::Provider;
 
 fn bench_hostname_execute(c: &mut Criterion) {
     let p = HostnameProvider;
@@ -51,7 +51,7 @@ fn bench_uptime_execute(c: &mut Criterion) {
 }
 
 fn bench_git_execute(c: &mut Criterion) {
-    // Use the shellstate repo itself as the target.
+    // Use the beachcomber repo itself as the target.
     let repo_path = env!("CARGO_MANIFEST_DIR");
     let p = GitProvider;
 
@@ -67,7 +67,7 @@ fn bench_git_vs_raw(c: &mut Criterion) {
     let repo_path = env!("CARGO_MANIFEST_DIR");
     let mut group = c.benchmark_group("git_comparison");
 
-    group.bench_function("shellstate_git_provider", |b| {
+    group.bench_function("beachcomber_git_provider", |b| {
         let p = GitProvider;
         b.iter(|| {
             let result = p.execute(Some(criterion::black_box(repo_path)));

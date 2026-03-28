@@ -1,5 +1,5 @@
-use shellstate::subscription::SubscriptionManager;
-use shellstate::scheduler::TriggerSet;
+use beachcomber::subscription::SubscriptionManager;
+use beachcomber::scheduler::TriggerSet;
 
 fn watch_triggers() -> TriggerSet {
     TriggerSet { watch: true, poll_secs: None }

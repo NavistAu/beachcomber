@@ -1,6 +1,6 @@
-# shellstate Performance Guide
+# beachcomber Performance Guide
 
-This document records all performance optimizations applied to shellstate, the design principles behind them, and the measured results. It serves as a reference for future development to ensure performance regressions are avoided and further optimization opportunities are understood.
+This document records all performance optimizations applied to beachcomber, the design principles behind them, and the measured results. It serves as a reference for future development to ensure performance regressions are avoided and further optimization opportunities are understood.
 
 ## Design Principles
 
@@ -229,7 +229,7 @@ libc::getifaddrs(&mut ifaddrs);
 
 ### Real-World Impact
 
-| Scenario | Before shellstate | With shellstate |
+| Scenario | Before beachcomber | With beachcomber |
 |---|---|---|
 | zsh prompt (3 queries) | ~5ms (gitstatus fork) | 45µs (ClientSession) — **111x faster** |
 | tmux status (100 panes, 10s refresh) | 2.5s CPU (500 shell forks) | 7.5ms (socket queries) — **333x faster** |
@@ -253,7 +253,7 @@ libc::getifaddrs(&mut ifaddrs);
 
 ### Low value / deferred
 
-6. **Connection pooling in CLI.** The `shellstate get` CLI spawns a tokio runtime per invocation. A shell function holding a persistent connection would eliminate runtime + connection cost. This is a consumer-side optimization, not a daemon optimization.
+6. **Connection pooling in CLI.** The `beachcomber get` CLI spawns a tokio runtime per invocation. A shell function holding a persistent connection would eliminate runtime + connection cost. This is a consumer-side optimization, not a daemon optimization.
 
 7. **mmap shared memory for cache reads.** Eliminate socket round-trip entirely by exposing cache via memory-mapped file. Consumers read directly from shared memory. This is the theoretical minimum latency (just a memory read) but adds significant complexity for lifecycle management.
 
@@ -282,7 +282,7 @@ Benchmark results with historical comparison are stored in `target/criterion/`. 
 
 ## Performance Regression Checklist
 
-When modifying shellstate, verify these properties:
+When modifying beachcomber, verify these properties:
 
 - [ ] Cache read latency stays under 200ns (run `cargo bench --bench cache`)
 - [ ] Socket round-trip stays under 40µs cold, 20µs warm (run `cargo bench --bench socket`)

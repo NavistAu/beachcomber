@@ -1,14 +1,14 @@
 [package]
-name = "shellstate"
+name = "beachcomber"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "shellstate"
+name = "beachcomber"
 path = "src/lib.rs"
 
 [[bin]]
-name = "shellstate"
+name = "comb"
 path = "src/main.rs"
 
 [dependencies]

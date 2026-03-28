@@ -1,11 +1,11 @@
-use shellstate::cache::Cache;
-use shellstate::config::Config;
-use shellstate::provider::registry::ProviderRegistry;
-use shellstate::provider::{
+use beachcomber::cache::Cache;
+use beachcomber::config::Config;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::provider::{
     Provider, ProviderMetadata, ProviderResult, Value,
     FieldSchema, FieldType, InvalidationStrategy,
 };
-use shellstate::scheduler::{Scheduler, SchedulerMessage};
+use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 

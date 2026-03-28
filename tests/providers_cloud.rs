@@ -1,7 +1,7 @@
-use shellstate::provider::{Provider, InvalidationStrategy};
-use shellstate::provider::kubecontext::KubecontextProvider;
-use shellstate::provider::aws::AwsProvider;
-use shellstate::provider::gcloud::GcloudProvider;
+use beachcomber::provider::{Provider, InvalidationStrategy};
+use beachcomber::provider::kubecontext::KubecontextProvider;
+use beachcomber::provider::aws::AwsProvider;
+use beachcomber::provider::gcloud::GcloudProvider;
 
 #[test]
 fn kubecontext_provider_metadata() {

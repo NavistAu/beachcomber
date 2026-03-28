@@ -1,11 +1,11 @@
-use shellstate::cache::Cache;
-use shellstate::provider::registry::ProviderRegistry;
-use shellstate::provider::{
+use beachcomber::cache::Cache;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::provider::{
     Provider, ProviderMetadata, ProviderResult, Value,
     FieldSchema, FieldType, InvalidationStrategy,
 };
-use shellstate::server::Server;
-use shellstate::protocol::Response;
+use beachcomber::server::Server;
+use beachcomber::protocol::Response;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::io::{AsyncWriteExt, AsyncBufReadExt, BufReader};

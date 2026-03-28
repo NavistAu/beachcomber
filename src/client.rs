@@ -7,7 +7,7 @@ pub struct Client {
     socket_path: PathBuf,
 }
 
-/// A persistent connection to the shellstate daemon.
+/// A persistent connection to the beachcomber daemon.
 /// Reuses a single Unix socket connection across multiple requests,
 /// avoiding the per-request connect/disconnect overhead.
 pub struct ClientSession {

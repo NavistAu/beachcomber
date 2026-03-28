@@ -1,6 +1,6 @@
-use shellstate::provider::Provider;
-use shellstate::provider::script::ScriptProvider;
-use shellstate::config::ScriptProviderConfig;
+use beachcomber::provider::Provider;
+use beachcomber::provider::script::ScriptProvider;
+use beachcomber::config::ScriptProviderConfig;
 
 #[test]
 fn script_provider_metadata() {
@@ -65,7 +65,7 @@ fn script_provider_returns_none_on_failure() {
 fn script_provider_custom_poll() {
     let config = ScriptProviderConfig {
         command: "echo '{}'".to_string(),
-        invalidation: Some(shellstate::config::ScriptInvalidation {
+        invalidation: Some(beachcomber::config::ScriptInvalidation {
             poll: Some("10s".to_string()),
             watch: None,
         }),
@@ -74,7 +74,7 @@ fn script_provider_custom_poll() {
     let p = ScriptProvider::new("poll_test", config);
     let meta = p.metadata();
     match meta.invalidation {
-        shellstate::provider::InvalidationStrategy::Poll { interval_secs, .. } => {
+        beachcomber::provider::InvalidationStrategy::Poll { interval_secs, .. } => {
             assert_eq!(interval_secs, 10);
         }
         _ => panic!("Expected Poll invalidation"),
@@ -85,7 +85,7 @@ fn script_provider_custom_poll() {
 fn script_provider_with_watch_patterns() {
     let config = ScriptProviderConfig {
         command: "echo '{}'".to_string(),
-        invalidation: Some(shellstate::config::ScriptInvalidation {
+        invalidation: Some(beachcomber::config::ScriptInvalidation {
             poll: Some("60s".to_string()),
             watch: Some(vec!["Cargo.toml".to_string(), "Cargo.lock".to_string()]),
         }),
@@ -94,7 +94,7 @@ fn script_provider_with_watch_patterns() {
     let p = ScriptProvider::new("watch_test", config);
     let meta = p.metadata();
     match meta.invalidation {
-        shellstate::provider::InvalidationStrategy::WatchAndPoll { ref patterns, interval_secs, .. } => {
+        beachcomber::provider::InvalidationStrategy::WatchAndPoll { ref patterns, interval_secs, .. } => {
             assert!(patterns.contains(&"Cargo.toml".to_string()));
             assert!(patterns.contains(&"Cargo.lock".to_string()));
             assert_eq!(interval_secs, 60);
@@ -111,7 +111,7 @@ type = "script"
 command = "echo '{\"context\":\"default\"}'"
 invalidation = { poll = "30s" }
 "#;
-    let config: shellstate::config::Config = toml::from_str(toml_str).unwrap();
+    let config: beachcomber::config::Config = toml::from_str(toml_str).unwrap();
     let scripts = config.script_providers();
     assert_eq!(scripts.len(), 1);
     assert_eq!(scripts[0].0, "docker_context");

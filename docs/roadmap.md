@@ -1,4 +1,4 @@
-# shellstate Roadmap
+# beachcomber Roadmap
 
 Single source of truth for project status and next steps.
 
@@ -18,9 +18,9 @@ Last updated: 2026-03-28
 
 **Protocol:** get, poke, subscribe, unsubscribe, context, list, status. JSON and text output formats. Connection context for implicit path resolution. Staleness flag in responses.
 
-**CLI:** `shellstate daemon | get | poke | subscribe | list | status`
+**CLI:** `comb daemon | get | poke | subscribe | list | status`
 
-**Config:** TOML at `~/.config/shellstate/config.toml`. Provider enabled/disabled flag. Provider timeout, poll interval, floor overrides. Script provider definitions. Lifecycle tuning (grace period, idle shutdown).
+**Config:** TOML at `~/.config/beachcomber/config.toml` (binary: `comb`). Provider enabled/disabled flag. Provider timeout, poll interval, floor overrides. Script provider definitions. Lifecycle tuning (grace period, idle shutdown).
 
 **Providers (16 built-in + script backend):**
 
@@ -53,7 +53,7 @@ Everything below must be done before the first public release. Ordered by depend
 
 Before anything public-facing can be written (README, brew formula, crate name, binary name), the final name must be decided.
 
-- [ ] **A.1 Final name decision.** "shellstate" is the working name. Considerations: is the name taken on crates.io, homebrew, GitHub? Is it memorable, searchable, unambiguous? Short enough for CLI usage? Alternatives to consider.
+- [ ] **A.1 Final name decision.** "beachcomber" is the working name. Considerations: is the name taken on crates.io, homebrew, GitHub? Is it memorable, searchable, unambiguous? Short enough for CLI usage? Alternatives to consider.
 - [ ] **A.2 Rename if needed.** Binary name, crate name, config paths, socket paths, all docs.
 
 ---
@@ -70,7 +70,7 @@ Must happen before README is written — the positioning depends on understandin
   - `powerline-daemon` — the original "cache prompt data in a daemon" approach
   - `zoxide`, `atuin` — other shell tools that use daemon patterns
   - Any other tools doing centralized shell state caching
-- [ ] **B.2 Write competitive positioning.** For each: what it does, how it overlaps with shellstate, why shellstate is different/better (or when to use that tool instead). Honest, not dismissive. Goes in README.
+- [ ] **B.2 Write competitive positioning.** For each: what it does, how it overlaps with beachcomber, why beachcomber is different/better (or when to use that tool instead). Honest, not dismissive. Goes in README.
 
 ---
 
@@ -94,7 +94,7 @@ One long file with in-file linking. Sections in order:
   - polybar/waybar/sketchybar custom module
   - shell script one-liner for CI/automation
   - Python script reading state
-- [ ] **Shell fallback function.** A portable shell function that apps can use: "if shellstate is installed, use it; else fall back to manual." Must work in bash, zsh, fish. This is critical for adoption — apps can add shellstate support without requiring it.
+- [ ] **Shell fallback function.** A portable shell function that apps can use: "if beachcomber is installed, use it; else fall back to manual." Must work in bash, zsh, fish. This is critical for adoption — apps can add beachcomber support without requiring it.
 - [ ] **Configuration reference.** Full config.toml documentation with every field, defaults, and examples.
 - [ ] **Built-in providers reference.** Every provider with fields, types, default triggers, example output.
 - [ ] **Custom providers guide.** How to write script providers. JSON and kv formats. Invalidation strategies. Real examples (docker context, kubectl version, node version, ruby version).
@@ -142,7 +142,7 @@ For contributors and app maintainers who want deep understanding.
 
 - [ ] **E.1 Homebrew formula.** Primary macOS install method. Tap or core formula. Auto-update via `brew upgrade`.
 - [ ] **E.2 `cargo install`.** For Rust developers. Already works (`cargo install --path .`), needs crates.io publication.
-- [ ] **E.3 Pre-built binaries.** GitHub Releases with `shellstate-<version>-<target>.tar.gz`. Install script: `curl -fsSL https://... | sh`.
+- [ ] **E.3 Pre-built binaries.** GitHub Releases with `beachcomber-<version>-<target>.tar.gz`. Install script: `curl -fsSL https://... | sh`.
 - [ ] **E.4 Other package managers (future).** Nix, AUR, MacPorts, Scoop. Document how to request packaging.
 
 ---
@@ -187,8 +187,8 @@ After the initial release, based on feedback and adoption.
 
 - [ ] Protocol stability guarantee (wire format frozen)
 - [ ] Config format stability guarantee
-- [ ] Published Rust client crate (`shellstate-client`)
-- [ ] C shared library (`libshellstate`) for FFI
+- [ ] Published Rust client crate (`beachcomber-client`)
+- [ ] C shared library (`libbeachcomber`) for FFI
 - [ ] mmap/shared memory for zero-latency reads (if demand exists)
 - [ ] Consumer integration packages (zsh plugin, tmux plugin, neovim plugin)
 

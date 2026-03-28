@@ -1,5 +1,5 @@
-use shellstate::cache::Cache;
-use shellstate::provider::{ProviderResult, Value};
+use beachcomber::cache::Cache;
+use beachcomber::provider::{ProviderResult, Value};
 
 /// Test 1: A fresh entry with an interval is not stale.
 #[test]

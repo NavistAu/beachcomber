@@ -1,7 +1,7 @@
-use shellstate::cache::Cache;
-use shellstate::config::Config;
-use shellstate::provider::registry::ProviderRegistry;
-use shellstate::scheduler::Scheduler;
+use beachcomber::cache::Cache;
+use beachcomber::config::Config;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::scheduler::Scheduler;
 use std::sync::Arc;
 
 #[tokio::test]

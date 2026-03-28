@@ -1,4 +1,4 @@
-use shellstate::watcher::FsWatcher;
+use beachcomber::watcher::FsWatcher;
 use std::fs;
 use tempfile::TempDir;
 use tokio::time::{timeout, Duration};

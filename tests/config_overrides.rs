@@ -1,5 +1,5 @@
-use shellstate::config::Config;
-use shellstate::provider::registry::ProviderRegistry;
+use beachcomber::config::Config;
+use beachcomber::provider::registry::ProviderRegistry;
 
 #[test]
 fn disabled_provider_not_registered() {

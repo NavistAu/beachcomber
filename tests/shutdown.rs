@@ -1,5 +1,5 @@
-use shellstate::config::Config;
-use shellstate::daemon;
+use beachcomber::config::Config;
+use beachcomber::daemon;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 

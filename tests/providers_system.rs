@@ -1,7 +1,7 @@
-use shellstate::provider::{Provider, InvalidationStrategy};
-use shellstate::provider::battery::BatteryProvider;
-use shellstate::provider::load::LoadProvider;
-use shellstate::provider::uptime::UptimeProvider;
+use beachcomber::provider::{Provider, InvalidationStrategy};
+use beachcomber::provider::battery::BatteryProvider;
+use beachcomber::provider::load::LoadProvider;
+use beachcomber::provider::uptime::UptimeProvider;
 
 // --- Battery ---
 

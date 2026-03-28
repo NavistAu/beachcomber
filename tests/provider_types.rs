@@ -1,4 +1,4 @@
-use shellstate::provider::{Value, ProviderResult};
+use beachcomber::provider::{Value, ProviderResult};
 use std::collections::HashMap;
 
 #[test]

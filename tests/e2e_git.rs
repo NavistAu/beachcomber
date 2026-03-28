@@ -1,9 +1,9 @@
-use shellstate::cache::Cache;
-use shellstate::client::Client;
-use shellstate::config::Config;
-use shellstate::provider::registry::ProviderRegistry;
-use shellstate::scheduler::Scheduler;
-use shellstate::server::Server;
+use beachcomber::cache::Cache;
+use beachcomber::client::Client;
+use beachcomber::config::Config;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::scheduler::Scheduler;
+use beachcomber::server::Server;
 use std::process::Command;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -20,7 +20,7 @@ fn create_test_repo() -> TempDir {
     tmp
 }
 
-async fn setup_daemon() -> (TempDir, std::path::PathBuf, shellstate::scheduler::SchedulerHandle) {
+async fn setup_daemon() -> (TempDir, std::path::PathBuf, beachcomber::scheduler::SchedulerHandle) {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
     let cache = Arc::new(Cache::new());

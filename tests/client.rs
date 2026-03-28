@@ -1,8 +1,8 @@
-use shellstate::cache::Cache;
-use shellstate::client::Client;
-use shellstate::provider::registry::ProviderRegistry;
-use shellstate::provider::{ProviderResult, Value};
-use shellstate::server::Server;
+use beachcomber::cache::Cache;
+use beachcomber::client::Client;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::provider::{ProviderResult, Value};
+use beachcomber::server::Server;
 use std::sync::Arc;
 use tempfile::TempDir;
 

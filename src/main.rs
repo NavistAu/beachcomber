@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand};
-use shellstate::config::Config;
-use shellstate::protocol::Format;
+use beachcomber::config::Config;
+use beachcomber::protocol::Format;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(name = "shellstate", about = "Centralized shell state daemon")]
+#[command(name = "comb", about = "Centralized shell state daemon (beachcomber)")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -89,7 +89,7 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
         .with_max_level(filter)
         .init();
 
-    tracing::info!("Starting shellstate daemon");
+    tracing::info!("Starting beachcomber daemon");
     tracing::info!("Socket: {:?}", socket_path);
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
@@ -103,7 +103,7 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
             cancel_clone.cancel();
         });
 
-        let handle = shellstate::daemon::start_in_process_with_cancel(socket_path, config, cancel);
+        let handle = beachcomber::daemon::start_in_process_with_cancel(socket_path, config, cancel);
         handle.await.ok();
     });
 
@@ -113,14 +113,14 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
 fn run_get(config: &Config, key: &str, path: Option<&str>, format: Format) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
-    if let Err(e) = shellstate::daemon::ensure_daemon(&socket_path) {
+    if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
         eprintln!("Failed to start daemon: {}", e);
         return ExitCode::from(2);
     }
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let result = rt.block_on(async {
-        let client = shellstate::client::Client::new(socket_path);
+        let client = beachcomber::client::Client::new(socket_path);
 
         if format == Format::Text {
             match client.get_text(key, path).await {
@@ -162,14 +162,14 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: Format) -> Ex
 fn run_poke(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
-    if let Err(e) = shellstate::daemon::ensure_daemon(&socket_path) {
+    if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
         eprintln!("Failed to start daemon: {}", e);
         return ExitCode::from(2);
     }
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let client = shellstate::client::Client::new(socket_path);
+        let client = beachcomber::client::Client::new(socket_path);
         match client.poke(key, path).await {
             Ok(response) => {
                 if response.ok {
@@ -190,14 +190,14 @@ fn run_poke(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
 fn run_status(config: &Config) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
-    if let Err(e) = shellstate::daemon::ensure_daemon(&socket_path) {
+    if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
         eprintln!("Failed to start daemon: {}", e);
         return ExitCode::from(2);
     }
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let client = shellstate::client::Client::new(socket_path);
+        let client = beachcomber::client::Client::new(socket_path);
         match client.send_raw(serde_json::json!({"op": "status"})).await {
             Ok(response) => {
                 if response.ok {
@@ -219,14 +219,14 @@ fn run_status(config: &Config) -> ExitCode {
 fn run_list(config: &Config) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
-    if let Err(e) = shellstate::daemon::ensure_daemon(&socket_path) {
+    if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
         eprintln!("Failed to start daemon: {}", e);
         return ExitCode::from(2);
     }
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let client = shellstate::client::Client::new(socket_path);
+        let client = beachcomber::client::Client::new(socket_path);
         match client.send_raw(serde_json::json!({"op": "list"})).await {
             Ok(response) => {
                 if response.ok {
@@ -248,7 +248,7 @@ fn run_list(config: &Config) -> ExitCode {
 fn run_subscribe(config: &Config, key: &str, path: Option<&str>, watch: bool, poll: Option<&str>) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
-    if let Err(e) = shellstate::daemon::ensure_daemon(&socket_path) {
+    if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
         eprintln!("Failed to start daemon: {}", e);
         return ExitCode::from(2);
     }

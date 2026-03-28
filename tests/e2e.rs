@@ -1,6 +1,6 @@
-use shellstate::client::Client;
-use shellstate::config::Config;
-use shellstate::daemon;
+use beachcomber::client::Client;
+use beachcomber::config::Config;
+use beachcomber::daemon;
 use tempfile::TempDir;
 
 #[tokio::test]

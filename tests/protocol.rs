@@ -1,4 +1,4 @@
-use shellstate::protocol::{Request, Response, Format};
+use beachcomber::protocol::{Request, Response, Format};
 
 #[test]
 fn parse_get_request_with_path() {
@@ -84,21 +84,21 @@ fn response_miss_serializes() {
 
 #[test]
 fn key_splits_provider_and_field() {
-    let (provider, field) = shellstate::protocol::split_key("git.branch");
+    let (provider, field) = beachcomber::protocol::split_key("git.branch");
     assert_eq!(provider, "git");
     assert_eq!(field, Some("branch"));
 }
 
 #[test]
 fn key_without_field() {
-    let (provider, field) = shellstate::protocol::split_key("battery");
+    let (provider, field) = beachcomber::protocol::split_key("battery");
     assert_eq!(provider, "battery");
     assert_eq!(field, None);
 }
 
 #[test]
 fn key_with_dotted_field() {
-    let (provider, field) = shellstate::protocol::split_key("mise.tools");
+    let (provider, field) = beachcomber::protocol::split_key("mise.tools");
     assert_eq!(provider, "mise");
     assert_eq!(field, Some("tools"));
 }

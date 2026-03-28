@@ -1,6 +1,6 @@
-use shellstate::provider::{Provider, InvalidationStrategy};
-use shellstate::provider::hostname::HostnameProvider;
-use shellstate::provider::user::UserProvider;
+use beachcomber::provider::{Provider, InvalidationStrategy};
+use beachcomber::provider::hostname::HostnameProvider;
+use beachcomber::provider::user::UserProvider;
 
 #[test]
 fn hostname_provider_metadata() {

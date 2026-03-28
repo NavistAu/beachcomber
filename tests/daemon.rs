@@ -1,18 +1,18 @@
-use shellstate::daemon;
+use beachcomber::daemon;
 use tempfile::TempDir;
 use std::path::PathBuf;
 use tokio::net::UnixStream;
 
 #[test]
 fn pid_file_path() {
-    let sock = PathBuf::from("/tmp/shellstate-501/sock");
+    let sock = PathBuf::from("/tmp/beachcomber-501/sock");
     let pid = daemon::pid_path_for_socket(&sock);
-    assert_eq!(pid, PathBuf::from("/tmp/shellstate-501/daemon.pid"));
+    assert_eq!(pid, PathBuf::from("/tmp/beachcomber-501/daemon.pid"));
 }
 
 #[test]
 fn is_daemon_responsive_when_no_socket() {
-    let path = PathBuf::from("/tmp/nonexistent-shellstate-test/sock");
+    let path = PathBuf::from("/tmp/nonexistent-beachcomber-test/sock");
     assert!(
         !daemon::is_daemon_running(&path),
         "Should return false when socket doesn't exist"
@@ -24,7 +24,7 @@ async fn socket_activation_starts_daemon() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
 
-    let config = shellstate::config::Config::default();
+    let config = beachcomber::config::Config::default();
     let handle = daemon::start_in_process(sock.clone(), config);
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;

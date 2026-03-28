@@ -1,5 +1,5 @@
-use shellstate::cache::{Cache, CacheEntry};
-use shellstate::provider::{ProviderResult, Value};
+use beachcomber::cache::{Cache, CacheEntry};
+use beachcomber::provider::{ProviderResult, Value};
 
 #[test]
 fn cache_get_missing_key() {

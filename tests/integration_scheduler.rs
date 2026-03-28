@@ -1,9 +1,9 @@
-use shellstate::cache::Cache;
-use shellstate::client::Client;
-use shellstate::config::Config;
-use shellstate::provider::registry::ProviderRegistry;
-use shellstate::scheduler::Scheduler;
-use shellstate::server::Server;
+use beachcomber::cache::Cache;
+use beachcomber::client::Client;
+use beachcomber::config::Config;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::scheduler::Scheduler;
+use beachcomber::server::Server;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -65,6 +65,6 @@ async fn subscribe_via_protocol() {
     let mut line = String::new();
     reader.read_line(&mut line).await.unwrap();
 
-    let resp: shellstate::protocol::Response = serde_json::from_str(&line).unwrap();
+    let resp: beachcomber::protocol::Response = serde_json::from_str(&line).unwrap();
     assert!(resp.ok, "Subscribe should return ok");
 }

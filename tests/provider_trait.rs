@@ -1,4 +1,4 @@
-use shellstate::provider::{
+use beachcomber::provider::{
     Provider, ProviderMetadata, ProviderResult, Value, FieldSchema, FieldType,
     InvalidationStrategy,
 };

@@ -1,6 +1,6 @@
-use shellstate::provider::Provider;
-use shellstate::provider::git::GitProvider;
-use shellstate::provider::InvalidationStrategy;
+use beachcomber::provider::Provider;
+use beachcomber::provider::git::GitProvider;
+use beachcomber::provider::InvalidationStrategy;
 use std::process::Command;
 use tempfile::TempDir;
 

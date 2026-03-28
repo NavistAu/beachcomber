@@ -1,6 +1,6 @@
-use shellstate::client::Client;
-use shellstate::config::Config;
-use shellstate::daemon;
+use beachcomber::client::Client;
+use beachcomber::config::Config;
+use beachcomber::daemon;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -39,7 +39,7 @@ async fn e2e_script_provider_from_config() {
     let mut config = Config::default();
     config.providers.insert(
         "test_echo".to_string(),
-        shellstate::config::ScriptProviderConfig {
+        beachcomber::config::ScriptProviderConfig {
             provider_type: Some("script".to_string()),
             command: r#"echo '{"greeting":"hello"}'"#.to_string(),
             ..Default::default()

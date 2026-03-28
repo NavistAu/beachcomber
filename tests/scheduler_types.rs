@@ -1,5 +1,5 @@
-use shellstate::scheduler::TriggerSet;
-use shellstate::protocol::SubscribeTriggers;
+use beachcomber::scheduler::TriggerSet;
+use beachcomber::protocol::SubscribeTriggers;
 
 #[test]
 fn trigger_set_from_protocol_with_watch_and_poll() {

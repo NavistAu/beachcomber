@@ -1,10 +1,10 @@
-use shellstate::provider::{Provider, InvalidationStrategy};
-use shellstate::provider::terraform::TerraformProvider;
-use shellstate::provider::direnv::DirenvProvider;
-use shellstate::provider::python::PythonProvider;
-use shellstate::provider::conda::CondaProvider;
-use shellstate::provider::mise::MiseProvider;
-use shellstate::provider::asdf::AsdfProvider;
+use beachcomber::provider::{Provider, InvalidationStrategy};
+use beachcomber::provider::terraform::TerraformProvider;
+use beachcomber::provider::direnv::DirenvProvider;
+use beachcomber::provider::python::PythonProvider;
+use beachcomber::provider::conda::CondaProvider;
+use beachcomber::provider::mise::MiseProvider;
+use beachcomber::provider::asdf::AsdfProvider;
 use tempfile::TempDir;
 
 // --- Terraform ---

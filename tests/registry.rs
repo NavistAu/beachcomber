@@ -1,6 +1,6 @@
-use shellstate::provider::registry::ProviderRegistry;
-use shellstate::provider::hostname::HostnameProvider;
-use shellstate::provider::user::UserProvider;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::provider::hostname::HostnameProvider;
+use beachcomber::provider::user::UserProvider;
 
 #[test]
 fn registry_register_and_get() {

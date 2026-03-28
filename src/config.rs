@@ -95,7 +95,7 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        let xdg = xdg::BaseDirectories::with_prefix("shellstate");
+        let xdg = xdg::BaseDirectories::with_prefix("beachcomber");
 
         match xdg.find_config_file("config.toml") {
             Some(path) => {
@@ -112,23 +112,23 @@ impl Config {
         }
 
         if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            return PathBuf::from(runtime_dir).join("shellstate").join("sock");
+            return PathBuf::from(runtime_dir).join("beachcomber").join("sock");
         }
 
         let uid = unsafe { libc::getuid() };
         let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
         PathBuf::from(tmpdir)
-            .join(format!("shellstate-{}", uid))
+            .join(format!("beachcomber-{}", uid))
             .join("sock")
     }
 
     pub fn resolve_log_path(&self) -> PathBuf {
-        let xdg = xdg::BaseDirectories::with_prefix("shellstate");
+        let xdg = xdg::BaseDirectories::with_prefix("beachcomber");
 
         xdg.get_state_home()
             .unwrap_or_else(|| {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                PathBuf::from(home).join(".local").join("state").join("shellstate")
+                PathBuf::from(home).join(".local").join("state").join("beachcomber")
             })
             .join("daemon.log")
     }
