@@ -177,24 +177,29 @@ impl Scheduler {
         (handle, scheduler)
     }
 
-    /// Execute a provider synchronously and write result to cache.
+    /// Execute a provider on the blocking thread pool and write result to cache.
+    /// This is fire-and-forget: returns immediately while the provider runs in the background.
     fn execute_provider(&self, provider_name: &str, path: Option<&str>) {
-        match self.registry.get(provider_name) {
-            Some(provider) => {
-                match provider.execute(path) {
-                    Some(result) => {
-                        self.cache.put(provider_name, path, result);
-                        debug!("Executed provider '{}' path={:?}", provider_name, path);
-                    }
-                    None => {
-                        warn!("Provider '{}' returned None for path={:?}", provider_name, path);
-                    }
+        let Some(provider) = self.registry.get(provider_name) else {
+            warn!("Poke for unknown provider '{}'", provider_name);
+            return;
+        };
+
+        let path_owned = path.map(|s| s.to_string());
+        let name_owned = provider_name.to_string();
+        let cache = Arc::clone(&self.cache);
+
+        tokio::task::spawn_blocking(move || {
+            match provider.execute(path_owned.as_deref()) {
+                Some(result) => {
+                    cache.put(&name_owned, path_owned.as_deref(), result);
+                    debug!("Executed provider '{}' path={:?}", name_owned, path_owned);
+                }
+                None => {
+                    warn!("Provider '{}' returned None for path={:?}", name_owned, path_owned);
                 }
             }
-            None => {
-                warn!("Poke for unknown provider '{}'", provider_name);
-            }
-        }
+        });
     }
 
     pub async fn run(mut self) {

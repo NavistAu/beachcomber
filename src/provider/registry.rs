@@ -18,10 +18,11 @@ use crate::provider::mise::MiseProvider;
 use crate::provider::asdf::AsdfProvider;
 use crate::provider::script::ScriptProvider;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub struct ProviderRegistry {
-    providers: HashMap<String, Box<dyn Provider>>,
+    providers: HashMap<String, Arc<dyn Provider>>,
 }
 
 impl ProviderRegistry {
@@ -63,13 +64,14 @@ impl ProviderRegistry {
         registry
     }
 
+    /// Register a provider. Accepts a Box and converts internally to Arc.
     pub fn register(&mut self, provider: Box<dyn Provider>) {
         let name = provider.metadata().name.clone();
-        self.providers.insert(name, provider);
+        self.providers.insert(name, Arc::from(provider));
     }
 
-    pub fn get(&self, name: &str) -> Option<&dyn Provider> {
-        self.providers.get(name).map(|p| p.as_ref())
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Provider>> {
+        self.providers.get(name).cloned()
     }
 
     pub fn list(&self) -> Vec<String> {
