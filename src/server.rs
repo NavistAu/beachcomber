@@ -257,8 +257,10 @@ async fn handle_request(
             Response::ok(serde_json::json!(providers), 0, false)
         }
         Request::Status => {
+            let cache_details = cache.list_entries();
             let mut status_data = serde_json::json!({
                 "cache_entries": cache.len(),
+                "cache": serde_json::to_value(&cache_details).unwrap_or_default(),
                 "providers": registry.list().len(),
             });
 

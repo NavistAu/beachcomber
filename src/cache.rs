@@ -88,6 +88,35 @@ impl Cache {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// List all cache entries with their keys parsed back into (provider, path) and age info.
+    pub fn list_entries(&self) -> Vec<CacheEntryInfo> {
+        self.entries.iter().map(|entry| {
+            let key = entry.key();
+            let (provider, path) = if let Some(sep) = key.find('\0') {
+                (key[..sep].to_string(), Some(key[sep + 1..].to_string()))
+            } else {
+                (key.clone(), None)
+            };
+            let value = entry.value();
+            CacheEntryInfo {
+                provider,
+                path,
+                age_ms: value.age_ms(),
+                stale: value.is_stale(),
+                field_count: value.result.fields.len(),
+            }
+        }).collect()
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CacheEntryInfo {
+    pub provider: String,
+    pub path: Option<String>,
+    pub age_ms: u128,
+    pub stale: bool,
+    pub field_count: usize,
 }
 
 impl Default for Cache {
