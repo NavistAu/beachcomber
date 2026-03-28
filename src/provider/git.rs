@@ -118,34 +118,31 @@ fn parse_git_status(dir: &Path) -> Option<GitStatus> {
 }
 
 fn count_stashes(dir: &Path) -> i64 {
-    Command::new("git")
-        .args(["stash", "list"])
-        .current_dir(dir)
-        .output()
-        .ok()
-        .map(|out| {
-            if out.status.success() {
-                String::from_utf8_lossy(&out.stdout).lines().count() as i64
-            } else { 0 }
-        })
+    let stash_log = dir.join(".git").join("logs").join("refs").join("stash");
+    std::fs::read_to_string(&stash_log)
+        .map(|s| s.lines().count() as i64)
         .unwrap_or(0)
 }
 
 fn detect_repo_state(dir: &Path) -> String {
     let git_dir = dir.join(".git");
-    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
-        "rebase".to_string()
-    } else if git_dir.join("MERGE_HEAD").exists() {
-        "merge".to_string()
-    } else if git_dir.join("CHERRY_PICK_HEAD").exists() {
-        "cherry-pick".to_string()
-    } else if git_dir.join("BISECT_LOG").exists() {
-        "bisect".to_string()
-    } else if git_dir.join("REVERT_HEAD").exists() {
-        "revert".to_string()
-    } else {
-        "clean".to_string()
+    // Check in order of likelihood for early return
+    if git_dir.join("MERGE_HEAD").exists() {
+        return "merge".to_string();
     }
+    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+        return "rebase".to_string();
+    }
+    if git_dir.join("CHERRY_PICK_HEAD").exists() {
+        return "cherry-pick".to_string();
+    }
+    if git_dir.join("BISECT_LOG").exists() {
+        return "bisect".to_string();
+    }
+    if git_dir.join("REVERT_HEAD").exists() {
+        return "revert".to_string();
+    }
+    "clean".to_string()
 }
 
 fn is_inside_git_repo(dir: &Path) -> bool {
