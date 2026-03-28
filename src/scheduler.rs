@@ -152,6 +152,38 @@ fn check_backoff(
     to_evict
 }
 
+/// Tracks consecutive failures and suppression state for a provider key.
+struct FailureState {
+    consecutive_failures: u32,
+    suppressed_until: Option<Instant>,
+}
+
+impl FailureState {
+    fn new() -> Self {
+        Self { consecutive_failures: 0, suppressed_until: None }
+    }
+
+    fn record_failure(&mut self) {
+        self.consecutive_failures += 1;
+        if self.consecutive_failures >= 3 {
+            // Exponential backoff: 1s, 2s, 4s, 8s, ... max 60s
+            let delay_secs = (1u64 << (self.consecutive_failures - 3).min(6)).min(60);
+            self.suppressed_until = Some(Instant::now() + Duration::from_secs(delay_secs));
+        }
+    }
+
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.suppressed_until = None;
+    }
+
+    fn is_suppressed(&self) -> bool {
+        self.suppressed_until
+            .map(|until| Instant::now() < until)
+            .unwrap_or(false)
+    }
+}
+
 /// The scheduler core loop: executes providers on demand and manages subscriptions.
 pub struct Scheduler {
     cache: Arc<Cache>,
@@ -162,6 +194,8 @@ pub struct Scheduler {
     in_flight: Arc<std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>>,
     /// Tracks which (provider, path) need to re-run after current execution completes.
     pending_rerun: Arc<std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>>,
+    /// Tracks consecutive failures and suppression state per (provider, path).
+    failure_counts: Arc<std::sync::Mutex<HashMap<(String, Option<String>), FailureState>>>,
 }
 
 impl Scheduler {
@@ -179,6 +213,7 @@ impl Scheduler {
             rx,
             in_flight: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             pending_rerun: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            failure_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
         };
         (handle, scheduler)
     }
@@ -187,6 +222,7 @@ impl Scheduler {
     /// This is fire-and-forget: returns immediately while the provider runs in the background.
     /// Deduplicates concurrent executions: if a provider is already running, marks it for
     /// a single rerun after completion rather than launching another concurrent execution.
+    /// Suppresses execution when failure backoff is active.
     fn execute_provider(&self, provider_name: &str, path: Option<&str>) {
         let Some(provider) = self.registry.get(provider_name) else {
             warn!("Poke for unknown provider '{}'", provider_name);
@@ -194,6 +230,17 @@ impl Scheduler {
         };
 
         let key = (provider_name.to_string(), path.map(|s| s.to_string()));
+
+        // Check failure backoff — skip if suppressed.
+        {
+            let failures = self.failure_counts.lock().unwrap();
+            if let Some(state) = failures.get(&key) {
+                if state.is_suppressed() {
+                    debug!("Provider '{}' suppressed due to failure backoff", provider_name);
+                    return;
+                }
+            }
+        }
 
         // Check if already in flight — if so, queue a rerun and return.
         {
@@ -213,6 +260,7 @@ impl Scheduler {
         let in_flight = Arc::clone(&self.in_flight);
         let pending_rerun = Arc::clone(&self.pending_rerun);
         let registry = Arc::clone(&self.registry);
+        let failure_counts = Arc::clone(&self.failure_counts);
 
         let path_for_cache = path_owned.clone();
         let name_for_log = name_owned.clone();
@@ -225,6 +273,22 @@ impl Scheduler {
                     provider.execute(path_owned.as_deref())
                 }),
             ).await;
+
+            // Record success or failure for backoff tracking.
+            match &result {
+                Ok(Ok(Some(_))) => {
+                    failure_counts.lock().unwrap()
+                        .entry(key_for_cleanup.clone())
+                        .or_insert_with(FailureState::new)
+                        .record_success();
+                }
+                _ => {
+                    failure_counts.lock().unwrap()
+                        .entry(key_for_cleanup.clone())
+                        .or_insert_with(FailureState::new)
+                        .record_failure();
+                }
+            }
 
             match result {
                 Ok(Ok(Some(provider_result))) => {
@@ -260,6 +324,22 @@ impl Scheduler {
                                 rerun_provider.execute(rerun_path.as_deref())
                             }),
                         ).await;
+
+                        // Record success or failure for the rerun.
+                        match &rerun_result {
+                            Ok(Ok(Some(_))) => {
+                                failure_counts.lock().unwrap()
+                                    .entry(key_for_cleanup.clone())
+                                    .or_insert_with(FailureState::new)
+                                    .record_success();
+                            }
+                            _ => {
+                                failure_counts.lock().unwrap()
+                                    .entry(key_for_cleanup.clone())
+                                    .or_insert_with(FailureState::new)
+                                    .record_failure();
+                            }
+                        }
 
                         match rerun_result {
                             Ok(Ok(Some(r))) => {
