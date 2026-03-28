@@ -111,22 +111,41 @@ async fn handle_connection(
 
 /// Resolve the effective path for a request: explicit path > context path > None.
 /// Only applies the context for path-scoped (non-global) providers.
-fn resolve_path<'a>(
-    explicit: Option<&'a str>,
-    context: &'a Option<String>,
+/// Relative paths are canonicalized to absolute paths.
+fn resolve_path(
+    explicit: Option<&str>,
+    context: &Option<String>,
     provider_name: &str,
     registry: &ProviderRegistry,
 ) -> Option<String> {
-    if explicit.is_some() {
-        return explicit.map(|s| s.to_string());
-    }
-    // Only apply context path for non-global (path-scoped) providers.
-    if let Some(provider) = registry.get(provider_name) {
+    let raw = if explicit.is_some() {
+        explicit.map(|s| s.to_string())
+    } else if let Some(provider) = registry.get(provider_name) {
         if !provider.metadata().global {
-            return context.clone();
+            context.clone()
+        } else {
+            None
         }
-    }
-    None
+    } else {
+        None
+    };
+
+    // Canonicalize relative paths to absolute
+    raw.map(|p| {
+        let path = std::path::Path::new(&p);
+        if path.is_relative() {
+            std::env::current_dir()
+                .ok()
+                .and_then(|cwd| cwd.join(path).canonicalize().ok())
+                .map(|abs| abs.to_string_lossy().to_string())
+                .unwrap_or(p)
+        } else {
+            // Canonicalize absolute paths too (resolve symlinks, ..)
+            path.canonicalize()
+                .map(|abs| abs.to_string_lossy().to_string())
+                .unwrap_or(p)
+        }
+    })
 }
 
 async fn handle_request(
