@@ -38,6 +38,44 @@ pub enum SchedulerMessage {
         paths: Vec<PathBuf>,
     },
     Shutdown,
+    /// Request scheduler status info. Response sent via oneshot channel.
+    GetStatus {
+        reply: tokio::sync::oneshot::Sender<SchedulerStatus>,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SchedulerStatus {
+    pub subscriptions: Vec<SubscriptionInfo>,
+    pub watched_paths: Vec<String>,
+    pub in_flight: Vec<String>,
+    pub backoff: Vec<BackoffInfo>,
+    pub poll_timers: Vec<PollTimerInfo>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SubscriptionInfo {
+    pub provider: String,
+    pub path: Option<String>,
+    pub subscriber_count: usize,
+    pub effective_watch: bool,
+    pub effective_poll_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BackoffInfo {
+    pub provider: String,
+    pub path: Option<String>,
+    pub stage: String,
+    pub elapsed_secs: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PollTimerInfo {
+    pub provider: String,
+    pub path: Option<String>,
+    pub interval_secs: u64,
+    pub last_run_secs_ago: u64,
 }
 
 /// The set of triggers a consumer requests for a subscription.
@@ -93,6 +131,12 @@ impl SchedulerHandle {
 
     pub async fn send(&self, msg: SchedulerMessage) {
         let _ = self.tx.send(msg).await;
+    }
+
+    pub async fn get_status(&self) -> Option<SchedulerStatus> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx.send(SchedulerMessage::GetStatus { reply: reply_tx }).await.ok()?;
+        reply_rx.await.ok()
     }
 }
 
@@ -181,6 +225,66 @@ impl FailureState {
         self.suppressed_until
             .map(|until| Instant::now() < until)
             .unwrap_or(false)
+    }
+}
+
+/// Build a snapshot of the current scheduler state for status reporting.
+fn build_status(
+    subs: &SubscriptionManager,
+    poll_states: &HashMap<(String, Option<String>), PollState>,
+    watch_paths: &HashMap<PathBuf, Vec<(String, Option<String>)>>,
+    backoff: &HashMap<(String, Option<String>), BackoffState>,
+    in_flight: &std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>,
+) -> SchedulerStatus {
+    let subscriptions = subs.all_keys().into_iter().map(|(provider, path)| {
+        let effective = subs.effective_triggers(&provider, path.as_deref());
+        SubscriptionInfo {
+            subscriber_count: subs.subscriber_count(&provider, path.as_deref()),
+            effective_watch: effective.as_ref().map(|t| t.watch).unwrap_or(false),
+            effective_poll_secs: effective.as_ref().and_then(|t| t.poll_secs),
+            provider,
+            path,
+        }
+    }).collect();
+
+    let watched: Vec<String> = watch_paths.keys()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
+    let in_flight_keys: Vec<String> = in_flight
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(p, path)| match path {
+            Some(pa) => format!("{}:{}", p, pa),
+            None => p.clone(),
+        })
+        .collect();
+
+    let backoff_info: Vec<BackoffInfo> = backoff.iter().map(|((provider, path), state)| {
+        BackoffInfo {
+            provider: provider.clone(),
+            path: path.clone(),
+            stage: format!("{:?}", state.stage()),
+            elapsed_secs: state.elapsed().as_secs(),
+        }
+    }).collect();
+
+    let poll_timer_info: Vec<PollTimerInfo> = poll_states.iter().map(|((provider, path), state)| {
+        PollTimerInfo {
+            provider: provider.clone(),
+            path: path.clone(),
+            interval_secs: state.interval_secs,
+            last_run_secs_ago: state.last_run.elapsed().as_secs(),
+        }
+    }).collect();
+
+    SchedulerStatus {
+        subscriptions,
+        watched_paths: watched,
+        in_flight: in_flight_keys,
+        backoff: backoff_info,
+        poll_timers: poll_timer_info,
     }
 }
 
@@ -526,6 +630,10 @@ impl Scheduler {
                             self.handle_fs_event(paths, &watch_paths);
                             last_activity = Instant::now();
                         }
+                        Some(SchedulerMessage::GetStatus { reply }) => {
+                            let status = build_status(&subs, &poll_states, &watch_paths, &backoff, &self.in_flight);
+                            let _ = reply.send(status);
+                        }
                     }
                 }
 
@@ -620,6 +728,12 @@ impl Scheduler {
                         }
                         Some(SchedulerMessage::FsEvent { .. }) => {
                             // No-op without watcher.
+                        }
+                        Some(SchedulerMessage::GetStatus { reply }) => {
+                            let empty_watch_paths: HashMap<PathBuf, Vec<(String, Option<String>)>> = HashMap::new();
+                            let empty_backoff: HashMap<(String, Option<String>), BackoffState> = HashMap::new();
+                            let status = build_status(&subs, &poll_states, &empty_watch_paths, &empty_backoff, &self.in_flight);
+                            let _ = reply.send(status);
                         }
                     }
                 }

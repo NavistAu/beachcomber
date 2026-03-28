@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand};
 use beachcomber::config::Config;
 use beachcomber::protocol::Format;
+use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser)]
 #[command(name = "comb", about = "Centralized shell state daemon (beachcomber)")]
@@ -83,14 +85,52 @@ fn main() -> ExitCode {
 }
 
 fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
-    let filter = config.daemon.log_level.parse()
+    let log_path = config.resolve_log_path();
+
+    // Ensure log directory exists.
+    if let Some(parent) = log_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    // Open log file (append mode).
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path);
+
+    let filter: tracing_subscriber::filter::LevelFilter = config.daemon.log_level.parse()
         .unwrap_or(tracing_subscriber::filter::LevelFilter::INFO);
-    tracing_subscriber::fmt()
-        .with_max_level(filter)
-        .init();
+    let env_filter = EnvFilter::from_default_env()
+        .add_directive(filter.into());
+
+    match log_file {
+        Ok(file) => {
+            // Log to both stderr and file.
+            let stderr_layer = fmt::layer()
+                .with_target(true)
+                .with_writer(std::io::stderr);
+            let file_layer = fmt::layer()
+                .with_target(true)
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file));
+
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(stderr_layer)
+                .with(file_layer)
+                .init();
+        }
+        Err(_) => {
+            // Fall back to stderr only.
+            tracing_subscriber::fmt()
+                .with_max_level(filter)
+                .init();
+        }
+    }
 
     tracing::info!("Starting beachcomber daemon");
     tracing::info!("Socket: {:?}", socket_path);
+    tracing::info!("Log file: {:?}", log_path);
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {

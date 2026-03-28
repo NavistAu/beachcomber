@@ -67,13 +67,28 @@ pub fn fork_daemon(binary_path: &str, socket_path: &Path) -> std::io::Result<()>
         std::fs::create_dir_all(parent)?;
     }
 
+    // Open log file for the forked daemon's stderr.
+    let config = crate::config::Config::load();
+    let log_path = config.resolve_log_path();
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .unwrap_or_else(|_| {
+            // Fall back to /dev/null if log file can't be opened.
+            std::fs::File::open("/dev/null").unwrap()
+        });
+
     let child = Command::new(binary_path)
         .arg("daemon")
         .arg("--socket")
         .arg(socket_path.as_os_str())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(log_file))
         .spawn()?;
 
     std::fs::write(&pid_path, child.id().to_string())?;

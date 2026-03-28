@@ -238,11 +238,23 @@ async fn handle_request(
             Response::ok(serde_json::json!(providers), 0, false)
         }
         Request::Status => {
-            let data = serde_json::json!({
+            let mut status_data = serde_json::json!({
                 "cache_entries": cache.len(),
                 "providers": registry.list().len(),
             });
-            Response::ok(data, 0, false)
+
+            // Get scheduler status if available.
+            if let Some(sched) = scheduler {
+                if let Some(sched_status) = sched.get_status().await {
+                    status_data["subscriptions"] = serde_json::to_value(&sched_status.subscriptions).unwrap_or_default();
+                    status_data["watched_paths"] = serde_json::to_value(&sched_status.watched_paths).unwrap_or_default();
+                    status_data["in_flight"] = serde_json::to_value(&sched_status.in_flight).unwrap_or_default();
+                    status_data["backoff"] = serde_json::to_value(&sched_status.backoff).unwrap_or_default();
+                    status_data["poll_timers"] = serde_json::to_value(&sched_status.poll_timers).unwrap_or_default();
+                }
+            }
+
+            Response::ok(status_data, 0, false)
         }
     }
 }
