@@ -65,6 +65,9 @@ pub struct ScriptProviderConfig {
     pub fields: Option<HashMap<String, String>>,
     pub output: Option<String>,
     pub scope: Option<String>,
+    pub enabled: Option<bool>,
+    pub poll_secs: Option<u64>,
+    pub poll_floor_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -75,6 +78,13 @@ pub struct ScriptInvalidation {
 }
 
 impl Config {
+    pub fn is_provider_disabled(&self, name: &str) -> bool {
+        self.providers.get(name)
+            .and_then(|p| p.enabled)
+            .map(|e| !e)
+            .unwrap_or(false)
+    }
+
     pub fn script_providers(&self) -> Vec<(String, ScriptProviderConfig)> {
         self.providers.iter()
             .filter(|(_, v)| v.provider_type.as_deref() == Some("script") || (!v.command.is_empty() && v.provider_type.is_none()))

@@ -6,11 +6,7 @@ use shellstate::config::ScriptProviderConfig;
 fn script_provider_metadata() {
     let config = ScriptProviderConfig {
         command: "echo hello".to_string(),
-        invalidation: None,
-        fields: None,
-        output: None,
-        scope: None,
-        provider_type: None,
+        ..Default::default()
     };
     let p = ScriptProvider::new("test_script", config);
     let meta = p.metadata();
@@ -22,11 +18,7 @@ fn script_provider_metadata() {
 fn script_provider_executes_json_output() {
     let config = ScriptProviderConfig {
         command: r#"echo '{"key":"value","num":42}'"#.to_string(),
-        invalidation: None,
-        fields: None,
-        output: None,
-        scope: None,
-        provider_type: None,
+        ..Default::default()
     };
     let p = ScriptProvider::new("json_test", config);
     let result = p.execute(None).expect("Should parse JSON output");
@@ -38,11 +30,8 @@ fn script_provider_executes_json_output() {
 fn script_provider_executes_kv_output() {
     let config = ScriptProviderConfig {
         command: "printf 'name=test\\ncount=5\\n'".to_string(),
-        invalidation: None,
-        fields: None,
         output: Some("kv".to_string()),
-        scope: None,
-        provider_type: None,
+        ..Default::default()
     };
     let p = ScriptProvider::new("kv_test", config);
     let result = p.execute(None).expect("Should parse kv output");
@@ -54,11 +43,8 @@ fn script_provider_executes_kv_output() {
 fn script_provider_path_scoped() {
     let config = ScriptProviderConfig {
         command: "echo '{\"cwd\":\"test\"}'".to_string(),
-        invalidation: None,
-        fields: None,
-        output: None,
         scope: Some("path".to_string()),
-        provider_type: None,
+        ..Default::default()
     };
     let p = ScriptProvider::new("path_test", config);
     let meta = p.metadata();
@@ -69,11 +55,7 @@ fn script_provider_path_scoped() {
 fn script_provider_returns_none_on_failure() {
     let config = ScriptProviderConfig {
         command: "false".to_string(),
-        invalidation: None,
-        fields: None,
-        output: None,
-        scope: None,
-        provider_type: None,
+        ..Default::default()
     };
     let p = ScriptProvider::new("fail_test", config);
     assert!(p.execute(None).is_none(), "Failed command should return None");
@@ -87,10 +69,7 @@ fn script_provider_custom_poll() {
             poll: Some("10s".to_string()),
             watch: None,
         }),
-        fields: None,
-        output: None,
-        scope: None,
-        provider_type: None,
+        ..Default::default()
     };
     let p = ScriptProvider::new("poll_test", config);
     let meta = p.metadata();
@@ -110,10 +89,7 @@ fn script_provider_with_watch_patterns() {
             poll: Some("60s".to_string()),
             watch: Some(vec!["Cargo.toml".to_string(), "Cargo.lock".to_string()]),
         }),
-        fields: None,
-        output: None,
-        scope: None,
-        provider_type: None,
+        ..Default::default()
     };
     let p = ScriptProvider::new("watch_test", config);
     let meta = p.metadata();

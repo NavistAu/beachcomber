@@ -42,10 +42,7 @@ async fn e2e_script_provider_from_config() {
         shellstate::config::ScriptProviderConfig {
             provider_type: Some("script".to_string()),
             command: r#"echo '{"greeting":"hello"}'"#.to_string(),
-            invalidation: None,
-            fields: None,
-            output: None,
-            scope: None,
+            ..Default::default()
         },
     );
 

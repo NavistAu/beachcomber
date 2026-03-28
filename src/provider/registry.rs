@@ -54,11 +54,39 @@ impl ProviderRegistry {
     }
 
     pub fn with_config(config: &Config) -> Self {
-        let mut registry = Self::with_defaults();
+        let mut registry = Self::new();
 
-        // Register script providers from config
+        // Register built-in providers unless disabled by config.
+        let builtins: Vec<(&str, Box<dyn Provider>)> = vec![
+            ("hostname", Box::new(HostnameProvider)),
+            ("user", Box::new(UserProvider)),
+            ("git", Box::new(GitProvider)),
+            ("battery", Box::new(BatteryProvider)),
+            ("load", Box::new(LoadProvider)),
+            ("uptime", Box::new(UptimeProvider)),
+            ("network", Box::new(NetworkProvider)),
+            ("kubecontext", Box::new(KubecontextProvider)),
+            ("aws", Box::new(AwsProvider)),
+            ("gcloud", Box::new(GcloudProvider)),
+            ("terraform", Box::new(TerraformProvider)),
+            ("direnv", Box::new(DirenvProvider)),
+            ("python", Box::new(PythonProvider)),
+            ("conda", Box::new(CondaProvider)),
+            ("mise", Box::new(MiseProvider)),
+            ("asdf", Box::new(AsdfProvider)),
+        ];
+
+        for (name, provider) in builtins {
+            if !config.is_provider_disabled(name) {
+                registry.register(provider);
+            }
+        }
+
+        // Register script providers from config unless disabled.
         for (name, script_config) in config.script_providers() {
-            registry.register(Box::new(ScriptProvider::new(&name, script_config)));
+            if !config.is_provider_disabled(&name) {
+                registry.register(Box::new(ScriptProvider::new(&name, script_config)));
+            }
         }
 
         registry
