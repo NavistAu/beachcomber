@@ -118,11 +118,31 @@ fn bench_sequential_gets(c: &mut Criterion) {
     });
 }
 
+/// Persistent session: one connection, 10 sequential gets via ClientSession.
+fn bench_socket_session_gets(c: &mut Criterion) {
+    let server = TestServer::new();
+
+    c.bench_function("session_10_gets", |b| {
+        b.to_async(&server.rt).iter(|| {
+            let sock = server.sock.clone();
+            async move {
+                let client = Client::new(sock);
+                let mut session = client.connect().await.unwrap();
+                for _ in 0..10 {
+                    let resp = session.get("hostname.name", None).await.unwrap();
+                    criterion::black_box(resp);
+                }
+            }
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_socket_roundtrip_cold,
     bench_socket_roundtrip_text,
     bench_socket_poke,
     bench_sequential_gets,
+    bench_socket_session_gets,
 );
 criterion_main!(benches);
