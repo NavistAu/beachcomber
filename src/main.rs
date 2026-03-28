@@ -40,6 +40,19 @@ enum Commands {
     Status,
     /// List active providers
     List,
+    /// Subscribe to a provider (keeps connection alive)
+    Subscribe {
+        /// Provider key (e.g., "git.branch")
+        key: String,
+        /// Path context for directory-scoped providers
+        path: Option<String>,
+        /// Watch for filesystem changes
+        #[arg(long)]
+        watch: bool,
+        /// Poll interval (e.g., "10s", "1m")
+        #[arg(long)]
+        poll: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -63,6 +76,9 @@ fn main() -> ExitCode {
         }
         Commands::Status => run_status(&config),
         Commands::List => run_list(&config),
+        Commands::Subscribe { key, path, watch, poll } => {
+            run_subscribe(&config, &key, path.as_deref(), watch, poll.as_deref())
+        }
     }
 }
 
@@ -226,5 +242,67 @@ fn run_list(config: &Config) -> ExitCode {
                 ExitCode::from(2)
             }
         }
+    })
+}
+
+fn run_subscribe(config: &Config, key: &str, path: Option<&str>, watch: bool, poll: Option<&str>) -> ExitCode {
+    let socket_path = config.resolve_socket_path();
+
+    if let Err(e) = shellstate::daemon::ensure_daemon(&socket_path) {
+        eprintln!("Failed to start daemon: {}", e);
+        return ExitCode::from(2);
+    }
+
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    rt.block_on(async {
+        use tokio::io::{AsyncWriteExt, AsyncBufReadExt, BufReader};
+        use tokio::net::UnixStream;
+
+        let stream = match UnixStream::connect(&socket_path).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return ExitCode::from(2);
+            }
+        };
+
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // Build subscribe request with triggers.
+        let mut triggers = serde_json::json!({});
+        if watch {
+            triggers["watch"] = serde_json::json!(true);
+        }
+        if let Some(p) = poll {
+            triggers["poll"] = serde_json::json!(p);
+        }
+
+        let mut request = serde_json::json!({
+            "op": "subscribe",
+            "key": key,
+            "triggers": triggers,
+        });
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        if writer.write_all(msg.as_bytes()).await.is_err() {
+            return ExitCode::from(2);
+        }
+
+        let mut line = String::new();
+        if reader.read_line(&mut line).await.is_err() {
+            return ExitCode::from(2);
+        }
+
+        eprintln!("Subscribed to {} (Ctrl+C to stop)", key);
+
+        // Hold connection open — subscription stays alive until disconnect.
+        let _ = tokio::signal::ctrl_c().await;
+        eprintln!("\nUnsubscribed");
+
+        ExitCode::SUCCESS
     })
 }
