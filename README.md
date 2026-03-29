@@ -48,14 +48,26 @@ $ comb get git .
   "ok": true,
   "data": {
     "branch": "main",
+    "commit": "a1b2c3d",
+    "detached": false,
+    "upstream": "origin/main",
+    "tag": "v0.3.1",
     "dirty": true,
     "staged": 2,
     "unstaged": 1,
     "untracked": 4,
+    "conflicted": 0,
     "ahead": 0,
     "behind": 0,
     "stash": 1,
-    "state": "clean"
+    "lines_added": 47,
+    "lines_removed": 12,
+    "lines_staged_added": 23,
+    "lines_staged_removed": 5,
+    "state": "clean",
+    "state_step": 0,
+    "state_total": 0,
+    "last_commit_age_secs": 3420
   },
   "age_ms": 120,
   "stale": false
@@ -502,6 +514,51 @@ if [ "$(comb get git.dirty . -f text 2>/dev/null)" = "true" ]; then
 fi
 ```
 
+### Rust SDK (`beachcomber-client`)
+
+For Rust consumers, the `beachcomber-client` crate provides a typed, synchronous API with no tokio dependency:
+
+```toml
+[dependencies]
+beachcomber-client = "0.1"
+```
+
+```rust
+use beachcomber_client::{Client, CombResult};
+
+let client = Client::new(); // auto-discovers socket, starts daemon if needed
+
+// Single field query
+match client.get("git.branch", Some("/path/to/repo"))? {
+    CombResult::Hit { data, .. } => println!("branch: {}", data.as_text().unwrap()),
+    CombResult::Miss => println!("not cached yet — will be ready on next query"),
+}
+
+// Full provider query with typed field access
+match client.get("git", Some("/path/to/repo"))? {
+    CombResult::Hit { data, age_ms, stale } => {
+        println!("branch: {}", data.get_str("branch").unwrap_or("?"));
+        println!("dirty: {}", data.get_bool("dirty").unwrap_or(false));
+        println!("ahead: {}", data.get_i64("ahead").unwrap_or(0));
+        println!("age: {}ms, stale: {}", age_ms, stale);
+    }
+    CombResult::Miss => {}
+}
+
+// Persistent session for multiple queries (one connection, multiple requests)
+let mut session = client.session()?;
+session.set_context("/path/to/repo")?;
+let branch = session.get("git.branch", None)?;
+let battery = session.get("battery.percent", None)?;
+```
+
+Features:
+- **Synchronous** — no async runtime needed
+- **Socket activation** — starts the daemon automatically if not running
+- **Typed access** — `get_str()`, `get_bool()`, `get_i64()`, `get_f64()`
+- **Persistent sessions** — reuse one connection for multiple queries (15µs/query vs 34µs)
+- **Configurable timeouts** — default 100ms, adjustable via `ClientConfig`
+
 ---
 
 ## Shell Fallback Function
@@ -788,9 +845,33 @@ beachcomber ships 16 built-in providers organized by category.
 
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | path | `branch` (string), `dirty` (bool), `staged` (int), `unstaged` (int), `untracked` (int), `conflicted` (int), `ahead` (int), `behind` (int), `stash` (int), `state` (string) | watch `.git` + fallback poll | 5.6 ms |
+| `git` | path | 21 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
 
-The `state` field reflects repository state: `"clean"`, `"merge"`, `"rebase"`, `"cherry-pick"`, `"bisect"`, `"revert"`.
+**Fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `branch` | string | Current branch name |
+| `commit` | string | Short SHA of HEAD |
+| `detached` | bool | Whether HEAD is detached |
+| `upstream` | string | Upstream tracking branch (e.g., "origin/main") |
+| `tag` | string | Nearest tag (empty if none) |
+| `dirty` | bool | Whether working tree has changes |
+| `staged` | int | Number of staged files |
+| `unstaged` | int | Number of unstaged modified files |
+| `untracked` | int | Number of untracked files |
+| `conflicted` | int | Number of conflicted files |
+| `ahead` | int | Commits ahead of upstream |
+| `behind` | int | Commits behind upstream |
+| `stash` | int | Number of stash entries |
+| `lines_added` | int | Lines added in working tree (unstaged) |
+| `lines_removed` | int | Lines removed in working tree (unstaged) |
+| `lines_staged_added` | int | Lines added in index (staged) |
+| `lines_staged_removed` | int | Lines removed in index (staged) |
+| `state` | string | Repo state: "clean", "merge", "rebase", "cherry-pick", "bisect", "revert" |
+| `state_step` | int | Current step in rebase/cherry-pick (0 if not in progress) |
+| `state_total` | int | Total steps in rebase/cherry-pick (0 if not in progress) |
+| `last_commit_age_secs` | int | Seconds since last commit |
 
 **Example output:**
 
@@ -800,6 +881,10 @@ The `state` field reflects repository state: `"clean"`, `"merge"`, `"rebase"`, `
   "ok": true,
   "data": {
     "branch": "feature/fast-cache",
+    "commit": "a1b2c3d",
+    "detached": false,
+    "upstream": "origin/main",
+    "tag": "v0.3.1",
     "dirty": true,
     "staged": 3,
     "unstaged": 1,
@@ -808,7 +893,14 @@ The `state` field reflects repository state: `"clean"`, `"merge"`, `"rebase"`, `
     "ahead": 2,
     "behind": 0,
     "stash": 1,
-    "state": "clean"
+    "lines_added": 47,
+    "lines_removed": 12,
+    "lines_staged_added": 23,
+    "lines_staged_removed": 5,
+    "state": "clean",
+    "state_step": 0,
+    "state_total": 0,
+    "last_commit_age_secs": 3420
   },
   "age_ms": 234
 }
