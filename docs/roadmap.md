@@ -187,10 +187,25 @@ After the initial release, based on feedback and adoption.
 
 - [ ] Protocol stability guarantee (wire format frozen)
 - [ ] Config format stability guarantee
-- [ ] Published Rust client crate (`beachcomber-client`)
-- [ ] C shared library (`libbeachcomber`) for FFI
 - [ ] mmap/shared memory for zero-latency reads (if demand exists)
 - [ ] Consumer integration packages (zsh plugin, tmux plugin, neovim plugin)
+
+#### Client SDKs
+
+Published, packaged client libraries for each language's native package manager. Each SDK wraps the Unix socket protocol with typed APIs, handles socket discovery, socket activation (starts daemon if not running), timeouts, and error handling. No consumer should need to hand-roll socket code.
+
+| SDK | Package manager | Status |
+|---|---|---|
+| **Rust** (`beachcomber-client`) | crates.io | **Done** (workspace crate) |
+| **C** (`libbeachcomber`) | Source / pkg-config | Not started — C ABI shared library, enables FFI from any language |
+| **Python** (`beachcomber`) | PyPI | Not started — sync client, `socket` module, typed dataclasses |
+| **Node.js** (`beachcomber`) | npm | Not started — `net.connect` to Unix socket, TypeScript types |
+| **Go** (`beachcomber`) | Go module | Not started — `net.Dial("unix", ...)`, struct types |
+| **Lua** (`beachcomber`) | LuaRocks | Not started — for neovim plugins, uses `vim.loop` or luasocket |
+| **Ruby** (`beachcomber`) | RubyGems | Not started — `UNIXSocket`, for shell/devtool integrations |
+| **Shell** (POSIX sh function) | N/A (copy-paste) | **Done** (in README, portable fallback functions) |
+
+The C library is the highest priority after Rust — it enables FFI bindings for Python (ctypes/cffi), Ruby (ffi), and any other language without writing native socket code per language. The Python and Node.js SDKs are highest value for the developer community given the size of those ecosystems.
 
 ---
 
