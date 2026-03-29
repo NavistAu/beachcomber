@@ -751,6 +751,40 @@ poll = "120s"
 [providers.my_slow_thing]
 command = "my-slow-script"
 enabled = false
+
+
+# ─── HTTP Providers ──────────────────────────────────────────────────────────
+# Fetch data directly from REST APIs — no curl fork, no shell spawning.
+# Uses in-process HTTP client with connection reuse.
+
+# Basic: poll a status API
+[providers.service_status]
+type = "http"
+url = "https://status.anthropic.com/api/v2/summary.json"
+extract = "status"              # dot-path into the JSON response
+                                # e.g., response.status.indicator → provider field "indicator"
+
+[providers.service_status.invalidation]
+poll = "60s"
+
+# With auth headers (env vars expanded at runtime)
+[providers.github_rate]
+type = "http"
+url = "https://api.github.com/rate_limit"
+headers = { Authorization = "Bearer ${GITHUB_TOKEN}" }
+extract = "rate"                # extracts { "limit": 5000, "remaining": 4999, ... }
+
+[providers.github_rate.invalidation]
+poll = "30s"
+
+# Infrequent poll (daily)
+[providers.exchange_rate]
+type = "http"
+url = "https://api.exchangerate-api.com/v4/latest/USD"
+extract = "rates.AUD"           # extracts a single nested value
+
+[providers.exchange_rate.invalidation]
+poll = "86400s"
 ```
 
 ### Config field summary
@@ -769,7 +803,7 @@ enabled = false
 |---|---|---|---|
 | `grace_period_secs` | int | `30` | Seconds at full cadence after last subscriber |
 | `eviction_timeout_secs` | int | `900` | Seconds until cache entry is fully evicted |
-| `idle_shutdown_secs` | int or null | `300` | Seconds until idle daemon shuts down |
+| `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
 
 **`[providers.<name>]` section (built-in overrides):**
 
@@ -791,6 +825,19 @@ enabled = false
 | `poll_floor_secs` | int | no | Minimum poll interval |
 | `invalidation.poll` | string | no | Poll interval as duration string (`"30s"`, `"2m"`) |
 | `invalidation.watch` | array of strings | no | File/directory patterns to watch |
+
+**`[providers.<name>]` section (HTTP providers):**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | string | yes | Must be `"http"` |
+| `url` | string | yes | URL to fetch. Supports `${ENV_VAR}` expansion. |
+| `method` | string | no | HTTP method: `"GET"` (default), `"POST"`, `"PUT"` |
+| `headers` | table | no | HTTP headers. Values support `${ENV_VAR}` expansion. |
+| `body` | string | no | Request body (for POST/PUT) |
+| `extract` | string | no | Dot-separated path into the JSON response (e.g., `"status.indicator"`, `"rates.AUD"`) |
+| `enabled` | bool | no | `false` to disable |
+| `invalidation.poll` | string | no | Poll interval (default `"60s"`, floor `5s`) |
 
 ---
 
@@ -1165,6 +1212,84 @@ poll = "10s"
 ```
 
 Query: `comb get vpn.active -f text`
+
+### HTTP Providers
+
+For providers that fetch data from REST APIs, beachcomber has a built-in HTTP provider type. This makes HTTP requests directly in the daemon process — no `curl` fork, no shell spawning, with connection reuse and proper timeout handling.
+
+> **Note:** You can also use script providers with `curl` for quick-and-dirty HTTP queries. But for anything polling regularly, the `http` type is significantly more efficient — it avoids 2-6ms of process spawn overhead per request.
+
+**Basic API status check:**
+
+```toml
+[providers.claude_status]
+type = "http"
+url = "https://status.anthropic.com/api/v2/summary.json"
+extract = "status"
+invalidation = { poll = "60s" }
+```
+
+Query: `comb get claude_status.indicator -f text` returns `"none"`, `"minor"`, `"major"`, etc.
+
+The `extract` field navigates into the JSON response using dot-separated paths. Without it, the entire response object becomes the provider's fields.
+
+**Authenticated API with headers:**
+
+```toml
+[providers.github_rate]
+type = "http"
+url = "https://api.github.com/rate_limit"
+headers = { Authorization = "Bearer ${GITHUB_TOKEN}", Accept = "application/json" }
+extract = "rate"
+invalidation = { poll = "30s" }
+```
+
+Query: `comb get github_rate.remaining -f text`
+
+Header values support `${ENV_VAR}` expansion — secrets stay in your environment, not in config files.
+
+**Service health endpoint:**
+
+```toml
+[providers.api_health]
+type = "http"
+url = "https://internal.example.com/health"
+invalidation = { poll = "10s" }
+```
+
+If the endpoint returns JSON, top-level keys become fields. If it returns non-JSON, the raw body is available as the `body` field.
+
+**Exchange rate (infrequent poll):**
+
+```toml
+[providers.exchange]
+type = "http"
+url = "https://api.exchangerate-api.com/v4/latest/USD"
+extract = "rates.AUD"
+invalidation = { poll = "86400s" }
+```
+
+Query: `comb get exchange.value -f text` — returns the AUD rate, refreshed daily.
+
+**Comparison — script vs HTTP for the same task:**
+
+Using a script provider (forks `sh` + `curl` every poll):
+```toml
+[providers.api_status_script]
+type = "script"
+command = "curl -s https://status.anthropic.com/api/v2/summary.json"
+invalidation = { poll = "60s" }
+```
+
+Using the HTTP provider (in-process, no fork):
+```toml
+[providers.api_status_http]
+type = "http"
+url = "https://status.anthropic.com/api/v2/summary.json"
+invalidation = { poll = "60s" }
+```
+
+Both produce the same result. The HTTP version skips the ~5ms process spawn overhead and handles connection failures more gracefully.
 
 ### Script Provider Tips
 
