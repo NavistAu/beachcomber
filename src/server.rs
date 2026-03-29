@@ -178,10 +178,19 @@ async fn handle_request(
 
             let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
 
+            // Signal demand to scheduler — this keeps the data warm.
+            if let Some(sched) = scheduler {
+                sched.send(SchedulerMessage::QueryActivity {
+                    provider: provider_name.to_string(),
+                    path: effective_path.clone(),
+                }).await;
+            }
+
             match cache.get(provider_name, effective_path.as_deref()) {
                 Some(entry) => {
                     let age_ms = entry.age_ms();
                     let stale = entry.is_stale();
+
                     let data = if let Some(field_name) = field {
                         match entry.result.get(field_name) {
                             Some(value) => serde_json::to_value(value).unwrap(),
@@ -194,16 +203,7 @@ async fn handle_request(
                     };
                     Response::ok(data, age_ms, stale)
                 }
-                None => {
-                    // Trigger background computation so the next get has data
-                    if let Some(sched) = scheduler {
-                        sched.send(SchedulerMessage::Poke {
-                            provider: provider_name.to_string(),
-                            path: effective_path,
-                        }).await;
-                    }
-                    Response::miss()
-                }
+                None => Response::miss(),
             }
         }
         Request::Poke { key, path } => {
@@ -293,6 +293,7 @@ async fn handle_request(
                     status_data["in_flight"] = serde_json::to_value(&sched_status.in_flight).unwrap_or_default();
                     status_data["backoff"] = serde_json::to_value(&sched_status.backoff).unwrap_or_default();
                     status_data["poll_timers"] = serde_json::to_value(&sched_status.poll_timers).unwrap_or_default();
+                    status_data["demand"] = serde_json::to_value(&sched_status.demand).unwrap_or_default();
                 }
             }
 
