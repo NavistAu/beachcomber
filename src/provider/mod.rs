@@ -16,6 +16,7 @@ pub mod conda;
 pub mod mise;
 pub mod asdf;
 pub mod script;
+pub mod http;
 
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;

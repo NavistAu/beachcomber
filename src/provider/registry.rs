@@ -17,6 +17,7 @@ use crate::provider::conda::CondaProvider;
 use crate::provider::mise::MiseProvider;
 use crate::provider::asdf::AsdfProvider;
 use crate::provider::script::ScriptProvider;
+use crate::provider::http::HttpProvider;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -86,6 +87,13 @@ impl ProviderRegistry {
         for (name, script_config) in config.script_providers() {
             if !config.is_provider_disabled(&name) {
                 registry.register(Box::new(ScriptProvider::new(&name, script_config)));
+            }
+        }
+
+        // Register HTTP providers from config unless disabled.
+        for (name, http_config) in config.http_providers() {
+            if !config.is_provider_disabled(&name) {
+                registry.register(Box::new(HttpProvider::new(&name, http_config)));
             }
         }
 

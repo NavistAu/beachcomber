@@ -70,6 +70,25 @@ pub struct ScriptProviderConfig {
     pub enabled: Option<bool>,
     pub poll_secs: Option<u64>,
     pub poll_floor_secs: Option<u64>,
+    // HTTP provider fields (used when type = "http")
+    pub url: Option<String>,
+    pub method: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
+    pub body: Option<String>,
+    pub extract: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct HttpProviderConfig {
+    #[serde(rename = "type")]
+    pub provider_type: Option<String>,
+    pub url: String,
+    pub method: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
+    pub body: Option<String>,
+    pub extract: Option<String>,
+    pub invalidation: Option<ScriptInvalidation>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -91,6 +110,23 @@ impl Config {
         self.providers.iter()
             .filter(|(_, v)| v.provider_type.as_deref() == Some("script") || (!v.command.is_empty() && v.provider_type.is_none()))
             .map(|(name, config)| (name.clone(), config.clone()))
+            .collect()
+    }
+
+    pub fn http_providers(&self) -> Vec<(String, HttpProviderConfig)> {
+        self.providers.iter()
+            .filter(|(_, v)| v.provider_type.as_deref() == Some("http"))
+            .map(|(name, config)| {
+                (name.clone(), HttpProviderConfig {
+                    provider_type: config.provider_type.clone(),
+                    url: config.url.clone().unwrap_or_default(),
+                    method: config.method.clone(),
+                    headers: config.headers.clone(),
+                    body: config.body.clone(),
+                    extract: config.extract.clone(),
+                    invalidation: config.invalidation.clone(),
+                })
+            })
             .collect()
     }
 
