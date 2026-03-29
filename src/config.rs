@@ -52,7 +52,7 @@ impl Default for LifecycleConfig {
         Self {
             grace_period_secs: 30,
             eviction_timeout_secs: 900,
-            idle_shutdown_secs: Some(300), // 5 minutes
+            idle_shutdown_secs: None, // disabled by default — daemon stays alive until killed
         }
     }
 }
