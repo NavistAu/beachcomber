@@ -27,6 +27,12 @@ pub struct DaemonConfig {
     pub socket_path: Option<String>,
     pub log_level: String,
     pub provider_timeout_secs: Option<u64>,
+    /// Path to an env file loaded at daemon startup.
+    /// Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
+    /// These vars are injected into the daemon's environment before any providers execute,
+    /// making them available to ${VAR} expansion in HTTP headers, script commands, etc.
+    /// Default: ~/.config/beachcomber/env
+    pub env_file: Option<String>,
 }
 
 impl Default for DaemonConfig {
@@ -35,6 +41,7 @@ impl Default for DaemonConfig {
             socket_path: None,
             log_level: "info".to_string(),
             provider_timeout_secs: Some(10),
+            env_file: None,
         }
     }
 }
@@ -142,6 +149,59 @@ impl Config {
         }
     }
 
+    /// Load environment variables from the configured env file (or default path).
+    /// Sets them in the process environment so they're available to ${VAR} expansion
+    /// in HTTP headers, script commands, etc.
+    /// Returns the number of variables loaded.
+    pub fn load_env_file(&self) -> usize {
+        let path = match &self.daemon.env_file {
+            Some(p) => PathBuf::from(shellexpand(p)),
+            None => {
+                // Default: ~/.config/beachcomber/env
+                let xdg = xdg::BaseDirectories::with_prefix("beachcomber");
+                match xdg.find_config_file("env") {
+                    Some(p) => p,
+                    None => return 0,
+                }
+            }
+        };
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+
+        let mut count = 0;
+        for line in content.lines() {
+            let line = line.trim();
+
+            // Skip blanks and comments
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+
+                // Strip surrounding quotes if present
+                let value = if (value.starts_with('"') && value.ends_with('"'))
+                    || (value.starts_with('\'') && value.ends_with('\''))
+                {
+                    &value[1..value.len() - 1]
+                } else {
+                    value
+                };
+
+                // SAFETY: env file is loaded once at daemon startup before any threads
+                // are spawned, so there are no concurrent readers of the environment.
+                unsafe { std::env::set_var(key, value); }
+                count += 1;
+            }
+        }
+        count
+    }
+
     pub fn resolve_socket_path(&self) -> PathBuf {
         if let Some(ref path) = self.daemon.socket_path {
             return PathBuf::from(path);
@@ -168,4 +228,14 @@ impl Config {
             })
             .join("daemon.log")
     }
+}
+
+/// Expand ~ to $HOME in a path string.
+fn shellexpand(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{}{}", home, &path[1..]);
+        }
+    }
+    path.to_string()
 }

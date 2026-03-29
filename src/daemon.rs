@@ -32,6 +32,12 @@ pub fn start_in_process_with_cancel(
 }
 
 async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: CancellationToken) {
+    // Load env file before anything else — providers need these vars
+    let env_count = config.load_env_file();
+    if env_count > 0 {
+        info!("Loaded {} environment variables from env file", env_count);
+    }
+
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_config(&config));
 
