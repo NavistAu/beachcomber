@@ -33,6 +33,17 @@ fn git_provider_metadata() {
     assert!(field_names.contains(&"conflicted"));
     assert!(field_names.contains(&"stash"));
     assert!(field_names.contains(&"state"));
+    assert!(field_names.contains(&"lines_added"));
+    assert!(field_names.contains(&"lines_removed"));
+    assert!(field_names.contains(&"lines_staged_added"));
+    assert!(field_names.contains(&"lines_staged_removed"));
+    assert!(field_names.contains(&"upstream"));
+    assert!(field_names.contains(&"detached"));
+    assert!(field_names.contains(&"commit"));
+    assert!(field_names.contains(&"tag"));
+    assert!(field_names.contains(&"state_step"));
+    assert!(field_names.contains(&"state_total"));
+    assert!(field_names.contains(&"last_commit_age_secs"));
 }
 
 #[test]
@@ -117,4 +128,99 @@ fn git_provider_stash_count() {
 fn git_provider_requires_path() {
     let p = GitProvider;
     assert!(p.execute(None).is_none(), "Git provider should return None without a path");
+}
+
+#[test]
+fn git_provider_clean_repo_new_fields() {
+    let tmp = create_test_repo();
+    let p = GitProvider;
+    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+
+    // No unstaged line changes in a clean repo
+    assert_eq!(result.get("lines_added").unwrap().as_text(), "0");
+    assert_eq!(result.get("lines_removed").unwrap().as_text(), "0");
+    // No staged line changes in a clean repo
+    assert_eq!(result.get("lines_staged_added").unwrap().as_text(), "0");
+    assert_eq!(result.get("lines_staged_removed").unwrap().as_text(), "0");
+    // No upstream in a local-only repo
+    assert_eq!(result.get("upstream").unwrap().as_text(), "");
+    // HEAD is not detached after a normal commit
+    assert_eq!(result.get("detached").unwrap().as_text(), "false");
+    // state_step and state_total are 0 in a clean repo
+    assert_eq!(result.get("state_step").unwrap().as_text(), "0");
+    assert_eq!(result.get("state_total").unwrap().as_text(), "0");
+    // state is clean
+    assert_eq!(result.get("state").unwrap().as_text(), "clean");
+}
+
+#[test]
+fn git_provider_commit_hash_format() {
+    let tmp = create_test_repo();
+    let p = GitProvider;
+    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let commit = result.get("commit").unwrap().as_text();
+    // Short SHA: non-empty, all hex, typically 7 chars
+    assert!(!commit.is_empty(), "commit should not be empty");
+    assert!(commit.chars().all(|c| c.is_ascii_hexdigit()), "commit should be hex: {}", commit);
+    assert!(commit.len() >= 4 && commit.len() <= 40, "unexpected commit length: {}", commit.len());
+}
+
+#[test]
+fn git_provider_last_commit_age_secs() {
+    let tmp = create_test_repo();
+    let p = GitProvider;
+    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let age: i64 = result.get("last_commit_age_secs").unwrap().as_text().parse().unwrap();
+    // The commit was just made, so age should be very small (< 60 seconds)
+    assert!(age >= 0, "age should be non-negative");
+    assert!(age < 60, "last_commit_age_secs should be recent: {}", age);
+}
+
+#[test]
+fn git_provider_lines_added_removed_unstaged() {
+    let tmp = create_test_repo();
+    // README.md has "# test" (1 line). Replace with 3 lines.
+    std::fs::write(tmp.path().join("README.md"), "line1\nline2\nline3").unwrap();
+    let p = GitProvider;
+    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let added: i64 = result.get("lines_added").unwrap().as_text().parse().unwrap();
+    let removed: i64 = result.get("lines_removed").unwrap().as_text().parse().unwrap();
+    // 3 lines added, 1 removed (the original "# test" line)
+    assert!(added > 0, "lines_added should be > 0, got {}", added);
+    assert!(removed > 0, "lines_removed should be > 0, got {}", removed);
+}
+
+#[test]
+fn git_provider_lines_staged_added_removed() {
+    let tmp = create_test_repo();
+    // Stage an addition of a new file with 2 lines
+    std::fs::write(tmp.path().join("new.txt"), "alpha\nbeta").unwrap();
+    Command::new("git").args(["add", "new.txt"]).current_dir(tmp.path()).output().unwrap();
+    let p = GitProvider;
+    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let staged_added: i64 = result.get("lines_staged_added").unwrap().as_text().parse().unwrap();
+    let staged_removed: i64 = result.get("lines_staged_removed").unwrap().as_text().parse().unwrap();
+    assert_eq!(staged_added, 2, "staged_added should be 2, got {}", staged_added);
+    assert_eq!(staged_removed, 0, "staged_removed should be 0 for a new file, got {}", staged_removed);
+}
+
+#[test]
+fn git_provider_detached_head() {
+    let tmp = create_test_repo();
+    // Get the commit hash so we can check it out detached
+    let log_out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&log_out.stdout).trim().to_string();
+    Command::new("git")
+        .args(["checkout", "--detach", &sha])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let p = GitProvider;
+    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    assert_eq!(result.get("detached").unwrap().as_text(), "true");
 }
