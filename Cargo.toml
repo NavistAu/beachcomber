@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "beachcomber-client"]
+
 [package]
 name = "beachcomber"
 version = "0.1.0"
