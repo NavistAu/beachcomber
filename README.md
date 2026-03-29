@@ -665,6 +665,12 @@ log_level = "info"
 # Default: 10
 provider_timeout_secs = 10
 
+# Path to an environment file loaded at daemon startup.
+# Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
+# These vars are available to ${VAR} expansion in HTTP headers, script commands, etc.
+# Default: ~/.config/beachcomber/env (loaded automatically if present)
+# env_file = "~/.config/beachcomber/env"
+
 
 # ─── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -796,6 +802,7 @@ poll = "86400s"
 | `socket_path` | string | `$XDG_RUNTIME_DIR/beachcomber/sock` | Unix socket path |
 | `log_level` | string | `"info"` | Tracing log level |
 | `provider_timeout_secs` | int | `10` | Max seconds for any provider to run |
+| `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
 
 **`[lifecycle]` section:**
 
@@ -1290,6 +1297,66 @@ invalidation = { poll = "60s" }
 ```
 
 Both produce the same result. The HTTP version skips the ~5ms process spawn overhead and handles connection failures more gracefully.
+
+### Secrets and Environment Variables
+
+HTTP headers and script commands support `${VAR}` expansion, pulling values from the daemon's environment. But the daemon's environment depends on how it starts — socket activation inherits the env of whatever triggered it, which is unpredictable.
+
+The solution: **env files.** The daemon loads `~/.config/beachcomber/env` at startup before any providers execute, guaranteeing a consistent environment regardless of how the daemon was started.
+
+```sh
+# ~/.config/beachcomber/env
+# This file is loaded by the daemon at startup.
+# Format: KEY=VALUE (one per line). Blank lines and #comments are ignored.
+# Values can be quoted: KEY="value with spaces" or KEY='single quoted'
+
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxx
+ANTHROPIC_ADMIN_KEY=sk-admin-xxxxxxxxxxxx
+EXCHANGE_API_KEY=abc123
+```
+
+**Protect this file:**
+```sh
+chmod 600 ~/.config/beachcomber/env
+```
+
+Then reference these in provider configs:
+
+```toml
+[providers.github_rate]
+type = "http"
+url = "https://api.github.com/rate_limit"
+headers = { Authorization = "Bearer ${GITHUB_TOKEN}" }
+invalidation = { poll = "30s" }
+```
+
+The `${GITHUB_TOKEN}` is expanded at request time from the daemon's environment (which includes the env file values).
+
+**Custom env file path:** If you keep secrets elsewhere:
+
+```toml
+[daemon]
+env_file = "~/.secrets/beachcomber.env"
+```
+
+**Integration with secret managers:** Generate the env file from your secret manager of choice:
+
+```sh
+# 1Password
+op read "op://Vault/beachcomber/env" > ~/.config/beachcomber/env
+
+# pass
+pass show beachcomber/env > ~/.config/beachcomber/env
+
+# macOS Keychain
+security find-generic-password -s beachcomber -w > ~/.config/beachcomber/env
+
+# Vault
+vault kv get -field=env secret/beachcomber > ~/.config/beachcomber/env
+```
+
+Then `chmod 600` and restart the daemon (`pkill -f 'comb daemon'` — it socket-activates on next query).
 
 ### Script Provider Tips
 
