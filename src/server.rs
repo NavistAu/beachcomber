@@ -38,7 +38,19 @@ impl Server {
             std::fs::create_dir_all(parent)?;
         }
 
-        let _ = std::fs::remove_file(&self.socket_path);
+        // Clean up stale socket file. If another daemon is actively listening,
+        // the bind will fail with EADDRINUSE — that's correct behavior.
+        if self.socket_path.exists() {
+            // Check if something is actually listening
+            if std::os::unix::net::UnixStream::connect(&self.socket_path).is_ok() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    format!("Another daemon is already listening on {:?}", self.socket_path),
+                ));
+            }
+            // Stale socket file — remove it
+            let _ = std::fs::remove_file(&self.socket_path);
+        }
 
         let listener = UnixListener::bind(&self.socket_path)?;
         info!("Listening on {:?}", self.socket_path);
