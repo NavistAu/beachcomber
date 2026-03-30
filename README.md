@@ -636,6 +636,23 @@ end
 
 These functions can be pasted directly into prompt frameworks, dotfile repos, or shared shell libraries. Users with beachcomber installed get the 15µs path; users without it get the native fallback. No beachcomber dependency required.
 
+### Inline Fallback with `||`
+
+For scripts that only need a value once (not in a hot loop like a prompt), the wrapper function is unnecessary. `comb` exits non-zero when it's not installed, not running, or the key doesn't exist — so a simple `||` chain works:
+
+```sh
+# Single assignment, no wrapper needed
+branch=$(comb get git.branch . -f text 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null)
+dirty=$(comb get git.dirty . -f text 2>/dev/null || git diff --quiet 2>/dev/null || echo "true")
+
+# Use the values
+if [ -n "$branch" ]; then
+    echo "on $branch"
+fi
+```
+
+This keeps scripts portable with zero comb dependency — `2>/dev/null` swallows errors, the `||` falls through to the native tool, and there's nothing to source or import. Prefer this for standalone scripts; use the wrapper functions above for shared shell libraries where the pattern repeats.
+
 ---
 
 ## Configuration Reference
