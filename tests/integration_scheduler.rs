@@ -50,21 +50,3 @@ async fn once_providers_available_via_scheduler() {
     assert!(response.data.is_some());
 }
 
-#[tokio::test]
-async fn subscribe_via_protocol() {
-    let (_tmp, sock) = setup_with_scheduler().await;
-
-    use tokio::io::{AsyncWriteExt, AsyncBufReadExt, BufReader};
-    use tokio::net::UnixStream;
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let req = r#"{"op": "subscribe", "key": "hostname", "triggers": {"poll": "1s"}}"#;
-    stream.write_all(format!("{}\n", req).as_bytes()).await.unwrap();
-
-    let mut reader = BufReader::new(&mut stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.unwrap();
-
-    let resp: beachcomber::protocol::Response = serde_json::from_str(&line).unwrap();
-    assert!(resp.ok, "Subscribe should return ok");
-}

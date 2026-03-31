@@ -14,11 +14,11 @@ Last updated: 2026-03-29
 
 **Cache:** Concurrent DashMap. 157ns read latency. Staleness computation with expected refresh intervals. Auto-poke on cache miss (triggers background computation so next query hits). Detailed cache listing via `comb status`.
 
-**Scheduler:** Poll timers, filesystem watching (notify/FSEvents), poke triggers. Provider execution on `spawn_blocking` (non-blocking). Execution timeouts (configurable, default 10s). Deduplication (in-flight tracking + pending rerun). Failure backoff (exponential after 3 consecutive failures, max 60s). Subscription manager with multi-tenant cadence resolution. Backoff/drain lifecycle (Grace -> SlowPoll -> Frozen -> Evict).
+**Scheduler:** Poll timers, filesystem watching (notify/FSEvents), poke triggers. Provider execution on `spawn_blocking` (non-blocking). Execution timeouts (configurable, default 10s). Deduplication (in-flight tracking + pending rerun). Failure backoff (exponential after 3 consecutive failures, max 60s). Demand-driven cache warming (QueryActivity keeps providers warm while actively queried). Backoff/drain lifecycle (Grace -> SlowPoll -> Frozen -> Evict).
 
-**Protocol:** get, poke, subscribe, unsubscribe, context, list, status. JSON and text output formats. Connection context for implicit path resolution. Staleness flag in responses. Path canonicalization (relative -> absolute).
+**Protocol:** get, poke, context, list, status. JSON and text output formats. Connection context for implicit path resolution. Staleness flag in responses. Path canonicalization (relative -> absolute).
 
-**CLI:** `comb daemon | get | poke | subscribe | list | status`
+**CLI:** `comb daemon | get | poke | list | status`
 
 **Config:** TOML at `~/.config/beachcomber/config.toml`. Provider enabled/disabled flag. Provider timeout, poll interval, floor overrides. Script provider definitions. Lifecycle tuning (grace period, idle shutdown).
 
@@ -146,21 +146,42 @@ Everything below must be done before the first public release. Ordered by depend
 
 ---
 
-#### Remaining to publish v0.1.0
+---
 
+## Up Next: Client SDKs
+
+Published, packaged client libraries for each language's native package manager. Each SDK wraps the Unix socket protocol with typed APIs, handles socket discovery, socket activation (starts daemon if not running), timeouts, and error handling. No consumer should need to hand-roll socket code.
+
+| SDK | Package manager | Status |
+|---|---|---|
+| **Rust** (`beachcomber-client`) | crates.io | **Done** (workspace crate) |
+| **C** (`libbeachcomber`) | Source / pkg-config | Not started — C ABI shared library, enables FFI from any language |
+| **Python** (`beachcomber`) | PyPI | Not started — sync client, `socket` module, typed dataclasses |
+| **Node.js** (`beachcomber`) | npm | Not started — `net.connect` to Unix socket, TypeScript types |
+| **Go** (`beachcomber`) | Go module | Not started — `net.Dial("unix", ...")`, struct types |
+| **Lua** (`beachcomber`) | LuaRocks | Not started — for neovim plugins, uses `vim.loop` or luasocket |
+| **Ruby** (`beachcomber`) | RubyGems | Not started — `UNIXSocket`, for shell/devtool integrations |
+| **Shell** (POSIX sh function) | N/A (copy-paste) | **Done** (in README, portable fallback functions) |
+
+The C library is the highest priority after Rust — it enables FFI bindings for Python (ctypes/cffi), Ruby (ffi), and any other language without writing native socket code per language. The Python and Node.js SDKs are highest value for the developer community given the size of those ecosystems.
+
+---
+
+## Deferred: v0.1.0 Publish
+
+Remaining items to publish v0.1.0. Not blocking current work.
+
+- [ ] Document SemVer policy (D.4)
+- [ ] Write CLAUDE.md for contributors (F.6)
 - [ ] Create GitHub repo (jhogendorn/beachcomber or org)
 - [ ] Push code
 - [ ] Tag v0.1.0 to trigger release workflow
 - [ ] `cargo publish` beachcomber + beachcomber-client to crates.io
 - [ ] Create Homebrew tap with formula (E.1)
-- [ ] Document SemVer policy (D.4)
-- [ ] Write CLAUDE.md for contributors (F.6)
 
 ---
 
-## Milestone: v0.2.0 (Post-Launch)
-
-After the initial release, based on feedback and adoption.
+## Deferred: Post-Launch
 
 ### Linux Support
 
@@ -190,28 +211,9 @@ After the initial release, based on feedback and adoption.
 - [ ] MacPorts
 - [ ] Scoop (Windows, if/when Windows support lands)
 
----
-
-## Milestone: v1.0.0 (Stability)
+### Stability
 
 - [ ] Protocol stability guarantee (wire format frozen)
 - [ ] Config format stability guarantee
 - [ ] mmap/shared memory for zero-latency reads (if demand exists)
 - [ ] Consumer integration packages (zsh plugin, tmux plugin, neovim plugin)
-
-### Client SDKs
-
-Published, packaged client libraries for each language's native package manager. Each SDK wraps the Unix socket protocol with typed APIs, handles socket discovery, socket activation (starts daemon if not running), timeouts, and error handling. No consumer should need to hand-roll socket code.
-
-| SDK | Package manager | Status |
-|---|---|---|
-| **Rust** (`beachcomber-client`) | crates.io | **Done** (workspace crate) |
-| **C** (`libbeachcomber`) | Source / pkg-config | Not started — C ABI shared library, enables FFI from any language |
-| **Python** (`beachcomber`) | PyPI | Not started — sync client, `socket` module, typed dataclasses |
-| **Node.js** (`beachcomber`) | npm | Not started — `net.connect` to Unix socket, TypeScript types |
-| **Go** (`beachcomber`) | Go module | Not started — `net.Dial("unix", ...")`, struct types |
-| **Lua** (`beachcomber`) | LuaRocks | Not started — for neovim plugins, uses `vim.loop` or luasocket |
-| **Ruby** (`beachcomber`) | RubyGems | Not started — `UNIXSocket`, for shell/devtool integrations |
-| **Shell** (POSIX sh function) | N/A (copy-paste) | **Done** (in README, portable fallback functions) |
-
-The C library is the highest priority after Rust — it enables FFI bindings for Python (ctypes/cffi), Ruby (ffi), and any other language without writing native socket code per language. The Python and Node.js SDKs are highest value for the developer community given the size of those ecosystems.

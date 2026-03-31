@@ -266,13 +266,13 @@ invalidation: InvalidationStrategy::WatchAndPoll {
 },
 ```
 
-Note that for path-scoped providers (e.g., `git`), patterns like `".git"` are relative to the subscribed path and the FsWatcher receives the resolved absolute path at subscription time. For global providers, patterns should be absolute paths.
+Note that for path-scoped providers (e.g., `git`), patterns like `".git"` are relative to the queried path and the FsWatcher receives the resolved absolute path when demand is first registered. For global providers, patterns should be absolute paths.
 
 ---
 
 ## 4. Performance Guidelines
 
-Provider execution happens on tokio's blocking thread pool. Slow providers delay cache freshness for their subscribers but do not block the scheduler loop. Still, keep providers fast. The tier list from `docs/performance.md`:
+Provider execution happens on tokio's blocking thread pool. Slow providers delay cache freshness but do not block the scheduler loop. Still, keep providers fast. The tier list from `docs/performance.md`:
 
 | Tier | Target | Method |
 |---|---|---|
@@ -462,7 +462,7 @@ The `invalidation` config maps directly to `InvalidationStrategy`:
 - Both -> `WatchAndPoll { patterns, interval_secs }`
 - Neither -> `Poll { interval_secs: 30 }` (default)
 
-Set `scope = "path"` to make the provider path-scoped (the script will be run with its working directory set to the subscribed path):
+Set `scope = "path"` to make the provider path-scoped (the script will be run with its working directory set to the queried path):
 
 ```toml
 [providers.project_version]

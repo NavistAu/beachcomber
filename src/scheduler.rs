@@ -10,26 +10,11 @@ use crate::cache::Cache;
 use crate::config::Config;
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::InvalidationStrategy;
-use crate::subscription::{BackoffStage, BackoffState, SubscriptionManager};
 use crate::watcher::FsWatcher;
 
 /// Messages sent from the Server to the Scheduler.
 #[derive(Debug)]
 pub enum SchedulerMessage {
-    Subscribe {
-        consumer_id: u64,
-        provider: String,
-        path: Option<String>,
-        triggers: TriggerSet,
-    },
-    Unsubscribe {
-        consumer_id: u64,
-        provider: String,
-        path: Option<String>,
-    },
-    ConsumerDisconnected {
-        consumer_id: u64,
-    },
     Poke {
         provider: String,
         path: Option<String>,
@@ -51,7 +36,6 @@ pub enum SchedulerMessage {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SchedulerStatus {
-    pub subscriptions: Vec<SubscriptionInfo>,
     pub watched_paths: Vec<String>,
     pub in_flight: Vec<String>,
     pub backoff: Vec<BackoffInfo>,
@@ -64,15 +48,6 @@ pub struct DemandInfo {
     pub provider: String,
     pub path: Option<String>,
     pub last_query_secs_ago: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct SubscriptionInfo {
-    pub provider: String,
-    pub path: Option<String>,
-    pub subscriber_count: usize,
-    pub effective_watch: bool,
-    pub effective_poll_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -89,23 +64,6 @@ pub struct PollTimerInfo {
     pub path: Option<String>,
     pub interval_secs: u64,
     pub last_run_secs_ago: u64,
-}
-
-/// The set of triggers a consumer requests for a subscription.
-#[derive(Debug, Clone)]
-pub struct TriggerSet {
-    pub watch: bool,
-    pub poll_secs: Option<u64>,
-}
-
-impl TriggerSet {
-    pub fn from_protocol(triggers: &crate::protocol::SubscribeTriggers) -> Self {
-        let poll_secs = triggers.poll.as_ref().and_then(|s| parse_duration_secs(s));
-        Self {
-            watch: triggers.watch,
-            poll_secs,
-        }
-    }
 }
 
 /// Public wrapper for parse_duration_secs, used by script provider.
@@ -153,25 +111,75 @@ impl SchedulerHandle {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackoffStage {
+    Grace,
+    SlowPoll,
+    Frozen,
+    Evict,
+}
+
+pub struct BackoffState {
+    stage: BackoffStage,
+    started_at: Instant,
+    grace_duration: std::time::Duration,
+}
+
+impl BackoffState {
+    pub fn new(grace_duration: std::time::Duration) -> Self {
+        Self {
+            stage: BackoffStage::Grace,
+            started_at: Instant::now(),
+            grace_duration,
+        }
+    }
+
+    pub fn stage(&self) -> &BackoffStage {
+        &self.stage
+    }
+
+    pub fn advance(&mut self) {
+        self.stage = match self.stage {
+            BackoffStage::Grace => BackoffStage::SlowPoll,
+            BackoffStage::SlowPoll => BackoffStage::Frozen,
+            BackoffStage::Frozen => BackoffStage::Evict,
+            BackoffStage::Evict => BackoffStage::Evict,
+        };
+        self.started_at = Instant::now();
+    }
+
+    pub fn reset(&mut self, grace_duration: std::time::Duration) {
+        self.stage = BackoffStage::Grace;
+        self.started_at = Instant::now();
+        self.grace_duration = grace_duration;
+    }
+
+    pub fn elapsed(&self) -> std::time::Duration {
+        self.started_at.elapsed()
+    }
+
+    pub fn grace_expired(&self) -> bool {
+        matches!(self.stage, BackoffStage::Grace) && self.started_at.elapsed() >= self.grace_duration
+    }
+
+    pub fn poll_multiplier(&self) -> u64 {
+        match self.stage {
+            BackoffStage::Grace => 1,
+            BackoffStage::SlowPoll => 4,
+            BackoffStage::Frozen => 0,
+            BackoffStage::Evict => 0,
+        }
+    }
+
+    pub fn should_watch(&self) -> bool {
+        matches!(self.stage, BackoffStage::Grace)
+    }
+}
+
 /// Tracks the last execution time for polling purposes.
 struct PollState {
     last_run: Instant,
     interval_secs: u64,
-}
-
-/// Start backoff for any subscription keys that currently have zero subscribers.
-/// Only starts backoff if not already in backoff for that key.
-fn start_backoff_for_empty_keys(
-    subs: &SubscriptionManager,
-    backoff: &mut HashMap<(String, Option<String>), BackoffState>,
-    grace_duration: std::time::Duration,
-) {
-    for key in subs.keys_with_no_subscribers() {
-        backoff.entry(key.clone()).or_insert_with(|| {
-            debug!("Starting backoff grace for provider={} path={:?}", key.0, key.1);
-            BackoffState::new(grace_duration)
-        });
-    }
 }
 
 /// Advance backoff states. Returns the list of keys that should be evicted from cache.
@@ -243,24 +251,12 @@ impl FailureState {
 
 /// Build a snapshot of the current scheduler state for status reporting.
 fn build_status(
-    subs: &SubscriptionManager,
     poll_states: &HashMap<(String, Option<String>), PollState>,
     watch_paths: &HashMap<PathBuf, Vec<(String, Option<String>)>>,
     backoff: &HashMap<(String, Option<String>), BackoffState>,
     in_flight: &std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>,
     demand: &HashMap<(String, Option<String>), Instant>,
 ) -> SchedulerStatus {
-    let subscriptions = subs.all_keys().into_iter().map(|(provider, path)| {
-        let effective = subs.effective_triggers(&provider, path.as_deref());
-        SubscriptionInfo {
-            subscriber_count: subs.subscriber_count(&provider, path.as_deref()),
-            effective_watch: effective.as_ref().map(|t| t.watch).unwrap_or(false),
-            effective_poll_secs: effective.as_ref().and_then(|t| t.poll_secs),
-            provider,
-            path,
-        }
-    }).collect();
-
     let watched: Vec<String> = watch_paths.keys()
         .map(|p| p.to_string_lossy().to_string())
         .collect();
@@ -302,7 +298,6 @@ fn build_status(
     }).collect();
 
     SchedulerStatus {
-        subscriptions,
         watched_paths: watched,
         in_flight: in_flight_keys,
         backoff: backoff_info,
@@ -529,9 +524,6 @@ impl Scheduler {
         // Compute Once providers at startup.
         self.compute_once_providers();
 
-        // Subscription manager tracks who wants what.
-        let mut subs = SubscriptionManager::new();
-
         // Poll states: (provider, path) -> PollState
         let mut poll_states: HashMap<(String, Option<String>), PollState> = HashMap::new();
 
@@ -572,106 +564,12 @@ impl Scheduler {
                             self.execute_provider(&provider, path.as_deref());
                             last_activity = Instant::now();
                         }
-                        Some(SchedulerMessage::Subscribe { consumer_id, provider, path, triggers }) => {
-                            debug!("Subscribe: consumer={} provider={} path={:?}", consumer_id, provider, path);
-
-                            let was_empty = subs.subscriber_count(&provider, path.as_deref()) == 0;
-                            subs.subscribe(consumer_id, &provider, path.as_deref(), triggers.clone());
-
-                            // Cancel backoff if someone is subscribing again.
-                            let key = (provider.clone(), path.clone());
-                            if backoff.remove(&key).is_some() {
-                                debug!("Cancelled backoff for provider={} path={:?} (new subscriber)", provider, path);
-                            }
-
-                            // If no one was subscribed before, set up the triggers.
-                            if was_empty {
-                                // Set up filesystem watch if requested.
-                                if triggers.watch {
-                                    if let Some(path_str) = &path {
-                                        let watch_path = PathBuf::from(path_str);
-                                        if let Err(e) = fs_watcher.watch(&watch_path) {
-                                            warn!("Failed to watch {:?}: {}", watch_path, e);
-                                        } else {
-                                            watch_paths
-                                                .entry(watch_path)
-                                                .or_default()
-                                                .push((provider.clone(), path.clone()));
-                                        }
-                                    } else {
-                                        // For global providers, watch based on metadata patterns.
-                                        if let Some(prov) = self.registry.get(&provider) {
-                                            let meta = prov.metadata();
-                                            let patterns = match &meta.invalidation {
-                                                InvalidationStrategy::Watch { patterns, .. } => patterns.clone(),
-                                                InvalidationStrategy::WatchAndPoll { patterns, .. } => patterns.clone(),
-                                                _ => vec![],
-                                            };
-                                            for pattern in &patterns {
-                                                let watch_path = PathBuf::from(pattern);
-                                                if let Err(e) = fs_watcher.watch(&watch_path) {
-                                                    warn!("Failed to watch {:?}: {}", watch_path, e);
-                                                } else {
-                                                    watch_paths
-                                                        .entry(watch_path)
-                                                        .or_default()
-                                                        .push((provider.clone(), path.clone()));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Set up poll timer if requested.
-                                if let Some(poll_secs) = triggers.poll_secs {
-                                    let key = (provider.clone(), path.clone());
-                                    poll_states.insert(key, PollState {
-                                        last_run: Instant::now(),
-                                        interval_secs: poll_secs,
-                                    });
-                                }
-                            } else {
-                                // Update effective poll interval.
-                                let effective = subs.effective_triggers(&provider, path.as_deref());
-                                if let Some(effective) = effective {
-                                    let key = (provider.clone(), path.clone());
-                                    if let Some(poll_secs) = effective.poll_secs {
-                                        poll_states.entry(key).and_modify(|s| {
-                                            s.interval_secs = poll_secs;
-                                        }).or_insert(PollState {
-                                            last_run: Instant::now(),
-                                            interval_secs: poll_secs,
-                                        });
-                                    }
-                                }
-                            }
-
-                            // Execute immediately if not cached.
-                            if self.cache.get(&provider, path.as_deref()).is_none() {
-                                self.execute_provider(&provider, path.as_deref());
-                            }
-                            last_activity = Instant::now();
-                        }
-                        Some(SchedulerMessage::Unsubscribe { consumer_id, provider, path }) => {
-                            debug!("Unsubscribe: consumer={} provider={} path={:?}", consumer_id, provider, path);
-                            subs.unsubscribe(consumer_id, &provider, path.as_deref());
-                            start_backoff_for_empty_keys(&subs, &mut backoff, grace_duration);
-                            self.cleanup_unused_subscriptions(&mut subs, &mut poll_states, &mut watch_paths, &mut fs_watcher);
-                            last_activity = Instant::now();
-                        }
-                        Some(SchedulerMessage::ConsumerDisconnected { consumer_id }) => {
-                            debug!("ConsumerDisconnected: consumer={}", consumer_id);
-                            subs.disconnect(consumer_id);
-                            start_backoff_for_empty_keys(&subs, &mut backoff, grace_duration);
-                            self.cleanup_unused_subscriptions(&mut subs, &mut poll_states, &mut watch_paths, &mut fs_watcher);
-                            last_activity = Instant::now();
-                        }
                         Some(SchedulerMessage::FsEvent { paths }) => {
                             self.handle_fs_event(paths, &watch_paths);
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
-                            let status = build_status(&subs, &poll_states, &watch_paths, &backoff, &self.in_flight, &demand);
+                            let status = build_status(&poll_states, &watch_paths, &backoff, &self.in_flight, &demand);
                             let _ = reply.send(status);
                         }
                         Some(SchedulerMessage::QueryActivity { provider, path }) => {
@@ -765,27 +663,23 @@ impl Scheduler {
                     for key in expired_demand {
                         debug!("Demand expired for provider={} path={:?}", key.0, key.1);
                         demand.remove(&key);
+                        poll_states.remove(&key);
 
-                        // Only remove poll/watch if there's no explicit subscription keeping it alive.
-                        if subs.subscriber_count(&key.0, key.1.as_deref()) == 0 {
-                            poll_states.remove(&key);
-
-                            // Remove watch for this key.
-                            let mut paths_to_unwatch = Vec::new();
-                            for (watch_path, subscriptions) in watch_paths.iter_mut() {
-                                subscriptions.retain(|(p, pa)| !(p == &key.0 && pa == &key.1));
-                                if subscriptions.is_empty() {
-                                    paths_to_unwatch.push(watch_path.clone());
-                                }
+                        // Remove watch for this key.
+                        let mut paths_to_unwatch = Vec::new();
+                        for (watch_path, subscriptions) in watch_paths.iter_mut() {
+                            subscriptions.retain(|(p, pa)| !(p == &key.0 && pa == &key.1));
+                            if subscriptions.is_empty() {
+                                paths_to_unwatch.push(watch_path.clone());
                             }
-                            for wp in paths_to_unwatch {
-                                watch_paths.remove(&wp);
-                                let _ = fs_watcher.unwatch(&wp);
-                            }
-
-                            // Start backoff for eviction.
-                            start_backoff_for_key(&key, &mut backoff, grace_duration);
                         }
+                        for wp in paths_to_unwatch {
+                            watch_paths.remove(&wp);
+                            let _ = fs_watcher.unwatch(&wp);
+                        }
+
+                        // Start backoff for eviction.
+                        start_backoff_for_key(&key, &mut backoff, grace_duration);
                     }
 
                     // Advance backoff states and evict cache entries when needed.
@@ -798,10 +692,10 @@ impl Scheduler {
                     // Check idle shutdown condition.
                     if let Some(idle_secs) = idle_shutdown_secs {
                         if self.cache.is_empty()
-                            && subs.all_keys().is_empty()
+                            && demand.is_empty()
                             && last_activity.elapsed().as_secs() >= idle_secs
                         {
-                            info!("Idle shutdown: no cache entries, no subscriptions, idle for {}s", idle_secs);
+                            info!("Idle shutdown: no cache entries, no demand, idle for {}s", idle_secs);
                             break;
                         }
                     }
@@ -814,7 +708,6 @@ impl Scheduler {
     async fn run_without_watcher(mut self, mut _dummy_rx: mpsc::Receiver<Vec<PathBuf>>) {
         self.compute_once_providers();
 
-        let mut subs = SubscriptionManager::new();
         let mut poll_states: HashMap<(String, Option<String>), PollState> = HashMap::new();
         let mut backoff: HashMap<(String, Option<String>), BackoffState> = HashMap::new();
         let grace_duration = std::time::Duration::from_secs(self.config.lifecycle.grace_period_secs);
@@ -838,34 +731,12 @@ impl Scheduler {
                             self.execute_provider(&provider, path.as_deref());
                             last_activity = Instant::now();
                         }
-                        Some(SchedulerMessage::Subscribe { consumer_id, provider, path, triggers }) => {
-                            subs.subscribe(consumer_id, &provider, path.as_deref(), triggers.clone());
-                            if let Some(poll_secs) = triggers.poll_secs {
-                                let key = (provider.clone(), path.clone());
-                                poll_states.entry(key).or_insert(PollState {
-                                    last_run: Instant::now(),
-                                    interval_secs: poll_secs,
-                                });
-                            }
-                            if self.cache.get(&provider, path.as_deref()).is_none() {
-                                self.execute_provider(&provider, path.as_deref());
-                            }
-                            last_activity = Instant::now();
-                        }
-                        Some(SchedulerMessage::Unsubscribe { consumer_id, provider, path }) => {
-                            subs.unsubscribe(consumer_id, &provider, path.as_deref());
-                            last_activity = Instant::now();
-                        }
-                        Some(SchedulerMessage::ConsumerDisconnected { consumer_id }) => {
-                            subs.disconnect(consumer_id);
-                            last_activity = Instant::now();
-                        }
                         Some(SchedulerMessage::FsEvent { .. }) => {
                             // No-op without watcher.
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
                             let empty_watch_paths: HashMap<PathBuf, Vec<(String, Option<String>)>> = HashMap::new();
-                            let status = build_status(&subs, &poll_states, &empty_watch_paths, &backoff, &self.in_flight, &demand);
+                            let status = build_status(&poll_states, &empty_watch_paths, &backoff, &self.in_flight, &demand);
                             let _ = reply.send(status);
                         }
                         Some(SchedulerMessage::QueryActivity { provider, path }) => {
@@ -935,12 +806,8 @@ impl Scheduler {
                     for key in expired_demand {
                         debug!("Demand expired for provider={} path={:?}", key.0, key.1);
                         demand.remove(&key);
-
-                        // Only remove poll if there's no explicit subscription keeping it alive.
-                        if subs.subscriber_count(&key.0, key.1.as_deref()) == 0 {
-                            poll_states.remove(&key);
-                            start_backoff_for_key(&key, &mut backoff, grace_duration);
-                        }
+                        poll_states.remove(&key);
+                        start_backoff_for_key(&key, &mut backoff, grace_duration);
                     }
 
                     // Advance backoff states and evict cache entries when needed.
@@ -953,10 +820,10 @@ impl Scheduler {
                     // Check idle shutdown condition.
                     if let Some(idle_secs) = idle_shutdown_secs {
                         if self.cache.is_empty()
-                            && subs.all_keys().is_empty()
+                            && demand.is_empty()
                             && last_activity.elapsed().as_secs() >= idle_secs
                         {
-                            info!("Idle shutdown: no cache entries, no subscriptions, idle for {}s", idle_secs);
+                            info!("Idle shutdown: no cache entries, no demand, idle for {}s", idle_secs);
                             break;
                         }
                     }
@@ -998,33 +865,4 @@ impl Scheduler {
         }
     }
 
-    fn cleanup_unused_subscriptions(
-        &self,
-        subs: &mut SubscriptionManager,
-        poll_states: &mut HashMap<(String, Option<String>), PollState>,
-        watch_paths: &mut HashMap<PathBuf, Vec<(String, Option<String>)>>,
-        fs_watcher: &mut FsWatcher,
-    ) {
-        for (provider, path) in subs.keys_with_no_subscribers() {
-            let key = (provider.clone(), path.clone());
-            poll_states.remove(&key);
-
-            // Remove watch paths associated with this subscription.
-            let mut paths_to_unwatch = Vec::new();
-            for (watch_path, subscriptions) in watch_paths.iter_mut() {
-                subscriptions.retain(|(p, pa)| !(p == &provider && pa == &path));
-                if subscriptions.is_empty() {
-                    paths_to_unwatch.push(watch_path.clone());
-                }
-            }
-            for wp in paths_to_unwatch {
-                watch_paths.remove(&wp);
-                if let Err(e) = fs_watcher.unwatch(&wp) {
-                    debug!("Failed to unwatch {:?}: {}", wp, e);
-                }
-            }
-
-            subs.remove_key(&provider, path.as_deref());
-        }
-    }
 }

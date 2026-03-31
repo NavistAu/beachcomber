@@ -1,9 +1,8 @@
 use crate::cache::Cache;
 use crate::protocol::{self, Format, Request, Response};
 use crate::provider::registry::ProviderRegistry;
-use crate::scheduler::{SchedulerHandle, SchedulerMessage, TriggerSet};
+use crate::scheduler::{SchedulerHandle, SchedulerMessage};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -14,7 +13,6 @@ pub struct Server {
     cache: Arc<Cache>,
     registry: Arc<ProviderRegistry>,
     scheduler: Option<SchedulerHandle>,
-    next_consumer_id: Arc<AtomicU64>,
 }
 
 impl Server {
@@ -29,7 +27,6 @@ impl Server {
             cache,
             registry,
             scheduler,
-            next_consumer_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -61,9 +58,8 @@ impl Server {
                     let cache = Arc::clone(&self.cache);
                     let registry = Arc::clone(&self.registry);
                     let scheduler = self.scheduler.clone();
-                    let consumer_id = self.next_consumer_id.fetch_add(1, Ordering::Relaxed);
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, cache, registry, scheduler, consumer_id).await {
+                        if let Err(e) = handle_connection(stream, cache, registry, scheduler).await {
                             debug!("Connection error: {}", e);
                         }
                     });
@@ -81,7 +77,6 @@ async fn handle_connection(
     cache: Arc<Cache>,
     registry: Arc<ProviderRegistry>,
     scheduler: Option<SchedulerHandle>,
-    consumer_id: u64,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -98,7 +93,7 @@ async fn handle_connection(
 
         let response_bytes = match serde_json::from_str::<Request>(trimmed) {
             Ok(request) => {
-                let response = handle_request(&request, &cache, &registry, scheduler.as_ref(), consumer_id, &mut context_path).await;
+                let response = handle_request(&request, &cache, &registry, scheduler.as_ref(), &mut context_path).await;
                 format_response(&request, &response)
             }
             Err(e) => {
@@ -111,11 +106,6 @@ async fn handle_connection(
 
         writer.write_all(response_bytes.as_bytes()).await?;
         line.clear();
-    }
-
-    // Connection closed — notify scheduler of disconnect.
-    if let Some(sched) = &scheduler {
-        sched.send(SchedulerMessage::ConsumerDisconnected { consumer_id }).await;
     }
 
     Ok(())
@@ -165,7 +155,6 @@ async fn handle_request(
     cache: &Cache,
     registry: &ProviderRegistry,
     scheduler: Option<&SchedulerHandle>,
-    consumer_id: u64,
     context_path: &mut Option<String>,
 ) -> Response {
     match request {
@@ -230,36 +219,6 @@ async fn handle_request(
                 }
             }
         }
-        Request::Subscribe { key, path, triggers } => {
-            let (provider_name, _) = protocol::split_key(key);
-            let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
-
-            if let Some(sched) = scheduler {
-                let trigger_set = TriggerSet::from_protocol(triggers);
-                sched.send(SchedulerMessage::Subscribe {
-                    consumer_id,
-                    provider: provider_name.to_string(),
-                    path: effective_path,
-                    triggers: trigger_set,
-                }).await;
-            }
-
-            Response { ok: true, data: None, age_ms: None, stale: None, error: None }
-        }
-        Request::Unsubscribe { key, path } => {
-            let (provider_name, _) = protocol::split_key(key);
-            let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
-
-            if let Some(sched) = scheduler {
-                sched.send(SchedulerMessage::Unsubscribe {
-                    consumer_id,
-                    provider: provider_name.to_string(),
-                    path: effective_path,
-                }).await;
-            }
-
-            Response { ok: true, data: None, age_ms: None, stale: None, error: None }
-        }
         Request::Context { path } => {
             *context_path = Some(path.clone());
             Response { ok: true, data: None, age_ms: None, stale: None, error: None }
@@ -288,7 +247,6 @@ async fn handle_request(
             // Get scheduler status if available.
             if let Some(sched) = scheduler {
                 if let Some(sched_status) = sched.get_status().await {
-                    status_data["subscriptions"] = serde_json::to_value(&sched_status.subscriptions).unwrap_or_default();
                     status_data["watched_paths"] = serde_json::to_value(&sched_status.watched_paths).unwrap_or_default();
                     status_data["in_flight"] = serde_json::to_value(&sched_status.in_flight).unwrap_or_default();
                     status_data["backoff"] = serde_json::to_value(&sched_status.backoff).unwrap_or_default();

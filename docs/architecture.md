@@ -39,7 +39,7 @@ Data flow summary:
 - **Write path**: trigger (fs event or poll timer) -> Scheduler -> spawn_blocking(provider.execute()) -> Cache.put()
 - **Miss path**: client asks for uncached key -> Server sends Poke to Scheduler -> Scheduler fires provider -> client retries or polls
 
-The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Server sends messages to the Scheduler over an `mpsc::Sender<SchedulerMessage>`. The Scheduler owns the `FsWatcher` and all subscription/poll state.
+The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Server sends messages to the Scheduler over an `mpsc::Sender<SchedulerMessage>`. The Scheduler owns the `FsWatcher` and all demand/poll state.
 
 ---
 
@@ -50,11 +50,10 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/lib.rs` | Module declarations; no logic |
 | `src/daemon.rs` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel` |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
-| `src/scheduler.rs` | Single event loop: handles Subscribe/Unsubscribe/Poke/FsEvent/poll tick; owns all subscription and watch state |
+| `src/scheduler.rs` | Single event loop: handles Poke/FsEvent/QueryActivity/poll tick; owns all demand and watch state; contains `BackoffState`/`BackoffStage` |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; generation counter |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
-| `src/subscription.rs` | `SubscriptionManager`: tracks which consumer IDs are subscribed to which (provider, path) pairs and with what triggers; computes effective (union) trigger set |
-| `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`, `SubscribeTriggers`; `split_key()` |
+| `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`; `split_key()` |
 | `src/config.rs` | TOML config loading from XDG directories; `Config`, `DaemonConfig`, `LifecycleConfig`, `ScriptProviderConfig` |
 | `src/provider/mod.rs` | `Provider` trait; `ProviderResult`, `Value`, `ProviderMetadata`, `FieldSchema`, `InvalidationStrategy` |
 | `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; built-in registration; script provider registration from config |
@@ -178,42 +177,33 @@ After clearing `in_flight`, the scheduler checks `pending_rerun`. If a rerun was
 
 ---
 
-## 5. Subscription Lifecycle
+## 5. Demand-Driven Cache Lifecycle
 
-**Subscribe**
+**Demand signal**
 
-A consumer sends `{"op":"subscribe","key":"git.branch","path":"/home/user/myrepo","triggers":{"watch":true,"poll":"30s"}}`.
+Every `get` request sends `SchedulerMessage::QueryActivity { provider, path }` to the scheduler. This records the current time in the `demand` HashMap for that key. If the key is new to demand, the scheduler immediately sets up polling (based on provider metadata) and filesystem watching (for path-scoped providers), and fires `execute_provider` if the cache is cold.
 
-The Server calls `TriggerSet::from_protocol()` to parse the poll duration string into seconds, then sends `SchedulerMessage::Subscribe { consumer_id, provider: "git", path: Some("/home/user/myrepo"), triggers: TriggerSet { watch: true, poll_secs: Some(30) } }`.
+**Demand window**
 
-**Scheduler registers the subscription**
+The scheduler's per-second tick checks all demand entries. Any key not queried within the last 120 seconds is considered expired. When demand expires for a key:
 
-`SubscriptionManager::subscribe()` records the consumer against the key `("git", Some("/home/user/myrepo"))`. If this is the first subscriber for this key:
+- The poll timer for that key is removed.
+- Filesystem watches for that key are removed (if no other keys share the watch path).
+- A `BackoffState` is started in `Grace` stage.
 
-- If `triggers.watch` is true and a path is present, `fs_watcher.watch("/home/user/myrepo")` is called (recursive). The watch path is added to `watch_paths` mapping it back to the provider key.
-- If `triggers.poll_secs` is set, a `PollState` entry is inserted with `last_run = Instant::now()` and `interval_secs = 30`.
+**Backoff/drain sequence**
 
-If there were already other subscribers, the effective poll interval (minimum of all subscribers' intervals) is recomputed and the `PollState` updated if it changed.
-
-If the cache has no entry for this key, `execute_provider` is called immediately.
-
-**Effective triggers**
-
-`SubscriptionManager::effective_triggers()` computes the union of all subscribers' trigger sets: `watch` is true if any subscriber requests it; `poll_secs` is the minimum non-None poll interval across all subscribers.
-
-**Disconnect / unsubscribe**
-
-When a connection closes, `SchedulerMessage::ConsumerDisconnected { consumer_id }` is sent. `SubscriptionManager::disconnect()` removes that consumer from all subscription entries. If any key now has zero subscribers, `start_backoff_for_empty_keys()` begins the backoff sequence for it.
-
-**Backoff on disconnect**
-
-When a subscription key reaches zero subscribers, a `BackoffState` is created in the `Grace` stage (configurable via `lifecycle.grace_period_secs`, default 30s). The scheduler's per-second tick advances the state:
+When a key enters the backoff sequence, `BackoffState` (in `src/scheduler.rs`) tracks its stage:
 
 ```
 Grace (30s) -> SlowPoll -> Frozen -> Evict
 ```
 
-At `Evict`, `cache.remove()` is called. Poll timers and filesystem watches are torn down when the key is cleaned up. If a new subscriber arrives for the same key during any backoff stage, the backoff is cancelled immediately.
+At `Evict`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any backoff stage, the backoff is cancelled immediately and the key re-enters the demand window.
+
+**Idle shutdown**
+
+When `cache.is_empty()` and `demand.is_empty()` both hold true and no activity has been seen for `lifecycle.idle_shutdown_secs`, the daemon exits.
 
 ---
 
@@ -237,7 +227,7 @@ Providers are stored as `Arc<dyn Provider>`. When the scheduler needs to execute
 
 **Scheduler-owned mutable state**
 
-The Scheduler owns all mutable coordination state: `SubscriptionManager`, `poll_states`, `watch_paths`, `backoff`. This state is only accessed from the single scheduler task, so it requires no synchronisation. The `in_flight`, `pending_rerun`, and `failure_counts` maps are wrapped in `Mutex` because they are accessed from both the scheduler task and from within `tokio::spawn` closures that run after `spawn_blocking` completes.
+The Scheduler owns all mutable coordination state: `demand`, `poll_states`, `watch_paths`, `backoff`. This state is only accessed from the single scheduler task, so it requires no synchronisation. The `in_flight`, `pending_rerun`, and `failure_counts` maps are wrapped in `Mutex` because they are accessed from both the scheduler task and from within `tokio::spawn` closures that run after `spawn_blocking` completes.
 
 **No provider-side concurrency**
 
@@ -263,6 +253,6 @@ The `Provider` trait's `execute` method is synchronous (`fn execute(&self, path:
 
 Naively, a burst of filesystem events (e.g., a `git commit` touching many `.git` files) would launch many concurrent provider executions for the same key. The deduplication scheme allows at most one in-flight execution per key and queues at most one rerun. This means at most two executions will ever run for any key in response to a burst: one that was already in-flight when the burst began, and one that starts after it completes. This bounds both resource usage and cache write rate.
 
-**Failure backoff separate from subscriber backoff**
+**Two independent backoff mechanisms**
 
-There are two independent backoff mechanisms: failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly; subscriber backoff (in `BackoffState`, Grace->SlowPoll->Frozen->Evict) handles resource cleanup when consumers disconnect. They serve different purposes and are deliberately kept separate.
+Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Demand backoff (in `BackoffState`, Grace->SlowPoll->Frozen->Evict) handles resource cleanup when a key drops out of the demand window. They serve different purposes and are deliberately kept separate.

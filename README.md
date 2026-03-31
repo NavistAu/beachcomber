@@ -96,7 +96,7 @@ $ comb status
   "uptime_secs": 3642,
   "cache_entries": 12,
   "active_watchers": 3,
-  "subscribers": 8
+  "demand": 8
 }
 ```
 
@@ -158,7 +158,7 @@ precmd() {
 }
 ```
 
-Source your `.zshrc` and open a few more shells. Then run `comb status` — you'll see multiple subscribers sharing the same cache entry, with a single filesystem watcher covering all of them.
+Source your `.zshrc` and open a few more shells. Then run `comb status` — you'll see the cache entry being shared across all shells, with a single filesystem watcher covering all of them.
 
 ---
 
@@ -166,7 +166,7 @@ Source your `.zshrc` and open a few more shells. Then run `comb status` — you'
 
 beachcomber is a single async daemon that:
 
-1. Accepts subscriptions from consumers (prompts, status bars, editors) via a Unix socket
+1. Serves queries from consumers (prompts, status bars, editors) via a Unix socket
 2. Watches filesystem directories using native FSEvents (macOS) or inotify (Linux)
 3. Executes providers when files change or poll timers fire — not on every query
 4. Caches results in a shared in-memory map (157ns reads)
@@ -201,11 +201,11 @@ The daemon is socket-activated: it starts automatically when any client connects
                starship       oh-my-posh             CI/automation
 ```
 
-**Providers are never re-executed on every query.** A git status is computed once when `.git` changes, then served from cache to every reader — whether that's one prompt or a hundred tmux panes. The filesystem watcher is registered once regardless of how many consumers subscribe.
+**Providers are never re-executed on every query.** A git status is computed once when `.git` changes, then served from cache to every reader — whether that's one prompt or a hundred tmux panes. The filesystem watcher is registered once for all concurrent readers.
 
 **Connection context** means consumers can set a working directory once on connect. `comb get git.branch` without an explicit path uses the connection's context directory, making prompt integration natural.
 
-**Demand-driven lifecycle:** the daemon watches nothing until subscribed. Resource usage scales with actual demand. Entries enter a backoff/drain sequence after all subscribers disconnect — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
+**Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a backoff/drain sequence after queries stop — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
 
 ---
 
@@ -254,7 +254,7 @@ set -g status-interval 5
 
 **Why this is different from the problem described above:** each `#()` invocation still forks a shell, but `comb` reads a pre-cached value in ~34µs instead of spawning git (5ms+) or running a battery subprocess (6ms). The total time savings across a 50-pane tmux session is substantial.
 
-For the best performance, use a long-running `comb subscribe` connection and write status to a file that tmux reads — but the simple `#()` approach is already a major improvement.
+The simple `#()` approach shown above is already a major improvement over shelling out to git or battery commands directly. Each `comb get` also signals demand to the daemon, keeping the provider warm automatically.
 
 ### bash prompt (PROMPT_COMMAND)
 
@@ -693,15 +693,15 @@ provider_timeout_secs = 10
 
 [lifecycle]
 
-# How long (in seconds) to maintain full polling cadence after the last
-# subscriber disconnects. During this window, cache entries stay warm in case
-# a new shell opens.
+# How long (in seconds) to maintain full polling cadence after demand expires
+# (i.e., after the last query for a key). During this window, cache entries
+# stay warm in case a new shell opens.
 # Default: 30
 grace_period_secs = 30
 
-# How long (in seconds) after the last subscriber disconnects before a cache
-# entry is fully evicted. The daemon enters a progressive backoff between grace
-# expiry and eviction (2x poll at 30s, 4x poll at 2min, frozen at 5min).
+# How long (in seconds) after demand expires before a cache entry is fully
+# evicted. The daemon enters a progressive backoff between grace expiry and
+# eviction (2x poll at 30s, 4x poll at 2min, frozen at 5min).
 # Default: 900 (15 minutes)
 eviction_timeout_secs = 900
 
@@ -825,7 +825,7 @@ poll = "86400s"
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `grace_period_secs` | int | `30` | Seconds at full cadence after last subscriber |
+| `grace_period_secs` | int | `30` | Seconds at full cadence after demand expires |
 | `eviction_timeout_secs` | int | `900` | Seconds until cache entry is fully evicted |
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
 
@@ -1447,23 +1447,6 @@ comb poke kubecontext
 
 **Exit codes:** `0` on success, `2` on error.
 
-### `comb subscribe <key> [path] [--watch] [--poll <interval>]`
-
-Register a subscription and hold the connection open. The daemon maintains the provider at the requested cadence while the connection is alive. Press Ctrl+C to disconnect (the daemon will begin the backoff sequence if no other subscribers remain).
-
-```sh
-# Watch git status for the current directory
-comb subscribe git.branch . --watch
-
-# Poll battery every 15 seconds
-comb subscribe battery --poll 15s
-
-# Watch and poll (recommended: filesystem events with poll safety net)
-comb subscribe git . --watch --poll 30s
-```
-
-Use `comb subscribe` in scripts that run alongside your shell session and need to ensure the daemon keeps a provider warmed up. For prompts and status bars, the implicit subscription from each `comb get` call is typically sufficient.
-
 ### `comb status`
 
 Show daemon health and statistics.
@@ -1474,7 +1457,6 @@ $ comb status
   "uptime_secs": 7234,
   "cache_entries": 14,
   "active_watchers": 4,
-  "subscribers": 11,
   "providers": 16,
   "requests_total": 184291
 }
@@ -1482,15 +1464,15 @@ $ comb status
 
 ### `comb list`
 
-Show all active providers, their cached state age, and subscriber counts.
+Show all active providers and their cached state age.
 
 ```sh
 $ comb list
 {
   "entries": [
-    { "key": "git", "path": "/Users/me/project", "age_ms": 1240, "subscribers": 3 },
-    { "key": "battery", "path": null, "age_ms": 8900, "subscribers": 5 },
-    { "key": "kubecontext", "path": null, "age_ms": 22100, "subscribers": 2 }
+    { "key": "git", "path": "/Users/me/project", "age_ms": 1240 },
+    { "key": "battery", "path": null, "age_ms": 8900 },
+    { "key": "kubecontext", "path": null, "age_ms": 22100 }
   ]
 }
 ```
@@ -1565,15 +1547,6 @@ comb status
 {
   "cache_entries": 3,
   "providers": 12,
-  "subscriptions": [
-    {
-      "provider": "git",
-      "path": "/Users/you/project",
-      "subscriber_count": 2,
-      "effective_watch": true,
-      "effective_poll_secs": null
-    }
-  ],
   "watched_paths": ["/Users/you/project"],
   "in_flight": [],
   "backoff": [],
@@ -1584,17 +1557,24 @@ comb status
       "interval_secs": 30,
       "last_run_secs_ago": 12
     }
+  ],
+  "demand": [
+    {
+      "provider": "git",
+      "path": "/Users/you/project",
+      "last_query_secs_ago": 5
+    }
   ]
 }
 ```
 
 Key fields:
 
-- `subscriptions` — which providers have active subscribers, how many, and their effective trigger settings
 - `watched_paths` — filesystem paths currently being watched for changes
 - `in_flight` — providers currently executing (non-empty means a computation is running right now)
-- `backoff` — subscriptions in the drain/eviction sequence after all consumers disconnected
+- `backoff` — keys in the drain/eviction sequence after demand expired
 - `poll_timers` — active poll timers and when they last ran
+- `demand` — providers kept warm by recent queries and when they were last queried
 
 ### Killing and restarting the daemon
 
@@ -1689,8 +1669,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "get", "key": "battery"}
 {"op": "get", "key": "git.branch", "path": "/home/user/project", "format": "text"}
 {"op": "poke", "key": "git", "path": "/home/user/project"}
-{"op": "subscribe", "key": "git", "path": "/home/user/project", "triggers": {"watch": true, "poll": "10s"}}
-{"op": "unsubscribe", "key": "git", "path": "/home/user/project"}
 {"op": "context", "path": "/home/user/project"}
 {"op": "list"}
 {"op": "status"}
@@ -1700,11 +1678,10 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `poke`, `subscribe`, `unsubscribe`, `context`, `list`, `status` |
+| `op` | string | Operation: `get`, `poke`, `context`, `list`, `status` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default) or `"text"` |
-| `triggers` | object | For `subscribe`: `{"watch": true, "poll": "10s"}` |
 
 ### Response Format
 
@@ -1730,8 +1707,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 **`get`:** Read from cache. Always returns immediately. If the key has never been computed, `data` is null and `ok` is true. A null response means "no data yet" — retry after a moment or `poke` to trigger computation.
 
 **`poke`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
-
-**`subscribe`:** Register interest in a key with a trigger set. The daemon will maintain the provider at the requested cadence while this connection is alive. Returns `{"ok": true}` on success. On disconnect, the subscription is implicitly removed.
 
 **`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
 

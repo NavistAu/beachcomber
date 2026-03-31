@@ -1,4 +1,4 @@
-use beachcomber::subscription::{BackoffState, BackoffStage};
+use beachcomber::scheduler::{BackoffState, BackoffStage};
 use std::time::Duration;
 
 #[test]

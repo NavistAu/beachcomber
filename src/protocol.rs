@@ -28,31 +28,11 @@ pub enum Request {
         #[serde(default)]
         path: Option<String>,
     },
-    Subscribe {
-        key: String,
-        #[serde(default)]
-        path: Option<String>,
-        #[serde(default)]
-        triggers: SubscribeTriggers,
-    },
-    Unsubscribe {
-        key: String,
-        #[serde(default)]
-        path: Option<String>,
-    },
     Context {
         path: String,
     },
     List,
     Status,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct SubscribeTriggers {
-    #[serde(default)]
-    pub watch: bool,
-    #[serde(default)]
-    pub poll: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
