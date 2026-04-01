@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "beachcomber"
+version = "0.1.0"
+description = "This package exists to prevent name squatting and malicious supply chain attacks. Install libbeachcomber instead. See https://beachcomber.sh"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [
+    { name = "NavistAu" },
+]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.urls]
+Homepage = "https://beachcomber.sh"
+Repository = "https://github.com/NavistAu/beachcomber"
+
+[tool.hatch.build.targets.wheel]
+packages = ["beachcomber_placeholder"]

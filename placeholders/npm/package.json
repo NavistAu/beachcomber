@@ -1,0 +1,13 @@
+{
+  "name": "beachcomber",
+  "version": "0.1.0",
+  "description": "This package exists to prevent name squatting and malicious supply chain attacks. Install libbeachcomber instead. See https://beachcomber.sh",
+  "main": "index.js",
+  "author": "NavistAu",
+  "license": "MIT",
+  "homepage": "https://beachcomber.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NavistAu/beachcomber.git"
+  }
+}
