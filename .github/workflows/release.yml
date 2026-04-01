@@ -14,32 +14,74 @@ jobs:
     strategy:
       matrix:
         include:
-          - target: x86_64-apple-darwin
-            os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            musl: true
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install musl tools
+        if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
-      - name: Build
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
         run: cargo build --release --target ${{ matrix.target }}
+
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../beachcomber-${{ github.ref_name }}-${{ matrix.target }}.tar.gz comb
           cd ../../..
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: beachcomber-${{ matrix.target }}
           path: beachcomber-*.tar.gz
 
+  c-sdk-tarball:
+    name: Package C SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create C SDK tarball
+        run: |
+          tar czf beachcomber-c-sdk-${{ github.ref_name }}.tar.gz \
+            -C sdks/c \
+            beachcomber.c beachcomber.h json.c json.h Makefile README.md
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: beachcomber-c-sdk
+          path: beachcomber-c-sdk-*.tar.gz
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, c-sdk-tarball]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,4 +92,168 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: beachcomber-*.tar.gz
+          files: |
+            beachcomber-*.tar.gz
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish beachcomber-client
+        run: cargo publish -p beachcomber-client
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish beachcomber
+        run: cargo publish -p beachcomber
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: release
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build tools
+        run: pip install build twine
+      - name: Build
+        run: python -m build
+      - name: Publish
+        run: twine upload dist/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+  publish-npm:
+    name: Publish to npm
+    needs: release
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Install dependencies
+        run: npm ci
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-rubygems:
+    name: Publish to RubyGems
+    needs: release
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/ruby
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - name: Build gem
+        run: gem build beachcomber.gemspec
+      - name: Publish
+        run: gem push beachcomber-0.1.0.gem
+        env:
+          GEM_HOST_API_KEY: ${{ secrets.GEM_HOST_API_KEY }}
+
+  publish-luarocks:
+    name: Publish to LuaRocks
+    needs: release
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/lua
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leafo/gh-actions-lua@v10
+        with:
+          luaVersion: '5.4'
+      - uses: leafo/gh-actions-luarocks@v4
+      - name: Publish
+        run: luarocks upload rockspec/beachcomber-0.1.0-1.rockspec --api-key=${{ secrets.LUAROCKS_API_KEY }}
+
+  publish-go:
+    name: Tag Go module
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Go module tag
+        run: |
+          git tag sdks/go/${{ github.ref_name }}
+          git push origin sdks/go/${{ github.ref_name }}
+
+  publish-homebrew:
+    name: Update Homebrew tap
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: NavistAu/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: beachcomber-*-apple-darwin
+          merge-multiple: true
+          path: artifacts
+
+      - name: Generate formula
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          ARM_SHA=$(shasum -a 256 artifacts/beachcomber-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
+          INTEL_SHA=$(shasum -a 256 artifacts/beachcomber-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
+
+          cat > homebrew-tap/Formula/beachcomber.rb << FORMULA
+          class Beachcomber < Formula
+            desc "Daemon that caches shell environment state for instant prompt rendering"
+            homepage "https://github.com/NavistAu/beachcomber"
+            version "${VERSION}"
+            license "MIT"
+
+            if Hardware::CPU.arm?
+              url "https://github.com/NavistAu/beachcomber/releases/download/${{ github.ref_name }}/beachcomber-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz"
+              sha256 "${ARM_SHA}"
+            else
+              url "https://github.com/NavistAu/beachcomber/releases/download/${{ github.ref_name }}/beachcomber-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz"
+              sha256 "${INTEL_SHA}"
+            end
+
+            def install
+              bin.install "comb"
+            end
+
+            test do
+              assert_match "beachcomber", shell_output("#{bin}/comb --version")
+            end
+          end
+          FORMULA
+
+      - name: Push formula
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/beachcomber.rb
+          git commit -m "beachcomber ${{ github.ref_name }}"
+          git push
