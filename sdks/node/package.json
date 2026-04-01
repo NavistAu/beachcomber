@@ -17,6 +17,7 @@
   "scripts": {
     "build": "tsc",
     "test": "node --import tsx/esm --test tests/*.test.ts",
+    "prepublishOnly": "tsc",
     "clean": "rm -rf dist"
   },
   "keywords": [
@@ -27,7 +28,22 @@
     "cache",
     "unix-socket"
   ],
+  "author": "NavistAu",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NavistAu/beachcomber.git",
+    "directory": "sdks/node"
+  },
+  "homepage": "https://github.com/NavistAu/beachcomber",
+  "bugs": {
+    "url": "https://github.com/NavistAu/beachcomber/issues"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.ts.map"
+  ],
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.0.0",
