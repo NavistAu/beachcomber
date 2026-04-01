@@ -28,6 +28,8 @@ sdks/python/dist/
 sdks/node/node_modules/
 sdks/node/dist/
 sdks/ruby/*.gem
+placeholders/ruby/*.gem
+placeholders/pypi/dist/
 sdks/c/test_beachcomber
 sdks/c/*.o
 sdks/c/*.a
