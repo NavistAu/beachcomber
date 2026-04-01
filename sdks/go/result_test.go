@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	beachcomber "github.com/jhogendorn/beachcomber/sdks/go"
+	beachcomber "github.com/NavistAu/beachcomber/sdks/go"
 )
 
 // buildResult is a test helper that constructs a *Result by round-tripping

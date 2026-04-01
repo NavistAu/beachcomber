@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	beachcomber "github.com/jhogendorn/beachcomber/sdks/go"
+	beachcomber "github.com/NavistAu/beachcomber/sdks/go"
 )
 
 // ---------------------------------------------------------------------------

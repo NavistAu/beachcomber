@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	beachcomber "github.com/jhogendorn/beachcomber/sdks/go"
+	beachcomber "github.com/NavistAu/beachcomber/sdks/go"
 )
 
 func TestDiscoverSocketPath_XDG(t *testing.T) {
