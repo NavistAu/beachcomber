@@ -266,7 +266,7 @@ fn build_status(
         .unwrap()
         .iter()
         .map(|(p, path)| match path {
-            Some(pa) => format!("{}:{}", p, pa),
+            Some(pa) => format!("{p}:{pa}"),
             None => p.clone(),
         })
         .collect();
@@ -371,11 +371,10 @@ impl Scheduler {
         // Check failure backoff — skip if suppressed.
         {
             let failures = self.failure_counts.lock().unwrap();
-            if let Some(state) = failures.get(&key) {
-                if state.is_suppressed() {
-                    debug!("Provider '{}' suppressed due to failure backoff", provider_name);
-                    return;
-                }
+            if let Some(state) = failures.get(&key)
+                && state.is_suppressed() {
+                debug!("Provider '{}' suppressed due to failure backoff", provider_name);
+                return;
             }
         }
 
@@ -606,18 +605,17 @@ impl Scheduler {
                                     }
 
                                     // Set up filesystem watching for path-scoped providers.
-                                    if !meta.global {
-                                        if let Some(ref path_str) = path {
-                                            let watch_path = PathBuf::from(path_str);
-                                            if let Err(e) = fs_watcher.watch(&watch_path) {
-                                                warn!("Failed to watch {:?}: {}", watch_path, e);
-                                            } else {
-                                                watch_paths
-                                                    .entry(watch_path)
-                                                    .or_default()
-                                                    .push((provider.clone(), path.clone()));
-                                                debug!("Demand: watching path {:?} for provider={}", path, provider);
-                                            }
+                                    if !meta.global
+                                        && let Some(ref path_str) = path {
+                                        let watch_path = PathBuf::from(path_str);
+                                        if let Err(e) = fs_watcher.watch(&watch_path) {
+                                            warn!("Failed to watch {:?}: {}", watch_path, e);
+                                        } else {
+                                            watch_paths
+                                                .entry(watch_path)
+                                                .or_default()
+                                                .push((provider.clone(), path.clone()));
+                                            debug!("Demand: watching path {:?} for provider={}", path, provider);
                                         }
                                     }
                                 }
@@ -693,14 +691,13 @@ impl Scheduler {
                     }
 
                     // Check idle shutdown condition.
-                    if let Some(idle_secs) = idle_shutdown_secs {
-                        if self.cache.is_empty()
-                            && demand.is_empty()
-                            && last_activity.elapsed().as_secs() >= idle_secs
-                        {
-                            info!("Idle shutdown: no cache entries, no demand, idle for {}s", idle_secs);
-                            break;
-                        }
+                    if let Some(idle_secs) = idle_shutdown_secs
+                        && self.cache.is_empty()
+                        && demand.is_empty()
+                        && last_activity.elapsed().as_secs() >= idle_secs
+                    {
+                        info!("Idle shutdown: no cache entries, no demand, idle for {}s", idle_secs);
+                        break;
                     }
                 }
             }
@@ -821,14 +818,13 @@ impl Scheduler {
                     }
 
                     // Check idle shutdown condition.
-                    if let Some(idle_secs) = idle_shutdown_secs {
-                        if self.cache.is_empty()
-                            && demand.is_empty()
-                            && last_activity.elapsed().as_secs() >= idle_secs
-                        {
-                            info!("Idle shutdown: no cache entries, no demand, idle for {}s", idle_secs);
-                            break;
-                        }
+                    if let Some(idle_secs) = idle_shutdown_secs
+                        && self.cache.is_empty()
+                        && demand.is_empty()
+                        && last_activity.elapsed().as_secs() >= idle_secs
+                    {
+                        info!("Idle shutdown: no cache entries, no demand, idle for {}s", idle_secs);
+                        break;
                     }
                 }
             }

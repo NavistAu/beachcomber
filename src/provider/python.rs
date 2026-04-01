@@ -54,13 +54,12 @@ impl Provider for PythonProvider {
         }
 
         // Also check VIRTUAL_ENV env var
-        if !venv_found {
-            if let Ok(venv_path) = std::env::var("VIRTUAL_ENV") {
-                let p = Path::new(&venv_path);
-                if p.exists() {
-                    venv_found = true;
-                    venv_name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                }
+        if !venv_found
+            && let Ok(venv_path) = std::env::var("VIRTUAL_ENV") {
+            let p = Path::new(&venv_path);
+            if p.exists() {
+                venv_found = true;
+                venv_name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             }
         }
 

@@ -33,9 +33,7 @@ fn hostname_provider_short_is_prefix() {
     let short = result.get("short").unwrap().as_text();
     assert!(
         name.starts_with(&short),
-        "Short hostname '{}' should be a prefix of full hostname '{}'",
-        short,
-        name,
+        "Short hostname '{short}' should be a prefix of full hostname '{name}'",
     );
 }
 

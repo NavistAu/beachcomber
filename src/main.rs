@@ -138,7 +138,7 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: Format) -> Ex
     let socket_path = config.resolve_socket_path();
 
     if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
-        eprintln!("Failed to start daemon: {}", e);
+        eprintln!("Failed to start daemon: {e}");
         return ExitCode::from(2);
     }
 
@@ -149,11 +149,11 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: Format) -> Ex
         if format == Format::Text {
             match client.get_text(key, path).await {
                 Ok(text) => {
-                    print!("{}", text);
+                    print!("{text}");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    eprintln!("Error: {e}");
                     ExitCode::from(2)
                 }
             }
@@ -173,7 +173,7 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: Format) -> Ex
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    eprintln!("Error: {e}");
                     ExitCode::from(2)
                 }
             }
@@ -185,7 +185,7 @@ fn run_poke(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
     if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
-        eprintln!("Failed to start daemon: {}", e);
+        eprintln!("Failed to start daemon: {e}");
         return ExitCode::from(2);
     }
 
@@ -202,7 +202,7 @@ fn run_poke(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
                 }
             }
             Err(e) => {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 ExitCode::from(2)
             }
         }
@@ -213,7 +213,7 @@ fn run_status(config: &Config) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
     if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
-        eprintln!("Failed to start daemon: {}", e);
+        eprintln!("Failed to start daemon: {e}");
         return ExitCode::from(2);
     }
 
@@ -231,7 +231,7 @@ fn run_status(config: &Config) -> ExitCode {
                 }
             }
             Err(e) => {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 ExitCode::from(2)
             }
         }
@@ -242,7 +242,7 @@ fn run_list(config: &Config) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
     if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
-        eprintln!("Failed to start daemon: {}", e);
+        eprintln!("Failed to start daemon: {e}");
         return ExitCode::from(2);
     }
 
@@ -260,7 +260,7 @@ fn run_list(config: &Config) -> ExitCode {
                 }
             }
             Err(e) => {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 ExitCode::from(2)
             }
         }

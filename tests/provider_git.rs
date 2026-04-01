@@ -161,7 +161,7 @@ fn git_provider_commit_hash_format() {
     let commit = result.get("commit").unwrap().as_text();
     // Short SHA: non-empty, all hex, typically 7 chars
     assert!(!commit.is_empty(), "commit should not be empty");
-    assert!(commit.chars().all(|c| c.is_ascii_hexdigit()), "commit should be hex: {}", commit);
+    assert!(commit.chars().all(|c| c.is_ascii_hexdigit()), "commit should be hex: {commit}");
     assert!(commit.len() >= 4 && commit.len() <= 40, "unexpected commit length: {}", commit.len());
 }
 
@@ -173,7 +173,7 @@ fn git_provider_last_commit_age_secs() {
     let age: i64 = result.get("last_commit_age_secs").unwrap().as_text().parse().unwrap();
     // The commit was just made, so age should be very small (< 60 seconds)
     assert!(age >= 0, "age should be non-negative");
-    assert!(age < 60, "last_commit_age_secs should be recent: {}", age);
+    assert!(age < 60, "last_commit_age_secs should be recent: {age}");
 }
 
 #[test]
@@ -186,8 +186,8 @@ fn git_provider_lines_added_removed_unstaged() {
     let added: i64 = result.get("lines_added").unwrap().as_text().parse().unwrap();
     let removed: i64 = result.get("lines_removed").unwrap().as_text().parse().unwrap();
     // 3 lines added, 1 removed (the original "# test" line)
-    assert!(added > 0, "lines_added should be > 0, got {}", added);
-    assert!(removed > 0, "lines_removed should be > 0, got {}", removed);
+    assert!(added > 0, "lines_added should be > 0, got {added}");
+    assert!(removed > 0, "lines_removed should be > 0, got {removed}");
 }
 
 #[test]
@@ -200,8 +200,8 @@ fn git_provider_lines_staged_added_removed() {
     let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
     let staged_added: i64 = result.get("lines_staged_added").unwrap().as_text().parse().unwrap();
     let staged_removed: i64 = result.get("lines_staged_removed").unwrap().as_text().parse().unwrap();
-    assert_eq!(staged_added, 2, "staged_added should be 2, got {}", staged_added);
-    assert_eq!(staged_removed, 0, "staged_removed should be 0 for a new file, got {}", staged_removed);
+    assert_eq!(staged_added, 2, "staged_added should be 2, got {staged_added}");
+    assert_eq!(staged_removed, 0, "staged_removed should be 0 for a new file, got {staged_removed}");
 }
 
 #[test]

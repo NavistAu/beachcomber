@@ -8,7 +8,7 @@ type CacheKey = String;
 /// Uses a null byte as separator since it cannot appear in valid paths.
 fn make_cache_key(provider: &str, path: Option<&str>) -> CacheKey {
     match path {
-        Some(p) => format!("{}\0{}", provider, p),
+        Some(p) => format!("{provider}\0{p}"),
         None => provider.to_string(),
     }
 }

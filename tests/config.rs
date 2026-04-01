@@ -56,13 +56,11 @@ fn socket_path_resolves_xdg_default() {
     let path = config.resolve_socket_path();
     assert!(
         path.to_string_lossy().contains("beachcomber"),
-        "Socket path should include 'beachcomber': {:?}",
-        path
+        "Socket path should include 'beachcomber': {path:?}",
     );
     assert!(
         path.to_string_lossy().ends_with("sock"),
-        "Socket path should end with 'sock': {:?}",
-        path
+        "Socket path should end with 'sock': {path:?}",
     );
 }
 
@@ -84,7 +82,6 @@ fn log_path_resolves_xdg() {
     let path = config.resolve_log_path();
     assert!(
         path.to_string_lossy().contains("beachcomber"),
-        "Log path should include 'beachcomber': {:?}",
-        path
+        "Log path should include 'beachcomber': {path:?}",
     );
 }

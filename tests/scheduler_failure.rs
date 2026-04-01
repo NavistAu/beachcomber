@@ -62,7 +62,7 @@ async fn repeated_failures_trigger_backoff() {
     // After 3 consecutive failures, subsequent pokes should be suppressed
     // So we expect fewer than 10 executions
     assert!(count < 10,
-            "Expected failure backoff to suppress some executions, got {}", count);
+            "Expected failure backoff to suppress some executions, got {count}");
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;

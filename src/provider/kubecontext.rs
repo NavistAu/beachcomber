@@ -91,8 +91,8 @@ fn find_context_namespace(content: &str, context_name: &str) -> Option<String> {
 
     // Find the block containing our context name
     for block in &blocks {
-        if block.contains(&format!("name: {}", context_name))
-            || block.contains(&format!("name: \"{}\"", context_name))
+        if block.contains(&format!("name: {context_name}"))
+            || block.contains(&format!("name: \"{context_name}\""))
         {
             // Look for namespace in this block
             for line in block.lines() {

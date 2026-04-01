@@ -97,7 +97,7 @@ async fn handle_connection(
                 format_response(&request, &response)
             }
             Err(e) => {
-                let resp = Response::error(format!("invalid request: {}", e));
+                let resp = Response::error(format!("invalid request: {e}"));
                 let mut out = serde_json::to_string(&resp).unwrap();
                 out.push('\n');
                 out
@@ -162,7 +162,7 @@ async fn handle_request(
             let (provider_name, field) = protocol::split_key(key);
 
             if registry.get(provider_name).is_none() {
-                return Response::error(format!("unknown provider: {}", provider_name));
+                return Response::error(format!("unknown provider: {provider_name}"));
             }
 
             let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
@@ -184,7 +184,7 @@ async fn handle_request(
                         match entry.result.get(field_name) {
                             Some(value) => serde_json::to_value(value).unwrap(),
                             None => return Response::error(
-                                format!("unknown field: {}.{}", provider_name, field_name)
+                                format!("unknown field: {provider_name}.{field_name}")
                             ),
                         }
                     } else {
@@ -215,7 +215,7 @@ async fn handle_request(
                         }
                         Response { ok: true, data: None, age_ms: None, stale: None, error: None }
                     }
-                    None => Response::error(format!("unknown provider: {}", provider_name)),
+                    None => Response::error(format!("unknown provider: {provider_name}")),
                 }
             }
         }
@@ -245,14 +245,13 @@ async fn handle_request(
             });
 
             // Get scheduler status if available.
-            if let Some(sched) = scheduler {
-                if let Some(sched_status) = sched.get_status().await {
-                    status_data["watched_paths"] = serde_json::to_value(&sched_status.watched_paths).unwrap_or_default();
-                    status_data["in_flight"] = serde_json::to_value(&sched_status.in_flight).unwrap_or_default();
-                    status_data["backoff"] = serde_json::to_value(&sched_status.backoff).unwrap_or_default();
-                    status_data["poll_timers"] = serde_json::to_value(&sched_status.poll_timers).unwrap_or_default();
-                    status_data["demand"] = serde_json::to_value(&sched_status.demand).unwrap_or_default();
-                }
+            if let Some(sched) = scheduler
+                && let Some(sched_status) = sched.get_status().await {
+                status_data["watched_paths"] = serde_json::to_value(&sched_status.watched_paths).unwrap_or_default();
+                status_data["in_flight"] = serde_json::to_value(&sched_status.in_flight).unwrap_or_default();
+                status_data["backoff"] = serde_json::to_value(&sched_status.backoff).unwrap_or_default();
+                status_data["poll_timers"] = serde_json::to_value(&sched_status.poll_timers).unwrap_or_default();
+                status_data["demand"] = serde_json::to_value(&sched_status.demand).unwrap_or_default();
             }
 
             Response::ok(status_data, 0, false)
@@ -272,9 +271,9 @@ fn format_response(request: &Request, response: &Response) -> String {
                 return format!("error: {}\n", response.error.as_deref().unwrap_or("unknown"));
             }
             match &response.data {
-                Some(serde_json::Value::String(s)) => format!("{}\n", s),
-                Some(serde_json::Value::Number(n)) => format!("{}\n", n),
-                Some(serde_json::Value::Bool(b)) => format!("{}\n", b),
+                Some(serde_json::Value::String(s)) => format!("{s}\n"),
+                Some(serde_json::Value::Number(n)) => format!("{n}\n"),
+                Some(serde_json::Value::Bool(b)) => format!("{b}\n"),
                 Some(serde_json::Value::Object(map)) => {
                     let mut lines: Vec<String> = map.iter()
                         .map(|(k, v)| {
@@ -282,7 +281,7 @@ fn format_response(request: &Request, response: &Response) -> String {
                                 serde_json::Value::String(s) => s.clone(),
                                 other => other.to_string(),
                             };
-                            format!("{}={}", k, val)
+                            format!("{k}={val}")
                         })
                         .collect();
                     lines.sort();
@@ -291,7 +290,7 @@ fn format_response(request: &Request, response: &Response) -> String {
                     out
                 }
                 Some(serde_json::Value::Null) | None => "\n".to_string(),
-                Some(other) => format!("{}\n", other),
+                Some(other) => format!("{other}\n"),
             }
         }
         Format::Json => {

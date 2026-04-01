@@ -66,8 +66,7 @@ async fn rapid_pokes_are_deduplicated() {
     // Should execute significantly fewer than 10 times due to dedup
     // At minimum 1, at most ~2-3 (one running + one queued rerun)
     assert!(exec_count < 5,
-            "Expected deduplication to reduce 10 pokes to fewer executions, got {}",
-            exec_count);
+            "Expected deduplication to reduce 10 pokes to fewer executions, got {exec_count}");
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;

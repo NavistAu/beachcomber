@@ -76,7 +76,7 @@ async fn send_recv_line(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     request: &str,
 ) -> Response {
-    writer.write_all(format!("{}\n", request).as_bytes()).await.unwrap();
+    writer.write_all(format!("{request}\n").as_bytes()).await.unwrap();
     let mut line = String::new();
     reader.read_line(&mut line).await.unwrap();
     serde_json::from_str(&line).unwrap()

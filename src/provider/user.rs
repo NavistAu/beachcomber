@@ -31,7 +31,7 @@ impl Provider for UserProvider {
 fn get_username(uid: u32) -> String {
     let pw = unsafe { libc::getpwuid(uid) };
     if pw.is_null() {
-        return format!("{}", uid);
+        return format!("{uid}");
     }
     let name = unsafe { std::ffi::CStr::from_ptr((*pw).pw_name) };
     name.to_string_lossy().to_string()

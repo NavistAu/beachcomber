@@ -204,7 +204,7 @@ impl Config {
         let uid = unsafe { libc::getuid() };
         let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
         PathBuf::from(tmpdir)
-            .join(format!("beachcomber-{}", uid))
+            .join(format!("beachcomber-{uid}"))
             .join("sock")
     }
 
@@ -222,10 +222,9 @@ impl Config {
 
 /// Expand ~ to $HOME in a path string.
 fn shellexpand(path: &str) -> String {
-    if path.starts_with("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{}{}", home, &path[1..]);
-        }
+    if path.starts_with("~/")
+        && let Ok(home) = std::env::var("HOME") {
+        return format!("{}{}", home, &path[1..]);
     }
     path.to_string()
 }

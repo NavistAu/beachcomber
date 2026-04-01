@@ -46,7 +46,7 @@ async fn server_handles_get_global_provider() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op": "get", "key": "hostname"}"#;
-    stream.write_all(format!("{}\n", request).as_bytes()).await.unwrap();
+    stream.write_all(format!("{request}\n").as_bytes()).await.unwrap();
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -76,7 +76,7 @@ async fn server_handles_get_single_field() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op": "get", "key": "hostname.short"}"#;
-    stream.write_all(format!("{}\n", request).as_bytes()).await.unwrap();
+    stream.write_all(format!("{request}\n").as_bytes()).await.unwrap();
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -103,7 +103,7 @@ async fn server_handles_get_text_format() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op": "get", "key": "hostname.name", "format": "text"}"#;
-    stream.write_all(format!("{}\n", request).as_bytes()).await.unwrap();
+    stream.write_all(format!("{request}\n").as_bytes()).await.unwrap();
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -125,7 +125,7 @@ async fn server_handles_cache_miss() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op": "get", "key": "hostname"}"#;
-    stream.write_all(format!("{}\n", request).as_bytes()).await.unwrap();
+    stream.write_all(format!("{request}\n").as_bytes()).await.unwrap();
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -148,7 +148,7 @@ async fn server_handles_unknown_provider() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op": "get", "key": "nonexistent"}"#;
-    stream.write_all(format!("{}\n", request).as_bytes()).await.unwrap();
+    stream.write_all(format!("{request}\n").as_bytes()).await.unwrap();
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -171,7 +171,7 @@ async fn server_handles_poke() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op": "poke", "key": "hostname"}"#;
-    stream.write_all(format!("{}\n", request).as_bytes()).await.unwrap();
+    stream.write_all(format!("{request}\n").as_bytes()).await.unwrap();
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
