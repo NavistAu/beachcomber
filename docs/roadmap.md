@@ -183,9 +183,9 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 
 ### Release Infrastructure
 
-- [ ] Swap temp registry tokens to scoped/trusted publishing (npm OIDC, RubyGems trusted publishing)
+- [x] Swap temp registry tokens to trusted publishing (OIDC for crates.io, PyPI, npm, RubyGems; LuaRocks has no OIDC support)
 - [ ] Add aarch64-unknown-linux-gnu binary target (fix cross-rs GLIBC version mismatch)
-- [ ] Make Go module tag step idempotent in release workflow
+- [x] Make Go module tag step idempotent in release workflow
 - [ ] Binary distribution via npm/PyPI `beachcomber` packages (replace noop placeholders with platform-specific binary installers)
 
 ### Linux Support
