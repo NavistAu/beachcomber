@@ -77,12 +77,12 @@ fn parse_duration_secs(s: &str) -> Option<u64> {
     if s.is_empty() {
         return None;
     }
-    let (num_str, multiplier) = if s.ends_with('s') {
-        (&s[..s.len() - 1], 1u64)
-    } else if s.ends_with('m') {
-        (&s[..s.len() - 1], 60)
-    } else if s.ends_with('h') {
-        (&s[..s.len() - 1], 3600)
+    let (num_str, multiplier) = if let Some(stripped) = s.strip_suffix('s') {
+        (stripped, 1u64)
+    } else if let Some(stripped) = s.strip_suffix('m') {
+        (stripped, 60)
+    } else if let Some(stripped) = s.strip_suffix('h') {
+        (stripped, 3600)
     } else {
         (s, 1)
     };
@@ -318,6 +318,9 @@ fn start_backoff_for_key(
     });
 }
 
+type ProviderKeySet = Arc<std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>>;
+type ProviderFailureMap = Arc<std::sync::Mutex<HashMap<(String, Option<String>), FailureState>>>;
+
 /// The scheduler core loop: executes providers on demand and manages subscriptions.
 pub struct Scheduler {
     cache: Arc<Cache>,
@@ -325,11 +328,11 @@ pub struct Scheduler {
     config: Config,
     rx: mpsc::Receiver<SchedulerMessage>,
     /// Tracks which (provider, path) combinations are currently executing.
-    in_flight: Arc<std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>>,
+    in_flight: ProviderKeySet,
     /// Tracks which (provider, path) need to re-run after current execution completes.
-    pending_rerun: Arc<std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>>,
+    pending_rerun: ProviderKeySet,
     /// Tracks consecutive failures and suppression state per (provider, path).
-    failure_counts: Arc<std::sync::Mutex<HashMap<(String, Option<String>), FailureState>>>,
+    failure_counts: ProviderFailureMap,
 }
 
 impl Scheduler {
@@ -397,13 +400,13 @@ impl Scheduler {
         let failure_counts = Arc::clone(&self.failure_counts);
 
         // Extract the poll interval from provider metadata for staleness tracking.
-        let poll_interval_secs: Option<u64> = registry.get(provider_name).map(|p| {
+        let poll_interval_secs: Option<u64> = registry.get(provider_name).and_then(|p| {
             match p.metadata().invalidation {
                 InvalidationStrategy::Poll { interval_secs, .. } => Some(interval_secs),
                 InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(interval_secs),
                 _ => None,
             }
-        }).flatten();
+        });
 
         let path_for_cache = path_owned.clone();
         let name_for_log = name_owned.clone();

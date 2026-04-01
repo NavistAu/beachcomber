@@ -43,7 +43,7 @@ impl Provider for PythonProvider {
                 if let Ok(cfg) = std::fs::read_to_string(&cfg_path) {
                     for line in cfg.lines() {
                         if let Some(v) = line.strip_prefix("version") {
-                            let v = v.trim_start_matches(|c: char| c == ' ' || c == '=').trim();
+                            let v = v.trim_start_matches([' ', '=']).trim();
                             version = v.to_string();
                             break;
                         }

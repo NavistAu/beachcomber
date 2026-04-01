@@ -1,4 +1,4 @@
-use beachcomber::cache::{Cache, CacheEntry};
+use beachcomber::cache::Cache;
 use beachcomber::provider::{ProviderResult, Value};
 
 #[test]

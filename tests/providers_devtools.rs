@@ -1,4 +1,4 @@
-use beachcomber::provider::{Provider, InvalidationStrategy};
+use beachcomber::provider::Provider;
 use beachcomber::provider::terraform::TerraformProvider;
 use beachcomber::provider::direnv::DirenvProvider;
 use beachcomber::provider::python::PythonProvider;

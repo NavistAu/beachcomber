@@ -1,16 +1,11 @@
 use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Format {
+    #[default]
     Json,
     Text,
-}
-
-impl Default for Format {
-    fn default() -> Self {
-        Format::Json
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -40,10 +40,10 @@ impl Provider for GcloudProvider {
             }
             if in_core {
                 if let Some(val) = line.strip_prefix("project") {
-                    let val = val.trim_start_matches(|c: char| c == ' ' || c == '=').trim();
+                    let val = val.trim_start_matches([' ', '=']).trim();
                     project = val.to_string();
                 } else if let Some(val) = line.strip_prefix("account") {
-                    let val = val.trim_start_matches(|c: char| c == ' ' || c == '=').trim();
+                    let val = val.trim_start_matches([' ', '=']).trim();
                     account = val.to_string();
                 }
             }

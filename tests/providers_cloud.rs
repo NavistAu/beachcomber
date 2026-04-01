@@ -1,4 +1,4 @@
-use beachcomber::provider::{Provider, InvalidationStrategy};
+use beachcomber::provider::Provider;
 use beachcomber::provider::kubecontext::KubecontextProvider;
 use beachcomber::provider::aws::AwsProvider;
 use beachcomber::provider::gcloud::GcloudProvider;

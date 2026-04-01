@@ -49,7 +49,7 @@ impl ClientSession {
         self.reader.read_line(&mut line).await?;
         let trimmed = line.trim_end_matches('\n').to_string();
         if trimmed.starts_with("error:") {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, trimmed));
+            return Err(std::io::Error::other(trimmed));
         }
         Ok(trimmed)
     }
@@ -114,10 +114,7 @@ impl Client {
 
         let trimmed = line.trim_end_matches('\n').to_string();
         if trimmed.starts_with("error:") {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                trimmed,
-            ));
+            return Err(std::io::Error::other(trimmed));
         }
         Ok(trimmed)
     }

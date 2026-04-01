@@ -2,23 +2,13 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub daemon: DaemonConfig,
     pub lifecycle: LifecycleConfig,
     #[serde(default)]
     pub providers: HashMap<String, ScriptProviderConfig>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            daemon: DaemonConfig::default(),
-            lifecycle: LifecycleConfig::default(),
-            providers: HashMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

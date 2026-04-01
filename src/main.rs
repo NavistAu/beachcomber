@@ -143,7 +143,7 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: Format) -> Ex
     }
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    let result = rt.block_on(async {
+    rt.block_on(async {
         let client = beachcomber::client::Client::new(socket_path);
 
         if format == Format::Text {
@@ -178,9 +178,7 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: Format) -> Ex
                 }
             }
         }
-    });
-
-    result
+    })
 }
 
 fn run_poke(config: &Config, key: &str, path: Option<&str>) -> ExitCode {

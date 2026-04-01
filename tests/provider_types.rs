@@ -21,8 +21,8 @@ fn value_from_bool() {
 
 #[test]
 fn value_from_float() {
-    let v = Value::Float(3.14);
-    assert_eq!(v.as_text(), "3.14", "Float value should render as text");
+    let v = Value::Float(1.5);
+    assert_eq!(v.as_text(), "1.5", "Float value should render as text");
 }
 
 #[test]
