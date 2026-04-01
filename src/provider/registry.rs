@@ -5,6 +5,7 @@ use crate::provider::user::UserProvider;
 use crate::provider::git::GitProvider;
 use crate::provider::battery::BatteryProvider;
 use crate::provider::load::LoadProvider;
+#[cfg(target_os = "macos")]
 use crate::provider::uptime::UptimeProvider;
 use crate::provider::network::NetworkProvider;
 use crate::provider::kubecontext::KubecontextProvider;
@@ -40,6 +41,7 @@ impl ProviderRegistry {
         registry.register(Box::new(GitProvider));
         registry.register(Box::new(BatteryProvider));
         registry.register(Box::new(LoadProvider));
+        #[cfg(target_os = "macos")]
         registry.register(Box::new(UptimeProvider));
         registry.register(Box::new(NetworkProvider));
         registry.register(Box::new(KubecontextProvider));
@@ -58,13 +60,12 @@ impl ProviderRegistry {
         let mut registry = Self::new();
 
         // Register built-in providers unless disabled by config.
-        let builtins: Vec<(&str, Box<dyn Provider>)> = vec![
+        let mut builtins: Vec<(&str, Box<dyn Provider>)> = vec![
             ("hostname", Box::new(HostnameProvider)),
             ("user", Box::new(UserProvider)),
             ("git", Box::new(GitProvider)),
             ("battery", Box::new(BatteryProvider)),
             ("load", Box::new(LoadProvider)),
-            ("uptime", Box::new(UptimeProvider)),
             ("network", Box::new(NetworkProvider)),
             ("kubecontext", Box::new(KubecontextProvider)),
             ("aws", Box::new(AwsProvider)),
@@ -76,6 +77,9 @@ impl ProviderRegistry {
             ("mise", Box::new(MiseProvider)),
             ("asdf", Box::new(AsdfProvider)),
         ];
+
+        #[cfg(target_os = "macos")]
+        builtins.push(("uptime", Box::new(UptimeProvider)));
 
         for (name, provider) in builtins {
             if !config.is_provider_disabled(name) {

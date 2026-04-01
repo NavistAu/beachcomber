@@ -4,6 +4,7 @@ pub mod user;
 pub mod git;
 pub mod battery;
 pub mod load;
+#[cfg(target_os = "macos")]
 pub mod uptime;
 pub mod network;
 pub mod kubecontext;
