@@ -17,3 +17,19 @@
 # Internal planning docs (kept in repo but not published)
 INIT.md
 docs/superpowers/
+
+# SDK build artifacts
+sdks/python/__pycache__/
+sdks/python/**/__pycache__/
+sdks/python/.venv/
+sdks/python/.pytest_cache/
+sdks/python/uv.lock
+sdks/python/dist/
+sdks/node/node_modules/
+sdks/node/dist/
+sdks/ruby/*.gem
+sdks/c/test_beachcomber
+sdks/c/*.o
+sdks/c/*.a
+sdks/c/*.so
+sdks/c/*.dylib
