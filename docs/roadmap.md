@@ -2,7 +2,7 @@
 
 Single source of truth for project status and next steps.
 
-Last updated: 2026-03-30
+Last updated: 2026-04-01
 
 ---
 
@@ -37,13 +37,13 @@ Last updated: 2026-03-30
 
 **External:** Script provider backend (JSON or kv output, any language).
 
-**Client SDKs:** Rust (`beachcomber-client`), C (`libbeachcomber`), Python, Node.js (TypeScript), Go, Lua, Ruby. All stdlib-only, with test suites. Lua SDK has three backends (vim.uv, luasocket, CLI fallback).
+**Client SDKs:** Rust (`libbeachcomber`), C (`libbeachcomber`), Python, Node.js (TypeScript), Go, Lua, Ruby. All stdlib-only, with test suites. Lua SDK has three backends (vim.uv, luasocket, CLI fallback).
 
 **Performance:** 42k req/sec. 15µs/query via ClientSession. Comprehensive benchmark suite (criterion).
 
 ---
 
-## Milestone: v0.1.0 Public Release
+## Milestone: v0.1.0 Public Release — Published 2026-04-01
 
 Everything below must be done before the first public release. Ordered by dependency — later items depend on earlier ones.
 
@@ -113,9 +113,13 @@ Everything below must be done before the first public release. Ordered by depend
   - `cargo clippy -- -D warnings`
   - `cargo fmt -- --check`
   - `cargo bench` (run on main, upload results as artifact)
+  - SDK test suites: Python pytest, Node.js npm test, Go test, Ruby minitest, Lua test runner, C make test
 - [x] **D.2 GitHub Actions: Release.** On tag push (`v*`):
-  - Build release binaries for macOS (x86_64 + aarch64)
-  - Create GitHub Release with binaries and auto-generated notes
+  - Build release binaries for macOS (x86_64 + aarch64) and Linux (x86_64 gnu + musl)
+  - Create GitHub Release with binaries, C SDK tarball, and auto-generated notes
+  - Parallel publish to crates.io, PyPI, npm, RubyGems, LuaRocks
+  - Tag Go module
+  - Auto-update Homebrew tap formula
 - [x] **D.3 Benchmark regression tracking.** Benchmark results uploaded as artifacts on main pushes.
 - [x] **D.4 SemVer policy.** Documented in docs/versioning.md. Covers protocol, config, providers, CLI, SDKs, and Rust client crate. Defines what is not a public surface.
 
@@ -123,9 +127,9 @@ Everything below must be done before the first public release. Ordered by depend
 
 #### Phase E: Install Methods
 
-- [ ] **E.1 Homebrew formula.** Primary macOS install method. Tap or core formula. Requires GitHub repo + first release tag.
-- [x] **E.2 `cargo install`.** Cargo.toml has metadata, ready for crates.io publication.
-- [x] **E.3 Pre-built binaries.** Release workflow creates `beachcomber-<tag>-<target>.tar.gz`.
+- [x] **E.1 Homebrew formula.** `brew tap navistau/tap && brew install beachcomber`. Auto-updated from release workflow via NavistAu/homebrew-tap.
+- [x] **E.2 `cargo install`.** `beachcomber` published to crates.io.
+- [x] **E.3 Pre-built binaries.** Release workflow creates `beachcomber-<tag>-<target>.tar.gz` for 4 targets.
 - [ ] **E.4 Other package managers (future).** Nix, AUR, MacPorts, Scoop. Document how to request packaging.
 
 ---
@@ -141,47 +145,48 @@ Everything below must be done before the first public release. Ordered by depend
 
 ---
 
+#### Phase G: Publishing
+
+- [x] Create GitHub repo (NavistAu/beachcomber)
+- [x] Push code
+- [x] Tag v0.1.0 to trigger release workflow
+- [x] `cargo publish` beachcomber + libbeachcomber to crates.io
+- [x] Create Homebrew tap with formula (NavistAu/homebrew-tap)
+- [x] Publish Python SDK (`libbeachcomber`) to PyPI
+- [x] Publish Node.js SDK (`libbeachcomber`) to npm
+- [x] Publish Go module (tagged `sdks/go/v0.1.0` in repo)
+- [x] Publish Lua SDK (`libbeachcomber`) to LuaRocks
+- [x] Publish Ruby SDK (`libbeachcomber`) to RubyGems
+- [x] Publish C SDK source tarball in GitHub Release
+- [x] Reserve `beachcomber` name on npm, PyPI, RubyGems, LuaRocks (supply chain attack prevention placeholders)
+
 ---
 
 ## Done: Client SDKs
 
-Client libraries for each language wrapping the Unix socket protocol with typed APIs, socket discovery, timeouts, and error handling.
+Client libraries for each language wrapping the Unix socket protocol with typed APIs, socket discovery, timeouts, and error handling. All published as `libbeachcomber`.
 
-| SDK | Package manager | Status |
+| SDK | Registry | Status |
 |---|---|---|
-| **Rust** (`beachcomber-client`) | crates.io | **Done** (workspace crate) |
-| **C** (`libbeachcomber`) | Source / pkg-config | **Done** — embedded JSON parser, shared/static lib, 130 tests |
-| **Python** (`beachcomber`) | PyPI | **Done** — sync client + session, dataclasses, 80 tests |
-| **Node.js** (`beachcomber`) | npm | **Done** — TypeScript, async API, 62 tests |
-| **Go** (`beachcomber`) | Go module | **Done** — idiomatic error returns, 47 tests |
-| **Lua** (`beachcomber`) | LuaRocks | **Done** — vim.uv / luasocket / comb CLI fallback, 50 tests |
-| **Ruby** (`beachcomber`) | RubyGems | **Done** — block-based sessions, minitest, 45 tests |
+| **Rust** (`libbeachcomber`) | crates.io | **Published** |
+| **C** (`libbeachcomber`) | GitHub Release tarball | **Published** — embedded JSON parser, shared/static lib, 130 tests |
+| **Python** (`libbeachcomber`) | PyPI | **Published** — sync client + session, dataclasses, 80 tests |
+| **Node.js** (`libbeachcomber`) | npm | **Published** — TypeScript, async API, 62 tests |
+| **Go** | Go module | **Published** — idiomatic error returns, 47 tests |
+| **Lua** (`libbeachcomber`) | LuaRocks | **Published** — vim.uv / luasocket / comb CLI fallback, 50 tests |
+| **Ruby** (`libbeachcomber`) | RubyGems | **Published** — block-based sessions, minitest, 45 tests |
 | **Shell** (POSIX sh function) | N/A (copy-paste) | **Done** (in README, portable fallback functions) |
 
 ---
 
-## Deferred: v0.1.0 Publish
-
-Remaining items to publish v0.1.0. Not blocking current work.
-
-- [x] Document SemVer policy (D.4)
-- [x] Write CLAUDE.md for contributors (F.6)
-- [x] Add SDK tests to CI (Python pytest, Go test, Node test, C make test, Lua, Ruby minitest)
-- [ ] Create GitHub repo (jhogendorn/beachcomber or org)
-- [ ] Push code
-- [ ] Tag v0.1.0 to trigger release workflow
-- [ ] `cargo publish` beachcomber + beachcomber-client to crates.io
-- [ ] Create Homebrew tap with formula (E.1)
-- [ ] Publish Python SDK to PyPI
-- [ ] Publish Node.js SDK to npm
-- [ ] Publish Go module (tagged in repo)
-- [ ] Publish Lua SDK to LuaRocks
-- [ ] Publish Ruby SDK to RubyGems
-- [ ] Publish C SDK source tarball / pkg-config
-
----
-
 ## Deferred: Post-Launch
+
+### Release Infrastructure
+
+- [ ] Swap temp registry tokens to scoped/trusted publishing (npm OIDC, RubyGems trusted publishing)
+- [ ] Add aarch64-unknown-linux-gnu binary target (fix cross-rs GLIBC version mismatch)
+- [ ] Make Go module tag step idempotent in release workflow
+- [ ] Binary distribution via npm/PyPI `beachcomber` packages (replace noop placeholders with platform-specific binary installers)
 
 ### Linux Support
 
