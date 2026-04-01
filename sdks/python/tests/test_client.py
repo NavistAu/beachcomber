@@ -8,9 +8,9 @@ from typing import Any, Dict
 
 import pytest
 
-from beachcomber.client import Client
-from beachcomber.exceptions import DaemonNotRunning, ProtocolError, ServerError
-from beachcomber.result import CombResult
+from libbeachcomber.client import Client
+from libbeachcomber.exceptions import DaemonNotRunning, ProtocolError, ServerError
+from libbeachcomber.result import CombResult
 
 from .conftest import MockDaemon
 

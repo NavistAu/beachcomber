@@ -1,5 +1,5 @@
 {
-  "name": "beachcomber",
+  "name": "libbeachcomber",
   "version": "0.1.0",
   "description": "Node.js client SDK for the beachcomber shell state daemon",
   "main": "./dist/index.js",

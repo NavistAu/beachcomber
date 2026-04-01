@@ -1,5 +1,5 @@
 Gem::Specification.new do |s|
-  s.name        = 'beachcomber'
+  s.name        = 'libbeachcomber'
   s.version     = '0.1.0'
   s.summary     = 'Ruby client for the beachcomber shell-data daemon'
   s.description = 'Communicates with the beachcomber daemon over a Unix domain socket ' \

@@ -1,5 +1,5 @@
 [package]
-name = "beachcomber-client"
+name = "libbeachcomber"
 version = "0.1.0"
 edition = "2024"
 description = "Client library for querying the beachcomber (comb) shell state daemon"

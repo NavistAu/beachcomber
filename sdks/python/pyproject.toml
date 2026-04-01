@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "beachcomber"
+name = "libbeachcomber"
 version = "0.1.0"
 description = "Python client SDK for the beachcomber (comb) shell-state daemon"
 readme = "README.md"
@@ -37,7 +37,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["beachcomber"]
+packages = ["libbeachcomber"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

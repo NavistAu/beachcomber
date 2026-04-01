@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from beachcomber.exceptions import ProtocolError, ServerError
-from beachcomber.protocol import (
+from libbeachcomber.exceptions import ProtocolError, ServerError
+from libbeachcomber.protocol import (
     build_context_request,
     build_get_request,
     build_list_request,

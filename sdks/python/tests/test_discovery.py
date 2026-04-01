@@ -7,7 +7,7 @@ import tempfile
 
 import pytest
 
-from beachcomber.discovery import discover_socket_path, get_uid
+from libbeachcomber.discovery import discover_socket_path, get_uid
 
 
 class TestGetUid:

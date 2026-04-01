@@ -1,8 +1,9 @@
-package = "beachcomber"
-version = "scm-1"
+package = "libbeachcomber"
+version = "0.1.0-1"
 
 source = {
   url = "git+https://github.com/NavistAu/beachcomber.git",
+  tag = "v0.1.0",
   dir = "sdks/lua",
 }
 
@@ -20,18 +21,16 @@ description = {
 
 dependencies = {
   "lua >= 5.1",
-  -- luasocket is optional: only required outside Neovim
-  -- "luasocket >= 3.0",
 }
 
 build = {
   type    = "builtin",
   modules = {
-    ["beachcomber"]                  = "beachcomber/init.lua",
-    ["beachcomber.client"]           = "beachcomber/client.lua",
-    ["beachcomber.discovery"]        = "beachcomber/discovery.lua",
-    ["beachcomber.json"]             = "beachcomber/json.lua",
-    ["beachcomber.socket_luasocket"] = "beachcomber/socket_luasocket.lua",
-    ["beachcomber.socket_vim"]       = "beachcomber/socket_vim.lua",
+    ["libbeachcomber"]                  = "beachcomber/init.lua",
+    ["libbeachcomber.client"]           = "beachcomber/client.lua",
+    ["libbeachcomber.discovery"]        = "beachcomber/discovery.lua",
+    ["libbeachcomber.json"]             = "beachcomber/json.lua",
+    ["libbeachcomber.socket_luasocket"] = "beachcomber/socket_luasocket.lua",
+    ["libbeachcomber.socket_vim"]       = "beachcomber/socket_vim.lua",
   },
 }
