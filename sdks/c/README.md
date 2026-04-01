@@ -1,6 +1,6 @@
 # beachcomber C SDK
 
-A minimal C client library for the [beachcomber](https://github.com/jhogendorn/beachcomber) shell-state daemon.
+A minimal C client library for the [beachcomber](https://github.com/NavistAu/beachcomber) shell-state daemon.
 
 ## Building
 

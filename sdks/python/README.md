@@ -1,6 +1,6 @@
 # beachcomber Python SDK
 
-Python client for the [beachcomber](https://github.com/jhogendorn/beachcomber) (`comb`) shell-state daemon.
+Python client for the [beachcomber](https://github.com/NavistAu/beachcomber) (`comb`) shell-state daemon.
 
 ## Requirements
 

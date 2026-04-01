@@ -1,6 +1,6 @@
 # beachcomber Ruby SDK
 
-Ruby client for the [beachcomber](https://github.com/jhogendorn/beachcomber) daemon. Communicates over a Unix domain socket using newline-delimited JSON.
+Ruby client for the [beachcomber](https://github.com/NavistAu/beachcomber) daemon. Communicates over a Unix domain socket using newline-delimited JSON.
 
 **No external dependencies** — stdlib only (`socket`, `json`, `etc`). Ruby 3.0+.
 

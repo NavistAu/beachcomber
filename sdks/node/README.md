@@ -1,6 +1,6 @@
 # beachcomber Node.js SDK
 
-Node.js/TypeScript client for the [beachcomber](https://github.com/jhogendorn/beachcomber) shell state daemon.
+Node.js/TypeScript client for the [beachcomber](https://github.com/NavistAu/beachcomber) shell state daemon.
 
 **No external runtime dependencies** — pure Node.js stdlib (`net`, `fs`, `os`, `path`).
 

@@ -1,6 +1,6 @@
 # beachcomber — Lua SDK
 
-Lua client for the [beachcomber](https://github.com/jhogendorn/beachcomber)
+Lua client for the [beachcomber](https://github.com/NavistAu/beachcomber)
 daemon. Communicates over a Unix domain socket using newline-delimited JSON.
 
 Designed for Neovim plugin authors (via `vim.uv`) but also works in standalone
