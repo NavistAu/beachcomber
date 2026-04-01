@@ -2,7 +2,7 @@
 
 Single source of truth for project status and next steps.
 
-Last updated: 2026-03-29
+Last updated: 2026-03-30
 
 ---
 
@@ -16,7 +16,7 @@ Last updated: 2026-03-29
 
 **Scheduler:** Poll timers, filesystem watching (notify/FSEvents), poke triggers. Provider execution on `spawn_blocking` (non-blocking). Execution timeouts (configurable, default 10s). Deduplication (in-flight tracking + pending rerun). Failure backoff (exponential after 3 consecutive failures, max 60s). Demand-driven cache warming (QueryActivity keeps providers warm while actively queried). Backoff/drain lifecycle (Grace -> SlowPoll -> Frozen -> Evict).
 
-**Protocol:** get, poke, context, list, status. JSON and text output formats. Connection context for implicit path resolution. Staleness flag in responses. Path canonicalization (relative -> absolute).
+**Protocol:** get, poke, context, list, status. JSON and text output formats. Connection context for implicit path resolution. Staleness flag in responses. Path canonicalization (relative -> absolute). Subscribe/unsubscribe removed — demand-driven warming replaced explicit subscriptions (ephemeral consumers can't maintain persistent connections).
 
 **CLI:** `comb daemon | get | poke | list | status`
 
@@ -37,7 +37,7 @@ Last updated: 2026-03-29
 
 **External:** Script provider backend (JSON or kv output, any language).
 
-**Client SDK:** `beachcomber-client` Rust crate (sync, no tokio dependency). Socket discovery, socket activation, typed field access, persistent sessions.
+**Client SDKs:** Rust (`beachcomber-client`), C (`libbeachcomber`), Python, Node.js (TypeScript), Go, Lua, Ruby. All stdlib-only, with test suites. Lua SDK has three backends (vim.uv, luasocket, CLI fallback).
 
 **Performance:** 42k req/sec. 15µs/query via ClientSession. Comprehensive benchmark suite (criterion).
 
@@ -150,7 +150,7 @@ Everything below must be done before the first public release. Ordered by depend
 
 ## Done: Client SDKs
 
-Published, packaged client libraries for each language's native package manager. Each SDK wraps the Unix socket protocol with typed APIs, handles socket discovery, timeouts, and error handling.
+Client libraries for each language wrapping the Unix socket protocol with typed APIs, socket discovery, timeouts, and error handling.
 
 | SDK | Package manager | Status |
 |---|---|---|
@@ -171,11 +171,18 @@ Remaining items to publish v0.1.0. Not blocking current work.
 
 - [ ] Document SemVer policy (D.4)
 - [ ] Write CLAUDE.md for contributors (F.6)
+- [ ] Add SDK tests to CI (Python pytest, Go test, Node test, C make test, Lua, Ruby minitest)
 - [ ] Create GitHub repo (jhogendorn/beachcomber or org)
 - [ ] Push code
 - [ ] Tag v0.1.0 to trigger release workflow
 - [ ] `cargo publish` beachcomber + beachcomber-client to crates.io
 - [ ] Create Homebrew tap with formula (E.1)
+- [ ] Publish Python SDK to PyPI
+- [ ] Publish Node.js SDK to npm
+- [ ] Publish Go module (tagged in repo)
+- [ ] Publish Lua SDK to LuaRocks
+- [ ] Publish Ruby SDK to RubyGems
+- [ ] Publish C SDK source tarball / pkg-config
 
 ---
 
