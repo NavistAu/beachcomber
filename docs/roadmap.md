@@ -117,12 +117,7 @@ Everything below must be done before the first public release. Ordered by depend
   - Build release binaries for macOS (x86_64 + aarch64)
   - Create GitHub Release with binaries and auto-generated notes
 - [x] **D.3 Benchmark regression tracking.** Benchmark results uploaded as artifacts on main pushes.
-- [ ] **D.4 SemVer policy.** Document what constitutes breaking changes:
-  - Protocol wire format changes = major
-  - Config format changes = minor (with backwards compat) or major (without)
-  - Provider field additions = minor
-  - Provider field removals = major
-  - CLI flag changes = minor (additions) or major (removals)
+- [x] **D.4 SemVer policy.** Documented in docs/versioning.md. Covers protocol, config, providers, CLI, SDKs, and Rust client crate. Defines what is not a public surface.
 
 ---
 
@@ -142,7 +137,7 @@ Everything below must be done before the first public release. Ordered by depend
 - [x] **F.3 CHANGELOG.md.** Started from v0.1.0, keepachangelog.com format.
 - [x] **F.4 .gitignore.** target/, .claude/, docs/superpowers/, INIT.md excluded.
 - [x] **F.5 Cargo.toml metadata.** description, repository, license, keywords, categories for crates.io.
-- [ ] **F.6 CLAUDE.md.** Project-specific Claude Code instructions for contributors who use it.
+- [x] **F.6 CLAUDE.md.** Project-specific Claude Code instructions for contributors who use it.
 
 ---
 
@@ -169,9 +164,9 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 
 Remaining items to publish v0.1.0. Not blocking current work.
 
-- [ ] Document SemVer policy (D.4)
-- [ ] Write CLAUDE.md for contributors (F.6)
-- [ ] Add SDK tests to CI (Python pytest, Go test, Node test, C make test, Lua, Ruby minitest)
+- [x] Document SemVer policy (D.4)
+- [x] Write CLAUDE.md for contributors (F.6)
+- [x] Add SDK tests to CI (Python pytest, Go test, Node test, C make test, Lua, Ruby minitest)
 - [ ] Create GitHub repo (jhogendorn/beachcomber or org)
 - [ ] Push code
 - [ ] Tag v0.1.0 to trigger release workflow
@@ -194,8 +189,6 @@ Remaining items to publish v0.1.0. Not blocking current work.
 - [ ] Network provider: Linux `getifaddrs` + `iwgetid` for SSID
 - [ ] Uptime provider: read `/proc/uptime`
 - [ ] Conditional compilation: `#[cfg(target_os)]` blocks in platform-specific providers
-- [ ] CI: Add Linux test matrix
-- [ ] Release workflow: Add Linux x86_64 + aarch64 targets
 
 ### External Provider Backends
 
@@ -214,6 +207,8 @@ Remaining items to publish v0.1.0. Not blocking current work.
 - [ ] Nix package
 - [ ] AUR package
 - [ ] MacPorts
+- [ ] Debian/Ubuntu (.deb) package
+- [ ] Fedora/RHEL (.rpm) package
 - [ ] Scoop (Windows, if/when Windows support lands)
 
 ### Stability
