@@ -2,7 +2,7 @@ package = "beachcomber"
 version = "scm-1"
 
 source = {
-  url = "git+https://github.com/jhogendorn/beachcomber.git",
+  url = "git+https://github.com/NavistAu/beachcomber.git",
   dir = "sdks/lua",
 }
 
@@ -14,7 +14,7 @@ description = {
     backend detection: vim.uv inside Neovim, luasocket everywhere else.
     Ships a minimal JSON encoder/decoder — no external JSON dependency.
   ]],
-  homepage = "https://github.com/jhogendorn/beachcomber",
+  homepage = "https://github.com/NavistAu/beachcomber",
   license  = "MIT",
 }
 

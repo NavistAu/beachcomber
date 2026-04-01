@@ -1,3 +1,3 @@
-module github.com/jhogendorn/beachcomber/sdks/go
+module github.com/NavistAu/beachcomber/sdks/go
 
 go 1.21
