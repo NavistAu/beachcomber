@@ -148,22 +148,20 @@ Everything below must be done before the first public release. Ordered by depend
 
 ---
 
-## Up Next: Client SDKs
+## Done: Client SDKs
 
-Published, packaged client libraries for each language's native package manager. Each SDK wraps the Unix socket protocol with typed APIs, handles socket discovery, socket activation (starts daemon if not running), timeouts, and error handling. No consumer should need to hand-roll socket code.
+Published, packaged client libraries for each language's native package manager. Each SDK wraps the Unix socket protocol with typed APIs, handles socket discovery, timeouts, and error handling.
 
 | SDK | Package manager | Status |
 |---|---|---|
 | **Rust** (`beachcomber-client`) | crates.io | **Done** (workspace crate) |
-| **C** (`libbeachcomber`) | Source / pkg-config | Not started — C ABI shared library, enables FFI from any language |
-| **Python** (`beachcomber`) | PyPI | Not started — sync client, `socket` module, typed dataclasses |
-| **Node.js** (`beachcomber`) | npm | Not started — `net.connect` to Unix socket, TypeScript types |
-| **Go** (`beachcomber`) | Go module | Not started — `net.Dial("unix", ...")`, struct types |
-| **Lua** (`beachcomber`) | LuaRocks | Not started — for neovim plugins, uses `vim.loop` or luasocket |
-| **Ruby** (`beachcomber`) | RubyGems | Not started — `UNIXSocket`, for shell/devtool integrations |
+| **C** (`libbeachcomber`) | Source / pkg-config | **Done** — embedded JSON parser, shared/static lib, 130 tests |
+| **Python** (`beachcomber`) | PyPI | **Done** — sync client + session, dataclasses, 80 tests |
+| **Node.js** (`beachcomber`) | npm | **Done** — TypeScript, async API, 62 tests |
+| **Go** (`beachcomber`) | Go module | **Done** — idiomatic error returns, 47 tests |
+| **Lua** (`beachcomber`) | LuaRocks | **Done** — vim.uv / luasocket / comb CLI fallback, 50 tests |
+| **Ruby** (`beachcomber`) | RubyGems | **Done** — block-based sessions, minitest, 45 tests |
 | **Shell** (POSIX sh function) | N/A (copy-paste) | **Done** (in README, portable fallback functions) |
-
-The C library is the highest priority after Rust — it enables FFI bindings for Python (ctypes/cffi), Ruby (ffi), and any other language without writing native socket code per language. The Python and Node.js SDKs are highest value for the developer community given the size of those ecosystems.
 
 ---
 
