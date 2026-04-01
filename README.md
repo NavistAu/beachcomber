@@ -106,12 +106,13 @@ $ comb status
 
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
-- [Consumer Integration](#consumer-integration)
-- [Shell Fallback Function](#shell-fallback-function)
+- [CLI Reference](#cli-reference)
 - [Configuration Reference](#configuration-reference)
 - [Built-in Providers Reference](#built-in-providers-reference)
+- [Consumer Integration](#consumer-integration)
+- [Shell Fallback Function](#shell-fallback-function)
+- [Client SDKs](#client-sdks)
 - [Custom Providers Guide](#custom-providers-guide)
-- [CLI Reference](#cli-reference)
 - [Debugging](#debugging)
 - [Protocol Reference](#protocol-reference)
 - [Alternatives and Prior Art](#alternatives-and-prior-art)
@@ -162,6 +163,8 @@ Source your `.zshrc` and open a few more shells. Then run `comb status` — you'
 
 ---
 
+---
+
 ## How It Works
 
 beachcomber is a single async daemon that:
@@ -209,414 +212,110 @@ The daemon is socket-activated: it starts automatically when any client connects
 
 ---
 
-## Consumer Integration
+## CLI Reference
 
-### zsh prompt (precmd hook)
+All commands are subcommands of `comb`. The daemon is socket-activated — you never need to start it manually.
 
-The most common use case. Use `precmd` to refresh prompt variables before each prompt draw. A persistent `ClientSession` amortizes the connection cost across multiple queries — three fields for the price of one connection.
+### `comb get <key> [path] [-f format]`
 
-```zsh
-# ~/.zshrc
-precmd() {
-    local branch dirty untracked
-    branch=$(comb get git.branch . -f text 2>/dev/null)
-    dirty=$(comb get git.dirty . -f text 2>/dev/null)
-    untracked=$(comb get git.untracked . -f text 2>/dev/null)
-
-    local git_part=""
-    if [[ -n "$branch" ]]; then
-        git_part="%F{blue}${branch}%f"
-        [[ "$dirty" == "true" ]] && git_part+="*"
-        [[ "$untracked" -gt 0 ]] && git_part+="?"
-        git_part+=" "
-    fi
-
-    PS1="${git_part}%F{green}%~%f %# "
-}
-```
-
-### tmux status bar (format string replacement)
-
-tmux evaluates `#(command)` format strings to populate the status bar. Each `#()` is a subprocess — beachcomber makes these essentially free because the daemon is already running.
-
-```tmux
-# ~/.tmux.conf
-
-# Battery percentage and git branch in right status
-set -g status-right '#(comb get battery.percent -f text)%% bat | #(comb get git.branch . -f text)'
-
-# Left: session name + kubernetes context
-set -g status-left '[#S] #(comb get kubecontext.context -f text)'
-
-# Refresh interval — lower is fine because queries cost almost nothing
-set -g status-interval 5
-```
-
-**Why this is different from the problem described above:** each `#()` invocation still forks a shell, but `comb` reads a pre-cached value in ~34µs instead of spawning git (5ms+) or running a battery subprocess (6ms). The total time savings across a 50-pane tmux session is substantial.
-
-The simple `#()` approach shown above is already a major improvement over shelling out to git or battery commands directly. Each `comb get` also signals demand to the daemon, keeping the provider warm automatically.
-
-### bash prompt (PROMPT_COMMAND)
-
-bash runs `PROMPT_COMMAND` before each prompt. Parse the `key=value` text output from a whole-provider query to minimize subprocess calls.
-
-```bash
-# ~/.bashrc
-__beachcomber_prompt() {
-    # Fetch entire git state in one query, parse key=value output
-    local git_state
-    git_state=$(comb get git . -f text 2>/dev/null)
-
-    local branch dirty
-    while IFS='=' read -r key value; do
-        case "$key" in
-            branch) branch="$value" ;;
-            dirty)  dirty="$value" ;;
-        esac
-    done <<< "$git_state"
-
-    local git_part=""
-    [[ -n "$branch" ]] && git_part="(${branch}${dirty:+*}) "
-
-    local kube
-    kube=$(comb get kubecontext.context -f text 2>/dev/null)
-    local kube_part=""
-    [[ -n "$kube" ]] && kube_part="[${kube}] "
-
-    PS1="${kube_part}${git_part}\w \$ "
-}
-
-PROMPT_COMMAND=__beachcomber_prompt
-```
-
-### fish prompt function
-
-fish's `fish_prompt` function is called before each prompt. fish has no subshell penalty for command substitutions, so this is already efficient.
-
-```fish
-# ~/.config/fish/functions/fish_prompt.fish
-function fish_prompt
-    set -l branch (comb get git.branch . -f text 2>/dev/null)
-    set -l dirty (comb get git.dirty . -f text 2>/dev/null)
-    set -l battery (comb get battery.percent -f text 2>/dev/null)
-
-    set -l git_info ""
-    if test -n "$branch"
-        set git_info " $branch"
-        test "$dirty" = "true"; and set git_info "$git_info*"
-    end
-
-    set -l bat_info ""
-    if test -n "$battery"
-        set bat_info " $battery%%"
-    end
-
-    echo -n (set_color blue)(prompt_pwd)(set_color normal)$git_info$bat_info" > "
-end
-```
-
-### neovim statusline (Lua SDK)
-
-The `beachcomber` Lua SDK auto-detects neovim and uses `vim.uv` for zero-dependency socket access:
-
-```lua
--- In your statusline plugin or init.lua
-local comb = require('beachcomber')
-local client = comb.connect()
-
-local function git_branch()
-    local cwd = vim.fn.getcwd()
-    local result = client:get('git.branch', cwd)
-    if result and result:is_hit() then
-        return ' ' .. result.data
-    end
-    return ''
-end
-```
-
-Outside neovim, the SDK falls back to luasocket if available, or shells out to `comb` as a last resort.
-
-### starship custom module
-
-starship's `[custom.*]` modules run a shell command and display its output. Using beachcomber as the backend replaces starship's per-prompt git computation with a cache read.
-
-```toml
-# ~/.config/starship.toml
-
-# Replace starship's built-in git_branch with a beachcomber-backed one
-[git_branch]
-disabled = true
-
-[custom.git_branch]
-command = "comb get git.branch . -f text"
-when = "comb get git.branch . -f text"
-format = "[$output]($style) "
-style = "bold blue"
-description = "Git branch via beachcomber"
-
-[custom.git_dirty]
-command = 'test "$(comb get git.dirty . -f text)" = "true" && echo "*"'
-when = "comb get git.dirty . -f text"
-format = "[$output]($style)"
-style = "bold red"
-
-[custom.kube]
-command = "comb get kubecontext.context -f text"
-when = "comb get kubecontext.context -f text"
-format = "[$output]($style) "
-style = "bold cyan"
-symbol = "☸ "
-```
-
-### polybar / waybar / sketchybar custom module
-
-Status bars on Linux (polybar, waybar) and macOS (sketchybar) poll external commands for dynamic content. beachcomber makes the polling interval irrelevant — each query costs microseconds.
-
-**polybar:**
-```ini
-[module/git]
-type = custom/script
-exec = comb get git.branch . -f text
-interval = 5
-format = <label>
-label = %output%
-
-[module/battery]
-type = custom/script
-exec = comb get battery.percent -f text
-interval = 30
-format = <label>
-label = BAT: %output%%%
-
-[module/network]
-type = custom/script
-exec = comb get network.ssid -f text
-interval = 10
-```
-
-**waybar (JSON module):**
-```json
-"custom/git": {
-    "exec": "comb get git.branch . -f text",
-    "interval": 5,
-    "format": " {}",
-    "tooltip": false
-},
-"custom/battery": {
-    "exec": "comb get battery.percent -f text",
-    "interval": 30,
-    "format": " {}%"
-}
-```
-
-**sketchybar:**
-```sh
-# In your sketchybarrc
-sketchybar --add item git_branch right \
-           --set git_branch update_freq=5 \
-                            script="sketchybar --set git_branch label=\"$(comb get git.branch . -f text)\""
-```
-
-### Python script
-
-The `beachcomber` Python SDK is stdlib-only (no pip dependencies required):
-
-```python
-from beachcomber import Client
-
-client = Client()
-
-# Single field
-result = client.get("git.branch", path="/path/to/repo")
-if result.is_hit:
-    print(f"Branch: {result.data}")
-
-# Full provider with field access
-result = client.get("git", path="/path/to/repo")
-if result.is_hit:
-    print(f"Branch: {result['branch']}, dirty: {result['dirty']}")
-
-# Persistent session for multiple queries
-with client.session() as s:
-    s.set_context("/path/to/repo")
-    branch = s.get("git.branch")
-    battery = s.get("battery.percent")
-```
-
-Or connect directly with no SDK — the protocol is newline-delimited JSON over a Unix socket (see [Protocol Reference](#protocol-reference)).
-
-### Shell one-liner for scripts and CI
-
-For scripts that want to annotate output with git context but don't require beachcomber to be installed:
+Query a cached value. Returns immediately with cached data; never waits for a fresh computation.
 
 ```sh
-# Returns branch name — uses beachcomber if available, falls back to git
-BRANCH=$(comb get git.branch . -f text 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+# Query a specific field from a path-scoped provider
+comb get git.branch /path/to/repo
+comb get git.branch .          # relative path resolved to absolute
 
-# In CI, log the current branch alongside build output
-echo "Building branch: $(comb get git.branch . -f text 2>/dev/null || git rev-parse --abbrev-ref HEAD)"
+# Query a field from a global provider (no path needed)
+comb get battery.percent
+comb get hostname.short
 
-# Check if repo is dirty before deploying
-if [ "$(comb get git.dirty . -f text 2>/dev/null)" = "true" ]; then
-    echo "Warning: uncommitted changes"
-fi
+# Query the entire provider (all fields)
+comb get git .
+comb get battery
+
+# Output formats
+comb get git.branch . -f text   # prints: main
+comb get git.branch . -f json   # prints: full JSON response (default)
+
+# Multi-field text output (key=value lines)
+comb get git . -f text
+# prints:
+# ahead=0
+# behind=0
+# branch=main
+# dirty=false
+# staged=0
+# stash=0
+# state=clean
+# untracked=2
+# unstaged=0
 ```
 
-### Rust SDK (`beachcomber-client`)
+**Exit codes:**
+- `0` — success, data returned
+- `1` — cache miss (provider has no data yet)
+- `2` — error (daemon unreachable, unknown provider, invalid key)
 
-For Rust consumers, the `beachcomber-client` crate provides a typed, synchronous API with no tokio dependency:
+### `comb poke <key> [path]`
 
-```toml
-[dependencies]
-beachcomber-client = "0.1"
-```
-
-```rust
-use beachcomber_client::{Client, CombResult};
-
-let client = Client::new(); // auto-discovers socket, starts daemon if needed
-
-// Single field query
-match client.get("git.branch", Some("/path/to/repo"))? {
-    CombResult::Hit { data, .. } => println!("branch: {}", data.as_text().unwrap()),
-    CombResult::Miss => println!("not cached yet — will be ready on next query"),
-}
-
-// Full provider query with typed field access
-match client.get("git", Some("/path/to/repo"))? {
-    CombResult::Hit { data, age_ms, stale } => {
-        println!("branch: {}", data.get_str("branch").unwrap_or("?"));
-        println!("dirty: {}", data.get_bool("dirty").unwrap_or(false));
-        println!("ahead: {}", data.get_i64("ahead").unwrap_or(0));
-        println!("age: {}ms, stale: {}", age_ms, stale);
-    }
-    CombResult::Miss => {}
-}
-
-// Persistent session for multiple queries (one connection, multiple requests)
-let mut session = client.session()?;
-session.set_context("/path/to/repo")?;
-let branch = session.get("git.branch", None)?;
-let battery = session.get("battery.percent", None)?;
-```
-
-Features:
-- **Synchronous** — no async runtime needed
-- **Socket activation** — starts the daemon automatically if not running
-- **Typed access** — `get_str()`, `get_bool()`, `get_i64()`, `get_f64()`
-- **Persistent sessions** — reuse one connection for multiple queries (15µs/query vs 34µs)
-- **Configurable timeouts** — default 100ms, adjustable via `ClientConfig`
-
-### All Client SDKs
-
-Every SDK wraps the Unix socket protocol with typed APIs, socket discovery, timeouts, and error handling. All are stdlib-only (no external runtime dependencies).
-
-| SDK | Location | Package manager | Notes |
-|---|---|---|---|
-| **Rust** (`beachcomber-client`) | `beachcomber-client/` | crates.io | Sync, no tokio dependency |
-| **C** (`libbeachcomber`) | `sdks/c/` | Source / pkg-config | Shared + static lib, embedded JSON parser |
-| **Python** (`beachcomber`) | `sdks/python/` | PyPI | Dataclasses, sync client + session |
-| **Node.js** (`beachcomber`) | `sdks/node/` | npm | TypeScript, async API |
-| **Go** (`beachcomber`) | `sdks/go/` | Go module | Idiomatic error returns |
-| **Lua** (`beachcomber`) | `sdks/lua/` | LuaRocks | vim.uv / luasocket / CLI fallback |
-| **Ruby** (`beachcomber`) | `sdks/ruby/` | RubyGems | Block-based sessions, minitest |
-| **Shell** (POSIX function) | In README | N/A | Copy-paste fallback pattern |
-
-You don't need an SDK to talk to beachcomber — the protocol is newline-delimited JSON over a Unix socket. See [Protocol Reference](#protocol-reference).
-
----
-
-## Shell Fallback Function
-
-Apps that want to support beachcomber without requiring it can embed a fallback function. If `comb` is not installed, the function falls back to the native tool. This pattern lets any shell script or prompt framework opt into beachcomber acceleration transparently.
-
-**bash / zsh:**
-```sh
-# Returns the current git branch name.
-# Uses beachcomber if installed; falls back to git directly.
-_git_branch() {
-    if command -v comb >/dev/null 2>&1; then
-        comb get git.branch . -f text 2>/dev/null && return
-    fi
-    git rev-parse --abbrev-ref HEAD 2>/dev/null
-}
-
-# Returns "true" if the working tree has uncommitted changes.
-_git_dirty() {
-    if command -v comb >/dev/null 2>&1; then
-        comb get git.dirty . -f text 2>/dev/null && return
-    fi
-    git diff --quiet 2>/dev/null || echo "true"
-}
-
-# Returns current kubernetes context.
-_kube_context() {
-    if command -v comb >/dev/null 2>&1; then
-        comb get kubecontext.context -f text 2>/dev/null && return
-    fi
-    kubectl config current-context 2>/dev/null
-}
-
-# Returns battery percentage as an integer.
-_battery_percent() {
-    if command -v comb >/dev/null 2>&1; then
-        comb get battery.percent -f text 2>/dev/null && return
-    fi
-    # macOS fallback
-    pmset -g batt 2>/dev/null | grep -Eo '[0-9]+%' | head -1 | tr -d '%'
-}
-```
-
-**fish:**
-```fish
-function _git_branch
-    if command -q comb
-        comb get git.branch . -f text 2>/dev/null; and return
-    end
-    git rev-parse --abbrev-ref HEAD 2>/dev/null
-end
-
-function _git_dirty
-    if command -q comb
-        comb get git.dirty . -f text 2>/dev/null; and return
-    end
-    git diff --quiet 2>/dev/null; or echo "true"
-end
-
-function _kube_context
-    if command -q comb
-        comb get kubecontext.context -f text 2>/dev/null; and return
-    end
-    kubectl config current-context 2>/dev/null
-end
-
-function _battery_percent
-    if command -q comb
-        comb get battery.percent -f text 2>/dev/null; and return
-    end
-    # macOS fallback
-    pmset -g batt 2>/dev/null | string match -r '\d+%' | string replace '%' ''
-end
-```
-
-These functions can be pasted directly into prompt frameworks, dotfile repos, or shared shell libraries. Users with beachcomber installed get the 15µs path; users without it get the native fallback. No beachcomber dependency required.
-
-### Inline Fallback with `||`
-
-For scripts that only need a value once (not in a hot loop like a prompt), the wrapper function is unnecessary. `comb` exits non-zero when it's not installed, not running, or the key doesn't exist — so a simple `||` chain works:
+Trigger immediate recomputation of a provider. Returns immediately after acknowledging the request — does not wait for the result. The next `get` will return the fresh value.
 
 ```sh
-# Single assignment, no wrapper needed
-branch=$(comb get git.branch . -f text 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null)
-dirty=$(comb get git.dirty . -f text 2>/dev/null || git diff --quiet 2>/dev/null || echo "true")
+# Force git status refresh after a branch switch
+comb poke git .
 
-# Use the values
-if [ -n "$branch" ]; then
-    echo "on $branch"
-fi
+# Force network info refresh after connecting to VPN
+comb poke network
+
+# After modifying kubeconfig manually
+comb poke kubecontext
 ```
 
-This keeps scripts portable with zero comb dependency — `2>/dev/null` swallows errors, the `||` falls through to the native tool, and there's nothing to source or import. Prefer this for standalone scripts; use the wrapper functions above for shared shell libraries where the pattern repeats.
+**Exit codes:** `0` on success, `2` on error.
+
+### `comb status`
+
+Show daemon health and statistics.
+
+```sh
+$ comb status
+{
+  "uptime_secs": 7234,
+  "cache_entries": 14,
+  "active_watchers": 4,
+  "providers": 16,
+  "requests_total": 184291
+}
+```
+
+### `comb list`
+
+Show all active providers and their cached state age.
+
+```sh
+$ comb list
+{
+  "entries": [
+    { "key": "git", "path": "/Users/me/project", "age_ms": 1240 },
+    { "key": "battery", "path": null, "age_ms": 8900 },
+    { "key": "kubecontext", "path": null, "age_ms": 22100 }
+  ]
+}
+```
+
+### `comb daemon [--socket <path>]`
+
+Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
+
+```sh
+# Run with debug logging
+BEACHCOMBER_LOG=debug comb daemon
+
+# Override socket path
+comb daemon --socket /tmp/beachcomber-debug.sock
+```
+
+The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 
 ---
 
@@ -1010,6 +709,419 @@ feature/fast-cache
 
 ---
 
+## Consumer Integration
+
+### zsh prompt (precmd hook)
+
+The most common use case. Use `precmd` to refresh prompt variables before each prompt draw. A persistent `ClientSession` amortizes the connection cost across multiple queries — three fields for the price of one connection.
+
+```zsh
+# ~/.zshrc
+precmd() {
+    local branch dirty untracked
+    branch=$(comb get git.branch . -f text 2>/dev/null)
+    dirty=$(comb get git.dirty . -f text 2>/dev/null)
+    untracked=$(comb get git.untracked . -f text 2>/dev/null)
+
+    local git_part=""
+    if [[ -n "$branch" ]]; then
+        git_part="%F{blue}${branch}%f"
+        [[ "$dirty" == "true" ]] && git_part+="*"
+        [[ "$untracked" -gt 0 ]] && git_part+="?"
+        git_part+=" "
+    fi
+
+    PS1="${git_part}%F{green}%~%f %# "
+}
+```
+
+### tmux status bar (format string replacement)
+
+tmux evaluates `#(command)` format strings to populate the status bar. Each `#()` is a subprocess — beachcomber makes these essentially free because the daemon is already running.
+
+```tmux
+# ~/.tmux.conf
+
+# Battery percentage and git branch in right status
+set -g status-right '#(comb get battery.percent -f text)%% bat | #(comb get git.branch . -f text)'
+
+# Left: session name + kubernetes context
+set -g status-left '[#S] #(comb get kubecontext.context -f text)'
+
+# Refresh interval — lower is fine because queries cost almost nothing
+set -g status-interval 5
+```
+
+**Why this is different from the problem described above:** each `#()` invocation still forks a shell, but `comb` reads a pre-cached value in ~34µs instead of spawning git (5ms+) or running a battery subprocess (6ms). The total time savings across a 50-pane tmux session is substantial.
+
+The simple `#()` approach shown above is already a major improvement over shelling out to git or battery commands directly. Each `comb get` also signals demand to the daemon, keeping the provider warm automatically.
+
+### bash prompt (PROMPT_COMMAND)
+
+bash runs `PROMPT_COMMAND` before each prompt. Parse the `key=value` text output from a whole-provider query to minimize subprocess calls.
+
+```bash
+# ~/.bashrc
+__beachcomber_prompt() {
+    # Fetch entire git state in one query, parse key=value output
+    local git_state
+    git_state=$(comb get git . -f text 2>/dev/null)
+
+    local branch dirty
+    while IFS='=' read -r key value; do
+        case "$key" in
+            branch) branch="$value" ;;
+            dirty)  dirty="$value" ;;
+        esac
+    done <<< "$git_state"
+
+    local git_part=""
+    [[ -n "$branch" ]] && git_part="(${branch}${dirty:+*}) "
+
+    local kube
+    kube=$(comb get kubecontext.context -f text 2>/dev/null)
+    local kube_part=""
+    [[ -n "$kube" ]] && kube_part="[${kube}] "
+
+    PS1="${kube_part}${git_part}\w \$ "
+}
+
+PROMPT_COMMAND=__beachcomber_prompt
+```
+
+### fish prompt function
+
+fish's `fish_prompt` function is called before each prompt. fish has no subshell penalty for command substitutions, so this is already efficient.
+
+```fish
+# ~/.config/fish/functions/fish_prompt.fish
+function fish_prompt
+    set -l branch (comb get git.branch . -f text 2>/dev/null)
+    set -l dirty (comb get git.dirty . -f text 2>/dev/null)
+    set -l battery (comb get battery.percent -f text 2>/dev/null)
+
+    set -l git_info ""
+    if test -n "$branch"
+        set git_info " $branch"
+        test "$dirty" = "true"; and set git_info "$git_info*"
+    end
+
+    set -l bat_info ""
+    if test -n "$battery"
+        set bat_info " $battery%%"
+    end
+
+    echo -n (set_color blue)(prompt_pwd)(set_color normal)$git_info$bat_info" > "
+end
+```
+
+### neovim statusline (Lua SDK)
+
+The `beachcomber` Lua SDK auto-detects neovim and uses `vim.uv` for zero-dependency socket access:
+
+```lua
+-- In your statusline plugin or init.lua
+local comb = require('beachcomber')
+local client = comb.connect()
+
+local function git_branch()
+    local cwd = vim.fn.getcwd()
+    local result = client:get('git.branch', cwd)
+    if result and result:is_hit() then
+        return ' ' .. result.data
+    end
+    return ''
+end
+```
+
+Outside neovim, the SDK falls back to luasocket if available, or shells out to `comb` as a last resort.
+
+### starship custom module
+
+starship's `[custom.*]` modules run a shell command and display its output. Using beachcomber as the backend replaces starship's per-prompt git computation with a cache read.
+
+```toml
+# ~/.config/starship.toml
+
+# Replace starship's built-in git_branch with a beachcomber-backed one
+[git_branch]
+disabled = true
+
+[custom.git_branch]
+command = "comb get git.branch . -f text"
+when = "comb get git.branch . -f text"
+format = "[$output]($style) "
+style = "bold blue"
+description = "Git branch via beachcomber"
+
+[custom.git_dirty]
+command = 'test "$(comb get git.dirty . -f text)" = "true" && echo "*"'
+when = "comb get git.dirty . -f text"
+format = "[$output]($style)"
+style = "bold red"
+
+[custom.kube]
+command = "comb get kubecontext.context -f text"
+when = "comb get kubecontext.context -f text"
+format = "[$output]($style) "
+style = "bold cyan"
+symbol = "☸ "
+```
+
+### polybar / waybar / sketchybar custom module
+
+Status bars on Linux (polybar, waybar) and macOS (sketchybar) poll external commands for dynamic content. beachcomber makes the polling interval irrelevant — each query costs microseconds.
+
+**polybar:**
+```ini
+[module/git]
+type = custom/script
+exec = comb get git.branch . -f text
+interval = 5
+format = <label>
+label = %output%
+
+[module/battery]
+type = custom/script
+exec = comb get battery.percent -f text
+interval = 30
+format = <label>
+label = BAT: %output%%%
+
+[module/network]
+type = custom/script
+exec = comb get network.ssid -f text
+interval = 10
+```
+
+**waybar (JSON module):**
+```json
+"custom/git": {
+    "exec": "comb get git.branch . -f text",
+    "interval": 5,
+    "format": " {}",
+    "tooltip": false
+},
+"custom/battery": {
+    "exec": "comb get battery.percent -f text",
+    "interval": 30,
+    "format": " {}%"
+}
+```
+
+**sketchybar:**
+```sh
+# In your sketchybarrc
+sketchybar --add item git_branch right \
+           --set git_branch update_freq=5 \
+                            script="sketchybar --set git_branch label=\"$(comb get git.branch . -f text)\""
+```
+
+### Python script
+
+The `beachcomber` Python SDK is stdlib-only (no pip dependencies required):
+
+```python
+from beachcomber import Client
+
+client = Client()
+
+# Single field
+result = client.get("git.branch", path="/path/to/repo")
+if result.is_hit:
+    print(f"Branch: {result.data}")
+
+# Full provider with field access
+result = client.get("git", path="/path/to/repo")
+if result.is_hit:
+    print(f"Branch: {result['branch']}, dirty: {result['dirty']}")
+
+# Persistent session for multiple queries
+with client.session() as s:
+    s.set_context("/path/to/repo")
+    branch = s.get("git.branch")
+    battery = s.get("battery.percent")
+```
+
+Or connect directly with no SDK — the protocol is newline-delimited JSON over a Unix socket (see [Protocol Reference](#protocol-reference)).
+
+### Shell one-liner for scripts and CI
+
+For scripts that want to annotate output with git context but don't require beachcomber to be installed:
+
+```sh
+# Returns branch name — uses beachcomber if available, falls back to git
+BRANCH=$(comb get git.branch . -f text 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+
+# In CI, log the current branch alongside build output
+echo "Building branch: $(comb get git.branch . -f text 2>/dev/null || git rev-parse --abbrev-ref HEAD)"
+
+# Check if repo is dirty before deploying
+if [ "$(comb get git.dirty . -f text 2>/dev/null)" = "true" ]; then
+    echo "Warning: uncommitted changes"
+fi
+```
+
+### Rust SDK (`beachcomber-client`)
+
+For Rust consumers, the `beachcomber-client` crate provides a typed, synchronous API with no tokio dependency:
+
+```toml
+[dependencies]
+beachcomber-client = "0.1"
+```
+
+```rust
+use beachcomber_client::{Client, CombResult};
+
+let client = Client::new(); // auto-discovers socket, starts daemon if needed
+
+// Single field query
+match client.get("git.branch", Some("/path/to/repo"))? {
+    CombResult::Hit { data, .. } => println!("branch: {}", data.as_text().unwrap()),
+    CombResult::Miss => println!("not cached yet — will be ready on next query"),
+}
+
+// Full provider query with typed field access
+match client.get("git", Some("/path/to/repo"))? {
+    CombResult::Hit { data, age_ms, stale } => {
+        println!("branch: {}", data.get_str("branch").unwrap_or("?"));
+        println!("dirty: {}", data.get_bool("dirty").unwrap_or(false));
+        println!("ahead: {}", data.get_i64("ahead").unwrap_or(0));
+        println!("age: {}ms, stale: {}", age_ms, stale);
+    }
+    CombResult::Miss => {}
+}
+
+// Persistent session for multiple queries (one connection, multiple requests)
+let mut session = client.session()?;
+session.set_context("/path/to/repo")?;
+let branch = session.get("git.branch", None)?;
+let battery = session.get("battery.percent", None)?;
+```
+
+Features:
+- **Synchronous** — no async runtime needed
+- **Socket activation** — starts the daemon automatically if not running
+- **Typed access** — `get_str()`, `get_bool()`, `get_i64()`, `get_f64()`
+- **Persistent sessions** — reuse one connection for multiple queries (15µs/query vs 34µs)
+- **Configurable timeouts** — default 100ms, adjustable via `ClientConfig`
+
+---
+
+## Shell Fallback Function
+
+Apps that want to support beachcomber without requiring it can embed a fallback function. If `comb` is not installed, the function falls back to the native tool. This pattern lets any shell script or prompt framework opt into beachcomber acceleration transparently.
+
+**bash / zsh:**
+```sh
+# Returns the current git branch name.
+# Uses beachcomber if installed; falls back to git directly.
+_git_branch() {
+    if command -v comb >/dev/null 2>&1; then
+        comb get git.branch . -f text 2>/dev/null && return
+    fi
+    git rev-parse --abbrev-ref HEAD 2>/dev/null
+}
+
+# Returns "true" if the working tree has uncommitted changes.
+_git_dirty() {
+    if command -v comb >/dev/null 2>&1; then
+        comb get git.dirty . -f text 2>/dev/null && return
+    fi
+    git diff --quiet 2>/dev/null || echo "true"
+}
+
+# Returns current kubernetes context.
+_kube_context() {
+    if command -v comb >/dev/null 2>&1; then
+        comb get kubecontext.context -f text 2>/dev/null && return
+    fi
+    kubectl config current-context 2>/dev/null
+}
+
+# Returns battery percentage as an integer.
+_battery_percent() {
+    if command -v comb >/dev/null 2>&1; then
+        comb get battery.percent -f text 2>/dev/null && return
+    fi
+    # macOS fallback
+    pmset -g batt 2>/dev/null | grep -Eo '[0-9]+%' | head -1 | tr -d '%'
+}
+```
+
+**fish:**
+```fish
+function _git_branch
+    if command -q comb
+        comb get git.branch . -f text 2>/dev/null; and return
+    end
+    git rev-parse --abbrev-ref HEAD 2>/dev/null
+end
+
+function _git_dirty
+    if command -q comb
+        comb get git.dirty . -f text 2>/dev/null; and return
+    end
+    git diff --quiet 2>/dev/null; or echo "true"
+end
+
+function _kube_context
+    if command -q comb
+        comb get kubecontext.context -f text 2>/dev/null; and return
+    end
+    kubectl config current-context 2>/dev/null
+end
+
+function _battery_percent
+    if command -q comb
+        comb get battery.percent -f text 2>/dev/null; and return
+    end
+    # macOS fallback
+    pmset -g batt 2>/dev/null | string match -r '\d+%' | string replace '%' ''
+end
+```
+
+These functions can be pasted directly into prompt frameworks, dotfile repos, or shared shell libraries. Users with beachcomber installed get the 15µs path; users without it get the native fallback. No beachcomber dependency required.
+
+### Inline Fallback with `||`
+
+For scripts that only need a value once (not in a hot loop like a prompt), the wrapper function is unnecessary. `comb` exits non-zero when it's not installed, not running, or the key doesn't exist — so a simple `||` chain works:
+
+```sh
+# Single assignment, no wrapper needed
+branch=$(comb get git.branch . -f text 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null)
+dirty=$(comb get git.dirty . -f text 2>/dev/null || git diff --quiet 2>/dev/null || echo "true")
+
+# Use the values
+if [ -n "$branch" ]; then
+    echo "on $branch"
+fi
+```
+
+This keeps scripts portable with zero comb dependency — `2>/dev/null` swallows errors, the `||` falls through to the native tool, and there's nothing to source or import. Prefer this for standalone scripts; use the wrapper functions above for shared shell libraries where the pattern repeats.
+
+---
+
+## Client SDKs
+
+Every SDK wraps the Unix socket protocol with typed APIs, socket discovery, timeouts, and error handling. All are stdlib-only (no external runtime dependencies).
+
+| SDK | Location | Notes |
+|---|---|---|
+| **Rust** (`beachcomber-client`) | `beachcomber-client/` | Sync, no tokio dependency |
+| **C** (`libbeachcomber`) | `sdks/c/` | Shared + static lib, embedded JSON parser |
+| **Python** (`beachcomber`) | `sdks/python/` | Dataclasses, sync client + session |
+| **Node.js** (`beachcomber`) | `sdks/node/` | TypeScript, async API |
+| **Go** (`beachcomber`) | `sdks/go/` | Idiomatic error returns |
+| **Lua** (`beachcomber`) | `sdks/lua/` | vim.uv / luasocket / CLI fallback |
+| **Ruby** (`beachcomber`) | `sdks/ruby/` | Block-based sessions |
+| **Shell** (POSIX function) | In README | Copy-paste fallback pattern |
+
+You don't need an SDK to talk to beachcomber — the protocol is newline-delimited JSON over a Unix socket. See [Protocol Reference](#protocol-reference).
+
+---
+
 ## Custom Providers Guide
 
 Custom providers let you add any data source to beachcomber using any language. Your script runs on the configured schedule, and the results are cached and served to all consumers.
@@ -1348,113 +1460,6 @@ Then `chmod 600` and restart the daemon (`pkill -f 'comb daemon'` — it socket-
 - **Shell:** Commands are executed via `sh -c`. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
 - **Path-scoped providers:** If `scope = "path"`, the script is called with the directory path as its working directory. Use `$PWD` inside the script to reference it.
 - **Performance:** Every process spawn costs 2-6ms minimum. For providers that poll frequently (< 30s), prefer reading config files over spawning CLI tools. See the design principles in `docs/performance.md`.
-
----
-
-## CLI Reference
-
-All commands are subcommands of `comb`. The daemon is socket-activated — you never need to start it manually.
-
-### `comb get <key> [path] [-f format]`
-
-Query a cached value. Returns immediately with cached data; never waits for a fresh computation.
-
-```sh
-# Query a specific field from a path-scoped provider
-comb get git.branch /path/to/repo
-comb get git.branch .          # relative path resolved to absolute
-
-# Query a field from a global provider (no path needed)
-comb get battery.percent
-comb get hostname.short
-
-# Query the entire provider (all fields)
-comb get git .
-comb get battery
-
-# Output formats
-comb get git.branch . -f text   # prints: main
-comb get git.branch . -f json   # prints: full JSON response (default)
-
-# Multi-field text output (key=value lines)
-comb get git . -f text
-# prints:
-# ahead=0
-# behind=0
-# branch=main
-# dirty=false
-# staged=0
-# stash=0
-# state=clean
-# untracked=2
-# unstaged=0
-```
-
-**Exit codes:**
-- `0` — success, data returned
-- `1` — cache miss (provider has no data yet)
-- `2` — error (daemon unreachable, unknown provider, invalid key)
-
-### `comb poke <key> [path]`
-
-Trigger immediate recomputation of a provider. Returns immediately after acknowledging the request — does not wait for the result. The next `get` will return the fresh value.
-
-```sh
-# Force git status refresh after a branch switch
-comb poke git .
-
-# Force network info refresh after connecting to VPN
-comb poke network
-
-# After modifying kubeconfig manually
-comb poke kubecontext
-```
-
-**Exit codes:** `0` on success, `2` on error.
-
-### `comb status`
-
-Show daemon health and statistics.
-
-```sh
-$ comb status
-{
-  "uptime_secs": 7234,
-  "cache_entries": 14,
-  "active_watchers": 4,
-  "providers": 16,
-  "requests_total": 184291
-}
-```
-
-### `comb list`
-
-Show all active providers and their cached state age.
-
-```sh
-$ comb list
-{
-  "entries": [
-    { "key": "git", "path": "/Users/me/project", "age_ms": 1240 },
-    { "key": "battery", "path": null, "age_ms": 8900 },
-    { "key": "kubecontext", "path": null, "age_ms": 22100 }
-  ]
-}
-```
-
-### `comb daemon [--socket <path>]`
-
-Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
-
-```sh
-# Run with debug logging
-BEACHCOMBER_LOG=debug comb daemon
-
-# Override socket path
-comb daemon --socket /tmp/beachcomber-debug.sock
-```
-
-The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 
 ---
 
