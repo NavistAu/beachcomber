@@ -1,6 +1,5 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 
 pub struct KubecontextProvider;
@@ -10,8 +9,14 @@ impl Provider for KubecontextProvider {
         ProviderMetadata {
             name: "kubecontext".to_string(),
             fields: vec![
-                FieldSchema { name: "context".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "namespace".to_string(), field_type: FieldType::String },
+                FieldSchema {
+                    name: "context".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "namespace".to_string(),
+                    field_type: FieldType::String,
+                },
             ],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 30,
@@ -26,14 +31,20 @@ impl Provider for KubecontextProvider {
         let content = std::fs::read_to_string(&config_path).ok()?;
 
         // Find current-context
-        let context = content.lines()
+        let context = content
+            .lines()
             .find(|l| l.starts_with("current-context:"))
-            .map(|l| l.strip_prefix("current-context:").unwrap_or("").trim().to_string())
+            .map(|l| {
+                l.strip_prefix("current-context:")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            })
             .filter(|s| !s.is_empty())?;
 
         // Find namespace for this context
-        let namespace = find_context_namespace(&content, &context)
-            .unwrap_or_else(|| "default".to_string());
+        let namespace =
+            find_context_namespace(&content, &context).unwrap_or_else(|| "default".to_string());
 
         let mut result = ProviderResult::new();
         result.insert("context", Value::String(context));

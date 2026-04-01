@@ -1,10 +1,10 @@
-use criterion::{criterion_group, criterion_main, Criterion};
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
@@ -38,7 +38,11 @@ impl TestServer {
         // Wait for the server socket to appear.
         rt.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(50)).await });
 
-        Self { _tmp: tmp, sock, rt }
+        Self {
+            _tmp: tmp,
+            sock,
+            rt,
+        }
     }
 }
 

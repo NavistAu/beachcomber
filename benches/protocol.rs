@@ -1,5 +1,5 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-use beachcomber::protocol::{split_key, Request, Response};
+use beachcomber::protocol::{Request, Response, split_key};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 fn bench_parse_get_request(c: &mut Criterion) {
     let json = r#"{"op": "get", "key": "git.branch", "path": "/home/user/project"}"#;

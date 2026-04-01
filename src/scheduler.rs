@@ -3,13 +3,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 use tracing::{debug, info, warn};
 
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::provider::registry::ProviderRegistry;
 use crate::provider::InvalidationStrategy;
+use crate::provider::registry::ProviderRegistry;
 use crate::watcher::FsWatcher;
 
 /// Messages sent from the Server to the Scheduler.
@@ -106,7 +106,10 @@ impl SchedulerHandle {
 
     pub async fn get_status(&self) -> Option<SchedulerStatus> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx.send(SchedulerMessage::GetStatus { reply: reply_tx }).await.ok()?;
+        self.tx
+            .send(SchedulerMessage::GetStatus { reply: reply_tx })
+            .await
+            .ok()?;
         reply_rx.await.ok()
     }
 }
@@ -159,7 +162,8 @@ impl BackoffState {
     }
 
     pub fn grace_expired(&self) -> bool {
-        matches!(self.stage, BackoffStage::Grace) && self.started_at.elapsed() >= self.grace_duration
+        matches!(self.stage, BackoffStage::Grace)
+            && self.started_at.elapsed() >= self.grace_duration
     }
 
     pub fn poll_multiplier(&self) -> u64 {
@@ -210,7 +214,10 @@ fn check_backoff(
 
     // Remove evicted keys from backoff tracking.
     for key in &to_evict {
-        debug!("Removing backoff entry (evict) for provider={} path={:?}", key.0, key.1);
+        debug!(
+            "Removing backoff entry (evict) for provider={} path={:?}",
+            key.0, key.1
+        );
         backoff.remove(key);
     }
 
@@ -225,7 +232,10 @@ struct FailureState {
 
 impl FailureState {
     fn new() -> Self {
-        Self { consecutive_failures: 0, suppressed_until: None }
+        Self {
+            consecutive_failures: 0,
+            suppressed_until: None,
+        }
     }
 
     fn record_failure(&mut self) {
@@ -257,7 +267,8 @@ fn build_status(
     in_flight: &std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>,
     demand: &HashMap<(String, Option<String>), Instant>,
 ) -> SchedulerStatus {
-    let watched: Vec<String> = watch_paths.keys()
+    let watched: Vec<String> = watch_paths
+        .keys()
         .map(|p| p.to_string_lossy().to_string())
         .collect();
 
@@ -271,31 +282,34 @@ fn build_status(
         })
         .collect();
 
-    let backoff_info: Vec<BackoffInfo> = backoff.iter().map(|((provider, path), state)| {
-        BackoffInfo {
+    let backoff_info: Vec<BackoffInfo> = backoff
+        .iter()
+        .map(|((provider, path), state)| BackoffInfo {
             provider: provider.clone(),
             path: path.clone(),
             stage: format!("{:?}", state.stage()),
             elapsed_secs: state.elapsed().as_secs(),
-        }
-    }).collect();
+        })
+        .collect();
 
-    let poll_timer_info: Vec<PollTimerInfo> = poll_states.iter().map(|((provider, path), state)| {
-        PollTimerInfo {
+    let poll_timer_info: Vec<PollTimerInfo> = poll_states
+        .iter()
+        .map(|((provider, path), state)| PollTimerInfo {
             provider: provider.clone(),
             path: path.clone(),
             interval_secs: state.interval_secs,
             last_run_secs_ago: state.last_run.elapsed().as_secs(),
-        }
-    }).collect();
+        })
+        .collect();
 
-    let demand_info: Vec<DemandInfo> = demand.iter().map(|((provider, path), last_query)| {
-        DemandInfo {
+    let demand_info: Vec<DemandInfo> = demand
+        .iter()
+        .map(|((provider, path), last_query)| DemandInfo {
             provider: provider.clone(),
             path: path.clone(),
             last_query_secs_ago: last_query.elapsed().as_secs(),
-        }
-    }).collect();
+        })
+        .collect();
 
     SchedulerStatus {
         watched_paths: watched,
@@ -372,8 +386,12 @@ impl Scheduler {
         {
             let failures = self.failure_counts.lock().unwrap();
             if let Some(state) = failures.get(&key)
-                && state.is_suppressed() {
-                debug!("Provider '{}' suppressed due to failure backoff", provider_name);
+                && state.is_suppressed()
+            {
+                debug!(
+                    "Provider '{}' suppressed due to failure backoff",
+                    provider_name
+                );
                 return;
             }
         }
@@ -383,7 +401,10 @@ impl Scheduler {
             let mut in_flight = self.in_flight.lock().unwrap();
             if in_flight.contains(&key) {
                 self.pending_rerun.lock().unwrap().insert(key);
-                debug!("Provider '{}' already in flight, queued rerun", provider_name);
+                debug!(
+                    "Provider '{}' already in flight, queued rerun",
+                    provider_name
+                );
                 return;
             }
             in_flight.insert(key.clone());
@@ -399,13 +420,14 @@ impl Scheduler {
         let failure_counts = Arc::clone(&self.failure_counts);
 
         // Extract the poll interval from provider metadata for staleness tracking.
-        let poll_interval_secs: Option<u64> = registry.get(provider_name).and_then(|p| {
-            match p.metadata().invalidation {
-                InvalidationStrategy::Poll { interval_secs, .. } => Some(interval_secs),
-                InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(interval_secs),
-                _ => None,
-            }
-        });
+        let poll_interval_secs: Option<u64> =
+            registry
+                .get(provider_name)
+                .and_then(|p| match p.metadata().invalidation {
+                    InvalidationStrategy::Poll { interval_secs, .. } => Some(interval_secs),
+                    InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(interval_secs),
+                    _ => None,
+                });
 
         let path_for_cache = path_owned.clone();
         let name_for_log = name_owned.clone();
@@ -414,21 +436,24 @@ impl Scheduler {
         tokio::spawn(async move {
             let result = tokio::time::timeout(
                 Duration::from_secs(timeout_secs),
-                tokio::task::spawn_blocking(move || {
-                    provider.execute(path_owned.as_deref())
-                }),
-            ).await;
+                tokio::task::spawn_blocking(move || provider.execute(path_owned.as_deref())),
+            )
+            .await;
 
             // Record success or failure for backoff tracking.
             match &result {
                 Ok(Ok(Some(_))) => {
-                    failure_counts.lock().unwrap()
+                    failure_counts
+                        .lock()
+                        .unwrap()
                         .entry(key_for_cleanup.clone())
                         .or_insert_with(FailureState::new)
                         .record_success();
                 }
                 _ => {
-                    failure_counts.lock().unwrap()
+                    failure_counts
+                        .lock()
+                        .unwrap()
                         .entry(key_for_cleanup.clone())
                         .or_insert_with(FailureState::new)
                         .record_failure();
@@ -437,17 +462,31 @@ impl Scheduler {
 
             match result {
                 Ok(Ok(Some(provider_result))) => {
-                    cache.put_with_interval(&name_owned, path_for_cache.as_deref(), provider_result, poll_interval_secs);
-                    debug!("Executed provider '{}' path={:?}", name_owned, path_for_cache);
+                    cache.put_with_interval(
+                        &name_owned,
+                        path_for_cache.as_deref(),
+                        provider_result,
+                        poll_interval_secs,
+                    );
+                    debug!(
+                        "Executed provider '{}' path={:?}",
+                        name_owned, path_for_cache
+                    );
                 }
                 Ok(Ok(None)) => {
-                    debug!("Provider '{}' returned None for path={:?}", name_for_log, path_for_cache);
+                    debug!(
+                        "Provider '{}' returned None for path={:?}",
+                        name_for_log, path_for_cache
+                    );
                 }
                 Ok(Err(e)) => {
                     warn!("Provider '{}' panicked: {}", name_for_log, e);
                 }
                 Err(_) => {
-                    warn!("Provider '{}' timed out after {}s", name_for_log, timeout_secs);
+                    warn!(
+                        "Provider '{}' timed out after {}s",
+                        name_for_log, timeout_secs
+                    );
                 }
             }
 
@@ -456,7 +495,10 @@ impl Scheduler {
             let should_rerun = pending_rerun.lock().unwrap().remove(&key_for_cleanup);
 
             if should_rerun {
-                debug!("Re-running provider '{}' (was queued during previous execution)", key_for_cleanup.0);
+                debug!(
+                    "Re-running provider '{}' (was queued during previous execution)",
+                    key_for_cleanup.0
+                );
                 if let Some(rerun_provider) = registry.get(&key_for_cleanup.0) {
                     let rerun_path = key_for_cleanup.1.clone();
                     let rerun_name = key_for_cleanup.0.clone();
@@ -468,18 +510,23 @@ impl Scheduler {
                             tokio::task::spawn_blocking(move || {
                                 rerun_provider.execute(rerun_path.as_deref())
                             }),
-                        ).await;
+                        )
+                        .await;
 
                         // Record success or failure for the rerun.
                         match &rerun_result {
                             Ok(Ok(Some(_))) => {
-                                failure_counts.lock().unwrap()
+                                failure_counts
+                                    .lock()
+                                    .unwrap()
                                     .entry(key_for_cleanup.clone())
                                     .or_insert_with(FailureState::new)
                                     .record_success();
                             }
                             _ => {
-                                failure_counts.lock().unwrap()
+                                failure_counts
+                                    .lock()
+                                    .unwrap()
                                     .entry(key_for_cleanup.clone())
                                     .or_insert_with(FailureState::new)
                                     .record_failure();
@@ -498,7 +545,10 @@ impl Scheduler {
                                 warn!("Rerun provider '{}' panicked: {}", rerun_name, e);
                             }
                             Err(_) => {
-                                warn!("Rerun provider '{}' timed out after {}s", rerun_name, timeout_secs);
+                                warn!(
+                                    "Rerun provider '{}' timed out after {}s",
+                                    rerun_name, timeout_secs
+                                );
                             }
                         }
                         in_flight.lock().unwrap().remove(&key_for_cleanup);
@@ -513,7 +563,10 @@ impl Scheduler {
         let (mut fs_watcher, mut fs_rx) = match FsWatcher::new() {
             Ok(pair) => pair,
             Err(e) => {
-                warn!("Failed to create filesystem watcher: {}. Watch triggers disabled.", e);
+                warn!(
+                    "Failed to create filesystem watcher: {}. Watch triggers disabled.",
+                    e
+                );
                 // Create a channel that never receives to allow the rest of the loop to work.
                 let (_tx, rx) = mpsc::channel::<Vec<PathBuf>>(1);
                 // We can't easily create a no-op FsWatcher, so we'll handle this differently.
@@ -531,7 +584,8 @@ impl Scheduler {
 
         // Backoff states for keys with no active subscribers.
         let mut backoff: HashMap<(String, Option<String>), BackoffState> = HashMap::new();
-        let grace_duration = std::time::Duration::from_secs(self.config.lifecycle.grace_period_secs);
+        let grace_duration =
+            std::time::Duration::from_secs(self.config.lifecycle.grace_period_secs);
 
         // Watch paths that are being monitored: path -> (provider, path_arg)
         let mut watch_paths: HashMap<PathBuf, Vec<(String, Option<String>)>> = HashMap::new();
@@ -710,7 +764,8 @@ impl Scheduler {
 
         let mut poll_states: HashMap<(String, Option<String>), PollState> = HashMap::new();
         let mut backoff: HashMap<(String, Option<String>), BackoffState> = HashMap::new();
-        let grace_duration = std::time::Duration::from_secs(self.config.lifecycle.grace_period_secs);
+        let grace_duration =
+            std::time::Duration::from_secs(self.config.lifecycle.grace_period_secs);
 
         // Demand tracking: (provider, path) -> last query time.
         let mut demand: HashMap<(String, Option<String>), Instant> = HashMap::new();
@@ -842,7 +897,10 @@ impl Scheduler {
                             info!("Computed initial value for provider '{}'", name);
                         }
                         None => {
-                            warn!("Provider '{}' returned None during initial computation", name);
+                            warn!(
+                                "Provider '{}' returned None during initial computation",
+                                name
+                            );
                         }
                     }
                 }
@@ -850,18 +908,24 @@ impl Scheduler {
         }
     }
 
-    fn handle_fs_event(&self, paths: Vec<PathBuf>, watch_paths: &HashMap<PathBuf, Vec<(String, Option<String>)>>) {
+    fn handle_fs_event(
+        &self,
+        paths: Vec<PathBuf>,
+        watch_paths: &HashMap<PathBuf, Vec<(String, Option<String>)>>,
+    ) {
         for changed_path in &paths {
             // Find all subscriptions whose watch path is a prefix of the changed path.
             for (watch_path, subscriptions) in watch_paths {
                 if changed_path.starts_with(watch_path) || changed_path == watch_path {
                     for (provider, path) in subscriptions {
-                        debug!("FS event: re-executing provider={} path={:?}", provider, path);
+                        debug!(
+                            "FS event: re-executing provider={} path={:?}",
+                            provider, path
+                        );
                         self.execute_provider(provider, path.as_deref());
                     }
                 }
             }
         }
     }
-
 }

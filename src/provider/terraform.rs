@@ -1,6 +1,5 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use std::path::Path;
 
@@ -10,9 +9,10 @@ impl Provider for TerraformProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "terraform".to_string(),
-            fields: vec![
-                FieldSchema { name: "workspace".to_string(), field_type: FieldType::String },
-            ],
+            fields: vec![FieldSchema {
+                name: "workspace".to_string(),
+                field_type: FieldType::String,
+            }],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![".terraform".to_string()],
                 fallback_poll_secs: Some(30),
@@ -25,7 +25,9 @@ impl Provider for TerraformProvider {
         let path = path?;
         let dir = Path::new(path);
         let tf_dir = dir.join(".terraform");
-        if !tf_dir.exists() { return None; }
+        if !tf_dir.exists() {
+            return None;
+        }
 
         // Read workspace from .terraform/environment
         let workspace = std::fs::read_to_string(tf_dir.join("environment"))

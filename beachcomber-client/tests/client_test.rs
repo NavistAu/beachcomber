@@ -40,7 +40,7 @@ fn client_no_autostart_returns_error() {
 #[test]
 fn comb_data_accessors() {
     let data = beachcomber_client::CombData::from_json(
-        serde_json::json!({"branch": "main", "dirty": true, "ahead": 2, "load": 1.5})
+        serde_json::json!({"branch": "main", "dirty": true, "ahead": 2, "load": 1.5}),
     );
     assert_eq!(data.get_str("branch"), Some("main"));
     assert_eq!(data.get_bool("dirty"), Some(true));

@@ -1,6 +1,5 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use std::process::Command;
 
@@ -11,9 +10,18 @@ impl Provider for BatteryProvider {
         ProviderMetadata {
             name: "battery".to_string(),
             fields: vec![
-                FieldSchema { name: "percent".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "charging".to_string(), field_type: FieldType::Bool },
-                FieldSchema { name: "time_remaining".to_string(), field_type: FieldType::String },
+                FieldSchema {
+                    name: "percent".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "charging".to_string(),
+                    field_type: FieldType::Bool,
+                },
+                FieldSchema {
+                    name: "time_remaining".to_string(),
+                    field_type: FieldType::String,
+                },
             ],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 30,
@@ -24,10 +32,7 @@ impl Provider for BatteryProvider {
     }
 
     fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        let output = Command::new("pmset")
-            .args(["-g", "batt"])
-            .output()
-            .ok()?;
+        let output = Command::new("pmset").args(["-g", "batt"]).output().ok()?;
 
         if !output.status.success() {
             return None;
@@ -50,10 +55,19 @@ fn parse_pmset_output(output: &str) -> Option<ProviderResult> {
         if let Some(pct_pos) = line.find('%') {
             // Walk backwards from % to find the number
             let before = &line[..pct_pos];
-            let num_str: String = before.chars().rev().take_while(|c| c.is_ascii_digit()).collect::<String>().chars().rev().collect();
+            let num_str: String = before
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
             percent = num_str.parse().unwrap_or(0);
 
-            charging = line.contains("charging") && !line.contains("discharging") && !line.contains("not charging");
+            charging = line.contains("charging")
+                && !line.contains("discharging")
+                && !line.contains("not charging");
 
             if line.contains("remaining") {
                 // Extract time like "1:23 remaining"

@@ -60,7 +60,10 @@ fn cache_entry_age_ms() {
     cache.put("test", None, result);
 
     let entry = cache.get("test", None).unwrap();
-    assert!(entry.age_ms() < 100, "Freshly cached entry should have small age");
+    assert!(
+        entry.age_ms() < 100,
+        "Freshly cached entry should have small age"
+    );
 }
 
 #[test]
@@ -91,7 +94,10 @@ fn cache_remove() {
     cache.put("test", None, result);
 
     cache.remove("test", None);
-    assert!(cache.get("test", None).is_none(), "Removed entry should be gone");
+    assert!(
+        cache.get("test", None).is_none(),
+        "Removed entry should be gone"
+    );
 }
 
 #[test]

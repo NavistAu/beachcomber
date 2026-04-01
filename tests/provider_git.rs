@@ -1,18 +1,38 @@
+use beachcomber::provider::InvalidationStrategy;
 use beachcomber::provider::Provider;
 use beachcomber::provider::git::GitProvider;
-use beachcomber::provider::InvalidationStrategy;
 use std::process::Command;
 use tempfile::TempDir;
 
 fn create_test_repo() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
-    Command::new("git").args(["init"]).current_dir(dir).output().unwrap();
-    Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(dir).output().unwrap();
-    Command::new("git").args(["config", "user.name", "Test"]).current_dir(dir).output().unwrap();
+    Command::new("git")
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
     std::fs::write(dir.join("README.md"), "# test").unwrap();
-    Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
-    Command::new("git").args(["commit", "-m", "init"]).current_dir(dir).output().unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
     tmp
 }
 
@@ -51,7 +71,10 @@ fn git_provider_invalidation_is_watch_and_poll() {
     let p = GitProvider;
     match p.metadata().invalidation {
         InvalidationStrategy::WatchAndPoll { ref patterns, .. } => {
-            assert!(patterns.iter().any(|p| p.contains(".git")), "Should watch .git directory");
+            assert!(
+                patterns.iter().any(|p| p.contains(".git")),
+                "Should watch .git directory"
+            );
         }
         _ => panic!("Expected WatchAndPoll invalidation"),
     }
@@ -99,7 +122,11 @@ fn git_provider_dirty_repo() {
 fn git_provider_staged_changes() {
     let tmp = create_test_repo();
     std::fs::write(tmp.path().join("staged.txt"), "content").unwrap();
-    Command::new("git").args(["add", "staged.txt"]).current_dir(tmp.path()).output().unwrap();
+    Command::new("git")
+        .args(["add", "staged.txt"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
     let p = GitProvider;
     let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
     assert_eq!(result.get("staged").unwrap().as_text(), "1");
@@ -118,7 +145,11 @@ fn git_provider_unstaged_changes() {
 fn git_provider_stash_count() {
     let tmp = create_test_repo();
     std::fs::write(tmp.path().join("README.md"), "stash me").unwrap();
-    Command::new("git").args(["stash"]).current_dir(tmp.path()).output().unwrap();
+    Command::new("git")
+        .args(["stash"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
     let p = GitProvider;
     let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
     assert_eq!(result.get("stash").unwrap().as_text(), "1");
@@ -127,7 +158,10 @@ fn git_provider_stash_count() {
 #[test]
 fn git_provider_requires_path() {
     let p = GitProvider;
-    assert!(p.execute(None).is_none(), "Git provider should return None without a path");
+    assert!(
+        p.execute(None).is_none(),
+        "Git provider should return None without a path"
+    );
 }
 
 #[test]
@@ -161,8 +195,15 @@ fn git_provider_commit_hash_format() {
     let commit = result.get("commit").unwrap().as_text();
     // Short SHA: non-empty, all hex, typically 7 chars
     assert!(!commit.is_empty(), "commit should not be empty");
-    assert!(commit.chars().all(|c| c.is_ascii_hexdigit()), "commit should be hex: {commit}");
-    assert!(commit.len() >= 4 && commit.len() <= 40, "unexpected commit length: {}", commit.len());
+    assert!(
+        commit.chars().all(|c| c.is_ascii_hexdigit()),
+        "commit should be hex: {commit}"
+    );
+    assert!(
+        commit.len() >= 4 && commit.len() <= 40,
+        "unexpected commit length: {}",
+        commit.len()
+    );
 }
 
 #[test]
@@ -170,7 +211,12 @@ fn git_provider_last_commit_age_secs() {
     let tmp = create_test_repo();
     let p = GitProvider;
     let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
-    let age: i64 = result.get("last_commit_age_secs").unwrap().as_text().parse().unwrap();
+    let age: i64 = result
+        .get("last_commit_age_secs")
+        .unwrap()
+        .as_text()
+        .parse()
+        .unwrap();
     // The commit was just made, so age should be very small (< 60 seconds)
     assert!(age >= 0, "age should be non-negative");
     assert!(age < 60, "last_commit_age_secs should be recent: {age}");
@@ -183,8 +229,18 @@ fn git_provider_lines_added_removed_unstaged() {
     std::fs::write(tmp.path().join("README.md"), "line1\nline2\nline3").unwrap();
     let p = GitProvider;
     let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
-    let added: i64 = result.get("lines_added").unwrap().as_text().parse().unwrap();
-    let removed: i64 = result.get("lines_removed").unwrap().as_text().parse().unwrap();
+    let added: i64 = result
+        .get("lines_added")
+        .unwrap()
+        .as_text()
+        .parse()
+        .unwrap();
+    let removed: i64 = result
+        .get("lines_removed")
+        .unwrap()
+        .as_text()
+        .parse()
+        .unwrap();
     // 3 lines added, 1 removed (the original "# test" line)
     assert!(added > 0, "lines_added should be > 0, got {added}");
     assert!(removed > 0, "lines_removed should be > 0, got {removed}");
@@ -195,13 +251,33 @@ fn git_provider_lines_staged_added_removed() {
     let tmp = create_test_repo();
     // Stage an addition of a new file with 2 lines
     std::fs::write(tmp.path().join("new.txt"), "alpha\nbeta").unwrap();
-    Command::new("git").args(["add", "new.txt"]).current_dir(tmp.path()).output().unwrap();
+    Command::new("git")
+        .args(["add", "new.txt"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
     let p = GitProvider;
     let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
-    let staged_added: i64 = result.get("lines_staged_added").unwrap().as_text().parse().unwrap();
-    let staged_removed: i64 = result.get("lines_staged_removed").unwrap().as_text().parse().unwrap();
-    assert_eq!(staged_added, 2, "staged_added should be 2, got {staged_added}");
-    assert_eq!(staged_removed, 0, "staged_removed should be 0 for a new file, got {staged_removed}");
+    let staged_added: i64 = result
+        .get("lines_staged_added")
+        .unwrap()
+        .as_text()
+        .parse()
+        .unwrap();
+    let staged_removed: i64 = result
+        .get("lines_staged_removed")
+        .unwrap()
+        .as_text()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        staged_added, 2,
+        "staged_added should be 2, got {staged_added}"
+    );
+    assert_eq!(
+        staged_removed, 0,
+        "staged_removed should be 0 for a new file, got {staged_removed}"
+    );
 }
 
 #[test]

@@ -1,6 +1,5 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 
 pub struct UptimeProvider;
@@ -10,10 +9,22 @@ impl Provider for UptimeProvider {
         ProviderMetadata {
             name: "uptime".to_string(),
             fields: vec![
-                FieldSchema { name: "seconds".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "days".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "hours".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "minutes".to_string(), field_type: FieldType::Int },
+                FieldSchema {
+                    name: "seconds".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "days".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "hours".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "minutes".to_string(),
+                    field_type: FieldType::Int,
+                },
             ],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
@@ -24,7 +35,10 @@ impl Provider for UptimeProvider {
     }
 
     fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        let mut boottime = libc::timeval { tv_sec: 0, tv_usec: 0 };
+        let mut boottime = libc::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        };
         let mut size = std::mem::size_of::<libc::timeval>();
         let mut mib = [libc::CTL_KERN, libc::KERN_BOOTTIME];
 

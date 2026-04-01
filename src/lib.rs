@@ -1,9 +1,9 @@
 pub mod cache;
-pub mod watcher;
+pub mod client;
 pub mod config;
+pub mod daemon;
 pub mod protocol;
 pub mod provider;
 pub mod scheduler;
 pub mod server;
-pub mod client;
-pub mod daemon;
+pub mod watcher;

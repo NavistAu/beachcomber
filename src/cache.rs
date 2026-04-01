@@ -67,13 +67,18 @@ impl Cache {
         interval_secs: Option<u64>,
     ) {
         let key = make_cache_key(provider, path);
-        let current_gen = self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.entries.insert(key, CacheEntry {
-            result,
-            created_at: Instant::now(),
-            generation: current_gen,
-            expected_interval_secs: interval_secs,
-        });
+        let current_gen = self
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.entries.insert(
+            key,
+            CacheEntry {
+                result,
+                created_at: Instant::now(),
+                generation: current_gen,
+                expected_interval_secs: interval_secs,
+            },
+        );
     }
 
     pub fn remove(&self, provider: &str, path: Option<&str>) {
@@ -91,22 +96,25 @@ impl Cache {
 
     /// List all cache entries with their keys parsed back into (provider, path) and age info.
     pub fn list_entries(&self) -> Vec<CacheEntryInfo> {
-        self.entries.iter().map(|entry| {
-            let key = entry.key();
-            let (provider, path) = if let Some(sep) = key.find('\0') {
-                (key[..sep].to_string(), Some(key[sep + 1..].to_string()))
-            } else {
-                (key.clone(), None)
-            };
-            let value = entry.value();
-            CacheEntryInfo {
-                provider,
-                path,
-                age_ms: value.age_ms(),
-                stale: value.is_stale(),
-                field_count: value.result.fields.len(),
-            }
-        }).collect()
+        self.entries
+            .iter()
+            .map(|entry| {
+                let key = entry.key();
+                let (provider, path) = if let Some(sep) = key.find('\0') {
+                    (key[..sep].to_string(), Some(key[sep + 1..].to_string()))
+                } else {
+                    (key.clone(), None)
+                };
+                let value = entry.value();
+                CacheEntryInfo {
+                    provider,
+                    path,
+                    age_ms: value.age_ms(),
+                    stale: value.is_stale(),
+                    field_count: value.result.fields.len(),
+                }
+            })
+            .collect()
     }
 }
 

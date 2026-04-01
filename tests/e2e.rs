@@ -17,7 +17,10 @@ async fn e2e_get_hostname_via_daemon() {
     assert!(response.ok, "Response should be ok");
     let data = response.data.unwrap();
     assert!(data["name"].is_string(), "hostname.name should be a string");
-    assert!(!data["name"].as_str().unwrap().is_empty(), "hostname should not be empty");
+    assert!(
+        !data["name"].as_str().unwrap().is_empty(),
+        "hostname should not be empty"
+    );
 
     handle.abort();
 }
@@ -35,7 +38,10 @@ async fn e2e_get_hostname_single_field() {
     let response = client.get("hostname.short", None).await.unwrap();
     assert!(response.ok);
     let short = response.data.unwrap();
-    assert!(short.is_string(), "Single field should return a string value");
+    assert!(
+        short.is_string(),
+        "Single field should return a string value"
+    );
 
     handle.abort();
 }
@@ -92,7 +98,10 @@ async fn e2e_poke_and_get() {
 
     let response = client.get("hostname.name", None).await.unwrap();
     assert!(response.ok);
-    assert!(response.age_ms.unwrap() < 1000, "Data should be fresh after poke");
+    assert!(
+        response.age_ms.unwrap() < 1000,
+        "Data should be fresh after poke"
+    );
 
     handle.abort();
 }
@@ -140,7 +149,10 @@ async fn e2e_multiple_concurrent_clients() {
 
     let first = &results[0];
     for r in &results {
-        assert_eq!(r, first, "All concurrent clients should get the same hostname");
+        assert_eq!(
+            r, first,
+            "All concurrent clients should get the same hostname"
+        );
     }
 
     handle.abort();

@@ -1,12 +1,12 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
-use std::sync::atomic::{AtomicU64, Ordering};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
@@ -35,7 +35,11 @@ impl TestServer {
         rt.spawn(async move { server.run().await.unwrap() });
         rt.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(50)).await });
 
-        Self { _tmp: tmp, sock, rt }
+        Self {
+            _tmp: tmp,
+            sock,
+            rt,
+        }
     }
 }
 
@@ -65,7 +69,8 @@ fn bench_concurrent_throughput(c: &mut Criterion) {
                                 // Each client does 10 gets.
                                 for _ in 0..10 {
                                     if let Ok(resp) = client.get("hostname.name", None).await
-                                        && resp.ok {
+                                        && resp.ok
+                                    {
                                         counter.fetch_add(1, Ordering::Relaxed);
                                     }
                                 }

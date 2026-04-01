@@ -1,14 +1,13 @@
 use beachcomber::cache::Cache;
+use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    Provider, ProviderMetadata, ProviderResult, Value,
-    FieldSchema, FieldType, InvalidationStrategy,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use beachcomber::server::Server;
-use beachcomber::protocol::Response;
 use std::sync::Arc;
 use tempfile::TempDir;
-use tokio::io::{AsyncWriteExt, AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 /// A path-scoped provider that stores the path it was called with
@@ -19,9 +18,10 @@ impl Provider for PathScopedProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "pathprov".to_string(),
-            fields: vec![
-                FieldSchema { name: "active_path".to_string(), field_type: FieldType::String },
-            ],
+            fields: vec![FieldSchema {
+                name: "active_path".to_string(),
+                field_type: FieldType::String,
+            }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
                 floor_secs: 1,
@@ -45,9 +45,10 @@ impl Provider for GlobalProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "globalprov".to_string(),
-            fields: vec![
-                FieldSchema { name: "info".to_string(), field_type: FieldType::String },
-            ],
+            fields: vec![FieldSchema {
+                name: "info".to_string(),
+                field_type: FieldType::String,
+            }],
             invalidation: InvalidationStrategy::Once,
             global: true,
         }
@@ -60,7 +61,12 @@ impl Provider for GlobalProvider {
     }
 }
 
-fn setup_with_custom_registry() -> (TempDir, std::path::PathBuf, Arc<Cache>, Arc<ProviderRegistry>) {
+fn setup_with_custom_registry() -> (
+    TempDir,
+    std::path::PathBuf,
+    Arc<Cache>,
+    Arc<ProviderRegistry>,
+) {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
     let cache = Arc::new(Cache::new());
@@ -76,7 +82,10 @@ async fn send_recv_line(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     request: &str,
 ) -> Response {
-    writer.write_all(format!("{request}\n").as_bytes()).await.unwrap();
+    writer
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
     let mut line = String::new();
     reader.read_line(&mut line).await.unwrap();
     serde_json::from_str(&line).unwrap()
@@ -105,11 +114,21 @@ async fn context_sets_default_path_for_scoped_providers() {
     let mut reader = BufReader::new(reader);
 
     // Set context to /project/a
-    let resp = send_recv_line(&mut writer, &mut reader, r#"{"op":"context","path":"/project/a"}"#).await;
+    let resp = send_recv_line(
+        &mut writer,
+        &mut reader,
+        r#"{"op":"context","path":"/project/a"}"#,
+    )
+    .await;
     assert!(resp.ok, "context op should succeed");
 
     // Get without explicit path — should use /project/a from context
-    let resp = send_recv_line(&mut writer, &mut reader, r#"{"op":"get","key":"pathprov.active_path"}"#).await;
+    let resp = send_recv_line(
+        &mut writer,
+        &mut reader,
+        r#"{"op":"get","key":"pathprov.active_path"}"#,
+    )
+    .await;
     assert!(resp.ok);
     assert_eq!(resp.data.unwrap(), serde_json::json!("/project/a"));
 
@@ -138,17 +157,27 @@ async fn explicit_path_overrides_context() {
     let mut reader = BufReader::new(reader);
 
     // Set context to /project/a
-    let resp = send_recv_line(&mut writer, &mut reader, r#"{"op":"context","path":"/project/a"}"#).await;
+    let resp = send_recv_line(
+        &mut writer,
+        &mut reader,
+        r#"{"op":"context","path":"/project/a"}"#,
+    )
+    .await;
     assert!(resp.ok);
 
     // Get with explicit path /project/b — should override context
     let resp = send_recv_line(
-        &mut writer, &mut reader,
+        &mut writer,
+        &mut reader,
         r#"{"op":"get","key":"pathprov.active_path","path":"/project/b"}"#,
-    ).await;
+    )
+    .await;
     assert!(resp.ok);
-    assert_eq!(resp.data.unwrap(), serde_json::json!("/project/b"),
-        "Explicit path should override context");
+    assert_eq!(
+        resp.data.unwrap(),
+        serde_json::json!("/project/b"),
+        "Explicit path should override context"
+    );
 
     handle.abort();
 }
@@ -172,14 +201,27 @@ async fn global_provider_ignores_context() {
     let mut reader = BufReader::new(reader);
 
     // Set context to some path
-    let resp = send_recv_line(&mut writer, &mut reader, r#"{"op":"context","path":"/some/dir"}"#).await;
+    let resp = send_recv_line(
+        &mut writer,
+        &mut reader,
+        r#"{"op":"context","path":"/some/dir"}"#,
+    )
+    .await;
     assert!(resp.ok);
 
     // Get from global provider — context should be ignored, should find cache entry at None path
-    let resp = send_recv_line(&mut writer, &mut reader, r#"{"op":"get","key":"globalprov.info"}"#).await;
+    let resp = send_recv_line(
+        &mut writer,
+        &mut reader,
+        r#"{"op":"get","key":"globalprov.info"}"#,
+    )
+    .await;
     assert!(resp.ok, "Global provider should still be found");
-    assert_eq!(resp.data.unwrap(), serde_json::json!("global-value"),
-        "Global provider should ignore context and return global cache entry");
+    assert_eq!(
+        resp.data.unwrap(),
+        serde_json::json!("global-value"),
+        "Global provider should ignore context and return global cache entry"
+    );
 
     handle.abort();
 }

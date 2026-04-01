@@ -9,8 +9,10 @@ enabled = false
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     let registry = ProviderRegistry::with_config(&config);
-    assert!(registry.get("battery").is_none(),
-            "Disabled provider should not be registered");
+    assert!(
+        registry.get("battery").is_none(),
+        "Disabled provider should not be registered"
+    );
     // Other providers should still exist
     assert!(registry.get("hostname").is_some());
 }
@@ -33,7 +35,13 @@ poll_secs = 10
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     let battery = config.providers.get("battery").unwrap();
-    assert_eq!(battery.invalidation.as_ref().and_then(|i| i.poll.as_deref()), None);
+    assert_eq!(
+        battery
+            .invalidation
+            .as_ref()
+            .and_then(|i| i.poll.as_deref()),
+        None
+    );
     // poll_secs is a separate field for overrides
     assert_eq!(battery.poll_secs, Some(10));
 }

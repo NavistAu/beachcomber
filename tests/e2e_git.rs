@@ -11,16 +11,40 @@ use tempfile::TempDir;
 fn create_test_repo() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
-    Command::new("git").args(["init"]).current_dir(dir).output().unwrap();
-    Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(dir).output().unwrap();
-    Command::new("git").args(["config", "user.name", "Test"]).current_dir(dir).output().unwrap();
+    Command::new("git")
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
     std::fs::write(dir.join("README.md"), "# test").unwrap();
-    Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
-    Command::new("git").args(["commit", "-m", "init"]).current_dir(dir).output().unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
     tmp
 }
 
-async fn setup_daemon() -> (TempDir, std::path::PathBuf, beachcomber::scheduler::SchedulerHandle) {
+async fn setup_daemon() -> (
+    TempDir,
+    std::path::PathBuf,
+    beachcomber::scheduler::SchedulerHandle,
+) {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
     let cache = Arc::new(Cache::new());
@@ -44,12 +68,18 @@ async fn poke_git_provider() {
     let (_tmp, sock, _handle) = setup_daemon().await;
     let client = Client::new(sock);
 
-    let resp = client.poke("git", Some(repo.path().to_str().unwrap())).await.unwrap();
+    let resp = client
+        .poke("git", Some(repo.path().to_str().unwrap()))
+        .await
+        .unwrap();
     assert!(resp.ok);
 
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    let resp = client.get("git.branch", Some(repo.path().to_str().unwrap())).await.unwrap();
+    let resp = client
+        .get("git.branch", Some(repo.path().to_str().unwrap()))
+        .await
+        .unwrap();
     assert!(resp.ok, "Should get git branch");
     let branch = resp.data.unwrap();
     assert!(branch.is_string(), "Branch should be a string");
@@ -67,7 +97,11 @@ async fn git_detects_dirty_state_via_poke() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let resp = client.get("git.dirty", Some(repo_path)).await.unwrap();
-    assert_eq!(resp.data.unwrap(), serde_json::json!(false), "Should be clean");
+    assert_eq!(
+        resp.data.unwrap(),
+        serde_json::json!(false),
+        "Should be clean"
+    );
 
     // Create a dirty file
     std::fs::write(repo.path().join("dirty.txt"), "dirty").unwrap();
@@ -77,7 +111,11 @@ async fn git_detects_dirty_state_via_poke() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let resp = client.get("git.dirty", Some(repo_path)).await.unwrap();
-    assert_eq!(resp.data.unwrap(), serde_json::json!(true), "Should be dirty");
+    assert_eq!(
+        resp.data.unwrap(),
+        serde_json::json!(true),
+        "Should be dirty"
+    );
 }
 
 #[tokio::test]
@@ -86,10 +124,16 @@ async fn git_returns_miss_for_non_repo() {
     let (_daemon_tmp, sock, _handle) = setup_daemon().await;
     let client = Client::new(sock);
 
-    client.poke("git", Some(tmp.path().to_str().unwrap())).await.unwrap();
+    client
+        .poke("git", Some(tmp.path().to_str().unwrap()))
+        .await
+        .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let resp = client.get("git.branch", Some(tmp.path().to_str().unwrap())).await.unwrap();
+    let resp = client
+        .get("git.branch", Some(tmp.path().to_str().unwrap()))
+        .await
+        .unwrap();
     assert!(resp.ok);
     assert!(resp.data.is_none(), "Non-git dir should return miss");
 }

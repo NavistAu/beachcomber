@@ -1,7 +1,6 @@
 use crate::config::ScriptProviderConfig;
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use std::process::Command;
 use tracing::debug;
@@ -25,10 +24,13 @@ impl Provider for ScriptProvider {
         let invalidation = build_invalidation(&self.config);
         let global = self.config.scope.as_deref() != Some("path");
 
-        let fields = self.config.fields.as_ref()
+        let fields = self
+            .config
+            .fields
+            .as_ref()
             .map(|f| {
-                f.iter().map(|(name, type_str)| {
-                    FieldSchema {
+                f.iter()
+                    .map(|(name, type_str)| FieldSchema {
                         name: name.clone(),
                         field_type: match type_str.as_str() {
                             "int" => FieldType::Int,
@@ -36,8 +38,8 @@ impl Provider for ScriptProvider {
                             "float" => FieldType::Float,
                             _ => FieldType::String,
                         },
-                    }
-                }).collect()
+                    })
+                    .collect()
             })
             .unwrap_or_default();
 
@@ -64,7 +66,11 @@ impl Provider for ScriptProvider {
 
         let output = output.ok()?;
         if !output.status.success() {
-            debug!("Script provider '{}' failed with exit code {:?}", self.name, output.status.code());
+            debug!(
+                "Script provider '{}' failed with exit code {:?}",
+                self.name,
+                output.status.code()
+            );
             return None;
         }
 
@@ -116,7 +122,10 @@ fn parse_kv_output(stdout: &str) -> Option<ProviderResult> {
             continue;
         }
         if let Some((key, value)) = line.split_once('=') {
-            result.insert(key.trim().to_string(), Value::String(value.trim().to_string()));
+            result.insert(
+                key.trim().to_string(),
+                Value::String(value.trim().to_string()),
+            );
         }
     }
 
@@ -127,12 +136,13 @@ fn parse_kv_output(stdout: &str) -> Option<ProviderResult> {
 }
 
 fn build_invalidation(config: &ScriptProviderConfig) -> InvalidationStrategy {
-    let poll_secs = config.invalidation.as_ref()
+    let poll_secs = config
+        .invalidation
+        .as_ref()
         .and_then(|i| i.poll.as_ref())
         .and_then(|s| crate::scheduler::parse_duration_secs_pub(s));
 
-    let watch_patterns = config.invalidation.as_ref()
-        .and_then(|i| i.watch.clone());
+    let watch_patterns = config.invalidation.as_ref().and_then(|i| i.watch.clone());
 
     match (watch_patterns, poll_secs) {
         (Some(patterns), Some(secs)) => InvalidationStrategy::WatchAndPoll {

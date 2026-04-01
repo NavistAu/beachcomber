@@ -1,6 +1,5 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use std::path::Path;
 use std::process::Command;
@@ -11,9 +10,10 @@ impl Provider for MiseProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "mise".to_string(),
-            fields: vec![
-                FieldSchema { name: "tools".to_string(), field_type: FieldType::String },
-            ],
+            fields: vec![FieldSchema {
+                name: "tools".to_string(),
+                field_type: FieldType::String,
+            }],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![".mise.toml".to_string(), "mise.toml".to_string()],
                 fallback_poll_secs: Some(30),
@@ -27,9 +27,10 @@ impl Provider for MiseProvider {
         let dir = Path::new(path);
 
         // Check for mise config files
-        let has_config = dir.join("mise.toml").exists()
-            || dir.join(".mise.toml").exists();
-        if !has_config { return None; }
+        let has_config = dir.join("mise.toml").exists() || dir.join(".mise.toml").exists();
+        if !has_config {
+            return None;
+        }
 
         // Run mise to get current tool versions
         let output = Command::new("mise")
@@ -40,7 +41,8 @@ impl Provider for MiseProvider {
             .filter(|o| o.status.success())?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let tools: Vec<String> = stdout.lines()
+        let tools: Vec<String> = stdout
+            .lines()
             .filter_map(|line| {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 2 {

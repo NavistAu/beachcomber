@@ -1,4 +1,4 @@
-use beachcomber::protocol::{Request, Response, Format};
+use beachcomber::protocol::{Format, Request, Response};
 
 #[test]
 fn parse_get_request_with_path() {
@@ -54,11 +54,7 @@ fn parse_poke_request() {
 
 #[test]
 fn response_ok_serializes() {
-    let response = Response::ok(
-        serde_json::json!({"branch": "main"}),
-        50,
-        false,
-    );
+    let response = Response::ok(serde_json::json!({"branch": "main"}), 50, false);
     let json = serde_json::to_value(&response).unwrap();
     assert_eq!(json["ok"], true);
     assert_eq!(json["data"]["branch"], "main");

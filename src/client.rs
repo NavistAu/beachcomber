@@ -59,9 +59,8 @@ impl ClientSession {
         self.writer.write_all(msg.as_bytes()).await?;
         let mut line = String::new();
         self.reader.read_line(&mut line).await?;
-        serde_json::from_str(&line).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })
+        serde_json::from_str(&line)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 }
 
@@ -75,11 +74,7 @@ impl Client {
         ClientSession::connect(&self.socket_path).await
     }
 
-    pub async fn get(
-        &self,
-        key: &str,
-        path: Option<&str>,
-    ) -> std::io::Result<Response> {
+    pub async fn get(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
         let mut request = serde_json::json!({
             "op": "get",
             "key": key,
@@ -90,11 +85,7 @@ impl Client {
         self.send_request(&request).await
     }
 
-    pub async fn get_text(
-        &self,
-        key: &str,
-        path: Option<&str>,
-    ) -> std::io::Result<String> {
+    pub async fn get_text(&self, key: &str, path: Option<&str>) -> std::io::Result<String> {
         let mut request = serde_json::json!({
             "op": "get",
             "key": key,
@@ -119,11 +110,7 @@ impl Client {
         Ok(trimmed)
     }
 
-    pub async fn poke(
-        &self,
-        key: &str,
-        path: Option<&str>,
-    ) -> std::io::Result<Response> {
+    pub async fn poke(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
         let mut request = serde_json::json!({
             "op": "poke",
             "key": key,
@@ -134,17 +121,11 @@ impl Client {
         self.send_request(&request).await
     }
 
-    pub async fn send_raw(
-        &self,
-        request: serde_json::Value,
-    ) -> std::io::Result<Response> {
+    pub async fn send_raw(&self, request: serde_json::Value) -> std::io::Result<Response> {
         self.send_request(&request).await
     }
 
-    async fn send_request(
-        &self,
-        request: &serde_json::Value,
-    ) -> std::io::Result<Response> {
+    async fn send_request(&self, request: &serde_json::Value) -> std::io::Result<Response> {
         let mut stream = UnixStream::connect(&self.socket_path).await?;
         let msg = format!("{}\n", serde_json::to_string(request).unwrap());
         stream.write_all(msg.as_bytes()).await?;
@@ -153,8 +134,7 @@ impl Client {
         let mut line = String::new();
         reader.read_line(&mut line).await?;
 
-        serde_json::from_str(&line).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })
+        serde_json::from_str(&line)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 }

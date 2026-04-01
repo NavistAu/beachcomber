@@ -1,5 +1,5 @@
-use beachcomber::provider::{Provider, InvalidationStrategy};
 use beachcomber::provider::network::NetworkProvider;
+use beachcomber::provider::{InvalidationStrategy, Provider};
 
 #[test]
 fn network_provider_metadata() {
@@ -14,7 +14,10 @@ fn network_provider_metadata() {
     assert!(fields.contains(&"ssid"));
     assert!(fields.contains(&"online"));
     match meta.invalidation {
-        InvalidationStrategy::Poll { interval_secs, floor_secs } => {
+        InvalidationStrategy::Poll {
+            interval_secs,
+            floor_secs,
+        } => {
             assert_eq!(interval_secs, 10);
             assert_eq!(floor_secs, 5);
         }

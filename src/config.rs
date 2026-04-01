@@ -97,32 +97,41 @@ pub struct ScriptInvalidation {
 
 impl Config {
     pub fn is_provider_disabled(&self, name: &str) -> bool {
-        self.providers.get(name)
+        self.providers
+            .get(name)
             .and_then(|p| p.enabled)
             .map(|e| !e)
             .unwrap_or(false)
     }
 
     pub fn script_providers(&self) -> Vec<(String, ScriptProviderConfig)> {
-        self.providers.iter()
-            .filter(|(_, v)| v.provider_type.as_deref() == Some("script") || (!v.command.is_empty() && v.provider_type.is_none()))
+        self.providers
+            .iter()
+            .filter(|(_, v)| {
+                v.provider_type.as_deref() == Some("script")
+                    || (!v.command.is_empty() && v.provider_type.is_none())
+            })
             .map(|(name, config)| (name.clone(), config.clone()))
             .collect()
     }
 
     pub fn http_providers(&self) -> Vec<(String, HttpProviderConfig)> {
-        self.providers.iter()
+        self.providers
+            .iter()
             .filter(|(_, v)| v.provider_type.as_deref() == Some("http"))
             .map(|(name, config)| {
-                (name.clone(), HttpProviderConfig {
-                    provider_type: config.provider_type.clone(),
-                    url: config.url.clone().unwrap_or_default(),
-                    method: config.method.clone(),
-                    headers: config.headers.clone(),
-                    body: config.body.clone(),
-                    extract: config.extract.clone(),
-                    invalidation: config.invalidation.clone(),
-                })
+                (
+                    name.clone(),
+                    HttpProviderConfig {
+                        provider_type: config.provider_type.clone(),
+                        url: config.url.clone().unwrap_or_default(),
+                        method: config.method.clone(),
+                        headers: config.headers.clone(),
+                        body: config.body.clone(),
+                        extract: config.extract.clone(),
+                        invalidation: config.invalidation.clone(),
+                    },
+                )
             })
             .collect()
     }
@@ -185,7 +194,9 @@ impl Config {
 
                 // SAFETY: env file is loaded once at daemon startup before any threads
                 // are spawned, so there are no concurrent readers of the environment.
-                unsafe { std::env::set_var(key, value); }
+                unsafe {
+                    std::env::set_var(key, value);
+                }
                 count += 1;
             }
         }
@@ -214,7 +225,10 @@ impl Config {
         xdg.get_state_home()
             .unwrap_or_else(|| {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                PathBuf::from(home).join(".local").join("state").join("beachcomber")
+                PathBuf::from(home)
+                    .join(".local")
+                    .join("state")
+                    .join("beachcomber")
             })
             .join("daemon.log")
     }
@@ -223,7 +237,8 @@ impl Config {
 /// Expand ~ to $HOME in a path string.
 fn shellexpand(path: &str) -> String {
     if path.starts_with("~/")
-        && let Ok(home) = std::env::var("HOME") {
+        && let Ok(home) = std::env::var("HOME")
+    {
         return format!("{}{}", home, &path[1..]);
     }
     path.to_string()

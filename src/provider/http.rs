@@ -1,7 +1,6 @@
 use crate::config::HttpProviderConfig;
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use tracing::debug;
 
@@ -36,8 +35,15 @@ impl Provider for HttpProvider {
         let method = self.config.method.as_deref().unwrap_or("GET");
 
         // Build a list of (key, expanded_value) header pairs
-        let header_pairs: Vec<(String, String)> = self.config.headers.as_ref()
-            .map(|h| h.iter().map(|(k, v)| (k.clone(), expand_env_vars(v))).collect())
+        let header_pairs: Vec<(String, String)> = self
+            .config
+            .headers
+            .as_ref()
+            .map(|h| {
+                h.iter()
+                    .map(|(k, v)| (k.clone(), expand_env_vars(v)))
+                    .collect()
+            })
             .unwrap_or_default();
 
         // ureq 3.x uses type-state for body: GET/HEAD/DELETE return RequestBuilder<WithoutBody>,
@@ -75,7 +81,10 @@ impl Provider for HttpProvider {
         let body = match response.body_mut().read_to_string() {
             Ok(s) => s,
             Err(e) => {
-                debug!("HTTP provider '{}' failed to read response body: {}", self.name, e);
+                debug!(
+                    "HTTP provider '{}' failed to read response body: {}",
+                    self.name, e
+                );
                 return None;
             }
         };
@@ -111,7 +120,12 @@ fn expand_env_vars(s: &str) -> String {
         if let Some(end) = result[start..].find('}') {
             let var_name = result[start + 2..start + end].to_string();
             let var_value = std::env::var(&var_name).unwrap_or_default();
-            result = format!("{}{}{}", &result[..start], var_value, &result[start + end + 1..]);
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                var_value,
+                &result[start + end + 1..]
+            );
         } else {
             break;
         }
@@ -198,7 +212,9 @@ fn json_to_provider_result(value: &serde_json::Value) -> Option<ProviderResult> 
 }
 
 fn build_invalidation(config: &HttpProviderConfig) -> InvalidationStrategy {
-    let poll_secs = config.invalidation.as_ref()
+    let poll_secs = config
+        .invalidation
+        .as_ref()
         .and_then(|i| i.poll.as_ref())
         .and_then(|s| crate::scheduler::parse_duration_secs_pub(s));
 

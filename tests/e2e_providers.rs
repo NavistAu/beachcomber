@@ -15,7 +15,10 @@ async fn e2e_all_builtin_providers_registered() {
     let client = Client::new(sock);
 
     let hostname = client.get("hostname", None).await.unwrap();
-    assert!(hostname.ok && hostname.data.is_some(), "hostname should be cached");
+    assert!(
+        hostname.ok && hostname.data.is_some(),
+        "hostname should be cached"
+    );
 
     let user = client.get("user", None).await.unwrap();
     assert!(user.ok && user.data.is_some(), "user should be cached");
@@ -26,7 +29,10 @@ async fn e2e_all_builtin_providers_registered() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let load = client.get("load", None).await.unwrap();
-    assert!(load.ok && load.data.is_some(), "load should have data after poke");
+    assert!(
+        load.ok && load.data.is_some(),
+        "load should have data after poke"
+    );
 
     handle.abort();
 }

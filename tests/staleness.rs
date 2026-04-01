@@ -12,7 +12,10 @@ fn fresh_entry_is_not_stale() {
     cache.put_with_interval("myprov", None, result, Some(60));
 
     let entry = cache.get("myprov", None).unwrap();
-    assert!(!entry.is_stale(), "Freshly written entry should not be stale");
+    assert!(
+        !entry.is_stale(),
+        "Freshly written entry should not be stale"
+    );
 }
 
 /// Test 2: An entry whose age exceeds the interval is stale.
@@ -35,7 +38,10 @@ fn expired_entry_is_stale() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
 
     let entry = cache.get("myprov", None).unwrap();
-    assert!(entry.is_stale(), "Entry older than its interval should be stale");
+    assert!(
+        entry.is_stale(),
+        "Entry older than its interval should be stale"
+    );
 }
 
 /// Test 3: An entry stored with no interval (e.g. Once providers) is never stale.
@@ -49,5 +55,8 @@ fn no_interval_entry_is_never_stale() {
     cache.put("myprov", None, result);
 
     let entry = cache.get("myprov", None).unwrap();
-    assert!(!entry.is_stale(), "Entry with no interval should never be stale");
+    assert!(
+        !entry.is_stale(),
+        "Entry with no interval should never be stale"
+    );
 }

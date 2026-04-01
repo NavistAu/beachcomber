@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use beachcomber::provider::Provider;
 use beachcomber::provider::battery::BatteryProvider;
 use beachcomber::provider::gcloud::GcloudProvider;
 use beachcomber::provider::git::GitProvider;
@@ -8,7 +8,7 @@ use beachcomber::provider::load::LoadProvider;
 use beachcomber::provider::network::NetworkProvider;
 use beachcomber::provider::uptime::UptimeProvider;
 use beachcomber::provider::user::UserProvider;
-use beachcomber::provider::Provider;
+use criterion::{Criterion, criterion_group, criterion_main};
 
 fn bench_hostname_execute(c: &mut Criterion) {
     let p = HostnameProvider;

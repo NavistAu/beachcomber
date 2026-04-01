@@ -14,16 +14,20 @@ async fn query_activity_triggers_provider_execution() {
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // Send query activity for hostname (a Once provider — should execute immediately)
-    handle.send(SchedulerMessage::QueryActivity {
-        provider: "hostname".to_string(),
-        path: None,
-    }).await;
+    handle
+        .send(SchedulerMessage::QueryActivity {
+            provider: "hostname".to_string(),
+            path: None,
+        })
+        .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Cache should be populated
-    assert!(cache.get("hostname", None).is_some(),
-            "QueryActivity should trigger provider execution");
+    assert!(
+        cache.get("hostname", None).is_some(),
+        "QueryActivity should trigger provider execution"
+    );
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;
@@ -39,10 +43,12 @@ async fn query_activity_sets_up_polling() {
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // Query load provider (Poll with 10s interval)
-    handle.send(SchedulerMessage::QueryActivity {
-        provider: "load".to_string(),
-        path: None,
-    }).await;
+    handle
+        .send(SchedulerMessage::QueryActivity {
+            provider: "load".to_string(),
+            path: None,
+        })
+        .await;
 
     // Wait for initial execution + one poll cycle
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -56,8 +62,10 @@ async fn query_activity_sets_up_polling() {
     let entry2 = cache.get("load", None);
     assert!(entry2.is_some(), "Should still have load data after poll");
     // The generation should have advanced (data was refreshed)
-    assert!(entry2.unwrap().generation > entry1.unwrap().generation,
-            "Data should have been refreshed by poll");
+    assert!(
+        entry2.unwrap().generation > entry1.unwrap().generation,
+        "Data should have been refreshed by poll"
+    );
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;
@@ -74,15 +82,19 @@ async fn repeated_queries_keep_data_warm() {
 
     // Simulate repeated queries (like a statusline)
     for _ in 0..5 {
-        handle.send(SchedulerMessage::QueryActivity {
-            provider: "hostname".to_string(),
-            path: None,
-        }).await;
+        handle
+            .send(SchedulerMessage::QueryActivity {
+                provider: "hostname".to_string(),
+                path: None,
+            })
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
-    assert!(cache.get("hostname", None).is_some(),
-            "Repeated queries should keep data warm");
+    assert!(
+        cache.get("hostname", None).is_some(),
+        "Repeated queries should keep data warm"
+    );
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;

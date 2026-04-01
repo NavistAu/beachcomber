@@ -119,9 +119,7 @@ pub fn ensure_daemon(socket_path: &Path) -> std::io::Result<()> {
         return Ok(());
     }
 
-    let binary = std::env::current_exe()?
-        .to_string_lossy()
-        .to_string();
+    let binary = std::env::current_exe()?.to_string_lossy().to_string();
 
     fork_daemon(&binary, socket_path)?;
 

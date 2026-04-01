@@ -1,6 +1,5 @@
 use crate::provider::{
-    Provider, ProviderMetadata, ProviderResult, Value,
-    FieldSchema, FieldType, InvalidationStrategy,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 
 pub struct HostnameProvider;
@@ -10,8 +9,14 @@ impl Provider for HostnameProvider {
         ProviderMetadata {
             name: "hostname".to_string(),
             fields: vec![
-                FieldSchema { name: "name".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "short".to_string(), field_type: FieldType::String },
+                FieldSchema {
+                    name: "name".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "short".to_string(),
+                    field_type: FieldType::String,
+                },
             ],
             invalidation: InvalidationStrategy::Once,
             global: true,

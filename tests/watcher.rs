@@ -1,13 +1,15 @@
 use beachcomber::watcher::FsWatcher;
 use std::fs;
 use tempfile::TempDir;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 #[tokio::test]
 async fn watcher_detects_file_creation() {
     let tmp = TempDir::new().unwrap();
     let (mut watcher, mut rx) = FsWatcher::new().expect("Failed to create watcher");
-    watcher.watch(tmp.path()).expect("Failed to watch directory");
+    watcher
+        .watch(tmp.path())
+        .expect("Failed to watch directory");
 
     fs::write(tmp.path().join("test.txt"), "hello").unwrap();
 
@@ -24,7 +26,9 @@ async fn watcher_detects_file_modification() {
     fs::write(&file_path, "initial").unwrap();
 
     let (mut watcher, mut rx) = FsWatcher::new().expect("Failed to create watcher");
-    watcher.watch(tmp.path()).expect("Failed to watch directory");
+    watcher
+        .watch(tmp.path())
+        .expect("Failed to watch directory");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     while rx.try_recv().is_ok() {}
@@ -40,7 +44,9 @@ async fn watcher_unwatch_stops_events() {
     let tmp = TempDir::new().unwrap();
     let (mut watcher, mut rx) = FsWatcher::new().expect("Failed to create watcher");
 
-    watcher.watch(tmp.path()).expect("Failed to watch directory");
+    watcher
+        .watch(tmp.path())
+        .expect("Failed to watch directory");
     watcher.unwatch(tmp.path()).expect("Failed to unwatch");
 
     fs::write(tmp.path().join("test.txt"), "hello").unwrap();

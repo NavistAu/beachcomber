@@ -12,16 +12,26 @@ async fn scheduler_poke_populates_cache() {
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
-    handle.send(SchedulerMessage::Poke {
-        provider: "hostname".to_string(),
-        path: None,
-    }).await;
+    handle
+        .send(SchedulerMessage::Poke {
+            provider: "hostname".to_string(),
+            path: None,
+        })
+        .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let entry = cache.get("hostname", None);
     assert!(entry.is_some(), "Poke should populate cache");
-    assert!(!entry.unwrap().result.get("name").unwrap().as_text().is_empty());
+    assert!(
+        !entry
+            .unwrap()
+            .result
+            .get("name")
+            .unwrap()
+            .as_text()
+            .is_empty()
+    );
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;
@@ -36,10 +46,12 @@ async fn scheduler_poke_unknown_provider() {
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
-    handle.send(SchedulerMessage::Poke {
-        provider: "nonexistent".to_string(),
-        path: None,
-    }).await;
+    handle
+        .send(SchedulerMessage::Poke {
+            provider: "nonexistent".to_string(),
+            path: None,
+        })
+        .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 

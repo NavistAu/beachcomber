@@ -1,6 +1,5 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 
 pub struct GcloudProvider;
@@ -10,8 +9,14 @@ impl Provider for GcloudProvider {
         ProviderMetadata {
             name: "gcloud".to_string(),
             fields: vec![
-                FieldSchema { name: "project".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "account".to_string(), field_type: FieldType::String },
+                FieldSchema {
+                    name: "project".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "account".to_string(),
+                    field_type: FieldType::String,
+                },
             ],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
@@ -66,5 +71,9 @@ fn gcloud_config_dir() -> Option<std::path::PathBuf> {
         return Some(std::path::PathBuf::from(dir));
     }
     let home = std::env::var("HOME").ok()?;
-    Some(std::path::PathBuf::from(home).join(".config").join("gcloud"))
+    Some(
+        std::path::PathBuf::from(home)
+            .join(".config")
+            .join("gcloud"),
+    )
 }

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 pub struct Server {
     socket_path: PathBuf,
@@ -42,7 +42,10 @@ impl Server {
             if std::os::unix::net::UnixStream::connect(&self.socket_path).is_ok() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::AddrInUse,
-                    format!("Another daemon is already listening on {:?}", self.socket_path),
+                    format!(
+                        "Another daemon is already listening on {:?}",
+                        self.socket_path
+                    ),
                 ));
             }
             // Stale socket file — remove it
@@ -59,7 +62,8 @@ impl Server {
                     let registry = Arc::clone(&self.registry);
                     let scheduler = self.scheduler.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, cache, registry, scheduler).await {
+                        if let Err(e) = handle_connection(stream, cache, registry, scheduler).await
+                        {
                             debug!("Connection error: {}", e);
                         }
                     });
@@ -93,7 +97,14 @@ async fn handle_connection(
 
         let response_bytes = match serde_json::from_str::<Request>(trimmed) {
             Ok(request) => {
-                let response = handle_request(&request, &cache, &registry, scheduler.as_ref(), &mut context_path).await;
+                let response = handle_request(
+                    &request,
+                    &cache,
+                    &registry,
+                    scheduler.as_ref(),
+                    &mut context_path,
+                )
+                .await;
                 format_response(&request, &response)
             }
             Err(e) => {
@@ -165,14 +176,17 @@ async fn handle_request(
                 return Response::error(format!("unknown provider: {provider_name}"));
             }
 
-            let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
+            let effective_path =
+                resolve_path(path.as_deref(), context_path, provider_name, registry);
 
             // Signal demand to scheduler — this keeps the data warm.
             if let Some(sched) = scheduler {
-                sched.send(SchedulerMessage::QueryActivity {
-                    provider: provider_name.to_string(),
-                    path: effective_path.clone(),
-                }).await;
+                sched
+                    .send(SchedulerMessage::QueryActivity {
+                        provider: provider_name.to_string(),
+                        path: effective_path.clone(),
+                    })
+                    .await;
             }
 
             match cache.get(provider_name, effective_path.as_deref()) {
@@ -183,9 +197,11 @@ async fn handle_request(
                     let data = if let Some(field_name) = field {
                         match entry.result.get(field_name) {
                             Some(value) => serde_json::to_value(value).unwrap(),
-                            None => return Response::error(
-                                format!("unknown field: {provider_name}.{field_name}")
-                            ),
+                            None => {
+                                return Response::error(format!(
+                                    "unknown field: {provider_name}.{field_name}"
+                                ));
+                            }
                         }
                     } else {
                         entry.result.to_json()
@@ -197,15 +213,24 @@ async fn handle_request(
         }
         Request::Poke { key, path } => {
             let (provider_name, _) = protocol::split_key(key);
-            let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
+            let effective_path =
+                resolve_path(path.as_deref(), context_path, provider_name, registry);
 
             if let Some(sched) = scheduler {
                 // Route through scheduler.
-                sched.send(SchedulerMessage::Poke {
-                    provider: provider_name.to_string(),
-                    path: effective_path,
-                }).await;
-                Response { ok: true, data: None, age_ms: None, stale: None, error: None }
+                sched
+                    .send(SchedulerMessage::Poke {
+                        provider: provider_name.to_string(),
+                        path: effective_path,
+                    })
+                    .await;
+                Response {
+                    ok: true,
+                    data: None,
+                    age_ms: None,
+                    stale: None,
+                    error: None,
+                }
             } else {
                 // Fallback: execute directly (used by tests with None scheduler).
                 match registry.get(provider_name) {
@@ -213,7 +238,13 @@ async fn handle_request(
                         if let Some(result) = provider.execute(effective_path.as_deref()) {
                             cache.put(provider_name, effective_path.as_deref(), result);
                         }
-                        Response { ok: true, data: None, age_ms: None, stale: None, error: None }
+                        Response {
+                            ok: true,
+                            data: None,
+                            age_ms: None,
+                            stale: None,
+                            error: None,
+                        }
                     }
                     None => Response::error(format!("unknown provider: {provider_name}")),
                 }
@@ -221,10 +252,18 @@ async fn handle_request(
         }
         Request::Context { path } => {
             *context_path = Some(path.clone());
-            Response { ok: true, data: None, age_ms: None, stale: None, error: None }
+            Response {
+                ok: true,
+                data: None,
+                age_ms: None,
+                stale: None,
+                error: None,
+            }
         }
         Request::List => {
-            let providers: Vec<serde_json::Value> = registry.list().into_iter()
+            let providers: Vec<serde_json::Value> = registry
+                .list()
+                .into_iter()
                 .map(|name| {
                     let meta = registry.get(&name).unwrap().metadata();
                     serde_json::json!({
@@ -246,12 +285,18 @@ async fn handle_request(
 
             // Get scheduler status if available.
             if let Some(sched) = scheduler
-                && let Some(sched_status) = sched.get_status().await {
-                status_data["watched_paths"] = serde_json::to_value(&sched_status.watched_paths).unwrap_or_default();
-                status_data["in_flight"] = serde_json::to_value(&sched_status.in_flight).unwrap_or_default();
-                status_data["backoff"] = serde_json::to_value(&sched_status.backoff).unwrap_or_default();
-                status_data["poll_timers"] = serde_json::to_value(&sched_status.poll_timers).unwrap_or_default();
-                status_data["demand"] = serde_json::to_value(&sched_status.demand).unwrap_or_default();
+                && let Some(sched_status) = sched.get_status().await
+            {
+                status_data["watched_paths"] =
+                    serde_json::to_value(&sched_status.watched_paths).unwrap_or_default();
+                status_data["in_flight"] =
+                    serde_json::to_value(&sched_status.in_flight).unwrap_or_default();
+                status_data["backoff"] =
+                    serde_json::to_value(&sched_status.backoff).unwrap_or_default();
+                status_data["poll_timers"] =
+                    serde_json::to_value(&sched_status.poll_timers).unwrap_or_default();
+                status_data["demand"] =
+                    serde_json::to_value(&sched_status.demand).unwrap_or_default();
             }
 
             Response::ok(status_data, 0, false)
@@ -268,14 +313,18 @@ fn format_response(request: &Request, response: &Response) -> String {
     match format {
         Format::Text => {
             if !response.ok {
-                return format!("error: {}\n", response.error.as_deref().unwrap_or("unknown"));
+                return format!(
+                    "error: {}\n",
+                    response.error.as_deref().unwrap_or("unknown")
+                );
             }
             match &response.data {
                 Some(serde_json::Value::String(s)) => format!("{s}\n"),
                 Some(serde_json::Value::Number(n)) => format!("{n}\n"),
                 Some(serde_json::Value::Bool(b)) => format!("{b}\n"),
                 Some(serde_json::Value::Object(map)) => {
-                    let mut lines: Vec<String> = map.iter()
+                    let mut lines: Vec<String> = map
+                        .iter()
                         .map(|(k, v)| {
                             let val = match v {
                                 serde_json::Value::String(s) => s.clone(),

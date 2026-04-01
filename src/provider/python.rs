@@ -1,6 +1,5 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use std::path::Path;
 
@@ -11,9 +10,18 @@ impl Provider for PythonProvider {
         ProviderMetadata {
             name: "python".to_string(),
             fields: vec![
-                FieldSchema { name: "venv".to_string(), field_type: FieldType::Bool },
-                FieldSchema { name: "venv_name".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "version".to_string(), field_type: FieldType::String },
+                FieldSchema {
+                    name: "venv".to_string(),
+                    field_type: FieldType::Bool,
+                },
+                FieldSchema {
+                    name: "venv_name".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "version".to_string(),
+                    field_type: FieldType::String,
+                },
             ],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![".venv".to_string(), "pyproject.toml".to_string()],
@@ -54,16 +62,20 @@ impl Provider for PythonProvider {
         }
 
         // Also check VIRTUAL_ENV env var
-        if !venv_found
-            && let Ok(venv_path) = std::env::var("VIRTUAL_ENV") {
+        if !venv_found && let Ok(venv_path) = std::env::var("VIRTUAL_ENV") {
             let p = Path::new(&venv_path);
             if p.exists() {
                 venv_found = true;
-                venv_name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                venv_name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
             }
         }
 
-        if !venv_found { return None; }
+        if !venv_found {
+            return None;
+        }
 
         let mut result = ProviderResult::new();
         result.insert("venv", Value::Bool(true));

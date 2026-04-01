@@ -1,6 +1,5 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use std::net::Ipv4Addr;
 use std::process::Command;
@@ -12,12 +11,30 @@ impl Provider for NetworkProvider {
         ProviderMetadata {
             name: "network".to_string(),
             fields: vec![
-                FieldSchema { name: "interface".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "ip".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "vpn_active".to_string(), field_type: FieldType::Bool },
-                FieldSchema { name: "vpn_name".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "ssid".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "online".to_string(), field_type: FieldType::Bool },
+                FieldSchema {
+                    name: "interface".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "ip".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "vpn_active".to_string(),
+                    field_type: FieldType::Bool,
+                },
+                FieldSchema {
+                    name: "vpn_name".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "ssid".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "online".to_string(),
+                    field_type: FieldType::Bool,
+                },
             ],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 10,
@@ -76,8 +93,7 @@ fn scan_interfaces() -> (String, String, bool, String) {
             if !entry.ifa_addr.is_null() {
                 let family = unsafe { (*entry.ifa_addr).sa_family } as i32;
                 if family == libc::AF_INET {
-                    let addr =
-                        unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in) };
+                    let addr = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in) };
                     let ip = Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
                     if !ip.is_loopback() && !ip.is_link_local() {
                         // Prefer en0 (primary ethernet/wifi on macOS), otherwise take first

@@ -1,7 +1,7 @@
-use beachcomber::provider::{Provider, InvalidationStrategy};
 use beachcomber::provider::battery::BatteryProvider;
 use beachcomber::provider::load::LoadProvider;
 use beachcomber::provider::uptime::UptimeProvider;
+use beachcomber::provider::{InvalidationStrategy, Provider};
 
 // --- Battery ---
 
@@ -16,7 +16,10 @@ fn battery_provider_metadata() {
     assert!(fields.contains(&"charging"));
     assert!(fields.contains(&"time_remaining"));
     match meta.invalidation {
-        InvalidationStrategy::Poll { interval_secs, floor_secs } => {
+        InvalidationStrategy::Poll {
+            interval_secs,
+            floor_secs,
+        } => {
             assert_eq!(interval_secs, 30);
             assert_eq!(floor_secs, 5);
         }

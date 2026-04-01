@@ -12,16 +12,14 @@ impl FsWatcher {
         let (tx, rx) = mpsc::channel(256);
 
         let watcher = RecommendedWatcher::new(
-            move |result: Result<Event, notify::Error>| {
-                match result {
-                    Ok(event) => {
-                        if !event.paths.is_empty() {
-                            let _ = tx.blocking_send(event.paths);
-                        }
+            move |result: Result<Event, notify::Error>| match result {
+                Ok(event) => {
+                    if !event.paths.is_empty() {
+                        let _ = tx.blocking_send(event.paths);
                     }
-                    Err(e) => {
-                        warn!("Filesystem watch error: {}", e);
-                    }
+                }
+                Err(e) => {
+                    warn!("Filesystem watch error: {}", e);
                 }
             },
             Config::default(),

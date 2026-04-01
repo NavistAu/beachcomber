@@ -1,6 +1,5 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use std::path::Path;
 use std::process::Command;
@@ -12,8 +11,14 @@ impl Provider for DirenvProvider {
         ProviderMetadata {
             name: "direnv".to_string(),
             fields: vec![
-                FieldSchema { name: "status".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "allowed".to_string(), field_type: FieldType::Bool },
+                FieldSchema {
+                    name: "status".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "allowed".to_string(),
+                    field_type: FieldType::Bool,
+                },
             ],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![".envrc".to_string()],
@@ -26,7 +31,9 @@ impl Provider for DirenvProvider {
     fn execute(&self, path: Option<&str>) -> Option<ProviderResult> {
         let path = path?;
         let dir = Path::new(path);
-        if !dir.join(".envrc").exists() { return None; }
+        if !dir.join(".envrc").exists() {
+            return None;
+        }
 
         let allowed = Command::new("direnv")
             .args(["status"])

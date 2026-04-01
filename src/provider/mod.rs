@@ -1,25 +1,25 @@
-pub mod registry;
-pub mod hostname;
-pub mod user;
-pub mod git;
+pub mod asdf;
+pub mod aws;
 pub mod battery;
+pub mod conda;
+pub mod direnv;
+pub mod gcloud;
+pub mod git;
+pub mod hostname;
+pub mod http;
+pub mod kubecontext;
 pub mod load;
+pub mod mise;
+pub mod network;
+pub mod python;
+pub mod registry;
+pub mod script;
+pub mod terraform;
 #[cfg(target_os = "macos")]
 pub mod uptime;
-pub mod network;
-pub mod kubecontext;
-pub mod aws;
-pub mod gcloud;
-pub mod terraform;
-pub mod direnv;
-pub mod python;
-pub mod conda;
-pub mod mise;
-pub mod asdf;
-pub mod script;
-pub mod http;
+pub mod user;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Note: `#[serde(untagged)]` means Float values that are whole numbers (e.g., 42.0)
@@ -52,7 +52,9 @@ pub struct ProviderResult {
 
 impl ProviderResult {
     pub fn new() -> Self {
-        Self { fields: HashMap::new() }
+        Self {
+            fields: HashMap::new(),
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
@@ -64,7 +66,9 @@ impl ProviderResult {
     }
 
     pub fn to_kv_text(&self) -> String {
-        let mut lines: Vec<String> = self.fields.iter()
+        let mut lines: Vec<String> = self
+            .fields
+            .iter()
             .map(|(k, v)| format!("{}={}", k, v.as_text()))
             .collect();
         lines.sort();

@@ -1,6 +1,5 @@
 use crate::provider::{
-    Provider, ProviderMetadata, ProviderResult, Value,
-    FieldSchema, FieldType, InvalidationStrategy,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 
 pub struct UserProvider;
@@ -10,8 +9,14 @@ impl Provider for UserProvider {
         ProviderMetadata {
             name: "user".to_string(),
             fields: vec![
-                FieldSchema { name: "name".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "uid".to_string(), field_type: FieldType::Int },
+                FieldSchema {
+                    name: "name".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "uid".to_string(),
+                    field_type: FieldType::Int,
+                },
             ],
             invalidation: InvalidationStrategy::Once,
             global: true,

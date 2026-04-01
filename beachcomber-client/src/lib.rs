@@ -249,21 +249,26 @@ impl Client {
     }
 
     fn connect(&self, path: &PathBuf) -> Result<UnixStream, CombError> {
-        let stream = UnixStream::connect(path)
-            .map_err(CombError::ConnectionFailed)?;
+        let stream = UnixStream::connect(path).map_err(CombError::ConnectionFailed)?;
         stream.set_read_timeout(Some(self.config.timeout))?;
         stream.set_write_timeout(Some(self.config.timeout))?;
         Ok(stream)
     }
 
-    fn send_recv(&self, stream: &mut UnixStream, request: &serde_json::Value) -> Result<CombResult, CombError> {
+    fn send_recv(
+        &self,
+        stream: &mut UnixStream,
+        request: &serde_json::Value,
+    ) -> Result<CombResult, CombError> {
         let msg = format!("{}\n", serde_json::to_string(request).unwrap());
         stream.write_all(msg.as_bytes())?;
 
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut
+            {
                 CombError::Timeout
             } else {
                 CombError::IoError(e)
@@ -340,13 +345,14 @@ impl Session {
 // --- Internal helpers ---
 
 fn parse_response(line: &str) -> Result<CombResult, CombError> {
-    let resp: serde_json::Value = serde_json::from_str(line.trim())
-        .map_err(|e| CombError::ParseError(e.to_string()))?;
+    let resp: serde_json::Value =
+        serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
 
     let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if !ok {
-        let error = resp.get("error")
+        let error = resp
+            .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown error")
             .to_string();
@@ -356,15 +362,16 @@ fn parse_response(line: &str) -> Result<CombResult, CombError> {
     match resp.get("data") {
         Some(serde_json::Value::Null) | None => Ok(CombResult::Miss),
         Some(data) => {
-            let age_ms = resp.get("age_ms")
+            let age_ms = resp
+                .get("age_ms")
                 .and_then(|v| v.as_u64())
                 .map(|v| v as u128)
                 .unwrap_or(0);
-            let stale = resp.get("stale")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let stale = resp.get("stale").and_then(|v| v.as_bool()).unwrap_or(false);
             Ok(CombResult::Hit {
-                data: CombData { value: data.clone() },
+                data: CombData {
+                    value: data.clone(),
+                },
                 age_ms,
                 stale,
             })

@@ -1,10 +1,10 @@
 use beachcomber::provider::Provider;
-use beachcomber::provider::terraform::TerraformProvider;
-use beachcomber::provider::direnv::DirenvProvider;
-use beachcomber::provider::python::PythonProvider;
-use beachcomber::provider::conda::CondaProvider;
-use beachcomber::provider::mise::MiseProvider;
 use beachcomber::provider::asdf::AsdfProvider;
+use beachcomber::provider::conda::CondaProvider;
+use beachcomber::provider::direnv::DirenvProvider;
+use beachcomber::provider::mise::MiseProvider;
+use beachcomber::provider::python::PythonProvider;
+use beachcomber::provider::terraform::TerraformProvider;
 use tempfile::TempDir;
 
 // --- Terraform ---
@@ -67,8 +67,9 @@ fn python_detects_venv() {
     std::fs::create_dir(tmp.path().join(".venv")).unwrap();
     std::fs::write(
         tmp.path().join(".venv").join("pyvenv.cfg"),
-        "home = /usr/bin\nversion = 3.12.0\n"
-    ).unwrap();
+        "home = /usr/bin\nversion = 3.12.0\n",
+    )
+    .unwrap();
 
     let p = PythonProvider;
     let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
@@ -132,7 +133,11 @@ fn asdf_metadata() {
 #[test]
 fn asdf_detects_tool_versions() {
     let tmp = TempDir::new().unwrap();
-    std::fs::write(tmp.path().join(".tool-versions"), "nodejs 20.0.0\nruby 3.2.0\n").unwrap();
+    std::fs::write(
+        tmp.path().join(".tool-versions"),
+        "nodejs 20.0.0\nruby 3.2.0\n",
+    )
+    .unwrap();
 
     let p = AsdfProvider;
     let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();

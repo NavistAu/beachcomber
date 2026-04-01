@@ -1,6 +1,5 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use std::path::Path;
 
@@ -10,9 +9,10 @@ impl Provider for AsdfProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "asdf".to_string(),
-            fields: vec![
-                FieldSchema { name: "tools".to_string(), field_type: FieldType::String },
-            ],
+            fields: vec![FieldSchema {
+                name: "tools".to_string(),
+                field_type: FieldType::String,
+            }],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![".tool-versions".to_string()],
                 fallback_poll_secs: Some(30),
@@ -26,10 +26,13 @@ impl Provider for AsdfProvider {
         let dir = Path::new(path);
         let tool_versions = dir.join(".tool-versions");
 
-        if !tool_versions.exists() { return None; }
+        if !tool_versions.exists() {
+            return None;
+        }
 
         let content = std::fs::read_to_string(&tool_versions).ok()?;
-        let tools: Vec<String> = content.lines()
+        let tools: Vec<String> = content
+            .lines()
             .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
             .filter_map(|line| {
                 let parts: Vec<&str> = line.split_whitespace().collect();

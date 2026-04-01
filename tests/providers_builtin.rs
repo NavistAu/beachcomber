@@ -1,6 +1,6 @@
-use beachcomber::provider::{Provider, InvalidationStrategy};
 use beachcomber::provider::hostname::HostnameProvider;
 use beachcomber::provider::user::UserProvider;
+use beachcomber::provider::{InvalidationStrategy, Provider};
 
 #[test]
 fn hostname_provider_metadata() {

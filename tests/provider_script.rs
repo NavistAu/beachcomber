@@ -1,6 +1,6 @@
+use beachcomber::config::ScriptProviderConfig;
 use beachcomber::provider::Provider;
 use beachcomber::provider::script::ScriptProvider;
-use beachcomber::config::ScriptProviderConfig;
 
 #[test]
 fn script_provider_metadata() {
@@ -58,7 +58,10 @@ fn script_provider_returns_none_on_failure() {
         ..Default::default()
     };
     let p = ScriptProvider::new("fail_test", config);
-    assert!(p.execute(None).is_none(), "Failed command should return None");
+    assert!(
+        p.execute(None).is_none(),
+        "Failed command should return None"
+    );
 }
 
 #[test]
@@ -94,7 +97,11 @@ fn script_provider_with_watch_patterns() {
     let p = ScriptProvider::new("watch_test", config);
     let meta = p.metadata();
     match meta.invalidation {
-        beachcomber::provider::InvalidationStrategy::WatchAndPoll { ref patterns, interval_secs, .. } => {
+        beachcomber::provider::InvalidationStrategy::WatchAndPoll {
+            ref patterns,
+            interval_secs,
+            ..
+        } => {
             assert!(patterns.contains(&"Cargo.toml".to_string()));
             assert!(patterns.contains(&"Cargo.lock".to_string()));
             assert_eq!(interval_secs, 60);

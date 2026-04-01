@@ -49,4 +49,3 @@ async fn once_providers_available_via_scheduler() {
     assert!(response.ok);
     assert!(response.data.is_some());
 }
-

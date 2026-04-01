@@ -1,6 +1,5 @@
 use beachcomber::provider::{
-    Provider, ProviderMetadata, ProviderResult, Value, FieldSchema, FieldType,
-    InvalidationStrategy,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 
 struct FakeProvider;
@@ -9,9 +8,10 @@ impl Provider for FakeProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "fake".to_string(),
-            fields: vec![
-                FieldSchema { name: "value".to_string(), field_type: FieldType::String },
-            ],
+            fields: vec![FieldSchema {
+                name: "value".to_string(),
+                field_type: FieldType::String,
+            }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 30,
                 floor_secs: 5,
@@ -62,7 +62,10 @@ fn provider_execute_returns_result() {
 fn invalidation_strategy_poll() {
     let p = FakeProvider;
     match p.metadata().invalidation {
-        InvalidationStrategy::Poll { interval_secs, floor_secs } => {
+        InvalidationStrategy::Poll {
+            interval_secs,
+            floor_secs,
+        } => {
             assert_eq!(interval_secs, 30);
             assert_eq!(floor_secs, 5);
         }

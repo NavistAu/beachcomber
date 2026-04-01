@@ -1,6 +1,5 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use std::path::Path;
 use std::process::Command;
@@ -13,27 +12,90 @@ impl Provider for GitProvider {
         ProviderMetadata {
             name: "git".to_string(),
             fields: vec![
-                FieldSchema { name: "branch".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "dirty".to_string(), field_type: FieldType::Bool },
-                FieldSchema { name: "staged".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "unstaged".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "untracked".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "conflicted".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "ahead".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "behind".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "stash".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "state".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "lines_added".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "lines_removed".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "lines_staged_added".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "lines_staged_removed".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "upstream".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "detached".to_string(), field_type: FieldType::Bool },
-                FieldSchema { name: "commit".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "tag".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "state_step".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "state_total".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "last_commit_age_secs".to_string(), field_type: FieldType::Int },
+                FieldSchema {
+                    name: "branch".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "dirty".to_string(),
+                    field_type: FieldType::Bool,
+                },
+                FieldSchema {
+                    name: "staged".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "unstaged".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "untracked".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "conflicted".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "ahead".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "behind".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "stash".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "state".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "lines_added".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "lines_removed".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "lines_staged_added".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "lines_staged_removed".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "upstream".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "detached".to_string(),
+                    field_type: FieldType::Bool,
+                },
+                FieldSchema {
+                    name: "commit".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "tag".to_string(),
+                    field_type: FieldType::String,
+                },
+                FieldSchema {
+                    name: "state_step".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "state_total".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "last_commit_age_secs".to_string(),
+                    field_type: FieldType::Int,
+                },
             ],
             invalidation: InvalidationStrategy::WatchAndPoll {
                 patterns: vec![".git".to_string()],
@@ -56,8 +118,10 @@ impl Provider for GitProvider {
         let stash_count = count_stashes(dir);
         let (state, state_step, state_total) = detect_repo_state(dir);
 
-        let dirty = status.staged > 0 || status.unstaged > 0
-            || status.untracked > 0 || status.conflicted > 0;
+        let dirty = status.staged > 0
+            || status.unstaged > 0
+            || status.untracked > 0
+            || status.conflicted > 0;
 
         let (lines_added, lines_removed) = diff_numstat(dir);
         let (lines_staged_added, lines_staged_removed) = diff_numstat_staged(dir);
@@ -119,7 +183,9 @@ fn parse_git_status(dir: &Path) -> Option<GitStatus> {
         .output()
         .ok()?;
 
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut branch = String::new();
@@ -142,7 +208,10 @@ fn parse_git_status(dir: &Path) -> Option<GitStatus> {
                 branch = head.to_string();
             }
         } else if line.starts_with("# branch.upstream ") {
-            upstream = line.strip_prefix("# branch.upstream ").unwrap_or("").to_string();
+            upstream = line
+                .strip_prefix("# branch.upstream ")
+                .unwrap_or("")
+                .to_string();
         } else if line.starts_with("# branch.ab ") {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 4 {
@@ -154,8 +223,12 @@ fn parse_git_status(dir: &Path) -> Option<GitStatus> {
             if chars.len() >= 4 {
                 let x = chars[2];
                 let y = chars[3];
-                if x != '.' { staged += 1; }
-                if y != '.' { unstaged += 1; }
+                if x != '.' {
+                    staged += 1;
+                }
+                if y != '.' {
+                    unstaged += 1;
+                }
             }
         } else if line.starts_with("u ") {
             conflicted += 1;
@@ -164,7 +237,17 @@ fn parse_git_status(dir: &Path) -> Option<GitStatus> {
         }
     }
 
-    Some(GitStatus { branch, upstream, detached, ahead, behind, staged, unstaged, untracked, conflicted })
+    Some(GitStatus {
+        branch,
+        upstream,
+        detached,
+        ahead,
+        behind,
+        staged,
+        unstaged,
+        untracked,
+        conflicted,
+    })
 }
 
 fn count_stashes(dir: &Path) -> i64 {
@@ -271,7 +354,10 @@ fn get_head_info(dir: &Path) -> (String, i64) {
     let line = stdout.trim();
     let mut parts = line.splitn(2, ' ');
     let hash = parts.next().unwrap_or("").to_string();
-    let ts: i64 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    let ts: i64 = parts
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
     (hash, ts)
 }
 
@@ -283,9 +369,7 @@ fn get_nearest_tag(dir: &Path) -> String {
         .output();
 
     match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => String::new(),
     }
 }

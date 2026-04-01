@@ -19,7 +19,11 @@ async fn scheduler_shuts_down_when_idle() {
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         tokio::spawn(async move { scheduler.run().await }),
-    ).await;
+    )
+    .await;
 
-    assert!(result.is_ok(), "Scheduler should shut down within idle timeout");
+    assert!(
+        result.is_ok(),
+        "Scheduler should shut down within idle timeout"
+    );
 }

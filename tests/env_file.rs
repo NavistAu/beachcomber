@@ -5,7 +5,9 @@ use tempfile::TempDir;
 fn loads_env_file() {
     let tmp = TempDir::new().unwrap();
     let env_path = tmp.path().join("env");
-    std::fs::write(&env_path, r#"
+    std::fs::write(
+        &env_path,
+        r#"
 # This is a comment
 BEACHCOMBER_TEST_KEY=hello_world
 BEACHCOMBER_TEST_QUOTED="quoted value"
@@ -13,16 +15,27 @@ BEACHCOMBER_TEST_SINGLE='single quoted'
 
 # Blank lines are fine
 BEACHCOMBER_TEST_NUM=42
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let mut config = Config::default();
     config.daemon.env_file = Some(env_path.to_string_lossy().to_string());
 
     let count = config.load_env_file();
     assert_eq!(count, 4, "Should load 4 variables");
-    assert_eq!(std::env::var("BEACHCOMBER_TEST_KEY").unwrap(), "hello_world");
-    assert_eq!(std::env::var("BEACHCOMBER_TEST_QUOTED").unwrap(), "quoted value");
-    assert_eq!(std::env::var("BEACHCOMBER_TEST_SINGLE").unwrap(), "single quoted");
+    assert_eq!(
+        std::env::var("BEACHCOMBER_TEST_KEY").unwrap(),
+        "hello_world"
+    );
+    assert_eq!(
+        std::env::var("BEACHCOMBER_TEST_QUOTED").unwrap(),
+        "quoted value"
+    );
+    assert_eq!(
+        std::env::var("BEACHCOMBER_TEST_SINGLE").unwrap(),
+        "single quoted"
+    );
     assert_eq!(std::env::var("BEACHCOMBER_TEST_NUM").unwrap(), "42");
 
     // Clean up

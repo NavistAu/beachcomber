@@ -2,8 +2,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    Provider, ProviderMetadata, ProviderResult, Value,
-    FieldSchema, FieldType, InvalidationStrategy,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use std::sync::Arc;
@@ -14,9 +13,10 @@ impl Provider for SlowProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "slow".to_string(),
-            fields: vec![
-                FieldSchema { name: "value".to_string(), field_type: FieldType::String },
-            ],
+            fields: vec![FieldSchema {
+                name: "value".to_string(),
+                field_type: FieldType::String,
+            }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
                 floor_secs: 1,
@@ -46,17 +46,21 @@ async fn slow_provider_times_out() {
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
-    handle.send(SchedulerMessage::Poke {
-        provider: "slow".to_string(),
-        path: None,
-    }).await;
+    handle
+        .send(SchedulerMessage::Poke {
+            provider: "slow".to_string(),
+            path: None,
+        })
+        .await;
 
     // Wait longer than timeout but shorter than provider sleep
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Cache should NOT have the value (timed out)
-    assert!(cache.get("slow", None).is_none(),
-            "Timed-out provider should not populate cache");
+    assert!(
+        cache.get("slow", None).is_none(),
+        "Timed-out provider should not populate cache"
+    );
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;
@@ -73,15 +77,19 @@ async fn fast_provider_completes_within_timeout() {
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
-    handle.send(SchedulerMessage::Poke {
-        provider: "hostname".to_string(),
-        path: None,
-    }).await;
+    handle
+        .send(SchedulerMessage::Poke {
+            provider: "hostname".to_string(),
+            path: None,
+        })
+        .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    assert!(cache.get("hostname", None).is_some(),
-            "Fast provider should complete within timeout");
+    assert!(
+        cache.get("hostname", None).is_some(),
+        "Fast provider should complete within timeout"
+    );
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;

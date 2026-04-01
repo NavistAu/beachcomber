@@ -1,6 +1,6 @@
 use beachcomber::daemon;
-use tempfile::TempDir;
 use std::path::PathBuf;
+use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 #[test]

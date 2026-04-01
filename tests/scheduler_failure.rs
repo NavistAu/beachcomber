@@ -2,8 +2,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    Provider, ProviderMetadata, ProviderResult,
-    FieldSchema, FieldType, InvalidationStrategy,
+    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult,
 };
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use std::sync::Arc;
@@ -17,9 +16,10 @@ impl Provider for FailingProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "failing".to_string(),
-            fields: vec![
-                FieldSchema { name: "value".to_string(), field_type: FieldType::String },
-            ],
+            fields: vec![FieldSchema {
+                name: "value".to_string(),
+                field_type: FieldType::String,
+            }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
                 floor_secs: 1,
@@ -49,10 +49,12 @@ async fn repeated_failures_trigger_backoff() {
 
     // Poke 10 times with small delays
     for _ in 0..10 {
-        handle.send(SchedulerMessage::Poke {
-            provider: "failing".to_string(),
-            path: None,
-        }).await;
+        handle
+            .send(SchedulerMessage::Poke {
+                provider: "failing".to_string(),
+                path: None,
+            })
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
@@ -61,8 +63,10 @@ async fn repeated_failures_trigger_backoff() {
     let count = FAIL_EXEC_COUNT.load(Ordering::SeqCst);
     // After 3 consecutive failures, subsequent pokes should be suppressed
     // So we expect fewer than 10 executions
-    assert!(count < 10,
-            "Expected failure backoff to suppress some executions, got {count}");
+    assert!(
+        count < 10,
+        "Expected failure backoff to suppress some executions, got {count}"
+    );
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;

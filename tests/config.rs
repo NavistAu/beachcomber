@@ -3,8 +3,14 @@ use beachcomber::config::Config;
 #[test]
 fn default_config() {
     let config = Config::default();
-    assert_eq!(config.daemon.log_level, "info", "Default log level should be info");
-    assert!(config.daemon.socket_path.is_none(), "Default socket path should be None");
+    assert_eq!(
+        config.daemon.log_level, "info",
+        "Default log level should be info"
+    );
+    assert!(
+        config.daemon.socket_path.is_none(),
+        "Default socket path should be None"
+    );
 }
 
 #[test]
@@ -47,7 +53,10 @@ invalidation = { poll = "10s" }
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     let battery = config.providers.get("battery").unwrap();
-    assert_eq!(battery.invalidation.as_ref().unwrap().poll, Some("10s".to_string()));
+    assert_eq!(
+        battery.invalidation.as_ref().unwrap().poll,
+        Some("10s".to_string())
+    );
 }
 
 #[test]

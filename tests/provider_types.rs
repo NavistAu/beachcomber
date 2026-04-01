@@ -1,4 +1,4 @@
-use beachcomber::provider::{Value, ProviderResult};
+use beachcomber::provider::{ProviderResult, Value};
 use std::collections::HashMap;
 
 #[test]
@@ -29,14 +29,22 @@ fn value_from_float() {
 fn value_serializes_to_json() {
     let v = Value::String("main".to_string());
     let json = serde_json::to_value(&v).unwrap();
-    assert_eq!(json, serde_json::json!("main"), "String value should serialize as JSON string");
+    assert_eq!(
+        json,
+        serde_json::json!("main"),
+        "String value should serialize as JSON string"
+    );
 }
 
 #[test]
 fn value_int_serializes_to_json() {
     let v = Value::Int(42);
     let json = serde_json::to_value(&v).unwrap();
-    assert_eq!(json, serde_json::json!(42), "Int value should serialize as JSON number");
+    assert_eq!(
+        json,
+        serde_json::json!(42),
+        "Int value should serialize as JSON number"
+    );
 }
 
 #[test]
@@ -53,8 +61,13 @@ fn provider_result_single_field() {
 
 #[test]
 fn provider_result_missing_field() {
-    let result = ProviderResult { fields: HashMap::new() };
-    assert!(result.get("missing").is_none(), "Missing field should return None");
+    let result = ProviderResult {
+        fields: HashMap::new(),
+    };
+    assert!(
+        result.get("missing").is_none(),
+        "Missing field should return None"
+    );
 }
 
 #[test]

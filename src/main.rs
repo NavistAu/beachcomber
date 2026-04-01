@@ -1,10 +1,10 @@
-use clap::{Parser, Subcommand};
 use beachcomber::config::Config;
 use beachcomber::protocol::Format;
+use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[derive(Parser)]
 #[command(name = "comb", about = "Centralized shell state daemon (beachcomber)")]
@@ -60,9 +60,7 @@ fn main() -> ExitCode {
             };
             run_get(&config, &key, path.as_deref(), format)
         }
-        Commands::Poke { key, path } => {
-            run_poke(&config, &key, path.as_deref())
-        }
+        Commands::Poke { key, path } => run_poke(&config, &key, path.as_deref()),
         Commands::Status => run_status(&config),
         Commands::List => run_list(&config),
     }
@@ -82,17 +80,17 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
         .append(true)
         .open(&log_path);
 
-    let filter: tracing_subscriber::filter::LevelFilter = config.daemon.log_level.parse()
+    let filter: tracing_subscriber::filter::LevelFilter = config
+        .daemon
+        .log_level
+        .parse()
         .unwrap_or(tracing_subscriber::filter::LevelFilter::INFO);
-    let env_filter = EnvFilter::from_default_env()
-        .add_directive(filter.into());
+    let env_filter = EnvFilter::from_default_env().add_directive(filter.into());
 
     match log_file {
         Ok(file) => {
             // Log to both stderr and file.
-            let stderr_layer = fmt::layer()
-                .with_target(true)
-                .with_writer(std::io::stderr);
+            let stderr_layer = fmt::layer().with_target(true).with_writer(std::io::stderr);
             let file_layer = fmt::layer()
                 .with_target(true)
                 .with_ansi(false)
@@ -106,9 +104,7 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
         }
         Err(_) => {
             // Fall back to stderr only.
-            tracing_subscriber::fmt()
-                .with_max_level(filter)
-                .init();
+            tracing_subscriber::fmt().with_max_level(filter).init();
         }
     }
 
@@ -223,7 +219,13 @@ fn run_status(config: &Config) -> ExitCode {
         match client.send_raw(serde_json::json!({"op": "status"})).await {
             Ok(response) => {
                 if response.ok {
-                    println!("{}", serde_json::to_string_pretty(&response.data.unwrap_or(serde_json::Value::Null)).unwrap());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(
+                            &response.data.unwrap_or(serde_json::Value::Null)
+                        )
+                        .unwrap()
+                    );
                     ExitCode::SUCCESS
                 } else {
                     eprintln!("Error: {}", response.error.unwrap_or_default());
@@ -252,7 +254,13 @@ fn run_list(config: &Config) -> ExitCode {
         match client.send_raw(serde_json::json!({"op": "list"})).await {
             Ok(response) => {
                 if response.ok {
-                    println!("{}", serde_json::to_string_pretty(&response.data.unwrap_or(serde_json::Value::Null)).unwrap());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(
+                            &response.data.unwrap_or(serde_json::Value::Null)
+                        )
+                        .unwrap()
+                    );
                     ExitCode::SUCCESS
                 } else {
                     eprintln!("Error: {}", response.error.unwrap_or_default());
@@ -266,4 +274,3 @@ fn run_list(config: &Config) -> ExitCode {
         }
     })
 }
-

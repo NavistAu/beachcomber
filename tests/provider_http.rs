@@ -1,6 +1,6 @@
+use beachcomber::config::HttpProviderConfig;
 use beachcomber::provider::Provider;
 use beachcomber::provider::http::HttpProvider;
-use beachcomber::config::HttpProviderConfig;
 
 #[test]
 fn http_provider_metadata() {

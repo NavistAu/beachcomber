@@ -1,18 +1,24 @@
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::hostname::HostnameProvider;
+use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::user::UserProvider;
 
 #[test]
 fn registry_register_and_get() {
     let mut registry = ProviderRegistry::new();
     registry.register(Box::new(HostnameProvider));
-    assert!(registry.get("hostname").is_some(), "Should find registered provider");
+    assert!(
+        registry.get("hostname").is_some(),
+        "Should find registered provider"
+    );
 }
 
 #[test]
 fn registry_get_missing() {
     let registry = ProviderRegistry::new();
-    assert!(registry.get("nonexistent").is_none(), "Should return None for unknown provider");
+    assert!(
+        registry.get("nonexistent").is_none(),
+        "Should return None for unknown provider"
+    );
 }
 
 #[test]
@@ -29,7 +35,10 @@ fn registry_list_providers() {
 #[test]
 fn registry_with_defaults_has_builtins() {
     let registry = ProviderRegistry::with_defaults();
-    assert!(registry.get("hostname").is_some(), "Should have hostname provider");
+    assert!(
+        registry.get("hostname").is_some(),
+        "Should have hostname provider"
+    );
     assert!(registry.get("user").is_some(), "Should have user provider");
 }
 
