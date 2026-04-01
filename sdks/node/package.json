@@ -1,0 +1,36 @@
+{
+  "name": "beachcomber",
+  "version": "0.1.0",
+  "description": "Node.js client SDK for the beachcomber shell state daemon",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx/esm --test tests/*.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "beachcomber",
+    "comb",
+    "shell",
+    "prompt",
+    "cache",
+    "unix-socket"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
