@@ -315,61 +315,26 @@ function fish_prompt
 end
 ```
 
-### neovim statusline (Lua via vim.loop)
+### neovim statusline (Lua SDK)
 
-neovim plugins can connect directly to the beachcomber socket using `vim.loop` (libuv). This gives the editor real-time git state without spawning `git` on every buffer switch or save.
+The `beachcomber` Lua SDK auto-detects neovim and uses `vim.uv` for zero-dependency socket access:
 
 ```lua
 -- In your statusline plugin or init.lua
-local function get_beachcomber(key, path, callback)
-    local runtime_dir = os.getenv("XDG_RUNTIME_DIR")
-    local tmpdir = os.getenv("TMPDIR") or "/tmp"
-    local uid = vim.loop.getuid()
+local comb = require('beachcomber')
+local client = comb.connect()
 
-    local sock_path
-    if runtime_dir then
-        sock_path = runtime_dir .. "/beachcomber/sock"
-    else
-        sock_path = tmpdir .. "/beachcomber-" .. uid .. "/sock"
-    end
-
-    local sock = vim.loop.new_pipe()
-    sock:connect(sock_path, function(err)
-        if err then callback(nil); return end
-
-        local request = vim.json.encode({
-            op = "get",
-            key = key,
-            path = path,
-            format = "text"
-        }) .. "\n"
-
-        sock:write(request)
-        sock:read_start(function(err2, data)
-            sock:close()
-            if err2 or not data then callback(nil); return end
-            local ok, response = pcall(vim.json.decode, data)
-            if ok and response.ok and response.data then
-                callback(response.data)
-            else
-                callback(nil)
-            end
-        end)
-    end)
-end
-
--- Usage in a statusline
 local function git_branch()
     local cwd = vim.fn.getcwd()
-    local result = ""
-    get_beachcomber("git.branch", cwd, function(branch)
-        if branch then result = " " .. branch end
-    end)
-    return result
+    local result = client:get('git.branch', cwd)
+    if result and result:is_hit() then
+        return ' ' .. result.data
+    end
+    return ''
 end
 ```
 
-For a synchronous alternative, `comb get git.branch . -f text` in a `jobstart` or `system()` call works fine — the 34µs round-trip is negligible compared to UI update frequency.
+Outside neovim, the SDK falls back to luasocket if available, or shells out to `comb` as a last resort.
 
 ### starship custom module
 
@@ -454,48 +419,31 @@ sketchybar --add item git_branch right \
 
 ### Python script
 
-Connect directly to the Unix socket from any language. beachcomber's protocol is newline-delimited JSON — no dependencies required.
+The `beachcomber` Python SDK is stdlib-only (no pip dependencies required):
 
 ```python
-import socket
-import json
-import os
+from beachcomber import Client
 
-def beachcomber_get(key, path=None):
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-    if runtime_dir:
-        sock_path = os.path.join(runtime_dir, "beachcomber", "sock")
-    else:
-        import ctypes
-        uid = os.getuid()
-        tmpdir = os.environ.get("TMPDIR", "/tmp")
-        sock_path = os.path.join(tmpdir, f"beachcomber-{uid}", "sock")
+client = Client()
 
-    request = {"op": "get", "key": key}
-    if path:
-        request["path"] = path
+# Single field
+result = client.get("git.branch", path="/path/to/repo")
+if result.is_hit:
+    print(f"Branch: {result.data}")
 
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(sock_path)
-    sock.send((json.dumps(request) + "\n").encode())
+# Full provider with field access
+result = client.get("git", path="/path/to/repo")
+if result.is_hit:
+    print(f"Branch: {result['branch']}, dirty: {result['dirty']}")
 
-    # Read until newline
-    data = b""
-    while not data.endswith(b"\n"):
-        data += sock.recv(4096)
-    sock.close()
-
-    response = json.loads(data.decode())
-    if response.get("ok") and response.get("data") is not None:
-        return response["data"]
-    return None
-
-# Examples
-branch = beachcomber_get("git.branch", "/path/to/repo")
-battery = beachcomber_get("battery.percent")
-git_state = beachcomber_get("git", "/path/to/repo")  # returns full dict
-print(f"Branch: {branch}, Battery: {battery}%")
+# Persistent session for multiple queries
+with client.session() as s:
+    s.set_context("/path/to/repo")
+    branch = s.get("git.branch")
+    battery = s.get("battery.percent")
 ```
+
+Or connect directly with no SDK — the protocol is newline-delimited JSON over a Unix socket (see [Protocol Reference](#protocol-reference)).
 
 ### Shell one-liner for scripts and CI
 
@@ -558,6 +506,23 @@ Features:
 - **Typed access** — `get_str()`, `get_bool()`, `get_i64()`, `get_f64()`
 - **Persistent sessions** — reuse one connection for multiple queries (15µs/query vs 34µs)
 - **Configurable timeouts** — default 100ms, adjustable via `ClientConfig`
+
+### All Client SDKs
+
+Every SDK wraps the Unix socket protocol with typed APIs, socket discovery, timeouts, and error handling. All are stdlib-only (no external runtime dependencies).
+
+| SDK | Location | Package manager | Notes |
+|---|---|---|---|
+| **Rust** (`beachcomber-client`) | `beachcomber-client/` | crates.io | Sync, no tokio dependency |
+| **C** (`libbeachcomber`) | `sdks/c/` | Source / pkg-config | Shared + static lib, embedded JSON parser |
+| **Python** (`beachcomber`) | `sdks/python/` | PyPI | Dataclasses, sync client + session |
+| **Node.js** (`beachcomber`) | `sdks/node/` | npm | TypeScript, async API |
+| **Go** (`beachcomber`) | `sdks/go/` | Go module | Idiomatic error returns |
+| **Lua** (`beachcomber`) | `sdks/lua/` | LuaRocks | vim.uv / luasocket / CLI fallback |
+| **Ruby** (`beachcomber`) | `sdks/ruby/` | RubyGems | Block-based sessions, minitest |
+| **Shell** (POSIX function) | In README | N/A | Copy-paste fallback pattern |
+
+You don't need an SDK to talk to beachcomber — the protocol is newline-delimited JSON over a Unix socket. See [Protocol Reference](#protocol-reference).
 
 ---
 
