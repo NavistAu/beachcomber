@@ -230,10 +230,10 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     return
   end
 
-  -- Helper: spin up a trivial Unix socket server, run one exchange, return.
-  -- server_fn receives (client_sock) and should read one line and write one.
-  local function with_mock_server(tmppath, server_fn, client_fn)
-    -- Remove leftover socket file
+  --- Helper: spin up a trivial Unix socket server that pre-sends a canned
+  --- response, then runs the client. Optionally verifies the request the
+  --- client sent. Works on both macOS and Linux (no concurrency needed).
+  local function with_mock_server(tmppath, response_line, client_fn, verify_request_fn)
     os.remove(tmppath)
 
     local server = unix_mod()
@@ -241,29 +241,18 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     server:listen(1)
     server:settimeout(2)
 
-    -- Client connects in the background by forking... but Lua has no fork.
-    -- Instead we use non-blocking accept + do client work in-process via
-    -- a second coroutine-style interleave.
-    --
-    -- Simpler approach: connect client first (non-blocking), then accept.
     local luasocket_backend = require("beachcomber.socket_luasocket")
     local sock_handle, conn_err = luasocket_backend.connect(tmppath)
 
-    -- If connect failed (server not ready yet), accept first then retry.
-    -- In practice luasocket connect to a bound/listening socket succeeds
-    -- immediately on the same machine, so we accept after.
     local csock, acc_err = server:accept()
     if not csock then
+      if sock_handle then sock_handle:close() end
       server:close()
       os.remove(tmppath)
       error("mock server accept failed: " .. tostring(acc_err))
     end
     csock:settimeout(2)
 
-    -- If connect failed before accept was ready, try again after accept
-    if not sock_handle then
-      sock_handle, conn_err = luasocket_backend.connect(tmppath)
-    end
     if not sock_handle then
       csock:close()
       server:close()
@@ -271,20 +260,32 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
       error("mock client connect failed: " .. tostring(conn_err))
     end
 
-    -- Run server handler (synchronous, one exchange)
-    local ok, srv_err = pcall(server_fn, csock)
+    -- Pre-send the canned response into the kernel buffer.
+    -- The client will read this after it sends its request.
+    csock:send(response_line .. "\n")
+
+    -- Run client: sends request, reads the buffered response.
+    local ok, err = pcall(client_fn, sock_handle)
+
+    -- Optionally verify the request the client sent.
+    if verify_request_fn and ok then
+      local request_line = csock:receive("*l")
+      local vok, verr = pcall(verify_request_fn, request_line)
+      if not vok then
+        csock:close()
+        sock_handle:close()
+        server:close()
+        os.remove(tmppath)
+        error(verr)
+      end
+    end
+
     csock:close()
+    sock_handle:close()
     server:close()
     os.remove(tmppath)
 
-    if not ok then
-      sock_handle:close()
-      error("mock server error: " .. tostring(srv_err))
-    end
-
-    -- Run client test
-    client_fn(sock_handle)
-    sock_handle:close()
+    if not ok then error(err) end
   end
 
   local function tmppath()
@@ -297,15 +298,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     local path = tmppath()
     with_mock_server(
       path,
-      function(csock)
-        -- Read request line
-        local line = csock:receive("*l")
-        assert_not_nil(line)
-        local req = json.decode(line)
-        assert_eq(req.op, "get")
-        -- Send response
-        csock:send(json.encode({ ok = true, data = "feature-branch", age_ms = 250, stale = false }) .. "\n")
-      end,
+      json.encode({ ok = true, data = "feature-branch", age_ms = 250, stale = false }),
       function(handle)
         local c = Client.new(handle)
         local r, err = c:get("git.branch", "/testrepo")
@@ -314,6 +307,11 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
         assert_true(r:is_hit())
         assert_eq(r.data, "feature-branch")
         assert_eq(r.age_ms, 250)
+      end,
+      function(request_line)
+        assert_not_nil(request_line)
+        local req = json.decode(request_line)
+        assert_eq(req.op, "get")
       end
     )
   end)
@@ -322,13 +320,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     local path = tmppath()
     with_mock_server(
       path,
-      function(csock)
-        csock:receive("*l") -- discard request
-        csock:send(json.encode({
-          ok = true,
-          data = { { name = "git", global = false, fields = {"branch"} } }
-        }) .. "\n")
-      end,
+      json.encode({ ok = true, data = { { name = "git", global = false, fields = {"branch"} } } }),
       function(handle)
         local c = Client.new(handle)
         local providers, err = c:list()
@@ -343,10 +335,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     local path = tmppath()
     with_mock_server(
       path,
-      function(csock)
-        csock:receive("*l")
-        csock:send(json.encode({ ok = false, error = "unknown provider: nope" }) .. "\n")
-      end,
+      json.encode({ ok = false, error = "unknown provider: nope" }),
       function(handle)
         local c = Client.new(handle)
         local r, err = c:get("nope.field")
