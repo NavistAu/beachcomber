@@ -46,10 +46,10 @@
   --ifm-navbar-shadow: 0 1px 0 0 rgba(44, 36, 22, 0.12);
 
   /* Footer */
-  --ifm-footer-background-color: #2c2416;
-  --ifm-footer-color: #c8b99a;
+  --ifm-footer-background-color: #1e1a10;
+  --ifm-footer-color: #a89878;
   --ifm-footer-link-color: #0891b2;
-  --ifm-footer-title-color: #f5f0e8;
+  --ifm-footer-title-color: #d4cabc;
 
   /* Typography */
   --ifm-font-family-base: 'Source Sans 3', system-ui, sans-serif;
@@ -113,10 +113,10 @@
   --ifm-navbar-shadow: 0 1px 0 0 rgba(6, 214, 240, 0.15);
 
   /* Footer */
-  --ifm-footer-background-color: #080c11;
-  --ifm-footer-color: #7a6e5a;
+  --ifm-footer-background-color: #060910;
+  --ifm-footer-color: #6a5e4a;
   --ifm-footer-link-color: #06d6f0;
-  --ifm-footer-title-color: #e8dfc8;
+  --ifm-footer-title-color: #b5a88c;
 
   /* Borders */
   --ifm-color-emphasis-200: #1e2a38;
