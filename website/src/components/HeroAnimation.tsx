@@ -3,28 +3,28 @@ import styles from './HeroAnimation.module.css';
 
 // Layout (relative coords 0-1)
 const consumerRel = [
-  {label: 'zsh', rx: 0.08, ry: 0.06},
-  {label: 'bash', rx: 0.24, ry: 0.02},
-  {label: 'tmux', rx: 0.40, ry: 0.08},
-  {label: 'nvim', rx: 0.56, ry: 0.02},
-  {label: 'fish', rx: 0.72, ry: 0.06},
-  {label: 'tmux', rx: 0.88, ry: 0.03},
-  {label: 'zsh', rx: 0.16, ry: 0.20},
-  {label: 'tmux', rx: 0.34, ry: 0.22},
-  {label: 'nvim', rx: 0.50, ry: 0.18},
-  {label: 'bash', rx: 0.66, ry: 0.21},
-  {label: 'zsh', rx: 0.82, ry: 0.18},
+  {label: 'zsh', rx: 0.08, ry: 0.14},
+  {label: 'bash', rx: 0.24, ry: 0.10},
+  {label: 'tmux', rx: 0.40, ry: 0.16},
+  {label: 'nvim', rx: 0.56, ry: 0.10},
+  {label: 'fish', rx: 0.72, ry: 0.14},
+  {label: 'tmux', rx: 0.88, ry: 0.11},
+  {label: 'zsh', rx: 0.16, ry: 0.28},
+  {label: 'tmux', rx: 0.34, ry: 0.30},
+  {label: 'nvim', rx: 0.50, ry: 0.26},
+  {label: 'bash', rx: 0.66, ry: 0.29},
+  {label: 'zsh', rx: 0.82, ry: 0.26},
 ];
 
 const sourceRel = [
-  {label: 'git', rx: 0.10, ry: 0.85, type: 'watch'},
-  {label: 'battery', rx: 0.30, ry: 0.88, type: 'poll'},
-  {label: 'network', rx: 0.50, ry: 0.85, type: 'poll'},
-  {label: 'kube', rx: 0.70, ry: 0.88, type: 'watch'},
-  {label: 'load', rx: 0.90, ry: 0.85, type: 'poll'},
+  {label: 'git', rx: 0.10, ry: 0.75, type: 'watch'},
+  {label: 'battery', rx: 0.30, ry: 0.78, type: 'poll'},
+  {label: 'network', rx: 0.50, ry: 0.75, type: 'poll'},
+  {label: 'kube', rx: 0.70, ry: 0.78, type: 'watch'},
+  {label: 'load', rx: 0.90, ry: 0.75, type: 'poll'},
 ];
 
-const DAEMON_REL = {rx: 0.50, ry: 0.54};
+const DAEMON_REL = {rx: 0.50, ry: 0.52};
 
 interface Packet {
   x1: number; y1: number; x2: number; y2: number;

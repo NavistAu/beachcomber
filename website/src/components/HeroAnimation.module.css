@@ -25,13 +25,13 @@
   z-index: 4;
 }
 
-/* Bottom gradient fade */
+/* Bottom gradient fade — below the stats */
 .bottomFade {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  height: 60px;
+  height: 40px;
   background: linear-gradient(to top, #0d1117, transparent);
   pointer-events: none;
   z-index: 4;
@@ -92,25 +92,25 @@
 }
 
 .chaosLabel {
-  font-size: 0.7rem;
+  font-size: 0.9rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.15em;
-  color: rgba(232, 68, 26, 0.8);
+  color: rgba(232, 68, 26, 0.85);
 }
 
 .hubLabel {
-  font-size: 0.7rem;
+  font-size: 0.9rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.15em;
-  color: rgba(6, 214, 240, 0.8);
+  color: rgba(6, 214, 240, 0.85);
 }
 
 /* Stats overlays */
 .statsContainer {
   position: absolute;
-  bottom: 16px;
+  bottom: 24px;
   left: 0;
   right: 0;
   display: flex;
