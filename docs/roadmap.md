@@ -188,6 +188,12 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [x] Make Go module tag step idempotent in release workflow
 - [ ] Binary distribution via npm/PyPI `beachcomber` packages (replace noop placeholders with platform-specific binary installers)
 
+### Website (beachcomber.sh)
+
+- [ ] GitHub Pages site for beachcomber.sh (docs, install instructions, examples)
+- [ ] CI workflow to build and deploy the site on push to main
+- [ ] Configure beachcomber.sh custom domain (DNS + GitHub Pages CNAME)
+
 ### Linux Support
 
 - [ ] Battery provider: read `/sys/class/power_supply/`
