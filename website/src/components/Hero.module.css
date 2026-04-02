@@ -64,7 +64,7 @@
   line-height: 1.65;
 }
 
-.badges {
+.metrics {
   display: flex;
   flex-direction: row;
   justify-content: center;
@@ -74,25 +74,20 @@
   margin-bottom: 1.5rem;
 }
 
-.badge {
+.metric {
   display: inline-flex;
   align-items: center;
-  padding: 0.4rem 1rem;
-  border-radius: 9999px;
-  font-size: 0.85rem;
-  font-weight: 600;
-  background: var(--ifm-background-surface-color);
-  color: var(--ifm-font-color-base);
   text-decoration: none;
-  border: 1px solid var(--ifm-color-emphasis-200);
-  transition: border-color 0.2s, color 0.2s, background 0.2s;
+  transition: opacity 0.2s;
 }
 
-.badge:hover {
-  border-color: var(--ifm-color-primary);
-  color: var(--ifm-color-primary);
-  background: var(--ifm-background-color);
-  text-decoration: none;
+.metric:hover {
+  opacity: 0.8;
+}
+
+.shieldBadge {
+  height: 22px;
+  border-radius: 4px;
 }
 
 .registryLinks {

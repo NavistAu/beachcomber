@@ -1,31 +1,6 @@
 import {useIntersectionObserver} from '../hooks/useIntersectionObserver';
 import styles from './HowItWorks.module.css';
 
-const diagram = `                ┌─────────────────────────────────────┐
-                │          beachcomber daemon           │
-                │                                       │
-  filesystem ──►│  FSEvents/inotify                     │
-  changes       │       │                               │
-                │       ▼                               │
-                │  Scheduler ──► Providers ──► Cache   │
-                │                  git          157ns   │
-                │                  battery      reads   │
-                │                  network              │
-                │                  hostname             │
-                │                  ...                  │
-                │                  scripts              │
-                │                  (your own)           │
-                │                                       │
-                │  Unix Socket Server                   │
-                └──────────────┬────────────────────────┘
-                               │
-                ┌──────────────┼────────────────────┐
-                │              │                     │
-           zsh prompt     tmux status           neovim
-           bash prompt    polybar/waybar         lualine
-           fish prompt    sketchybar             scripts
-           starship       oh-my-posh             CI/automation`;
-
 export default function HowItWorks(): JSX.Element {
   const [ref, isVisible] = useIntersectionObserver(0.1);
 
@@ -94,9 +69,6 @@ export default function HowItWorks(): JSX.Element {
           </div>
         </div>
 
-        <div className={styles.diagram}>
-          <pre className={styles.diagramPre}>{diagram}</pre>
-        </div>
       </div>
     </section>
   );

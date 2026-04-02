@@ -18,21 +18,21 @@ export default function Problem(): JSX.Element {
 
         <div className={styles.prose}>
           <p>
-            You have 10 tmux windows open, each with 3 panes. Your fancy prompt tells you the git
-            branch — but every single pane is forking its own process to compute this. That&apos;s 30
-            processes, each spawning their own git status daemon with a pool of threads. Your tmux
-            status line is doing the same. Your neovim statusline too. Your Claude Code status line
-            too.
+            Open Activity Monitor on a typical dev machine and look at what&apos;s running. Every
+            shell prompt has its own git status daemon. Your tmux status bar forks a shell process
+            for every pane on a timer. Your editor has its own file watchers. Your prompt framework
+            has another set. Each one independently computing the same answer to the same question:
+            &quot;what branch am I on?&quot;
           </p>
           <p>
-            Meanwhile, fseventsd is pegging a CPU core dispatching the same filesystem change event
-            to 30 independent watchers — all monitoring the same <code>.git</code> directory. You
-            can see it in Activity Monitor: hundreds of open file handles, CPU burn on a process
-            that should be idle.
+            Scale it up: 30 terminal panes means 30 git daemons, each with a thread pool — that&apos;s
+            hundreds of threads. <code>fseventsd</code> is dispatching every filesystem change to 30
+            separate watchers all monitoring the same <code>.git</code> directory. Hundreds of open
+            file handles, constant CPU churn, and every single one of them returns the same answer.
           </p>
           <p>
-            Every consumer is independently asking the same questions about the same files with zero
-            coordination.
+            Nothing talks to anything else. Every consumer — prompts, status bars, editors,
+            scripts — operates in total isolation, duplicating work that only needs to happen once.
           </p>
         </div>
 

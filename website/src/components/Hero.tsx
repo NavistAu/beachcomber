@@ -17,22 +17,54 @@ export default function Hero(): JSX.Element {
           reads from one shared cache instead of recomputing everything independently.
         </p>
 
-        <div className={styles.badges}>
+        <div className={styles.metrics}>
           <a
-            className={styles.badge}
+            className={styles.metric}
             href="https://github.com/NavistAu/beachcomber"
             target="_blank"
             rel="noopener noreferrer"
           >
-            GitHub
+            <img
+              src="https://img.shields.io/github/stars/NavistAu/beachcomber?style=flat&label=GitHub%20Stars&color=0891b2"
+              alt="GitHub Stars"
+              className={styles.shieldBadge}
+            />
           </a>
           <a
-            className={styles.badge}
-            href="https://github.com/NavistAu/beachcomber/stargazers"
+            className={styles.metric}
+            href="https://crates.io/crates/beachcomber"
             target="_blank"
             rel="noopener noreferrer"
           >
-            ★ Stars
+            <img
+              src="https://img.shields.io/crates/d/beachcomber?style=flat&label=crates.io&color=0891b2"
+              alt="crates.io downloads"
+              className={styles.shieldBadge}
+            />
+          </a>
+          <a
+            className={styles.metric}
+            href="https://www.npmjs.com/package/libbeachcomber"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <img
+              src="https://img.shields.io/npm/dt/libbeachcomber?style=flat&label=npm&color=0891b2"
+              alt="npm downloads"
+              className={styles.shieldBadge}
+            />
+          </a>
+          <a
+            className={styles.metric}
+            href="https://pypi.org/project/libbeachcomber/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <img
+              src="https://img.shields.io/pypi/dm/libbeachcomber?style=flat&label=PyPI&color=0891b2"
+              alt="PyPI downloads"
+              className={styles.shieldBadge}
+            />
           </a>
         </div>
 

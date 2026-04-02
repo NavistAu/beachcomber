@@ -152,27 +152,3 @@
   color: #e6edf3;
 }
 
-/* Architecture diagram */
-.diagram {
-  border-radius: 8px;
-  overflow: auto;
-}
-
-.diagramPre {
-  background: #0d1117;
-  color: #e6edf3;
-  font-family: var(--ifm-font-family-monospace);
-  font-size: 0.78rem;
-  line-height: 1.5;
-  padding: 2rem;
-  border-radius: 8px;
-  margin: 0;
-  overflow-x: auto;
-  text-align: left;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
-}
-
-[data-theme='dark'] .diagramPre {
-  background: #090d12;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
-}
