@@ -117,17 +117,14 @@ const config: Config = {
             },
           ],
         },
-        {
-          title: 'Navist',
-          items: [
-            {
-              label: 'navist.com.au',
-              href: 'https://navist.com.au',
-            },
-          ],
-        },
       ],
-      copyright: '<div style="display:flex;align-items:center;justify-content:center;gap:0.75rem;flex-wrap:wrap"><a href="https://navist.com.au" style="display:inline-flex;align-items:center"><img src="/img/navist-logo.png" alt="Navist" style="height:28px;opacity:0.7" /></a><span>beachcomber is a product of <a href="https://navist.com.au">Navist</a> — polymath technical consultancy. MIT License.</span></div>',
+      logo: {
+        alt: 'Navist',
+        src: 'img/navist-logo.png',
+        href: 'https://navist.com.au',
+        width: 120,
+      },
+      copyright: 'beachcomber is a product of Navist — polymath technical consultancy. MIT License.',
     },
     prism: {
       theme: prismThemes.github,

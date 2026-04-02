@@ -46,7 +46,7 @@
   --ifm-navbar-shadow: 0 1px 0 0 rgba(44, 36, 22, 0.12);
 
   /* Footer */
-  --ifm-footer-background-color: #1e1a10;
+  --ifm-footer-background-color: #000000;
   --ifm-footer-color: #a89878;
   --ifm-footer-link-color: #0891b2;
   --ifm-footer-title-color: #d4cabc;
@@ -113,7 +113,7 @@
   --ifm-navbar-shadow: 0 1px 0 0 rgba(6, 214, 240, 0.15);
 
   /* Footer */
-  --ifm-footer-background-color: #060910;
+  --ifm-footer-background-color: #000000;
   --ifm-footer-color: #6a5e4a;
   --ifm-footer-link-color: #06d6f0;
   --ifm-footer-title-color: #b5a88c;
@@ -214,7 +214,16 @@ body::before {
 
 .footer {
   font-size: 0.875rem;
+  position: sticky;
+  bottom: 0;
+  z-index: 0;
+}
+
+/* Content sits above the sticky footer */
+main,
+.navbar {
   position: relative;
+  z-index: 1;
 }
 
 .footer::before {
