@@ -223,9 +223,4 @@ body::before {
   right: 0;
   z-index: 100;
   opacity: 0;
-  transition: opacity 0.5s ease;
-}
-
-.footer.footer--visible {
-  opacity: 1;
 }

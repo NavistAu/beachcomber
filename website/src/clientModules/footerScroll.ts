@@ -1,20 +1,17 @@
 import ExecutionEnvironment from '@docusaurus/ExecutionEnvironment';
 
 if (ExecutionEnvironment.canUseDOM) {
-  const threshold = 300;
+  const fadeStart = 100;
+  const fadeEnd = 500;
 
   function updateFooter() {
-    const footer = document.querySelector('.footer');
+    const footer = document.querySelector('.footer') as HTMLElement;
     if (!footer) return;
 
-    if (window.scrollY > threshold) {
-      footer.classList.add('footer--visible');
-    } else {
-      footer.classList.remove('footer--visible');
-    }
+    const opacity = Math.min(1, Math.max(0, (window.scrollY - fadeStart) / (fadeEnd - fadeStart)));
+    footer.style.opacity = String(opacity);
   }
 
   window.addEventListener('scroll', updateFooter, {passive: true});
-  // Initial check
   updateFooter();
 }
