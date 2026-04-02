@@ -144,10 +144,12 @@ jobs:
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+      - name: Upgrade npm for OIDC support
+        run: npm install -g npm@latest
       - name: Install dependencies
         run: npm ci
       - name: Publish
-        run: npm publish --access public --provenance || echo "Already published, skipping"
+        run: unset NODE_AUTH_TOKEN && npm publish --access public --provenance || echo "Already published, skipping"
 
   publish-rubygems:
     name: Publish to RubyGems
