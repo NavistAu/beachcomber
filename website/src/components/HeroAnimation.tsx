@@ -476,6 +476,8 @@ export default function HeroAnimation(): JSX.Element {
   return (
     <div className={styles.animationContainer}>
       <canvas ref={canvasRef} />
+      <div className={styles.topFade} />
+      <div className={styles.bottomFade} />
       <div className={styles.wiper} ref={wiperRef}>
         <div className={styles.wiperHandle}>
           <div className={`${styles.wiperArrow} ${styles.left}`} />
@@ -485,6 +487,20 @@ export default function HeroAnimation(): JSX.Element {
       <div className={styles.zoneLabels}>
         <span className={styles.chaosLabel}>Without beachcomber</span>
         <span className={styles.hubLabel}>With beachcomber</span>
+      </div>
+      <div className={styles.statsContainer}>
+        <div className={`${styles.statsGroup} ${styles.chaos}`}>
+          <div className={styles.statItem}><div className={styles.statVal}>960</div><div className={styles.statLbl}>threads</div></div>
+          <div className={styles.statItem}><div className={styles.statVal}>30</div><div className={styles.statLbl}>watchers</div></div>
+          <div className={styles.statItem}><div className={styles.statVal}>312</div><div className={styles.statLbl}>handles</div></div>
+          <div className={styles.statItem}><div className={styles.statVal}>30.9ms</div><div className={styles.statLbl}>latency</div></div>
+        </div>
+        <div className={`${styles.statsGroup} ${styles.hub}`}>
+          <div className={styles.statItem}><div className={styles.statVal}>4</div><div className={styles.statLbl}>threads</div></div>
+          <div className={styles.statItem}><div className={styles.statVal}>1</div><div className={styles.statLbl}>watcher</div></div>
+          <div className={styles.statItem}><div className={styles.statVal}>12</div><div className={styles.statLbl}>handles</div></div>
+          <div className={styles.statItem}><div className={styles.statVal}>15&#181;s</div><div className={styles.statLbl}>latency</div></div>
+        </div>
       </div>
     </div>
   );
