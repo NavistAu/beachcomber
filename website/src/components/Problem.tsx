@@ -5,7 +5,7 @@ export default function Problem(): JSX.Element {
   const [ref, isVisible] = useIntersectionObserver(0.15);
 
   return (
-    <section className={styles.section}>
+    <section className={styles.section} id="problem">
       <div
         className={`${styles.container} ${isVisible ? styles.visible : ''}`}
         ref={ref as React.RefObject<HTMLDivElement>}

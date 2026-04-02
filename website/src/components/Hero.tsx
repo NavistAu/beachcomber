@@ -32,6 +32,22 @@ export default function Hero(): JSX.Element {
           </a>
         </div>
 
+        <div className={styles.ctas}>
+          <a className={styles.ctaPrimary} href="/docs/getting-started/installation">
+            Read the Docs
+          </a>
+          <a
+            className={styles.ctaSecondary}
+            href="#problem"
+            onClick={(e) => {
+              e.preventDefault();
+              document.getElementById('problem')?.scrollIntoView({behavior: 'smooth'});
+            }}
+          >
+            Learn More &darr;
+          </a>
+        </div>
+
         <div className={styles.registryLinks}>
           <a className={styles.registryLink} href="https://crates.io/crates/beachcomber" target="_blank" rel="noopener noreferrer">crates.io</a>
           <span className={styles.registrySep} aria-hidden="true">·</span>
