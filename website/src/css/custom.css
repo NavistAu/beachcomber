@@ -215,7 +215,7 @@ body::before {
 .footer {
   font-size: 1rem;
   background: #000 !important;
-  padding: 1rem 2rem !important;
+  padding: 0.75rem 2rem !important;
   text-align: center;
   position: fixed !important;
   bottom: 0;
@@ -223,4 +223,9 @@ body::before {
   right: 0;
   z-index: 100;
   opacity: 0;
+}
+
+/* Pad the bottom of the page so content isn't hidden behind the fixed footer */
+.main-wrapper {
+  padding-bottom: 3rem;
 }

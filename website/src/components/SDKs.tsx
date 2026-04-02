@@ -30,10 +30,10 @@ export default function SDKs(): JSX.Element {
         </div>
 
         <div className={styles.links}>
-          <a className={styles.link} href="/docs/quick-start">
+          <a className={styles.link} href="/docs/getting-started/quick-start">
             Quick Start
           </a>
-          <a className={styles.link} href="/docs">
+          <a className={styles.link} href="/docs/getting-started/installation">
             Docs
           </a>
           <a
@@ -52,6 +52,21 @@ export default function SDKs(): JSX.Element {
           >
             cargo install
           </a>
+        </div>
+
+        <div className={styles.footerLinks}>
+          <div className={styles.footerCol}>
+            <div className={styles.footerColTitle}>Docs</div>
+            <a className={styles.footerColLink} href="/docs/getting-started/installation">Getting Started</a>
+            <a className={styles.footerColLink} href="/docs/reference/cli-commands">CLI Reference</a>
+            <a className={styles.footerColLink} href="/docs/reference/built-in-providers">Providers</a>
+          </div>
+          <div className={styles.footerCol}>
+            <div className={styles.footerColTitle}>Ecosystem</div>
+            <a className={styles.footerColLink} href="/docs/ecosystem/overview">SDKs</a>
+            <a className={styles.footerColLink} href="https://github.com/NavistAu/beachcomber" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <a className={styles.footerColLink} href="https://crates.io/crates/beachcomber" target="_blank" rel="noopener noreferrer">crates.io</a>
+          </div>
         </div>
       </div>
     </section>

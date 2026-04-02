@@ -87,7 +87,7 @@ const config: Config = {
     footer: {
       style: 'dark',
       links: [],
-      copyright: 'beachcomber is a product of <a href="https://navist.com.au"><img src="/img/navist-logo.png" alt="Navist" style="height:20px;vertical-align:middle" /></a> — a polymath technical consultancy. MIT License.',
+      copyright: 'beachcomber is a product of <a href="https://navist.com.au"><img src="/img/navist-logo.png" alt="Navist" style="height:20px;vertical-align:middle;position:relative;top:-2px;margin-left:4px" /></a> — a polymath technical consultancy. MIT License.',
     },
     prism: {
       theme: prismThemes.github,
