@@ -71,6 +71,9 @@
   /* Sidebar */
   --ifm-menu-color: #3d3024;
   --ifm-menu-color-active: #0891b2;
+
+  /* Landing page section backgrounds */
+  --bc-problem-bg: #2c2416;
 }
 
 /* ============================================================
@@ -126,6 +129,9 @@
   /* Sidebar */
   --ifm-menu-color: #c2b69a;
   --ifm-menu-color-active: #06d6f0;
+
+  /* Landing page section backgrounds */
+  --bc-problem-bg: #080c11;
 }
 
 /* ============================================================

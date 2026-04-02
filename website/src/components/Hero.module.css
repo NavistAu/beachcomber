@@ -1,32 +1,67 @@
 .hero {
-  padding: 6rem 2rem 4rem;
+  position: relative;
+  padding: 7rem 2rem 6rem;
   text-align: center;
+  overflow: hidden;
+  background: var(--ifm-background-color);
+}
+
+.glow {
+  position: absolute;
+  bottom: -20%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 70%;
+  height: 60%;
+  background: radial-gradient(ellipse at center, rgba(8, 145, 178, 0.12) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+[data-theme='dark'] .glow {
+  background: radial-gradient(ellipse at center, rgba(6, 214, 240, 0.10) 0%, transparent 70%);
+}
+
+.content {
+  position: relative;
+  z-index: 1;
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.content.visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .title {
   font-family: var(--ifm-heading-font-family);
-  font-size: 3.5rem;
+  font-size: clamp(3rem, 8vw, 5.5rem);
   font-weight: 800;
-  letter-spacing: -0.03em;
-  margin-bottom: 1rem;
+  letter-spacing: -0.04em;
+  margin-bottom: 1.25rem;
+  line-height: 1;
+
+  background: linear-gradient(135deg, var(--ifm-font-color-base) 0%, var(--ifm-color-primary) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+[data-theme='dark'] .title {
+  background: linear-gradient(135deg, var(--ifm-font-color-base) 0%, var(--ifm-color-primary) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .tagline {
-  font-size: 1.25rem;
+  font-size: 1.2rem;
   color: var(--ifm-font-color-secondary);
-  max-width: 600px;
-  margin: 0 auto 2rem;
-}
-
-.installBlock {
-  display: inline-block;
-  background: var(--prism-background-color);
-  font-family: var(--ifm-font-family-monospace);
-  font-size: 1rem;
-  padding: 0.75rem 1.5rem;
-  border-radius: 8px;
-  user-select: all;
-  margin-bottom: 2rem;
+  max-width: 620px;
+  margin: 0 auto 2.5rem;
+  line-height: 1.65;
 }
 
 .badges {
@@ -34,7 +69,7 @@
   flex-direction: row;
   justify-content: center;
   align-items: center;
-  gap: 1rem;
+  gap: 0.75rem;
   flex-wrap: wrap;
   margin-bottom: 1.5rem;
 }
@@ -42,17 +77,21 @@
 .badge {
   display: inline-flex;
   align-items: center;
-  padding: 0.35rem 0.85rem;
+  padding: 0.4rem 1rem;
   border-radius: 9999px;
   font-size: 0.85rem;
+  font-weight: 600;
   background: var(--ifm-background-surface-color);
   color: var(--ifm-font-color-base);
   text-decoration: none;
-  transition: color 0.2s;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
 }
 
 .badge:hover {
+  border-color: var(--ifm-color-primary);
   color: var(--ifm-color-primary);
+  background: var(--ifm-background-color);
   text-decoration: none;
 }
 
@@ -61,13 +100,12 @@
   flex-direction: row;
   justify-content: center;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.5rem;
   flex-wrap: wrap;
-  margin-bottom: 3rem;
 }
 
 .registryLink {
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   color: var(--ifm-font-color-secondary);
   text-decoration: none;
   transition: color 0.2s;
@@ -78,23 +116,7 @@
   text-decoration: none;
 }
 
-.terminalDemo {
-  max-width: 600px;
-  margin: 0 auto;
-  background: var(--prism-background-color);
-  border-radius: 8px;
-  padding: 1.5rem;
-  font-family: var(--ifm-font-family-monospace);
-  font-size: 0.9rem;
-  text-align: left;
-}
-
-.prompt {
-  color: var(--ifm-color-primary);
-  margin-right: 0.5rem;
-}
-
-.output {
-  color: var(--ifm-font-color-secondary);
-  padding-left: 1.25rem;
+.registrySep {
+  color: var(--ifm-color-emphasis-300);
+  font-size: 0.75rem;
 }

@@ -1,3 +1,4 @@
+import {useIntersectionObserver} from '../hooks/useIntersectionObserver';
 import styles from './Providers.module.css';
 
 const providers = [
@@ -20,9 +21,14 @@ const providers = [
 ];
 
 export default function Providers(): JSX.Element {
+  const [ref, isVisible] = useIntersectionObserver(0.1);
+
   return (
     <section className={styles.section}>
-      <div className={styles.container}>
+      <div
+        className={`${styles.container} ${isVisible ? styles.visible : ''}`}
+        ref={ref as React.RefObject<HTMLDivElement>}
+      >
         <h2 className={styles.heading}>16 built-in providers</h2>
         <p className={styles.subheading}>Plus a script backend for anything else</p>
         <div className={styles.grid}>

@@ -1,28 +1,56 @@
+import {useIntersectionObserver} from '../hooks/useIntersectionObserver';
 import styles from './SDKs.module.css';
 
-const sdks = [
-  {name: 'Rust', href: '/docs/ecosystem/rust-sdk'},
-  {name: 'Python', href: '/docs/ecosystem/python-sdk'},
-  {name: 'Node.js', href: '/docs/ecosystem/nodejs-sdk'},
-  {name: 'Go', href: '/docs/ecosystem/go-sdk'},
-  {name: 'Lua', href: '/docs/ecosystem/lua-sdk'},
-  {name: 'Ruby', href: '/docs/ecosystem/ruby-sdk'},
-  {name: 'C', href: '/docs/ecosystem/c-sdk'},
-  {name: 'Shell', href: '/docs/ecosystem/shell'},
-];
-
 export default function SDKs(): JSX.Element {
+  const [ref, isVisible] = useIntersectionObserver(0.1);
+
   return (
     <section className={styles.section}>
-      <div className={styles.container}>
-        <h2 className={styles.heading}>Client SDKs</h2>
-        <p className={styles.subheading}>All stdlib-only. Published to their native registries.</p>
-        <div className={styles.items}>
-          {sdks.map((sdk) => (
-            <a key={sdk.name} href={sdk.href} className={styles.item}>
-              {sdk.name}
-            </a>
-          ))}
+      <div
+        className={`${styles.container} ${isVisible ? styles.visible : ''}`}
+        ref={ref as React.RefObject<HTMLDivElement>}
+      >
+        <h2 className={styles.heading}>Get started</h2>
+        <p className={styles.subheading}>
+          The daemon starts automatically on first query. Integrate with your prompt, status bar, or
+          editor to start seeing the benefits.
+        </p>
+
+        <div className={styles.terminalWrapper}>
+          <div className={styles.terminalHeader}>
+            <span className={`${styles.dot} ${styles.dotRed}`} />
+            <span className={`${styles.dot} ${styles.dotYellow}`} />
+            <span className={`${styles.dot} ${styles.dotGreen}`} />
+          </div>
+          <div className={styles.terminalBody}>
+            <span className={styles.prompt}>$</span>
+            <span className={styles.command}> brew install beachcomber</span>
+          </div>
+        </div>
+
+        <div className={styles.links}>
+          <a className={styles.link} href="/docs/quick-start">
+            Quick Start
+          </a>
+          <a className={styles.link} href="/docs">
+            Docs
+          </a>
+          <a
+            className={styles.link}
+            href="https://github.com/NavistAu/beachcomber"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            GitHub
+          </a>
+          <a
+            className={styles.link}
+            href="https://crates.io/crates/beachcomber"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            cargo install
+          </a>
         </div>
       </div>
     </section>

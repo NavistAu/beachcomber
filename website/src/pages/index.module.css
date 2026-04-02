@@ -1,0 +1,17 @@
+/*
+ * Wave dividers sit between sections. They each take the background color of the
+ * section below them so the SVG fill blends seamlessly.
+ *
+ * Because the Problem section bg differs between light/dark, we use a CSS custom
+ * property --bc-problem-bg that is set in custom.css for both modes.
+ */
+
+.waveProblem {
+  background: var(--ifm-background-color);
+  margin-bottom: -1px;
+}
+
+.wavePerformance {
+  background: var(--bc-problem-bg);
+  margin-bottom: -1px;
+}
