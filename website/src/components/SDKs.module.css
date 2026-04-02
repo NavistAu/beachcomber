@@ -1,0 +1,50 @@
+.section {
+  padding: 4rem 2rem;
+}
+
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.heading {
+  font-family: var(--ifm-heading-font-family);
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-align: center;
+  margin-bottom: 0.5rem;
+}
+
+.subheading {
+  font-size: 1rem;
+  color: var(--ifm-font-color-secondary);
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: center;
+}
+
+.item {
+  padding: 0.6rem 1.5rem;
+  border-radius: 6px;
+  background: var(--ifm-background-surface-color);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ifm-font-color-base);
+  text-decoration: none;
+  transition: background 0.15s ease, color 0.15s ease;
+  border: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.item:hover {
+  background: var(--ifm-color-primary);
+  color: white;
+  border-color: var(--ifm-color-primary);
+  text-decoration: none;
+}

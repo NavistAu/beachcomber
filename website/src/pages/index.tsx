@@ -1,7 +1,11 @@
 import Layout from '@theme/Layout';
 import Hero from '../components/Hero';
-import Performance from '../components/Performance';
 import Problem from '../components/Problem';
+import Performance from '../components/Performance';
+import HowItWorks from '../components/HowItWorks';
+import Providers from '../components/Providers';
+import Integrations from '../components/Integrations';
+import SDKs from '../components/SDKs';
 
 export default function Home(): JSX.Element {
   return (
@@ -9,6 +13,10 @@ export default function Home(): JSX.Element {
       <Hero />
       <Problem />
       <Performance />
+      <HowItWorks />
+      <Providers />
+      <Integrations />
+      <SDKs />
     </Layout>
   );
 }

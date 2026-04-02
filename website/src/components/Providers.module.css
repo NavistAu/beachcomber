@@ -1,0 +1,51 @@
+.section {
+  padding: 4rem 2rem;
+}
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.heading {
+  font-family: var(--ifm-heading-font-family);
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-align: center;
+  margin-bottom: 0.5rem;
+}
+
+.subheading {
+  font-size: 1rem;
+  color: var(--ifm-font-color-secondary);
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  padding: 1rem 1.25rem;
+  border-radius: 8px;
+  background: var(--ifm-background-surface-color);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.cardName {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.cardTime {
+  font-size: 0.8rem;
+  color: var(--ifm-color-primary);
+  font-family: var(--ifm-font-family-monospace);
+}
