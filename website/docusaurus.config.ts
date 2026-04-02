@@ -29,6 +29,10 @@ const config: Config = {
     },
   },
 
+  clientModules: [
+    './src/clientModules/footerScroll.ts',
+  ],
+
   i18n: {
     defaultLocale: 'en',
     locales: ['en'],

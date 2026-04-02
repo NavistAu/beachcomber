@@ -213,7 +213,7 @@ body::before {
    ============================================================ */
 
 .footer {
-  font-size: 0.8rem;
+  font-size: 1rem;
   background: #000 !important;
   padding: 1rem 2rem !important;
   text-align: center;
@@ -222,8 +222,10 @@ body::before {
   left: 0;
   right: 0;
   z-index: 100;
+  opacity: 0;
+  transition: opacity 0.5s ease;
 }
 
-.footer__copyright {
-  opacity: 0.7;
+.footer.footer--visible {
+  opacity: 1;
 }
