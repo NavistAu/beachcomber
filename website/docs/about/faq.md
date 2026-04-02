@@ -1,0 +1,54 @@
+---
+sidebar_position: 2
+title: FAQ
+---
+
+# FAQ
+
+### Does beachcomber replace starship / powerlevel10k / oh-my-posh?
+
+No. beachcomber is infrastructure — a data cache that prompt frameworks can consume. It does not render prompts, apply themes, or manage shell hooks. Think of it as a fast, shared data source that your existing prompt setup can optionally use instead of computing everything from scratch.
+
+With beachcomber, starship reads git state from a cache instead of invoking gitoxide. With beachcomber, powerlevel10k (if it gains socket support) could share one gitstatusd-equivalent across all shells. The prompt frameworks stay; they just get faster.
+
+### Why not just use Watchman?
+
+Watchman tells you *which files changed*. beachcomber tells you *what the git status is*, *what the battery percentage is*, *which kubernetes context is active*. Watchman is a lower-level primitive — it produces events, not interpreted state.
+
+Building on Watchman would mean beachcomber is also responsible for maintaining a Watchman installation, handling its failure modes, and adding 88MB+ to your system. The `notify` crate beachcomber uses talks to FSEvents/inotify directly, achieving the same result without the dependency.
+
+### How much memory does the daemon use?
+
+Light. The cache holds one result object per `(provider, path)` combination. A typical developer session with 10 active providers across 3 directories is around 30 cache entries. Provider results are small — the git state object is a few dozen bytes.
+
+Unlike Watchman, beachcomber does not maintain an in-memory database of every file's metadata. It knows that `.git/HEAD` changed; it does not index every file in your repository.
+
+On a system with 20 shells and typical usage, expect the daemon to use 10-30MB of RSS. The tokio thread pool is fixed-size; provider executions happen on `spawn_blocking` threads that are bounded by tokio's defaults.
+
+### What happens when the daemon crashes?
+
+The socket file is cleaned up on graceful exit. If the daemon crashes unexpectedly, the stale socket file may remain. The next client connection will attempt to connect, fail, detect the stale socket, remove it, start a fresh daemon instance, and retry. This is handled transparently — `comb get` will succeed with a slight delay on the restart.
+
+You can verify the daemon is responsive at any time with `comb status`. If the daemon is unhealthy, `comb poke` on any key will trigger a restart if needed.
+
+### Can I use this on Linux?
+
+macOS is the primary target and the only supported platform for the current release. Linux support is designed in from the beginning — the filesystem watcher, battery reader, and network reader are all abstracted behind platform traits — and is planned for v0.2.0.
+
+The providers that read config files directly (`kubecontext`, `gcloud`, `aws`, `conda`) work identically on Linux. The providers that use platform-specific APIs (`battery` via IOKit/pmset, `network` via getifaddrs + airport) will need Linux implementations reading `/sys/class/power_supply/` and `/sys/class/net/`.
+
+### Can I run multiple daemons simultaneously?
+
+The daemon is designed for one instance per user. Multiple daemon instances would each have independent caches and independent filesystem watchers, defeating the purpose of centralization. The socket activation logic prevents this by design: if a socket already exists and is responsive, the client uses it.
+
+If you need per-project isolation (e.g., different config for work vs personal projects), use `daemon.socket_path` in a per-project config to run daemons on separate sockets.
+
+### How do I add a provider for a tool beachcomber doesn't know about?
+
+Write a script provider. See the Custom Providers Guide. If the provider would be useful to everyone (not just your specific setup), consider contributing it as a built-in — see [Contributing](./contributing).
+
+### What is the `stale` flag in responses?
+
+Each provider has an expected refresh interval. If the cached value is older than that interval plus some tolerance, `stale: true` is set in the response. The value is still returned — beachcomber never blocks a read waiting for fresh data.
+
+Consumers can use `stale` to decide whether to show a loading indicator or use a different visual style. For prompt use, ignoring `stale` is usually the right choice — showing a slightly old branch name is better than blocking the prompt.
