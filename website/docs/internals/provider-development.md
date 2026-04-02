@@ -281,7 +281,7 @@ Provider execution happens on tokio's blocking thread pool. Slow providers delay
 
 | Tier | Target | Method |
 |---|---|---|
-| Nanosecond (<1µs) | `user`, `hostname`, `kubecontext`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
+| Nanosecond (`<1µs`) | `user`, `hostname`, `kubecontext`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
 | Microsecond (1-100µs) | `terraform`, `python`, `direnv` (no binary) | File existence checks + small reads |
 | Millisecond (1-10ms) | `git`, `network`, `battery` | At most one process spawn |
 | Slow (10-50ms) | `mise`, `direnv` (with binary), script providers | Multiple spawns or interpreted CLI |
@@ -488,7 +488,7 @@ Prefer a built-in provider when:
 - **Cross-platform behaviour**: Shell semantics differ between sh and cmd.exe; Rust handles this uniformly
 - **The provider will be broadly useful**: If most beachcomber users would want it, it belongs in the binary
 
-The perf breakeven point: if direct file reading brings execution from >1ms to <100µs, write a built-in. If the tool must be shelled out anyway and the data changes slowly, a script provider is fine.
+The perf breakeven point: if direct file reading brings execution from `>1ms` to `<100µs`, write a built-in. If the tool must be shelled out anyway and the data changes slowly, a script provider is fine.
 
 ### Migrating a script provider to built-in
 

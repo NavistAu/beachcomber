@@ -226,7 +226,7 @@ All provider `execute()` calls happen in `tokio::task::spawn_blocking`. This mov
 
 `Cache` wraps a `DashMap<String, CacheEntry>`. DashMap provides fine-grained shard locking, allowing concurrent reads and writes without a global mutex. Cache reads — the hot path hit on every client request — are effectively lock-free under contention.
 
-**Arc<dyn Provider> for registry**
+**`Arc<dyn Provider>` for registry**
 
 Providers are stored as `Arc<dyn Provider>`. When the scheduler needs to execute a provider, it calls `registry.get(name)` which returns `Arc::clone()`. The cloned Arc is moved into `spawn_blocking`. The registry itself is never mutated after startup; reads from multiple tasks are contention-free.
 

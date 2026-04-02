@@ -92,11 +92,11 @@ const config: Config = {
             },
             {
               label: 'CLI Reference',
-              to: '/docs/reference/cli',
+              to: '/docs/reference/cli-commands',
             },
             {
               label: 'Providers',
-              to: '/docs/reference/providers',
+              to: '/docs/reference/built-in-providers',
             },
           ],
         },
@@ -105,7 +105,7 @@ const config: Config = {
           items: [
             {
               label: 'SDKs',
-              to: '/docs/ecosystem/sdks',
+              to: '/docs/ecosystem/overview',
             },
             {
               label: 'GitHub',

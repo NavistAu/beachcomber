@@ -77,7 +77,7 @@ fn make_cache_key(provider: &str, path: Option<&str>) -> String {
 
 **Problem:** `execute_provider()` ran synchronously on the scheduler's tokio task. A git provider taking 5.6ms blocked the entire scheduler loop — no messages processed, no poll timers fired, no filesystem events handled.
 
-**Fix:** Changed `ProviderRegistry` to store `Arc<dyn Provider>` (converted from `Box` at registration). The scheduler clones the Arc and moves it into `tokio::task::spawn_blocking`, making execution non-blocking.
+**Fix:** Changed `ProviderRegistry` to store `Arc<dyn Provider>` (converted from `Box<dyn Provider>` at registration). The scheduler clones the Arc and moves it into `tokio::task::spawn_blocking`, making execution non-blocking.
 
 ```rust
 // Before: blocks scheduler loop
@@ -246,7 +246,7 @@ libc::getifaddrs(&mut ifaddrs);
 
 ### High value, not yet implemented
 
-1. **ProviderResult: Vec instead of HashMap.** Providers have 2-10 fields. HashMap's hashing overhead dominates for small collections. A `Vec<(String, Value)>` with linear scan would be faster for <16 fields. Estimated 20-30% improvement in provider construction + field lookup.
+1. **ProviderResult: Vec instead of HashMap.** Providers have 2-10 fields. HashMap's hashing overhead dominates for small collections. A `Vec<(String, Value)>` with linear scan would be faster for `<16` fields. Estimated 20-30% improvement in provider construction + field lookup.
 
 2. **Response serialization: skip serde_json::Value intermediate.** The get handler converts `Value` → `serde_json::Value` → JSON string (double serialization). A direct serializer writing the Response in one pass would cut ~30% from response formatting.
 

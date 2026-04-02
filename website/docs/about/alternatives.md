@@ -109,7 +109,7 @@ All of these are independently computing the same answers to the same questions.
 |---|---|---|
 | Git status per prompt | 1-5ms (small repo), 200ms+ (large) | 15µs (cache read) |
 | Battery per prompt | 5-10ms (subprocess) | 15µs (cache read) |
-| Total prompt cost | 5-50ms | <100µs |
+| Total prompt cost | 5-50ms | `<100µs` |
 
 ---
 
