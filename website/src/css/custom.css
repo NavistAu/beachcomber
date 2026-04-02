@@ -217,6 +217,11 @@ body::before {
   background: #000 !important;
   padding: 1rem 2rem !important;
   text-align: center;
+  position: fixed !important;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
 }
 
 .footer__copyright {
