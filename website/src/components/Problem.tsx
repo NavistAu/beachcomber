@@ -10,6 +10,7 @@ export default function Problem(): JSX.Element {
         className={`${styles.container} ${isVisible ? styles.visible : ''}`}
         ref={ref as React.RefObject<HTMLDivElement>}
       >
+        <div className={styles.label}>The problem</div>
         <h2 className={styles.heading}>
           Your terminal is doing{' '}
           <span className={styles.accent}>insane</span>{' '}

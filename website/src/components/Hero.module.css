@@ -41,6 +41,19 @@
   background: radial-gradient(ellipse at center, rgba(245, 158, 11, 0.05) 0%, transparent 65%);
 }
 
+[data-theme='dark'] .hero::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(ellipse 60% 50% at 30% 60%, rgba(6, 214, 240, 0.04) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
 .content {
   position: relative;
   z-index: 1;
@@ -109,6 +122,106 @@
   height: 22px;
   border-radius: 4px;
 }
+
+/* Terminal demo */
+.terminalWrapper {
+  max-width: 550px;
+  margin: 0 auto 1.5rem;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.22),
+    0 4px 12px rgba(0, 0, 0, 0.12),
+    0 0 0 1px rgba(8, 145, 178, 0.18);
+  text-align: left;
+}
+
+[data-theme='dark'] .terminalWrapper {
+  box-shadow:
+    0 20px 56px rgba(0, 0, 0, 0.6),
+    0 4px 16px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(6, 214, 240, 0.2);
+}
+
+.terminalHeader {
+  background: #2d2d2d;
+  padding: 0.55rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+[data-theme='dark'] .terminalHeader {
+  background: #1c1c1e;
+}
+
+.dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dotRed { background: #ff5f57; }
+.dotYellow { background: #febc2e; }
+.dotGreen { background: #28c840; }
+
+.terminalTitle {
+  flex: 1;
+  text-align: center;
+  font-size: 0.75rem;
+  color: #888;
+  font-family: var(--ifm-font-family-monospace);
+  margin-right: 2rem;
+}
+
+.terminalBody {
+  background: #0d1117;
+  padding: 1.25rem 1.5rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+[data-theme='dark'] .terminalBody {
+  background: #090d12;
+}
+
+.terminalLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+.terminalSpacer {
+  height: 0.6rem;
+}
+
+.prompt {
+  color: #06d6f0;
+  font-weight: 700;
+}
+
+.command {
+  color: #e6edf3;
+}
+
+.output {
+  color: #8b949e;
+}
+
+.annotation {
+  color: #06d6f0;
+  font-size: 0.75rem;
+  opacity: 0.7;
+  margin-left: 0.75rem;
+}
+
+.jsonBrace { color: #e6edf3; }
+.jsonKey { color: #06d6f0; }
+.jsonColon { color: #e6edf3; }
+.jsonNumber { color: #f59e0b; }
+.jsonComma { color: #e6edf3; }
 
 .registryLinks {
   display: flex;

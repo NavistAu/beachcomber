@@ -16,6 +16,17 @@
   transform: translateY(0);
 }
 
+.label {
+  font-family: var(--ifm-heading-font-family);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--ifm-color-primary);
+  margin-bottom: 0.75rem;
+  text-align: center;
+}
+
 .heading {
   font-family: var(--ifm-heading-font-family);
   font-size: clamp(1.75rem, 4vw, 2.25rem);
@@ -140,23 +151,55 @@
 }
 
 .comparisonPanelBad {
-  background: linear-gradient(135deg, rgba(232, 68, 26, 0.07) 0%, rgba(232, 68, 26, 0.03) 100%);
-  border-color: rgba(232, 68, 26, 0.22);
+  background:
+    linear-gradient(135deg, rgba(232, 68, 26, 0.07) 0%, rgba(232, 68, 26, 0.03) 100%) padding-box,
+    linear-gradient(135deg, rgba(232, 68, 26, 0.35), rgba(232, 68, 26, 0.08)) border-box;
+  border: 1px solid transparent;
 }
 
 [data-theme='dark'] .comparisonPanelBad {
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.03) 100%);
-  border-color: rgba(245, 158, 11, 0.22);
+  background:
+    linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.03) 100%) padding-box,
+    linear-gradient(135deg, rgba(245, 158, 11, 0.30), rgba(245, 158, 11, 0.06)) border-box;
+  border: 1px solid transparent;
+}
+
+.comparisonPanelBad:hover {
+  background:
+    linear-gradient(135deg, rgba(232, 68, 26, 0.10) 0%, rgba(232, 68, 26, 0.05) 100%) padding-box,
+    linear-gradient(135deg, rgba(232, 68, 26, 0.55), rgba(232, 68, 26, 0.15)) border-box;
+}
+
+[data-theme='dark'] .comparisonPanelBad:hover {
+  background:
+    linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(245, 158, 11, 0.05) 100%) padding-box,
+    linear-gradient(135deg, rgba(245, 158, 11, 0.50), rgba(245, 158, 11, 0.10)) border-box;
 }
 
 .comparisonPanelGood {
-  background: linear-gradient(135deg, rgba(8, 145, 178, 0.08) 0%, rgba(8, 145, 178, 0.03) 100%);
-  border-color: rgba(8, 145, 178, 0.22);
+  background:
+    linear-gradient(135deg, rgba(8, 145, 178, 0.08) 0%, rgba(8, 145, 178, 0.03) 100%) padding-box,
+    linear-gradient(135deg, rgba(8, 145, 178, 0.35), rgba(8, 145, 178, 0.08)) border-box;
+  border: 1px solid transparent;
 }
 
 [data-theme='dark'] .comparisonPanelGood {
-  background: linear-gradient(135deg, rgba(6, 214, 240, 0.08) 0%, rgba(6, 214, 240, 0.03) 100%);
-  border-color: rgba(6, 214, 240, 0.18);
+  background:
+    linear-gradient(135deg, rgba(6, 214, 240, 0.08) 0%, rgba(6, 214, 240, 0.03) 100%) padding-box,
+    linear-gradient(135deg, rgba(6, 214, 240, 0.28), rgba(6, 214, 240, 0.04)) border-box;
+  border: 1px solid transparent;
+}
+
+.comparisonPanelGood:hover {
+  background:
+    linear-gradient(135deg, rgba(8, 145, 178, 0.12) 0%, rgba(8, 145, 178, 0.05) 100%) padding-box,
+    linear-gradient(135deg, rgba(8, 145, 178, 0.55), rgba(8, 145, 178, 0.15)) border-box;
+}
+
+[data-theme='dark'] .comparisonPanelGood:hover {
+  background:
+    linear-gradient(135deg, rgba(6, 214, 240, 0.12) 0%, rgba(6, 214, 240, 0.05) 100%) padding-box,
+    linear-gradient(135deg, rgba(6, 214, 240, 0.45), rgba(6, 214, 240, 0.08)) border-box;
 }
 
 .comparisonTitle {
@@ -239,6 +282,22 @@
   margin-bottom: 0.75rem;
   letter-spacing: -0.04em;
   position: relative;
+}
+
+.calloutNumber::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(ellipse at center, rgba(8, 145, 178, 0.08) 0%, transparent 60%);
+  pointer-events: none;
+}
+
+[data-theme='dark'] .calloutNumber::before {
+  background: radial-gradient(ellipse at center, rgba(6, 214, 240, 0.10) 0%, transparent 60%);
 }
 
 .calloutText {

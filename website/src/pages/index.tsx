@@ -26,6 +26,10 @@ export default function Home(): JSX.Element {
       <HowItWorks />
       <Providers />
       <Integrations />
+      {/* Wave into Get Started (dark section) */}
+      <div className={styles.waveGetStarted}>
+        <WaveDivider fillColor="var(--bc-problem-bg)" />
+      </div>
       <SDKs />
     </Layout>
   );

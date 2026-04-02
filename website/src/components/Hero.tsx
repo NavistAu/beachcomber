@@ -69,6 +69,41 @@ export default function Hero(): JSX.Element {
           </a>
         </div>
 
+        <div className={styles.terminalWrapper}>
+          <div className={styles.terminalHeader}>
+            <span className={`${styles.dot} ${styles.dotRed}`} />
+            <span className={`${styles.dot} ${styles.dotYellow}`} />
+            <span className={`${styles.dot} ${styles.dotGreen}`} />
+            <span className={styles.terminalTitle}>Terminal</span>
+          </div>
+          <div className={styles.terminalBody}>
+            <div className={styles.terminalLine}>
+              <span className={styles.prompt}>$</span>
+              <span className={styles.command}> comb get git.branch . -f text</span>
+            </div>
+            <div className={styles.terminalLine}>
+              <span className={styles.output}>main</span>
+              <span className={styles.annotation}> ← 15µs</span>
+            </div>
+            <div className={styles.terminalSpacer} />
+            <div className={styles.terminalLine}>
+              <span className={styles.prompt}>$</span>
+              <span className={styles.command}> comb status</span>
+            </div>
+            <div className={styles.terminalLine}>
+              <span className={styles.jsonBrace}>{'{'}</span>
+              <span className={styles.jsonKey}>&quot;cache_entries&quot;</span>
+              <span className={styles.jsonColon}>: </span>
+              <span className={styles.jsonNumber}>12</span>
+              <span className={styles.jsonComma}>, </span>
+              <span className={styles.jsonKey}>&quot;active_watchers&quot;</span>
+              <span className={styles.jsonColon}>: </span>
+              <span className={styles.jsonNumber}>3</span>
+              <span className={styles.jsonBrace}>{'}'}</span>
+            </div>
+          </div>
+        </div>
+
         <div className={styles.registryLinks}>
           <a className={styles.registryLink} href="https://crates.io/crates/beachcomber" target="_blank" rel="noopener noreferrer">crates.io</a>
           <span className={styles.registrySep} aria-hidden="true">·</span>

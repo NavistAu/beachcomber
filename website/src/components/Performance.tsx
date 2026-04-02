@@ -110,6 +110,7 @@ export default function Performance(): JSX.Element {
         className={`${styles.container} ${sectionVisible ? styles.visible : ''}`}
         ref={sectionRef as React.RefObject<HTMLDivElement>}
       >
+        <div className={styles.label}>Performance</div>
         <h2 className={styles.heading}>The speed difference is absurd</h2>
 
         <BarChart />

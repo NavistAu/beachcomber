@@ -10,6 +10,7 @@ export default function SDKs(): JSX.Element {
         className={`${styles.container} ${isVisible ? styles.visible : ''}`}
         ref={ref as React.RefObject<HTMLDivElement>}
       >
+        <div className={styles.label}>Get started</div>
         <h2 className={styles.heading}>Get started</h2>
         <p className={styles.subheading}>
           The daemon starts automatically on first query. Integrate with your prompt, status bar, or

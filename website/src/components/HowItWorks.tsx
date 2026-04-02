@@ -10,6 +10,7 @@ export default function HowItWorks(): JSX.Element {
         className={`${styles.container} ${isVisible ? styles.visible : ''}`}
         ref={ref as React.RefObject<HTMLDivElement>}
       >
+        <div className={styles.label}>How it works</div>
         <h2 className={styles.heading}>How it works</h2>
         <p className={styles.description}>
           beachcomber is a single async daemon. It watches directories using native OS APIs, runs

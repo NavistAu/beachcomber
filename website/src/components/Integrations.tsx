@@ -34,6 +34,7 @@ export default function Integrations(): JSX.Element {
         className={`${styles.container} ${isVisible ? styles.visible : ''}`}
         ref={ref as React.RefObject<HTMLDivElement>}
       >
+        <div className={styles.label}>Ecosystem</div>
         <h2 className={styles.heading}>Ecosystem</h2>
         <p className={styles.subheading}>beachcomber is infrastructure, not a prompt theme</p>
 
