@@ -82,49 +82,8 @@ const config: Config = {
     },
     footer: {
       style: 'dark',
-      links: [
-        {
-          title: 'Docs',
-          items: [
-            {
-              label: 'Getting Started',
-              to: '/docs/getting-started/installation',
-            },
-            {
-              label: 'CLI Reference',
-              to: '/docs/reference/cli-commands',
-            },
-            {
-              label: 'Providers',
-              to: '/docs/reference/built-in-providers',
-            },
-          ],
-        },
-        {
-          title: 'Ecosystem',
-          items: [
-            {
-              label: 'SDKs',
-              to: '/docs/ecosystem/overview',
-            },
-            {
-              label: 'GitHub',
-              href: 'https://github.com/NavistAu/beachcomber',
-            },
-            {
-              label: 'crates.io',
-              href: 'https://crates.io/crates/beachcomber',
-            },
-          ],
-        },
-      ],
-      logo: {
-        alt: 'Navist',
-        src: 'img/navist-logo.png',
-        href: 'https://navist.com.au',
-        width: 120,
-      },
-      copyright: 'beachcomber is a product of Navist — polymath technical consultancy. MIT License.',
+      links: [],
+      copyright: 'beachcomber is a product of <a href="https://navist.com.au"><img src="/img/navist-logo.png" alt="Navist" style="height:20px;vertical-align:middle" /></a> — a polymath technical consultancy. MIT License.',
     },
     prism: {
       theme: prismThemes.github,
