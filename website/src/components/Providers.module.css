@@ -1,5 +1,5 @@
 .section {
-  padding: 5rem 2rem;
+  padding: 4rem 2rem;
   background: var(--ifm-background-color);
 }
 
@@ -46,19 +46,32 @@
   flex-direction: column;
   gap: 0.3rem;
   border: 1px solid var(--ifm-color-emphasis-200);
+  border-left: 2px solid var(--ifm-color-primary);
   cursor: default;
-  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease, border-left-width 0.18s ease;
 }
 
 .card:hover {
   background: var(--ifm-color-primary);
   border-color: var(--ifm-color-primary);
+  border-left: 4px solid var(--ifm-color-primary-dark);
   box-shadow: 0 4px 16px rgba(8, 145, 178, 0.25);
   transform: translateY(-2px);
 }
 
 [data-theme='dark'] .card:hover {
   box-shadow: 0 4px 16px rgba(6, 214, 240, 0.2);
+}
+
+/* Stagger fade-in when container becomes visible */
+.container.visible .card {
+  animation: fadeInUp 0.3s ease forwards;
+  opacity: 0;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .card:hover .cardName {

@@ -15,13 +15,13 @@ export default function WaveDivider({fillColor, className, flip = false}: WaveDi
       }}
     >
       <svg
-        viewBox="0 0 1440 80"
+        viewBox="0 0 1440 72"
         xmlns="http://www.w3.org/2000/svg"
         preserveAspectRatio="none"
-        style={{display: 'block', width: '100%', height: '80px'}}
+        style={{display: 'block', width: '100%', height: '72px'}}
       >
         <path
-          d="M0,40 C180,80 360,0 540,40 C720,80 900,0 1080,40 C1260,80 1380,20 1440,30 L1440,80 L0,80 Z"
+          d="M0,36 C120,62 240,10 400,38 C560,66 640,14 800,36 C960,58 1080,8 1200,32 C1320,56 1390,22 1440,28 L1440,72 L0,72 Z"
           fill={fillColor}
         />
       </svg>

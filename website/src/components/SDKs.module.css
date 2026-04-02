@@ -1,6 +1,35 @@
 .section {
   padding: 5rem 2rem 6rem;
   background: var(--ifm-background-color);
+  position: relative;
+}
+
+.section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(8, 145, 178, 0.6) 30%,
+    rgba(8, 145, 178, 0.9) 50%,
+    rgba(8, 145, 178, 0.6) 70%,
+    transparent 100%
+  );
+}
+
+[data-theme='dark'] .section::before {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(6, 214, 240, 0.5) 30%,
+    rgba(6, 214, 240, 0.8) 50%,
+    rgba(6, 214, 240, 0.5) 70%,
+    transparent 100%
+  );
 }
 
 .container {
@@ -37,15 +66,38 @@
 
 /* Terminal block */
 .terminalWrapper {
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1);
   margin-bottom: 2rem;
   text-align: left;
+  transition: box-shadow 0.3s ease;
+}
+
+.terminalWrapper:hover {
+  box-shadow: 0 16px 48px rgba(8, 145, 178, 0.18), 0 4px 16px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(8, 145, 178, 0.15);
+  animation: terminalPulse 2s ease infinite;
+}
+
+@keyframes terminalPulse {
+  0% { box-shadow: 0 16px 48px rgba(8, 145, 178, 0.18), 0 4px 16px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(8, 145, 178, 0.15); }
+  50% { box-shadow: 0 16px 56px rgba(8, 145, 178, 0.28), 0 4px 16px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(8, 145, 178, 0.25); }
+  100% { box-shadow: 0 16px 48px rgba(8, 145, 178, 0.18), 0 4px 16px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(8, 145, 178, 0.15); }
 }
 
 [data-theme='dark'] .terminalWrapper {
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme='dark'] .terminalWrapper:hover {
+  box-shadow: 0 16px 56px rgba(6, 214, 240, 0.15), 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(6, 214, 240, 0.2);
+  animation: terminalPulseDark 2s ease infinite;
+}
+
+@keyframes terminalPulseDark {
+  0% { box-shadow: 0 16px 56px rgba(6, 214, 240, 0.15), 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(6, 214, 240, 0.2); }
+  50% { box-shadow: 0 16px 64px rgba(6, 214, 240, 0.25), 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(6, 214, 240, 0.3); }
+  100% { box-shadow: 0 16px 56px rgba(6, 214, 240, 0.15), 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(6, 214, 240, 0.2); }
 }
 
 .terminalHeader {
@@ -81,9 +133,10 @@
 
 .terminalBody {
   background: #0d1117;
-  padding: 1.25rem 1.5rem;
+  padding: 1.75rem 1.75rem;
   font-family: var(--ifm-font-family-monospace);
-  font-size: 0.95rem;
+  font-size: 1rem;
+  line-height: 1.7;
 }
 
 [data-theme='dark'] .terminalBody {

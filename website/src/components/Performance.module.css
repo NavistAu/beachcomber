@@ -1,5 +1,5 @@
 .section {
-  padding: 5rem 2rem;
+  padding: 7rem 2rem 5rem;
   background: var(--ifm-background-color);
 }
 
@@ -48,9 +48,10 @@
 
 .chartBarContainer {
   flex: 1;
-  height: 36px;
+  height: 44px;
   background: var(--ifm-background-surface-color);
-  border-radius: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--ifm-color-emphasis-200);
   overflow: visible;
   position: relative;
   display: flex;
@@ -59,7 +60,7 @@
 
 .chartBar {
   height: 100%;
-  border-radius: 6px;
+  border-radius: 7px;
   transition: width 1.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
   width: 0;
   display: flex;
@@ -123,38 +124,39 @@
 }
 
 .comparisonPanel {
-  padding: 1.75rem;
-  border-radius: 10px;
+  padding: 2rem 2rem;
+  border-radius: 12px;
   border: 1px solid transparent;
-  transition: box-shadow 0.2s ease;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .comparisonPanel:hover {
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.1);
+  transform: translateY(-2px);
 }
 
 [data-theme='dark'] .comparisonPanel:hover {
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.4);
 }
 
 .comparisonPanelBad {
-  background: rgba(232, 68, 26, 0.05);
-  border-color: rgba(232, 68, 26, 0.2);
+  background: linear-gradient(135deg, rgba(232, 68, 26, 0.07) 0%, rgba(232, 68, 26, 0.03) 100%);
+  border-color: rgba(232, 68, 26, 0.22);
 }
 
 [data-theme='dark'] .comparisonPanelBad {
-  background: rgba(245, 158, 11, 0.05);
-  border-color: rgba(245, 158, 11, 0.2);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.03) 100%);
+  border-color: rgba(245, 158, 11, 0.22);
 }
 
 .comparisonPanelGood {
-  background: rgba(8, 145, 178, 0.05);
-  border-color: rgba(8, 145, 178, 0.2);
+  background: linear-gradient(135deg, rgba(8, 145, 178, 0.08) 0%, rgba(8, 145, 178, 0.03) 100%);
+  border-color: rgba(8, 145, 178, 0.22);
 }
 
 [data-theme='dark'] .comparisonPanelGood {
-  background: rgba(6, 214, 240, 0.05);
-  border-color: rgba(6, 214, 240, 0.15);
+  background: linear-gradient(135deg, rgba(6, 214, 240, 0.08) 0%, rgba(6, 214, 240, 0.03) 100%);
+  border-color: rgba(6, 214, 240, 0.18);
 }
 
 .comparisonTitle {
@@ -176,10 +178,10 @@
 
 .comparisonStat {
   font-family: var(--ifm-heading-font-family);
-  font-size: 1.35rem;
+  font-size: 2rem;
   font-weight: 800;
   margin-bottom: 0.2rem;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
 }
 
 .comparisonStatBad {
@@ -199,25 +201,44 @@
 /* Stat Callout */
 .callout {
   text-align: center;
-  padding: 2.5rem 2rem;
-  border-radius: 10px;
+  padding: 3rem 2rem;
+  border-radius: 12px;
   background: var(--ifm-background-surface-color);
   border: 1px solid var(--ifm-color-emphasis-200);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.06);
+  position: relative;
+  overflow: hidden;
+}
+
+.callout::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 60%;
+  height: 80%;
+  background: radial-gradient(ellipse at center, rgba(8, 145, 178, 0.08) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+[data-theme='dark'] .callout::before {
+  background: radial-gradient(ellipse at center, rgba(6, 214, 240, 0.08) 0%, transparent 70%);
 }
 
 [data-theme='dark'] .callout {
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.3);
 }
 
 .calloutNumber {
   font-family: var(--ifm-heading-font-family);
-  font-size: clamp(3rem, 8vw, 5rem);
+  font-size: clamp(3.5rem, 9vw, 6rem);
   font-weight: 800;
   color: var(--ifm-color-primary);
   line-height: 1;
   margin-bottom: 0.75rem;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.04em;
+  position: relative;
 }
 
 .calloutText {

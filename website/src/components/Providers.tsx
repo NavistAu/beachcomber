@@ -32,8 +32,12 @@ export default function Providers(): JSX.Element {
         <h2 className={styles.heading}>16 built-in providers</h2>
         <p className={styles.subheading}>Plus a script backend for anything else</p>
         <div className={styles.grid}>
-          {providers.map((p) => (
-            <div key={p.name} className={styles.card}>
+          {providers.map((p, i) => (
+            <div
+              key={p.name}
+              className={styles.card}
+              style={{ animationDelay: `${i * 30}ms` } as React.CSSProperties}
+            >
               <div className={styles.cardName}>{p.name}</div>
               <div className={styles.cardTime}>{p.time}</div>
             </div>

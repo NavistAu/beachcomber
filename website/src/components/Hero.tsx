@@ -7,6 +7,7 @@ export default function Hero(): JSX.Element {
   return (
     <section className={styles.hero}>
       <div className={styles.glow} aria-hidden="true" />
+      <div className={styles.glowWarm} aria-hidden="true" />
       <div
         className={`${styles.content} ${isVisible ? styles.visible : ''}`}
         ref={ref as React.RefObject<HTMLDivElement>}

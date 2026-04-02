@@ -189,15 +189,67 @@ pre.prism-code {
 }
 
 /* ============================================================
+   BACKGROUND GRAIN TEXTURE
+   ============================================================ */
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 256px;
+}
+
+[data-theme='dark'] body::before {
+  opacity: 0.035;
+}
+
+/* ============================================================
    FOOTER
    ============================================================ */
 
 .footer {
   font-size: 0.875rem;
+  position: relative;
+}
+
+.footer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(8, 145, 178, 0.6) 30%,
+    rgba(8, 145, 178, 0.8) 50%,
+    rgba(8, 145, 178, 0.6) 70%,
+    transparent 100%
+  );
+}
+
+[data-theme='dark'] .footer::before {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(6, 214, 240, 0.5) 30%,
+    rgba(6, 214, 240, 0.7) 50%,
+    rgba(6, 214, 240, 0.5) 70%,
+    transparent 100%
+  );
 }
 
 .footer__title {
   font-family: var(--ifm-heading-font-family);
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: -0.01em;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
