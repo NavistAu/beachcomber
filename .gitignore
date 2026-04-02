@@ -14,6 +14,9 @@
 # Claude Code working files
 .claude/
 
+# Git worktrees
+.worktrees/
+
 # Internal planning docs (kept in repo but not published)
 INIT.md
 docs/superpowers/
