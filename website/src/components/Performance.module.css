@@ -1,0 +1,154 @@
+.section {
+  padding: 4rem 2rem;
+}
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.heading {
+  font-family: var(--ifm-heading-font-family);
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-align: center;
+  margin-bottom: 3rem;
+}
+
+/* Bar Chart */
+.chart {
+  margin-bottom: 3rem;
+}
+
+.chartRow {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.chartLabel {
+  width: 180px;
+  text-align: right;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.85rem;
+}
+
+.chartBarContainer {
+  flex: 1;
+  height: 36px;
+  background: var(--ifm-background-surface-color);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.chartBar {
+  height: 100%;
+  border-radius: 6px;
+  transition: width 1.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  width: 0;
+  display: flex;
+  align-items: center;
+  padding-left: 0.5rem;
+  box-sizing: border-box;
+}
+
+.chartBarSlow {
+  background: var(--bc-accent-secondary);
+}
+
+.chartBarMedium {
+  background: var(--bc-accent-secondary-light);
+}
+
+.chartBarFast {
+  background: var(--ifm-color-primary);
+  min-width: 3px;
+}
+
+.chartValue {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: white;
+  font-family: var(--ifm-font-family-monospace);
+  white-space: nowrap;
+}
+
+/* Before/After Comparison */
+.comparison {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  margin-bottom: 3rem;
+}
+
+@media (max-width: 640px) {
+  .comparison {
+    grid-template-columns: 1fr;
+  }
+}
+
+.comparisonPanel {
+  padding: 2rem;
+  border-radius: 8px;
+  background: var(--ifm-background-surface-color);
+}
+
+.comparisonTitle {
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  color: var(--ifm-font-color-secondary);
+  letter-spacing: 0.05em;
+  margin-bottom: 1rem;
+}
+
+.comparisonStat {
+  font-family: var(--ifm-heading-font-family);
+  font-size: 1.5rem;
+  font-weight: 800;
+  margin-bottom: 0.25rem;
+}
+
+.comparisonStatBad {
+  color: var(--bc-accent-secondary);
+}
+
+.comparisonStatGood {
+  color: var(--ifm-color-primary);
+}
+
+.comparisonDesc {
+  font-size: 0.85rem;
+  color: var(--ifm-font-color-secondary);
+  margin-bottom: 1rem;
+}
+
+.comparisonDesc:last-child {
+  margin-bottom: 0;
+}
+
+/* Stat Callout */
+.callout {
+  text-align: center;
+  padding: 2rem;
+  border-radius: 8px;
+  background: var(--ifm-background-surface-color);
+}
+
+.calloutNumber {
+  font-family: var(--ifm-heading-font-family);
+  font-size: 4rem;
+  font-weight: 800;
+  color: var(--ifm-color-primary);
+  line-height: 1;
+  margin-bottom: 1rem;
+  transition: opacity 0.6s ease;
+}
+
+.calloutText {
+  font-size: 1.1rem;
+  color: var(--ifm-font-color-secondary);
+  max-width: 500px;
+  margin: 0 auto;
+}
