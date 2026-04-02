@@ -1,0 +1,84 @@
+.animationContainer {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  min-height: 300px;
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.animationContainer canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.wiper {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.3);
+  z-index: 5;
+  pointer-events: none;
+}
+
+.wiperHandle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 26px;
+  height: 48px;
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 13px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  pointer-events: none;
+}
+
+.wiperArrow {
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+
+.wiperArrow.left {
+  border-right: 6px solid #333;
+}
+
+.wiperArrow.right {
+  border-left: 6px solid #333;
+}
+
+.zoneLabels {
+  position: absolute;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  padding: 0 20px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.chaosLabel {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(232, 68, 26, 0.7);
+}
+
+.hubLabel {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(6, 214, 240, 0.7);
+}
