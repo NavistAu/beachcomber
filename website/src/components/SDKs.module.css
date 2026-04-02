@@ -2,39 +2,10 @@
   padding: 5rem 2rem 6rem;
   background: #2c2416;
   color: #e8dfc8;
-  position: relative;
 }
 
 [data-theme='dark'] .section {
   background: #080c11;
-}
-
-.section::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(8, 145, 178, 0.6) 30%,
-    rgba(8, 145, 178, 0.9) 50%,
-    rgba(8, 145, 178, 0.6) 70%,
-    transparent 100%
-  );
-}
-
-[data-theme='dark'] .section::before {
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(6, 214, 240, 0.5) 30%,
-    rgba(6, 214, 240, 0.8) 50%,
-    rgba(6, 214, 240, 0.5) 70%,
-    transparent 100%
-  );
 }
 
 .container {
