@@ -4,22 +4,28 @@ build-backend = "hatchling.build"
 
 [project]
 name = "beachcomber"
-version = "0.1.0"
-description = "This package exists to prevent name squatting and malicious supply chain attacks. Install libbeachcomber instead. See https://beachcomber.sh"
+version = "0.1.1"
+description = "Install the beachcomber (comb) shell-state daemon. Downloads the correct binary for your platform from GitHub Releases."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
-authors = [
-    { name = "NavistAu" },
-]
+dependencies = []
+authors = [{ name = "NavistAu" }]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Console",
 ]
 
 [project.urls]
 Homepage = "https://beachcomber.sh"
 Repository = "https://github.com/NavistAu/beachcomber"
 
+[project.scripts]
+comb = "beachcomber_installer:main"
+beachcomber = "beachcomber_installer:main"
+
 [tool.hatch.build.targets.wheel]
-packages = ["beachcomber_placeholder"]
+packages = ["beachcomber_installer"]
