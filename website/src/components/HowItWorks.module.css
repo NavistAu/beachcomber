@@ -159,6 +159,7 @@
 .prompt {
   color: #06d6f0;
   font-weight: 700;
+  white-space: pre;
 }
 
 .command {
