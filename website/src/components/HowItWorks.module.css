@@ -61,44 +61,57 @@
 
 .terminalHeader {
   background: #2d2d2d;
-  padding: 0.5rem 0.75rem;
+  padding: 0;
   display: flex;
-  align-items: center;
-  gap: 0.4rem;
+  align-items: stretch;
 }
 
 [data-theme='dark'] .terminalHeader {
   background: #1c1c1e;
 }
 
-/* Tabs */
+.dots {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.75rem;
+}
+
+/* Tabs — terminal app style */
 .tabs {
   display: flex;
   gap: 0;
-  margin-left: 1rem;
   flex: 1;
+  overflow-x: auto;
 }
 
 .tab {
-  background: none;
+  background: transparent;
   border: none;
-  padding: 0.3rem 0.75rem;
+  padding: 0.55rem 1rem;
   font-family: var(--ifm-font-family-monospace);
-  font-size: 0.75rem;
-  color: #888;
+  font-size: 0.8rem;
+  color: #777;
   cursor: pointer;
-  border-radius: 4px;
+  border-bottom: 2px solid transparent;
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
   transition: color 0.15s, background 0.15s;
+  white-space: nowrap;
 }
 
 .tab:hover {
-  color: #ccc;
-  background: rgba(255, 255, 255, 0.06);
+  color: #bbb;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .tabActive {
   color: #e6edf3;
-  background: rgba(255, 255, 255, 0.1);
+  background: #0d1117;
+  border-bottom-color: #06d6f0;
+}
+
+[data-theme='dark'] .tabActive {
+  background: #090d12;
 }
 
 .dot {
@@ -184,21 +197,42 @@
   color: #e6edf3;
 }
 
-/* Code display (SDK tabs) */
+/* Code display — Monokai-inspired */
 .codeLine {
   line-height: 1.6;
 }
 
 .codeText {
-  color: #e6edf3;
+  color: #f8f8f2;
 }
 
 .codeKeyword {
-  color: #ff7b72;
+  color: #f92672;
 }
 
 .codeComment {
-  color: #6a737d;
+  color: #75715e;
   font-style: italic;
+}
+
+.codeString {
+  color: #e6db74;
+}
+
+.codeFunction {
+  color: #a6e22e;
+}
+
+.codeType {
+  color: #66d9ef;
+  font-style: italic;
+}
+
+.codeNumber {
+  color: #ae81ff;
+}
+
+.codeOperator {
+  color: #f92672;
 }
 
