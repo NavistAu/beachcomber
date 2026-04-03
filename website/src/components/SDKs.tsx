@@ -9,7 +9,7 @@ interface InstallTab {
 }
 
 const installTabs: InstallTab[] = [
-  {id: 'brew', label: 'Homebrew', command: 'brew install beachcomber'},
+  {id: 'brew', label: 'Homebrew', command: 'brew install navistau/tap/beachcomber'},
   {id: 'npm', label: 'npm', command: 'npm install -g beachcomber'},
   {id: 'pip', label: 'pip', command: 'pip install beachcomber'},
   {id: 'cargo', label: 'Cargo', command: 'cargo install beachcomber'},

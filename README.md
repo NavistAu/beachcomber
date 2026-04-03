@@ -127,7 +127,7 @@ $ comb status
 
 ```sh
 # Homebrew (macOS)
-brew install beachcomber
+brew install navistau/tap/beachcomber
 
 # npm
 npm install -g beachcomber

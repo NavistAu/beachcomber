@@ -7,7 +7,7 @@ sidebar_position: 1
 ## Homebrew
 
 ```sh
-brew install beachcomber
+brew install navistau/tap/beachcomber
 ```
 
 ## npm

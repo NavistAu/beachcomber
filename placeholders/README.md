@@ -12,7 +12,7 @@ npm install -g beachcomber
 pip install beachcomber
 
 # Homebrew
-brew install beachcomber
+brew install navistau/tap/beachcomber
 ```
 
 The beachcomber **client SDK** is a separate package published as `libbeachcomber`:
