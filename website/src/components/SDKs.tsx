@@ -5,6 +5,7 @@ export default function SDKs(): JSX.Element {
   const [ref, isVisible] = useIntersectionObserver(0.1);
 
   return (
+    <>
     <section className={styles.section}>
       <div
         className={`${styles.container} ${isVisible ? styles.visible : ''}`}
@@ -54,21 +55,25 @@ export default function SDKs(): JSX.Element {
           </a>
         </div>
 
-        <div className={styles.footerLinks}>
-          <div className={styles.footerCol}>
-            <div className={styles.footerColTitle}>Docs</div>
-            <a className={styles.footerColLink} href="/docs/getting-started/installation">Getting Started</a>
-            <a className={styles.footerColLink} href="/docs/reference/cli-commands">CLI Reference</a>
-            <a className={styles.footerColLink} href="/docs/reference/built-in-providers">Providers</a>
-          </div>
-          <div className={styles.footerCol}>
-            <div className={styles.footerColTitle}>Ecosystem</div>
-            <a className={styles.footerColLink} href="/docs/ecosystem/overview">SDKs</a>
-            <a className={styles.footerColLink} href="https://github.com/NavistAu/beachcomber" target="_blank" rel="noopener noreferrer">GitHub</a>
-            <a className={styles.footerColLink} href="https://crates.io/crates/beachcomber" target="_blank" rel="noopener noreferrer">crates.io</a>
-          </div>
+      </div>
+    </section>
+
+    <section className={styles.pageFooter}>
+      <div className={styles.pageFooterInner}>
+        <div className={styles.footerCol}>
+          <div className={styles.footerColTitle}>Docs</div>
+          <a className={styles.footerColLink} href="/docs/getting-started/installation">Getting Started</a>
+          <a className={styles.footerColLink} href="/docs/reference/cli-commands">CLI Reference</a>
+          <a className={styles.footerColLink} href="/docs/reference/built-in-providers">Providers</a>
+        </div>
+        <div className={styles.footerCol}>
+          <div className={styles.footerColTitle}>Ecosystem</div>
+          <a className={styles.footerColLink} href="/docs/ecosystem/overview">SDKs</a>
+          <a className={styles.footerColLink} href="https://github.com/NavistAu/beachcomber" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a className={styles.footerColLink} href="https://crates.io/crates/beachcomber" target="_blank" rel="noopener noreferrer">crates.io</a>
         </div>
       </div>
     </section>
+    </>
   );
 }
