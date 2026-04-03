@@ -193,6 +193,7 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [ ] GitHub Pages site for beachcomber.sh (docs, install instructions, examples)
 - [ ] CI workflow to build and deploy the site on push to main
 - [ ] Configure beachcomber.sh custom domain (DNS + GitHub Pages CNAME)
+- [ ] Site analytics (privacy-respecting — Plausible, Fathom, or similar)
 
 ### Linux Support
 
