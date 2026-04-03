@@ -141,3 +141,37 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and test
         run: make test
+
+  validate-npm-installer:
+    name: Validate npm installer
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: placeholders/npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check
+        run: node --check install.js
+      - name: Verify package.json is valid
+        run: node -e "JSON.parse(require('fs').readFileSync('package.json', 'utf8'))"
+      - name: Dry-run pack
+        run: npm pack --dry-run
+
+  validate-pypi-installer:
+    name: Validate PyPI installer
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: placeholders/pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax check
+        run: python -m py_compile beachcomber_installer/__init__.py
+      - name: Verify package builds
+        run: pip install build && python -m build
