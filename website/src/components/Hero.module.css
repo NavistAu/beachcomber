@@ -48,7 +48,14 @@
   margin-bottom: 0.75rem;
   line-height: 1;
 
-  background: linear-gradient(120deg, var(--ifm-font-color-base) 0%, var(--ifm-color-primary) 100%);
+  background: linear-gradient(120deg, #2C2416 0%, #0891B2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+[data-theme='dark'] .title {
+  background: linear-gradient(120deg, #e8dfc8 0%, #06d6f0 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;

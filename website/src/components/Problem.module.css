@@ -1,7 +1,7 @@
 .section {
   padding: 6rem 2rem;
-  background: #2c2416;
-  color: #e8dfc8;
+  background: var(--ifm-background-surface-color);
+  color: var(--ifm-font-color-base);
 }
 
 [data-theme='dark'] .section {
@@ -28,7 +28,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.15em;
-  color: #06d6f0;
+  color: var(--ifm-color-primary);
   margin-bottom: 0.75rem;
   text-align: center;
 }
@@ -39,7 +39,7 @@
   font-weight: 800;
   letter-spacing: -0.03em;
   margin-bottom: 2rem;
-  color: #f5f0e8;
+  color: var(--ifm-font-color-base);
   line-height: 1.2;
 }
 
@@ -48,12 +48,8 @@
 }
 
 .accent {
-  color: #e8441a;
+  color: var(--bc-accent-secondary);
   font-style: italic;
-}
-
-[data-theme='dark'] .accent {
-  color: #f59e0b;
 }
 
 .prose {
@@ -63,7 +59,7 @@
 .prose p {
   font-size: 1.05rem;
   line-height: 1.75;
-  color: #c8b99a;
+  color: var(--ifm-font-color-secondary);
   margin-bottom: 1.25rem;
 }
 
@@ -72,8 +68,8 @@
 }
 
 .prose code {
-  background: rgba(255, 255, 255, 0.08);
-  color: #06d6f0;
+  background: rgba(8, 145, 178, 0.1);
+  color: var(--ifm-color-primary);
   padding: 0.1em 0.4em;
   border-radius: 4px;
   font-family: var(--ifm-font-family-monospace);
@@ -101,12 +97,8 @@
 .calloutBar {
   width: 3px;
   border-radius: 3px;
-  background: #0891b2;
+  background: var(--ifm-color-primary);
   flex-shrink: 0;
-}
-
-[data-theme='dark'] .calloutBar {
-  background: #06d6f0;
 }
 
 .calloutBody {
@@ -116,16 +108,12 @@
 .calloutBody p {
   font-size: 1rem;
   line-height: 1.7;
-  color: #c8b99a;
+  color: var(--ifm-font-color-secondary);
   margin: 0;
 }
 
-[data-theme='dark'] .calloutBody p {
-  color: #b5a88c;
-}
-
 .calloutBody strong {
-  color: #f5f0e8;
+  color: var(--ifm-font-color-base);
   font-weight: 700;
 }
 
