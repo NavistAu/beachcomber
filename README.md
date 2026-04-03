@@ -129,9 +129,17 @@ $ comb status
 # Homebrew (macOS)
 brew install beachcomber
 
+# npm
+npm install -g beachcomber
+
+# pip
+pip install beachcomber
+
 # Cargo (Rust toolchain required)
 cargo install beachcomber
 ```
+
+The npm and pip packages download the correct pre-built binary for your platform from GitHub Releases. You can also use `npx beachcomber`, `uvx beachcomber`, or `uv tool install beachcomber`.
 
 ### Verify
 

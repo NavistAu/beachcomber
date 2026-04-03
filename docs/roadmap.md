@@ -158,7 +158,7 @@ Everything below must be done before the first public release. Ordered by depend
 - [x] Publish Lua SDK (`libbeachcomber`) to LuaRocks
 - [x] Publish Ruby SDK (`libbeachcomber`) to RubyGems
 - [x] Publish C SDK source tarball in GitHub Release
-- [x] Reserve `beachcomber` name on npm, PyPI, RubyGems, LuaRocks (supply chain attack prevention placeholders)
+- [x] Reserve `beachcomber` name on npm, PyPI, RubyGems, LuaRocks (npm and PyPI now ship binary installers; RubyGems and LuaRocks remain name-reservation placeholders)
 
 ---
 

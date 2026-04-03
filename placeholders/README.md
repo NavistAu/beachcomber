@@ -1,9 +1,24 @@
 # beachcomber
 
-This package exists to prevent name squatting and malicious supply chain attacks.
+Install the [beachcomber](https://beachcomber.sh) (`comb`) shell-state daemon.
 
-The beachcomber client SDK is published as **libbeachcomber**. The beachcomber daemon binary is distributed via GitHub releases and Homebrew.
+The `beachcomber` packages on npm and PyPI download the correct pre-built binary for your platform from GitHub Releases.
+
+```sh
+# npm
+npm install -g beachcomber
+
+# pip
+pip install beachcomber
+
+# Homebrew
+brew install beachcomber
+```
+
+The beachcomber **client SDK** is a separate package published as `libbeachcomber`:
+
+- `pip install libbeachcomber` (Python)
+- `npm install libbeachcomber` (Node.js)
 
 - Website: https://beachcomber.sh
 - GitHub: https://github.com/NavistAu/beachcomber
-- Client SDK: install **libbeachcomber** instead

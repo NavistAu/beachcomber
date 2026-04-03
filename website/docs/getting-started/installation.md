@@ -10,6 +10,34 @@ sidebar_position: 1
 brew install beachcomber
 ```
 
+## npm
+
+```sh
+npm install -g beachcomber
+```
+
+Or run without installing:
+
+```sh
+npx beachcomber --version
+```
+
+## pip
+
+```sh
+pip install beachcomber
+```
+
+Or with uv:
+
+```sh
+uv tool install beachcomber
+# or run without installing:
+uvx beachcomber --version
+```
+
+The npm and pip packages download the correct pre-built binary for your platform from GitHub Releases. Once installed, the binary persists independently of the package manager.
+
 ## Cargo
 
 ```sh
