@@ -1,0 +1,252 @@
+/**
+ * Beach Day / Beach at Night theme for beachcomber docs.
+ *
+ * Fonts:
+ *   Headings: Sora — sharp geometric, clean angles, strong presence
+ *   Body:     Source Sans 3 — humanist, readable at length
+ *   Code:     JetBrains Mono — crisp monospace, excellent legibility
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Source+Sans+3:ital,wght@0,300;0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+/* ============================================================
+   LIGHT MODE — Beach at Day
+   Warm sand, deep charcoal, vivid ocean teal, coral accent
+   ============================================================ */
+
+:root {
+  /* Primary: Vivid ocean teal */
+  --ifm-color-primary: #0891b2;
+  --ifm-color-primary-dark: #0782a0;
+  --ifm-color-primary-darker: #077a97;
+  --ifm-color-primary-darkest: #06647c;
+  --ifm-color-primary-light: #09a0c4;
+  --ifm-color-primary-lighter: #0aa8cd;
+  --ifm-color-primary-lightest: #1bbde4;
+
+  /* Background: Warm sand */
+  --ifm-background-color: #f5f0e8;
+  --ifm-background-surface-color: #ede7d8;
+
+  /* Text: Deep driftwood charcoal */
+  --ifm-font-color-base: #2c2416;
+  --ifm-font-color-secondary: #5a4d3a;
+
+  /* Secondary accent: Vivid coral */
+  --bc-accent-secondary: #e8441a;
+  --bc-accent-secondary-light: #f26641;
+
+  /* Code blocks: Wet sand */
+  --ifm-code-background: #e4dccb;
+  --prism-background-color: #ddd5c2;
+  --docusaurus-highlighted-code-line-bg: rgba(8, 145, 178, 0.12);
+
+  /* Navbar — light mode uses warm sand */
+  --ifm-navbar-background-color: #ede7d8;
+  --ifm-navbar-shadow: 0 1px 0 0 rgba(44, 36, 22, 0.12);
+
+  /* Footer */
+  --ifm-footer-background-color: #000000;
+  --ifm-footer-color: #a89878;
+  --ifm-footer-link-color: #0891b2;
+  --ifm-footer-title-color: #d4cabc;
+
+  /* Typography */
+  --ifm-font-family-base: 'Source Sans 3', system-ui, sans-serif;
+  --ifm-heading-font-family: 'Sora', system-ui, sans-serif;
+  --ifm-font-family-monospace: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Font sizes */
+  --ifm-font-size-base: 16px;
+  --ifm-code-font-size: 90%;
+
+  /* Borders */
+  --ifm-color-emphasis-200: #d6cdb8;
+  --ifm-color-emphasis-300: #c4baa4;
+
+  /* Link */
+  --ifm-link-color: #0891b2;
+  --ifm-link-hover-color: #06647c;
+
+  /* Sidebar */
+  --ifm-menu-color: #3d3024;
+  --ifm-menu-color-active: #0891b2;
+
+  /* Landing page section backgrounds */
+  --bc-problem-bg: #2c2416;
+}
+
+/* ============================================================
+   DARK MODE — Beach at Night
+   Deep ocean navy, moonlit sand, bioluminescent teal, amber
+   ============================================================ */
+
+[data-theme='dark'] {
+  /* Primary: Bioluminescent teal — brighter than day */
+  --ifm-color-primary: #06d6f0;
+  --ifm-color-primary-dark: #05c1d9;
+  --ifm-color-primary-darker: #05b7ce;
+  --ifm-color-primary-darkest: #0496aa;
+  --ifm-color-primary-light: #1edaf3;
+  --ifm-color-primary-lighter: #2eddf4;
+  --ifm-color-primary-lightest: #57e4f6;
+
+  /* Background: Deep ocean navy */
+  --ifm-background-color: #0d1117;
+  --ifm-background-surface-color: #141b24;
+
+  /* Text: Moonlit sand — warm off-white */
+  --ifm-font-color-base: #e8dfc8;
+  --ifm-font-color-secondary: #b5a88c;
+
+  /* Secondary accent: Bonfire amber */
+  --bc-accent-secondary: #f59e0b;
+  --bc-accent-secondary-light: #fbbf24;
+
+  /* Code blocks: Deep water dark */
+  --ifm-code-background: #1a2332;
+  --prism-background-color: #111927;
+  --docusaurus-highlighted-code-line-bg: rgba(6, 214, 240, 0.10);
+
+  /* Navbar */
+  --ifm-navbar-background-color: #0d1117;
+  --ifm-navbar-shadow: 0 1px 0 0 rgba(6, 214, 240, 0.15);
+
+  /* Footer */
+  --ifm-footer-background-color: #000000;
+  --ifm-footer-color: #6a5e4a;
+  --ifm-footer-link-color: #06d6f0;
+  --ifm-footer-title-color: #b5a88c;
+
+  /* Borders */
+  --ifm-color-emphasis-200: #1e2a38;
+  --ifm-color-emphasis-300: #263245;
+
+  /* Link */
+  --ifm-link-color: #06d6f0;
+  --ifm-link-hover-color: #57e4f6;
+
+  /* Sidebar */
+  --ifm-menu-color: #c2b69a;
+  --ifm-menu-color-active: #06d6f0;
+
+  /* Landing page section backgrounds */
+  --bc-problem-bg: #080c11;
+}
+
+/* ============================================================
+   TYPOGRAPHY
+   ============================================================ */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--ifm-heading-font-family);
+  letter-spacing: -0.02em;
+}
+
+h1 {
+  font-weight: 800;
+}
+
+h2 {
+  font-weight: 700;
+}
+
+h3,
+h4 {
+  font-weight: 600;
+}
+
+/* ============================================================
+   NAVBAR
+   ============================================================ */
+
+.navbar__title {
+  font-family: var(--ifm-heading-font-family);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ifm-font-color-base);
+}
+
+[data-theme='dark'] .navbar__title {
+  color: #e8dfc8;
+}
+
+.navbar__link {
+  color: var(--ifm-navbar-link-color, var(--ifm-font-color-base)) !important;
+}
+
+.navbar__link:hover {
+  color: var(--ifm-color-primary) !important;
+}
+
+[data-theme='dark'] .navbar__link {
+  color: #e8dfc8 !important;
+}
+
+[data-theme='dark'] .navbar__link:hover {
+  color: #06d6f0 !important;
+}
+
+/* ============================================================
+   CODE BLOCKS
+   ============================================================ */
+
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--ifm-font-family-monospace);
+}
+
+div[class*='codeBlock'],
+pre.prism-code {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: var(--ifm-code-font-size);
+}
+
+/* ============================================================
+   BACKGROUND GRAIN TEXTURE
+   ============================================================ */
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 256px;
+}
+
+[data-theme='dark'] body::before {
+  opacity: 0.035;
+}
+
+/* ============================================================
+   FOOTER
+   ============================================================ */
+
+.footer {
+  font-size: 1rem;
+  background: #000 !important;
+  padding: 0.75rem 2rem !important;
+  text-align: center;
+  position: fixed !important;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  opacity: 0;
+}
+
+/* Pad the bottom of the page so content isn't hidden behind the fixed footer */
+.main-wrapper {
+  padding-bottom: 3rem;
+}

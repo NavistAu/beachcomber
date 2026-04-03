@@ -1,0 +1,122 @@
+.section {
+  padding: 6rem 2rem;
+  background: var(--ifm-background-surface-color);
+  color: var(--ifm-font-color-base);
+}
+
+[data-theme='dark'] .section {
+  background: #080c11;
+  color: #e8dfc8;
+}
+
+.container {
+  max-width: 720px;
+  margin: 0 auto;
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.container.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.label {
+  font-family: var(--ifm-heading-font-family);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--ifm-color-primary);
+  margin-bottom: 0.75rem;
+  text-align: center;
+}
+
+.heading {
+  font-family: var(--ifm-heading-font-family);
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin-bottom: 2rem;
+  color: var(--ifm-font-color-base);
+  line-height: 1.2;
+}
+
+[data-theme='dark'] .heading {
+  color: #e8dfc8;
+}
+
+.accent {
+  color: var(--bc-accent-secondary);
+  font-style: italic;
+}
+
+.prose {
+  margin-bottom: 2.5rem;
+}
+
+.prose p {
+  font-size: 1.05rem;
+  line-height: 1.75;
+  color: var(--ifm-font-color-secondary);
+  margin-bottom: 1.25rem;
+}
+
+.prose p:last-child {
+  margin-bottom: 0;
+}
+
+.prose code {
+  background: rgba(8, 145, 178, 0.1);
+  color: var(--ifm-color-primary);
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.9em;
+}
+
+[data-theme='dark'] .prose code {
+  background: rgba(6, 214, 240, 0.12);
+  color: #06d6f0;
+}
+
+.callout {
+  display: flex;
+  gap: 1.25rem;
+  background: rgba(8, 145, 178, 0.08);
+  border-radius: 8px;
+  padding: 1.5rem;
+  align-items: stretch;
+}
+
+[data-theme='dark'] .callout {
+  background: rgba(6, 214, 240, 0.06);
+}
+
+.calloutBar {
+  width: 3px;
+  border-radius: 3px;
+  background: var(--ifm-color-primary);
+  flex-shrink: 0;
+}
+
+.calloutBody {
+  flex: 1;
+}
+
+.calloutBody p {
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--ifm-font-color-secondary);
+  margin: 0;
+}
+
+.calloutBody strong {
+  color: var(--ifm-font-color-base);
+  font-weight: 700;
+}
+
+[data-theme='dark'] .calloutBody strong {
+  color: #e8dfc8;
+}

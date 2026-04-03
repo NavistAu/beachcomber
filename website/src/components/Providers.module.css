@@ -1,0 +1,183 @@
+.section {
+  padding: 4rem 2rem;
+  background: var(--ifm-background-color);
+}
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.container.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.label {
+  font-family: var(--ifm-heading-font-family);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--ifm-color-primary);
+  margin-bottom: 0.75rem;
+  text-align: center;
+}
+
+.heading {
+  font-family: var(--ifm-heading-font-family);
+  font-size: clamp(1.75rem, 4vw, 2.25rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-align: center;
+  margin-bottom: 0.5rem;
+}
+
+.subheading {
+  font-size: 1rem;
+  color: var(--ifm-font-color-secondary);
+  text-align: center;
+  margin-bottom: 2.5rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.875rem;
+}
+
+.card {
+  padding: 1rem 1.25rem;
+  border-radius: 10px;
+  background:
+    linear-gradient(var(--ifm-background-surface-color), var(--ifm-background-surface-color)) padding-box,
+    linear-gradient(135deg, rgba(8, 145, 178, 0.3), rgba(8, 145, 178, 0.05)) border-box;
+  border: 1px solid transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  cursor: default;
+  transition: box-shadow 0.18s ease, transform 0.18s ease, background 0.18s ease;
+}
+
+[data-theme='dark'] .card {
+  background:
+    linear-gradient(var(--ifm-background-surface-color), var(--ifm-background-surface-color)) padding-box,
+    linear-gradient(135deg, rgba(6, 214, 240, 0.25), rgba(6, 214, 240, 0.03)) border-box;
+}
+
+.card:hover {
+  background:
+    linear-gradient(var(--ifm-color-primary), var(--ifm-color-primary)) padding-box,
+    linear-gradient(135deg, rgba(8, 145, 178, 0.9), rgba(8, 145, 178, 0.4)) border-box;
+  box-shadow: 0 4px 16px rgba(8, 145, 178, 0.25);
+  transform: translateY(-2px);
+}
+
+[data-theme='dark'] .card:hover {
+  background:
+    linear-gradient(var(--ifm-color-primary), var(--ifm-color-primary)) padding-box,
+    linear-gradient(135deg, rgba(6, 214, 240, 0.9), rgba(6, 214, 240, 0.3)) border-box;
+  box-shadow: 0 4px 16px rgba(6, 214, 240, 0.2);
+}
+
+.cardFeatured {
+  grid-column: span 2;
+  background:
+    linear-gradient(var(--ifm-background-surface-color), var(--ifm-background-surface-color)) padding-box,
+    linear-gradient(135deg, rgba(8, 145, 178, 0.5), rgba(8, 145, 178, 0.1)) border-box;
+  border: 1px solid transparent;
+}
+
+[data-theme='dark'] .cardFeatured {
+  background:
+    linear-gradient(var(--ifm-background-surface-color), var(--ifm-background-surface-color)) padding-box,
+    linear-gradient(135deg, rgba(6, 214, 240, 0.4), rgba(6, 214, 240, 0.06)) border-box;
+}
+
+.cardFeatured:hover {
+  background:
+    linear-gradient(var(--ifm-background-surface-color), var(--ifm-background-surface-color)) padding-box,
+    linear-gradient(135deg, rgba(8, 145, 178, 0.75), rgba(8, 145, 178, 0.2)) border-box;
+}
+
+[data-theme='dark'] .cardFeatured:hover {
+  background:
+    linear-gradient(var(--ifm-background-surface-color), var(--ifm-background-surface-color)) padding-box,
+    linear-gradient(135deg, rgba(6, 214, 240, 0.65), rgba(6, 214, 240, 0.12)) border-box;
+}
+
+.cardFeaturedHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.cardFields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.cardField {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.72rem;
+  color: var(--ifm-color-primary);
+  background: rgba(8, 145, 178, 0.08);
+  border-radius: 4px;
+  padding: 0.15em 0.5em;
+  white-space: nowrap;
+}
+
+[data-theme='dark'] .cardField {
+  background: rgba(6, 214, 240, 0.08);
+  color: var(--ifm-color-primary);
+}
+
+.cardFeatured:hover .cardField {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+[data-theme='dark'] .cardFeatured:hover .cardField {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* Stagger fade-in when container becomes visible */
+.container.visible .card {
+  animation: fadeInUp 0.3s ease forwards;
+  opacity: 0;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.card:hover .cardName {
+  color: white;
+}
+
+.card:hover .cardTime {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.cardName {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ifm-font-color-base);
+  transition: color 0.18s ease;
+}
+
+.cardTime {
+  font-size: 0.78rem;
+  color: var(--ifm-color-primary);
+  font-family: var(--ifm-font-family-monospace);
+  transition: color 0.18s ease;
+}
