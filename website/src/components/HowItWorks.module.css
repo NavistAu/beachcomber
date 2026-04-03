@@ -61,7 +61,7 @@
 
 .terminalHeader {
   background: #2d2d2d;
-  padding: 0.6rem 1rem;
+  padding: 0.5rem 0.75rem;
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -69,6 +69,36 @@
 
 [data-theme='dark'] .terminalHeader {
   background: #1c1c1e;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 0;
+  margin-left: 1rem;
+  flex: 1;
+}
+
+.tab {
+  background: none;
+  border: none;
+  padding: 0.3rem 0.75rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.75rem;
+  color: #888;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.tab:hover {
+  color: #ccc;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.tabActive {
+  color: #e6edf3;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .dot {
@@ -88,15 +118,6 @@
 
 .dotGreen {
   background: #28c840;
-}
-
-.terminalTitle {
-  flex: 1;
-  text-align: center;
-  font-size: 0.75rem;
-  color: #888;
-  font-family: var(--ifm-font-family-monospace);
-  margin-right: 2rem;
 }
 
 .terminalBody {
@@ -161,5 +182,23 @@
 
 .jsonComma {
   color: #e6edf3;
+}
+
+/* Code display (SDK tabs) */
+.codeLine {
+  line-height: 1.6;
+}
+
+.codeText {
+  color: #e6edf3;
+}
+
+.codeKeyword {
+  color: #ff7b72;
+}
+
+.codeComment {
+  color: #6a737d;
+  font-style: italic;
 }
 
