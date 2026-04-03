@@ -5,7 +5,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #0d1117;
+  background: var(--ifm-background-color);
 }
 
 /* Header area: title, tagline, badges — ~1/3 of hero */
@@ -35,7 +35,7 @@
   position: relative;
   z-index: 1;
   height: 60px;
-  background: linear-gradient(to bottom, #0d1117, transparent);
+  background: linear-gradient(to bottom, var(--ifm-background-color), transparent);
   margin-top: -20px;
   pointer-events: none;
 }
@@ -47,9 +47,8 @@
   letter-spacing: -0.04em;
   margin-bottom: 0.75rem;
   line-height: 1;
-  color: #e8dfc8;
 
-  background: linear-gradient(120deg, #e8dfc8 0%, #06d6f0 100%);
+  background: linear-gradient(120deg, var(--ifm-font-color-base) 0%, var(--ifm-color-primary) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -57,7 +56,7 @@
 
 .tagline {
   font-size: 1.1rem;
-  color: rgba(232, 223, 200, 0.6);
+  color: var(--ifm-font-color-secondary);
   max-width: 580px;
   margin: 0 auto 1.5rem;
   line-height: 1.6;
@@ -103,16 +102,24 @@
   border-radius: 8px;
   font-size: 0.9rem;
   font-weight: 600;
-  background: #06d6f0;
-  color: #0d1117;
+  background: var(--ifm-color-primary);
+  color: #ffffff;
   text-decoration: none;
   transition: background 0.2s, transform 0.15s;
 }
 
 .ctaPrimary:hover {
-  background: #22e0f5;
+  background: var(--ifm-color-primary-light);
   transform: translateY(-1px);
   text-decoration: none;
+  color: #ffffff;
+}
+
+[data-theme='dark'] .ctaPrimary {
+  color: #0d1117;
+}
+
+[data-theme='dark'] .ctaPrimary:hover {
   color: #0d1117;
 }
 
@@ -124,15 +131,15 @@
   font-size: 0.9rem;
   font-weight: 600;
   background: transparent;
-  color: rgba(232, 223, 200, 0.7);
-  border: 1px solid rgba(232, 223, 200, 0.2);
+  color: var(--ifm-font-color-secondary);
+  border: 1px solid var(--ifm-color-emphasis-300);
   text-decoration: none;
   transition: border-color 0.2s, color 0.2s, transform 0.15s;
 }
 
 .ctaSecondary:hover {
-  border-color: rgba(232, 223, 200, 0.4);
-  color: rgba(232, 223, 200, 0.9);
+  border-color: var(--ifm-color-primary);
+  color: var(--ifm-color-primary);
   transform: translateY(-1px);
   text-decoration: none;
 }
@@ -148,17 +155,19 @@
 
 .registryLink {
   font-size: 0.8rem;
-  color: rgba(232, 223, 200, 0.35);
+  color: var(--ifm-font-color-secondary);
+  opacity: 0.5;
   text-decoration: none;
-  transition: color 0.2s;
+  transition: color 0.2s, opacity 0.2s;
 }
 
 .registryLink:hover {
-  color: #06d6f0;
+  color: var(--ifm-color-primary);
+  opacity: 1;
   text-decoration: none;
 }
 
 .registrySep {
-  color: rgba(232, 223, 200, 0.15);
+  color: var(--ifm-color-emphasis-300);
   font-size: 0.7rem;
 }

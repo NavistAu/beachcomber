@@ -46,6 +46,105 @@ interface Source {
   label: string; rx: number; ry: number; x: number; y: number; type: string;
 }
 
+interface Colors {
+  bg: string;
+  nodeFill: string;
+  chaosIdle: string;
+  chaosDim: string;
+  chaosConn: string;
+  chaosPacket: string;
+  chaosPacketReturn: string;
+  chaosEvent: string;
+  chaosRipple: [number, number, number];
+  hubIdle: string;
+  hubDim: string;
+  hubConn: string;
+  hubConnSource: string;
+  hubPacket: string;
+  hubPacketReturn: string;
+  hubEvent: string;
+  hubRipple: [number, number, number];
+  daemonStroke: string;
+  daemonHitStroke: string;
+  daemonLabel: string;
+  daemonHitLabel: string;
+  daemonGlow: string;
+  sourceWatch: string;
+  sourcePoll: string;
+  hubSourceWatch: string;
+  hubSourcePoll: string;
+  sourceStroke: string;
+  hubSourceStroke: string;
+  zoneChaosBg: string;
+  zoneHubBg: string;
+}
+
+const DARK_COLORS: Colors = {
+  bg: '#0d1117',
+  nodeFill: '#141b24',
+  chaosIdle: 'rgb(220,120,50)',
+  chaosDim: 'rgb(120,65,30)',
+  chaosConn: 'rgba(232,68,26,0.07)',
+  chaosPacket: 'rgba(255,140,40,0.85)',
+  chaosPacketReturn: 'rgba(232,110,50,0.55)',
+  chaosEvent: 'rgba(255,200,30,0.9)',
+  chaosRipple: [255, 180, 30],
+  hubIdle: 'rgb(6,180,210)',
+  hubDim: 'rgb(6,90,110)',
+  hubConn: 'rgba(6,214,240,0.055)',
+  hubConnSource: 'rgba(6,214,240,0.08)',
+  hubPacket: 'rgba(6,220,250,0.7)',
+  hubPacketReturn: 'rgba(6,245,255,0.8)',
+  hubEvent: 'rgba(6,245,255,0.85)',
+  hubRipple: [6, 214, 240],
+  daemonStroke: 'rgb(6,214,240)',
+  daemonHitStroke: 'rgb(80,245,255)',
+  daemonLabel: '#06d6f0',
+  daemonHitLabel: '#80f5ff',
+  daemonGlow: 'rgba(6,214,240,',
+  sourceWatch: 'rgba(255,180,30,0.6)',
+  sourcePoll: 'rgba(200,150,80,0.5)',
+  hubSourceWatch: 'rgba(6,214,240,0.45)',
+  hubSourcePoll: 'rgba(6,180,200,0.35)',
+  sourceStroke: 'rgb(220,120,50)',
+  hubSourceStroke: 'rgba(6,210,230,0.6)',
+  zoneChaosBg: 'rgba(232,68,26,0.012)',
+  zoneHubBg: 'rgba(6,214,240,0.006)',
+};
+
+const LIGHT_COLORS: Colors = {
+  bg: '#F5F0E8',
+  nodeFill: '#EDE7DB',
+  chaosIdle: 'rgb(200,80,30)',
+  chaosDim: 'rgb(180,140,110)',
+  chaosConn: 'rgba(200,80,30,0.1)',
+  chaosPacket: 'rgba(220,80,20,0.85)',
+  chaosPacketReturn: 'rgba(200,100,50,0.5)',
+  chaosEvent: 'rgba(220,120,20,0.9)',
+  chaosRipple: [220, 120, 20],
+  hubIdle: 'rgb(8,130,170)',
+  hubDim: 'rgb(140,180,190)',
+  hubConn: 'rgba(8,145,178,0.08)',
+  hubConnSource: 'rgba(8,145,178,0.12)',
+  hubPacket: 'rgba(8,145,178,0.8)',
+  hubPacketReturn: 'rgba(6,180,210,0.85)',
+  hubEvent: 'rgba(8,145,178,0.9)',
+  hubRipple: [8, 145, 178],
+  daemonStroke: 'rgb(8,145,178)',
+  daemonHitStroke: 'rgb(6,180,210)',
+  daemonLabel: '#0891b2',
+  daemonHitLabel: '#06b6d4',
+  daemonGlow: 'rgba(8,145,178,',
+  sourceWatch: 'rgba(200,120,20,0.6)',
+  sourcePoll: 'rgba(160,130,80,0.5)',
+  hubSourceWatch: 'rgba(8,145,178,0.5)',
+  hubSourcePoll: 'rgba(8,130,160,0.35)',
+  sourceStroke: 'rgb(200,80,30)',
+  hubSourceStroke: 'rgba(8,145,178,0.6)',
+  zoneChaosBg: 'rgba(200,80,30,0.03)',
+  zoneHubBg: 'rgba(8,145,178,0.015)',
+};
+
 export default function HeroAnimation(): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wiperRef = useRef<HTMLDivElement>(null);
@@ -196,17 +295,13 @@ export default function HeroAnimation(): JSX.Element {
       ctx!.strokeStyle=color; ctx!.lineWidth=w||1; ctx!.stroke();
     }
 
-    // Colors
-    const C_IDLE = 'rgb(220,120,50)';
-    const C_DIM = 'rgb(120,65,30)';
-    const H_IDLE = 'rgb(6,180,210)';
-    const H_DIM = 'rgb(6,90,110)';
-
-    function consumerColor(state: string, until: number, now: number, isHub: boolean): string {
-      const idle = isHub ? H_IDLE : C_IDLE;
-      const dim = isHub ? H_DIM : C_DIM;
+    function consumerColor(state: string, until: number, now: number, isHub: boolean, colors: Colors): string {
+      const idle = isHub ? colors.hubIdle : colors.chaosIdle;
+      const dim = isHub ? colors.hubDim : colors.chaosDim;
       const flashR = isHub ? [120,255,255] : [255,230,70];
-      const idleR = isHub ? [6,180,210] : [220,120,50];
+      const idleR = isHub
+        ? colors.hubRipple
+        : colors.chaosRipple;
       const flashDur = isHub ? 250 : 300;
 
       if (state === 'waiting' && now < until) return dim;
@@ -260,7 +355,7 @@ export default function HeroAnimation(): JSX.Element {
       }
     }
 
-    function spawnChaos(t: number, now: number) {
+    function spawnChaos(t: number, now: number, colors: Colors) {
       const {consumers: cs, sources: ss, chaosConns: cc, cPkt, cRip} = s;
       cs.forEach((c, ci) => {
         const my = cc.filter(cn => cn.ci === ci);
@@ -274,8 +369,8 @@ export default function HeroAnimation(): JSX.Element {
           const upDur = downDur * 1.2;
           c.chaosState = 'waiting';
           c.chaosUntil = now + (downDur + 0.08 + upDur) * 1000;
-          cPkt.push({x1: c.x, y1: c.y, x2: src.x, y2: src.y, start: t, dur: downDur, color: 'rgba(255,140,40,0.85)', size: 4});
-          cPkt.push({x1: src.x, y1: src.y, x2: c.x, y2: c.y, start: t + downDur + 0.08, dur: upDur, color: 'rgba(232,110,50,0.55)', size: 3, onArrive: () => { c.chaosState = 'flash'; c.chaosUntil = performance.now() + 300; }});
+          cPkt.push({x1: c.x, y1: c.y, x2: src.x, y2: src.y, start: t, dur: downDur, color: colors.chaosPacket, size: 4});
+          cPkt.push({x1: src.x, y1: src.y, x2: c.x, y2: c.y, start: t + downDur + 0.08, dur: upDur, color: colors.chaosPacketReturn, size: 3, onArrive: () => { c.chaosState = 'flash'; c.chaosUntil = performance.now() + 300; }});
         }
       });
       ss.forEach((src, si) => {
@@ -290,7 +385,7 @@ export default function HeroAnimation(): JSX.Element {
             const d = Math.hypot(c.x - src.x, c.y - src.y);
             const arr = d / 280;
             setTimeout(() => { c.chaosState = 'flash'; c.chaosUntil = performance.now() + 300; }, arr * 1000);
-            cPkt.push({x1: src.x, y1: src.y, x2: c.x, y2: c.y, start: t + 0.05 + idx * 0.04, dur: arr, color: 'rgba(255,200,30,0.9)', size: 5});
+            cPkt.push({x1: src.x, y1: src.y, x2: c.x, y2: c.y, start: t + 0.05 + idx * 0.04, dur: arr, color: colors.chaosEvent, size: 5});
           });
         }
       });
@@ -303,7 +398,7 @@ export default function HeroAnimation(): JSX.Element {
       });
     }
 
-    function spawnHub(t: number, now: number) {
+    function spawnHub(t: number, now: number, colors: Colors) {
       const {consumers: cs, sources: ss, daemon: dm, hPkt, hRip} = s;
       cs.forEach((c, ci) => {
         const iv = 1.4 + (ci % 5) * 0.35;
@@ -313,8 +408,8 @@ export default function HeroAnimation(): JSX.Element {
           const upDur = downDur * 0.5;
           c.hubState = 'waiting';
           c.hubUntil = now + (downDur + 0.02 + upDur) * 1000;
-          hPkt.push({x1: c.x, y1: c.y, x2: dm.x, y2: dm.y, start: t, dur: downDur, color: 'rgba(6,220,250,0.7)', size: 4});
-          hPkt.push({x1: dm.x, y1: dm.y, x2: c.x, y2: c.y, start: t + downDur + 0.02, dur: upDur, color: 'rgba(6,245,255,0.8)', size: 4.5, onArrive: () => { c.hubState = 'flash'; c.hubUntil = performance.now() + 250; }});
+          hPkt.push({x1: c.x, y1: c.y, x2: dm.x, y2: dm.y, start: t, dur: downDur, color: colors.hubPacket, size: 4});
+          hPkt.push({x1: dm.x, y1: dm.y, x2: c.x, y2: c.y, start: t + downDur + 0.02, dur: upDur, color: colors.hubPacketReturn, size: 4.5, onArrive: () => { c.hubState = 'flash'; c.hubUntil = performance.now() + 250; }});
         }
       });
       ss.forEach((src, si) => {
@@ -323,7 +418,7 @@ export default function HeroAnimation(): JSX.Element {
         if (((t + si * 0.9 + 0.5) % iv) < 0.017) {
           const dD = Math.hypot(dm.x - src.x, dm.y - src.y);
           hRip.push({x: src.x, y: src.y, start: t, max: dD + 25, spd: 320});
-          hPkt.push({x1: src.x, y1: src.y, x2: dm.x, y2: dm.y, start: t + 0.05, dur: dD / 320, color: 'rgba(6,245,255,0.85)', size: 5});
+          hPkt.push({x1: src.x, y1: src.y, x2: dm.x, y2: dm.y, start: t + 0.05, dur: dD / 320, color: colors.hubEvent, size: 5});
         }
       });
       ss.forEach((src, si) => {
@@ -333,8 +428,8 @@ export default function HeroAnimation(): JSX.Element {
           hRip.push({x: src.x, y: src.y, start: t, max: 45, spd: 160});
           const d = Math.hypot(src.x - dm.x, src.y - dm.y);
           const dur = d / 500;
-          hPkt.push({x1: dm.x, y1: dm.y, x2: src.x, y2: src.y, start: t, dur, color: 'rgba(6,200,230,0.5)', size: 3});
-          hPkt.push({x1: src.x, y1: src.y, x2: dm.x, y2: dm.y, start: t + dur + 0.05, dur: dur * 0.8, color: 'rgba(6,220,240,0.55)', size: 3});
+          hPkt.push({x1: dm.x, y1: dm.y, x2: src.x, y2: src.y, start: t, dur, color: colors.hubConn, size: 3});
+          hPkt.push({x1: src.x, y1: src.y, x2: dm.x, y2: dm.y, start: t + dur + 0.05, dur: dur * 0.8, color: colors.hubConnSource, size: 3});
         }
       });
     }
@@ -342,6 +437,9 @@ export default function HeroAnimation(): JSX.Element {
     let animId: number;
 
     function tick(now: number) {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      const colors = isDark ? DARK_COLORS : LIGHT_COLORS;
+
       const t = (now - s.T0) / 1000;
       const {W, H} = s;
 
@@ -365,10 +463,12 @@ export default function HeroAnimation(): JSX.Element {
       }
 
       const sx = s.splitX * W;
-      ctx!.clearRect(0, 0, W, H);
 
-      spawnChaos(t, now);
-      spawnHub(t, now);
+      ctx!.fillStyle = colors.bg;
+      ctx!.fillRect(0, 0, W, H);
+
+      spawnChaos(t, now, colors);
+      spawnHub(t, now, colors);
 
       // Check arrivals
       for (const p of s.cPkt) { if (!p.arrived && t - p.start >= p.dur && p.onArrive) { p.onArrive(); p.arrived = true; } }
@@ -390,24 +490,24 @@ export default function HeroAnimation(): JSX.Element {
 
       s.chaosConns.forEach(cn => {
         const c = s.consumers[cn.ci], src = s.sources[cn.si];
-        line(c.x, c.y, src.x, src.y, 'rgba(232,68,26,0.07)', 0.6);
+        line(c.x, c.y, src.x, src.y, colors.chaosConn, 0.6);
       });
 
-      drawRips(s.cRip, t, 255, 180, 30);
+      drawRips(s.cRip, t, colors.chaosRipple[0], colors.chaosRipple[1], colors.chaosRipple[2]);
       drawPkts(s.cPkt, t);
 
       s.sources.forEach(src => {
-        const tc = src.type === 'watch' ? 'rgba(255,180,30,0.6)' : 'rgba(200,150,80,0.5)';
-        diamondShape(src.x, src.y, 30, '#141b24', 'rgb(220,120,50)', 2);
-        label(src.x, src.y, src.label, 'rgb(220,120,50)', 13, true);
+        const tc = src.type === 'watch' ? colors.sourceWatch : colors.sourcePoll;
+        diamondShape(src.x, src.y, 30, colors.nodeFill, colors.sourceStroke, 2);
+        label(src.x, src.y, src.label, colors.sourceStroke, 13, true);
         label(src.x, src.y + 44, src.type, tc, 11);
       });
 
       s.consumers.forEach((c) => {
-        const col = consumerColor(c.chaosState, c.chaosUntil, now, false);
+        const col = consumerColor(c.chaosState, c.chaosUntil, now, false, colors);
         const glow = consumerGlow(c.chaosState, c.chaosUntil, now, false);
         if (glow) roundRect(c.x, c.y, 82, 46, 11, null, glow, 1);
-        roundRect(c.x, c.y, 72, 36, 8, '#141b24', col, 2);
+        roundRect(c.x, c.y, 72, 36, 8, colors.nodeFill, col, 2);
         label(c.x, c.y, c.label, col, 14, true);
       });
 
@@ -417,24 +517,24 @@ export default function HeroAnimation(): JSX.Element {
       ctx!.save();
       ctx!.beginPath(); ctx!.rect(sx, 0, W - sx, H); ctx!.clip();
 
-      s.consumers.forEach(c => line(c.x, c.y, s.daemon.x, s.daemon.y, 'rgba(6,214,240,0.055)', 0.6));
-      s.sources.forEach(src => line(s.daemon.x, s.daemon.y, src.x, src.y, 'rgba(6,214,240,0.08)', 0.8));
+      s.consumers.forEach(c => line(c.x, c.y, s.daemon.x, s.daemon.y, colors.hubConn, 0.6));
+      s.sources.forEach(src => line(s.daemon.x, s.daemon.y, src.x, src.y, colors.hubConnSource, 0.8));
 
-      drawRips(s.hRip, t, 6, 214, 240);
+      drawRips(s.hRip, t, colors.hubRipple[0], colors.hubRipple[1], colors.hubRipple[2]);
       drawPkts(s.hPkt, t);
 
       s.sources.forEach(src => {
-        const tc = src.type === 'watch' ? 'rgba(6,214,240,0.45)' : 'rgba(6,180,200,0.35)';
-        diamondShape(src.x, src.y, 30, '#141b24', 'rgba(6,210,230,0.6)', 2);
-        label(src.x, src.y, src.label, 'rgba(6,210,230,0.6)', 13, true);
+        const tc = src.type === 'watch' ? colors.hubSourceWatch : colors.hubSourcePoll;
+        diamondShape(src.x, src.y, 30, colors.nodeFill, colors.hubSourceStroke, 2);
+        label(src.x, src.y, src.label, colors.hubSourceStroke, 13, true);
         label(src.x, src.y + 44, src.type, tc, 11);
       });
 
       s.consumers.forEach(c => {
-        const col = consumerColor(c.hubState, c.hubUntil, now, true);
+        const col = consumerColor(c.hubState, c.hubUntil, now, true, colors);
         const glow = consumerGlow(c.hubState, c.hubUntil, now, true);
         if (glow) roundRect(c.x, c.y, 82, 46, 11, null, glow, 1);
-        roundRect(c.x, c.y, 72, 36, 8, '#141b24', col, 2);
+        roundRect(c.x, c.y, 72, 36, 8, colors.nodeFill, col, 2);
         label(c.x, c.y, c.label, col, 14, true);
       });
 
@@ -445,13 +545,13 @@ export default function HeroAnimation(): JSX.Element {
       });
       const gr = hit ? 55 : 45;
       const go = hit ? 0.1 : 0.04;
-      circle(s.daemon.x, s.daemon.y, gr, `rgba(6,214,240,${go})`, null);
-      circle(s.daemon.x, s.daemon.y, 34, '#0d1117', hit ? 'rgb(80,245,255)' : 'rgb(6,214,240)', 2.5);
-      label(s.daemon.x, s.daemon.y - 2, 'comb', hit ? '#80f5ff' : '#06d6f0', 16, true);
+      circle(s.daemon.x, s.daemon.y, gr, `${colors.daemonGlow}${go})`, null);
+      circle(s.daemon.x, s.daemon.y, 34, colors.bg, hit ? colors.daemonHitStroke : colors.daemonStroke, 2.5);
+      label(s.daemon.x, s.daemon.y - 2, 'comb', hit ? colors.daemonHitLabel : colors.daemonLabel, 16, true);
 
       const pp = (t % 3.5);
       if (pp < 0.6) {
-        circle(s.daemon.x, s.daemon.y, 34 + pp * 30, null, `rgba(6,214,240,${(0.05 * (1 - pp / 0.6)).toFixed(3)})`, 1.5);
+        circle(s.daemon.x, s.daemon.y, 34 + pp * 30, null, `${colors.daemonGlow}${(0.05 * (1 - pp / 0.6)).toFixed(3)})`, 1.5);
       }
 
       ctx!.restore();

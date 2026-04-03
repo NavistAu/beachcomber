@@ -20,9 +20,13 @@
   left: 0;
   right: 0;
   height: 80px;
-  background: linear-gradient(to bottom, #0d1117, transparent);
+  background: linear-gradient(to bottom, #F5F0E8, transparent);
   pointer-events: none;
   z-index: 4;
+}
+
+[data-theme='dark'] .topFade {
+  background: linear-gradient(to bottom, #0d1117, transparent);
 }
 
 /* Bottom gradient fade — below the stats */
@@ -32,9 +36,13 @@
   left: 0;
   right: 0;
   height: 40px;
-  background: linear-gradient(to top, #0d1117, transparent);
+  background: linear-gradient(to top, #F5F0E8, transparent);
   pointer-events: none;
   z-index: 4;
+}
+
+[data-theme='dark'] .bottomFade {
+  background: linear-gradient(to top, #0d1117, transparent);
 }
 
 .wiper {
