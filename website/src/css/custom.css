@@ -41,9 +41,11 @@
   --prism-background-color: #ddd5c2;
   --docusaurus-highlighted-code-line-bg: rgba(8, 145, 178, 0.12);
 
-  /* Navbar */
-  --ifm-navbar-background-color: #ede7d8;
-  --ifm-navbar-shadow: 0 1px 0 0 rgba(44, 36, 22, 0.12);
+  /* Navbar — always dark to match the hero */
+  --ifm-navbar-background-color: #0d1117;
+  --ifm-navbar-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.06);
+  --ifm-navbar-link-color: #e8dfc8;
+  --ifm-navbar-link-hover-color: #06d6f0;
 
   /* Footer */
   --ifm-footer-background-color: #000000;
@@ -169,6 +171,15 @@ h4 {
   font-family: var(--ifm-heading-font-family);
   font-weight: 700;
   letter-spacing: -0.02em;
+  color: #e8dfc8;
+}
+
+.navbar__link {
+  color: #e8dfc8 !important;
+}
+
+.navbar__link:hover {
+  color: #06d6f0 !important;
 }
 
 /* ============================================================
