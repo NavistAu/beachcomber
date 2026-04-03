@@ -259,3 +259,51 @@ jobs:
           git add Formula/beachcomber.rb
           git commit -m "beachcomber ${{ github.ref_name }}"
           git push
+
+  publish-npm-binary:
+    name: Publish beachcomber binary installer to npm
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: placeholders/npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Upgrade npm for OIDC support
+        run: npm install -g npm@latest
+      - name: Set version from tag
+        run: npm version --no-git-tag-version "${GITHUB_REF_NAME#v}"
+      - name: Publish
+        run: unset NODE_AUTH_TOKEN && npm publish --access public --provenance || echo "Already published, skipping"
+
+  publish-pypi-binary:
+    name: Publish beachcomber binary installer to PyPI
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: placeholders/pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Set version from tag
+        run: sed -i "s/^version = .*/version = \"${GITHUB_REF_NAME#v}\"/" pyproject.toml
+      - name: Build
+        run: pip install build && python -m build
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: placeholders/pypi/dist/
+          skip-existing: true
