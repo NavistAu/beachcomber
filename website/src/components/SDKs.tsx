@@ -1,8 +1,25 @@
+import {useState} from 'react';
 import {useIntersectionObserver} from '../hooks/useIntersectionObserver';
 import styles from './SDKs.module.css';
 
+interface InstallTab {
+  id: string;
+  label: string;
+  command: string;
+}
+
+const installTabs: InstallTab[] = [
+  {id: 'brew', label: 'Homebrew', command: 'brew install beachcomber'},
+  {id: 'npm', label: 'npm', command: 'npm install -g beachcomber'},
+  {id: 'pip', label: 'pip', command: 'pip install beachcomber'},
+  {id: 'cargo', label: 'Cargo', command: 'cargo install beachcomber'},
+];
+
 export default function SDKs(): JSX.Element {
   const [ref, isVisible] = useIntersectionObserver(0.1);
+  const [activeTab, setActiveTab] = useState('brew');
+
+  const activeInstall = installTabs.find(t => t.id === activeTab);
 
   return (
     <>
@@ -20,13 +37,26 @@ export default function SDKs(): JSX.Element {
 
         <div className={styles.terminalWrapper}>
           <div className={styles.terminalHeader}>
-            <span className={`${styles.dot} ${styles.dotRed}`} />
-            <span className={`${styles.dot} ${styles.dotYellow}`} />
-            <span className={`${styles.dot} ${styles.dotGreen}`} />
+            <div className={styles.dots}>
+              <span className={`${styles.dot} ${styles.dotRed}`} />
+              <span className={`${styles.dot} ${styles.dotYellow}`} />
+              <span className={`${styles.dot} ${styles.dotGreen}`} />
+            </div>
+            <div className={styles.tabs}>
+              {installTabs.map(tab => (
+                <button
+                  key={tab.id}
+                  className={`${styles.tab} ${activeTab === tab.id ? styles.tabActive : ''}`}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className={styles.terminalBody}>
             <span className={styles.prompt}>$</span>
-            <span className={styles.command}> brew install beachcomber</span>
+            <span className={styles.command}> {activeInstall?.command}</span>
           </div>
         </div>
 
