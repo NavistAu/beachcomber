@@ -190,9 +190,9 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 
 ### Website (beachcomber.sh)
 
-- [ ] GitHub Pages site for beachcomber.sh (docs, install instructions, examples)
-- [ ] CI workflow to build and deploy the site on push to main
-- [ ] Configure beachcomber.sh custom domain (DNS + GitHub Pages CNAME)
+- [x] GitHub Pages site for beachcomber.sh (docs, install instructions, examples)
+- [x] CI workflow to build and deploy the site on push to main
+- [x] Configure beachcomber.sh custom domain (DNS + GitHub Pages CNAME)
 - [ ] Site analytics (privacy-respecting — Plausible, Fathom, or similar)
 
 ### Linux Support
