@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[derive(Parser)]
-#[command(name = "comb", about = "Centralized shell state daemon (beachcomber)")]
+#[command(name = "comb", version, about = "Centralized shell state daemon (beachcomber)")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
