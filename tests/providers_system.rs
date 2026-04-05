@@ -61,8 +61,8 @@ fn load_provider_executes() {
 
 #[cfg(target_os = "linux")]
 mod battery_linux_tests {
-    use beachcomber::provider::battery::BatteryProvider;
     use beachcomber::provider::Provider;
+    use beachcomber::provider::battery::BatteryProvider;
 
     #[test]
     fn battery_provider_handles_no_battery() {
@@ -75,8 +75,8 @@ mod battery_linux_tests {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod uptime_tests {
-    use beachcomber::provider::uptime::UptimeProvider;
     use beachcomber::provider::Provider;
+    use beachcomber::provider::uptime::UptimeProvider;
 
     #[test]
     fn uptime_provider_metadata() {

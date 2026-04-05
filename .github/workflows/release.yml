@@ -114,8 +114,8 @@ jobs:
 
       - name: Extract binary
         run: |
-          mkdir -p target/release
-          tar xzf beachcomber-*.tar.gz -C target/release
+          mkdir -p target/${{ matrix.target }}/release
+          tar xzf beachcomber-*.tar.gz -C target/${{ matrix.target }}/release
 
       - name: Build deb
         if: matrix.format == 'deb'

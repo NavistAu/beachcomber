@@ -10,12 +10,27 @@ impl Provider for UptimeProvider {
         ProviderMetadata {
             name: "uptime".to_string(),
             fields: vec![
-                FieldSchema { name: "seconds".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "days".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "hours".to_string(), field_type: FieldType::Int },
-                FieldSchema { name: "minutes".to_string(), field_type: FieldType::Int },
+                FieldSchema {
+                    name: "seconds".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "days".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "hours".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "minutes".to_string(),
+                    field_type: FieldType::Int,
+                },
             ],
-            invalidation: InvalidationStrategy::Poll { interval_secs: 60, floor_secs: 10 },
+            invalidation: InvalidationStrategy::Poll {
+                interval_secs: 60,
+                floor_secs: 10,
+            },
             global: true,
         }
     }

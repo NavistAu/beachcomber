@@ -3,10 +3,10 @@ use crate::provider::{
 };
 use std::net::Ipv4Addr;
 
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 
 pub struct NetworkProvider;
 
