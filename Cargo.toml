@@ -65,3 +65,18 @@ harness = false
 opt-level = "z"
 lto = true
 strip = true
+
+[package.metadata.deb]
+maintainer = "NavistAu <github@navistau.io>"
+copyright = "2026, NavistAu"
+extended-description = "A centralized daemon that caches shell state (git, battery, network, etc.) so every consumer reads from one fast cache instead of independently forking shells."
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/comb", "usr/bin/", "755"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/comb", dest = "/usr/bin/comb", mode = "0755" },
+]
