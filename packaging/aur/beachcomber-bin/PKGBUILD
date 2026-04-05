@@ -1,0 +1,19 @@
+# Maintainer: NavistAu <github@navistau.io>
+pkgname=beachcomber-bin
+pkgver=0.1.1
+pkgrel=1
+pkgdesc="Daemon that caches shell environment state for instant prompt rendering (prebuilt binary)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/NavistAu/beachcomber"
+license=('MIT')
+depends=('gcc-libs')
+provides=('beachcomber')
+conflicts=('beachcomber')
+source_x86_64=("https://github.com/NavistAu/beachcomber/releases/download/v$pkgver/beachcomber-v$pkgver-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("https://github.com/NavistAu/beachcomber/releases/download/v$pkgver/beachcomber-v$pkgver-aarch64-unknown-linux-gnu.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    install -Dm755 "comb" "$pkgdir/usr/bin/comb"
+}
