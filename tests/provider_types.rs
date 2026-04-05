@@ -89,3 +89,17 @@ fn provider_result_to_kv_text() {
     let text = result.to_kv_text();
     assert_eq!(text, "name=myhost\n", "Should format as key=value lines");
 }
+
+#[test]
+fn provider_source_default_is_builtin() {
+    use beachcomber::provider::ProviderSource;
+    let source = ProviderSource::default();
+    assert!(matches!(source, ProviderSource::Builtin));
+}
+
+#[test]
+fn provider_source_ordering() {
+    use beachcomber::provider::ProviderSource;
+    assert!(ProviderSource::Builtin < ProviderSource::Script);
+    assert!(ProviderSource::Script < ProviderSource::Virtual);
+}

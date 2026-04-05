@@ -128,6 +128,19 @@ pub struct ProviderMetadata {
     pub global: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ProviderSource {
+    Builtin,
+    Script,
+    Virtual,
+}
+
+impl Default for ProviderSource {
+    fn default() -> Self {
+        Self::Builtin
+    }
+}
+
 pub trait Provider: Send + Sync {
     fn metadata(&self) -> ProviderMetadata;
     fn execute(&self, path: Option<&str>) -> Option<ProviderResult>;
