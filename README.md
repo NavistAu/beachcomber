@@ -141,6 +141,40 @@ cargo install beachcomber
 
 The npm and pip packages download the correct pre-built binary for your platform from GitHub Releases. You can also use `npx beachcomber`, `uvx beachcomber`, or `uv tool install beachcomber`.
 
+#### Debian/Ubuntu
+
+Download the `.deb` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
+
+```sh
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.1.1-1_amd64.deb
+sudo dpkg -i beachcomber_0.1.1-1_amd64.deb
+```
+
+#### Fedora/RHEL
+
+Download the `.rpm` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
+
+```sh
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.1.1-1.x86_64.rpm
+sudo rpm -i beachcomber-0.1.1-1.x86_64.rpm
+```
+
+#### Arch Linux (AUR)
+
+```sh
+# From source
+yay -S beachcomber
+
+# Prebuilt binary
+yay -S beachcomber-bin
+```
+
+#### Nix
+
+```sh
+nix run github:NavistAu/beachcomber
+```
+
 ### Verify
 
 The daemon starts automatically on first use — no setup required.
@@ -561,7 +595,11 @@ beachcomber ships 16 built-in providers organized by category.
   "data": { "percent": 78, "charging": false, "time_remaining": 7200 },
   "age_ms": 4200
 }
+```
 
+> **Platform note:** On macOS, `time_remaining` is always available. On Linux, it requires UPower (`upower` command) — if unavailable, the field reads "unknown".
+
+```json
 // comb get network
 {
   "ok": true,

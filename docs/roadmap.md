@@ -2,7 +2,7 @@
 
 Single source of truth for project status and next steps.
 
-Last updated: 2026-04-01
+Last updated: 2026-04-05
 
 ---
 
@@ -184,7 +184,7 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 ### Release Infrastructure
 
 - [x] Swap temp registry tokens to trusted publishing (OIDC for crates.io, PyPI, npm, RubyGems; LuaRocks has no OIDC support)
-- [ ] Add aarch64-unknown-linux-gnu binary target (fix cross-rs GLIBC version mismatch)
+- [x] Add aarch64-unknown-linux-gnu binary target (fix cross-rs GLIBC version mismatch)
 - [x] Make Go module tag step idempotent in release workflow
 - [x] Binary distribution via npm/PyPI `beachcomber` packages (replace noop placeholders with platform-specific binary installers)
 
@@ -197,10 +197,10 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 
 ### Linux Support
 
-- [ ] Battery provider: read `/sys/class/power_supply/`
-- [ ] Network provider: Linux `getifaddrs` + `iwgetid` for SSID
-- [ ] Uptime provider: read `/proc/uptime`
-- [ ] Conditional compilation: `#[cfg(target_os)]` blocks in platform-specific providers
+- [x] Battery provider: read `/sys/class/power_supply/`
+- [x] Network provider: Linux `getifaddrs` + `nmcli`/`iw` for SSID
+- [x] Uptime provider: read `/proc/uptime`
+- [x] Conditional compilation: `#[cfg(target_os)]` blocks in platform-specific providers
 
 ### External Provider Backends
 
@@ -216,12 +216,18 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 
 ### Install Methods
 
-- [ ] Nix package
-- [ ] AUR package
+- [x] Nix flake
+- [x] AUR package
 - [ ] MacPorts
-- [ ] Debian/Ubuntu (.deb) package
-- [ ] Fedora/RHEL (.rpm) package
+- [x] Debian/Ubuntu (.deb) package
+- [x] Fedora/RHEL (.rpm) package
 - [ ] Scoop (Windows, if/when Windows support lands)
+
+### Linux C SDK Packages
+
+- [ ] `libbeachcomber-dev` (deb) — headers + shared/static lib + pkg-config
+- [ ] `libbeachcomber-devel` (rpm)
+- [ ] `libbeachcomber` (AUR)
 
 ### Stability
 
