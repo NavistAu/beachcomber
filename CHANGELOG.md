@@ -26,3 +26,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - JSON and text output formats
 - ClientSession for persistent connections (15µs/query)
 - Comprehensive benchmark suite (cache, protocol, providers, socket, throughput)
+- Linux support for battery provider (sysfs + UPower), network provider (nmcli/iw SSID, tun/wg VPN detection), and uptime provider (/proc/uptime)
+- Pre-built binaries for aarch64-unknown-linux-gnu and aarch64-unknown-linux-musl
+- Debian/Ubuntu (.deb) and Fedora/RHEL (.rpm) packages published as GitHub Release assets
+- AUR packages: `beachcomber` (source) and `beachcomber-bin` (prebuilt)
+- Nix flake for building from source
+- Linux CI job (cargo check, test, clippy, fmt on ubuntu-latest)
+
+### Changed
+
+- Network provider refactored into platform submodules (network/mod.rs, network/macos.rs, network/linux.rs)
+- npm and PyPI binary installers now support Linux arm64
