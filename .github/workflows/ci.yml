@@ -26,6 +26,22 @@ jobs:
       - name: Format
         run: cargo fmt -- --check
 
+  check-linux:
+    name: Check (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --all-targets
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Format
+        run: cargo fmt -- --check
+
   test:
     name: Test
     runs-on: macos-latest
@@ -35,6 +51,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test -- --skip watcher_ --skip uptime_provider_executes
+
+  test-linux:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test -- --skip watcher_
 
   bench:
     name: Benchmark
