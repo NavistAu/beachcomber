@@ -10,6 +10,7 @@ const PLATFORM_MAP = {
   "darwin-arm64": "aarch64-apple-darwin",
   "darwin-x64": "x86_64-apple-darwin",
   "linux-x64": "x86_64-unknown-linux-musl",
+  "linux-arm64": "aarch64-unknown-linux-musl",
 };
 
 function getTarget() {
@@ -19,7 +20,7 @@ function getTarget() {
     console.error(
       `Error: beachcomber does not provide a pre-built binary for ${process.platform} ${process.arch}.\n\n` +
         `Install from source:  cargo install beachcomber\n` +
-        `Supported platforms:  macOS (arm64, x86_64), Linux (x86_64)\n` +
+        `Supported platforms:  macOS (arm64, x86_64), Linux (x86_64, arm64)\n` +
         `More info:            https://beachcomber.sh`
     );
     process.exit(1);

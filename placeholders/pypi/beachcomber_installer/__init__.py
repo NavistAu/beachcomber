@@ -14,6 +14,7 @@ PLATFORM_MAP = {
     ("darwin", "arm64"): "aarch64-apple-darwin",
     ("darwin", "x86_64"): "x86_64-apple-darwin",
     ("linux", "x86_64"): "x86_64-unknown-linux-musl",
+    ("linux", "aarch64"): "aarch64-unknown-linux-musl",
 }
 
 INSTALL_DIR = Path.home() / ".local" / "bin"
@@ -36,7 +37,7 @@ def _get_target():
             f"Error: beachcomber does not provide a pre-built binary "
             f"for {sys.platform} {platform.machine()}.\n\n"
             f"Install from source:  cargo install beachcomber\n"
-            f"Supported platforms:  macOS (arm64, x86_64), Linux (x86_64)\n"
+            f"Supported platforms:  macOS (arm64, x86_64), Linux (x86_64, aarch64)\n"
             f"More info:            https://beachcomber.sh",
             file=sys.stderr,
         )
