@@ -1,6 +1,5 @@
 use beachcomber::provider::battery::BatteryProvider;
 use beachcomber::provider::load::LoadProvider;
-use beachcomber::provider::uptime::UptimeProvider;
 use beachcomber::provider::{InvalidationStrategy, Provider};
 
 // --- Battery ---
@@ -60,24 +59,30 @@ fn load_provider_executes() {
 
 // --- Uptime ---
 
-#[test]
-fn uptime_provider_metadata() {
-    let p = UptimeProvider;
-    let meta = p.metadata();
-    assert_eq!(meta.name, "uptime");
-    assert!(meta.global);
-    let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"seconds"));
-    assert!(fields.contains(&"days"));
-    assert!(fields.contains(&"hours"));
-    assert!(fields.contains(&"minutes"));
-}
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod uptime_tests {
+    use beachcomber::provider::uptime::UptimeProvider;
+    use beachcomber::provider::Provider;
 
-#[test]
-fn uptime_provider_executes() {
-    let p = UptimeProvider;
-    let result = p.execute(None).expect("Uptime should always succeed");
-    let secs = result.get("seconds").unwrap().as_text();
-    let val: i64 = secs.parse().expect("Seconds should be a number");
-    assert!(val > 0, "Uptime should be positive");
+    #[test]
+    fn uptime_provider_metadata() {
+        let p = UptimeProvider;
+        let meta = p.metadata();
+        assert_eq!(meta.name, "uptime");
+        assert!(meta.global);
+        let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
+        assert!(fields.contains(&"seconds"));
+        assert!(fields.contains(&"days"));
+        assert!(fields.contains(&"hours"));
+        assert!(fields.contains(&"minutes"));
+    }
+
+    #[test]
+    fn uptime_provider_executes() {
+        let p = UptimeProvider;
+        let result = p.execute(None).expect("Uptime should always succeed");
+        let secs = result.get("seconds").unwrap().as_text();
+        let val: i64 = secs.parse().expect("Seconds should be a number");
+        assert!(val > 0, "Uptime should be positive");
+    }
 }

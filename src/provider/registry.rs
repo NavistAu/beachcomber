@@ -18,6 +18,8 @@ use crate::provider::script::ScriptProvider;
 use crate::provider::terraform::TerraformProvider;
 #[cfg(target_os = "macos")]
 use crate::provider::uptime::UptimeProvider;
+#[cfg(target_os = "linux")]
+use crate::provider::uptime::UptimeProvider;
 use crate::provider::user::UserProvider;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,6 +44,8 @@ impl ProviderRegistry {
         registry.register(Box::new(BatteryProvider));
         registry.register(Box::new(LoadProvider));
         #[cfg(target_os = "macos")]
+        registry.register(Box::new(UptimeProvider));
+        #[cfg(target_os = "linux")]
         registry.register(Box::new(UptimeProvider));
         registry.register(Box::new(NetworkProvider));
         registry.register(Box::new(KubecontextProvider));
@@ -79,6 +83,8 @@ impl ProviderRegistry {
         ];
 
         #[cfg(target_os = "macos")]
+        builtins.push(("uptime", Box::new(UptimeProvider)));
+        #[cfg(target_os = "linux")]
         builtins.push(("uptime", Box::new(UptimeProvider)));
 
         for (name, provider) in builtins {

@@ -17,6 +17,10 @@ pub mod script;
 pub mod terraform;
 #[cfg(target_os = "macos")]
 pub mod uptime;
+#[cfg(target_os = "linux")]
+pub mod uptime_linux;
+#[cfg(target_os = "linux")]
+pub use uptime_linux as uptime;
 pub mod user;
 
 use serde::{Deserialize, Serialize};
