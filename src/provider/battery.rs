@@ -32,17 +32,22 @@ impl Provider for BatteryProvider {
     }
 
     fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        let output = Command::new("pmset").args(["-g", "batt"]).output().ok()?;
-
-        if !output.status.success() {
-            return None;
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        parse_pmset_output(&stdout)
+        execute_platform(_path)
     }
 }
 
+// === macOS: pmset ===
+#[cfg(target_os = "macos")]
+fn execute_platform(_path: Option<&str>) -> Option<ProviderResult> {
+    let output = Command::new("pmset").args(["-g", "batt"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_pmset_output(&stdout)
+}
+
+#[cfg(target_os = "macos")]
 fn parse_pmset_output(output: &str) -> Option<ProviderResult> {
     // Example: " -InternalBattery-0 (id=...)	85%; charging; 1:23 remaining present: true"
     let mut percent: i64 = 0;
@@ -95,4 +100,71 @@ fn parse_pmset_output(output: &str) -> Option<ProviderResult> {
     result.insert("charging", Value::Bool(charging));
     result.insert("time_remaining", Value::String(time_remaining));
     Some(result)
+}
+
+// === Linux: sysfs + UPower ===
+#[cfg(target_os = "linux")]
+fn execute_platform(_path: Option<&str>) -> Option<ProviderResult> {
+    let battery_dir = find_battery_dir()?;
+    let capacity_str = std::fs::read_to_string(battery_dir.join("capacity")).ok()?;
+    let percent: i64 = capacity_str.trim().parse().ok()?;
+
+    let status_str = std::fs::read_to_string(battery_dir.join("status")).ok()?;
+    let status = status_str.trim();
+    let charging = status == "Charging" || status == "Full";
+
+    let time_remaining = get_upower_time_remaining().unwrap_or_else(|| {
+        if status == "Full" {
+            "full".to_string()
+        } else {
+            "unknown".to_string()
+        }
+    });
+
+    let mut result = ProviderResult::new();
+    result.insert("percent", Value::Int(percent));
+    result.insert("charging", Value::Bool(charging));
+    result.insert("time_remaining", Value::String(time_remaining));
+    Some(result)
+}
+
+#[cfg(target_os = "linux")]
+fn find_battery_dir() -> Option<std::path::PathBuf> {
+    let power_supply = std::path::Path::new("/sys/class/power_supply");
+    for entry in std::fs::read_dir(power_supply).ok()? {
+        let entry = entry.ok()?;
+        let type_path = entry.path().join("type");
+        if let Ok(contents) = std::fs::read_to_string(&type_path) {
+            if contents.trim() == "Battery" {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn get_upower_time_remaining() -> Option<String> {
+    let output = Command::new("upower").args(["-e"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let battery_path = stdout.lines().find(|l| l.contains("battery"))?;
+
+    let info = Command::new("upower")
+        .args(["-i", battery_path.trim()])
+        .output()
+        .ok()?;
+    if !info.status.success() {
+        return None;
+    }
+    let info_str = String::from_utf8_lossy(&info.stdout);
+    for line in info_str.lines() {
+        let line = line.trim();
+        if line.starts_with("time to empty:") || line.starts_with("time to full:") {
+            return line.split(':').nth(1).map(|s| s.trim().to_string());
+        }
+    }
+    None
 }

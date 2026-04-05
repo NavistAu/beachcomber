@@ -57,6 +57,20 @@ fn load_provider_executes() {
     assert!(val >= 0.0, "Load average should be non-negative");
 }
 
+// --- Battery (Linux) ---
+
+#[cfg(target_os = "linux")]
+mod battery_linux_tests {
+    use beachcomber::provider::battery::BatteryProvider;
+    use beachcomber::provider::Provider;
+
+    #[test]
+    fn battery_provider_handles_no_battery() {
+        let p = BatteryProvider;
+        let _ = p.execute(None); // Should not panic even on VMs with no battery
+    }
+}
+
 // --- Uptime ---
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
