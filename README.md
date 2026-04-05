@@ -146,8 +146,8 @@ The npm and pip packages download the correct pre-built binary for your platform
 Download the `.deb` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.1.1-1_amd64.deb
-sudo dpkg -i beachcomber_0.1.1-1_amd64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.2.0-1_amd64.deb
+sudo dpkg -i beachcomber_0.2.0-1_amd64.deb
 ```
 
 #### Fedora/RHEL
@@ -155,8 +155,8 @@ sudo dpkg -i beachcomber_0.1.1-1_amd64.deb
 Download the `.rpm` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.1.1-1.x86_64.rpm
-sudo rpm -i beachcomber-0.1.1-1.x86_64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.2.0-1.x86_64.rpm
+sudo rpm -i beachcomber-0.2.0-1.x86_64.rpm
 ```
 
 #### Arch Linux (AUR)
