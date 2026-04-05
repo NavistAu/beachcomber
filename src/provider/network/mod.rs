@@ -2,7 +2,11 @@ use crate::provider::{
     FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use std::net::Ipv4Addr;
-use std::process::Command;
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "linux")]
+pub(crate) mod linux;
 
 pub struct NetworkProvider;
 
@@ -59,7 +63,6 @@ impl Provider for NetworkProvider {
     }
 }
 
-/// Single getifaddrs pass: returns (interface, ip, vpn_active, vpn_name).
 fn scan_interfaces() -> (String, String, bool, String) {
     let mut ifaddrs: *mut libc::ifaddrs = std::ptr::null_mut();
     if unsafe { libc::getifaddrs(&mut ifaddrs) } != 0 {
@@ -83,24 +86,22 @@ fn scan_interfaces() -> (String, String, bool, String) {
         let is_loopback = flags & (libc::IFF_LOOPBACK as u32) != 0;
 
         if is_up && !is_loopback {
-            // Detect VPN via utun interfaces
-            if name.starts_with("utun") && !vpn_active {
+            if is_vpn_interface(&name) && !vpn_active {
                 vpn_active = true;
                 vpn_name = name.clone();
             }
 
-            // Collect primary IPv4 address
             if !entry.ifa_addr.is_null() {
                 let family = unsafe { (*entry.ifa_addr).sa_family } as i32;
                 if family == libc::AF_INET {
                     let addr = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in) };
                     let ip = Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
-                    if !ip.is_loopback() && !ip.is_link_local() {
-                        // Prefer en0 (primary ethernet/wifi on macOS), otherwise take first
-                        if best_iface.is_empty() || name == "en0" {
-                            best_iface = name.clone();
-                            best_ip = ip.to_string();
-                        }
+                    if !ip.is_loopback()
+                        && !ip.is_link_local()
+                        && (best_iface.is_empty() || is_preferred_interface(&name))
+                    {
+                        best_iface = name.clone();
+                        best_ip = ip.to_string();
                     }
                 }
             }
@@ -114,31 +115,29 @@ fn scan_interfaces() -> (String, String, bool, String) {
     (best_iface, best_ip, vpn_active, vpn_name)
 }
 
-fn get_wifi_ssid() -> String {
-    // macOS: use airport command — no easy non-ObjC alternative for SSID
-    let output = Command::new(
-        "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport",
-    )
-    .args(["-I"])
-    .output()
-    .ok();
+#[cfg(target_os = "macos")]
+fn is_vpn_interface(name: &str) -> bool {
+    macos::is_vpn_interface(name)
+}
+#[cfg(target_os = "linux")]
+fn is_vpn_interface(name: &str) -> bool {
+    linux::is_vpn_interface(name)
+}
 
-    output
-        .and_then(|o| {
-            if !o.status.success() {
-                return None;
-            }
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            stdout
-                .lines()
-                .find(|l| l.trim().starts_with("SSID:"))
-                .map(|l| {
-                    l.trim()
-                        .strip_prefix("SSID:")
-                        .unwrap_or("")
-                        .trim()
-                        .to_string()
-                })
-        })
-        .unwrap_or_default()
+#[cfg(target_os = "macos")]
+fn is_preferred_interface(name: &str) -> bool {
+    macos::is_preferred_interface(name)
+}
+#[cfg(target_os = "linux")]
+fn is_preferred_interface(name: &str) -> bool {
+    linux::is_preferred_interface(name)
+}
+
+#[cfg(target_os = "macos")]
+fn get_wifi_ssid() -> String {
+    macos::get_wifi_ssid()
+}
+#[cfg(target_os = "linux")]
+fn get_wifi_ssid() -> String {
+    linux::get_wifi_ssid()
 }
