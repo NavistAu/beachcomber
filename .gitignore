@@ -38,3 +38,6 @@ sdks/c/*.o
 sdks/c/*.a
 sdks/c/*.so
 sdks/c/*.dylib
+
+# Nix
+flake.lock
