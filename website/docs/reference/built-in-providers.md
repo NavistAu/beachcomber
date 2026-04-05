@@ -18,6 +18,12 @@ beachcomber ships 16 built-in providers organized by category.
 | `battery` | global | `percent` (int), `charging` (bool), `time_remaining` (int, seconds) | poll 30s / floor 5s | 6 ms |
 | `network` | global | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
 
+**Platform notes:**
+
+- **battery:** `time_remaining` requires UPower on Linux. If UPower is unavailable, the field reads `"unknown"`.
+- **network:** SSID detection uses `nmcli`/`iw` on Linux (vs `airport` on macOS).
+- **uptime:** reads `/proc/uptime` on Linux (vs `sysctl` on macOS) — transparent to consumers, same fields.
+
 **Example output:**
 
 ```json

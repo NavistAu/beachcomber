@@ -44,6 +44,40 @@ The npm and pip packages download the correct pre-built binary for your platform
 cargo install beachcomber
 ```
 
+## Debian/Ubuntu
+
+Download the `.deb` from the latest release:
+
+```sh
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.1.1-1_amd64.deb
+sudo dpkg -i beachcomber_0.1.1-1_amd64.deb
+```
+
+## Fedora/RHEL
+
+Download the `.rpm` from the latest release:
+
+```sh
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.1.1-1.x86_64.rpm
+sudo rpm -i beachcomber-0.1.1-1.x86_64.rpm
+```
+
+## Arch Linux (AUR)
+
+```sh
+# From source
+yay -S beachcomber
+
+# Prebuilt binary
+yay -S beachcomber-bin
+```
+
+## Nix
+
+```sh
+nix run github:NavistAu/beachcomber
+```
+
 ## Pre-built binaries
 
 Pre-built binaries are available on the [GitHub Releases](https://github.com/NavistAu/beachcomber/releases) page for the following targets:
