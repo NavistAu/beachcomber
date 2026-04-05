@@ -133,11 +133,11 @@ jobs:
           - distro: ubuntu
             format: deb
             image: ubuntu:latest
-            install_cmd: dpkg -i /pkg/*.deb
+            install_cmd: dpkg -i $(find /pkg -name '*.deb')
           - distro: fedora
             format: rpm
             image: fedora:latest
-            install_cmd: rpm -i /pkg/*.rpm
+            install_cmd: rpm -i $(find /pkg -name '*.rpm')
     steps:
       - name: Download package
         uses: actions/download-artifact@v4
