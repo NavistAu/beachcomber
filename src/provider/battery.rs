@@ -134,10 +134,10 @@ fn find_battery_dir() -> Option<std::path::PathBuf> {
     for entry in std::fs::read_dir(power_supply).ok()? {
         let entry = entry.ok()?;
         let type_path = entry.path().join("type");
-        if let Ok(contents) = std::fs::read_to_string(&type_path) {
-            if contents.trim() == "Battery" {
-                return Some(entry.path());
-            }
+        if let Ok(contents) = std::fs::read_to_string(&type_path)
+            && contents.trim() == "Battery"
+        {
+            return Some(entry.path());
         }
     }
     None
