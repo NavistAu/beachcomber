@@ -24,12 +24,13 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             musl: true
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            cross: true
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            cross: true
+          # aarch64-linux targets deferred — cross-rs GLIBC mismatch needs resolution
+          # - target: aarch64-unknown-linux-gnu
+          #   os: ubuntu-latest
+          #   cross: true
+          # - target: aarch64-unknown-linux-musl
+          #   os: ubuntu-latest
+          #   cross: true
     steps:
       - uses: actions/checkout@v4
 
@@ -43,16 +44,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install cross
-        if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Build (cross)
-        if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }}
-
-      - name: Build (native)
-        if: '!matrix.cross'
+      - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
@@ -93,15 +85,9 @@ jobs:
           - format: deb
             arch: x86_64
             target: x86_64-unknown-linux-gnu
-          - format: deb
-            arch: aarch64
-            target: aarch64-unknown-linux-gnu
           - format: rpm
             arch: x86_64
             target: x86_64-unknown-linux-gnu
-          - format: rpm
-            arch: aarch64
-            target: aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
 
