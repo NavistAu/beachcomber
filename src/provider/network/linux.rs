@@ -11,7 +11,7 @@ pub fn is_preferred_interface(name: &str) -> bool {
     is_preferred_interface_by_prefix(name)
 }
 
-pub(crate) fn is_preferred_interface_by_prefix(name: &str) -> bool {
+pub fn is_preferred_interface_by_prefix(name: &str) -> bool {
     name.starts_with("eth") || name.starts_with("ens") || name.starts_with("enp")
 }
 
@@ -27,7 +27,7 @@ fn get_default_route_interface() -> Option<String> {
     parse_default_route(&stdout)
 }
 
-pub(crate) fn parse_default_route(output: &str) -> Option<String> {
+pub fn parse_default_route(output: &str) -> Option<String> {
     let first_line = output.lines().next()?;
     let mut tokens = first_line.split_whitespace();
     while let Some(token) = tokens.next() {
@@ -57,7 +57,7 @@ fn get_ssid_nmcli() -> Option<String> {
     parse_nmcli_output(&stdout)
 }
 
-pub(crate) fn parse_nmcli_output(output: &str) -> Option<String> {
+pub fn parse_nmcli_output(output: &str) -> Option<String> {
     for line in output.lines() {
         if let Some(ssid) = line.strip_prefix("yes:") {
             let ssid = ssid.trim();
@@ -88,7 +88,7 @@ fn get_ssid_iw() -> Option<String> {
     parse_iw_info_ssid(&info_str)
 }
 
-pub(crate) fn parse_iw_dev_interface(output: &str) -> Option<String> {
+pub fn parse_iw_dev_interface(output: &str) -> Option<String> {
     for line in output.lines() {
         let trimmed = line.trim();
         if let Some(iface) = trimmed.strip_prefix("Interface ") {
@@ -98,7 +98,7 @@ pub(crate) fn parse_iw_dev_interface(output: &str) -> Option<String> {
     None
 }
 
-pub(crate) fn parse_iw_info_ssid(output: &str) -> Option<String> {
+pub fn parse_iw_info_ssid(output: &str) -> Option<String> {
     for line in output.lines() {
         let trimmed = line.trim();
         if let Some(ssid) = trimmed.strip_prefix("ssid ") {
