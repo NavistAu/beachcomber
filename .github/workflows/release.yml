@@ -133,11 +133,9 @@ jobs:
           - distro: ubuntu
             format: deb
             image: ubuntu:latest
-            install_cmd: dpkg -i $(find /pkg -name '*.deb')
           - distro: fedora
             format: rpm
             image: fedora:latest
-            install_cmd: rpm -i $(find /pkg -name '*.rpm')
     steps:
       - name: Download package
         uses: actions/download-artifact@v4
@@ -148,7 +146,7 @@ jobs:
       - name: Test install in container
         run: |
           docker run --rm -v ${{ github.workspace }}/pkg:/pkg ${{ matrix.image }} \
-            bash -c "${{ matrix.install_cmd }} && comb --version"
+            bash -c 'pkg_file=$(find /pkg -name "*.${{ matrix.format }}" -type f); echo "Installing $pkg_file"; if [ "${{ matrix.format }}" = "deb" ]; then dpkg -i "$pkg_file"; else rpm -i "$pkg_file"; fi && comb --version'
 
   release:
     name: Create Release
