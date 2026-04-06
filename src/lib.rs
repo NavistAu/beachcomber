@@ -7,3 +7,4 @@ pub mod provider;
 pub mod scheduler;
 pub mod server;
 pub mod watcher;
+pub mod watcher_registry;
