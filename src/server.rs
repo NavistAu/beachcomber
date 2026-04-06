@@ -87,7 +87,7 @@ async fn handle_connection(
     cache: Arc<Cache>,
     registry: Arc<ProviderRegistry>,
     scheduler: Option<SchedulerHandle>,
-    _watchers: Arc<WatcherRegistry>,
+    watchers: Arc<WatcherRegistry>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -102,7 +102,23 @@ async fn handle_connection(
             continue;
         }
 
-        let response_bytes = match serde_json::from_str::<Request>(trimmed) {
+        match serde_json::from_str::<Request>(trimmed) {
+            Ok(Request::Watch { key, path, format }) => {
+                // Watch takes over the connection — enter streaming mode
+                handle_watch(
+                    key,
+                    path,
+                    format,
+                    &context_path,
+                    &cache,
+                    &registry,
+                    scheduler.as_ref(),
+                    &watchers,
+                    &mut writer,
+                )
+                .await;
+                return Ok(());
+            }
             Ok(request) => {
                 let response = handle_request(
                     &request,
@@ -112,21 +128,177 @@ async fn handle_connection(
                     &mut context_path,
                 )
                 .await;
-                format_response(&request, &response)
+                let response_bytes = format_response(&request, &response);
+                writer.write_all(response_bytes.as_bytes()).await?;
             }
             Err(e) => {
                 let resp = Response::error(format!("invalid request: {e}"));
                 let mut out = serde_json::to_string(&resp).unwrap();
                 out.push('\n');
-                out
+                writer.write_all(out.as_bytes()).await?;
             }
         };
-
-        writer.write_all(response_bytes.as_bytes()).await?;
         line.clear();
     }
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_watch(
+    key: String,
+    path: Option<String>,
+    format: Format,
+    context_path: &Option<String>,
+    cache: &Cache,
+    registry: &ProviderRegistry,
+    scheduler: Option<&SchedulerHandle>,
+    watchers: &WatcherRegistry,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+) {
+    let (provider_name, field) = protocol::split_key(&key);
+
+    let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
+
+    // Signal demand
+    if let Some(sched) = scheduler {
+        sched
+            .send(SchedulerMessage::QueryActivity {
+                provider: provider_name.to_string(),
+                path: effective_path.clone(),
+            })
+            .await;
+    }
+
+    // Subscribe to notifications
+    let mut rx = watchers.subscribe(provider_name, effective_path.as_deref());
+
+    // Send initial value
+    let initial = read_watch_value(cache, provider_name, field, effective_path.as_deref());
+    if write_watch_line(writer, &initial, &format).await.is_err() {
+        return;
+    }
+
+    let mut last_data = initial.data.clone();
+
+    // Stream loop
+    loop {
+        match rx.recv().await {
+            Ok(()) => {
+                // Signal ongoing demand
+                if let Some(sched) = scheduler {
+                    sched
+                        .send(SchedulerMessage::QueryActivity {
+                            provider: provider_name.to_string(),
+                            path: effective_path.clone(),
+                        })
+                        .await;
+                }
+
+                let response =
+                    read_watch_value(cache, provider_name, field, effective_path.as_deref());
+
+                // Field-level filtering: skip if value unchanged
+                if response.data == last_data {
+                    continue;
+                }
+                last_data = response.data.clone();
+
+                if write_watch_line(writer, &response, &format).await.is_err() {
+                    break; // Client disconnected
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                debug!("Watch subscriber lagged by {n} messages, catching up");
+                let response =
+                    read_watch_value(cache, provider_name, field, effective_path.as_deref());
+                if response.data != last_data {
+                    last_data = response.data.clone();
+                    if write_watch_line(writer, &response, &format).await.is_err() {
+                        break;
+                    }
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                break;
+            }
+        }
+    }
+}
+
+fn read_watch_value(
+    cache: &Cache,
+    provider_name: &str,
+    field: Option<&str>,
+    path: Option<&str>,
+) -> Response {
+    match cache.get(provider_name, path) {
+        Some(entry) => {
+            let age_ms = entry.age_ms();
+            let stale = entry.is_stale();
+            let data = if let Some(field_name) = field {
+                match entry.result.get(field_name) {
+                    Some(value) => serde_json::to_value(value).unwrap(),
+                    None => {
+                        return Response::error(format!(
+                            "unknown field: {provider_name}.{field_name}"
+                        ));
+                    }
+                }
+            } else {
+                entry.result.to_json()
+            };
+            Response::ok(data, age_ms, stale)
+        }
+        None => Response::miss(),
+    }
+}
+
+async fn write_watch_line(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    response: &Response,
+    format: &Format,
+) -> Result<(), std::io::Error> {
+    let line = match format {
+        Format::Text => {
+            if !response.ok {
+                format!(
+                    "error: {}\n",
+                    response.error.as_deref().unwrap_or("unknown")
+                )
+            } else {
+                match &response.data {
+                    Some(serde_json::Value::String(s)) => format!("{s}\n"),
+                    Some(serde_json::Value::Number(n)) => format!("{n}\n"),
+                    Some(serde_json::Value::Bool(b)) => format!("{b}\n"),
+                    Some(serde_json::Value::Object(map)) => {
+                        let mut lines: Vec<String> = map
+                            .iter()
+                            .map(|(k, v)| {
+                                let val = match v {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    other => other.to_string(),
+                                };
+                                format!("{k}={val}")
+                            })
+                            .collect();
+                        lines.sort();
+                        let mut out = lines.join("\n");
+                        out.push('\n');
+                        out
+                    }
+                    Some(serde_json::Value::Null) | None => "\n".to_string(),
+                    Some(other) => format!("{other}\n"),
+                }
+            }
+        }
+        Format::Json => {
+            let mut out = serde_json::to_string(response).unwrap();
+            out.push('\n');
+            out
+        }
+    };
+    writer.write_all(line.as_bytes()).await
 }
 
 /// Resolve the effective path for a request: explicit path > context path > None.
@@ -380,7 +552,6 @@ async fn handle_request(
                 error: None,
             }
         }
-        Request::Watch { .. } => Response::error("watch not implemented yet"),
         Request::Status => {
             let cache_details = cache.list_entries();
             let mut status_data = serde_json::json!({
@@ -407,6 +578,8 @@ async fn handle_request(
 
             Response::ok(status_data, 0, false)
         }
+        // Watch is intercepted in handle_connection before reaching here
+        Request::Watch { .. } => unreachable!("Watch handled before handle_request"),
     }
 }
 
