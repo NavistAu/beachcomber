@@ -3,6 +3,7 @@ use crate::config::Config;
 use crate::provider::registry::ProviderRegistry;
 use crate::scheduler::Scheduler;
 use crate::server::Server;
+use crate::watcher_registry::WatcherRegistry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -38,7 +39,8 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
         info!("Loaded {} environment variables from env file", env_count);
     }
 
-    let cache = Arc::new(Cache::new());
+    let watchers = Arc::new(WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(ProviderRegistry::with_config(&config));
 
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config);
@@ -46,7 +48,7 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
     let scheduler_handle = handle.clone();
     let scheduler_task = tokio::spawn(async move { scheduler.run().await });
 
-    let server = Server::new(socket_path, cache, registry, Some(handle));
+    let server = Server::new(socket_path, cache, registry, Some(handle), watchers);
 
     tokio::select! {
         result = server.run() => {

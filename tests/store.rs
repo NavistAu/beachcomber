@@ -12,12 +12,14 @@ fn setup() -> (
     std::path::PathBuf,
     Arc<Cache>,
     Arc<ProviderRegistry>,
+    Arc<beachcomber::watcher_registry::WatcherRegistry>,
 ) {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
-    let cache = Arc::new(Cache::new());
+    let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(ProviderRegistry::with_defaults());
-    (tmp, sock, cache, registry)
+    (tmp, sock, cache, registry, watchers)
 }
 
 async fn send_recv(stream: &mut UnixStream, request: &str) -> Response {
@@ -33,8 +35,8 @@ async fn send_recv(stream: &mut UnixStream, request: &str) -> Response {
 
 #[tokio::test]
 async fn store_and_get_roundtrip() {
-    let (_tmp, sock, cache, registry) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None);
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -68,8 +70,8 @@ async fn store_and_get_roundtrip() {
 
 #[tokio::test]
 async fn store_rejects_builtin_name() {
-    let (_tmp, sock, cache, registry) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None);
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -89,8 +91,8 @@ async fn store_rejects_builtin_name() {
 
 #[tokio::test]
 async fn store_replaces_previous_data() {
-    let (_tmp, sock, cache, registry) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None);
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -121,8 +123,8 @@ async fn store_replaces_previous_data() {
 
 #[tokio::test]
 async fn store_with_ttl_shows_staleness() {
-    let (_tmp, sock, cache, registry) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None);
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -156,8 +158,8 @@ async fn store_with_ttl_shows_staleness() {
 
 #[tokio::test]
 async fn store_appears_in_list() {
-    let (_tmp, sock, cache, registry) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None);
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -189,8 +191,8 @@ async fn store_appears_in_list() {
 
 #[tokio::test]
 async fn poke_virtual_provider_is_noop() {
-    let (_tmp, sock, cache, registry) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None);
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -213,8 +215,8 @@ async fn poke_virtual_provider_is_noop() {
 
 #[tokio::test]
 async fn store_with_path_scope() {
-    let (_tmp, sock, cache, registry) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None);
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

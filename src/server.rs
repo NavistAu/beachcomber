@@ -2,6 +2,7 @@ use crate::cache::Cache;
 use crate::protocol::{self, Format, Request, Response};
 use crate::provider::registry::ProviderRegistry;
 use crate::scheduler::{SchedulerHandle, SchedulerMessage};
+use crate::watcher_registry::WatcherRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -13,6 +14,7 @@ pub struct Server {
     cache: Arc<Cache>,
     registry: Arc<ProviderRegistry>,
     scheduler: Option<SchedulerHandle>,
+    watchers: Arc<WatcherRegistry>,
 }
 
 impl Server {
@@ -21,12 +23,14 @@ impl Server {
         cache: Arc<Cache>,
         registry: Arc<ProviderRegistry>,
         scheduler: Option<SchedulerHandle>,
+        watchers: Arc<WatcherRegistry>,
     ) -> Self {
         Self {
             socket_path,
             cache,
             registry,
             scheduler,
+            watchers,
         }
     }
 
@@ -61,8 +65,10 @@ impl Server {
                     let cache = Arc::clone(&self.cache);
                     let registry = Arc::clone(&self.registry);
                     let scheduler = self.scheduler.clone();
+                    let watchers = self.watchers.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, cache, registry, scheduler).await
+                        if let Err(e) =
+                            handle_connection(stream, cache, registry, scheduler, watchers).await
                         {
                             debug!("Connection error: {}", e);
                         }
@@ -81,6 +87,7 @@ async fn handle_connection(
     cache: Arc<Cache>,
     registry: Arc<ProviderRegistry>,
     scheduler: Option<SchedulerHandle>,
+    _watchers: Arc<WatcherRegistry>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -373,6 +380,7 @@ async fn handle_request(
                 error: None,
             }
         }
+        Request::Watch { .. } => Response::error("watch not implemented yet"),
         Request::Status => {
             let cache_details = cache.list_entries();
             let mut status_data = serde_json::json!({

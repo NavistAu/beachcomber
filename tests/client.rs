@@ -9,7 +9,8 @@ use tempfile::TempDir;
 async fn setup_server() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
-    let cache = Arc::new(Cache::new());
+    let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
     // Pre-populate cache
@@ -23,7 +24,7 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
     user.insert("uid", Value::Int(501));
     cache.put("user", None, user);
 
-    let server = Server::new(sock.clone(), cache, registry, None);
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
     tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

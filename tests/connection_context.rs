@@ -66,15 +66,17 @@ fn setup_with_custom_registry() -> (
     std::path::PathBuf,
     Arc<Cache>,
     Arc<ProviderRegistry>,
+    Arc<beachcomber::watcher_registry::WatcherRegistry>,
 ) {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
-    let cache = Arc::new(Cache::new());
+    let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let mut registry = ProviderRegistry::new();
     registry.register(Box::new(PathScopedProvider));
     registry.register(Box::new(GlobalProvider));
     let registry = Arc::new(registry);
-    (tmp, sock, cache, registry)
+    (tmp, sock, cache, registry, watchers)
 }
 
 async fn send_recv_line(
@@ -94,7 +96,7 @@ async fn send_recv_line(
 /// Test 1: Setting context makes subsequent gets use the context path for path-scoped providers.
 #[tokio::test]
 async fn context_sets_default_path_for_scoped_providers() {
-    let (_tmp, sock, cache, registry) = setup_with_custom_registry();
+    let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
 
     // Pre-populate cache for two different paths
     let mut result_a = ProviderResult::new();
@@ -105,7 +107,7 @@ async fn context_sets_default_path_for_scoped_providers() {
     result_b.insert("active_path", Value::String("/project/b".to_string()));
     cache.put("pathprov", Some("/project/b"), result_b);
 
-    let server = Server::new(sock.clone(), cache, registry, None);
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -138,7 +140,7 @@ async fn context_sets_default_path_for_scoped_providers() {
 /// Test 2: An explicit path on a request overrides the context path.
 #[tokio::test]
 async fn explicit_path_overrides_context() {
-    let (_tmp, sock, cache, registry) = setup_with_custom_registry();
+    let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
 
     let mut result_a = ProviderResult::new();
     result_a.insert("active_path", Value::String("/project/a".to_string()));
@@ -148,7 +150,7 @@ async fn explicit_path_overrides_context() {
     result_b.insert("active_path", Value::String("/project/b".to_string()));
     cache.put("pathprov", Some("/project/b"), result_b);
 
-    let server = Server::new(sock.clone(), cache, registry, None);
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -185,14 +187,14 @@ async fn explicit_path_overrides_context() {
 /// Test 3: Global providers ignore the context path.
 #[tokio::test]
 async fn global_provider_ignores_context() {
-    let (_tmp, sock, cache, registry) = setup_with_custom_registry();
+    let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
 
     // Pre-populate global provider in cache (no path)
     let mut result = ProviderResult::new();
     result.insert("info", Value::String("global-value".to_string()));
     cache.put("globalprov", None, result);
 
-    let server = Server::new(sock.clone(), cache, registry, None);
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

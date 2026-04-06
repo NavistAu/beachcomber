@@ -10,7 +10,8 @@ use tempfile::TempDir;
 async fn setup_with_scheduler() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
-    let cache = Arc::new(Cache::new());
+    let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = Config::default();
 
@@ -18,7 +19,7 @@ async fn setup_with_scheduler() -> (TempDir, std::path::PathBuf) {
     tokio::spawn(async move { scheduler.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let server = Server::new(sock.clone(), cache, registry, Some(handle));
+    let server = Server::new(sock.clone(), cache, registry, Some(handle), watchers);
     tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
