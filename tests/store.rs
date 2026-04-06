@@ -197,3 +197,24 @@ async fn poke_virtual_provider_is_noop() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn store_with_path_scope() {
+    let (_tmp, sock, cache, registry) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    send_recv(&mut stream, r#"{"op":"store","key":"myapp","data":{"v":"proj-a"},"path":"/tmp/proj-a"}"#).await;
+    send_recv(&mut stream, r#"{"op":"store","key":"myapp","data":{"v":"proj-b"},"path":"/tmp/proj-b"}"#).await;
+
+    let resp = send_recv(&mut stream, r#"{"op":"get","key":"myapp.v","path":"/tmp/proj-a"}"#).await;
+    assert_eq!(resp.data.unwrap(), "proj-a");
+
+    let resp = send_recv(&mut stream, r#"{"op":"get","key":"myapp.v","path":"/tmp/proj-b"}"#).await;
+    assert_eq!(resp.data.unwrap(), "proj-b");
+
+    handle.abort();
+}
