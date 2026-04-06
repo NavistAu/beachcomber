@@ -46,6 +46,19 @@ enum Commands {
     Status,
     /// List active providers
     List,
+    /// Store data as a virtual provider
+    Store {
+        /// Provider name (e.g., "myapp")
+        key: String,
+        /// JSON data (e.g., '{"status":"healthy"}')
+        data: String,
+        /// Expected refresh interval (e.g., "30s", "5m")
+        #[arg(long)]
+        ttl: Option<String>,
+        /// Path scope for directory-scoped data
+        #[arg(long)]
+        path: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -67,6 +80,9 @@ fn main() -> ExitCode {
         Commands::Poke { key, path } => run_poke(&config, &key, path.as_deref()),
         Commands::Status => run_status(&config),
         Commands::List => run_list(&config),
+        Commands::Store { key, data, ttl, path } => {
+            run_store(&config, &key, &data, ttl.as_deref(), path.as_deref())
+        }
     }
 }
 
@@ -265,6 +281,53 @@ fn run_list(config: &Config) -> ExitCode {
                         )
                         .unwrap()
                     );
+                    ExitCode::SUCCESS
+                } else {
+                    eprintln!("Error: {}", response.error.unwrap_or_default());
+                    ExitCode::from(2)
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                ExitCode::from(2)
+            }
+        }
+    })
+}
+
+fn run_store(
+    config: &Config,
+    key: &str,
+    data_str: &str,
+    ttl: Option<&str>,
+    path: Option<&str>,
+) -> ExitCode {
+    let socket_path = config.resolve_socket_path();
+
+    if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
+        eprintln!("Failed to start daemon: {e}");
+        return ExitCode::from(2);
+    }
+
+    let data: serde_json::Value = match serde_json::from_str(data_str) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Invalid JSON: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    if !data.is_object() {
+        eprintln!("Store data must be a JSON object");
+        return ExitCode::from(2);
+    }
+
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    rt.block_on(async {
+        let client = beachcomber::client::Client::new(socket_path);
+        match client.store(key, data, ttl, path).await {
+            Ok(response) => {
+                if response.ok {
                     ExitCode::SUCCESS
                 } else {
                     eprintln!("Error: {}", response.error.unwrap_or_default());
