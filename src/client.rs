@@ -71,6 +71,38 @@ impl ClientSession {
         Ok(trimmed)
     }
 
+    /// Send a watch request. Call read_watch_line() in a loop to receive updates.
+    pub async fn watch(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        format: Option<&str>,
+    ) -> std::io::Result<()> {
+        let mut request = serde_json::json!({
+            "op": "watch",
+            "key": key,
+        });
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        if let Some(f) = format {
+            request["format"] = serde_json::json!(f);
+        }
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        self.writer.write_all(msg.as_bytes()).await?;
+        Ok(())
+    }
+
+    /// Read the next watch update line. Returns None on EOF.
+    pub async fn read_watch_line(&mut self) -> std::io::Result<Option<String>> {
+        let mut line = String::new();
+        let n = self.reader.read_line(&mut line).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        Ok(Some(line))
+    }
+
     async fn send_request(&mut self, request: &serde_json::Value) -> std::io::Result<Response> {
         let msg = format!("{}\n", serde_json::to_string(request).unwrap());
         self.writer.write_all(msg.as_bytes()).await?;
