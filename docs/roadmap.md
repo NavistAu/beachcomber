@@ -16,9 +16,9 @@ Last updated: 2026-04-05
 
 **Scheduler:** Poll timers, filesystem watching (notify/FSEvents), poke triggers. Provider execution on `spawn_blocking` (non-blocking). Execution timeouts (configurable, default 10s). Deduplication (in-flight tracking + pending rerun). Failure backoff (exponential after 3 consecutive failures, max 60s). Demand-driven cache warming (QueryActivity keeps providers warm while actively queried). Backoff/drain lifecycle (Grace -> SlowPoll -> Frozen -> Evict).
 
-**Protocol:** get, poke, context, list, status. JSON and text output formats. Connection context for implicit path resolution. Staleness flag in responses. Path canonicalization (relative -> absolute). Subscribe/unsubscribe removed — demand-driven warming replaced explicit subscriptions (ephemeral consumers can't maintain persistent connections).
+**Protocol:** get, poke, store, watch, context, list, status. JSON and text output formats. Connection context for implicit path resolution. Staleness flag in responses. Path canonicalization (relative -> absolute). Subscribe/unsubscribe removed — demand-driven warming replaced explicit subscriptions (ephemeral consumers can't maintain persistent connections).
 
-**CLI:** `comb daemon | get | poke | list | status`
+**CLI:** `comb daemon | get | poke | store | watch | list | status`
 
 **Config:** TOML at `~/.config/beachcomber/config.toml`. Provider enabled/disabled flag. Provider timeout, poll interval, floor overrides. Script provider definitions. Lifecycle tuning (grace period, idle shutdown).
 
@@ -193,7 +193,7 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [x] GitHub Pages site for beachcomber.sh (docs, install instructions, examples)
 - [x] CI workflow to build and deploy the site on push to main
 - [x] Configure beachcomber.sh custom domain (DNS + GitHub Pages CNAME)
-- [ ] Site analytics (privacy-respecting — Plausible, Fathom, or similar)
+- [ ] Site analytics — Umami + Cloudflare Web Analytics. Design and rollout managed in ~/ws/analytics/ project.
 
 ### Linux Support
 
@@ -211,8 +211,8 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 
 - [ ] Watchdog — detect scheduler stalls, auto-restart
 - [ ] Configurable backoff steps
-- [ ] Push/streaming mode — stream cache updates to long-lived connections
-- [ ] `comb watch <key> [path]` CLI command — stream value changes to stdout
+- [x] Virtual providers / store — comb store protocol op lets external processes write data into the cache. Creates virtual providers (no execute(), data-only). Namespace hierarchy: builtin > script > virtual.
+- [x] comb watch <key> [path] — server-push streaming over long-lived connections. NDJSON line emitted on each cache update for the watched key. Subsumes the push/streaming mode item.
 
 ### Install Methods
 
@@ -234,4 +234,4 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [ ] Protocol stability guarantee (wire format frozen)
 - [ ] Config format stability guarantee
 - [ ] mmap/shared memory for zero-latency reads (if demand exists)
-- [ ] Consumer integration packages (zsh plugin, tmux plugin, neovim plugin)
+- [ ] Integration guides and tutorials for beachcomber.sh website — tested config snippets and step-by-step tutorials for starship, oh-my-zsh, powerlevel10k, oh-my-posh, oh-my-tmux, lualine.nvim, heirline.nvim, polybar, waybar, sketchybar. Replaces the original "consumer integration packages" plan.

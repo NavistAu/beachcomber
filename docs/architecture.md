@@ -57,6 +57,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/config.rs` | TOML config loading from XDG directories; `Config`, `DaemonConfig`, `LifecycleConfig`, `ScriptProviderConfig` |
 | `src/provider/mod.rs` | `Provider` trait; `ProviderResult`, `Value`, `ProviderMetadata`, `FieldSchema`, `InvalidationStrategy` |
 | `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; built-in registration; script provider registration from config |
+| `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; notified by cache on every put |
 | `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, `Once` strategy, global scope |
 | `src/provider/git.rs` | `GitProvider`: `git status --porcelain=v2`, file reads for stash/state; `WatchAndPoll` on `.git` |
 | `src/provider/script.rs` | `ScriptProvider`: runs arbitrary shell commands; parses JSON or KV output; strategy built from config |
@@ -256,3 +257,19 @@ Naively, a burst of filesystem events (e.g., a `git commit` touching many `.git`
 **Two independent backoff mechanisms**
 
 Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Demand backoff (in `BackoffState`, Grace->SlowPoll->Frozen->Evict) handles resource cleanup when a key drops out of the demand window. They serve different purposes and are deliberately kept separate.
+
+**Watch connections are long-lived**
+
+A `watch` request takes over the connection for the duration of the stream. The server task does not return to the request dispatch loop; instead it loops, blocking on the broadcast receiver, and emits an NDJSON line to the client on each cache update for the watched key. The connection terminates when the client disconnects or the daemon shuts down.
+
+**Field-level deduplication for watch**
+
+Watching `git.branch` only emits a line when the branch value itself changes, not on every git provider update. The watch handler records the last emitted value and skips writes when the new value is identical. This prevents spurious output when unrelated git fields (e.g., `ahead`, `dirty`) change.
+
+**Broadcast channels for watch subscribers**
+
+`src/watcher_registry.rs` maintains a `tokio::sync::broadcast` channel per (provider, path) key. `Cache::put()` notifies the registry after every write. Watch connections subscribe to the relevant channel. Using broadcast rather than mpsc allows multiple simultaneous watchers on the same key without coordination between them.
+
+**Virtual providers via store**
+
+External processes can write arbitrary data into the cache via the `store` protocol op. The server creates a virtual provider entry — a `CacheEntry` with no associated `Arc<dyn Provider>` — and inserts it directly. Virtual providers have no `execute()` method and are never polled or evicted by the scheduler. Namespace hierarchy (builtin > script > virtual) prevents a `store` call from shadowing a real provider: if a built-in or script provider already owns the namespace, the store op is rejected.
