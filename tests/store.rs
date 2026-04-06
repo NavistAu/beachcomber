@@ -177,3 +177,23 @@ async fn store_appears_in_list() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn poke_virtual_provider_is_noop() {
+    let (_tmp, sock, cache, registry) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    send_recv(&mut stream, r#"{"op":"store","key":"myapp","data":{"v":"1"}}"#).await;
+
+    let resp = send_recv(&mut stream, r#"{"op":"poke","key":"myapp"}"#).await;
+    assert!(resp.ok);
+
+    let resp = send_recv(&mut stream, r#"{"op":"get","key":"myapp.v"}"#).await;
+    assert_eq!(resp.data.unwrap(), "1");
+
+    handle.abort();
+}

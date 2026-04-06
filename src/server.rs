@@ -233,6 +233,18 @@ async fn handle_request(
                 }
             } else {
                 // Fallback: execute directly (used by tests with None scheduler).
+                // Check if it's a virtual provider — poke is a no-op
+                if registry.get_source(provider_name)
+                    == Some(crate::provider::ProviderSource::Virtual)
+                {
+                    return Response {
+                        ok: true,
+                        data: None,
+                        age_ms: None,
+                        stale: None,
+                        error: None,
+                    };
+                }
                 match registry.get(provider_name) {
                     Some(provider) => {
                         if let Some(result) = provider.execute(effective_path.as_deref()) {
