@@ -94,6 +94,47 @@ $ comb list
 }
 ```
 
+## `comb store <key> <json-data> [--ttl <duration>] [--path <path>]`
+
+Write data into the cache as a virtual provider. External processes use this to expose state to prompt/statusline consumers without writing a script provider.
+
+```sh
+# Store application status
+comb store myapp '{"status":"healthy","version":"1.2.3"}'
+
+# Store with TTL — consumers see staleness if writer stops updating
+comb store myapp '{"status":"healthy"}' --ttl 30s
+
+# Store with path scope
+comb store myapp '{"status":"building"}' --path /home/user/project
+```
+
+Read back with standard `comb get`:
+
+```sh
+comb get myapp.status        # "healthy"
+```
+
+Namespace hierarchy: builtin > script > virtual. Storing to a name used by a built-in or script provider is rejected.
+
+**Exit codes:** `0` on success, `2` on error.
+
+## `comb watch <key> [--path <path>] [-f format]`
+
+Stream cache changes to stdout. Opens a long-lived connection and emits an NDJSON line on each cache update for the watched key.
+
+```sh
+comb watch git.branch --path /home/user/project
+comb watch git --path /home/user/project
+comb watch git.branch -f text
+```
+
+First line: current value (or cache miss). Subsequent lines: emitted on each change. Ctrl-C to stop.
+
+Field-level filtering: `comb watch git.branch` only emits when the branch value changes, not on every git provider update.
+
+**Exit codes:** `0` on success (clean disconnect), `2` on error.
+
 ## `comb daemon [--socket <path>]`
 
 Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.

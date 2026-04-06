@@ -33,7 +33,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `poke`, `context`, `list`, `status` |
+| `op` | string | Operation: `get`, `poke`, `context`, `list`, `status`, `store`, `watch` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default) or `"text"` |
@@ -68,6 +68,33 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 **`list`:** Returns an array of all active cache entries with their metadata.
 
 **`status`:** Returns daemon health information.
+
+**`store`:** Write data as a virtual provider. The `key` names the virtual provider, and `data` must be a JSON object. An optional `ttl` duration string (e.g. `"30s"`) marks entries stale if the writer stops updating. An optional `path` scopes the entry to a directory.
+
+```json
+{"op":"store","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}
+{"op":"store","key":"myapp","data":{"status":"ok"},"ttl":"30s","path":"/project"}
+```
+
+Response: `{"ok":true}`
+
+Returns an error if the key conflicts with a built-in or script provider.
+
+**`watch`:** Stream cache updates for a key. The server holds the connection open and emits a response line on each cache update for the watched key. An optional `path` scopes the watch to a directory. An optional `format` field accepts `"text"` for raw value output.
+
+```json
+{"op":"watch","key":"git.branch","path":"/project"}
+{"op":"watch","key":"git.branch","format":"text"}
+```
+
+The server streams responses:
+
+```json
+{"ok":true,"data":"main","age_ms":0,"stale":false}
+{"ok":true,"data":"feature/foo","age_ms":0,"stale":false}
+```
+
+The first line is emitted immediately with the current cached value (or a null data miss). Subsequent lines are emitted on each cache update. Watching a field path (e.g. `git.branch`) only emits when that field's value changes, not on every provider update. The client disconnects to stop the stream.
 
 ## Text Format
 
