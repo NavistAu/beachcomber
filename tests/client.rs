@@ -74,3 +74,26 @@ async fn client_poke() {
     let response = client.poke("hostname", None).await.unwrap();
     assert!(response.ok);
 }
+
+#[tokio::test]
+async fn client_store_and_get() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let config = beachcomber::config::Config::load();
+    let handle = beachcomber::daemon::start_in_process(sock.clone(), config);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let client = beachcomber::client::Client::new(sock.clone());
+
+    let resp = client
+        .store("testapp", serde_json::json!({"status": "ok"}), None, None)
+        .await
+        .unwrap();
+    assert!(resp.ok);
+
+    let resp = client.get("testapp.status", None).await.unwrap();
+    assert!(resp.ok);
+    assert_eq!(resp.data.unwrap(), "ok");
+
+    handle.abort();
+}

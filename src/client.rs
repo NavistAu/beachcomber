@@ -38,6 +38,23 @@ impl ClientSession {
         self.send_request(&request).await
     }
 
+    pub async fn store(
+        &mut self,
+        key: &str,
+        data: serde_json::Value,
+        ttl: Option<&str>,
+        path: Option<&str>,
+    ) -> std::io::Result<Response> {
+        let mut request = serde_json::json!({ "op": "store", "key": key, "data": data });
+        if let Some(t) = ttl {
+            request["ttl"] = serde_json::json!(t);
+        }
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        self.send_request(&request).await
+    }
+
     pub async fn get_text(&mut self, key: &str, path: Option<&str>) -> std::io::Result<String> {
         let mut request = serde_json::json!({ "op": "get", "key": key, "format": "text" });
         if let Some(p) = path {
@@ -108,6 +125,23 @@ impl Client {
             return Err(std::io::Error::other(trimmed));
         }
         Ok(trimmed)
+    }
+
+    pub async fn store(
+        &self,
+        key: &str,
+        data: serde_json::Value,
+        ttl: Option<&str>,
+        path: Option<&str>,
+    ) -> std::io::Result<Response> {
+        let mut request = serde_json::json!({ "op": "store", "key": key, "data": data });
+        if let Some(t) = ttl {
+            request["ttl"] = serde_json::json!(t);
+        }
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        self.send_request(&request).await
     }
 
     pub async fn poke(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
