@@ -252,6 +252,8 @@ The daemon is socket-activated: it starts automatically when any client connects
 
 **Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a backoff/drain sequence after queries stop — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
 
+**Virtual providers and streaming:** external processes can also write data into the cache via `comb store`, exposing arbitrary state to prompt and statusline consumers without writing a script provider. Long-lived connections can stream changes via `comb watch`, receiving an NDJSON line each time a cache value is updated.
+
 ---
 
 ## CLI Reference
@@ -358,6 +360,49 @@ comb daemon --socket /tmp/beachcomber-debug.sock
 ```
 
 The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
+
+### `comb store <key> <json-data> [--ttl <duration>] [--path <path>]`
+
+Write data into the cache as a virtual provider. External processes can use this to expose state to prompt/statusline consumers without writing a script provider.
+
+```sh
+# Store application status
+comb store myapp '{"status":"healthy","version":"1.2.3"}'
+
+# Store with TTL — consumers see staleness if writer stops updating
+comb store myapp '{"status":"healthy"}' --ttl 30s
+
+# Store with path scope
+comb store myapp '{"status":"building"}' --path /home/user/project
+```
+
+Virtual providers are read with standard `comb get`:
+
+```sh
+comb get myapp.status        # "healthy"
+comb get myapp               # {"status":"healthy","version":"1.2.3"}
+```
+
+Namespace hierarchy prevents shadowing built-in or script providers — `comb store git '...'` is rejected.
+
+### `comb watch <key> [--path <path>] [-f format]`
+
+Stream cache changes to stdout. Opens a long-lived connection and emits an NDJSON line each time the watched key is updated.
+
+```sh
+# Watch a specific field
+comb watch git.branch --path /home/user/project
+
+# Watch all fields of a provider
+comb watch git --path /home/user/project
+
+# Stream plain values (one per line)
+comb watch git.branch -f text
+```
+
+The first line is emitted immediately with the current value (or a cache miss if no data exists). Subsequent lines appear as the cache updates. Press Ctrl-C to stop.
+
+Field-level filtering: watching `git.branch` only emits when the branch value changes, not on every git provider update.
 
 ---
 
@@ -1685,6 +1730,9 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "get", "key": "battery"}
 {"op": "get", "key": "git.branch", "path": "/home/user/project", "format": "text"}
 {"op": "poke", "key": "git", "path": "/home/user/project"}
+{"op": "store", "key": "myapp", "data": {"status": "healthy"}}
+{"op": "store", "key": "myapp", "data": {"status": "ok"}, "ttl": "30s", "path": "/project"}
+{"op": "watch", "key": "git.branch", "path": "/home/user/project"}
 {"op": "context", "path": "/home/user/project"}
 {"op": "list"}
 {"op": "status"}
@@ -1694,7 +1742,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `poke`, `context`, `list`, `status` |
+| `op` | string | Operation: `get`, `poke`, `store`, `watch`, `context`, `list`, `status` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default) or `"text"` |
@@ -1723,6 +1771,28 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 **`get`:** Read from cache. Always returns immediately. If the key has never been computed, `data` is null and `ok` is true. A null response means "no data yet" — retry after a moment or `poke` to trigger computation.
 
 **`poke`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
+
+**`store`:** Write data into the cache as a virtual provider. The `data` field must be a JSON object. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success; rejected if the key conflicts with a built-in or script provider.
+
+```json
+{"op":"store","key":"myapp","data":{"status":"healthy"}}
+{"op":"store","key":"myapp","data":{"status":"ok"},"ttl":"30s","path":"/project"}
+```
+
+**`watch`:** Open a long-lived subscription. The server emits one NDJSON response immediately with the current value, then emits additional lines each time the watched key changes. The connection stays open until the client closes it.
+
+```json
+{"op":"watch","key":"git.branch","path":"/project"}
+```
+
+Server streams responses:
+
+```json
+{"ok":true,"data":"main","age_ms":0,"stale":false}
+{"ok":true,"data":"feature/foo","age_ms":0,"stale":false}
+```
+
+Field-level filtering applies: watching `git.branch` only emits when the branch value changes, not on every git provider update.
 
 **`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
 
