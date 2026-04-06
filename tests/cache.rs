@@ -1,5 +1,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::provider::{ProviderResult, Value};
+use beachcomber::watcher_registry::WatcherRegistry;
+use std::sync::Arc;
 
 #[test]
 fn cache_get_missing_key() {
@@ -108,4 +110,21 @@ fn cache_entry_count() {
     cache.put("a", None, ProviderResult::new());
     cache.put("b", None, ProviderResult::new());
     assert_eq!(cache.len(), 2, "Cache should have 2 entries");
+}
+
+#[tokio::test]
+async fn cache_put_notifies_watchers() {
+    let watchers = Arc::new(WatcherRegistry::new());
+    let cache = Cache::with_watchers(watchers.clone());
+    let mut rx = watchers.subscribe("git", None);
+
+    let mut result = ProviderResult::new();
+    result.insert("branch", Value::String("main".to_string()));
+    cache.put("git", None, result);
+
+    let notification = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+    assert!(
+        notification.is_ok(),
+        "Watcher should be notified on cache put"
+    );
 }

@@ -1,5 +1,7 @@
 use crate::provider::ProviderResult;
+use crate::watcher_registry::WatcherRegistry;
 use dashmap::DashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 type CacheKey = String;
@@ -40,6 +42,7 @@ impl CacheEntry {
 pub struct Cache {
     entries: DashMap<CacheKey, CacheEntry>,
     generation: std::sync::atomic::AtomicU64,
+    watchers: Option<Arc<WatcherRegistry>>,
 }
 
 impl Cache {
@@ -47,6 +50,15 @@ impl Cache {
         Self {
             entries: DashMap::new(),
             generation: std::sync::atomic::AtomicU64::new(0),
+            watchers: None,
+        }
+    }
+
+    pub fn with_watchers(watchers: Arc<WatcherRegistry>) -> Self {
+        Self {
+            entries: DashMap::new(),
+            generation: std::sync::atomic::AtomicU64::new(0),
+            watchers: Some(watchers),
         }
     }
 
@@ -79,6 +91,9 @@ impl Cache {
                 expected_interval_secs: interval_secs,
             },
         );
+        if let Some(ref watchers) = self.watchers {
+            watchers.notify(provider, path);
+        }
     }
 
     pub fn remove(&self, provider: &str, path: Option<&str>) {
