@@ -139,3 +139,29 @@ fn parse_store_request_with_ttl_and_path() {
         _ => panic!("Expected Store request"),
     }
 }
+
+#[test]
+fn parse_watch_request() {
+    let json = r#"{"op":"watch","key":"git.branch","path":"/home/user/project"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Watch { key, path, format } => {
+            assert_eq!(key, "git.branch");
+            assert_eq!(path.as_deref(), Some("/home/user/project"));
+            assert_eq!(format, Format::Json);
+        }
+        _ => panic!("Expected Watch request"),
+    }
+}
+
+#[test]
+fn parse_watch_request_text_format() {
+    let json = r#"{"op":"watch","key":"git.branch","format":"text"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Watch { format, .. } => {
+            assert_eq!(format, Format::Text);
+        }
+        _ => panic!("Expected Watch request"),
+    }
+}

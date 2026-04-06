@@ -36,6 +36,13 @@ pub enum Request {
         #[serde(default)]
         path: Option<String>,
     },
+    Watch {
+        key: String,
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default)]
+        format: Format,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
