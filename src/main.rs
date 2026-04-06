@@ -59,6 +59,17 @@ enum Commands {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Watch a key and stream changes to stdout
+    Watch {
+        /// Provider key (e.g., "git.branch")
+        key: String,
+        /// Path context for directory-scoped providers
+        #[arg(long)]
+        path: Option<String>,
+        /// Output format (json or text)
+        #[arg(short, long, default_value = "json")]
+        format: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -86,6 +97,7 @@ fn main() -> ExitCode {
             ttl,
             path,
         } => run_store(&config, &key, &data, ttl.as_deref(), path.as_deref()),
+        Commands::Watch { key, path, format } => run_watch(&config, &key, path.as_deref(), &format),
     }
 }
 
@@ -295,6 +307,48 @@ fn run_list(config: &Config) -> ExitCode {
                 ExitCode::from(2)
             }
         }
+    })
+}
+
+fn run_watch(config: &Config, key: &str, path: Option<&str>, format: &str) -> ExitCode {
+    let socket_path = config.resolve_socket_path();
+
+    if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
+        eprintln!("Failed to start daemon: {e}");
+        return ExitCode::from(2);
+    }
+
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    rt.block_on(async {
+        let client = beachcomber::client::Client::new(socket_path);
+        let mut session = match client.connect().await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                return ExitCode::from(2);
+            }
+        };
+
+        let fmt = if format == "text" { Some("text") } else { None };
+        if let Err(e) = session.watch(key, path, fmt).await {
+            eprintln!("Error: {e}");
+            return ExitCode::from(2);
+        }
+
+        loop {
+            match session.read_watch_line().await {
+                Ok(Some(line)) => {
+                    print!("{line}");
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+
+        ExitCode::SUCCESS
     })
 }
 
