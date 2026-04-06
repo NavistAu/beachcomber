@@ -172,7 +172,7 @@ async fn handle_request(
         Request::Get { key, path, .. } => {
             let (provider_name, field) = protocol::split_key(key);
 
-            if registry.get(provider_name).is_none() {
+            if registry.get_source(provider_name).is_none() {
                 return Response::error(format!("unknown provider: {provider_name}"));
             }
 
@@ -265,17 +265,102 @@ async fn handle_request(
                 .list()
                 .into_iter()
                 .map(|name| {
-                    let meta = registry.get(&name).unwrap().metadata();
-                    serde_json::json!({
-                        "name": name,
-                        "global": meta.global,
-                        "fields": meta.fields.iter().map(|f| &f.name).collect::<Vec<_>>(),
-                    })
+                    if let Some(provider) = registry.get(&name) {
+                        let meta = provider.metadata();
+                        serde_json::json!({
+                            "name": name,
+                            "source": registry.get_source(&name),
+                            "global": meta.global,
+                            "fields": meta.fields.iter().map(|f| &f.name).collect::<Vec<_>>(),
+                        })
+                    } else {
+                        // Virtual provider — no backing Provider trait object.
+                        serde_json::json!({
+                            "name": name,
+                            "source": registry.get_source(&name),
+                            "global": true,
+                            "fields": serde_json::Value::Array(vec![]),
+                        })
+                    }
                 })
                 .collect();
             Response::ok(serde_json::json!(providers), 0, false)
         }
-        Request::Store { .. } => Response::error("store not implemented yet"),
+        Request::Store {
+            key,
+            data,
+            ttl,
+            path,
+        } => {
+            // Reject if a builtin or script provider already owns this name.
+            if registry.has_non_virtual(key) {
+                return Response::error(format!(
+                    "cannot store under '{key}': name is used by a builtin or script provider"
+                ));
+            }
+
+            // data must be a JSON object; its top-level keys become fields.
+            let obj = match data.as_object() {
+                Some(o) => o,
+                None => return Response::error("store data must be a JSON object"),
+            };
+
+            // Convert JSON object fields to ProviderResult.
+            let mut result = crate::provider::ProviderResult::new();
+            for (field_key, field_val) in obj {
+                let value = match field_val {
+                    serde_json::Value::String(s) => crate::provider::Value::String(s.clone()),
+                    serde_json::Value::Bool(b) => crate::provider::Value::Bool(*b),
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            crate::provider::Value::Int(i)
+                        } else if let Some(f) = n.as_f64() {
+                            crate::provider::Value::Float(f)
+                        } else {
+                            crate::provider::Value::String(n.to_string())
+                        }
+                    }
+                    other => crate::provider::Value::String(other.to_string()),
+                };
+                result.insert(field_key.clone(), value);
+            }
+
+            // Parse optional TTL.
+            let interval_secs = ttl
+                .as_deref()
+                .and_then(crate::scheduler::parse_duration_secs_pub);
+
+            // Resolve optional path — canonicalize if provided.
+            let effective_path: Option<String> = path.as_deref().map(|p| {
+                let path_obj = std::path::Path::new(p);
+                if path_obj.is_relative() {
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|cwd| cwd.join(path_obj).canonicalize().ok())
+                        .map(|abs| abs.to_string_lossy().to_string())
+                        .unwrap_or_else(|| p.to_string())
+                } else {
+                    path_obj
+                        .canonicalize()
+                        .map(|abs| abs.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| p.to_string())
+                }
+            });
+
+            // Register virtual name (idempotent, safe under concurrent access).
+            registry.register_virtual(key);
+
+            // Write to cache.
+            cache.put_with_interval(key, effective_path.as_deref(), result, interval_secs);
+
+            Response {
+                ok: true,
+                data: None,
+                age_ms: None,
+                stale: None,
+                error: None,
+            }
+        }
         Request::Status => {
             let cache_details = cache.list_entries();
             let mut status_data = serde_json::json!({

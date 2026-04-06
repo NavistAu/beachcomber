@@ -22,6 +22,7 @@ use crate::provider::uptime::UptimeProvider;
 #[cfg(target_os = "linux")]
 use crate::provider::uptime::UptimeProvider;
 use crate::provider::user::UserProvider;
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ use std::sync::Arc;
 pub struct ProviderRegistry {
     providers: HashMap<String, Arc<dyn Provider>>,
     sources: HashMap<String, ProviderSource>,
+    virtual_names: DashMap<String, ()>,
 }
 
 impl ProviderRegistry {
@@ -36,6 +38,7 @@ impl ProviderRegistry {
         Self {
             providers: HashMap::new(),
             sources: HashMap::new(),
+            virtual_names: DashMap::new(),
         }
     }
 
@@ -137,7 +140,13 @@ impl ProviderRegistry {
     }
 
     pub fn get_source(&self, name: &str) -> Option<ProviderSource> {
-        self.sources.get(name).copied()
+        if let Some(source) = self.sources.get(name) {
+            Some(*source)
+        } else if self.virtual_names.contains_key(name) {
+            Some(ProviderSource::Virtual)
+        } else {
+            None
+        }
     }
 
     /// Returns true if the provider exists and its source is Builtin or Script
@@ -149,7 +158,24 @@ impl ProviderRegistry {
         )
     }
 
+    /// Register a virtual provider name. Returns false if a non-virtual provider
+    /// already exists with this name.
+    pub fn register_virtual(&self, name: &str) -> bool {
+        if self.has_non_virtual(name) {
+            return false;
+        }
+        self.virtual_names.insert(name.to_string(), ());
+        true
+    }
+
     pub fn list(&self) -> Vec<String> {
-        self.providers.keys().cloned().collect()
+        let mut names: Vec<String> = self.providers.keys().cloned().collect();
+        for entry in self.virtual_names.iter() {
+            let name = entry.key().clone();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
     }
 }
