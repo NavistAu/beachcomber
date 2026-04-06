@@ -98,3 +98,34 @@ fn key_with_dotted_field() {
     assert_eq!(provider, "mise");
     assert_eq!(field, Some("tools"));
 }
+
+#[test]
+fn parse_store_request() {
+    let json = r#"{"op":"store","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Store { key, data, ttl, path } => {
+            assert_eq!(key, "myapp");
+            assert_eq!(data["status"], "healthy");
+            assert_eq!(data["version"], "1.2.3");
+            assert!(ttl.is_none());
+            assert!(path.is_none());
+        }
+        _ => panic!("Expected Store request"),
+    }
+}
+
+#[test]
+fn parse_store_request_with_ttl_and_path() {
+    let json = r#"{"op":"store","key":"myapp","data":{"count":42},"ttl":"30s","path":"/home/user/project"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Store { key, data, ttl, path } => {
+            assert_eq!(key, "myapp");
+            assert_eq!(data["count"], 42);
+            assert_eq!(ttl.as_deref(), Some("30s"));
+            assert_eq!(path.as_deref(), Some("/home/user/project"));
+        }
+        _ => panic!("Expected Store request"),
+    }
+}

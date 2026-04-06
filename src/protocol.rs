@@ -28,6 +28,14 @@ pub enum Request {
     },
     List,
     Status,
+    Store {
+        key: String,
+        data: serde_json::Value,
+        #[serde(default)]
+        ttl: Option<String>,
+        #[serde(default)]
+        path: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

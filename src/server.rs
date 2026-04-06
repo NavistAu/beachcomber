@@ -275,6 +275,7 @@ async fn handle_request(
                 .collect();
             Response::ok(serde_json::json!(providers), 0, false)
         }
+        Request::Store { .. } => Response::error("store not implemented yet"),
         Request::Status => {
             let cache_details = cache.list_entries();
             let mut status_data = serde_json::json!({
