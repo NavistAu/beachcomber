@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::provider::Provider;
+use crate::provider::ProviderSource;
 use crate::provider::asdf::AsdfProvider;
 use crate::provider::aws::AwsProvider;
 use crate::provider::battery::BatteryProvider;
@@ -27,12 +28,14 @@ use std::sync::Arc;
 #[derive(Default)]
 pub struct ProviderRegistry {
     providers: HashMap<String, Arc<dyn Provider>>,
+    sources: HashMap<String, ProviderSource>,
 }
 
 impl ProviderRegistry {
     pub fn new() -> Self {
         Self {
             providers: HashMap::new(),
+            sources: HashMap::new(),
         }
     }
 
@@ -89,35 +92,61 @@ impl ProviderRegistry {
 
         for (name, provider) in builtins {
             if !config.is_provider_disabled(name) {
-                registry.register(provider);
+                registry.register_with_source(provider, ProviderSource::Builtin);
             }
         }
 
         // Register script providers from config unless disabled.
         for (name, script_config) in config.script_providers() {
             if !config.is_provider_disabled(&name) {
-                registry.register(Box::new(ScriptProvider::new(&name, script_config)));
+                registry.register_with_source(
+                    Box::new(ScriptProvider::new(&name, script_config)),
+                    ProviderSource::Script,
+                );
             }
         }
 
         // Register HTTP providers from config unless disabled.
         for (name, http_config) in config.http_providers() {
             if !config.is_provider_disabled(&name) {
-                registry.register(Box::new(HttpProvider::new(&name, http_config)));
+                registry.register_with_source(
+                    Box::new(HttpProvider::new(&name, http_config)),
+                    ProviderSource::Script,
+                );
             }
         }
 
         registry
     }
 
-    /// Register a provider. Accepts a Box and converts internally to Arc.
-    pub fn register(&mut self, provider: Box<dyn Provider>) {
+    /// Register a provider with an explicit source.
+    pub fn register_with_source(&mut self, provider: Box<dyn Provider>, source: ProviderSource) {
         let name = provider.metadata().name.clone();
+        self.sources.insert(name.clone(), source);
         self.providers.insert(name, Arc::from(provider));
+    }
+
+    /// Register a provider. Accepts a Box and converts internally to Arc.
+    /// Convenience wrapper that uses `ProviderSource::Builtin`.
+    pub fn register(&mut self, provider: Box<dyn Provider>) {
+        self.register_with_source(provider, ProviderSource::Builtin);
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Provider>> {
         self.providers.get(name).cloned()
+    }
+
+    pub fn get_source(&self, name: &str) -> Option<ProviderSource> {
+        self.sources.get(name).copied()
+    }
+
+    /// Returns true if the provider exists and its source is Builtin or Script
+    /// (i.e., not Virtual).
+    pub fn has_non_virtual(&self, name: &str) -> bool {
+        matches!(
+            self.sources.get(name),
+            Some(ProviderSource::Builtin) | Some(ProviderSource::Script)
+        )
     }
 
     pub fn list(&self) -> Vec<String> {

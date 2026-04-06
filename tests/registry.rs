@@ -60,3 +60,18 @@ fn registry_metadata() {
     let meta = provider.metadata();
     assert_eq!(meta.name, "hostname");
 }
+
+#[test]
+fn registry_tracks_builtin_source() {
+    use beachcomber::provider::ProviderSource;
+
+    let registry = ProviderRegistry::with_defaults();
+    assert_eq!(registry.get_source("hostname"), Some(ProviderSource::Builtin));
+}
+
+#[test]
+fn registry_has_non_virtual_blocks_store() {
+    let registry = ProviderRegistry::with_defaults();
+    assert!(registry.has_non_virtual("hostname"));
+    assert!(!registry.has_non_virtual("nonexistent"));
+}
