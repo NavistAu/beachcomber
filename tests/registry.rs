@@ -66,7 +66,10 @@ fn registry_tracks_builtin_source() {
     use beachcomber::provider::ProviderSource;
 
     let registry = ProviderRegistry::with_defaults();
-    assert_eq!(registry.get_source("hostname"), Some(ProviderSource::Builtin));
+    assert_eq!(
+        registry.get_source("hostname"),
+        Some(ProviderSource::Builtin)
+    );
 }
 
 #[test]

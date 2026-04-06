@@ -7,7 +7,12 @@ use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-fn setup() -> (TempDir, std::path::PathBuf, Arc<Cache>, Arc<ProviderRegistry>) {
+fn setup() -> (
+    TempDir,
+    std::path::PathBuf,
+    Arc<Cache>,
+    Arc<ProviderRegistry>,
+) {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
     let cache = Arc::new(Cache::new());
@@ -38,7 +43,11 @@ async fn store_and_get_roundtrip() {
     // Store data
     let store_req = r#"{"op":"store","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}"#;
     let store_resp = send_recv(&mut stream, store_req).await;
-    assert!(store_resp.ok, "store should succeed: {:?}", store_resp.error);
+    assert!(
+        store_resp.ok,
+        "store should succeed: {:?}",
+        store_resp.error
+    );
 
     // Get all fields
     let get_req = r#"{"op":"get","key":"myapp"}"#;
@@ -187,7 +196,11 @@ async fn poke_virtual_provider_is_noop() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
-    send_recv(&mut stream, r#"{"op":"store","key":"myapp","data":{"v":"1"}}"#).await;
+    send_recv(
+        &mut stream,
+        r#"{"op":"store","key":"myapp","data":{"v":"1"}}"#,
+    )
+    .await;
 
     let resp = send_recv(&mut stream, r#"{"op":"poke","key":"myapp"}"#).await;
     assert!(resp.ok);
@@ -207,13 +220,29 @@ async fn store_with_path_scope() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
-    send_recv(&mut stream, r#"{"op":"store","key":"myapp","data":{"v":"proj-a"},"path":"/tmp/proj-a"}"#).await;
-    send_recv(&mut stream, r#"{"op":"store","key":"myapp","data":{"v":"proj-b"},"path":"/tmp/proj-b"}"#).await;
+    send_recv(
+        &mut stream,
+        r#"{"op":"store","key":"myapp","data":{"v":"proj-a"},"path":"/tmp/proj-a"}"#,
+    )
+    .await;
+    send_recv(
+        &mut stream,
+        r#"{"op":"store","key":"myapp","data":{"v":"proj-b"},"path":"/tmp/proj-b"}"#,
+    )
+    .await;
 
-    let resp = send_recv(&mut stream, r#"{"op":"get","key":"myapp.v","path":"/tmp/proj-a"}"#).await;
+    let resp = send_recv(
+        &mut stream,
+        r#"{"op":"get","key":"myapp.v","path":"/tmp/proj-a"}"#,
+    )
+    .await;
     assert_eq!(resp.data.unwrap(), "proj-a");
 
-    let resp = send_recv(&mut stream, r#"{"op":"get","key":"myapp.v","path":"/tmp/proj-b"}"#).await;
+    let resp = send_recv(
+        &mut stream,
+        r#"{"op":"get","key":"myapp.v","path":"/tmp/proj-b"}"#,
+    )
+    .await;
     assert_eq!(resp.data.unwrap(), "proj-b");
 
     handle.abort();

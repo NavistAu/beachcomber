@@ -80,9 +80,12 @@ fn main() -> ExitCode {
         Commands::Poke { key, path } => run_poke(&config, &key, path.as_deref()),
         Commands::Status => run_status(&config),
         Commands::List => run_list(&config),
-        Commands::Store { key, data, ttl, path } => {
-            run_store(&config, &key, &data, ttl.as_deref(), path.as_deref())
-        }
+        Commands::Store {
+            key,
+            data,
+            ttl,
+            path,
+        } => run_store(&config, &key, &data, ttl.as_deref(), path.as_deref()),
     }
 }
 
