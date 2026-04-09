@@ -1,6 +1,6 @@
 # Maintainer: NavistAu <github@navistau.io>
 pkgname=beachcomber-bin
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Daemon that caches shell environment state for instant prompt rendering (prebuilt binary)"
 arch=('x86_64' 'aarch64')

@@ -4,6 +4,17 @@ All notable changes to beachcomber will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-04-09
+
+### Added
+- Virtual providers via `comb store` — external processes can write data into the cache, creating data-only providers with no execute function
+- Namespace hierarchy for providers: builtin > script > virtual (higher priority providers cannot be shadowed)
+- `comb watch <key> [path]` — server-push streaming over long-lived connections, NDJSON line emitted on each cache update
+- WatcherRegistry with broadcast channels for field-level change notification
+- `store` and `watch` protocol operations
+- `store` and `read_watch_line` methods on ClientSession
+- Store and watch integration tests
+
 ## [0.2.0] - 2026-04-05
 
 ### Added

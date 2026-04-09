@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name        = 'libbeachcomber'
-  s.version     = '0.2.0'
+  s.version     = '0.3.0'
   s.summary     = 'Ruby client for the beachcomber shell-data daemon'
   s.description = 'Communicates with the beachcomber daemon over a Unix domain socket ' \
                   'to query cached shell-environment data (git state, hostname, battery, etc.).'
