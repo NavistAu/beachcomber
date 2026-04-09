@@ -28,16 +28,6 @@ fn backoff_resets() {
 }
 
 #[test]
-fn backoff_poll_multiplier() {
-    let state = BackoffState::new(Duration::from_secs(0));
-    assert_eq!(state.poll_multiplier(), 1, "Grace has normal polling");
-
-    let mut state = BackoffState::new(Duration::from_secs(0));
-    state.advance();
-    assert_eq!(state.poll_multiplier(), 4, "SlowPoll has 4x polling");
-}
-
-#[test]
 fn backoff_should_watch() {
     let state = BackoffState::new(Duration::from_secs(0));
     assert!(state.should_watch(), "Grace keeps watches");

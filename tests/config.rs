@@ -1,4 +1,5 @@
-use beachcomber::config::Config;
+use beachcomber::config::{Config, parse_duration};
+use std::time::Duration;
 
 #[test]
 fn default_config() {
@@ -36,12 +37,34 @@ socket_path = "/tmp/test.sock"
 fn parse_lifecycle_section() {
     let toml_str = r#"
 [lifecycle]
-grace_period_secs = 60
+cache_lifespan = "1m"
 eviction_timeout_secs = 900
+failure_reattempts = 5
+failure_backoff_interval = "2s"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.lifecycle.grace_period_secs, 60);
+    assert_eq!(config.lifecycle.cache_lifespan, "1m");
+    assert_eq!(
+        config.lifecycle.cache_lifespan_duration(),
+        std::time::Duration::from_secs(60)
+    );
     assert_eq!(config.lifecycle.eviction_timeout_secs, 900);
+    assert_eq!(config.lifecycle.failure_reattempts, 5);
+    assert_eq!(config.lifecycle.failure_backoff_interval, "2s");
+}
+
+#[test]
+fn parse_lifecycle_backwards_compat() {
+    let toml_str = r#"
+[lifecycle]
+grace_period_secs = 60
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    assert_eq!(config.lifecycle.cache_lifespan, "60s");
+    assert_eq!(
+        config.lifecycle.cache_lifespan_duration(),
+        std::time::Duration::from_secs(60)
+    );
 }
 
 #[test]
@@ -93,4 +116,83 @@ fn log_path_resolves_xdg() {
         path.to_string_lossy().contains("beachcomber"),
         "Log path should include 'beachcomber': {path:?}",
     );
+}
+
+#[test]
+fn parse_duration_variants() {
+    assert_eq!(parse_duration("500ms"), Some(Duration::from_millis(500)));
+    assert_eq!(parse_duration("5s"), Some(Duration::from_secs(5)));
+    assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
+    assert_eq!(parse_duration("1h"), Some(Duration::from_secs(3600)));
+    assert_eq!(parse_duration("30"), Some(Duration::from_secs(30)));
+    assert_eq!(parse_duration(""), None);
+}
+
+#[test]
+fn per_provider_backoff_overrides() {
+    let toml_str = r#"
+[lifecycle]
+cache_lifespan = "30s"
+failure_reattempts = 3
+failure_backoff_interval = "1s"
+
+[providers.my_api]
+command = "curl http://example.com"
+cache_lifespan = "2m"
+failure_reattempts = 5
+failure_backoff_interval = "2s"
+poll_idle_interval = "30s"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+
+    // Per-provider overrides
+    assert_eq!(
+        config.resolve_cache_lifespan("my_api"),
+        Duration::from_secs(120)
+    );
+    assert_eq!(config.resolve_failure_reattempts("my_api"), 5);
+    assert_eq!(
+        config.resolve_failure_backoff_interval("my_api"),
+        Duration::from_secs(2)
+    );
+    assert_eq!(
+        config.resolve_poll_idle_interval("my_api"),
+        Some(Duration::from_secs(30))
+    );
+
+    // Unknown provider falls back to lifecycle defaults
+    assert_eq!(
+        config.resolve_cache_lifespan("unknown"),
+        Duration::from_secs(30)
+    );
+    assert_eq!(config.resolve_failure_reattempts("unknown"), 3);
+    assert_eq!(
+        config.resolve_failure_backoff_interval("unknown"),
+        Duration::from_secs(1)
+    );
+    assert_eq!(config.resolve_poll_idle_interval("unknown"), None);
+}
+
+#[test]
+fn poll_live_interval_overrides_poll_secs() {
+    let toml_str = r#"
+[providers.my_api]
+command = "echo test"
+poll_secs = 10
+poll_live_interval = "5s"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    // poll_live_interval takes precedence
+    assert_eq!(config.resolve_poll_live_interval("my_api"), Some(5));
+}
+
+#[test]
+fn poll_secs_still_works() {
+    let toml_str = r#"
+[providers.my_api]
+command = "echo test"
+poll_secs = 10
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    assert_eq!(config.resolve_poll_live_interval("my_api"), Some(10));
 }
