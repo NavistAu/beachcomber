@@ -4,6 +4,7 @@ use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
+use beachcomber::watcher_registry::WatcherRegistry;
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -32,7 +33,7 @@ impl TestServer {
         rt.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(200)).await });
 
         let sock_clone = sock.clone();
-        let server = Server::new(sock_clone, cache, registry, Some(handle));
+        let server = Server::new(sock_clone, cache, registry, Some(handle), Arc::new(WatcherRegistry::new()));
         rt.spawn(async move { server.run().await.unwrap() });
 
         // Wait for the server socket to appear.
