@@ -32,7 +32,13 @@ impl TestServer {
         rt.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(200)).await });
 
         let sock_clone = sock.clone();
-        let server = Server::new(sock_clone, cache, registry, Some(handle), Arc::new(WatcherRegistry::new()));
+        let server = Server::new(
+            sock_clone,
+            cache,
+            registry,
+            Some(handle),
+            Arc::new(WatcherRegistry::new()),
+        );
         rt.spawn(async move { server.run().await.unwrap() });
         rt.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(50)).await });
 
