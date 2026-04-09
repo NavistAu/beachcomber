@@ -634,11 +634,12 @@ impl Scheduler {
                                         InvalidationStrategy::Once => 0,
                                     }
                                 );
-                                if let Some(state) = poll_states.get_mut(&key) {
-                                    if state.interval_secs != live_poll_secs && live_poll_secs > 0 {
-                                        debug!("Restored live polling for provider={} path={:?} every {}s", provider, path, live_poll_secs);
-                                        state.interval_secs = live_poll_secs;
-                                    }
+                                if let Some(state) = poll_states.get_mut(&key)
+                                    && state.interval_secs != live_poll_secs
+                                    && live_poll_secs > 0
+                                {
+                                    debug!("Restored live polling for provider={} path={:?} every {}s", provider, path, live_poll_secs);
+                                    state.interval_secs = live_poll_secs;
                                 }
                             }
 
@@ -830,11 +831,12 @@ impl Scheduler {
                                         InvalidationStrategy::Once => 0,
                                     }
                                 );
-                                if let Some(state) = poll_states.get_mut(&key) {
-                                    if state.interval_secs != live_poll_secs && live_poll_secs > 0 {
-                                        debug!("Restored live polling for provider={} path={:?} every {}s", provider, path, live_poll_secs);
-                                        state.interval_secs = live_poll_secs;
-                                    }
+                                if let Some(state) = poll_states.get_mut(&key)
+                                    && state.interval_secs != live_poll_secs
+                                    && live_poll_secs > 0
+                                {
+                                    debug!("Restored live polling for provider={} path={:?} every {}s", provider, path, live_poll_secs);
+                                    state.interval_secs = live_poll_secs;
                                 }
                             }
 
