@@ -10,13 +10,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  rust-version:
+    name: Read Rust version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse Rust version from mise.toml
+        id: parse
+        run: echo "version=$(grep '^rust' mise.toml | sed 's/.*"\(.*\)"/\1/')" >> "$GITHUB_OUTPUT"
+
   check:
     name: Check
+    needs: rust-version
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Check
@@ -28,11 +41,13 @@ jobs:
 
   check-linux:
     name: Check (Linux)
+    needs: rust-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Check
@@ -44,31 +59,40 @@ jobs:
 
   test:
     name: Test
+    needs: rust-version
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test -- --skip watcher_ --skip uptime_provider_executes
 
   test-linux:
     name: Test (Linux)
+    needs: rust-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test -- --skip watcher_
 
   bench:
     name: Benchmark
+    needs: rust-version
     runs-on: macos-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
       - uses: Swatinem/rust-cache@v2
       - name: Run benchmarks
         run: cargo bench -- --output-format=bencher 2>/dev/null | tee bench-results.txt
