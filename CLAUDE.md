@@ -8,7 +8,7 @@ Project-specific instructions for contributors using Claude Code.
 - **Binary:** `comb` (not `beachcomber`)
 - **Crate:** `beachcomber` (workspace root) + `beachcomber-client` (client library)
 - **Rust version:** pinned in `mise.toml` — use `mise install` to get it
-- **Platform:** macOS only (Linux support is planned, not yet implemented)
+- **Platform:** macOS and Linux
 
 ## Build and Test
 
@@ -76,6 +76,10 @@ See `docs/provider-development.md`. Short version:
 2. `tests/provider_yourprovider.rs` — integration tests
 3. Register in `src/provider/mod.rs` and `src/provider/registry.rs`
 4. Prefer reading files over spawning processes (see performance tiers in `docs/performance.md`)
+
+## Releasing
+
+See `docs/releasing.md` for the full release checklist. Short version: bump all version files, update CHANGELOG, push, wait for CI green, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag triggers the release workflow which builds, publishes to all registries, and updates Homebrew.
 
 ## Key Conventions
 
