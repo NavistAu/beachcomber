@@ -40,15 +40,17 @@ provider_timeout_secs = 10
 
 [lifecycle]
 
-# How long (in seconds) to maintain full polling cadence after demand expires
-# (i.e., after the last query for a key). During this window, cache entries
-# stay warm in case a new shell opens.
-# Default: 30
-grace_period_secs = 30
+# How long to keep cached data after the last query for a key.
+# During this window, the provider keeps polling at its normal interval
+# so the cache stays warm in case a new shell opens.
+# Accepts duration strings: "30s", "5m", "1h", "500ms"
+# Also accepts bare integers as seconds for backwards compatibility.
+# Default: "30s"
+cache_lifespan = "30s"
 
 # How long (in seconds) after demand expires before a cache entry is fully
-# evicted. The daemon enters a progressive backoff between grace expiry and
-# eviction (2x poll at 30s, 4x poll at 2min, frozen at 5min).
+# evicted. The daemon enters a progressive drain between cache lifespan
+# expiry and eviction.
 # Default: 900 (15 minutes)
 eviction_timeout_secs = 900
 
@@ -58,6 +60,17 @@ eviction_timeout_secs = 900
 # Set to null to disable idle shutdown (daemon stays resident permanently).
 # Default: 300 (5 minutes)
 idle_shutdown_secs = 300
+
+# Consecutive failures before the daemon backs off retrying a provider.
+# While within this threshold, the provider retries at its normal poll rate.
+# Default: 3
+failure_reattempts = 3
+
+# Initial delay between retries after failure_reattempts is exceeded.
+# The delay doubles each attempt for 4 levels, then stays at level 4.
+# E.g., "1s" → retries at 1s, 2s, 4s, 8s, 8s, 8s, ...
+# Default: "1s"
+failure_backoff_interval = "1s"
 
 
 # ─── Built-in Provider Overrides ───────────────────────────────────────────────
@@ -70,18 +83,19 @@ enabled = false
 
 # Override polling interval and floor for battery
 [providers.battery]
-poll_secs = 60          # default: 30
-poll_floor_secs = 10    # default: 5
+poll_live_interval = "60s"    # default: 30s
+poll_floor_secs = 10          # default: 5
 
 # Make git refresh more frequently (useful on fast machines or large repos)
 [providers.git]
-poll_secs = 30          # default: no poll (filesystem-triggered only)
-poll_floor_secs = 2     # default: not set
+poll_live_interval = "30s"    # default: no poll (filesystem-triggered only)
+poll_floor_secs = 2           # default: not set
+cache_lifespan = "2m"         # keep git data warm longer (re-warming is expensive)
 
 # Override network polling interval
 [providers.network]
-poll_secs = 30          # default: 10
-poll_floor_secs = 10    # default: 5
+poll_live_interval = "30s"    # default: 10s
+poll_floor_secs = 10          # default: 5
 
 
 # ─── Custom Script Providers ───────────────────────────────────────────────────
@@ -172,17 +186,25 @@ poll = "86400s"
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `grace_period_secs` | int | `30` | Seconds at full cadence after demand expires |
+| `cache_lifespan` | duration | `"30s"` | How long cached data stays warm after last query |
 | `eviction_timeout_secs` | int | `900` | Seconds until cache entry is fully evicted |
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
+| `failure_reattempts` | int | `3` | Consecutive failures before backoff kicks in |
+| `failure_backoff_interval` | duration | `"1s"` | Initial delay between retries after threshold |
+
+Duration fields accept strings like `"30s"`, `"5m"`, `"1h"`, `"500ms"`. Bare integers are treated as seconds for backwards compatibility.
 
 ### `[providers.<name>]` section (built-in overrides)
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` | Set `false` to disable provider entirely |
-| `poll_secs` | int | provider-specific | Override poll interval |
+| `poll_live_interval` | duration | provider-specific | Poll interval when provider has active demand |
+| `poll_idle_interval` | duration | none (stops polling) | Poll interval after demand expires |
 | `poll_floor_secs` | int | provider-specific | Minimum poll interval consumers can request |
+| `cache_lifespan` | duration | lifecycle default | Override how long cached data stays warm |
+| `failure_reattempts` | int | lifecycle default | Override failure threshold |
+| `failure_backoff_interval` | duration | lifecycle default | Override initial backoff delay |
 
 ### `[providers.<name>]` section (custom script providers)
 
@@ -192,8 +214,12 @@ poll = "86400s"
 | `output` | string | no | `"json"` (default), `"kv"`, or `"text"` |
 | `scope` | string | no | `"global"` (default) or `"path"` |
 | `enabled` | bool | no | `false` to disable |
-| `poll_secs` | int | no | Poll interval in seconds |
+| `poll_live_interval` | duration | no | Poll interval when provider has active demand |
+| `poll_idle_interval` | duration | no | Poll interval after demand expires |
 | `poll_floor_secs` | int | no | Minimum poll interval |
+| `cache_lifespan` | duration | no | Override how long cached data stays warm |
+| `failure_reattempts` | int | no | Override failure threshold |
+| `failure_backoff_interval` | duration | no | Override initial backoff delay |
 | `invalidation.poll` | string | no | Poll interval as duration string (`"30s"`, `"2m"`) |
 | `invalidation.watch` | array of strings | no | File/directory patterns to watch |
 

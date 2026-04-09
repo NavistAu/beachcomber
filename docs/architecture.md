@@ -147,7 +147,7 @@ The scheduler checks `in_flight` (a `Mutex<HashSet>`). If an execution for `("gi
 
 **Step 6: Failure backoff check**
 
-Before launching, the scheduler checks `failure_counts`. If the provider has failed 3+ consecutive times and is within its exponential backoff window (1s, 2s, 4s, ..., 60s), execution is skipped.
+Before launching, the scheduler checks `failure_counts`. If the provider has exceeded its failure threshold (`failure_reattempts`, default 3) and is within its exponential backoff window (starting at `failure_backoff_interval`, doubling for 4 levels), execution is skipped. Both values are configurable globally in `[lifecycle]` and per-provider in `[providers.<name>]`.
 
 **Step 7: spawn_blocking**
 
@@ -197,7 +197,7 @@ The scheduler's per-second tick checks all demand entries. Any key not queried w
 When a key enters the backoff sequence, `BackoffState` (in `src/scheduler.rs`) tracks its stage:
 
 ```
-Grace (30s) -> SlowPoll -> Frozen -> Evict
+Grace (cache_lifespan, default 30s) -> SlowPoll -> Frozen -> Evict
 ```
 
 At `Evict`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any backoff stage, the backoff is cancelled immediately and the key re-enters the demand window.

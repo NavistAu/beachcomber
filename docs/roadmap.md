@@ -210,7 +210,7 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 ### Additional Features
 
 - [ ] Watchdog — detect scheduler stalls, auto-restart
-- [ ] Configurable backoff steps
+- [x] Configurable backoff steps — failure reattempts, backoff interval, cache lifespan, poll idle interval. Global defaults in `[lifecycle]`, per-provider overrides in `[providers.<name>]`. Duration strings ("30s", "2m", "500ms").
 - [x] Virtual providers / store — comb store protocol op lets external processes write data into the cache. Creates virtual providers (no execute(), data-only). Namespace hierarchy: builtin > script > virtual.
 - [x] comb watch <key> [path] — server-push streaming over long-lived connections. NDJSON line emitted on each cache update for the watched key. Subsumes the push/streaming mode item.
 
