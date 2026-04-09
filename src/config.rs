@@ -1,6 +1,72 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Deserialize a value that can be either a string ("30s") or an integer (30, treated as seconds).
+fn deserialize_duration_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de;
+
+    struct StringOrInt;
+
+    impl<'de> de::Visitor<'de> for StringOrInt {
+        type Value = String;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a duration string (\"30s\") or integer (seconds)")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<String, E> {
+            Ok(v)
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<String, E> {
+            Ok(format!("{v}s"))
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<String, E> {
+            Ok(format!("{v}s"))
+        }
+    }
+
+    deserializer.deserialize_any(StringOrInt)
+}
+use std::time::Duration;
+
+/// Parse a duration string like "500ms", "30s", "5m", "1h" into a Duration.
+pub fn parse_duration(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(stripped) = s.strip_suffix("ms") {
+        return stripped
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(Duration::from_millis);
+    }
+    let (num_str, multiplier) = if let Some(stripped) = s.strip_suffix('s') {
+        (stripped, 1u64)
+    } else if let Some(stripped) = s.strip_suffix('m') {
+        (stripped, 60)
+    } else if let Some(stripped) = s.strip_suffix('h') {
+        (stripped, 3600)
+    } else {
+        (s, 1)
+    };
+    num_str
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|n| Duration::from_secs(n * multiplier))
+}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -39,18 +105,36 @@ impl Default for DaemonConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LifecycleConfig {
-    pub grace_period_secs: u64,
+    #[serde(
+        alias = "grace_period_secs",
+        deserialize_with = "deserialize_duration_string"
+    )]
+    pub cache_lifespan: String,
     pub eviction_timeout_secs: u64,
     pub idle_shutdown_secs: Option<u64>,
+    pub failure_reattempts: u32,
+    pub failure_backoff_interval: String,
 }
 
 impl Default for LifecycleConfig {
     fn default() -> Self {
         Self {
-            grace_period_secs: 30,
+            cache_lifespan: "30s".to_string(),
             eviction_timeout_secs: 900,
-            idle_shutdown_secs: None, // disabled by default — daemon stays alive until killed
+            idle_shutdown_secs: None,
+            failure_reattempts: 3,
+            failure_backoff_interval: "1s".to_string(),
         }
+    }
+}
+
+impl LifecycleConfig {
+    pub fn cache_lifespan_duration(&self) -> Duration {
+        parse_duration(&self.cache_lifespan).unwrap_or(Duration::from_secs(30))
+    }
+
+    pub fn failure_backoff_duration(&self) -> Duration {
+        parse_duration(&self.failure_backoff_interval).unwrap_or(Duration::from_secs(1))
     }
 }
 
@@ -73,6 +157,12 @@ pub struct ScriptProviderConfig {
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<String>,
     pub extract: Option<String>,
+    // New configurable backoff fields (override lifecycle defaults)
+    pub poll_live_interval: Option<String>,
+    pub poll_idle_interval: Option<String>,
+    pub cache_lifespan: Option<String>,
+    pub failure_reattempts: Option<u32>,
+    pub failure_backoff_interval: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -102,6 +192,56 @@ impl Config {
             .and_then(|p| p.enabled)
             .map(|e| !e)
             .unwrap_or(false)
+    }
+
+    /// Resolve the cache lifespan for a provider. Per-provider overrides lifecycle default.
+    pub fn resolve_cache_lifespan(&self, provider_name: &str) -> Duration {
+        self.providers
+            .get(provider_name)
+            .and_then(|p| p.cache_lifespan.as_ref())
+            .and_then(|s| parse_duration(s))
+            .unwrap_or_else(|| {
+                parse_duration(&self.lifecycle.cache_lifespan).unwrap_or(Duration::from_secs(30))
+            })
+    }
+
+    pub fn resolve_failure_reattempts(&self, provider_name: &str) -> u32 {
+        self.providers
+            .get(provider_name)
+            .and_then(|p| p.failure_reattempts)
+            .unwrap_or(self.lifecycle.failure_reattempts)
+    }
+
+    pub fn resolve_failure_backoff_interval(&self, provider_name: &str) -> Duration {
+        self.providers
+            .get(provider_name)
+            .and_then(|p| p.failure_backoff_interval.as_ref())
+            .and_then(|s| parse_duration(s))
+            .unwrap_or_else(|| {
+                parse_duration(&self.lifecycle.failure_backoff_interval)
+                    .unwrap_or(Duration::from_secs(1))
+            })
+    }
+
+    pub fn resolve_poll_idle_interval(&self, provider_name: &str) -> Option<Duration> {
+        self.providers
+            .get(provider_name)
+            .and_then(|p| p.poll_idle_interval.as_ref())
+            .and_then(|s| parse_duration(s))
+    }
+
+    pub fn resolve_poll_live_interval(&self, provider_name: &str) -> Option<u64> {
+        // poll_live_interval takes precedence over poll_secs
+        let provider_config = self.providers.get(provider_name);
+        if let Some(config) = provider_config {
+            if let Some(ref interval) = config.poll_live_interval {
+                return parse_duration(interval).map(|d| d.as_secs());
+            }
+            if let Some(secs) = config.poll_secs {
+                return Some(secs);
+            }
+        }
+        None
     }
 
     pub fn script_providers(&self) -> Vec<(String, ScriptProviderConfig)> {

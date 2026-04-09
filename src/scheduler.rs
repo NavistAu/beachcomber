@@ -66,27 +66,9 @@ pub struct PollTimerInfo {
     pub last_run_secs_ago: u64,
 }
 
-/// Public wrapper for parse_duration_secs, used by script provider.
+/// Public wrapper for parse_duration, used by script provider.
 pub fn parse_duration_secs_pub(s: &str) -> Option<u64> {
-    parse_duration_secs(s)
-}
-
-/// Parse a duration string like "30s", "5m", "1h" into seconds.
-fn parse_duration_secs(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let (num_str, multiplier) = if let Some(stripped) = s.strip_suffix('s') {
-        (stripped, 1u64)
-    } else if let Some(stripped) = s.strip_suffix('m') {
-        (stripped, 60)
-    } else if let Some(stripped) = s.strip_suffix('h') {
-        (stripped, 3600)
-    } else {
-        (s, 1)
-    };
-    num_str.trim().parse::<u64>().ok().map(|n| n * multiplier)
+    crate::config::parse_duration(s).map(|d| d.as_secs())
 }
 
 /// Handle for sending messages to the scheduler.
@@ -166,15 +148,6 @@ impl BackoffState {
             && self.started_at.elapsed() >= self.grace_duration
     }
 
-    pub fn poll_multiplier(&self) -> u64 {
-        match self.stage {
-            BackoffStage::Grace => 1,
-            BackoffStage::SlowPoll => 4,
-            BackoffStage::Frozen => 0,
-            BackoffStage::Evict => 0,
-        }
-    }
-
     pub fn should_watch(&self) -> bool {
         matches!(self.stage, BackoffStage::Grace)
     }
@@ -228,22 +201,27 @@ fn check_backoff(
 struct FailureState {
     consecutive_failures: u32,
     suppressed_until: Option<Instant>,
+    threshold: u32,
+    backoff_interval: Duration,
 }
 
 impl FailureState {
-    fn new() -> Self {
+    fn new(threshold: u32, backoff_interval: Duration) -> Self {
         Self {
             consecutive_failures: 0,
             suppressed_until: None,
+            threshold,
+            backoff_interval,
         }
     }
 
     fn record_failure(&mut self) {
         self.consecutive_failures += 1;
-        if self.consecutive_failures >= 3 {
-            // Exponential backoff: 1s, 2s, 4s, 8s, ... max 60s
-            let delay_secs = (1u64 << (self.consecutive_failures - 3).min(6)).min(60);
-            self.suppressed_until = Some(Instant::now() + Duration::from_secs(delay_secs));
+        if self.consecutive_failures >= self.threshold {
+            // 4 levels of exponential backoff from base interval, stays at level 4
+            let level = (self.consecutive_failures - self.threshold).min(3);
+            let delay = self.backoff_interval * (1u32 << level);
+            self.suppressed_until = Some(Instant::now() + delay);
         }
     }
 
@@ -324,8 +302,9 @@ fn build_status(
 fn start_backoff_for_key(
     key: &(String, Option<String>),
     backoff: &mut HashMap<(String, Option<String>), BackoffState>,
-    grace_duration: std::time::Duration,
+    config: &Config,
 ) {
+    let grace_duration = config.resolve_cache_lifespan(&key.0);
     backoff.entry(key.clone()).or_insert_with(|| {
         debug!("Starting backoff for provider={} path={:?}", key.0, key.1);
         BackoffState::new(grace_duration)
@@ -433,6 +412,9 @@ impl Scheduler {
         let name_for_log = name_owned.clone();
         let key_for_cleanup = key.clone();
 
+        let failure_threshold = self.config.resolve_failure_reattempts(provider_name);
+        let failure_backoff = self.config.resolve_failure_backoff_interval(provider_name);
+
         tokio::spawn(async move {
             let result = tokio::time::timeout(
                 Duration::from_secs(timeout_secs),
@@ -447,7 +429,7 @@ impl Scheduler {
                         .lock()
                         .unwrap()
                         .entry(key_for_cleanup.clone())
-                        .or_insert_with(FailureState::new)
+                        .or_insert_with(|| FailureState::new(failure_threshold, failure_backoff))
                         .record_success();
                 }
                 _ => {
@@ -455,7 +437,7 @@ impl Scheduler {
                         .lock()
                         .unwrap()
                         .entry(key_for_cleanup.clone())
-                        .or_insert_with(FailureState::new)
+                        .or_insert_with(|| FailureState::new(failure_threshold, failure_backoff))
                         .record_failure();
                 }
             }
@@ -520,7 +502,9 @@ impl Scheduler {
                                     .lock()
                                     .unwrap()
                                     .entry(key_for_cleanup.clone())
-                                    .or_insert_with(FailureState::new)
+                                    .or_insert_with(|| {
+                                        FailureState::new(failure_threshold, failure_backoff)
+                                    })
                                     .record_success();
                             }
                             _ => {
@@ -528,7 +512,9 @@ impl Scheduler {
                                     .lock()
                                     .unwrap()
                                     .entry(key_for_cleanup.clone())
-                                    .or_insert_with(FailureState::new)
+                                    .or_insert_with(|| {
+                                        FailureState::new(failure_threshold, failure_backoff)
+                                    })
                                     .record_failure();
                             }
                         }
@@ -584,8 +570,6 @@ impl Scheduler {
 
         // Backoff states for keys with no active subscribers.
         let mut backoff: HashMap<(String, Option<String>), BackoffState> = HashMap::new();
-        let grace_duration =
-            std::time::Duration::from_secs(self.config.lifecycle.grace_period_secs);
 
         // Watch paths that are being monitored: path -> (provider, path_arg)
         let mut watch_paths: HashMap<PathBuf, Vec<(String, Option<String>)>> = HashMap::new();
@@ -639,6 +623,25 @@ impl Scheduler {
                                 debug!("Cancelled backoff for provider={} path={:?} (query demand)", provider, path);
                             }
 
+                            // Restore live polling interval if we were in idle mode.
+                            if let Some(prov) = self.registry.get(&provider) {
+                                let meta = prov.metadata();
+                                let live_poll_secs = self.config.resolve_poll_live_interval(&provider).unwrap_or(
+                                    match &meta.invalidation {
+                                        InvalidationStrategy::Poll { interval_secs, .. } => *interval_secs,
+                                        InvalidationStrategy::WatchAndPoll { interval_secs, .. } => *interval_secs,
+                                        InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
+                                        InvalidationStrategy::Once => 0,
+                                    }
+                                );
+                                if let Some(state) = poll_states.get_mut(&key) {
+                                    if state.interval_secs != live_poll_secs && live_poll_secs > 0 {
+                                        debug!("Restored live polling for provider={} path={:?} every {}s", provider, path, live_poll_secs);
+                                        state.interval_secs = live_poll_secs;
+                                    }
+                                }
+                            }
+
                             // If this is new demand, set up default polling based on provider metadata.
                             if is_new {
                                 if let Some(prov) = self.registry.get(&provider) {
@@ -649,6 +652,10 @@ impl Scheduler {
                                         InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
                                         InvalidationStrategy::Once => 0, // No polling for Once providers
                                     };
+
+                                    // Apply config override if set
+                                    let poll_secs = self.config.resolve_poll_live_interval(&provider)
+                                        .unwrap_or(poll_secs);
 
                                     if poll_secs > 0 {
                                         poll_states.entry(key.clone()).or_insert(PollState {
@@ -718,9 +725,18 @@ impl Scheduler {
                     for key in expired_demand {
                         debug!("Demand expired for provider={} path={:?}", key.0, key.1);
                         demand.remove(&key);
-                        poll_states.remove(&key);
 
-                        // Remove watch for this key.
+                        // Switch to idle polling if configured, otherwise stop polling.
+                        if let Some(idle_interval) = self.config.resolve_poll_idle_interval(&key.0) {
+                            if let Some(state) = poll_states.get_mut(&key) {
+                                state.interval_secs = idle_interval.as_secs().max(1);
+                                debug!("Switched provider={} path={:?} to idle polling every {}s", key.0, key.1, idle_interval.as_secs());
+                            }
+                        } else {
+                            poll_states.remove(&key);
+                        }
+
+                        // Remove watch for this key (watches are only active during live demand).
                         let mut paths_to_unwatch = Vec::new();
                         for (watch_path, subscriptions) in watch_paths.iter_mut() {
                             subscriptions.retain(|(p, pa)| !(p == &key.0 && pa == &key.1));
@@ -734,7 +750,7 @@ impl Scheduler {
                         }
 
                         // Start backoff for eviction.
-                        start_backoff_for_key(&key, &mut backoff, grace_duration);
+                        start_backoff_for_key(&key, &mut backoff, &self.config);
                     }
 
                     // Advance backoff states and evict cache entries when needed.
@@ -764,8 +780,6 @@ impl Scheduler {
 
         let mut poll_states: HashMap<(String, Option<String>), PollState> = HashMap::new();
         let mut backoff: HashMap<(String, Option<String>), BackoffState> = HashMap::new();
-        let grace_duration =
-            std::time::Duration::from_secs(self.config.lifecycle.grace_period_secs);
 
         // Demand tracking: (provider, path) -> last query time.
         let mut demand: HashMap<(String, Option<String>), Instant> = HashMap::new();
@@ -805,6 +819,25 @@ impl Scheduler {
                                 debug!("Cancelled backoff for provider={} path={:?} (query demand)", provider, path);
                             }
 
+                            // Restore live polling interval if we were in idle mode.
+                            if let Some(prov) = self.registry.get(&provider) {
+                                let meta = prov.metadata();
+                                let live_poll_secs = self.config.resolve_poll_live_interval(&provider).unwrap_or(
+                                    match &meta.invalidation {
+                                        InvalidationStrategy::Poll { interval_secs, .. } => *interval_secs,
+                                        InvalidationStrategy::WatchAndPoll { interval_secs, .. } => *interval_secs,
+                                        InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
+                                        InvalidationStrategy::Once => 0,
+                                    }
+                                );
+                                if let Some(state) = poll_states.get_mut(&key) {
+                                    if state.interval_secs != live_poll_secs && live_poll_secs > 0 {
+                                        debug!("Restored live polling for provider={} path={:?} every {}s", provider, path, live_poll_secs);
+                                        state.interval_secs = live_poll_secs;
+                                    }
+                                }
+                            }
+
                             // If this is new demand, set up default polling based on provider metadata.
                             if is_new {
                                 if let Some(prov) = self.registry.get(&provider) {
@@ -815,6 +848,10 @@ impl Scheduler {
                                         InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
                                         InvalidationStrategy::Once => 0,
                                     };
+
+                                    // Apply config override if set
+                                    let poll_secs = self.config.resolve_poll_live_interval(&provider)
+                                        .unwrap_or(poll_secs);
 
                                     if poll_secs > 0 {
                                         poll_states.entry(key.clone()).or_insert(PollState {
@@ -861,8 +898,19 @@ impl Scheduler {
                     for key in expired_demand {
                         debug!("Demand expired for provider={} path={:?}", key.0, key.1);
                         demand.remove(&key);
-                        poll_states.remove(&key);
-                        start_backoff_for_key(&key, &mut backoff, grace_duration);
+
+                        // Switch to idle polling if configured, otherwise stop polling.
+                        if let Some(idle_interval) = self.config.resolve_poll_idle_interval(&key.0) {
+                            if let Some(state) = poll_states.get_mut(&key) {
+                                state.interval_secs = idle_interval.as_secs().max(1);
+                                debug!("Switched provider={} path={:?} to idle polling every {}s", key.0, key.1, idle_interval.as_secs());
+                            }
+                        } else {
+                            poll_states.remove(&key);
+                        }
+
+                        // Start backoff for eviction.
+                        start_backoff_for_key(&key, &mut backoff, &self.config);
                     }
 
                     // Advance backoff states and evict cache entries when needed.
