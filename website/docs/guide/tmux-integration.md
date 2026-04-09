@@ -17,7 +17,7 @@ Each `comb get` call also signals demand to the daemon, which keeps the relevant
 - The beachcomber daemon is running (`comb status` should return successfully)
 - tmux is installed and you have an active session
 
-If the daemon is not running, see the [Getting Started](./getting-started.md) guide.
+If the daemon is not running, see the [Getting Started](../getting-started/quick-start.md) guide.
 
 ## Plain tmux setup
 
