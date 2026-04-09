@@ -234,4 +234,4 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [ ] Protocol stability guarantee (wire format frozen)
 - [ ] Config format stability guarantee
 - [ ] mmap/shared memory for zero-latency reads (if demand exists)
-- [ ] Integration guides and tutorials for beachcomber.sh website — tested config snippets and step-by-step tutorials for starship, oh-my-zsh, powerlevel10k, oh-my-posh, oh-my-tmux, lualine.nvim, heirline.nvim, polybar, waybar, sketchybar. Replaces the original "consumer integration packages" plan.
+- [x] Integration guides and tutorials for beachcomber.sh website — tested config snippets and step-by-step tutorials for starship, oh-my-zsh, powerlevel10k, oh-my-posh, oh-my-tmux, lualine.nvim, heirline.nvim, polybar, waybar, sketchybar. Replaces the original "consumer integration packages" plan.
