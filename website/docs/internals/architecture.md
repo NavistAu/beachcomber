@@ -20,6 +20,7 @@ graph TB
 
     Scheduler["Scheduler · scheduler.rs<br/>single async event loop"] --> SB["spawn_blocking<br/>(thread pool)"]
     Scheduler --> FSW["FsWatcher<br/>(notify crate)"]
+    Scheduler --> Watchdog["Watchdog<br/>(heartbeat monitor)"]
 
     SB --> Provider["Arc‹dyn Provider›<br/>executes, returns ProviderResult"]
     Provider --> Put["Cache.put()"]
@@ -40,9 +41,9 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | Module declarations; no logic |
-| `src/daemon.rs` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel` |
+| `src/daemon.rs` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel`; watchdog task monitors scheduler heartbeat |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
-| `src/scheduler.rs` | Single event loop: handles Poke/FsEvent/QueryActivity/poll tick; owns all demand and watch state; contains `BackoffState`/`BackoffStage` |
+| `src/scheduler.rs` | Single event loop: handles Poke/FsEvent/QueryActivity/poll tick; owns all demand and watch state; contains `BackoffState`/`BackoffStage`; heartbeat counter for watchdog liveness detection |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; generation counter |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
 | `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`; `split_key()` |
@@ -53,6 +54,8 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, `Once` strategy, global scope |
 | `src/provider/git.rs` | `GitProvider`: `git status --porcelain=v2`, file reads for stash/state; `WatchAndPoll` on `.git` |
 | `src/provider/script.rs` | `ScriptProvider`: runs arbitrary shell commands; parses JSON or KV output; strategy built from config |
+| `src/provider/library.rs` | `LibraryProvider`: loads shared libraries (`.so`/`.dylib`) via `libloading`; C ABI contract with `beachcomber_provider_metadata/execute/free` symbols |
+| `src/provider/http.rs` | `HttpProvider`: in-process HTTP client for REST API providers; `extract` for JSON path navigation |
 | `src/client.rs` | `Client` (one-shot) and `ClientSession` (persistent) for consumer-side socket communication |
 
 The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`) follow the same pattern as `git.rs` — each implements `Provider` for a specific domain.

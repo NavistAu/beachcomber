@@ -1,13 +1,14 @@
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::provider::registry::ProviderRegistry;
-use crate::scheduler::Scheduler;
+use crate::scheduler::{Scheduler, SchedulerMessage};
 use crate::server::Server;
 use crate::watcher_registry::WatcherRegistry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
 pub fn pid_path_for_socket(socket_path: &Path) -> PathBuf {
     socket_path.with_file_name("daemon.pid")
@@ -43,10 +44,14 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(ProviderRegistry::with_config(&config));
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config);
+    let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config.clone());
+    let heartbeat = scheduler.heartbeat();
 
     let scheduler_handle = handle.clone();
     let scheduler_task = tokio::spawn(async move { scheduler.run().await });
+
+    // Start watchdog if configured.
+    let watchdog_task = spawn_watchdog(&config, heartbeat, cancel.clone());
 
     let server = Server::new(socket_path, cache, registry, Some(handle), watchers);
 
@@ -58,12 +63,64 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
         }
         _ = cancel.cancelled() => {
             info!("Shutdown signal received");
-            scheduler_handle.send(crate::scheduler::SchedulerMessage::Shutdown).await;
+            scheduler_handle.send(SchedulerMessage::Shutdown).await;
         }
     }
 
+    if let Some(task) = watchdog_task {
+        task.abort();
+    }
     let _ = scheduler_task.await;
     info!("Daemon shut down cleanly");
+}
+
+/// Spawn a watchdog task that monitors the scheduler heartbeat.
+/// On stall detection, cancels the daemon's CancellationToken to trigger a clean
+/// shutdown. The process supervisor (launchd, systemd, etc.) handles restart.
+/// Returns None if watchdog is not configured.
+fn spawn_watchdog(
+    config: &Config,
+    heartbeat: Arc<AtomicU64>,
+    cancel: CancellationToken,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let check_interval = config.daemon.watchdog_interval_duration()?;
+    let threshold = config
+        .daemon
+        .watchdog_threshold_duration()
+        .unwrap_or(check_interval * 3);
+
+    info!(
+        "Watchdog enabled: checking every {:?}, threshold {:?}",
+        check_interval, threshold
+    );
+
+    Some(tokio::spawn(async move {
+        let mut tick = tokio::time::interval(check_interval);
+        let mut last_seen_beat: u64 = heartbeat.load(Ordering::Relaxed);
+        let mut stale_since: Option<tokio::time::Instant> = None;
+
+        loop {
+            tick.tick().await;
+            let current_beat = heartbeat.load(Ordering::Relaxed);
+
+            if current_beat != last_seen_beat {
+                last_seen_beat = current_beat;
+                stale_since = None;
+            } else {
+                let stale_start = *stale_since.get_or_insert(tokio::time::Instant::now());
+                let stale_duration = stale_start.elapsed();
+
+                if stale_duration >= threshold {
+                    warn!(
+                        "Watchdog: scheduler heartbeat stale for {:?} (threshold {:?}), triggering shutdown",
+                        stale_duration, threshold
+                    );
+                    cancel.cancel();
+                    break;
+                }
+            }
+        }
+    }))
 }
 
 pub fn fork_daemon(binary_path: &str, socket_path: &Path) -> std::io::Result<()> {

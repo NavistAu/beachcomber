@@ -273,6 +273,24 @@ invalidation = { poll = "60s" }
 
 Both produce the same result. The HTTP version skips the ~5ms process spawn overhead and handles connection failures more gracefully.
 
+## Shared Library Providers
+
+For maximum performance, you can write providers as shared libraries (`.so` on Linux, `.dylib` on macOS). The daemon loads the library once at startup and calls into it directly — no process spawning, no shell overhead.
+
+```toml
+[providers.my_native]
+type = "library"
+library_path = "/usr/local/lib/beachcomber/libmy_provider.so"
+```
+
+The library must export three C-compatible functions:
+
+- `beachcomber_provider_metadata()` — returns JSON describing fields, invalidation strategy, and scope
+- `beachcomber_provider_execute(path)` — returns JSON field values (or NULL on failure)
+- `beachcomber_provider_free(ptr)` — frees strings returned by the above
+
+See the [Provider Development Guide](/docs/internals/provider-development#7-shared-library-providers) for the full C ABI contract and example code.
+
 ## Secrets and Environment Variables
 
 HTTP headers and script commands support `${VAR}` expansion, pulling values from the daemon's environment. But the daemon's environment depends on how it starts — socket activation inherits the env of whatever triggered it, which is unpredictable.

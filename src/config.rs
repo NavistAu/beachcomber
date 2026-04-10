@@ -89,6 +89,13 @@ pub struct DaemonConfig {
     /// making them available to ${VAR} expansion in HTTP headers, script commands, etc.
     /// Default: ~/.config/beachcomber/env
     pub env_file: Option<String>,
+    /// How often the watchdog checks the scheduler heartbeat. Default: disabled (None).
+    /// Example: "30s", "1m".
+    pub watchdog_interval: Option<String>,
+    /// How long the heartbeat can be stale before the watchdog restarts the scheduler.
+    /// Default: 3x watchdog_interval.
+    /// Example: "90s", "3m".
+    pub watchdog_threshold: Option<String>,
 }
 
 impl Default for DaemonConfig {
@@ -98,6 +105,25 @@ impl Default for DaemonConfig {
             log_level: "info".to_string(),
             provider_timeout_secs: Some(10),
             env_file: None,
+            watchdog_interval: None,
+            watchdog_threshold: None,
+        }
+    }
+}
+
+impl DaemonConfig {
+    pub fn watchdog_interval_duration(&self) -> Option<Duration> {
+        self.watchdog_interval
+            .as_ref()
+            .and_then(|s| parse_duration(s))
+    }
+
+    pub fn watchdog_threshold_duration(&self) -> Option<Duration> {
+        if let Some(ref s) = self.watchdog_threshold {
+            parse_duration(s)
+        } else {
+            // Default: 3x the watchdog interval
+            self.watchdog_interval_duration().map(|d| d * 3)
         }
     }
 }
@@ -157,6 +183,8 @@ pub struct ScriptProviderConfig {
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<String>,
     pub extract: Option<String>,
+    // Library provider fields (used when type = "library")
+    pub library_path: Option<String>,
     // New configurable backoff fields (override lifecycle defaults)
     pub poll_live_interval: Option<String>,
     pub poll_idle_interval: Option<String>,
@@ -251,6 +279,14 @@ impl Config {
                 v.provider_type.as_deref() == Some("script")
                     || (!v.command.is_empty() && v.provider_type.is_none())
             })
+            .map(|(name, config)| (name.clone(), config.clone()))
+            .collect()
+    }
+
+    pub fn library_providers(&self) -> Vec<(String, ScriptProviderConfig)> {
+        self.providers
+            .iter()
+            .filter(|(_, v)| v.provider_type.as_deref() == Some("library"))
             .map(|(name, config)| (name.clone(), config.clone()))
             .collect()
     }

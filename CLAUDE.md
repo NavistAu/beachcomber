@@ -37,6 +37,8 @@ Async tokio daemon listening on a Unix socket. One task per connection.
 - `src/config.rs` — TOML config loading, XDG paths, env file parsing
 - `src/provider/` — all providers implement the `Provider` trait
 - `src/provider/registry.rs` — registers built-in + config-defined providers
+- `src/provider/library.rs` — shared library provider backend via `libloading`; loads `.so`/`.dylib` with C ABI
+- `src/daemon.rs` — process lifecycle, watchdog task (monitors scheduler heartbeat, triggers shutdown on stall)
 
 Providers are synchronous — the scheduler runs them via `tokio::task::spawn_blocking`.
 

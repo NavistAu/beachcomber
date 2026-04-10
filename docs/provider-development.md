@@ -506,3 +506,84 @@ For testing, gate platform-specific tests with `#[cfg(target_os = "...")]`. Make
 3. Write the built-in following §2 above, matching the field names your existing config consumers expect
 4. Remove the script entry from config and register the built-in in `registry.rs`
 5. Run `cargo bench --bench providers` before and after to verify the improvement
+
+---
+
+## 8. Shared Library Providers
+
+Shared library providers load a `.so` (Linux) or `.dylib` (macOS) at daemon startup and call into it via a C ABI. This avoids the per-execution process spawn cost of script providers while allowing provider logic to be written in any language that can produce a shared library with C-compatible exports.
+
+### C ABI Contract
+
+Libraries must export three symbols:
+
+```c
+// Return JSON metadata: {"fields":{"name":"string",...}, "invalidation":{"poll":"30s"}, "global":true}
+// Caller frees the returned pointer via beachcomber_provider_free().
+const char* beachcomber_provider_metadata(void);
+
+// Execute the provider. path is NULL for global providers.
+// Return a JSON object of field values, or NULL on failure.
+// Caller frees the returned pointer via beachcomber_provider_free().
+const char* beachcomber_provider_execute(const char* path);
+
+// Free a string previously returned by metadata or execute.
+void beachcomber_provider_free(char* ptr);
+```
+
+### Configuration
+
+```toml
+[providers.my_native_provider]
+type = "library"
+library_path = "/usr/local/lib/beachcomber/libmy_provider.so"
+
+# Optional: override metadata from config instead of the library
+# scope = "path"
+# fields = { "field1" = "string", "field2" = "int" }
+# invalidation = { poll = "30s" }
+```
+
+If the library's `beachcomber_provider_metadata()` returns valid JSON, that metadata is used. Otherwise, metadata falls back to the TOML config fields (same as script providers).
+
+### When to Use
+
+- **Performance-critical providers** where even a 2-6ms process spawn is too expensive
+- **Complex logic** that benefits from compiled code but doesn't belong in the daemon binary
+- **Third-party plugins** distributed as shared libraries
+- **Language flexibility** — write providers in C, C++, Rust, Go (with cgo), Zig, or any language that can export C symbols
+
+### Example: Minimal C Provider
+
+```c
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+const char* beachcomber_provider_metadata(void) {
+    const char* json = "{\"fields\":{\"value\":\"string\"},\"invalidation\":{\"poll\":\"10s\"},\"global\":true}";
+    char* result = strdup(json);
+    return result;
+}
+
+const char* beachcomber_provider_execute(const char* path) {
+    (void)path;
+    char* result = strdup("{\"value\":\"hello from C\"}");
+    return result;
+}
+
+void beachcomber_provider_free(char* ptr) {
+    free(ptr);
+}
+```
+
+Build: `cc -shared -o libhello.so hello_provider.c` (Linux) or `cc -shared -o libhello.dylib hello_provider.c` (macOS).
+
+Configure:
+```toml
+[providers.hello]
+type = "library"
+library_path = "/path/to/libhello.so"
+```
+
+Test: `comb get hello.value -f text` → `hello from C`

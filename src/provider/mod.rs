@@ -8,6 +8,7 @@ pub mod git;
 pub mod hostname;
 pub mod http;
 pub mod kubecontext;
+pub mod library;
 pub mod load;
 pub mod mise;
 pub mod network;

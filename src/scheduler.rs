@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
@@ -326,6 +327,9 @@ pub struct Scheduler {
     pending_rerun: ProviderKeySet,
     /// Tracks consecutive failures and suppression state per (provider, path).
     failure_counts: ProviderFailureMap,
+    /// Monotonically increasing counter bumped on every tick. Used by the watchdog
+    /// to detect scheduler stalls.
+    heartbeat: Arc<AtomicU64>,
 }
 
 impl Scheduler {
@@ -336,6 +340,7 @@ impl Scheduler {
     ) -> (SchedulerHandle, Scheduler) {
         let (tx, rx) = mpsc::channel(256);
         let handle = SchedulerHandle::new(tx);
+        let heartbeat = Arc::new(AtomicU64::new(0));
         let scheduler = Scheduler {
             cache,
             registry,
@@ -344,8 +349,14 @@ impl Scheduler {
             in_flight: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             pending_rerun: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             failure_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            heartbeat,
         };
         (handle, scheduler)
+    }
+
+    /// Returns a clone of the heartbeat counter for external monitoring (watchdog).
+    pub fn heartbeat(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.heartbeat)
     }
 
     /// Execute a provider on the blocking thread pool and write result to cache.
@@ -698,6 +709,8 @@ impl Scheduler {
 
                 // Poll tick — check which subscriptions are due.
                 _ = tick.tick() => {
+                    self.heartbeat.fetch_add(1, Ordering::Relaxed);
+
                     let now = Instant::now();
                     let keys_to_run: Vec<(String, Option<String>)> = poll_states
                         .iter()
@@ -873,6 +886,8 @@ impl Scheduler {
                     }
                 }
                 _ = tick.tick() => {
+                    self.heartbeat.fetch_add(1, Ordering::Relaxed);
+
                     let now = Instant::now();
                     let keys_to_run: Vec<(String, Option<String>)> = poll_states
                         .iter()

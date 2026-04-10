@@ -36,6 +36,16 @@ provider_timeout_secs = 10
 # Default: ~/.config/beachcomber/env (loaded automatically if present)
 # env_file = "~/.config/beachcomber/env"
 
+# How often the watchdog checks the scheduler heartbeat.
+# If the heartbeat hasn't advanced within the threshold, the daemon shuts down
+# for the process supervisor (launchd, systemd) to restart.
+# Default: disabled (no watchdog)
+# watchdog_interval = "30s"
+
+# How long the heartbeat can be stale before the watchdog triggers shutdown.
+# Default: 3x watchdog_interval
+# watchdog_threshold = "90s"
+
 
 # ─── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -176,6 +186,8 @@ poll = "86400s"
 | `log_level` | string | `"info"` | Tracing log level |
 | `provider_timeout_secs` | int | `10` | Max seconds for any provider to run |
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
+| `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
+| `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
 
 **`[lifecycle]` section:**
 
@@ -230,3 +242,15 @@ poll = "86400s"
 | `extract` | string | no | Dot-separated path into the JSON response (e.g., `"status.indicator"`, `"rates.AUD"`) |
 | `enabled` | bool | no | `false` to disable |
 | `invalidation.poll` | string | no | Poll interval (default `"60s"`, floor `5s`) |
+
+**`[providers.<name>]` section (shared library providers):**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | string | yes | Must be `"library"` |
+| `library_path` | string | yes | Path to `.so`/`.dylib` file. Supports `~/` expansion. |
+| `scope` | string | no | `"global"` (default) or `"path"` — overrides library metadata |
+| `fields` | table | no | Field name to type mapping — overrides library metadata |
+| `enabled` | bool | no | `false` to disable |
+| `invalidation.poll` | string | no | Poll interval — overrides library metadata |
+| `invalidation.watch` | array of strings | no | Watch patterns — overrides library metadata |

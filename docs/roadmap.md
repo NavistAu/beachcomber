@@ -184,7 +184,7 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 ### Release Infrastructure
 
 - [x] Swap temp registry tokens to trusted publishing (OIDC for crates.io, PyPI, npm, RubyGems; LuaRocks has no OIDC support)
-- [ ] Add aarch64-unknown-linux-gnu binary target (cross-rs GLIBC version mismatch — needs custom Docker image or host-side build scripts)
+- [x] Add aarch64-unknown-linux-gnu binary target (cross-rs with pinned 0.2.5 images)
 - [x] Make Go module tag step idempotent in release workflow
 - [x] Binary distribution via npm/PyPI `beachcomber` packages (replace noop placeholders with platform-specific binary installers)
 
@@ -205,11 +205,11 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 ### External Provider Backends
 
 - [ ] Lua backend via `mlua` crate
-- [ ] Shared library backend via `libloading` crate
+- [x] Shared library backend via `libloading` crate
 
 ### Additional Features
 
-- [ ] Watchdog — detect scheduler stalls, auto-restart
+- [x] Watchdog — detect scheduler stalls, trigger clean shutdown for supervisor restart. Configurable via `[daemon] watchdog_interval` and `watchdog_threshold`.
 - [x] Configurable backoff steps — failure reattempts, backoff interval, cache lifespan, poll idle interval. Global defaults in `[lifecycle]`, per-provider overrides in `[providers.<name>]`. Duration strings ("30s", "2m", "500ms").
 - [x] Virtual providers / store — comb store protocol op lets external processes write data into the cache. Creates virtual providers (no execute(), data-only). Namespace hierarchy: builtin > script > virtual.
 - [x] comb watch <key> [path] — server-push streaming over long-lived connections. NDJSON line emitted on each cache update for the watched key. Subsumes the push/streaming mode item.

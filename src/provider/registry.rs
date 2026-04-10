@@ -11,6 +11,7 @@ use crate::provider::git::GitProvider;
 use crate::provider::hostname::HostnameProvider;
 use crate::provider::http::HttpProvider;
 use crate::provider::kubecontext::KubecontextProvider;
+use crate::provider::library::LibraryProvider;
 use crate::provider::load::LoadProvider;
 use crate::provider::mise::MiseProvider;
 use crate::provider::network::NetworkProvider;
@@ -106,6 +107,15 @@ impl ProviderRegistry {
                     Box::new(ScriptProvider::new(&name, script_config)),
                     ProviderSource::Script,
                 );
+            }
+        }
+
+        // Register library providers from config unless disabled.
+        for (name, lib_config) in config.library_providers() {
+            if !config.is_provider_disabled(&name)
+                && let Some(provider) = LibraryProvider::new(&name, lib_config)
+            {
+                registry.register_with_source(Box::new(provider), ProviderSource::Script);
             }
         }
 
