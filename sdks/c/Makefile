@@ -18,6 +18,8 @@ CFLAGS  ?= -O2
 CFLAGS  += -Wall -Wextra -Wpedantic -std=c99
 CFLAGS  += -D_POSIX_C_SOURCE=200809L
 
+VERSION ?= 0.3.1
+
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------
@@ -95,17 +97,24 @@ test: $(TEST_BIN)
 # Install
 # ---------------------------------------------------------------------------
 
-PREFIX  ?= /usr/local
-INCDIR  := $(PREFIX)/include
-LIBDIR  := $(PREFIX)/lib
+PREFIX      ?= /usr/local
+INCDIR      := $(PREFIX)/include
+LIBDIR      := $(PREFIX)/lib
+PKGCONFIGDIR := $(LIBDIR)/pkgconfig
+
+libbeachcomber.pc: libbeachcomber.pc.in
+	sed -e 's|@PREFIX@|$(PREFIX)|g' -e 's|@VERSION@|$(VERSION)|g' $< > $@
 
 .PHONY: install
-install: all
+install: all libbeachcomber.pc
 	$(INSTALL) -d $(DESTDIR)$(INCDIR)
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)
+	$(INSTALL) -d $(DESTDIR)$(PKGCONFIGDIR)
 	$(INSTALL) -m 644 beachcomber.h $(DESTDIR)$(INCDIR)/beachcomber.h
+	$(INSTALL) -m 644 json.h $(DESTDIR)$(INCDIR)/json.h
 	$(INSTALL) -m 755 $(SHARED_LIB) $(DESTDIR)$(LIBDIR)/$(SHARED_LIB)
 	$(INSTALL) -m 644 $(STATIC_LIB) $(DESTDIR)$(LIBDIR)/$(STATIC_LIB)
+	$(INSTALL) -m 644 libbeachcomber.pc $(DESTDIR)$(PKGCONFIGDIR)/libbeachcomber.pc
 
 # ---------------------------------------------------------------------------
 # Clean
@@ -113,4 +122,4 @@ install: all
 
 .PHONY: clean
 clean:
-	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(TEST_BIN)
+	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(TEST_BIN) libbeachcomber.pc

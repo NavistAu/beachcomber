@@ -21,6 +21,7 @@ Update version in **all** of these files:
 | `sdks/lua/rockspec/libbeachcomber-X.Y.Z-1.rockspec` | `version`, `tag` (rename the file too) |
 | `packaging/aur/beachcomber/PKGBUILD` | `pkgver` |
 | `packaging/aur/beachcomber-bin/PKGBUILD` | `pkgver` |
+| `packaging/aur/libbeachcomber/PKGBUILD` | `pkgver` |
 | `packaging/nix/flake.nix` | `version` |
 | `README.md` | `.deb` and `.rpm` download URLs in install section |
 | `.github/workflows/release.yml` | LuaRocks rockspec filename in `publish-luarocks` job |
@@ -67,12 +68,13 @@ The `v*` tag triggers `.github/workflows/release.yml` which:
 
 1. Builds binaries for macOS (aarch64, x86_64) and Linux (x86_64 gnu, x86_64 musl)
 2. Packages C SDK tarball
-3. Builds .deb and .rpm packages, smoke-tests them in containers
-4. Creates a GitHub Release with all artifacts
-5. Publishes to: crates.io, PyPI, npm, RubyGems, LuaRocks
-6. Tags the Go module (`sdks/go/vX.Y.Z`)
-7. Updates the Homebrew tap formula
-8. Publishes binary installer packages to npm and PyPI
+3. Builds .deb and .rpm packages for the daemon, smoke-tests them in containers
+4. Builds .deb and .rpm packages for the C SDK (`libbeachcomber-dev` / `libbeachcomber-devel`), smoke-tests them
+5. Creates a GitHub Release with all artifacts
+6. Publishes to: crates.io, PyPI, npm, RubyGems, LuaRocks
+7. Tags the Go module (`sdks/go/vX.Y.Z`)
+8. Updates the Homebrew tap formula
+9. Publishes binary installer packages to npm and PyPI
 
 ## 6. Verify Publish
 

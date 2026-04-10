@@ -14,5 +14,5 @@ beachcomber has client SDKs for 7 languages plus a POSIX shell function. All SDK
 | Go | [Go module](https://github.com/NavistAu/beachcomber/tree/main/sdks/go) | `go get github.com/NavistAu/beachcomber/sdks/go` |
 | Lua | [LuaRocks](https://luarocks.org/modules/navist/libbeachcomber) | `luarocks install libbeachcomber` |
 | Ruby | [RubyGems](https://rubygems.org/gems/libbeachcomber) | `gem install libbeachcomber` |
-| C | [GitHub Release](https://github.com/NavistAu/beachcomber/releases) | Source tarball in releases |
+| C | [GitHub Release](https://github.com/NavistAu/beachcomber/releases) | Source tarball, `.deb`, `.rpm`, or [AUR](https://aur.archlinux.org/packages/libbeachcomber) |
 | Shell | N/A | Copy-paste from [Shell Fallback Functions](/docs/guide/shell-fallback-functions) |

@@ -4,7 +4,33 @@ sidebar_position: 8
 
 # C SDK
 
-A minimal C client library for the beachcomber shell-state daemon. Available as a source tarball in [GitHub Releases](https://github.com/NavistAu/beachcomber/releases). Uses only POSIX (sockets, unistd) and the C standard library — no external dependencies.
+A minimal C client library for the beachcomber shell-state daemon. Uses only POSIX (sockets, unistd) and the C standard library — no external dependencies.
+
+## Installing
+
+### Debian/Ubuntu
+
+```sh
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-dev_0.3.1_amd64.deb
+sudo dpkg -i libbeachcomber-dev_0.3.1_amd64.deb
+```
+
+### Fedora/RHEL
+
+```sh
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-devel-0.3.1-1.x86_64.rpm
+sudo rpm -i libbeachcomber-devel-0.3.1-1.x86_64.rpm
+```
+
+### Arch Linux (AUR)
+
+```sh
+yay -S libbeachcomber
+```
+
+### From source
+
+Available as a source tarball in [GitHub Releases](https://github.com/NavistAu/beachcomber/releases), or build from the repo:
 
 ## Building
 
@@ -74,17 +100,16 @@ int main(void) {
 }
 ```
 
-Compile against the static library:
+Compile with pkg-config (recommended):
+
+```sh
+cc -o myapp myapp.c $(pkg-config --cflags --libs libbeachcomber)
+```
+
+Or specify paths directly:
 
 ```sh
 cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber
-```
-
-Or against the shared library:
-
-```sh
-cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber \
-   -Wl,-rpath,/usr/local/lib
 ```
 
 ## API reference
@@ -148,3 +173,4 @@ For scalar results, pass `NULL` (or any field name) to `comb_result_get_str`. Fo
 | `json.c` | Minimal JSON parser implementation |
 | `test_beachcomber.c` | Unit + integration test suite |
 | `Makefile` | Build system |
+| `libbeachcomber.pc.in` | pkg-config template |

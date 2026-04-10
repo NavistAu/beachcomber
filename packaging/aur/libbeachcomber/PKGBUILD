@@ -1,0 +1,28 @@
+# Maintainer: NavistAu <github@navistau.io>
+pkgname=libbeachcomber
+pkgver=0.3.1
+pkgrel=1
+pkgdesc="C client library for the beachcomber daemon (headers, shared/static lib, pkg-config)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/NavistAu/beachcomber"
+license=('MIT')
+depends=('beachcomber')
+makedepends=()
+source=("$pkgname-$pkgver.tar.gz::https://github.com/NavistAu/beachcomber/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "beachcomber-$pkgver"
+    make -C sdks/c VERSION="$pkgver"
+}
+
+check() {
+    cd "beachcomber-$pkgver"
+    make -C sdks/c test
+}
+
+package() {
+    cd "beachcomber-$pkgver"
+    make -C sdks/c install DESTDIR="$pkgdir" PREFIX=/usr VERSION="$pkgver"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

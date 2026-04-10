@@ -68,12 +68,85 @@ jobs:
         run: |
           tar czf beachcomber-c-sdk-${{ github.ref_name }}.tar.gz \
             -C sdks/c \
-            beachcomber.c beachcomber.h json.c json.h Makefile README.md
+            beachcomber.c beachcomber.h json.c json.h Makefile libbeachcomber.pc.in README.md
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: beachcomber-c-sdk
           path: beachcomber-c-sdk-*.tar.gz
+
+  package-csdk:
+    name: Package C SDK (${{ matrix.format }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - format: deb
+          - format: rpm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build deb
+        if: matrix.format == 'deb'
+        run: bash packaging/deb-csdk/build.sh "${{ steps.version.outputs.version }}"
+
+      - name: Build rpm
+        if: matrix.format == 'rpm'
+        run: |
+          sudo apt-get update && sudo apt-get install -y rpm
+          bash packaging/rpm-csdk/build.sh "${{ steps.version.outputs.version }}"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: libbeachcomber-${{ matrix.format }}
+          path: |
+            *.deb
+            *.rpm
+
+  test-csdk-packages:
+    name: Test C SDK ${{ matrix.distro }} package
+    needs: package-csdk
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - distro: ubuntu
+            format: deb
+            image: ubuntu:latest
+          - distro: fedora
+            format: rpm
+            image: fedora:latest
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: libbeachcomber-${{ matrix.format }}
+          path: pkg
+
+      - name: Test install and pkg-config
+        run: |
+          docker run --rm -v ${{ github.workspace }}/pkg:/pkg ${{ matrix.image }} bash -c '
+            if [ "${{ matrix.format }}" = "deb" ]; then
+              apt-get update && apt-get install -y pkg-config
+              dpkg -i /pkg/*.deb
+            else
+              dnf install -y pkg-config
+              rpm -i /pkg/*.rpm
+            fi
+            pkg-config --exists libbeachcomber
+            pkg-config --cflags libbeachcomber
+            pkg-config --libs libbeachcomber
+            test -f /usr/include/beachcomber.h
+            test -f /usr/include/json.h
+            test -f /usr/lib/libbeachcomber.so
+            test -f /usr/lib/libbeachcomber.a
+            echo "All checks passed"
+          '
 
   package-linux:
     name: Package Linux (${{ matrix.format }}-${{ matrix.arch }})
@@ -150,7 +223,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build, c-sdk-tarball, package-linux, test-packages]
+    needs: [build, c-sdk-tarball, package-linux, test-packages, test-csdk-packages]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -268,7 +341,7 @@ jobs:
       - name: Install JSON library
         run: luarocks install dkjson
       - name: Publish
-        run: luarocks upload --skip-pack rockspec/libbeachcomber-0.3.0-1.rockspec --api-key=${{ secrets.LUAROCKS_API_KEY }} || echo "Already published, skipping"
+        run: luarocks upload --skip-pack rockspec/libbeachcomber-0.3.1-1.rockspec --api-key=${{ secrets.LUAROCKS_API_KEY }} || echo "Already published, skipping"
 
   publish-go:
     name: Tag Go module

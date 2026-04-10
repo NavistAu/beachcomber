@@ -2,7 +2,7 @@
 
 Single source of truth for project status and next steps.
 
-Last updated: 2026-04-05
+Last updated: 2026-04-09
 
 ---
 
@@ -225,9 +225,9 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 
 ### Linux C SDK Packages
 
-- [ ] `libbeachcomber-dev` (deb) — headers + shared/static lib + pkg-config
-- [ ] `libbeachcomber-devel` (rpm)
-- [ ] `libbeachcomber` (AUR)
+- [x] `libbeachcomber-dev` (deb) — headers + shared/static lib + pkg-config
+- [x] `libbeachcomber-devel` (rpm)
+- [x] `libbeachcomber` (AUR)
 
 ### Stability
 
