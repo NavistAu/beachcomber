@@ -1,5 +1,5 @@
 Name:           libbeachcomber-devel
-Version:        0.3.0
+Version:        %{version}
 Release:        1%{?dist}
 Summary:        C client library for the beachcomber daemon (development files)
 License:        MIT

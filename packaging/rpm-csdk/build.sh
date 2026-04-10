@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${1:-0.3.0}"
+VERSION="${1:-0.3.1}"
 TOPDIR="$(mktemp -d)"
 trap 'rm -rf "$TOPDIR"' EXIT
 
@@ -19,6 +19,7 @@ tar czf "$TOPDIR/SOURCES/beachcomber-${VERSION}.tar.gz" \
 cp packaging/rpm-csdk/libbeachcomber.spec "$TOPDIR/SPECS/"
 rpmbuild --define "_topdir $TOPDIR" \
     --define "version $VERSION" \
+    --nodeps \
     -bb "$TOPDIR/SPECS/libbeachcomber.spec"
 
 # Copy output
