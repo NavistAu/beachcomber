@@ -6,31 +6,18 @@ Internal reference for contributors. Describes how the daemon (`comb daemon`) is
 
 ## 1. System Overview
 
-```
-  CLI / consumer
-      |
-      | Unix socket (newline-delimited JSON)
-      v
-  +-------------------+
-  |      Server       |  one tokio task per connection
-  |  (server.rs)      |  accepts, reads requests, writes responses
-  +-------------------+
-      |          |
-      | cache    | scheduler messages (mpsc)
-      v          v
-  +-------+   +-----------+
-  | Cache |   | Scheduler |  single async event loop
-  | (DashMap)  | (scheduler.rs)
-  +-------+   +-----------+
-                  |          \
-          spawn_blocking   FsWatcher
-          (thread pool)    (notify crate)
-                  |
-          Arc<dyn Provider>
-          executes, returns ProviderResult
-                  |
-                  v
-              Cache.put()
+```mermaid
+graph TB
+    CLI["CLI / consumer"] -->|"Unix socket (NDJSON)"| Server
+
+    Server["Server · server.rs<br/>one tokio task per connection"] -->|cache| Cache["Cache · DashMap"]
+    Server -->|"scheduler messages (mpsc)"| Scheduler
+
+    Scheduler["Scheduler · scheduler.rs<br/>single async event loop"] --> SB["spawn_blocking<br/>(thread pool)"]
+    Scheduler --> FSW["FsWatcher<br/>(notify crate)"]
+
+    SB --> Provider["Arc‹dyn Provider›<br/>executes, returns ProviderResult"]
+    Provider --> Put["Cache.put()"]
 ```
 
 Data flow summary:
@@ -196,8 +183,13 @@ The scheduler's per-second tick checks all demand entries. Any key not queried w
 
 When a key enters the backoff sequence, `BackoffState` (in `src/scheduler.rs`) tracks its stage:
 
-```
-Grace (cache_lifespan, default 30s) -> SlowPoll -> Frozen -> Evict
+```mermaid
+stateDiagram-v2
+    [*] --> Grace : cache_lifespan (default 30s)
+    Grace --> SlowPoll
+    SlowPoll --> Frozen
+    Frozen --> Evict
+    Evict --> [*] : cache.remove()
 ```
 
 At `Evict`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any backoff stage, the backoff is cancelled immediately and the key re-enters the demand window.

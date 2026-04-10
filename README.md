@@ -219,31 +219,19 @@ beachcomber is a single async daemon that:
 
 The daemon is socket-activated: it starts automatically when any client connects, and shuts down after an idle period when all connections drop.
 
-```
-                    ┌─────────────────────────────────────┐
-                    │          beachcomber daemon           │
-                    │                                       │
-  filesystem ──────►│  FSEvents/inotify                     │
-  changes           │       │                               │
-                    │       ▼                               │
-                    │  Scheduler ──► Providers ──► Cache   │
-                    │                  git          157ns   │
-                    │                  battery      reads   │
-                    │                  network              │
-                    │                  hostname             │
-                    │                  ...                  │
-                    │                  scripts              │
-                    │                  (your own)           │
-                    │                                       │
-                    │  Unix Socket Server                   │
-                    └──────────────┬──────────────────────-┘
-                                   │
-                    ┌──────────────┼────────────────────┐
-                    │              │                     │
-               zsh prompt     tmux status           neovim
-               bash prompt    polybar/waybar         lualine
-               fish prompt    sketchybar             scripts
-               starship       oh-my-posh             CI/automation
+```mermaid
+graph TB
+    FS["Filesystem changes"] -->|"FSEvents / inotify"| Sched
+
+    subgraph daemon["beachcomber daemon"]
+        Sched["Scheduler"] --> Prov["Providers<br/>git · battery · network<br/>hostname · scripts · (your own)"]
+        Prov --> Cache["Cache · 157ns reads"]
+        Cache --> USS["Unix Socket Server"]
+    end
+
+    USS --> Prompts["zsh / bash / fish prompt<br/>starship"]
+    USS --> Status["tmux status<br/>polybar/waybar · sketchybar<br/>oh-my-posh"]
+    USS --> Editors["neovim · lualine<br/>scripts · CI/automation"]
 ```
 
 **Providers are never re-executed on every query.** A git status is computed once when `.git` changes, then served from cache to every reader — whether that's one prompt or a hundred tmux panes. The filesystem watcher is registered once for all concurrent readers.
