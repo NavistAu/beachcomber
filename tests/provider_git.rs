@@ -65,6 +65,8 @@ fn git_provider_metadata() {
     assert!(field_names.contains(&"state_total"));
     assert!(field_names.contains(&"last_commit_age_secs"));
     assert!(field_names.contains(&"commit_summary"));
+    assert!(field_names.contains(&"push_ahead"));
+    assert!(field_names.contains(&"push_behind"));
 }
 
 #[test]
@@ -288,6 +290,16 @@ fn git_provider_commit_summary() {
     let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
     let summary = result.get("commit_summary").unwrap().as_text();
     assert_eq!(summary, "init", "commit_summary should be the first commit message");
+}
+
+#[test]
+fn git_provider_push_ahead_behind_no_push_remote() {
+    let tmp = create_test_repo();
+    let p = GitProvider;
+    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    // No push remote configured — both should be 0
+    assert_eq!(result.get("push_ahead").unwrap().as_text(), "0");
+    assert_eq!(result.get("push_behind").unwrap().as_text(), "0");
 }
 
 #[test]

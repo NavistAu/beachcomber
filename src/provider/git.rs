@@ -100,6 +100,14 @@ impl Provider for GitProvider {
                     name: "commit_summary".to_string(),
                     field_type: FieldType::String,
                 },
+                FieldSchema {
+                    name: "push_ahead".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "push_behind".to_string(),
+                    field_type: FieldType::Int,
+                },
             ],
             invalidation: InvalidationStrategy::WatchAndPoll {
                 patterns: vec![".git".to_string()],
@@ -131,6 +139,7 @@ impl Provider for GitProvider {
         let (lines_staged_added, lines_staged_removed) = diff_numstat_staged(dir);
         let (commit, last_commit_ts, commit_summary) = get_head_info(dir);
         let tag = get_nearest_tag(dir);
+        let (push_ahead, push_behind) = get_push_divergence(dir, &status.branch);
 
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -165,6 +174,8 @@ impl Provider for GitProvider {
         result.insert("state_total", Value::Int(state_total));
         result.insert("last_commit_age_secs", Value::Int(last_commit_age_secs));
         result.insert("commit_summary", Value::String(commit_summary));
+        result.insert("push_ahead", Value::Int(push_ahead));
+        result.insert("push_behind", Value::Int(push_behind));
         Some(result)
     }
 }
@@ -377,6 +388,69 @@ fn get_nearest_tag(dir: &Path) -> String {
     match output {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => String::new(),
+    }
+}
+
+/// Returns (push_ahead, push_behind) relative to the push remote.
+/// If no push remote is configured, returns (0, 0).
+fn get_push_divergence(dir: &Path, branch: &str) -> (i64, i64) {
+    if branch.is_empty() || branch == "(detached)" {
+        return (0, 0);
+    }
+
+    // Resolve push remote: branch.<name>.pushRemote, then remote.pushDefault
+    let push_remote = get_git_config(dir, &format!("branch.{branch}.pushRemote"))
+        .or_else(|| get_git_config(dir, "remote.pushDefault"));
+
+    let push_remote = match push_remote {
+        Some(r) => r,
+        None => return (0, 0),
+    };
+
+    let refspec = format!("{push_remote}/{branch}");
+
+    // Check the ref exists before rev-list
+    let check = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{refspec}")])
+        .current_dir(dir)
+        .output();
+    match check {
+        Ok(o) if o.status.success() => {}
+        _ => return (0, 0),
+    }
+
+    let output = Command::new("git")
+        .args(["rev-list", "--count", "--left-right", &format!("HEAD...{refspec}")])
+        .current_dir(dir)
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return (0, 0),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = stdout.trim().split('\t').collect();
+    if parts.len() == 2 {
+        let ahead = parts[0].parse().unwrap_or(0);
+        let behind = parts[1].parse().unwrap_or(0);
+        (ahead, behind)
+    } else {
+        (0, 0)
+    }
+}
+
+fn get_git_config(dir: &Path, key: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["config", "--get", key])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if val.is_empty() { None } else { Some(val) }
+    } else {
+        None
     }
 }
 
