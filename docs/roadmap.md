@@ -2,7 +2,7 @@
 
 Single source of truth for project status and next steps.
 
-Last updated: 2026-04-09
+Last updated: 2026-04-11
 
 ---
 
@@ -18,7 +18,7 @@ Last updated: 2026-04-09
 
 **Protocol:** get, poke, store, watch, context, list, status. JSON and text output formats. Connection context for implicit path resolution. Staleness flag in responses. Path canonicalization (relative -> absolute). Subscribe/unsubscribe removed — demand-driven warming replaced explicit subscriptions (ephemeral consumers can't maintain persistent connections).
 
-**CLI:** `comb daemon | get | poke | store | watch | list | status`
+**CLI:** `comb daemon | get | refresh | put | watch | list | status`
 
 **Config:** TOML at `~/.config/beachcomber/config.toml`. Provider enabled/disabled flag. Provider timeout, poll interval, floor overrides. Script provider definitions. Lifecycle tuning (grace period, idle shutdown).
 
@@ -213,16 +213,16 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [x] Configurable backoff steps — failure reattempts, backoff interval, cache lifespan, poll idle interval. Global defaults in `[lifecycle]`, per-provider overrides in `[providers.<name>]`. Duration strings ("30s", "2m", "500ms").
 - [x] Virtual providers / store — comb store protocol op lets external processes write data into the cache. Creates virtual providers (no execute(), data-only). Namespace hierarchy: builtin > script > virtual.
 - [x] comb watch <key> [path] — server-push streaming over long-lived connections. NDJSON line emitted on each cache update for the watched key. Subsumes the push/streaming mode item.
-- [ ] Git provider: `commit_summary` field — first line of HEAD commit message. Enables WIP detection in prompt integrations (p10k checks for "wip"/"WIP" in the summary).
-- [ ] Git provider: `push_ahead` and `push_behind` fields — commits ahead/behind the push remote (as distinct from the tracking remote). Used by p10k and starship for push remote indicators.
+- [x] Git provider: `commit_summary` field — first line of HEAD commit message. Enables WIP detection in prompt integrations (p10k checks for "wip"/"WIP" in the summary).
+- [x] Git provider: `push_ahead` and `push_behind` fields — commits ahead/behind the push remote (as distinct from the tracking remote). Used by p10k and starship for push remote indicators.
 - [ ] `sudo` provider — detect whether the user has an active sudo timestamp (`/var/run/sudo/ts/$USER` on Linux, `/var/db/sudo/` on macOS). Global, poll. Useful as a prompt indicator for elevated privilege awareness.
 - [ ] `op` provider — detect active 1Password CLI session. Check agent socket liveness or `op whoami` state. Global, poll. Useful for prompt indicators showing authenticated credential access.
-- [ ] Synchronous cache miss — when `comb get` hits a cold cache, execute the provider inline and return the result instead of returning empty and waiting for the next poll. Accept slightly higher latency on the first query rather than returning blank. Critical for prompt integrations where a blank first prompt looks broken.
+- [x] Synchronous cache miss — when `comb get` hits a cold cache, execute the provider inline and return the result instead of returning empty and waiting for the next poll. Accept slightly higher latency on the first query rather than returning blank. Critical for prompt integrations where a blank first prompt looks broken.
 
 ### CLI Ergonomics
 
-- [ ] Command shorthands — `comb g` = `comb get`, `comb p` = `comb poke`, `comb w` = `comb watch`, `comb s` = `comb status`, `comb l` = `comb list`, etc.
-- [ ] Rename `comb store` to `comb put` (shorter, clearer verb).
+- [x] Command shorthands — `comb g` = `comb get`, `comb r` = `comb refresh`, `comb w` = `comb watch`, `comb s` = `comb status`, `comb l` = `comb list`, `comb p` = `comb put`, `comb d` = `comb daemon`.
+- [x] Rename `comb store` to `comb put` and `comb poke` to `comb refresh` (shorter, clearer verbs).
 - [ ] Format suffix syntax on get — `comb get.text git.branch .` or `comb g.t git.branch .`. Avoids the `-f` flag entirely.
 - [ ] New output format: `sh` (shell) — outputs `name=val` pairs (the current `text` format for objects). `text` becomes just the raw value with no key prefix. `sh` is sourceable in shell scripts.
 - [ ] New output formats: `csv`/`tsv` (values only), `CSV`/`TSV` (with header row). For multi-field provider queries.

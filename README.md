@@ -262,7 +262,7 @@ graph TB
 
 **Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a backoff/drain sequence after queries stop — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
 
-**Virtual providers and streaming:** external processes can also write data into the cache via `comb store`, exposing arbitrary state to prompt and statusline consumers without writing a script provider. Long-lived connections can stream changes via `comb watch`, receiving an NDJSON line each time a cache value is updated.
+**Virtual providers and streaming:** external processes can also write data into the cache via `comb put`, exposing arbitrary state to prompt and statusline consumers without writing a script provider. Long-lived connections can stream changes via `comb watch`, receiving an NDJSON line each time a cache value is updated.
 
 ---
 
@@ -270,7 +270,7 @@ graph TB
 
 All commands are subcommands of `comb`. The daemon is socket-activated — you never need to start it manually.
 
-### `comb get <key> [path] [-f format]`
+### `comb get <key> [path] [-f format]` (alias: `g`)
 
 Query a cached value. Returns immediately with cached data; never waits for a fresh computation.
 
@@ -310,24 +310,24 @@ comb get git . -f text
 - `1` — cache miss (provider has no data yet)
 - `2` — error (daemon unreachable, unknown provider, invalid key)
 
-### `comb poke <key> [path]`
+### `comb refresh <key> [path]` (alias: `r`)
 
 Trigger immediate recomputation of a provider. Returns immediately after acknowledging the request — does not wait for the result. The next `get` will return the fresh value.
 
 ```sh
 # Force git status refresh after a branch switch
-comb poke git .
+comb refresh git .
 
 # Force network info refresh after connecting to VPN
-comb poke network
+comb refresh network
 
 # After modifying kubeconfig manually
-comb poke kubecontext
+comb refresh kubecontext
 ```
 
 **Exit codes:** `0` on success, `2` on error.
 
-### `comb status`
+### `comb status` (alias: `s`)
 
 Show daemon health and statistics.
 
@@ -342,7 +342,7 @@ $ comb status
 }
 ```
 
-### `comb list`
+### `comb list` (alias: `l`)
 
 Show all active providers and their cached state age.
 
@@ -357,7 +357,7 @@ $ comb list
 }
 ```
 
-### `comb daemon [--socket <path>]`
+### `comb daemon [--socket <path>]` (alias: `d`)
 
 Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
 
@@ -371,19 +371,19 @@ comb daemon --socket /tmp/beachcomber-debug.sock
 
 The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 
-### `comb store <key> <json-data> [--ttl <duration>] [--path <path>]`
+### `comb put <key> <json-data> [--ttl <duration>] [--path <path>]` (alias: `p`)
 
 Write data into the cache as a virtual provider. External processes can use this to expose state to prompt/statusline consumers without writing a script provider.
 
 ```sh
 # Store application status
-comb store myapp '{"status":"healthy","version":"1.2.3"}'
+comb put myapp '{"status":"healthy","version":"1.2.3"}'
 
 # Store with TTL — consumers see staleness if writer stops updating
-comb store myapp '{"status":"healthy"}' --ttl 30s
+comb put myapp '{"status":"healthy"}' --ttl 30s
 
 # Store with path scope
-comb store myapp '{"status":"building"}' --path /home/user/project
+comb put myapp '{"status":"building"}' --path /home/user/project
 ```
 
 Virtual providers are read with standard `comb get`:
@@ -393,9 +393,9 @@ comb get myapp.status        # "healthy"
 comb get myapp               # {"status":"healthy","version":"1.2.3"}
 ```
 
-Namespace hierarchy prevents shadowing built-in or script providers — `comb store git '...'` is rejected.
+Namespace hierarchy prevents shadowing built-in or script providers — `comb put git '...'` is rejected.
 
-### `comb watch <key> [--path <path>] [-f format]`
+### `comb watch <key> [--path <path>] [-f format]` (alias: `w`)
 
 Stream cache changes to stdout. Opens a long-lived connection and emits an NDJSON line each time the watched key is updated.
 
@@ -726,7 +726,7 @@ beachcomber ships 16 built-in providers organized by category.
 
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | path | 21 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
+| `git` | path | 24 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
 
 **Fields:**
 
@@ -753,6 +753,9 @@ beachcomber ships 16 built-in providers organized by category.
 | `state_step` | int | Current step in rebase/cherry-pick (0 if not in progress) |
 | `state_total` | int | Total steps in rebase/cherry-pick (0 if not in progress) |
 | `last_commit_age_secs` | int | Seconds since last commit |
+| `commit_summary` | string | First line of HEAD commit message |
+| `push_ahead` | int | Commits ahead of the push remote |
+| `push_behind` | int | Commits behind the push remote |
 
 **Example output:**
 
@@ -1979,7 +1982,7 @@ On a system with 20 shells and typical usage, expect the daemon to use 10-30MB o
 
 The socket file is cleaned up on graceful exit. If the daemon crashes unexpectedly, the stale socket file may remain. The next client connection will attempt to connect, fail, detect the stale socket, remove it, start a fresh daemon instance, and retry. This is handled transparently — `comb get` will succeed with a slight delay on the restart.
 
-You can verify the daemon is responsive at any time with `comb status`. If the daemon is unhealthy, `comb poke` on any key will trigger a restart if needed.
+You can verify the daemon is responsive at any time with `comb status`. If the daemon is unhealthy, `comb refresh` on any key will trigger a restart if needed.
 
 ### Can I use this on Linux?
 
