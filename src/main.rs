@@ -36,7 +36,7 @@ enum Commands {
         format: String,
     },
     /// Trigger immediate recomputation of a provider
-    Poke {
+    Refresh {
         /// Provider key
         key: String,
         /// Path context
@@ -47,7 +47,7 @@ enum Commands {
     /// List active providers
     List,
     /// Store data as a virtual provider
-    Store {
+    Put {
         /// Provider name (e.g., "myapp")
         key: String,
         /// JSON data (e.g., '{"status":"healthy"}')
@@ -88,15 +88,15 @@ fn main() -> ExitCode {
             };
             run_get(&config, &key, path.as_deref(), format)
         }
-        Commands::Poke { key, path } => run_poke(&config, &key, path.as_deref()),
+        Commands::Refresh { key, path } => run_refresh(&config, &key, path.as_deref()),
         Commands::Status => run_status(&config),
         Commands::List => run_list(&config),
-        Commands::Store {
+        Commands::Put {
             key,
             data,
             ttl,
             path,
-        } => run_store(&config, &key, &data, ttl.as_deref(), path.as_deref()),
+        } => run_put(&config, &key, &data, ttl.as_deref(), path.as_deref()),
         Commands::Watch { key, path, format } => run_watch(&config, &key, path.as_deref(), &format),
     }
 }
@@ -212,7 +212,7 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: Format) -> Ex
     })
 }
 
-fn run_poke(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
+fn run_refresh(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
     if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
@@ -352,7 +352,7 @@ fn run_watch(config: &Config, key: &str, path: Option<&str>, format: &str) -> Ex
     })
 }
 
-fn run_store(
+fn run_put(
     config: &Config,
     key: &str,
     data_str: &str,
