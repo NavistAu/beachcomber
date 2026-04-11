@@ -96,6 +96,10 @@ impl Provider for GitProvider {
                     name: "last_commit_age_secs".to_string(),
                     field_type: FieldType::Int,
                 },
+                FieldSchema {
+                    name: "commit_summary".to_string(),
+                    field_type: FieldType::String,
+                },
             ],
             invalidation: InvalidationStrategy::WatchAndPoll {
                 patterns: vec![".git".to_string()],
@@ -125,7 +129,7 @@ impl Provider for GitProvider {
 
         let (lines_added, lines_removed) = diff_numstat(dir);
         let (lines_staged_added, lines_staged_removed) = diff_numstat_staged(dir);
-        let (commit, last_commit_ts) = get_head_info(dir);
+        let (commit, last_commit_ts, commit_summary) = get_head_info(dir);
         let tag = get_nearest_tag(dir);
 
         let now_secs = SystemTime::now()
@@ -160,6 +164,7 @@ impl Provider for GitProvider {
         result.insert("state_step", Value::Int(state_step));
         result.insert("state_total", Value::Int(state_total));
         result.insert("last_commit_age_secs", Value::Int(last_commit_age_secs));
+        result.insert("commit_summary", Value::String(commit_summary));
         Some(result)
     }
 }
@@ -338,27 +343,28 @@ fn parse_numstat_output(output: Result<std::process::Output, std::io::Error>) ->
     (added, removed)
 }
 
-/// Runs `git log -1 --format="%h %ct"` and returns (short_hash, commit_timestamp).
-fn get_head_info(dir: &Path) -> (String, i64) {
+/// Runs `git log -1 --format="%h %ct %s"` and returns (short_hash, commit_timestamp, subject).
+fn get_head_info(dir: &Path) -> (String, i64, String) {
     let output = Command::new("git")
-        .args(["log", "-1", "--format=%h %ct"])
+        .args(["log", "-1", "--format=%h %ct %s"])
         .current_dir(dir)
         .output();
 
     let output = match output {
         Ok(o) if o.status.success() => o,
-        _ => return (String::new(), 0),
+        _ => return (String::new(), 0, String::new()),
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let line = stdout.trim();
-    let mut parts = line.splitn(2, ' ');
+    let mut parts = line.splitn(3, ' ');
     let hash = parts.next().unwrap_or("").to_string();
     let ts: i64 = parts
         .next()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
-    (hash, ts)
+    let subject = parts.next().unwrap_or("").to_string();
+    (hash, ts, subject)
 }
 
 /// Runs `git describe --tags --abbrev=0` and returns the nearest tag or empty string.

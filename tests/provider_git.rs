@@ -64,6 +64,7 @@ fn git_provider_metadata() {
     assert!(field_names.contains(&"state_step"));
     assert!(field_names.contains(&"state_total"));
     assert!(field_names.contains(&"last_commit_age_secs"));
+    assert!(field_names.contains(&"commit_summary"));
 }
 
 #[test]
@@ -278,6 +279,15 @@ fn git_provider_lines_staged_added_removed() {
         staged_removed, 0,
         "staged_removed should be 0 for a new file, got {staged_removed}"
     );
+}
+
+#[test]
+fn git_provider_commit_summary() {
+    let tmp = create_test_repo();
+    let p = GitProvider;
+    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let summary = result.get("commit_summary").unwrap().as_text();
+    assert_eq!(summary, "init", "commit_summary should be the first commit message");
 }
 
 #[test]
