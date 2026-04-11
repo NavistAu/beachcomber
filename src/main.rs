@@ -20,12 +20,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Run the daemon (usually auto-launched via socket activation)
+    #[command(visible_alias = "d")]
     Daemon {
         /// Override socket path
         #[arg(long)]
         socket: Option<PathBuf>,
     },
     /// Query a cached value
+    #[command(visible_alias = "g")]
     Get {
         /// Provider key (e.g., "hostname.name", "git.branch")
         key: String,
@@ -36,6 +38,7 @@ enum Commands {
         format: String,
     },
     /// Trigger immediate recomputation of a provider
+    #[command(visible_alias = "r")]
     Refresh {
         /// Provider key
         key: String,
@@ -43,10 +46,13 @@ enum Commands {
         path: Option<String>,
     },
     /// Show daemon status
+    #[command(visible_alias = "s")]
     Status,
     /// List active providers
+    #[command(visible_alias = "l")]
     List,
     /// Store data as a virtual provider
+    #[command(visible_alias = "p")]
     Put {
         /// Provider name (e.g., "myapp")
         key: String,
@@ -60,6 +66,7 @@ enum Commands {
         path: Option<String>,
     },
     /// Watch a key and stream changes to stdout
+    #[command(visible_alias = "w")]
     Watch {
         /// Provider key (e.g., "git.branch")
         key: String,
