@@ -132,14 +132,16 @@ async fn server_handles_get_text_format() {
 }
 
 #[tokio::test]
-async fn server_handles_cache_miss() {
+async fn server_handles_cache_miss_with_sync_execution() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
+    // No cache populated — the server should execute the provider inline
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
+    // hostname is a global provider that always returns data
     let request = r#"{"op": "get", "key": "hostname"}"#;
     stream
         .write_all(format!("{request}\n").as_bytes())
@@ -151,8 +153,78 @@ async fn server_handles_cache_miss() {
     reader.read_line(&mut line).await.unwrap();
 
     let response: Response = serde_json::from_str(&line).unwrap();
-    assert!(response.ok, "Cache miss should still be ok");
-    assert!(response.data.is_none(), "Cache miss should have null data");
+    assert!(response.ok, "Response should be ok");
+    assert!(
+        response.data.is_some(),
+        "Sync cache miss should return data from inline execution"
+    );
+    let data = response.data.unwrap();
+    assert!(
+        data.get("name").is_some(),
+        "hostname provider should return a name field"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn server_handles_cache_miss_provider_returns_none() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    // git provider with no path — execute() returns None
+    let request = r#"{"op": "get", "key": "git"}"#;
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+
+    let response: Response = serde_json::from_str(&line).unwrap();
+    assert!(response.ok, "Response should be ok even when provider returns None");
+    assert!(
+        response.data.is_none(),
+        "Provider returning None should still produce a miss"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn server_handles_cache_miss_virtual_provider() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+
+    // Register a virtual provider name but don't populate cache
+    registry.register_virtual("myvirtual");
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let request = r#"{"op": "get", "key": "myvirtual"}"#;
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+
+    let response: Response = serde_json::from_str(&line).unwrap();
+    assert!(response.ok);
+    assert!(
+        response.data.is_none(),
+        "Virtual provider with no cache data should return miss (no execute to call)"
+    );
 
     handle.abort();
 }

@@ -387,7 +387,43 @@ async fn handle_request(
                     };
                     Response::ok(data, age_ms, stale)
                 }
-                None => Response::miss(),
+                None => {
+                    // Synchronous cache miss: execute the provider inline if possible.
+                    let provider = registry.get(provider_name);
+                    match provider {
+                        Some(provider) => {
+                            let path_owned = effective_path.clone();
+                            let result = tokio::task::spawn_blocking(move || {
+                                provider.execute(path_owned.as_deref())
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+
+                            match result {
+                                Some(result) => {
+                                    cache.put(provider_name, effective_path.as_deref(), result.clone());
+                                    let data = if let Some(field_name) = field {
+                                        match result.get(field_name) {
+                                            Some(value) => serde_json::to_value(value).unwrap(),
+                                            None => {
+                                                return Response::error(format!(
+                                                    "unknown field: {provider_name}.{field_name}"
+                                                ));
+                                            }
+                                        }
+                                    } else {
+                                        result.to_json()
+                                    };
+                                    Response::ok(data, 0, false)
+                                }
+                                None => Response::miss(),
+                            }
+                        }
+                        // Virtual provider or provider with no execute — return miss
+                        None => Response::miss(),
+                    }
+                }
             }
         }
         Request::Poke { key, path } => {
