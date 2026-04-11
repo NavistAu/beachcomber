@@ -16,6 +16,7 @@ pub mod python;
 pub mod registry;
 pub mod script;
 pub mod terraform;
+pub mod uname;
 #[cfg(target_os = "macos")]
 pub mod uptime;
 #[cfg(target_os = "linux")]

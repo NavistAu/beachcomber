@@ -26,7 +26,7 @@ Last updated: 2026-04-09
 
 | Provider | Scope | Execution time |
 |---|---|---|
-| hostname, user | global/once | ~400-650ns |
+| hostname, user, uname | global/once | ~400-650ns |
 | load, uptime | global/poll | ~550-660ns |
 | kubecontext, gcloud, aws, conda | global/poll | <1µs |
 | terraform, python, asdf | path/watch | <1µs |
@@ -204,8 +204,8 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 
 ### External Provider Backends
 
-- [ ] Lua backend via `mlua` crate
 - [x] Shared library backend via `libloading` crate
+- ~~Lua backend via `mlua` crate~~ — won't do; dependency/attack surface cost not justified given script and library backends cover the use cases
 
 ### Additional Features
 
@@ -213,15 +213,74 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [x] Configurable backoff steps — failure reattempts, backoff interval, cache lifespan, poll idle interval. Global defaults in `[lifecycle]`, per-provider overrides in `[providers.<name>]`. Duration strings ("30s", "2m", "500ms").
 - [x] Virtual providers / store — comb store protocol op lets external processes write data into the cache. Creates virtual providers (no execute(), data-only). Namespace hierarchy: builtin > script > virtual.
 - [x] comb watch <key> [path] — server-push streaming over long-lived connections. NDJSON line emitted on each cache update for the watched key. Subsumes the push/streaming mode item.
+- [ ] Git provider: `commit_summary` field — first line of HEAD commit message. Enables WIP detection in prompt integrations (p10k checks for "wip"/"WIP" in the summary).
+- [ ] Git provider: `push_ahead` and `push_behind` fields — commits ahead/behind the push remote (as distinct from the tracking remote). Used by p10k and starship for push remote indicators.
+- [ ] `sudo` provider — detect whether the user has an active sudo timestamp (`/var/run/sudo/ts/$USER` on Linux, `/var/db/sudo/` on macOS). Global, poll. Useful as a prompt indicator for elevated privilege awareness.
+- [ ] `op` provider — detect active 1Password CLI session. Check agent socket liveness or `op whoami` state. Global, poll. Useful for prompt indicators showing authenticated credential access.
+- [ ] Synchronous cache miss — when `comb get` hits a cold cache, execute the provider inline and return the result instead of returning empty and waiting for the next poll. Accept slightly higher latency on the first query rather than returning blank. Critical for prompt integrations where a blank first prompt looks broken.
+
+### CLI Ergonomics
+
+- [ ] Command shorthands — `comb g` = `comb get`, `comb p` = `comb poke`, `comb w` = `comb watch`, `comb s` = `comb status`, `comb l` = `comb list`, etc.
+- [ ] Rename `comb store` to `comb put` (shorter, clearer verb).
+- [ ] Format suffix syntax on get — `comb get.text git.branch .` or `comb g.t git.branch .`. Avoids the `-f` flag entirely.
+- [ ] New output format: `sh` (shell) — outputs `name=val` pairs (the current `text` format for objects). `text` becomes just the raw value with no key prefix. `sh` is sourceable in shell scripts.
+- [ ] New output formats: `csv`/`tsv` (values only), `CSV`/`TSV` (with header row). For multi-field provider queries.
+- [ ] New output format: `fmt` (alias: `format`) — takes a printf-style format string as an argument, applies it per field/row. e.g. `-f fmt '$1=$2\n'` where `$1` is key and `$2` is value. User controls separators and newlines explicitly.
+- [ ] `comb eval` — printf-style template interpolation. e.g. `comb eval "branch: {git.branch} load: {load.one}" .` — resolves all referenced keys in a single connection and returns the formatted string.
+- [ ] Batch get — single command to query multiple keys in one connection. Needs a good single word with a unique first letter (not g/p/w/s/l/d/e). Candidates: `fetch`, `bulk`, `query`, `ask`.
+- [ ] Field metadata access — allow querying metadata about cached values via a delimiter syntax on the key. e.g. `comb g.t git.branch:age` or `git.branch.age` returns how old the cached value is. Metadata fields: `age`, `stale`, `source`. Avoids needing a separate `comb age` command.
+- [ ] Help screen branding — copyright byline, NavistAu authorship, project URL, tagline, license info in `comb --help` and `comb --version` output.
+
+### Shell Integration
+
+- [ ] `chpwd` hook — documented zsh/bash hook that pokes path-scoped providers on directory change. Warms git, mise, terraform, python caches before the first prompt renders in a new directory.
+- [ ] `comb` polyfill function — a POSIX shell function that wraps `comb` with transparent fallback to native tools when comb is not installed. Enables upstream integrations (oh-my-tmux, starship, etc.) to adopt comb without requiring it as a hard dependency. Central fallback definition rather than per-integration fallback logic.
+- [ ] `comb init` — auto-detect installed tools (oh-my-tmux, p10k, starship, neovim, etc.) and suggest integrations. For standard setups, scaffold the config. For non-standard setups, output useful snippets, link to the website, and show a QR code. Graceful degradation rather than trying to handle every edge case.
+
+### Health and Diagnostics
+
+- [ ] `comb check` — health check command (replaces the `diagnose` concept). Broad scope: daemon connectivity, provider health, stale cache entries, config validation, backoff state. Subcommands for specific diagnostics.
+- [ ] `comb check procs` (or similar subcommand) — process exec tracing (`eslogger exec` on macOS) that captures subprocess spawns over a sample window, categorizes them against known providers, and reports which tools are forking the most and what beachcomber could replace.
+
+### Additional Providers
+
+- [ ] `ssh` provider — `keys_loaded` (count of loaded keys), `agent_running` (bool). Global, poll. Useful for prompt indicators before push/deploy operations.
+- [ ] `kerberos` provider — active ticket state. Global, poll.
+- [ ] `docker` provider — running container count, current context. Support Docker, OrbStack, and Podman. Global, poll.
+- [ ] `brew` provider — count of outdated packages. Global, poll (daily). Extend pattern to other package managers: `apt`, `dnf`/`yum`, `apk`, `pacman`.
+
+### Performance Validation
+
+- [ ] Hyperfine benchmarks — before/after comparisons for tmux status bar refresh and p10k prompt render with beachcomber vs native tools. Publish results on the website.
+- [ ] Docker test containers — controlled environments for each integration target (oh-my-tmux, p10k, starship, etc.) with both stock and beachcomber-integrated configs. Enables reproducible perf tuning, CI benchmarks, and side-by-side demos for upstream adoption PRs.
+
+### Documentation
+
+- [ ] Fun examples — copy-paste script provider recipes for the website. Show beachcomber as a general-purpose cached data layer, not just a devtools daemon. Practical: local weather, quote of the day, today's Wordle number, countdown to next One Piece episode, ISS overhead pass, Hacker News top story, Spotify current track, Home Assistant entity state (front door lock, thermostat, lights via HA REST API). Weird/fun (not all committed, pick the best):
+  - Mercury Retrograde deploy guard — HTTP provider polling an astrology API, git pre-push hook refuses to push to production during retrograde. `mercury_yolo_mode = true` to override.
+  - Don't Deploy On Friday — same pattern, simpler astrology. Block or warn on pushes to production branches after Thursday EOD.
+  - Physical deploy confidence gauge — combine git.dirty, git.ahead, load, battery, time-since-commit into a 0-100 score. Pipe via `comb watch` to an Arduino servo gauge on your desk. Zones: "YOLO", "Maybe", "Safe", "It's Friday Don't".
+  - Vibe check emoji — single emoji in prompt computed from weather, day of week, battery, git state, load. Monday + rain + dirty repo + low battery = 💀. Friday + sunshine + clean = 🏖️. Full decision tree as a flowchart.
+  - Office thermostat wars — poll HA thermostat, alert in tmux when someone changes it with who and by how much. Rolling sparkline of temperature battles over the day.
+  - Banana scale — compute physical length of terminal scrollback in bananas (lines x font size x approximate character height ÷ 17.78cm). Display as a literal string of 🍌 emoji. Utterly useless, deeply satisfying.
+  - Claude token odometer — `wc -l` of Claude Code conversation history from the last 24 hours. Show in tmux/prompt as a rolling count of how much you've been talking to your AI pair programmer today.
+  - Magic 8-Ball deploy oracle — script provider that caches a random 8-ball response ("Outlook not so good", "Signs point to yes", etc.) and reshakes at random intervals. Git pre-push hook checks `comb get 8ball.sentiment` and blocks deploys on negative readings. Show the current reading in tmux. The universe has opinions about your release schedule.
+- [ ] Timeseries / sparkline guide — document how to use `comb store` to accumulate rolling timeseries data (e.g. service response times, error rates, CPU samples) and render sparkline/histogram status tickers in tmux or prompts. Cover append-to-array patterns, TTL-based expiry, and how to structure the data for consumers that render sparklines (e.g. oh-my-tmux, tmux-sparkline, unicode block characters).
+
+### Project Quality
+
+- [ ] Dependency audit — evaluate all Rust dependencies, document each one on the website with rationale for inclusion. Remove anything not strictly necessary.
+- [ ] `llms.txt` for the website — machine-readable project summary for LLM consumption.
 
 ### Install Methods
 
 - [x] Nix flake
 - [x] AUR package
-- [ ] MacPorts
+- ~~MacPorts~~ — won't do; small audience, not worth ongoing maintenance
 - [x] Debian/Ubuntu (.deb) package
 - [x] Fedora/RHEL (.rpm) package
-- [ ] Scoop (Windows, if/when Windows support lands)
+- ~~Scoop~~ — won't do; no Windows support planned
 
 ### Linux C SDK Packages
 
@@ -231,7 +290,7 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 
 ### Stability
 
-- [ ] Protocol stability guarantee (wire format frozen)
-- [ ] Config format stability guarantee
-- [ ] mmap/shared memory for zero-latency reads (if demand exists)
+- ~~Protocol stability guarantee (wire format frozen)~~ — won't do; protocol is abstracted behind CLI/SDKs, no need for manual socket consumers
+- ~~Config format stability guarantee~~ — won't do; same reasoning
+- ~~mmap/shared memory for zero-latency reads~~ — won't do; 15µs socket reads are already invisible, maintenance burden not justified
 - [x] Integration guides and tutorials for beachcomber.sh website — tested config snippets and step-by-step tutorials for starship, oh-my-zsh, powerlevel10k, oh-my-posh, oh-my-tmux, lualine.nvim, heirline.nvim, polybar, waybar, sketchybar. Replaces the original "consumer integration packages" plan.

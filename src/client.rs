@@ -62,13 +62,24 @@ impl ClientSession {
         }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
         self.writer.write_all(msg.as_bytes()).await?;
-        let mut line = String::new();
-        self.reader.read_line(&mut line).await?;
-        let trimmed = line.trim_end_matches('\n').to_string();
-        if trimmed.starts_with("error:") {
-            return Err(std::io::Error::other(trimmed));
+        // Text responses may be multi-line (Object values are key=val per line),
+        // terminated by a blank line. Single-value responses are one line.
+        let mut result = String::new();
+        loop {
+            let mut line = String::new();
+            let n = self.reader.read_line(&mut line).await?;
+            if n == 0 {
+                break;
+            }
+            if line == "\n" {
+                break;
+            }
+            if result.is_empty() && line.starts_with("error:") {
+                return Err(std::io::Error::other(line.trim_end().to_string()));
+            }
+            result.push_str(&line);
         }
-        Ok(trimmed)
+        Ok(result.trim_end_matches('\n').to_string())
     }
 
     /// Send a watch request. Call read_watch_line() in a loop to receive updates.
@@ -149,14 +160,22 @@ impl Client {
         stream.write_all(msg.as_bytes()).await?;
 
         let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).await?;
-
-        let trimmed = line.trim_end_matches('\n').to_string();
-        if trimmed.starts_with("error:") {
-            return Err(std::io::Error::other(trimmed));
+        let mut result = String::new();
+        loop {
+            let mut line = String::new();
+            let n = reader.read_line(&mut line).await?;
+            if n == 0 {
+                break;
+            }
+            if line == "\n" {
+                break;
+            }
+            if result.is_empty() && line.starts_with("error:") {
+                return Err(std::io::Error::other(line.trim_end().to_string()));
+            }
+            result.push_str(&line);
         }
-        Ok(trimmed)
+        Ok(result.trim_end_matches('\n').to_string())
     }
 
     pub async fn store(

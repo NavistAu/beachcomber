@@ -18,6 +18,7 @@ use crate::provider::network::NetworkProvider;
 use crate::provider::python::PythonProvider;
 use crate::provider::script::ScriptProvider;
 use crate::provider::terraform::TerraformProvider;
+use crate::provider::uname::UnameProvider;
 #[cfg(target_os = "macos")]
 use crate::provider::uptime::UptimeProvider;
 #[cfg(target_os = "linux")]
@@ -50,6 +51,7 @@ impl ProviderRegistry {
         registry.register(Box::new(GitProvider));
         registry.register(Box::new(BatteryProvider));
         registry.register(Box::new(LoadProvider));
+        registry.register(Box::new(UnameProvider));
         #[cfg(target_os = "macos")]
         registry.register(Box::new(UptimeProvider));
         #[cfg(target_os = "linux")]
@@ -77,6 +79,7 @@ impl ProviderRegistry {
             ("git", Box::new(GitProvider)),
             ("battery", Box::new(BatteryProvider)),
             ("load", Box::new(LoadProvider)),
+            ("uname", Box::new(UnameProvider)),
             ("network", Box::new(NetworkProvider)),
             ("kubecontext", Box::new(KubecontextProvider)),
             ("aws", Box::new(AwsProvider)),

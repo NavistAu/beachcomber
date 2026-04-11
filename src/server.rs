@@ -268,9 +268,9 @@ async fn write_watch_line(
                 )
             } else {
                 match &response.data {
-                    Some(serde_json::Value::String(s)) => format!("{s}\n"),
-                    Some(serde_json::Value::Number(n)) => format!("{n}\n"),
-                    Some(serde_json::Value::Bool(b)) => format!("{b}\n"),
+                    Some(serde_json::Value::String(s)) => format!("{s}\n\n"),
+                    Some(serde_json::Value::Number(n)) => format!("{n}\n\n"),
+                    Some(serde_json::Value::Bool(b)) => format!("{b}\n\n"),
                     Some(serde_json::Value::Object(map)) => {
                         let mut lines: Vec<String> = map
                             .iter()
@@ -284,11 +284,11 @@ async fn write_watch_line(
                             .collect();
                         lines.sort();
                         let mut out = lines.join("\n");
-                        out.push('\n');
+                        out.push_str("\n\n");
                         out
                     }
                     Some(serde_json::Value::Null) | None => "\n".to_string(),
-                    Some(other) => format!("{other}\n"),
+                    Some(other) => format!("{other}\n\n"),
                 }
             }
         }
@@ -598,9 +598,9 @@ fn format_response(request: &Request, response: &Response) -> String {
                 );
             }
             match &response.data {
-                Some(serde_json::Value::String(s)) => format!("{s}\n"),
-                Some(serde_json::Value::Number(n)) => format!("{n}\n"),
-                Some(serde_json::Value::Bool(b)) => format!("{b}\n"),
+                Some(serde_json::Value::String(s)) => format!("{s}\n\n"),
+                Some(serde_json::Value::Number(n)) => format!("{n}\n\n"),
+                Some(serde_json::Value::Bool(b)) => format!("{b}\n\n"),
                 Some(serde_json::Value::Object(map)) => {
                     let mut lines: Vec<String> = map
                         .iter()
@@ -614,11 +614,11 @@ fn format_response(request: &Request, response: &Response) -> String {
                         .collect();
                     lines.sort();
                     let mut out = lines.join("\n");
-                    out.push('\n');
+                    out.push_str("\n\n");
                     out
                 }
                 Some(serde_json::Value::Null) | None => "\n".to_string(),
-                Some(other) => format!("{other}\n"),
+                Some(other) => format!("{other}\n\n"),
             }
         }
         Format::Json => {
