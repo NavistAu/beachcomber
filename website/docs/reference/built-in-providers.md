@@ -60,7 +60,7 @@ beachcomber ships 16 built-in providers organized by category.
 
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | path | 21 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
+| `git` | path | 24 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
 
 **Fields:**
 
@@ -87,6 +87,9 @@ beachcomber ships 16 built-in providers organized by category.
 | `state_step` | int | Current step in rebase/cherry-pick (0 if not in progress) |
 | `state_total` | int | Total steps in rebase/cherry-pick (0 if not in progress) |
 | `last_commit_age_secs` | int | Seconds since last commit |
+| `commit_summary` | string | First line of the HEAD commit message |
+| `push_ahead` | int | Commits ahead of the push remote |
+| `push_behind` | int | Commits behind the push remote |
 
 **Example output:**
 
@@ -115,7 +118,10 @@ beachcomber ships 16 built-in providers organized by category.
     "state": "clean",
     "state_step": 0,
     "state_total": 0,
-    "last_commit_age_secs": 3420
+    "last_commit_age_secs": 3420,
+    "commit_summary": "feat: add synchronous cache miss",
+    "push_ahead": 2,
+    "push_behind": 0
   },
   "age_ms": 234
 }

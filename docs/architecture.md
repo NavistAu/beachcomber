@@ -25,7 +25,7 @@ Data flow summary:
 
 - **Read path**: client -> Server -> Cache.get() -> response (no provider involved)
 - **Write path**: trigger (fs event or poll timer) -> Scheduler -> spawn_blocking(provider.execute()) -> Cache.put()
-- **Miss path**: client asks for uncached key -> Server sends Poke to Scheduler -> Scheduler fires provider -> client retries or polls
+- **Miss path**: client asks for uncached key -> Server executes provider inline via spawn_blocking -> result written to cache -> response returned directly
 
 The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Server sends messages to the Scheduler over an `mpsc::Sender<SchedulerMessage>`. The Scheduler owns the `FsWatcher` and all demand/poll state.
 
@@ -107,7 +107,7 @@ The client reads the response line, strips metadata, and writes the plain text t
 
 **On a cache miss:**
 
-The server returns `Response::miss()` (ok=true, no data). The CLI treats this as an empty result or, in interactive use, sends a `Poke` request to trigger a fresh execution, then polls with exponential backoff until a value appears or a timeout is reached.
+The server detects no cached value for the key and executes the provider inline via `tokio::task::spawn_blocking`, awaiting the result. The result is written to the cache and returned directly in the same response. The client receives data on the first query — there is no empty response or polling step.
 
 ---
 

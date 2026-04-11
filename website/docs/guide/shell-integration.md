@@ -190,6 +190,6 @@ The daemon handles the expensive work on its own schedule, independent of your p
 ## Troubleshooting
 
 - **Prompt shows no dynamic data:** the `2>/dev/null` in the examples silences errors, so if the daemon is not running you get an empty prompt with no error message. Remove `2>/dev/null` temporarily to see what `comb get` reports.
-- **Wrong branch after switching:** the cache updates on its next poll cycle. Run `comb poke git .` to force an immediate refresh.
+- **Wrong branch after switching:** the cache updates on its next poll cycle. Run `comb refresh git .` to force an immediate refresh.
 
 See the [Troubleshooting](./troubleshooting.md) guide for general diagnostics.

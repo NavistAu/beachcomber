@@ -63,7 +63,7 @@ Global providers (battery, load, network, kubecontext, gcloud, aws, hostname, up
 The daemon polls providers on a timer. If you just switched branches or changed a context, the cache may not have refreshed yet. Force an immediate refresh:
 
 ```sh
-comb poke git .
+comb refresh git .
 ```
 
 ## comb not found in non-interactive shells

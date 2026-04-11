@@ -141,12 +141,7 @@ gitstatus is already fast. The motivation is architectural, not performance:
 
 ### Current limitations
 
-beachcomber's git provider does not yet expose two fields that gitstatus provides:
-
-- **Commit summary** — the first line of the HEAD commit message (used by p10k for WIP detection). Without this, the `wip` indicator will not appear.
-- **Push remote ahead/behind** — commits ahead of or behind the push remote, as distinct from the tracking remote. The `⇢` and `⇠` push indicators will not appear.
-
-Both are planned additions to the git provider.
+beachcomber's git provider now exposes `commit_summary` (the first line of the HEAD commit message) and `push_ahead`/`push_behind` (commits ahead of or behind the push remote). The `comb_git` segment above can be extended to use these fields. WIP detection and push indicator rendering require wiring them into the segment function — see the field table in [Built-in Providers](../reference/built-in-providers.md) for the field names.
 
 ### The comb_git segment
 
@@ -256,9 +251,9 @@ This should return nothing. If it returns a PID, the `vcs` segment is still in t
 
 ### First-prompt cache miss
 
-On the very first prompt after the daemon starts (or after switching to a new directory), the git provider may not have data cached yet. The segment will be empty for that one prompt. The `comb get` call registers demand, which triggers the provider to execute in the background. Subsequent prompts will show the git state.
+On the very first prompt after the daemon starts (or after switching to a new directory that has not been queried before), the git provider executes inline. The `comb get` call blocks briefly while the provider runs and returns the result directly — the segment will have data on that first prompt, with a short delay while git runs. Subsequent prompts return the cached value with no delay.
 
-This is a one-time warmup cost. Once the provider has run for a given directory, the cache is kept warm by ongoing demand from prompt queries.
+Once the provider has run for a given directory, the cache is kept warm by ongoing demand from prompt queries.
 
 ## Customizing colours
 
@@ -286,7 +281,7 @@ To revert just the git replacement while keeping other segments, remove the `POW
 ## Troubleshooting
 
 - **Segment not showing:** verify the function name exactly matches `prompt_<segment_name>` and the segment name is in the `PROMPT_ELEMENTS` array. Run `echo $POWERLEVEL9K_LEFT_PROMPT_ELEMENTS` to check. A typo in either causes p10k to silently skip it.
-- **Git segment empty on first prompt:** this is the cache warmup — press Enter and the segment will appear on the next prompt.
+- **Git segment slow on first prompt:** on a cold cache the provider executes inline, which takes as long as a normal `git` invocation (typically a few milliseconds). This is a one-time cost per directory.
 - **Overlay not taking effect:** ensure the `source` line comes after the `~/.p10k.zsh` source in `.zshrc`. The overlay must run second to patch the arrays.
 - **gitstatus still running:** check `pgrep -P $$ gitstatusd`. If it returns a PID, `vcs` is still in the elements array. The overlay may not be loaded — check `type prompt_comb_git` to see if the function exists.
 - **Icons not rendering:** the Nerd Font glyphs require a patched font. p10k's recommended fonts include all required glyphs. Replace icons with text labels if your font lacks them.

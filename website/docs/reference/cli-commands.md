@@ -7,9 +7,9 @@ title: CLI Commands
 
 All commands are subcommands of `comb`. The daemon is socket-activated — you never need to start it manually.
 
-## `comb get <key> [path] [-f format]`
+## `comb get <key> [path] [-f format]` (alias: `g`)
 
-Query a cached value. Returns immediately with cached data; never waits for a fresh computation.
+Query a cached value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay.
 
 ```sh
 # Query a specific field from a path-scoped provider
@@ -44,27 +44,27 @@ comb get git . -f text
 
 **Exit codes:**
 - `0` — success, data returned
-- `1` — cache miss (provider has no data yet)
+- `1` — provider returned no data (e.g. `git` queried outside a git repository)
 - `2` — error (daemon unreachable, unknown provider, invalid key)
 
-## `comb poke <key> [path]`
+## `comb refresh <key> [path]` (alias: `r`)
 
 Trigger immediate recomputation of a provider. Returns immediately after acknowledging the request — does not wait for the result. The next `get` will return the fresh value.
 
 ```sh
 # Force git status refresh after a branch switch
-comb poke git .
+comb refresh git .
 
 # Force network info refresh after connecting to VPN
-comb poke network
+comb refresh network
 
 # After modifying kubeconfig manually
-comb poke kubecontext
+comb refresh kubecontext
 ```
 
 **Exit codes:** `0` on success, `2` on error.
 
-## `comb status`
+## `comb status` (alias: `s`)
 
 Show daemon health and statistics.
 
@@ -79,7 +79,7 @@ $ comb status
 }
 ```
 
-## `comb list`
+## `comb list` (alias: `l`)
 
 Show all active providers and their cached state age.
 
@@ -94,19 +94,19 @@ $ comb list
 }
 ```
 
-## `comb store <key> <json-data> [--ttl <duration>] [--path <path>]`
+## `comb put <key> <json-data> [--ttl <duration>] [--path <path>]` (alias: `p`)
 
 Write data into the cache as a virtual provider. External processes use this to expose state to prompt/statusline consumers without writing a script provider.
 
 ```sh
 # Store application status
-comb store myapp '{"status":"healthy","version":"1.2.3"}'
+comb put myapp '{"status":"healthy","version":"1.2.3"}'
 
 # Store with TTL — consumers see staleness if writer stops updating
-comb store myapp '{"status":"healthy"}' --ttl 30s
+comb put myapp '{"status":"healthy"}' --ttl 30s
 
 # Store with path scope
-comb store myapp '{"status":"building"}' --path /home/user/project
+comb put myapp '{"status":"building"}' --path /home/user/project
 ```
 
 Read back with standard `comb get`:
@@ -119,7 +119,7 @@ Namespace hierarchy: builtin > script > virtual. Storing to a name used by a bui
 
 **Exit codes:** `0` on success, `2` on error.
 
-## `comb watch <key> [--path <path>] [-f format]`
+## `comb watch <key> [--path <path>] [-f format]` (alias: `w`)
 
 Stream cache changes to stdout. Opens a long-lived connection and emits an NDJSON line on each cache update for the watched key.
 
@@ -135,7 +135,7 @@ Field-level filtering: `comb watch git.branch` only emits when the branch value 
 
 **Exit codes:** `0` on success (clean disconnect), `2` on error.
 
-## `comb daemon [--socket <path>]`
+## `comb daemon [--socket <path>]` (alias: `d`)
 
 Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
 

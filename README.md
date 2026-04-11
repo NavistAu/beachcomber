@@ -272,7 +272,7 @@ All commands are subcommands of `comb`. The daemon is socket-activated — you n
 
 ### `comb get <key> [path] [-f format]` (alias: `g`)
 
-Query a cached value. Returns immediately with cached data; never waits for a fresh computation.
+Query a cached value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay.
 
 ```sh
 # Query a specific field from a path-scoped provider
