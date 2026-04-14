@@ -1603,10 +1603,10 @@ fn check_procs(duration: u64) -> u8 {
     // Initial scan to establish baseline.
     if let Ok(entries) = std::fs::read_dir("/proc") {
         for entry in entries.flatten() {
-            if let Ok(name) = entry.file_name().into_string() {
-                if name.chars().all(|c| c.is_ascii_digit()) {
-                    seen.insert(name);
-                }
+            if let Ok(name) = entry.file_name().into_string()
+                && name.chars().all(|c| c.is_ascii_digit())
+            {
+                seen.insert(name);
             }
         }
     }
@@ -1616,15 +1616,16 @@ fn check_procs(duration: u64) -> u8 {
         std::thread::sleep(std::time::Duration::from_millis(100));
         if let Ok(entries) = std::fs::read_dir("/proc") {
             for entry in entries.flatten() {
-                if let Ok(pid) = entry.file_name().into_string() {
-                    if pid.chars().all(|c| c.is_ascii_digit()) && !seen.contains(&pid) {
-                        seen.insert(pid.clone());
-                        // Read the command name.
-                        let comm_path = format!("/proc/{pid}/comm");
-                        if let Ok(comm) = std::fs::read_to_string(&comm_path) {
-                            let name = comm.trim().to_string();
-                            *counts.entry(name).or_insert(0) += 1;
-                        }
+                if let Ok(pid) = entry.file_name().into_string()
+                    && pid.chars().all(|c| c.is_ascii_digit())
+                    && !seen.contains(&pid)
+                {
+                    seen.insert(pid.clone());
+                    // Read the command name.
+                    let comm_path = format!("/proc/{pid}/comm");
+                    if let Ok(comm) = std::fs::read_to_string(&comm_path) {
+                        let name = comm.trim().to_string();
+                        *counts.entry(name).or_insert(0) += 1;
                     }
                 }
             }
