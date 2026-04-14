@@ -69,6 +69,7 @@ fn has_active_sudo() -> bool {
 }
 
 /// Check if any timestamp file in a directory was modified within the sudo timeout.
+#[cfg(target_os = "macos")]
 fn check_timestamp_dir(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
