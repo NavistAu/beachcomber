@@ -6,8 +6,8 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'beachcomber',
-  tagline: 'One daemon. One cache. Every consumer reads from it.',
-  favicon: 'img/favicon.ico',
+  tagline: 'One daemon that caches your shell environment — git status, kubernetes context, battery, and more. Prompts, status bars, and editors read from a shared cache instead of forking a process per keystroke.',
+  favicon: 'img/favicon.svg',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
   future: {
@@ -22,6 +22,32 @@ const config: Config = {
 
   trailingSlash: false,
   onBrokenLinks: 'throw',
+
+  // Control the <title> shown by link previews (Discord, Slack, Twitter).
+  titleDelimiter: '·',
+
+  // Static head tags for metadata Docusaurus doesn't emit automatically.
+  // og:title, og:description, og:image, twitter:image, twitter:card, and the
+  // page description are all derived from the Layout props / themeConfig.image.
+  headTags: [
+    {tagName: 'meta', attributes: {property: 'og:site_name', content: 'beachcomber'}},
+    {tagName: 'meta', attributes: {property: 'og:type', content: 'website'}},
+    {tagName: 'meta', attributes: {property: 'og:image:type', content: 'image/png'}},
+    {tagName: 'meta', attributes: {property: 'og:image:width', content: '1200'}},
+    {tagName: 'meta', attributes: {property: 'og:image:height', content: '630'}},
+    {
+      tagName: 'meta',
+      attributes: {
+        property: 'og:image:alt',
+        content: 'beachcomber — one daemon, one cache, every consumer reads from it.',
+      },
+    },
+    // PNG favicon fallbacks for browsers that don't support SVG favicons
+    // and for the Apple touch icon.
+    {tagName: 'link', attributes: {rel: 'alternate icon', type: 'image/png', sizes: '32x32', href: '/img/favicon-32.png'}},
+    {tagName: 'link', attributes: {rel: 'alternate icon', type: 'image/png', sizes: '64x64', href: '/img/favicon-64.png'}},
+    {tagName: 'link', attributes: {rel: 'apple-touch-icon', sizes: '180x180', href: '/img/favicon-180.png'}},
+  ],
 
   markdown: {
     mermaid: true,
@@ -57,7 +83,10 @@ const config: Config = {
   ],
 
   themeConfig: {
-    image: 'img/docusaurus-social-card.jpg',
+    image: 'img/beachcomber-social-card.png',
+    metadata: [
+      {name: 'keywords', content: 'beachcomber, shell prompt, zsh, bash, starship, powerlevel10k, tmux, git, kubernetes, status bar, daemon, cache, Rust'},
+    ],
     colorMode: {
       defaultMode: 'light',
       disableSwitch: false,
@@ -67,7 +96,8 @@ const config: Config = {
       title: 'beachcomber',
       logo: {
         alt: 'beachcomber logo',
-        src: 'img/logo.svg',
+        src: 'img/beachcomber-icon-light.svg',
+        srcDark: 'img/beachcomber-icon-dark.svg',
       },
       items: [
         {

@@ -9,7 +9,10 @@ import SDKs from '../components/SDKs';
 
 export default function Home(): JSX.Element {
   return (
-    <Layout title="beachcomber" description="One daemon. One cache. Every consumer reads from it.">
+    <Layout
+      title="Shell state, cached."
+      description="One daemon that caches your shell environment — git status, kubernetes context, battery, and more. Prompts, status bars, and editors read from a shared cache instead of forking a process per keystroke."
+    >
       <Hero />
       <Problem />
       <Performance />

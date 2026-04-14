@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-label="beachcomber — one daemon, one cache, every consumer reads from it.">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="55%" stop-color="#0b2430"/>
+      <stop offset="100%" stop-color="#083344"/>
+    </linearGradient>
+    <linearGradient id="tealglow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#06d6f0" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#06d6f0" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#06d6f0" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="1.2"/>
+    </filter>
+  </defs>
+
+  <!-- background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- subtle grid -->
+  <g stroke="#163345" stroke-width="1" opacity="0.45">
+    <path d="M0 160 H1200"/>
+    <path d="M0 260 H1200"/>
+    <path d="M0 360 H1200"/>
+    <path d="M0 460 H1200"/>
+    <path d="M0 560 H1200"/>
+  </g>
+
+  <!-- wave divider -->
+  <path d="M0 520 C 200 470, 400 570, 600 520 S 1000 470, 1200 520 L 1200 630 L 0 630 Z"
+        fill="#063443" opacity="0.7"/>
+  <path d="M0 570 C 200 540, 400 610, 600 570 S 1000 540, 1200 570 L 1200 630 L 0 630 Z"
+        fill="#042833"/>
+
+  <!-- glow line under wordmark -->
+  <rect x="80" y="268" width="1040" height="2" fill="url(#tealglow)"/>
+
+  <!-- wordmark -->
+  <g font-family="'Sora', system-ui, sans-serif">
+    <text x="80" y="240" font-size="136" font-weight="800" fill="#e8dfc8" letter-spacing="-4">beachcomber</text>
+    <text x="82" y="328" font-size="34" font-weight="500" fill="#06d6f0" letter-spacing="4" text-transform="uppercase">
+      SHELL STATE, CACHED.
+    </text>
+  </g>
+
+  <!-- tagline -->
+  <g font-family="'Source Sans 3', system-ui, sans-serif">
+    <text x="80" y="400" font-size="38" font-weight="400" fill="#b5a88c">
+      One daemon. One cache. Every consumer reads from it.
+    </text>
+    <text x="80" y="452" font-size="28" font-weight="400" fill="#8b7f68">
+      Fast prompts, status bars, and editors — without forking a process per keystroke.
+    </text>
+  </g>
+
+  <!-- code sample card -->
+  <g transform="translate(80 478)">
+    <rect x="0" y="0" width="620" height="96" rx="10" fill="#101a22" stroke="#163345" stroke-width="1"/>
+    <g font-family="'JetBrains Mono', monospace" font-size="22">
+      <text x="20" y="36" fill="#6a5e4a">$</text>
+      <text x="44" y="36" fill="#e8dfc8">comb g git.branch .</text>
+      <text x="20" y="72" fill="#06d6f0">main</text>
+      <text x="104" y="72" fill="#6a5e4a">← 15 µs from shared cache</text>
+    </g>
+  </g>
+
+  <!-- domain / url -->
+  <g font-family="'JetBrains Mono', monospace">
+    <text x="1120" y="594" font-size="22" font-weight="500" fill="#06d6f0" text-anchor="end">beachcomber.sh</text>
+  </g>
+</svg>
