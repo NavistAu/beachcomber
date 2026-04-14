@@ -165,3 +165,27 @@ fn parse_watch_request_text_format() {
         _ => panic!("Expected Watch request"),
     }
 }
+
+#[test]
+fn parse_get_request_sh_format() {
+    let json = r#"{"op":"get","key":"git","format":"sh"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Get { format, .. } => {
+            assert_eq!(format, Format::Sh);
+        }
+        _ => panic!("Expected Get request"),
+    }
+}
+
+#[test]
+fn parse_watch_request_sh_format() {
+    let json = r#"{"op":"watch","key":"git.branch","format":"sh"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Watch { format, .. } => {
+            assert_eq!(format, Format::Sh);
+        }
+        _ => panic!("Expected Watch request"),
+    }
+}

@@ -188,7 +188,10 @@ async fn server_handles_cache_miss_provider_returns_none() {
     reader.read_line(&mut line).await.unwrap();
 
     let response: Response = serde_json::from_str(&line).unwrap();
-    assert!(response.ok, "Response should be ok even when provider returns None");
+    assert!(
+        response.ok,
+        "Response should be ok even when provider returns None"
+    );
     assert!(
         response.data.is_none(),
         "Provider returning None should still produce a miss"
@@ -278,6 +281,90 @@ async fn server_handles_poke() {
     assert!(response.ok, "Poke should return ok");
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn server_handles_get_sh_format() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+
+    let mut result = ProviderResult::new();
+    result.insert("name", Value::String("testhost.local".to_string()));
+    result.insert("short", Value::String("testhost".to_string()));
+    cache.put("hostname", None, result);
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let request = r#"{"op": "get", "key": "hostname", "format": "sh"}"#;
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut lines = String::new();
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await.unwrap();
+        if n == 0 || line == "\n" {
+            break;
+        }
+        lines.push_str(&line);
+    }
+
+    // Sh format for objects: sorted key=value pairs
+    assert!(lines.contains("name=testhost.local"));
+    assert!(lines.contains("short=testhost"));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn server_text_format_object_returns_values_only() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+
+    let mut result = ProviderResult::new();
+    result.insert("name", Value::String("testhost.local".to_string()));
+    result.insert("short", Value::String("testhost".to_string()));
+    cache.put("hostname", None, result);
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let request = r#"{"op": "get", "key": "hostname", "format": "text"}"#;
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut lines = String::new();
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await.unwrap();
+        if n == 0 || line == "\n" {
+            break;
+        }
+        lines.push_str(&line);
+    }
+
+    // Text format for objects: sorted values only, no key= prefix
+    assert!(
+        !lines.contains("name="),
+        "Text format should not include key= prefix"
+    );
+    assert!(
+        !lines.contains("short="),
+        "Text format should not include key= prefix"
+    );
+    assert!(lines.contains("testhost.local"));
+    assert!(lines.contains("testhost"));
 
     handle.abort();
 }

@@ -15,8 +15,10 @@ use crate::provider::library::LibraryProvider;
 use crate::provider::load::LoadProvider;
 use crate::provider::mise::MiseProvider;
 use crate::provider::network::NetworkProvider;
+use crate::provider::op::OpProvider;
 use crate::provider::python::PythonProvider;
 use crate::provider::script::ScriptProvider;
+use crate::provider::sudo::SudoProvider;
 use crate::provider::terraform::TerraformProvider;
 use crate::provider::uname::UnameProvider;
 #[cfg(target_os = "macos")]
@@ -66,6 +68,8 @@ impl ProviderRegistry {
         registry.register(Box::new(CondaProvider));
         registry.register(Box::new(MiseProvider));
         registry.register(Box::new(AsdfProvider));
+        registry.register(Box::new(SudoProvider));
+        registry.register(Box::new(OpProvider));
         registry
     }
 
@@ -90,6 +94,8 @@ impl ProviderRegistry {
             ("conda", Box::new(CondaProvider)),
             ("mise", Box::new(MiseProvider)),
             ("asdf", Box::new(AsdfProvider)),
+            ("sudo", Box::new(SudoProvider)),
+            ("op", Box::new(OpProvider)),
         ];
 
         #[cfg(target_os = "macos")]

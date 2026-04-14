@@ -411,7 +411,12 @@ fn get_push_divergence(dir: &Path, branch: &str) -> (i64, i64) {
 
     // Check the ref exists before rev-list
     let check = Command::new("git")
-        .args(["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{refspec}")])
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/{refspec}"),
+        ])
         .current_dir(dir)
         .output();
     match check {
@@ -420,7 +425,12 @@ fn get_push_divergence(dir: &Path, branch: &str) -> (i64, i64) {
     }
 
     let output = Command::new("git")
-        .args(["rev-list", "--count", "--left-right", &format!("HEAD...{refspec}")])
+        .args([
+            "rev-list",
+            "--count",
+            "--left-right",
+            &format!("HEAD...{refspec}"),
+        ])
         .current_dir(dir)
         .output();
 

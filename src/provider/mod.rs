@@ -12,9 +12,11 @@ pub mod library;
 pub mod load;
 pub mod mise;
 pub mod network;
+pub mod op;
 pub mod python;
 pub mod registry;
 pub mod script;
+pub mod sudo;
 pub mod terraform;
 pub mod uname;
 #[cfg(target_os = "macos")]

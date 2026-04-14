@@ -6,6 +6,7 @@ pub enum Format {
     #[default]
     Json,
     Text,
+    Sh,
 }
 
 #[derive(Debug, Clone, Deserialize)]

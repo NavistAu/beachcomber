@@ -289,7 +289,10 @@ fn git_provider_commit_summary() {
     let p = GitProvider;
     let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
     let summary = result.get("commit_summary").unwrap().as_text();
-    assert_eq!(summary, "init", "commit_summary should be the first commit message");
+    assert_eq!(
+        summary, "init",
+        "commit_summary should be the first commit message"
+    );
 }
 
 #[test]

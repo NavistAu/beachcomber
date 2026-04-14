@@ -313,15 +313,30 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        let xdg = xdg::BaseDirectories::with_prefix("beachcomber");
-
-        match xdg.find_config_file("config.toml") {
+        match Self::config_path_if_exists() {
             Some(path) => {
                 let content = std::fs::read_to_string(&path).unwrap_or_default();
                 toml::from_str(&content).unwrap_or_default()
             }
             None => Self::default(),
         }
+    }
+
+    /// Return the default config file path (may not exist).
+    pub fn config_path() -> std::path::PathBuf {
+        let xdg = xdg::BaseDirectories::with_prefix("beachcomber");
+        xdg.get_config_home()
+            .unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_default();
+                std::path::PathBuf::from(format!("{home}/.config/beachcomber"))
+            })
+            .join("config.toml")
+    }
+
+    /// Return the config file path if it exists.
+    pub fn config_path_if_exists() -> Option<std::path::PathBuf> {
+        let xdg = xdg::BaseDirectories::with_prefix("beachcomber");
+        xdg.find_config_file("config.toml")
     }
 
     /// Load environment variables from the configured env file (or default path).
