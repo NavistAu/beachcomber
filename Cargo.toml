@@ -3,7 +3,7 @@ members = [".", "beachcomber-client"]
 
 [package]
 name = "beachcomber"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "A centralized daemon that caches shell state (git, battery, hostname, etc.) so every consumer reads from one fast cache instead of independently forking shells"
 license = "MIT"
