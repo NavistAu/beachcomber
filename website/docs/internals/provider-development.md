@@ -20,9 +20,9 @@ pub trait Provider: Send + Sync {
 }
 ```
 
-**`metadata()`** is called at registration time and on every `comb list` request. It must be fast and allocation-light (it currently allocates; a future optimisation may switch to `Cow<'static, str>`). Return a `ProviderMetadata` describing:
+**`metadata()`** is called at registration time and on every `comb l` request. It must be fast and allocation-light (it currently allocates; a future optimisation may switch to `Cow<'static, str>`). Return a `ProviderMetadata` describing:
 
-- `name`: the provider's key used in `comb get <name>.<field>`
+- `name`: the provider's key used in `comb g <name>.<field>`
 - `fields`: a list of `FieldSchema { name, field_type }` describing what fields `execute()` will populate
 - `invalidation`: when the cached value should be refreshed (see §3)
 - `global`: `true` if the provider ignores the `path` argument (e.g., `hostname`, `user`); `false` if it is path-scoped (e.g., `git`, `terraform`)
@@ -154,8 +154,8 @@ enabled = false
 ### 2.4 Use it
 
 ```bash
-comb get dockercontext.name
-comb get dockercontext.endpoint
+comb g dockercontext.name
+comb g dockercontext.endpoint
 ```
 
 ### 2.5 Write a test
@@ -577,4 +577,4 @@ type = "library"
 library_path = "/path/to/libhello.so"
 ```
 
-Test: `comb get hello.value -f text` → `hello from C`
+Test: `comb g hello.value` → `hello from C`

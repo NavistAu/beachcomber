@@ -51,7 +51,7 @@ command = "node --version | tr -d v"
 output = "text"
 ```
 
-Then query with `comb get node_version.value -f text`.
+Then query with `comb g node_version.value` (`g` = get, text is the default format).
 
 ## Invalidation Strategies
 
@@ -119,7 +119,7 @@ output = "json"
 poll = "30s"
 ```
 
-Query: `comb get docker_context.context -f text`
+Query: `comb g docker_context.context`
 
 **Node.js version provider (path-scoped):**
 ```sh
@@ -160,7 +160,7 @@ watch = [".ruby-version", "Gemfile", ".tool-versions"]
 poll = "120s"
 ```
 
-Query: `comb get ruby_version.value -f text`
+Query: `comb g ruby_version.value`
 
 **VPN connected check:**
 ```sh
@@ -193,7 +193,7 @@ output = "kv"
 poll = "10s"
 ```
 
-Query: `comb get vpn.active -f text`
+Query: `comb g vpn.active`
 
 ## HTTP Providers
 
@@ -211,7 +211,7 @@ extract = "status"
 invalidation = { poll = "60s" }
 ```
 
-Query: `comb get claude_status.indicator -f text` returns `"none"`, `"minor"`, `"major"`, etc.
+Query: `comb g claude_status.indicator` returns `"none"`, `"minor"`, `"major"`, etc.
 
 The `extract` field navigates into the JSON response using dot-separated paths. Without it, the entire response object becomes the provider's fields.
 
@@ -226,7 +226,7 @@ extract = "rate"
 invalidation = { poll = "30s" }
 ```
 
-Query: `comb get github_rate.remaining -f text`
+Query: `comb g github_rate.remaining`
 
 Header values support `${ENV_VAR}` expansion — secrets stay in your environment, not in config files.
 
@@ -251,7 +251,7 @@ extract = "rates.AUD"
 invalidation = { poll = "86400s" }
 ```
 
-Query: `comb get exchange.value -f text` — returns the AUD rate, refreshed daily.
+Query: `comb g exchange.value` — returns the AUD rate, refreshed daily.
 
 **Comparison — script vs HTTP for the same task:**
 
@@ -272,6 +272,16 @@ invalidation = { poll = "60s" }
 ```
 
 Both produce the same result. The HTTP version skips the ~5ms process spawn overhead and handles connection failures more gracefully.
+
+### Failure handling and timeouts
+
+HTTP providers share the same lifecycle as script providers:
+
+- **`provider_timeout_secs`** (default `10`, set under `[daemon]`) — the maximum time a single request may take. Requests that exceed this are cancelled and the last good cached value is retained.
+- **`failure_reattempts`** (default `3`) — the number of consecutive failures before the provider enters exponential backoff (up to 60s). Applies to any non-2xx response, connection error, or timeout.
+- **`failure_backoff_interval`** (default `"1s"`) — the wait between retry attempts before backoff kicks in.
+
+All three can be overridden per-provider under `[providers.<name>]`. A transient 5xx or network error will not remove the last cached value — consumers will see `stale: true` in the envelope once the value is past its expected refresh time.
 
 ## Shared Library Providers
 
@@ -349,7 +359,7 @@ security find-generic-password -s beachcomber -w > ~/.config/beachcomber/env
 vault kv get -field=env secret/beachcomber > ~/.config/beachcomber/env
 ```
 
-Then `chmod 600` and restart the daemon (`pkill -f 'comb daemon'` — it socket-activates on next query).
+Then `chmod 600` and restart the daemon (`comb kill` — it socket-activates on next query).
 
 ## Script Provider Tips
 

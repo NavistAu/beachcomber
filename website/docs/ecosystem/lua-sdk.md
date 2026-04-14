@@ -127,6 +127,10 @@ Close the underlying socket.
 | `result:is_hit()` | boolean | True when `data ~= nil` |
 | `result:get_str(field)` | string\|nil, error | Get a string field from object data |
 
+## Unsupported operations
+
+The `store` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for store, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+
 ## Socket path discovery
 
 The SDK looks for the daemon socket in this order:

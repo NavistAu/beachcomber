@@ -215,33 +215,33 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [x] comb watch <key> [path] — server-push streaming over long-lived connections. NDJSON line emitted on each cache update for the watched key. Subsumes the push/streaming mode item.
 - [x] Git provider: `commit_summary` field — first line of HEAD commit message. Enables WIP detection in prompt integrations (p10k checks for "wip"/"WIP" in the summary).
 - [x] Git provider: `push_ahead` and `push_behind` fields — commits ahead/behind the push remote (as distinct from the tracking remote). Used by p10k and starship for push remote indicators.
-- [ ] `sudo` provider — detect whether the user has an active sudo timestamp (`/var/run/sudo/ts/$USER` on Linux, `/var/db/sudo/` on macOS). Global, poll. Useful as a prompt indicator for elevated privilege awareness.
-- [ ] `op` provider — detect active 1Password CLI session. Check agent socket liveness or `op whoami` state. Global, poll. Useful for prompt indicators showing authenticated credential access.
+- [x] `sudo` provider — detect whether the user has an active sudo timestamp (`/var/run/sudo/ts/$USER` on Linux, `/var/db/sudo/` on macOS). Global, poll. Useful as a prompt indicator for elevated privilege awareness.
+- [x] `op` provider — detect active 1Password CLI session. Check agent socket liveness or `op whoami` state. Global, poll. Useful for prompt indicators showing authenticated credential access.
 - [x] Synchronous cache miss — when `comb get` hits a cold cache, execute the provider inline and return the result instead of returning empty and waiting for the next poll. Accept slightly higher latency on the first query rather than returning blank. Critical for prompt integrations where a blank first prompt looks broken.
 
 ### CLI Ergonomics
 
 - [x] Command shorthands — `comb g` = `comb get`, `comb r` = `comb refresh`, `comb w` = `comb watch`, `comb s` = `comb status`, `comb l` = `comb list`, `comb p` = `comb put`, `comb d` = `comb daemon`.
 - [x] Rename `comb store` to `comb put` and `comb poke` to `comb refresh` (shorter, clearer verbs).
-- [ ] Format suffix syntax on get — `comb get.text git.branch .` or `comb g.t git.branch .`. Avoids the `-f` flag entirely.
-- [ ] New output format: `sh` (shell) — outputs `name=val` pairs (the current `text` format for objects). `text` becomes just the raw value with no key prefix. `sh` is sourceable in shell scripts.
-- [ ] New output formats: `csv`/`tsv` (values only), `CSV`/`TSV` (with header row). For multi-field provider queries.
-- [ ] New output format: `fmt` (alias: `format`) — takes a printf-style format string as an argument, applies it per field/row. e.g. `-f fmt '$1=$2\n'` where `$1` is key and `$2` is value. User controls separators and newlines explicitly.
-- [ ] `comb eval` — printf-style template interpolation. e.g. `comb eval "branch: {git.branch} load: {load.one}" .` — resolves all referenced keys in a single connection and returns the formatted string.
-- [ ] Batch get — single command to query multiple keys in one connection. Needs a good single word with a unique first letter (not g/p/w/s/l/d/e). Candidates: `fetch`, `bulk`, `query`, `ask`.
-- [ ] Field metadata access — allow querying metadata about cached values via a delimiter syntax on the key. e.g. `comb g.t git.branch:age` or `git.branch.age` returns how old the cached value is. Metadata fields: `age`, `stale`, `source`. Avoids needing a separate `comb age` command.
-- [ ] Help screen branding — copyright byline, NavistAu authorship, project URL, tagline, license info in `comb --help` and `comb --version` output.
+- [x] Format suffix syntax on get — `comb g git.branch .`. Avoids the `-f` flag entirely. Text is the default (no suffix). Suffixes: `.s` (shell key=value), `.t` (tsv), `.T` (TSV with header), `.f` (template), `.c` (csv), `.C` (CSV with header), `.j` (json).
+- [x] New output format: `sh` (shell) — outputs `name=val` pairs (the current `text` format for objects). `text` becomes just the raw value with no key prefix. `sh` is sourceable in shell scripts.
+- [x] New output formats: `csv`/`tsv` (values only), `CSV`/`TSV` (with header row). For multi-field provider queries.
+- [x] New output format: `fmt` — takes a `{field_name}` template string as an argument, applies it per field. e.g. `comb g.f '{branch} ({dirty})' git .`. Uses brace interpolation, not printf.
+- [x] `comb eval` — template interpolation. e.g. `comb eval "branch: {git.branch} load: {load.one}" .` — resolves all referenced keys in a single connection and returns the formatted string. Alias: `e`.
+- [x] Batch get — `comb fetch` (alias `f`). Single command to query multiple keys in one connection. Format-aware output.
+- [x] Field metadata access — colon delimiter on key: `comb g git.branch:age` returns the cache age in milliseconds. Metadata fields: `age`, `stale`, `source`.
+- [x] Help screen branding — NavistAu authorship, project URL, tagline, MIT license in `comb --help` and `comb --version` output. Format suffix usage hint in after-help.
 
 ### Shell Integration
 
-- [ ] `chpwd` hook — documented zsh/bash hook that pokes path-scoped providers on directory change. Warms git, mise, terraform, python caches before the first prompt renders in a new directory.
-- [ ] `comb` polyfill function — a POSIX shell function that wraps `comb` with transparent fallback to native tools when comb is not installed. Enables upstream integrations (oh-my-tmux, starship, etc.) to adopt comb without requiring it as a hard dependency. Central fallback definition rather than per-integration fallback logic.
-- [ ] `comb init` — auto-detect installed tools (oh-my-tmux, p10k, starship, neovim, etc.) and suggest integrations. For standard setups, scaffold the config. For non-standard setups, output useful snippets, link to the website, and show a QR code. Graceful degradation rather than trying to handle every edge case.
+- [x] `chpwd` hook — standalone `scripts/chpwd.sh` for zsh/bash/fish. Pokes path-scoped providers on directory change. Curl-able from beachcomber.sh.
+- [x] `comb` polyfill function — standalone `scripts/polyfill.sh`. POSIX shell function wrapping `comb` with transparent fallback to native tools for known keys (git, hostname, load, battery, user).
+- [x] `comb init` — auto-detect installed tools (p10k, starship, oh-my-tmux, tmux, neovim, polybar, waybar, sketchybar, oh-my-zsh) and print integration snippets. Alias: `i`.
 
 ### Health and Diagnostics
 
-- [ ] `comb check` — health check command (replaces the `diagnose` concept). Broad scope: daemon connectivity, provider health, stale cache entries, config validation, backoff state. Subcommands for specific diagnostics.
-- [ ] `comb check procs` (or similar subcommand) — process exec tracing (`eslogger exec` on macOS) that captures subprocess spawns over a sample window, categorizes them against known providers, and reports which tools are forking the most and what beachcomber could replace.
+- [x] `comb check` — health check command with subcommands: `all`, `daemon`, `config`, `providers`, `cache`, `procs`. Text report with PASS/WARN/FAIL indicators. Alias: `c`.
+- [x] `comb check procs` — process exec tracing (`eslogger exec` on macOS, `/proc` scanning on Linux) that captures subprocess spawns over a sample window, categorizes them against known provider domains, and reports replacement opportunities.
 
 ### Additional Providers
 

@@ -157,6 +157,10 @@ All operations that return data return a `comb_result_t *`. Always free it with 
 
 For scalar results, pass `NULL` (or any field name) to `comb_result_get_str`. For object results, pass the field name to select a member.
 
+## Unsupported operations
+
+The `store` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for store, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+
 ## Socket discovery
 
 1. `$XDG_RUNTIME_DIR/beachcomber/sock`

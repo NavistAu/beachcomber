@@ -100,6 +100,10 @@ Opens a fresh socket connection for each call. Simple and stateless.
 
 All inherit from `Beachcomber::Error < StandardError`.
 
+## Unsupported operations
+
+The `store` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for store, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+
 ## Socket discovery
 
 1. `$XDG_RUNTIME_DIR/beachcomber/sock` — if the variable is set and the path exists

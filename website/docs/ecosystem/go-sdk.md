@@ -139,6 +139,10 @@ dirty, _  := result.GetBool("dirty")     // false
 | `*ServerError` | Daemon responded with `ok: false` |
 | `*ProtocolError` | Response could not be parsed |
 
+## Unsupported operations
+
+The `store` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for store, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+
 ## Socket discovery
 
 The SDK discovers the daemon socket at:

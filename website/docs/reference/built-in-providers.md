@@ -5,7 +5,7 @@ title: Built-in Providers
 
 # Built-in Providers
 
-beachcomber ships 16 built-in providers organized by category.
+beachcomber ships 19 built-in providers organized by category.
 
 ## System
 
@@ -17,6 +17,8 @@ beachcomber ships 16 built-in providers organized by category.
 | `uptime` | global | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
 | `battery` | global | `percent` (int), `charging` (bool), `time_remaining` (int, seconds) | poll 30s / floor 5s | 6 ms |
 | `network` | global | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
+| `sudo` | global | `active` (bool) | poll 30s | < 1 µs |
+| `op` | global | `signed_in` (bool), `account` (string) | poll 60s | varies |
 
 **Platform notes:**
 
@@ -27,14 +29,14 @@ beachcomber ships 16 built-in providers organized by category.
 **Example output:**
 
 ```json
-// comb get battery
+// comb g battery
 {
   "ok": true,
   "data": { "percent": 78, "charging": false, "time_remaining": 7200 },
   "age_ms": 4200
 }
 
-// comb get network
+// comb g network
 {
   "ok": true,
   "data": {
@@ -48,7 +50,7 @@ beachcomber ships 16 built-in providers organized by category.
   "age_ms": 3100
 }
 
-// comb get load
+// comb g load
 {
   "ok": true,
   "data": { "one": 2.34, "five": 1.87, "fifteen": 1.42 },
@@ -94,7 +96,7 @@ beachcomber ships 16 built-in providers organized by category.
 **Example output:**
 
 ```json
-// comb get git .
+// comb g git .
 {
   "ok": true,
   "data": {
@@ -126,7 +128,7 @@ beachcomber ships 16 built-in providers organized by category.
   "age_ms": 234
 }
 
-// comb get git.branch . -f text
+// comb g git.branch .    (g = get, text is the default format)
 feature/fast-cache
 ```
 
@@ -144,14 +146,14 @@ feature/fast-cache
 **Example output:**
 
 ```json
-// comb get kubecontext
+// comb g kubecontext
 {
   "ok": true,
   "data": { "context": "prod-cluster", "namespace": "default" },
   "age_ms": 15200
 }
 
-// comb get aws
+// comb g aws
 {
   "ok": true,
   "data": { "profile": "work-prod", "region": "us-east-1" },
@@ -172,7 +174,7 @@ feature/fast-cache
 **Example output:**
 
 ```json
-// comb get mise .
+// comb g mise .
 {
   "ok": true,
   "data": {
@@ -185,7 +187,7 @@ feature/fast-cache
   "age_ms": 890
 }
 
-// comb get python .
+// comb g python .
 {
   "ok": true,
   "data": { "venv": true, "venv_name": ".venv", "version": "3.12.1" },

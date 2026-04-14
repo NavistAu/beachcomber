@@ -36,7 +36,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | `op` | string | Operation: `get`, `poke`, `context`, `list`, `status`, `store`, `watch` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
-| `format` | string | Response format: `"json"` (default) or `"text"` |
+| `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`, `"csv"`, `"tsv"`, `"CSV"`, `"TSV"`, `"fmt"` |
 
 ## Response Format
 
@@ -80,7 +80,7 @@ Response: `{"ok":true}`
 
 Returns an error if the key conflicts with a built-in or script provider.
 
-**`watch`:** Stream cache updates for a key. The server holds the connection open and emits a response line on each cache update for the watched key. An optional `path` scopes the watch to a directory. An optional `format` field accepts `"text"` for raw value output.
+**`watch`:** Stream cache updates for a key. The server holds the connection open and emits a response line on each cache update for the watched key. An optional `path` scopes the watch to a directory. An optional `format` field accepts any of the supported format values (see Request Format table).
 
 ```json
 {"op":"watch","key":"git.branch","path":"/project"}
@@ -100,7 +100,15 @@ The first line is emitted immediately with the current cached value (or a null d
 
 When `"format": "text"` is specified:
 - Single field queries return the raw value followed by `\n` (e.g., `main\n`)
+- Full provider queries return raw values only, one per line, sorted alphabetically by field name
+- Errors return nothing on stdout; `ok` is false in the JSON response
+
+## Shell Format
+
+When `"format": "sh"` is specified:
+- Single field queries return `key=value\n` (suitable for shell `eval` or `source`)
 - Full provider queries return `key=value` lines sorted alphabetically, one per line, terminated with `\n`
+- Values are not quoted — consumers are responsible for safe handling of whitespace in field values
 - Errors return nothing on stdout; `ok` is false in the JSON response
 
 ## Connection Context Example

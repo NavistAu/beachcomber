@@ -14,7 +14,7 @@ cargo test
 The binary is `comb` (not `beachcomber`):
 
 ```sh
-cargo run -- get hostname.name -f text
+cargo run -- get hostname.name
 ```
 
 ## Development

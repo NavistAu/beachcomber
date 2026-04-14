@@ -171,7 +171,7 @@ beachcomber is the centralized state cache that every prompt tool independently 
 ## Integration Opportunities (by priority)
 
 1. **Starship** — Highest value. 55k stars, no caching, async git is the #1 feature request. A beachcomber-aware starship module would eliminate its biggest performance limitation.
-2. **tmux** — Direct replacement for `#(sh -s ...)` shell forks. Drop-in via `#(comb get battery.percent -f text)`.
+2. **tmux** — Direct replacement for `#(sh -s ...)` shell forks. Drop-in via `#(comb g battery.percent)`.
 3. **oh-my-posh** — Could use beachcomber as an external cache backend with event-driven invalidation instead of TTL.
 4. **neovim** — Replace gitsigns' per-buffer git watching with a single beachcomber subscription.
 5. **direnv** — beachcomber wraps `direnv export json` and makes the result available to all consumers.

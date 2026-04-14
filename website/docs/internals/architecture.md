@@ -5,7 +5,7 @@ title: Architecture
 
 # beachcomber Architecture
 
-Internal reference for contributors. Describes how the daemon (`comb daemon`) is structured, how components relate, and the reasoning behind key design choices.
+Internal reference for contributors. Describes how the daemon (`comb d`) is structured, how components relate, and the reasoning behind key design choices.
 
 ---
 
@@ -30,7 +30,7 @@ Data flow summary:
 
 - **Read path**: client -> Server -> Cache.get() -> response (no provider involved)
 - **Write path**: trigger (fs event or poll timer) -> Scheduler -> spawn_blocking(provider.execute()) -> Cache.put()
-- **Miss path**: client asks for uncached key -> Server sends Poke to Scheduler -> Scheduler fires provider -> client retries or polls
+- **Miss path**: client asks for uncached key -> Server executes provider inline (synchronous, blocking) -> result written to Cache -> response returned to client
 
 The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Server sends messages to the Scheduler over an `mpsc::Sender<SchedulerMessage>`. The Scheduler owns the `FsWatcher` and all demand/poll state.
 
@@ -58,21 +58,21 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/provider/http.rs` | `HttpProvider`: in-process HTTP client for REST API providers; `extract` for JSON path navigation |
 | `src/client.rs` | `Client` (one-shot) and `ClientSession` (persistent) for consumer-side socket communication |
 
-The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`) follow the same pattern as `git.rs` — each implements `Provider` for a specific domain.
+The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`, `sudo`, `op`) follow the same pattern as `git.rs` — each implements `Provider` for a specific domain.
 
 ---
 
-## 3. Request Lifecycle: `comb get git.branch . -f text`
+## 3. Request Lifecycle: `comb g git.branch .`
 
 This traces the full path from CLI invocation to output on stdout.
 
 **Step 1: CLI entry point**
 
-The `comb get` subcommand resolves the socket path (XDG runtime dir or `$TMPDIR/beachcomber-$UID/sock`). If no socket exists, it calls `daemon::ensure_daemon()` which forks `comb daemon --socket <path>` as a detached child and waits up to ~1.5s for the socket to appear.
+The `comb g` subcommand resolves the socket path (XDG runtime dir or `$TMPDIR/beachcomber-$UID/sock`). If no socket exists, it calls `daemon::ensure_daemon()` which forks `comb d --socket <path>` as a detached child and waits up to ~1.5s for the socket to appear.
 
 **Step 2: Socket connection**
 
-The client opens a Unix stream to the socket. For a one-shot `comb get`, this is a fresh connection. For `ClientSession` consumers (prompts, status bars), the connection is reused.
+The client opens a Unix stream to the socket. For a one-shot `comb g`, this is a fresh connection. For `ClientSession` consumers (prompts, status bars), the connection is reused.
 
 **Step 3: Request serialisation**
 
@@ -112,7 +112,7 @@ The client reads the response line, strips metadata, and writes the plain text t
 
 **On a cache miss:**
 
-The server returns `Response::miss()` (ok=true, no data). The CLI treats this as an empty result or, in interactive use, sends a `Poke` request to trigger a fresh execution, then polls with exponential backoff until a value appears or a timeout is reached.
+The server executes the provider inline, synchronously, before returning the response. The provider runs via `spawn_blocking` on the blocking thread pool and the server task awaits the result. Once execution completes, the result is written to the cache and returned to the client in the same response. Subsequent requests for the same key hit the cache immediately.
 
 ---
 

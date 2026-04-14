@@ -53,11 +53,11 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/provider/http.rs` | `HttpProvider`: in-process HTTP client for REST API providers; `extract` for JSON path navigation |
 | `src/client.rs` | `Client` (one-shot) and `ClientSession` (persistent) for consumer-side socket communication |
 
-The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`) follow the same pattern as `git.rs` — each implements `Provider` for a specific domain.
+The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`, `sudo`, `op`) follow the same pattern as `git.rs` — each implements `Provider` for a specific domain.
 
 ---
 
-## 3. Request Lifecycle: `comb get git.branch . -f text`
+## 3. Request Lifecycle: `comb get git.branch .`
 
 This traces the full path from CLI invocation to output on stdout.
 

@@ -128,3 +128,7 @@ For full provider results, `result["field"]` delegates to the underlying dict.
 | `ServerError` | Daemon returns `ok: false` |
 | `ProtocolError` | Malformed JSON or I/O failure |
 | `CombError` | Base class for all SDK errors |
+
+## Unsupported operations
+
+The `store` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for store, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.

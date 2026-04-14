@@ -115,6 +115,10 @@ match result {
 
 `data` provides typed accessors: `as_text()`, `get_str(field)`, `get_bool(field)`, `get_i64(field)`, `get_f64(field)`.
 
+## Unsupported operations
+
+The `store` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for store, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+
 ## Socket discovery
 
 The SDK discovers the daemon socket at:

@@ -60,6 +60,20 @@ Each SDK follows its own language ecosystem versioning. SDK versions are indepen
 
 Standard Rust API compatibility rules apply. Public API changes follow [the Cargo SemVer reference](https://doc.rust-lang.org/cargo/reference/semver.html).
 
+### Shared Library Provider C ABI
+
+The C ABI documented in [Provider Development §7](/docs/internals/provider-development#7-shared-library-providers) is a public binary interface. The three exported symbols — `beachcomber_provider_metadata`, `beachcomber_provider_execute`, `beachcomber_provider_free` — and their signatures are covered by the same stability guarantees as the wire protocol.
+
+| Change | Version bump |
+|---|---|
+| Add a new optional exported symbol | Minor |
+| Extend the metadata JSON schema with new optional fields | Minor |
+| Change the signature of an exported symbol | **Major** |
+| Change the ownership/free contract | **Major** |
+| Change how the daemon locates and loads libraries | **Major** |
+
+Libraries built against version _X.Y_ of the ABI are expected to keep loading on any _X.Z_ daemon without recompilation.
+
 ## What Is Not a Public Surface
 
 These may change in any release without a version bump:

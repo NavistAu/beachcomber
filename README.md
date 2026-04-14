@@ -43,55 +43,43 @@ Every shell, every editor plugin, every status bar, every prompt framework is in
 ## Quick Look
 
 ```
-$ comb get git .
+$ comb g git.branch .          # g = get, text is the default format
+main
+
+$ comb g hostname.short
+Project2501
+
+$ comb g battery.percent
+85
+
+$ comb g.s git .                # .s = shell format (key=value, sourceable)
+branch=main
+dirty=true
+staged=2
+ahead=0
+behind=0
+stash=1
+
+$ comb g git .                   # default: full JSON response
 {
   "ok": true,
   "data": {
     "branch": "main",
     "commit": "a1b2c3d",
-    "detached": false,
-    "upstream": "origin/main",
-    "tag": "v0.4.0",
     "dirty": true,
     "staged": 2,
     "unstaged": 1,
     "untracked": 4,
-    "conflicted": 0,
     "ahead": 0,
     "behind": 0,
     "stash": 1,
-    "lines_added": 47,
-    "lines_removed": 12,
-    "lines_staged_added": 23,
-    "lines_staged_removed": 5,
-    "state": "clean",
-    "state_step": 0,
-    "state_total": 0,
-    "last_commit_age_secs": 3420
+    "state": "clean"
   },
   "age_ms": 120,
   "stale": false
 }
 
-$ comb get git.branch . -f text
-main
-
-$ comb get hostname.short -f text
-Project2501
-
-$ comb get battery
-{
-  "ok": true,
-  "data": {
-    "percent": 85,
-    "charging": true,
-    "time_remaining": 0
-  },
-  "age_ms": 8400,
-  "stale": false
-}
-
-$ comb status
+$ comb s                         # status
 {
   "uptime_secs": 3642,
   "cache_entries": 12,
@@ -99,6 +87,8 @@ $ comb status
   "demand": 8
 }
 ```
+
+All commands use single-letter shorthands (`g` get, `s` status, `r` refresh, `w` watch, `l` list, `p` put, `e` eval, `f` fetch, `i` init, `c` check, `d` daemon). Format suffixes (`.s` shell, `.t` tsv, `.T` TSV+header, `.f` template, `.c` csv, `.C` CSV+header, `.j` json) replace the `-f` flag. Text is the default — `comb g` and `comb g git.branch .` both return plain text. Long forms always work too: `comb get git.branch . -f text` is the same as `comb g git.branch .`
 
 ---
 
@@ -110,7 +100,7 @@ $ comb status
 - [Configuration Reference](#configuration-reference)
 - [Built-in Providers Reference](#built-in-providers-reference)
 - [Consumer Integration](#consumer-integration)
-- [Shell Fallback Function](#shell-fallback-function)
+- [Shell Fallback & Integration Scripts](#shell-fallback--integration-scripts)
 - [Client SDKs](#client-sdks)
 - [Custom Providers Guide](#custom-providers-guide)
 - [Debugging](#debugging)
@@ -203,13 +193,13 @@ The daemon starts automatically on first use — no setup required.
 
 ```sh
 # Query your current git branch (run from inside a git repo)
-comb get git.branch . -f text
+comb g git.branch .
 
 # Query battery
-comb get battery.percent -f text
+comb g battery.percent
 
 # Check daemon status
-comb status
+comb s
 ```
 
 That's it. The daemon started in the background when you ran that first query.
@@ -219,11 +209,11 @@ That's it. The daemon started in the background when you ran that first query.
 ```sh
 # Add to ~/.zshrc
 precmd() {
-    PS1="%F{blue}$(comb get git.branch . -f text 2>/dev/null)%f %# "
+    PS1="%F{blue}$(comb g git.branch . 2>/dev/null)%f %# "
 }
 ```
 
-Source your `.zshrc` and open a few more shells. Then run `comb status` — you'll see the cache entry being shared across all shells, with a single filesystem watcher covering all of them.
+Source your `.zshrc` and open a few more shells. Then run `comb s` — you'll see the cache entry being shared across all shells, with a single filesystem watcher covering all of them.
 
 ---
 
@@ -258,51 +248,43 @@ graph TB
 
 **Providers are never re-executed on every query.** A git status is computed once when `.git` changes, then served from cache to every reader — whether that's one prompt or a hundred tmux panes. The filesystem watcher is registered once for all concurrent readers.
 
-**Connection context** means consumers can set a working directory once on connect. `comb get git.branch` without an explicit path uses the connection's context directory, making prompt integration natural.
+**Connection context** means consumers can set a working directory once on connect. `comb g git.branch` without an explicit path uses the connection's context directory, making prompt integration natural.
 
 **Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a backoff/drain sequence after queries stop — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
 
-**Virtual providers and streaming:** external processes can also write data into the cache via `comb put`, exposing arbitrary state to prompt and statusline consumers without writing a script provider. Long-lived connections can stream changes via `comb watch`, receiving an NDJSON line each time a cache value is updated.
+**Virtual providers and streaming:** external processes can also write data into the cache via `comb p`, exposing arbitrary state to prompt and statusline consumers without writing a script provider. Long-lived connections can stream changes via `comb w`, receiving an NDJSON line each time a cache value is updated.
 
 ---
 
 ## CLI Reference
 
-All commands are subcommands of `comb`. The daemon is socket-activated — you never need to start it manually.
+All commands are subcommands of `comb`. The daemon is socket-activated — you never need to start it manually. All commands have single-letter shorthands and format suffixes — see the Quick Look above for the pattern.
 
-### `comb get <key> [path] [-f format]` (alias: `g`)
+### `comb g` (get) `<key> [path]`
 
 Query a cached value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay.
 
 ```sh
-# Query a specific field from a path-scoped provider
-comb get git.branch /path/to/repo
-comb get git.branch .          # relative path resolved to absolute
+# Format suffixes on the command control output format
+comb g git.branch .            # text: raw value → main (default)
+comb g.s git .                  # shell: key=value pairs → branch=main\ndirty=false\n...
+comb g.j git .                   # json: full response with metadata
+comb g.c git .                   # csv: comma-separated values
+comb g.C git .                   # CSV: with header row
+comb g.t git .                   # tsv: tab-separated values
+comb g.T git .                   # TSV: with header row
+comb g.f '{branch} ({dirty})' git .  # template: → main (false)
 
-# Query a field from a global provider (no path needed)
-comb get battery.percent
-comb get hostname.short
+# Long form always works too (default format is text, so -f is usually unnecessary)
+comb get git.branch .            # same as comb g git.branch .
 
-# Query the entire provider (all fields)
-comb get git .
-comb get battery
+# Global providers (no path needed)
+comb g battery.percent
+comb g hostname.short
 
-# Output formats
-comb get git.branch . -f text   # prints: main
-comb get git.branch . -f json   # prints: full JSON response (default)
-
-# Multi-field text output (key=value lines)
-comb get git . -f text
-# prints:
-# ahead=0
-# behind=0
-# branch=main
-# dirty=false
-# staged=0
-# stash=0
-# state=clean
-# untracked=2
-# unstaged=0
+# Field metadata — append :age, :stale, or :source to any key
+comb g git.branch:age          # cache age in milliseconds
+comb g git.branch:stale        # whether value is past refresh time
 ```
 
 **Exit codes:**
@@ -310,44 +292,39 @@ comb get git . -f text
 - `1` — cache miss (provider has no data yet)
 - `2` — error (daemon unreachable, unknown provider, invalid key)
 
-### `comb refresh <key> [path]` (alias: `r`)
+### `comb r` (refresh) `<key> [path]`
 
-Trigger immediate recomputation of a provider. Returns immediately after acknowledging the request — does not wait for the result. The next `get` will return the fresh value.
+Trigger immediate recomputation of a provider. Returns immediately after acknowledging the request — does not wait for the result. The next `g` will return the fresh value.
 
 ```sh
-# Force git status refresh after a branch switch
-comb refresh git .
-
-# Force network info refresh after connecting to VPN
-comb refresh network
-
-# After modifying kubeconfig manually
-comb refresh kubecontext
+comb r git .              # force git refresh after a branch switch
+comb r network            # after connecting to VPN
+comb r kubecontext        # after modifying kubeconfig
 ```
 
 **Exit codes:** `0` on success, `2` on error.
 
-### `comb status` (alias: `s`)
+### `comb s` (status)
 
 Show daemon health and statistics.
 
 ```sh
-$ comb status
+$ comb s
 {
   "uptime_secs": 7234,
   "cache_entries": 14,
   "active_watchers": 4,
-  "providers": 16,
+  "providers": 19,
   "requests_total": 184291
 }
 ```
 
-### `comb list` (alias: `l`)
+### `comb l` (list)
 
 Show all active providers and their cached state age.
 
 ```sh
-$ comb list
+$ comb l
 {
   "entries": [
     { "key": "git", "path": "/Users/me/project", "age_ms": 1240 },
@@ -357,62 +334,137 @@ $ comb list
 }
 ```
 
-### `comb daemon [--socket <path>]` (alias: `d`)
+### `comb d` (daemon) `[--socket <path>]`
 
 Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
 
 ```sh
-# Run with debug logging
-BEACHCOMBER_LOG=debug comb daemon
-
-# Override socket path
-comb daemon --socket /tmp/beachcomber-debug.sock
+BEACHCOMBER_LOG=debug comb d                          # debug logging
+comb d --socket /tmp/beachcomber-debug.sock            # override socket path
 ```
 
 The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 
-### `comb put <key> <json-data> [--ttl <duration>] [--path <path>]` (alias: `p`)
+### `comb p` (put) `<key> <json-data> [--ttl <duration>] [--path <path>]`
 
 Write data into the cache as a virtual provider. External processes can use this to expose state to prompt/statusline consumers without writing a script provider.
 
 ```sh
-# Store application status
-comb put myapp '{"status":"healthy","version":"1.2.3"}'
-
-# Store with TTL — consumers see staleness if writer stops updating
-comb put myapp '{"status":"healthy"}' --ttl 30s
-
-# Store with path scope
-comb put myapp '{"status":"building"}' --path /home/user/project
+comb p myapp '{"status":"healthy","version":"1.2.3"}'
+comb p myapp '{"status":"healthy"}' --ttl 30s             # with TTL
+comb p myapp '{"status":"building"}' --path ~/project     # path-scoped
 ```
 
-Virtual providers are read with standard `comb get`:
+Read back with `comb g`:
 
 ```sh
-comb get myapp.status        # "healthy"
-comb get myapp               # {"status":"healthy","version":"1.2.3"}
+comb g myapp.status        # → healthy
+comb g myapp                 # → full JSON
 ```
 
-Namespace hierarchy prevents shadowing built-in or script providers — `comb put git '...'` is rejected.
+Namespace hierarchy prevents shadowing built-in or script providers — `comb p git '...'` is rejected.
 
-### `comb watch <key> [--path <path>] [-f format]` (alias: `w`)
+### `comb w` (watch) `<key> [--path <path>]`
 
 Stream cache changes to stdout. Opens a long-lived connection and emits an NDJSON line each time the watched key is updated.
 
 ```sh
-# Watch a specific field
-comb watch git.branch --path /home/user/project
-
-# Watch all fields of a provider
-comb watch git --path /home/user/project
-
-# Stream plain values (one per line)
-comb watch git.branch -f text
+comb w git.branch --path ~/project        # stream plain text values (default)
+comb w.j git.branch --path ~/project     # stream JSON updates
+comb w.s git --path ~/project            # stream key=value pairs
 ```
 
 The first line is emitted immediately with the current value (or a cache miss if no data exists). Subsequent lines appear as the cache updates. Press Ctrl-C to stop.
 
 Field-level filtering: watching `git.branch` only emits when the branch value changes, not on every git provider update.
+
+### `comb e` (eval) `<template> [path]`
+
+Interpolate `{provider.field}` placeholders in a template string using cached values. Resolves all referenced keys in a single connection.
+
+```sh
+comb e "{git.branch} | {battery.percent}%" .     # → main | 82%
+PS1="$(comb e '{git.branch} \$ ' . 2>/dev/null)"
+```
+
+### `comb f` (fetch) `<key>... [--path <path>]`
+
+Batch get: query multiple keys in a single connection. Format suffixes work: `comb f`, `comb f.s`, etc.
+
+```sh
+comb f git.branch git.dirty battery.percent
+comb f.s git.branch git.staged --path ~/repo
+```
+
+### `comb i` (init)
+
+Detect installed tools and print shell integration snippets tailored to your environment.
+
+```sh
+comb i
+# Detects: starship, p10k, tmux, neovim, polybar, waybar, sketchybar, oh-my-zsh
+# Prints ready-to-paste integration snippets for each detected tool.
+```
+
+### `comb c` (check) `[subcommand]`
+
+Run health checks. Without a subcommand, prints help. Subcommands: `all`, `daemon`, `config`, `providers`, `cache`, `procs`.
+
+```sh
+comb c all               # run all checks
+comb c daemon            # verify daemon is running and responsive
+comb c config            # validate config file syntax
+comb c providers         # check provider health and backoff state
+comb c cache             # inspect cache state and stale entries
+comb c procs             # 1-minute process snapshot, categorize against providers
+```
+
+Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
+
+---
+
+## Format Suffix Syntax
+
+The `get`, `watch`, and `fetch` commands support a shorthand suffix on the subcommand itself, saving characters in prompts and scripts. **Plain text is the default** — no suffix needed.
+
+| Suffix | Equivalent | Format |
+|---|---|---|
+| _(none)_ | `get -f text` | Raw value — the default |
+| `g.p` | `get -f text` | Raw value, explicit |
+| `g.j` | `get -f json` | Full JSON response with `age_ms`, `stale`, etc. |
+| `g.s` | `get -f sh` | `key=value` lines (shell-parseable) |
+| `g.c` | `get -f csv` | Comma-separated values |
+| `g.C` | `get -f CSV` | CSV with header row |
+| `g.t` | `get -f tsv` | Tab-separated values |
+| `g.T` | `get -f TSV` | TSV with header row |
+| `g.f` | `get -f fmt` | Template interpolation with `{field}` placeholders |
+
+```sh
+# These are all equivalent:
+comb g git.branch .              # default text
+comb g.p git.branch .            # explicit plain text
+comb get git.branch . -f text    # long form with flag
+```
+
+The suffix is appended to the command (`g`, `w`, `f`) with a dot separator.
+
+---
+
+## Field Metadata Access
+
+Append a colon suffix to any key to retrieve metadata about the cached value rather than the value itself:
+
+| Suffix | Type | Description |
+|---|---|---|
+| `:age` | int | Milliseconds since the value was last computed |
+| `:stale` | bool | Whether the value is past its expected refresh time |
+| `:source` | string | How the value was produced: `builtin`, `script`, or `virtual` |
+
+```sh
+comb g git.branch:age .       # → 1240 (ms since last computed)
+comb g battery.percent:stale  # → false
+comb g git:source .           # → builtin
+```
 
 ---
 
@@ -673,7 +725,7 @@ poll = "86400s"
 
 ## Built-in Providers Reference
 
-beachcomber ships 16 built-in providers organized by category.
+beachcomber ships 19 built-in providers organized by category.
 
 ### System
 
@@ -685,11 +737,13 @@ beachcomber ships 16 built-in providers organized by category.
 | `uptime` | global | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
 | `battery` | global | `percent` (int), `charging` (bool), `time_remaining` (int, seconds) | poll 30s / floor 5s | 6 ms |
 | `network` | global | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
+| `sudo` | global | `active` (bool) | poll 30s | < 1 µs |
+| `op` | global | `signed_in` (bool), `account` (string) | poll 60s | varies |
 
 **Example output:**
 
 ```json
-// comb get battery
+// comb g battery
 {
   "ok": true,
   "data": { "percent": 78, "charging": false, "time_remaining": 7200 },
@@ -700,7 +754,7 @@ beachcomber ships 16 built-in providers organized by category.
 > **Platform note:** On macOS, `time_remaining` is always available. On Linux, it requires UPower (`upower` command) — if unavailable, the field reads "unknown".
 
 ```json
-// comb get network
+// comb g network
 {
   "ok": true,
   "data": {
@@ -714,7 +768,7 @@ beachcomber ships 16 built-in providers organized by category.
   "age_ms": 3100
 }
 
-// comb get load
+// comb g load
 {
   "ok": true,
   "data": { "one": 2.34, "five": 1.87, "fifteen": 1.42 },
@@ -760,7 +814,7 @@ beachcomber ships 16 built-in providers organized by category.
 **Example output:**
 
 ```json
-// comb get git .
+// comb g git .
 {
   "ok": true,
   "data": {
@@ -789,7 +843,7 @@ beachcomber ships 16 built-in providers organized by category.
   "age_ms": 234
 }
 
-// comb get git.branch . -f text
+// comb g git.branch .
 feature/fast-cache
 ```
 
@@ -807,14 +861,14 @@ feature/fast-cache
 **Example output:**
 
 ```json
-// comb get kubecontext
+// comb g kubecontext
 {
   "ok": true,
   "data": { "context": "prod-cluster", "namespace": "default" },
   "age_ms": 15200
 }
 
-// comb get aws
+// comb g aws
 {
   "ok": true,
   "data": { "profile": "work-prod", "region": "us-east-1" },
@@ -835,7 +889,7 @@ feature/fast-cache
 **Example output:**
 
 ```json
-// comb get mise .
+// comb g mise .
 {
   "ok": true,
   "data": {
@@ -848,7 +902,7 @@ feature/fast-cache
   "age_ms": 890
 }
 
-// comb get python .
+// comb g python .
 {
   "ok": true,
   "data": { "venv": true, "venv_name": ".venv", "version": "3.12.1" },
@@ -868,9 +922,9 @@ The most common use case. Use `precmd` to refresh prompt variables before each p
 # ~/.zshrc
 precmd() {
     local branch dirty untracked
-    branch=$(comb get git.branch . -f text 2>/dev/null)
-    dirty=$(comb get git.dirty . -f text 2>/dev/null)
-    untracked=$(comb get git.untracked . -f text 2>/dev/null)
+    branch=$(comb g git.branch . 2>/dev/null)
+    dirty=$(comb g git.dirty . 2>/dev/null)
+    untracked=$(comb g git.untracked . 2>/dev/null)
 
     local git_part=""
     if [[ -n "$branch" ]]; then
@@ -892,10 +946,10 @@ tmux evaluates `#(command)` format strings to populate the status bar. Each `#()
 # ~/.tmux.conf
 
 # Battery percentage and git branch in right status
-set -g status-right '#(comb get battery.percent -f text)%% bat | #(comb get git.branch . -f text)'
+set -g status-right '#(comb g battery.percent)%% bat | #(comb g git.branch .)'
 
 # Left: session name + kubernetes context
-set -g status-left '[#S] #(comb get kubecontext.context -f text)'
+set -g status-left '[#S] #(comb g kubecontext.context)'
 
 # Refresh interval — lower is fine because queries cost almost nothing
 set -g status-interval 5
@@ -903,18 +957,18 @@ set -g status-interval 5
 
 **Why this is different from the problem described above:** each `#()` invocation still forks a shell, but `comb` reads a pre-cached value in ~34µs instead of spawning git (5ms+) or running a battery subprocess (6ms). The total time savings across a 50-pane tmux session is substantial.
 
-The simple `#()` approach shown above is already a major improvement over shelling out to git or battery commands directly. Each `comb get` also signals demand to the daemon, keeping the provider warm automatically.
+The simple `#()` approach shown above is already a major improvement over shelling out to git or battery commands directly. Each `comb g` also signals demand to the daemon, keeping the provider warm automatically.
 
 ### bash prompt (PROMPT_COMMAND)
 
-bash runs `PROMPT_COMMAND` before each prompt. Parse the `key=value` text output from a whole-provider query to minimize subprocess calls.
+bash runs `PROMPT_COMMAND` before each prompt. Parse the `key=value` sh output from a whole-provider query to minimize subprocess calls.
 
 ```bash
 # ~/.bashrc
 __beachcomber_prompt() {
     # Fetch entire git state in one query, parse key=value output
     local git_state
-    git_state=$(comb get git . -f text 2>/dev/null)
+    git_state=$(comb g.s git . 2>/dev/null)
 
     local branch dirty
     while IFS='=' read -r key value; do
@@ -928,7 +982,7 @@ __beachcomber_prompt() {
     [[ -n "$branch" ]] && git_part="(${branch}${dirty:+*}) "
 
     local kube
-    kube=$(comb get kubecontext.context -f text 2>/dev/null)
+    kube=$(comb g kubecontext.context 2>/dev/null)
     local kube_part=""
     [[ -n "$kube" ]] && kube_part="[${kube}] "
 
@@ -945,9 +999,9 @@ fish's `fish_prompt` function is called before each prompt. fish has no subshell
 ```fish
 # ~/.config/fish/functions/fish_prompt.fish
 function fish_prompt
-    set -l branch (comb get git.branch . -f text 2>/dev/null)
-    set -l dirty (comb get git.dirty . -f text 2>/dev/null)
-    set -l battery (comb get battery.percent -f text 2>/dev/null)
+    set -l branch (comb g git.branch . 2>/dev/null)
+    set -l dirty (comb g git.dirty . 2>/dev/null)
+    set -l battery (comb g battery.percent 2>/dev/null)
 
     set -l git_info ""
     if test -n "$branch"
@@ -997,21 +1051,21 @@ starship's `[custom.*]` modules run a shell command and display its output. Usin
 disabled = true
 
 [custom.git_branch]
-command = "comb get git.branch . -f text"
-when = "comb get git.branch . -f text"
+command = "comb g git.branch ."
+when = "comb g git.branch ."
 format = "[$output]($style) "
 style = "bold blue"
 description = "Git branch via beachcomber"
 
 [custom.git_dirty]
-command = 'test "$(comb get git.dirty . -f text)" = "true" && echo "*"'
-when = "comb get git.dirty . -f text"
+command = 'test "$(comb g git.dirty .)" = "true" && echo "*"'
+when = "comb g git.dirty ."
 format = "[$output]($style)"
 style = "bold red"
 
 [custom.kube]
-command = "comb get kubecontext.context -f text"
-when = "comb get kubecontext.context -f text"
+command = "comb g kubecontext.context"
+when = "comb g kubecontext.context"
 format = "[$output]($style) "
 style = "bold cyan"
 symbol = "☸ "
@@ -1025,34 +1079,34 @@ Status bars on Linux (polybar, waybar) and macOS (sketchybar) poll external comm
 ```ini
 [module/git]
 type = custom/script
-exec = comb get git.branch . -f text
+exec = comb g git.branch .
 interval = 5
 format = <label>
 label = %output%
 
 [module/battery]
 type = custom/script
-exec = comb get battery.percent -f text
+exec = comb g battery.percent
 interval = 30
 format = <label>
 label = BAT: %output%%%
 
 [module/network]
 type = custom/script
-exec = comb get network.ssid -f text
+exec = comb g network.ssid
 interval = 10
 ```
 
 **waybar (JSON module):**
 ```json
 "custom/git": {
-    "exec": "comb get git.branch . -f text",
+    "exec": "comb g git.branch .",
     "interval": 5,
     "format": " {}",
     "tooltip": false
 },
 "custom/battery": {
-    "exec": "comb get battery.percent -f text",
+    "exec": "comb g battery.percent",
     "interval": 30,
     "format": " {}%"
 }
@@ -1063,7 +1117,7 @@ interval = 10
 # In your sketchybarrc
 sketchybar --add item git_branch right \
            --set git_branch update_freq=5 \
-                            script="sketchybar --set git_branch label=\"$(comb get git.branch . -f text)\""
+                            script="sketchybar --set git_branch label=\"$(comb g git.branch .)\""
 ```
 
 ### Python script
@@ -1100,13 +1154,13 @@ For scripts that want to annotate output with git context but don't require beac
 
 ```sh
 # Returns branch name — uses beachcomber if available, falls back to git
-BRANCH=$(comb get git.branch . -f text 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+BRANCH=$(comb g git.branch . 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 
 # In CI, log the current branch alongside build output
-echo "Building branch: $(comb get git.branch . -f text 2>/dev/null || git rev-parse --abbrev-ref HEAD)"
+echo "Building branch: $(comb g git.branch . 2>/dev/null || git rev-parse --abbrev-ref HEAD)"
 
 # Check if repo is dirty before deploying
-if [ "$(comb get git.dirty . -f text 2>/dev/null)" = "true" ]; then
+if [ "$(comb g git.dirty . 2>/dev/null)" = "true" ]; then
     echo "Warning: uncommitted changes"
 fi
 ```
@@ -1158,97 +1212,41 @@ Features:
 
 ---
 
-## Shell Fallback Function
+## Shell Fallback & Integration Scripts
 
-Apps that want to support beachcomber without requiring it can embed a fallback function. If `comb` is not installed, the function falls back to the native tool. This pattern lets any shell script or prompt framework opt into beachcomber acceleration transparently.
+### The polyfill (recommended)
 
-**bash / zsh:**
-```sh
-# Returns the current git branch name.
-# Uses beachcomber if installed; falls back to git directly.
-_git_branch() {
-    if command -v comb >/dev/null 2>&1; then
-        comb get git.branch . -f text 2>/dev/null && return
-    fi
-    git rev-parse --abbrev-ref HEAD 2>/dev/null
-}
+`scripts/polyfill.sh` defines a `comb()` shell function that stands in for the real binary. If comb is already installed, the script does nothing. If comb is not installed, the function handles `comb g <key>` calls by falling back to native tools for known keys (git, hostname, uptime, battery, and more).
 
-# Returns "true" if the working tree has uncommitted changes.
-_git_dirty() {
-    if command -v comb >/dev/null 2>&1; then
-        comb get git.dirty . -f text 2>/dev/null && return
-    fi
-    git diff --quiet 2>/dev/null || echo "true"
-}
-
-# Returns current kubernetes context.
-_kube_context() {
-    if command -v comb >/dev/null 2>&1; then
-        comb get kubecontext.context -f text 2>/dev/null && return
-    fi
-    kubectl config current-context 2>/dev/null
-}
-
-# Returns battery percentage as an integer.
-_battery_percent() {
-    if command -v comb >/dev/null 2>&1; then
-        comb get battery.percent -f text 2>/dev/null && return
-    fi
-    # macOS fallback
-    pmset -g batt 2>/dev/null | grep -Eo '[0-9]+%' | head -1 | tr -d '%'
-}
-```
-
-**fish:**
-```fish
-function _git_branch
-    if command -q comb
-        comb get git.branch . -f text 2>/dev/null; and return
-    end
-    git rev-parse --abbrev-ref HEAD 2>/dev/null
-end
-
-function _git_dirty
-    if command -q comb
-        comb get git.dirty . -f text 2>/dev/null; and return
-    end
-    git diff --quiet 2>/dev/null; or echo "true"
-end
-
-function _kube_context
-    if command -q comb
-        comb get kubecontext.context -f text 2>/dev/null; and return
-    end
-    kubectl config current-context 2>/dev/null
-end
-
-function _battery_percent
-    if command -q comb
-        comb get battery.percent -f text 2>/dev/null; and return
-    end
-    # macOS fallback
-    pmset -g batt 2>/dev/null | string match -r '\d+%' | string replace '%' ''
-end
-```
-
-These functions can be pasted directly into prompt frameworks, dotfile repos, or shared shell libraries. Users with beachcomber installed get the 15µs path; users without it get the native fallback. No beachcomber dependency required.
-
-### Inline Fallback with `||`
-
-For scripts that only need a value once (not in a hot loop like a prompt), the wrapper function is unnecessary. `comb` exits non-zero when it's not installed, not running, or the key doesn't exist — so a simple `||` chain works:
+This lets integrations write `comb g git.branch .` and have it work everywhere — with or without beachcomber installed. Users with beachcomber get the ~34µs cached path. Users without get the native tool.
 
 ```sh
-# Single assignment, no wrapper needed
-branch=$(comb get git.branch . -f text 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null)
-dirty=$(comb get git.dirty . -f text 2>/dev/null || git diff --quiet 2>/dev/null || echo "true")
-
-# Use the values
-if [ -n "$branch" ]; then
-    echo "on $branch"
-fi
+# Install — add to your shell rc
+source <(curl -fsSL https://beachcomber.sh/scripts/polyfill.sh)
 ```
 
-This keeps scripts portable with zero comb dependency — `2>/dev/null` swallows errors, the `||` falls through to the native tool, and there's nothing to source or import. Prefer this for standalone scripts; use the wrapper functions above for shared shell libraries where the pattern repeats.
+Covered keys: `git.branch`, `git.dirty`, `git.ahead`, `git.behind`, `git.stash_count`, `git.commit_summary`, `hostname.name`, `hostname.short`, `user.name`, `load.one/five/fifteen`, `battery.percent`, `battery.charging`.
+
+### The chpwd hook
+
+`scripts/chpwd.sh` warms path-scoped provider caches on directory change. When you `cd`, it pokes `git`, `mise`, `terraform`, `python`, `direnv`, and `asdf` in the background so the cache is warm before your first prompt renders.
+
+```sh
+# Install — add to your shell rc (zsh, bash; fish requires a separate config file)
+source <(curl -fsSL https://beachcomber.sh/scripts/chpwd.sh)
+```
+
+No-op if comb is not installed. All pokes run in the background (`&`) so there's no prompt delay.
+
+### Alternative: inline `||` fallback
+
+For one-off uses in scripts, skip the polyfill and use `||` chains:
+
+```sh
+branch=$(comb g git.branch . 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null)
+```
+
+`comb` exits non-zero when not installed, so the fallback runs transparently.
 
 ---
 
@@ -1319,7 +1317,7 @@ command = "node --version | tr -d v"
 output = "text"
 ```
 
-Then query with `comb get node_version.value -f text`.
+Then query with `comb g node_version.value`.
 
 ### Invalidation Strategies
 
@@ -1387,7 +1385,7 @@ output = "json"
 poll = "30s"
 ```
 
-Query: `comb get docker_context.context -f text`
+Query: `comb g docker_context.context`
 
 **Node.js version provider (path-scoped):**
 ```sh
@@ -1428,7 +1426,7 @@ watch = [".ruby-version", "Gemfile", ".tool-versions"]
 poll = "120s"
 ```
 
-Query: `comb get ruby_version.value -f text`
+Query: `comb g ruby_version.value`
 
 **VPN connected check:**
 ```sh
@@ -1461,7 +1459,7 @@ output = "kv"
 poll = "10s"
 ```
 
-Query: `comb get vpn.active -f text`
+Query: `comb g vpn.active`
 
 ### HTTP Providers
 
@@ -1479,7 +1477,7 @@ extract = "status"
 invalidation = { poll = "60s" }
 ```
 
-Query: `comb get claude_status.indicator -f text` returns `"none"`, `"minor"`, `"major"`, etc.
+Query: `comb g claude_status.indicator` returns `"none"`, `"minor"`, `"major"`, etc.
 
 The `extract` field navigates into the JSON response using dot-separated paths. Without it, the entire response object becomes the provider's fields.
 
@@ -1494,7 +1492,7 @@ extract = "rate"
 invalidation = { poll = "30s" }
 ```
 
-Query: `comb get github_rate.remaining -f text`
+Query: `comb g github_rate.remaining`
 
 Header values support `${ENV_VAR}` expansion — secrets stay in your environment, not in config files.
 
@@ -1519,7 +1517,7 @@ extract = "rates.AUD"
 invalidation = { poll = "86400s" }
 ```
 
-Query: `comb get exchange.value -f text` — returns the AUD rate, refreshed daily.
+Query: `comb g exchange.value` — returns the AUD rate, refreshed daily.
 
 **Comparison — script vs HTTP for the same task:**
 
@@ -1646,20 +1644,20 @@ The easiest way to watch what the daemon is doing is to run it interactively. St
 pkill -f 'comb daemon'
 
 # Run in foreground with debug logging
-RUST_LOG=debug comb daemon
+RUST_LOG=debug comb d
 
 # Or use a custom socket to avoid interfering with your running setup
-comb daemon --socket /tmp/beachcomber-debug.sock
+comb d --socket /tmp/beachcomber-debug.sock
 ```
 
 Logs print directly to your terminal. Press Ctrl+C to shut down.
 
-### Checking active state with `comb status`
+### Checking active state with `comb s`
 
-`comb status` returns a JSON snapshot of the daemon's internal state:
+`comb s` returns a JSON snapshot of the daemon's internal state:
 
 ```sh
-comb status
+comb s
 ```
 
 ```json
@@ -1708,7 +1706,7 @@ kill $(cat ~/.local/state/beachcomber/daemon.pid 2>/dev/null || \
 pkill -f 'comb daemon'
 
 # The daemon restarts automatically on next query
-comb get hostname.short -f text
+comb g hostname.short
 ```
 
 ### Common issues
@@ -1722,14 +1720,14 @@ ls -la /run/user/$(id -u)/beachcomber/   # Linux
 ls -la $TMPDIR/beachcomber-$(id -u)/     # macOS fallback
 ```
 
-If the socket is missing, run `comb daemon` in the foreground to see why it failed to start.
+If the socket is missing, run `comb d` in the foreground to see why it failed to start.
 
 **Provider always returns stale/empty data**
 
 Check whether the provider is in a failure backoff loop:
 
 ```sh
-comb status
+comb s
 # Look at the "backoff" field and the daemon log for "suppressed due to failure backoff"
 ```
 
@@ -1737,7 +1735,7 @@ Run the provider directly to check for errors:
 
 ```sh
 # For git, run from inside a repo
-comb get git .
+comb g git .
 tail -20 ~/.local/state/beachcomber/daemon.log
 ```
 
@@ -1746,10 +1744,10 @@ tail -20 ~/.local/state/beachcomber/daemon.log
 Enable debug logging and watch the log file. Look for repeated `Executed provider` lines:
 
 ```sh
-RUST_LOG=debug comb daemon 2>&1 | grep 'Executed provider'
+RUST_LOG=debug comb d 2>&1 | grep 'Executed provider'
 ```
 
-If a provider is executing too frequently, check whether a filesystem watcher is triggering on a high-churn path (e.g., a build output directory). Check `watched_paths` in `comb status`.
+If a provider is executing too frequently, check whether a filesystem watcher is triggering on a high-churn path (e.g., a build output directory). Check `watched_paths` in `comb s`.
 
 **Log file grows too large**
 
@@ -1803,7 +1801,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | `op` | string | Operation: `get`, `poke`, `store`, `watch`, `context`, `list`, `status` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
-| `format` | string | Response format: `"json"` (default) or `"text"` |
+| `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`, `"csv"`, `"tsv"`, `"CSV"`, `"TSV"`, `"fmt"` |
 
 ### Response Format
 
@@ -1858,12 +1856,21 @@ Field-level filtering applies: watching `git.branch` only emits when the branch 
 
 **`status`:** Returns daemon health information.
 
-### Text Format
+### Output Formats
 
-When `"format": "text"` is specified:
-- Single field queries return the raw value followed by `\n` (e.g., `main\n`)
-- Full provider queries return `key=value` lines sorted alphabetically, one per line, terminated with `\n`
-- Errors return nothing on stdout; `ok` is false in the JSON response
+When a `format` other than `"json"` is specified, the response body changes and metadata fields (`age_ms`, `stale`) are omitted.
+
+**`text`:** Returns the raw value only, followed by `\n`. For full-provider queries, returns one raw value per field, one per line, sorted alphabetically. Use this when you want bare values with no structure.
+
+**`sh`:** Returns `key=value` lines sorted alphabetically, one per line, terminated with `\n`. Suitable for `while IFS='=' read -r key value` parsing in bash/zsh, or `eval`. Previously the behaviour of `text` for multi-field queries.
+
+**`csv` / `tsv`:** Comma- or tab-separated values. For single-field queries: one value per line. For full-provider queries: field values in alphabetical key order, one row.
+
+**`CSV` / `TSV`:** Same as `csv`/`tsv` but prefixed with a header row of field names.
+
+**`fmt`:** Compact human-readable format, suitable for terminal display.
+
+For all non-JSON formats, errors return nothing on stdout; `ok` is false in the JSON error response.
 
 ### Connection Context Example
 
@@ -1893,7 +1900,7 @@ gitstatusd's key insight was correct: a persistent daemon that maintains an in-m
 
 The limitation is architectural: gitstatusd spawns one daemon per interactive shell. On a machine with 20 shells open, that's 20 daemons, up to 640 threads, 20 independent FSEvents registrations all watching the same directories. The maintainer declined a shared-daemon proposal on security grounds, and powerlevel10k is now on maintenance-only status ("NO NEW FEATURES ARE IN THE WORKS. MOST BUGS WILL GO UNFIXED").
 
-**beachcomber vs gitstatusd:** beachcomber is what gitstatusd would be if the daemon were shared across all consumers. One daemon, one cache, one watcher — for git and everything else. gitstatusd handles only git; beachcomber handles 16 providers plus extensibility. If you are a powerlevel10k user looking for a maintained, general-purpose replacement, beachcomber is the intended answer.
+**beachcomber vs gitstatusd:** beachcomber is what gitstatusd would be if the daemon were shared across all consumers. One daemon, one cache, one watcher — for git and everything else. gitstatusd handles only git; beachcomber handles 19 providers plus extensibility. If you are a powerlevel10k user looking for a maintained, general-purpose replacement, beachcomber is the intended answer.
 
 See `docs/competitive-landscape.md` for detailed numbers.
 
@@ -1925,7 +1932,7 @@ On typical repositories starship completes in 1-5ms. On large monorepos it degra
 
 beachcomber is the missing piece for starship. Using the `[custom.*]` module, starship can read pre-cached state from beachcomber instead of computing git/battery/hostname on every prompt. The latency drops from 5ms to 15µs for cache-warm queries.
 
-**beachcomber vs Starship:** Not competitors — beachcomber is infrastructure that starship (and oh-my-posh, and p10k, and any other prompt framework) can use as a backend. The integration is already possible today via `comb get` in custom modules.
+**beachcomber vs Starship:** Not competitors — beachcomber is infrastructure that starship (and oh-my-posh, and p10k, and any other prompt framework) can use as a backend. The integration is already possible today via `comb g` in custom modules.
 
 ### Oh My Posh
 
@@ -1980,9 +1987,9 @@ On a system with 20 shells and typical usage, expect the daemon to use 10-30MB o
 
 ### What happens when the daemon crashes?
 
-The socket file is cleaned up on graceful exit. If the daemon crashes unexpectedly, the stale socket file may remain. The next client connection will attempt to connect, fail, detect the stale socket, remove it, start a fresh daemon instance, and retry. This is handled transparently — `comb get` will succeed with a slight delay on the restart.
+The socket file is cleaned up on graceful exit. If the daemon crashes unexpectedly, the stale socket file may remain. The next client connection will attempt to connect, fail, detect the stale socket, remove it, start a fresh daemon instance, and retry. This is handled transparently — `comb g` will succeed with a slight delay on the restart.
 
-You can verify the daemon is responsive at any time with `comb status`. If the daemon is unhealthy, `comb refresh` on any key will trigger a restart if needed.
+You can verify the daemon is responsive at any time with `comb s`. If the daemon is unhealthy, `comb r` on any key will trigger a restart if needed.
 
 ### Can I use this on Linux?
 

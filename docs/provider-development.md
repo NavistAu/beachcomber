@@ -586,4 +586,4 @@ type = "library"
 library_path = "/path/to/libhello.so"
 ```
 
-Test: `comb get hello.value -f text` → `hello from C`
+Test: `comb get hello.value` → `hello from C`

@@ -33,24 +33,24 @@ You can also override it at runtime using the `RUST_LOG` environment variable wh
 The easiest way to watch what the daemon is doing is to run it interactively. Stop any running background instance first, then start it yourself:
 
 ```sh
-# Kill the background daemon
-pkill -f 'comb daemon'
+# Stop the background daemon
+comb kill
 
 # Run in foreground with debug logging
-RUST_LOG=debug comb daemon
+RUST_LOG=debug comb d
 
 # Or use a custom socket to avoid interfering with your running setup
-comb daemon --socket /tmp/beachcomber-debug.sock
+comb d --socket /tmp/beachcomber-debug.sock
 ```
 
 Logs print directly to your terminal. Press Ctrl+C to shut down.
 
-## Checking active state with `comb status`
+## Checking active state with `comb s`
 
-`comb status` returns a JSON snapshot of the daemon's internal state:
+`comb s` returns a JSON snapshot of the daemon's internal state:
 
 ```sh
-comb status
+comb s
 ```
 
 ```json
@@ -88,19 +88,18 @@ Key fields:
 
 ## Killing and restarting the daemon
 
-The daemon will restart automatically the next time any client queries it (socket activation). To force a restart:
+The daemon will restart automatically the next time any client queries it (socket activation). To force a restart, use the built-in `kill` command:
 
 ```sh
-# Kill by PID file (socket path depends on your platform)
-kill $(cat ~/.local/state/beachcomber/daemon.pid 2>/dev/null || \
-       cat /run/user/$(id -u)/beachcomber/daemon.pid 2>/dev/null)
-
-# Or by process name
-pkill -f 'comb daemon'
+comb kill                # graceful SIGTERM, waits up to 5s for shutdown
+comb kill --timeout 30   # wait up to 30s instead
 
 # The daemon restarts automatically on next query
-comb get hostname.short -f text
+# comb g returns plain text by default. g = get, no suffix needed.
+comb g hostname.short
 ```
+
+`comb kill` asks the daemon for its pid over the socket, so it works even if the pid file is stale or missing.
 
 ## Common issues
 
@@ -113,14 +112,14 @@ ls -la /run/user/$(id -u)/beachcomber/   # Linux
 ls -la $TMPDIR/beachcomber-$(id -u)/     # macOS fallback
 ```
 
-If the socket is missing, run `comb daemon` in the foreground to see why it failed to start.
+If the socket is missing, run `comb d` in the foreground to see why it failed to start.
 
 **Provider always returns stale/empty data**
 
 Check whether the provider is in a failure backoff loop:
 
 ```sh
-comb status
+comb s
 # Look at the "backoff" field and the daemon log for "suppressed due to failure backoff"
 ```
 
@@ -128,7 +127,7 @@ Run the provider directly to check for errors:
 
 ```sh
 # For git, run from inside a repo
-comb get git .
+comb g git .
 tail -20 ~/.local/state/beachcomber/daemon.log
 ```
 
@@ -137,10 +136,10 @@ tail -20 ~/.local/state/beachcomber/daemon.log
 Enable debug logging and watch the log file. Look for repeated `Executed provider` lines:
 
 ```sh
-RUST_LOG=debug comb daemon 2>&1 | grep 'Executed provider'
+RUST_LOG=debug comb d 2>&1 | grep 'Executed provider'
 ```
 
-If a provider is executing too frequently, check whether a filesystem watcher is triggering on a high-churn path (e.g., a build output directory). Check `watched_paths` in `comb status`.
+If a provider is executing too frequently, check whether a filesystem watcher is triggering on a high-churn path (e.g., a build output directory). Check `watched_paths` in `comb s`.
 
 **Log file grows too large**
 

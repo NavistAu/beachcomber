@@ -27,15 +27,17 @@ On a system with 20 shells and typical usage, expect the daemon to use 10-30MB o
 
 ### What happens when the daemon crashes?
 
-The socket file is cleaned up on graceful exit. If the daemon crashes unexpectedly, the stale socket file may remain. The next client connection will attempt to connect, fail, detect the stale socket, remove it, start a fresh daemon instance, and retry. This is handled transparently — `comb get` will succeed with a slight delay on the restart.
+The socket file is cleaned up on graceful exit. If the daemon crashes unexpectedly, the stale socket file may remain. The next client connection will attempt to connect, fail, detect the stale socket, remove it, start a fresh daemon instance, and retry. This is handled transparently — `comb g` will succeed with a slight delay on the restart.
 
-You can verify the daemon is responsive at any time with `comb status`. If the daemon is unhealthy, `comb refresh` on any key will trigger a restart if needed.
+You can verify the daemon is responsive at any time with `comb s`. If the daemon is unhealthy, `comb r` on any key will trigger a restart if needed.
 
 ### Can I use this on Linux?
 
-macOS is the primary target and the only supported platform for the current release. Linux support is designed in from the beginning — the filesystem watcher, battery reader, and network reader are all abstracted behind platform traits — and is planned for v0.2.0.
+Yes. macOS and Linux are both first-class supported platforms. The filesystem watcher uses FSEvents on macOS and inotify on Linux; the battery and network providers have native implementations for both.
 
-The providers that read config files directly (`kubecontext`, `gcloud`, `aws`, `conda`) work identically on Linux. The providers that use platform-specific APIs (`battery` via IOKit/pmset, `network` via getifaddrs + airport) will need Linux implementations reading `/sys/class/power_supply/` and `/sys/class/net/`.
+A few fields are macOS-specific or depend on optional Linux components — for example, `battery.time_remaining` needs UPower on Linux and reads `"unknown"` if it isn't installed. See the [built-in providers reference](../reference/built-in-providers.md) for per-field platform notes.
+
+Pre-built Linux binaries (glibc, musl, arm64) and packages (`.deb`, `.rpm`, AUR) are published on every release — see [Installation](../getting-started/installation.md).
 
 ### Can I run multiple daemons simultaneously?
 
@@ -46,6 +48,23 @@ If you need per-project isolation (e.g., different config for work vs personal p
 ### How do I add a provider for a tool beachcomber doesn't know about?
 
 Write a script provider. See the Custom Providers Guide. If the provider would be useful to everyone (not just your specific setup), consider contributing it as a built-in — see [Contributing](./contributing).
+
+### How do I check what version is running?
+
+Run `comb --version` to see the version of the installed binary. To see what the running daemon reports (useful if you have multiple binaries on `PATH` or just updated), check `comb s` — the status output includes the running daemon's version.
+
+### How do I update beachcomber?
+
+Update using the same package manager you installed with: `brew upgrade beachcomber`, `npm install -g beachcomber@latest`, `pip install -U beachcomber`, `cargo install beachcomber --force`, `yay -Syu beachcomber`, etc. The pre-built `.deb` and `.rpm` releases can be upgraded by installing the newer package.
+
+The daemon does not auto-restart when the binary is replaced. The next `comb` query after the upgrade will connect to the running (old) daemon over the existing socket. To cut over cleanly:
+
+```sh
+comb kill                # stop the running daemon; it will auto-restart
+comb s                   # triggers socket activation of the new binary
+```
+
+This is only necessary when the upgrade crosses a protocol or config schema boundary — normal point releases are happy to keep running. The [versioning policy](./versioning-policy.md) documents what counts.
 
 ### What is the `stale` flag in responses?
 
