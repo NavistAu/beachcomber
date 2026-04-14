@@ -259,45 +259,7 @@ async fn write_watch_line(
     response: &Response,
     format: &Format,
 ) -> Result<(), std::io::Error> {
-    let line = match format {
-        Format::Text => {
-            if !response.ok {
-                format!(
-                    "error: {}\n",
-                    response.error.as_deref().unwrap_or("unknown")
-                )
-            } else {
-                match &response.data {
-                    Some(serde_json::Value::String(s)) => format!("{s}\n\n"),
-                    Some(serde_json::Value::Number(n)) => format!("{n}\n\n"),
-                    Some(serde_json::Value::Bool(b)) => format!("{b}\n\n"),
-                    Some(serde_json::Value::Object(map)) => {
-                        let mut lines: Vec<String> = map
-                            .iter()
-                            .map(|(k, v)| {
-                                let val = match v {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    other => other.to_string(),
-                                };
-                                format!("{k}={val}")
-                            })
-                            .collect();
-                        lines.sort();
-                        let mut out = lines.join("\n");
-                        out.push_str("\n\n");
-                        out
-                    }
-                    Some(serde_json::Value::Null) | None => "\n".to_string(),
-                    Some(other) => format!("{other}\n\n"),
-                }
-            }
-        }
-        Format::Json => {
-            let mut out = serde_json::to_string(response).unwrap();
-            out.push('\n');
-            out
-        }
-    };
+    let line = format_data(format, response);
     writer.write_all(line.as_bytes()).await
 }
 
@@ -402,7 +364,11 @@ async fn handle_request(
 
                             match result {
                                 Some(result) => {
-                                    cache.put(provider_name, effective_path.as_deref(), result.clone());
+                                    cache.put(
+                                        provider_name,
+                                        effective_path.as_deref(),
+                                        result.clone(),
+                                    );
                                     let data = if let Some(field_name) = field {
                                         match result.get(field_name) {
                                             Some(value) => serde_json::to_value(value).unwrap(),
@@ -591,6 +557,8 @@ async fn handle_request(
         Request::Status => {
             let cache_details = cache.list_entries();
             let mut status_data = serde_json::json!({
+                "pid": std::process::id(),
+                "version": env!("CARGO_PKG_VERSION"),
                 "cache_entries": cache.len(),
                 "cache": serde_json::to_value(&cache_details).unwrap_or_default(),
                 "providers": registry.list().len(),
@@ -625,8 +593,41 @@ fn format_response(request: &Request, response: &Response) -> String {
         _ => &Format::Json,
     };
 
+    format_data(format, response)
+}
+
+fn format_data(format: &Format, response: &Response) -> String {
     match format {
         Format::Text => {
+            if !response.ok {
+                return format!(
+                    "error: {}\n",
+                    response.error.as_deref().unwrap_or("unknown")
+                );
+            }
+            match &response.data {
+                Some(serde_json::Value::String(s)) => format!("{s}\n\n"),
+                Some(serde_json::Value::Number(n)) => format!("{n}\n\n"),
+                Some(serde_json::Value::Bool(b)) => format!("{b}\n\n"),
+                Some(serde_json::Value::Object(map)) => {
+                    let mut pairs: Vec<(&String, &serde_json::Value)> = map.iter().collect();
+                    pairs.sort_by_key(|(k, _)| *k);
+                    let vals: Vec<String> = pairs
+                        .iter()
+                        .map(|(_, v)| match v {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        })
+                        .collect();
+                    let mut out = vals.join("\n");
+                    out.push_str("\n\n");
+                    out
+                }
+                Some(serde_json::Value::Null) | None => "\n".to_string(),
+                Some(other) => format!("{other}\n\n"),
+            }
+        }
+        Format::Sh => {
             if !response.ok {
                 return format!(
                     "error: {}\n",

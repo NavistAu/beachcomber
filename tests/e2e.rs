@@ -157,3 +157,42 @@ async fn e2e_multiple_concurrent_clients() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn status_response_includes_pid_and_version() {
+    let tmp = TempDir::new().unwrap();
+    let sock = tmp.path().join("sock");
+    let config = Config::default();
+
+    let handle = daemon::start_in_process(sock.clone(), config);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Send a status request directly so we can inspect extra fields the typed
+    // client doesn't expose.
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let mut stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
+    stream.write_all(b"{\"op\":\"status\"}\n").await.unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(parsed["ok"], true, "status request should succeed");
+
+    let pid = parsed["data"]["pid"]
+        .as_i64()
+        .expect("status response should include pid");
+    assert_eq!(
+        pid as u32,
+        std::process::id(),
+        "in-process daemon reports the test process pid",
+    );
+
+    let version = parsed["data"]["version"]
+        .as_str()
+        .expect("status response should include version");
+    assert_eq!(version, env!("CARGO_PKG_VERSION"));
+
+    handle.abort();
+}
