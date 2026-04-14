@@ -247,8 +247,8 @@ jobs:
           generate_release_notes: true
           files: |
             beachcomber-*.tar.gz
-            *.deb
-            *.rpm
+            **/*.deb
+            **/*.rpm
 
   publish-crates:
     name: Publish to crates.io
