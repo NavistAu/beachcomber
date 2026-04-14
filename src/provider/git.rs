@@ -5,6 +5,23 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Builds a `git` command with defensive env vars for daemon-safe invocation:
+/// - `GIT_OPTIONAL_LOCKS=0`: prevents `.git/index.lock` contention with concurrent user git ops.
+/// - `GIT_TERMINAL_PROMPT=0`: never prompt on tty for credentials (would hang the daemon).
+/// - `GIT_ASKPASS=true` / `SSH_ASKPASS=true`: suppress GUI credential prompts; git/ssh treat
+///   the empty output from `true(1)` as "no credential available" and fail gracefully.
+/// - `GCM_INTERACTIVE=Never`: disables interactive flows in Git Credential Manager.
+fn git_cmd(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true")
+        .env("SSH_ASKPASS", "true")
+        .env("GCM_INTERACTIVE", "Never")
+        .current_dir(dir);
+    cmd
+}
+
 pub struct GitProvider;
 
 impl Provider for GitProvider {
@@ -193,9 +210,8 @@ struct GitStatus {
 }
 
 fn parse_git_status(dir: &Path) -> Option<GitStatus> {
-    let output = Command::new("git")
+    let output = git_cmd(dir)
         .args(["status", "--porcelain=v2", "--branch"])
-        .current_dir(dir)
         .output()
         .ok()?;
 
@@ -317,19 +333,15 @@ fn read_int_file(path: &Path) -> i64 {
 
 /// Runs `git diff --numstat` and returns (lines_added, lines_removed) summed across all files.
 fn diff_numstat(dir: &Path) -> (i64, i64) {
-    let output = Command::new("git")
-        .args(["diff", "--numstat"])
-        .current_dir(dir)
-        .output();
+    let output = git_cmd(dir).args(["diff", "--numstat"]).output();
 
     parse_numstat_output(output)
 }
 
 /// Runs `git diff --cached --numstat` and returns (lines_added, lines_removed) summed.
 fn diff_numstat_staged(dir: &Path) -> (i64, i64) {
-    let output = Command::new("git")
+    let output = git_cmd(dir)
         .args(["diff", "--cached", "--numstat"])
-        .current_dir(dir)
         .output();
 
     parse_numstat_output(output)
@@ -356,9 +368,8 @@ fn parse_numstat_output(output: Result<std::process::Output, std::io::Error>) ->
 
 /// Runs `git log -1 --format="%h %ct %s"` and returns (short_hash, commit_timestamp, subject).
 fn get_head_info(dir: &Path) -> (String, i64, String) {
-    let output = Command::new("git")
+    let output = git_cmd(dir)
         .args(["log", "-1", "--format=%h %ct %s"])
-        .current_dir(dir)
         .output();
 
     let output = match output {
@@ -380,9 +391,8 @@ fn get_head_info(dir: &Path) -> (String, i64, String) {
 
 /// Runs `git describe --tags --abbrev=0` and returns the nearest tag or empty string.
 fn get_nearest_tag(dir: &Path) -> String {
-    let output = Command::new("git")
+    let output = git_cmd(dir)
         .args(["describe", "--tags", "--abbrev=0"])
-        .current_dir(dir)
         .output();
 
     match output {
@@ -410,28 +420,26 @@ fn get_push_divergence(dir: &Path, branch: &str) -> (i64, i64) {
     let refspec = format!("{push_remote}/{branch}");
 
     // Check the ref exists before rev-list
-    let check = Command::new("git")
+    let check = git_cmd(dir)
         .args([
             "rev-parse",
             "--verify",
             "--quiet",
             &format!("refs/remotes/{refspec}"),
         ])
-        .current_dir(dir)
         .output();
     match check {
         Ok(o) if o.status.success() => {}
         _ => return (0, 0),
     }
 
-    let output = Command::new("git")
+    let output = git_cmd(dir)
         .args([
             "rev-list",
             "--count",
             "--left-right",
             &format!("HEAD...{refspec}"),
         ])
-        .current_dir(dir)
         .output();
 
     let output = match output {
@@ -451,11 +459,7 @@ fn get_push_divergence(dir: &Path, branch: &str) -> (i64, i64) {
 }
 
 fn get_git_config(dir: &Path, key: &str) -> Option<String> {
-    let output = Command::new("git")
-        .args(["config", "--get", key])
-        .current_dir(dir)
-        .output()
-        .ok()?;
+    let output = git_cmd(dir).args(["config", "--get", key]).output().ok()?;
     if output.status.success() {
         let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if val.is_empty() { None } else { Some(val) }
@@ -465,9 +469,8 @@ fn get_git_config(dir: &Path, key: &str) -> Option<String> {
 }
 
 fn is_inside_git_repo(dir: &Path) -> bool {
-    Command::new("git")
+    git_cmd(dir)
         .args(["rev-parse", "--git-dir"])
-        .current_dir(dir)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
