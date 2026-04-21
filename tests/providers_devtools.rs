@@ -91,7 +91,7 @@ fn conda_metadata() {
     let p = CondaProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "conda");
-    assert!(!meta.global);
+    assert!(meta.global);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"env"));
 }
