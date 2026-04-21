@@ -83,10 +83,6 @@ See `docs/provider-development.md`. Short version:
 
 See `docs/releasing.md` for the full release checklist. Short version: bump all version files, update CHANGELOG, push, wait for CI green, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag triggers the release workflow which builds, publishes to all registries, and updates Homebrew.
 
-## Git Workflow
-
-This repo works **direct-to-main**. Do not push feature branches to `origin` or open pull requests unless the user explicitly says "PR", "pull request", or "push branch". "Follow-up branch" means a local branch only — not a push, not a PR. GitHub does not allow PR deletion via API, so a mistaken PR leaves a permanent public artifact.
-
 ## Key Conventions
 
 - One test file per functional area in `tests/`
