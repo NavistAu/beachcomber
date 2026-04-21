@@ -81,10 +81,16 @@ $ comb g git .                   # default: full JSON response
 
 $ comb s                         # status
 {
-  "uptime_secs": 3642,
-  "cache_entries": 12,
-  "active_watchers": 3,
-  "demand": 8
+  "ok": true,
+  "data": {
+    "pid": 12345,
+    "version": "0.5.1",
+    "uptime_secs": 3642,
+    "active_watchers": 2,
+    "requests_total": 184291,
+    "cache_entries": 12,
+    "providers": 19
+  }
 }
 ```
 
@@ -311,11 +317,16 @@ Show daemon health and statistics.
 ```sh
 $ comb s
 {
-  "uptime_secs": 7234,
-  "cache_entries": 14,
-  "active_watchers": 4,
-  "providers": 19,
-  "requests_total": 184291
+  "ok": true,
+  "data": {
+    "pid": 12345,
+    "version": "0.5.1",
+    "uptime_secs": 7234,
+    "active_watchers": 4,
+    "requests_total": 184291,
+    "cache_entries": 14,
+    "providers": 19
+  }
 }
 ```
 
@@ -325,13 +336,10 @@ Show all active providers and their cached state age.
 
 ```sh
 $ comb l
-{
-  "entries": [
-    { "key": "git", "path": "/Users/me/project", "age_ms": 1240 },
-    { "key": "battery", "path": null, "age_ms": 8900 },
-    { "key": "kubecontext", "path": null, "age_ms": 22100 }
-  ]
-}
+[
+  {"name":"hostname","source":"builtin","global":true,"fields":["name","short"]},
+  {"name":"git","source":"builtin","global":false,"fields":["branch","commit","dirty","..."]}
+]
 ```
 
 ### `comb d` (daemon) `[--socket <path>]`
@@ -458,11 +466,15 @@ Append a colon suffix to any key to retrieve metadata about the cached value rat
 |---|---|---|
 | `:age` | int | Milliseconds since the value was last computed |
 | `:stale` | bool | Whether the value is past its expected refresh time |
-| `:source` | string | How the value was produced: `builtin`, `script`, or `virtual` |
+| `:fresh` | bool | Inverse of `:stale` — true when the value is within its refresh window |
+| `:cache` | bool | Whether the value was served from cache (`true`) or freshly computed (`false`) |
+| `:source` | string | Provider kind: `builtin`, `script`, or `virtual` |
 
 ```sh
 comb g git.branch:age .       # → 1240 (ms since last computed)
 comb g battery.percent:stale  # → false
+comb g git.branch:fresh .     # → true
+comb g git.branch:cache .     # → true
 comb g git:source .           # → builtin
 ```
 
@@ -735,7 +747,7 @@ beachcomber ships 19 built-in providers organized by category.
 | `user` | global | `name` (string), `uid` (int) | once at startup | 395 ns |
 | `load` | global | `one` (float), `five` (float), `fifteen` (float) | poll 10s / floor 5s | 550 ns |
 | `uptime` | global | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
-| `battery` | global | `percent` (int), `charging` (bool), `time_remaining` (int, seconds) | poll 30s / floor 5s | 6 ms |
+| `battery` | global | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s / floor 5s | 6 ms |
 | `network` | global | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
 | `sudo` | global | `active` (bool) | poll 30s | < 1 µs |
 | `op` | global | `signed_in` (bool), `account` (string) | poll 60s | varies |
@@ -746,12 +758,17 @@ beachcomber ships 19 built-in providers organized by category.
 // comb g battery
 {
   "ok": true,
-  "data": { "percent": 78, "charging": false, "time_remaining": 7200 },
+  "data": {
+    "percent": 78,
+    "charging": false,
+    "time_remaining_secs": 7200,
+    "status": "discharging"
+  },
   "age_ms": 4200
 }
 ```
 
-> **Platform note:** On macOS, `time_remaining` is always available. On Linux, it requires UPower (`upower` command) — if unavailable, the field reads "unknown".
+> **Platform note:** On macOS, `time_remaining_secs` is always available. On Linux, it requires UPower (`upower` command) — if unavailable, the field reads `0`. The `status` field reports the battery state: `"charging"`, `"discharging"`, `"full"`, or `"unknown"`.
 
 ```json
 // comb g network
@@ -881,8 +898,8 @@ feature/fast-cache
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
 | `python` | path | `venv` (bool), `venv_name` (string), `version` (string) | watch `.venv/`, `pyproject.toml` | < 1 µs |
-| `conda` | global | `env` (string), `version` (string) | poll 30s | < 1 µs |
-| `mise` | path | `tools` (object: tool-name → version) | watch `.mise.toml`, `mise.toml` | varies |
+| `conda` | global | `env` (string) | poll 30s | < 1 µs |
+| `mise` | path | `project` (object: tool-name → version), `global` (object: tool-name → version) | watch `.mise.toml`, `mise.toml` | varies |
 | `asdf` | path | `tools` (object: tool-name → version) | watch `.tool-versions` | < 1 µs |
 | `direnv` | path | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 
@@ -893,11 +910,8 @@ feature/fast-cache
 {
   "ok": true,
   "data": {
-    "tools": {
-      "node": "20.11.0",
-      "python": "3.12.1",
-      "rust": "1.75.0"
-    }
+    "project": {"node": "20.11.0", "python": "3.12.1"},
+    "global": {"rust": "1.75.0"}
   },
   "age_ms": 890
 }
@@ -1801,7 +1815,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | `op` | string | Operation: `get`, `poke`, `store`, `watch`, `context`, `list`, `status` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
-| `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`, `"csv"`, `"tsv"`, `"CSV"`, `"TSV"`, `"fmt"` |
+| `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
 
 ### Response Format
 
@@ -1824,7 +1838,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 ### Operations
 
-**`get`:** Read from cache. Always returns immediately. If the key has never been computed, `data` is null and `ok` is true. A null response means "no data yet" — retry after a moment or `poke` to trigger computation.
+**`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
 
 **`poke`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
 
