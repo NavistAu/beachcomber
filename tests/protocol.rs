@@ -40,15 +40,15 @@ fn parse_get_request_text_format() {
 }
 
 #[test]
-fn parse_poke_request() {
-    let json = r#"{"op": "poke", "key": "git", "path": "/project"}"#;
+fn parse_refresh_request() {
+    let json = r#"{"op": "refresh", "key": "git", "path": "/project"}"#;
     let req: Request = serde_json::from_str(json).unwrap();
     match req {
-        Request::Poke { key, path } => {
+        Request::Refresh { key, path } => {
             assert_eq!(key, "git");
             assert_eq!(path.as_deref(), Some("/project"));
         }
-        _ => panic!("Expected Poke request"),
+        _ => panic!("Expected Refresh request"),
     }
 }
 

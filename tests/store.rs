@@ -190,7 +190,7 @@ async fn store_appears_in_list() {
 }
 
 #[tokio::test]
-async fn poke_virtual_provider_is_noop() {
+async fn refresh_virtual_provider_is_noop() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -204,7 +204,7 @@ async fn poke_virtual_provider_is_noop() {
     )
     .await;
 
-    let resp = send_recv(&mut stream, r#"{"op":"poke","key":"myapp"}"#).await;
+    let resp = send_recv(&mut stream, r#"{"op":"refresh","key":"myapp"}"#).await;
     assert!(resp.ok);
 
     let resp = send_recv(&mut stream, r#"{"op":"get","key":"myapp.v"}"#).await;

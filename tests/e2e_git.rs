@@ -70,13 +70,13 @@ async fn setup_daemon() -> (
 }
 
 #[tokio::test]
-async fn poke_git_provider() {
+async fn refresh_git_provider() {
     let repo = create_test_repo();
     let (_tmp, sock, _handle) = setup_daemon().await;
     let client = Client::new(sock);
 
     let resp = client
-        .poke("git", Some(repo.path().to_str().unwrap()))
+        .refresh("git", Some(repo.path().to_str().unwrap()))
         .await
         .unwrap();
     assert!(resp.ok);
@@ -93,14 +93,14 @@ async fn poke_git_provider() {
 }
 
 #[tokio::test]
-async fn git_detects_dirty_state_via_poke() {
+async fn git_detects_dirty_state_via_refresh() {
     let repo = create_test_repo();
     let (_tmp, sock, _handle) = setup_daemon().await;
     let client = Client::new(sock);
     let repo_path = repo.path().to_str().unwrap();
 
-    // First poke: clean state
-    client.poke("git", Some(repo_path)).await.unwrap();
+    // First refresh: clean state
+    client.refresh("git", Some(repo_path)).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let resp = client.get("git.dirty", Some(repo_path)).await.unwrap();
@@ -113,8 +113,8 @@ async fn git_detects_dirty_state_via_poke() {
     // Create a dirty file
     std::fs::write(repo.path().join("dirty.txt"), "dirty").unwrap();
 
-    // Poke again
-    client.poke("git", Some(repo_path)).await.unwrap();
+    // Refresh again
+    client.refresh("git", Some(repo_path)).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let resp = client.get("git.dirty", Some(repo_path)).await.unwrap();
@@ -132,7 +132,7 @@ async fn git_returns_miss_for_non_repo() {
     let client = Client::new(sock);
 
     client
-        .poke("git", Some(tmp.path().to_str().unwrap()))
+        .refresh("git", Some(tmp.path().to_str().unwrap()))
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;

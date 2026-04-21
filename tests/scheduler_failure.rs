@@ -47,10 +47,10 @@ async fn repeated_failures_trigger_backoff() {
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
-    // Poke 10 times with small delays
+    // Refresh 10 times with small delays
     for _ in 0..10 {
         handle
-            .send(SchedulerMessage::Poke {
+            .send(SchedulerMessage::Refresh {
                 provider: "failing".to_string(),
                 path: None,
             })
@@ -61,7 +61,7 @@ async fn repeated_failures_trigger_backoff() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let count = FAIL_EXEC_COUNT.load(Ordering::SeqCst);
-    // After 3 consecutive failures, subsequent pokes should be suppressed
+    // After 3 consecutive failures, subsequent refreshes should be suppressed
     // So we expect fewer than 10 executions
     assert!(
         count < 10,

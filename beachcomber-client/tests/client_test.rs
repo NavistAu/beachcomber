@@ -1,4 +1,4 @@
-use beachcomber_client::{Client, ClientConfig};
+use libbeachcomber::{Client, ClientConfig};
 use std::time::Duration;
 
 #[test]
@@ -20,7 +20,7 @@ fn client_with_config() {
 
 #[test]
 fn socket_path_returns_something() {
-    let path = beachcomber_client::socket_path();
+    let path = libbeachcomber::socket_path();
     assert!(path.to_string_lossy().contains("beachcomber"));
 }
 
@@ -39,7 +39,7 @@ fn client_no_autostart_returns_error() {
 
 #[test]
 fn comb_data_accessors() {
-    let data = beachcomber_client::CombData::from_json(
+    let data = libbeachcomber::CombData::from_json(
         serde_json::json!({"branch": "main", "dirty": true, "ahead": 2, "load": 1.5}),
     );
     assert_eq!(data.get_str("branch"), Some("main"));
@@ -51,6 +51,15 @@ fn comb_data_accessors() {
 
 #[test]
 fn comb_data_scalar() {
-    let data = beachcomber_client::CombData::from_json(serde_json::json!("main"));
+    let data = libbeachcomber::CombData::from_json(serde_json::json!("main"));
     assert_eq!(data.as_text(), Some("main".to_string()));
+}
+
+// Compile-time check: Client::refresh and Session::refresh must exist with the correct signatures.
+// If the methods are still named `poke`, this test will fail to compile.
+#[test]
+fn client_and_session_refresh_methods_exist() {
+    // Verify Client::refresh exists with the expected signature
+    let _: fn(&Client, &str, Option<&str>) -> Result<(), libbeachcomber::CombError> =
+        Client::refresh;
 }

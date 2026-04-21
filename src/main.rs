@@ -580,7 +580,7 @@ fn run_refresh(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
         let client = beachcomber::client::Client::new(socket_path);
-        match client.poke(key, path).await {
+        match client.refresh(key, path).await {
             Ok(response) => {
                 if response.ok {
                     ExitCode::SUCCESS

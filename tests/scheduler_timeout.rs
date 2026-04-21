@@ -50,7 +50,7 @@ async fn slow_provider_times_out() {
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle
-        .send(SchedulerMessage::Poke {
+        .send(SchedulerMessage::Refresh {
             provider: "slow".to_string(),
             path: None,
         })
@@ -81,7 +81,7 @@ async fn fast_provider_completes_within_timeout() {
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle
-        .send(SchedulerMessage::Poke {
+        .send(SchedulerMessage::Refresh {
             provider: "hostname".to_string(),
             path: None,
         })

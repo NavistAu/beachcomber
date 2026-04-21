@@ -39,7 +39,7 @@ impl Provider for CountingProvider {
 }
 
 #[tokio::test]
-async fn rapid_pokes_are_deduplicated() {
+async fn rapid_refreshes_are_deduplicated() {
     EXEC_COUNT.store(0, Ordering::SeqCst);
 
     let cache = Arc::new(Cache::new());
@@ -51,10 +51,10 @@ async fn rapid_pokes_are_deduplicated() {
     let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
-    // Send 10 rapid pokes
+    // Send 10 rapid refreshes
     for _ in 0..10 {
         handle
-            .send(SchedulerMessage::Poke {
+            .send(SchedulerMessage::Refresh {
                 provider: "counter".to_string(),
                 path: None,
             })
@@ -69,7 +69,7 @@ async fn rapid_pokes_are_deduplicated() {
     // At minimum 1, at most ~2-3 (one running + one queued rerun)
     assert!(
         exec_count < 5,
-        "Expected deduplication to reduce 10 pokes to fewer executions, got {exec_count}"
+        "Expected deduplication to reduce 10 refreshes to fewer executions, got {exec_count}"
     );
 
     handle.send(SchedulerMessage::Shutdown).await;

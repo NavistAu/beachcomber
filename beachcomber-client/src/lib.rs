@@ -194,11 +194,11 @@ impl Client {
     }
 
     /// Trigger recomputation of a provider. Fire-and-forget.
-    pub fn poke(&self, key: &str, path: Option<&str>) -> Result<(), CombError> {
+    pub fn refresh(&self, key: &str, path: Option<&str>) -> Result<(), CombError> {
         let socket_path = self.find_or_start_socket()?;
         let mut stream = self.connect(&socket_path)?;
 
-        let mut request = serde_json::json!({ "op": "poke", "key": key });
+        let mut request = serde_json::json!({ "op": "refresh", "key": key });
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
         }
@@ -328,8 +328,8 @@ impl Session {
     }
 
     /// Trigger recomputation.
-    pub fn poke(&mut self, key: &str, path: Option<&str>) -> Result<(), CombError> {
-        let mut request = serde_json::json!({ "op": "poke", "key": key });
+    pub fn refresh(&mut self, key: &str, path: Option<&str>) -> Result<(), CombError> {
+        let mut request = serde_json::json!({ "op": "refresh", "key": key });
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
         }

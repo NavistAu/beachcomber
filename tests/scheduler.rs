@@ -4,7 +4,7 @@ use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use std::sync::Arc;
 
 #[tokio::test]
-async fn scheduler_poke_populates_cache() {
+async fn scheduler_refresh_populates_cache() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = beachcomber::config::Config::default();
@@ -13,7 +13,7 @@ async fn scheduler_poke_populates_cache() {
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle
-        .send(SchedulerMessage::Poke {
+        .send(SchedulerMessage::Refresh {
             provider: "hostname".to_string(),
             path: None,
         })
@@ -22,7 +22,7 @@ async fn scheduler_poke_populates_cache() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let entry = cache.get("hostname", None);
-    assert!(entry.is_some(), "Poke should populate cache");
+    assert!(entry.is_some(), "Refresh should populate cache");
     assert!(
         !entry
             .unwrap()
@@ -38,7 +38,7 @@ async fn scheduler_poke_populates_cache() {
 }
 
 #[tokio::test]
-async fn scheduler_poke_unknown_provider() {
+async fn scheduler_refresh_unknown_provider() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = beachcomber::config::Config::default();
@@ -47,7 +47,7 @@ async fn scheduler_poke_unknown_provider() {
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle
-        .send(SchedulerMessage::Poke {
+        .send(SchedulerMessage::Refresh {
             provider: "nonexistent".to_string(),
             path: None,
         })

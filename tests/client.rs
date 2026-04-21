@@ -69,10 +69,10 @@ async fn client_get_unknown_provider() {
 }
 
 #[tokio::test]
-async fn client_poke() {
+async fn client_refresh() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let response = client.poke("hostname", None).await.unwrap();
+    let response = client.refresh("hostname", None).await.unwrap();
     assert!(response.ok);
 }
 

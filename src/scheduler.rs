@@ -16,7 +16,7 @@ use crate::watcher::FsWatcher;
 /// Messages sent from the Server to the Scheduler.
 #[derive(Debug)]
 pub enum SchedulerMessage {
-    Poke {
+    Refresh {
         provider: String,
         path: Option<String>,
     },
@@ -408,7 +408,7 @@ impl Scheduler {
     /// Suppresses execution when failure backoff is active.
     fn execute_provider(&self, provider_name: &str, path: Option<&str>) {
         let Some(provider) = self.registry.get(provider_name) else {
-            warn!("Poke for unknown provider '{}'", provider_name);
+            warn!("Refresh for unknown provider '{}'", provider_name);
             return;
         };
 
@@ -660,8 +660,8 @@ impl Scheduler {
                             info!("Scheduler shutting down.");
                             break;
                         }
-                        Some(SchedulerMessage::Poke { provider, path }) => {
-                            debug!("Poke: provider={} path={:?}", provider, path);
+                        Some(SchedulerMessage::Refresh { provider, path }) => {
+                            debug!("Refresh: provider={} path={:?}", provider, path);
                             self.execute_provider(&provider, path.as_deref());
                             last_activity = Instant::now();
                         }
@@ -867,7 +867,7 @@ impl Scheduler {
                 msg = self.rx.recv() => {
                     match msg {
                         None | Some(SchedulerMessage::Shutdown) => break,
-                        Some(SchedulerMessage::Poke { provider, path }) => {
+                        Some(SchedulerMessage::Refresh { provider, path }) => {
                             self.execute_provider(&provider, path.as_deref());
                             last_activity = Instant::now();
                         }

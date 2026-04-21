@@ -27,11 +27,11 @@ async fn setup_with_scheduler() -> (TempDir, std::path::PathBuf) {
 }
 
 #[tokio::test]
-async fn poke_goes_through_scheduler() {
+async fn refresh_goes_through_scheduler() {
     let (_tmp, sock) = setup_with_scheduler().await;
     let client = Client::new(sock);
 
-    let response = client.poke("hostname", None).await.unwrap();
+    let response = client.refresh("hostname", None).await.unwrap();
     assert!(response.ok);
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;

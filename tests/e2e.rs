@@ -83,7 +83,7 @@ async fn e2e_get_user() {
 }
 
 #[tokio::test]
-async fn e2e_poke_and_get() {
+async fn e2e_refresh_and_get() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
     let config = Config::default();
@@ -93,14 +93,14 @@ async fn e2e_poke_and_get() {
 
     let client = Client::new(sock.clone());
 
-    let poke_resp = client.poke("hostname", None).await.unwrap();
-    assert!(poke_resp.ok);
+    let refresh_resp = client.refresh("hostname", None).await.unwrap();
+    assert!(refresh_resp.ok);
 
     let response = client.get("hostname.name", None).await.unwrap();
     assert!(response.ok);
     assert!(
         response.age_ms.unwrap() < 1000,
-        "Data should be fresh after poke"
+        "Data should be fresh after refresh"
     );
 
     handle.abort();

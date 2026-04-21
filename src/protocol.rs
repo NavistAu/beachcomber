@@ -19,7 +19,7 @@ pub enum Request {
         #[serde(default)]
         format: Format,
     },
-    Poke {
+    Refresh {
         key: String,
         #[serde(default)]
         path: Option<String>,

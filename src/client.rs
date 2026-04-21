@@ -213,9 +213,9 @@ impl Client {
         self.send_request(&request).await
     }
 
-    pub async fn poke(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
+    pub async fn refresh(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
         let mut request = serde_json::json!({
-            "op": "poke",
+            "op": "refresh",
             "key": key,
         });
         if let Some(p) = path {

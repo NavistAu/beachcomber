@@ -1243,14 +1243,14 @@ Covered keys: `git.branch`, `git.dirty`, `git.ahead`, `git.behind`, `git.stash_c
 
 ### The chpwd hook
 
-`scripts/chpwd.sh` warms path-scoped provider caches on directory change. When you `cd`, it pokes `git`, `mise`, `terraform`, `python`, `direnv`, and `asdf` in the background so the cache is warm before your first prompt renders.
+`scripts/chpwd.sh` warms path-scoped provider caches on directory change. When you `cd`, it refreshes `git`, `mise`, `terraform`, `python`, `direnv`, and `asdf` in the background so the cache is warm before your first prompt renders.
 
 ```sh
 # Install — add to your shell rc (zsh, bash; fish requires a separate config file)
 source <(curl -fsSL https://beachcomber.sh/scripts/chpwd.sh)
 ```
 
-No-op if comb is not installed. All pokes run in the background (`&`) so there's no prompt delay.
+No-op if comb is not installed. All refreshes run in the background (`&`) so there's no prompt delay.
 
 ### Alternative: inline `||` fallback
 
@@ -1799,7 +1799,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "get", "key": "git", "path": "/home/user/project"}
 {"op": "get", "key": "battery"}
 {"op": "get", "key": "git.branch", "path": "/home/user/project", "format": "text"}
-{"op": "poke", "key": "git", "path": "/home/user/project"}
+{"op": "refresh", "key": "git", "path": "/home/user/project"}
 {"op": "store", "key": "myapp", "data": {"status": "healthy"}}
 {"op": "store", "key": "myapp", "data": {"status": "ok"}, "ttl": "30s", "path": "/project"}
 {"op": "watch", "key": "git.branch", "path": "/home/user/project"}
@@ -1812,7 +1812,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `poke`, `store`, `watch`, `context`, `list`, `status` |
+| `op` | string | Operation: `get`, `refresh`, `store`, `watch`, `context`, `list`, `status` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
@@ -1840,7 +1840,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
 
-**`poke`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
+**`refresh`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
 
 **`store`:** Write data into the cache as a virtual provider. The `data` field must be a JSON object. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success; rejected if the key conflicts with a built-in or script provider.
 

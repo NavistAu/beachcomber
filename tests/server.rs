@@ -259,7 +259,7 @@ async fn server_handles_unknown_provider() {
 }
 
 #[tokio::test]
-async fn server_handles_poke() {
+async fn server_handles_refresh() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -267,7 +267,7 @@ async fn server_handles_poke() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let request = r#"{"op": "poke", "key": "hostname"}"#;
+    let request = r#"{"op": "refresh", "key": "hostname"}"#;
     stream
         .write_all(format!("{request}\n").as_bytes())
         .await
@@ -278,7 +278,7 @@ async fn server_handles_poke() {
     reader.read_line(&mut line).await.unwrap();
 
     let response: Response = serde_json::from_str(&line).unwrap();
-    assert!(response.ok, "Poke should return ok");
+    assert!(response.ok, "Refresh should return ok");
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

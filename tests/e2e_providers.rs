@@ -23,15 +23,15 @@ async fn e2e_all_builtin_providers_registered() {
     let user = client.get("user", None).await.unwrap();
     assert!(user.ok && user.data.is_some(), "user should be cached");
 
-    let load_poke = client.poke("load", None).await.unwrap();
-    assert!(load_poke.ok, "load poke should succeed");
+    let load_refresh = client.refresh("load", None).await.unwrap();
+    assert!(load_refresh.ok, "load refresh should succeed");
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let load = client.get("load", None).await.unwrap();
     assert!(
         load.ok && load.data.is_some(),
-        "load should have data after poke"
+        "load should have data after refresh"
     );
 
     handle.abort();
@@ -57,8 +57,8 @@ async fn e2e_script_provider_from_config() {
 
     let client = Client::new(sock);
 
-    let poke = client.poke("test_echo", None).await.unwrap();
-    assert!(poke.ok, "Poke script provider should succeed");
+    let refresh = client.refresh("test_echo", None).await.unwrap();
+    assert!(refresh.ok, "Refresh script provider should succeed");
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 

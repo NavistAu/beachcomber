@@ -486,7 +486,7 @@ async fn handle_request(
                 Some(other) => Response::error(format!("unknown metadata suffix: :{other}")),
             }
         }
-        Request::Poke { key, path } => {
+        Request::Refresh { key, path } => {
             let (provider_name, _) = protocol::split_key(key);
             let effective_path =
                 resolve_path(path.as_deref(), context_path, provider_name, registry);
@@ -494,7 +494,7 @@ async fn handle_request(
             if let Some(sched) = scheduler {
                 // Route through scheduler.
                 sched
-                    .send(SchedulerMessage::Poke {
+                    .send(SchedulerMessage::Refresh {
                         provider: provider_name.to_string(),
                         path: effective_path,
                     })
@@ -508,7 +508,7 @@ async fn handle_request(
                 }
             } else {
                 // Fallback: execute directly (used by tests with None scheduler).
-                // Check if it's a virtual provider — poke is a no-op
+                // Check if it's a virtual provider — refresh is a no-op
                 if registry.get_source(provider_name)
                     == Some(crate::provider::ProviderSource::Virtual)
                 {
