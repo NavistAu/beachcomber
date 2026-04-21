@@ -231,6 +231,7 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [x] Batch get — `comb fetch` (alias `f`). Single command to query multiple keys in one connection. Format-aware output.
 - [x] Field metadata access — colon delimiter on key: `comb g git.branch:age` returns the cache age in milliseconds. Metadata fields: `age`, `stale`, `fresh`, `cache`, `source`.
 - [x] Help screen branding — NavistAu authorship, project URL, tagline, MIT license in `comb --help` and `comb --version` output. Format suffix usage hint in after-help.
+- [ ] `comb inspect <path>` (working name) — dump every applicable provider's fields for the given directory in one shot. Globals + path-scoped providers evaluated against the path; single command replaces "ask every provider one at a time". Useful for "what does beachcomber know about this dir right now?" as a diagnostic, onboarding, and integration-authoring tool. Format-aware output (json/text/human). Naming bikeshed: `inspect`, `dump`, `snapshot`, `all`, `info`.
 
 ### Shell Integration
 
