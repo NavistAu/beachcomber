@@ -215,6 +215,8 @@ mod tests {
 Run with:
 
 ```bash
+cargo nextest run -p beachcomber -E 'test(provider::dockercontext)'
+# or, with plain cargo test:
 cargo test -p beachcomber provider::dockercontext
 ```
 
@@ -404,7 +406,7 @@ fn returns_none_without_kubeconfig() {
 }
 ```
 
-Avoid `std::env::set_var` in parallel tests — it mutates global state. Either mark such tests `#[serial]` (via the `serial_test` crate) or use a single-threaded test binary: `cargo test -- --test-threads=1`.
+Avoid `std::env::set_var` in parallel tests — it mutates global state. Either mark such tests `#[serial]` (via the `serial_test` crate), run them with `cargo nextest run --test-threads=1 <filter>`, or use `cargo test -- --test-threads=1`. Note: cargo-nextest runs each test in its own process by default, so env-var mutations are already isolated per test — the `--test-threads=1` workaround is mainly relevant for plain `cargo test`.
 
 **Testing `metadata()` completeness**
 

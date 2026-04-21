@@ -50,7 +50,7 @@ Verify docs reflect the new version's features:
 Commit, push to `main`, and wait for **all CI jobs** to pass:
 
 - Check (macOS + Linux): cargo check, clippy, fmt
-- Test (macOS + Linux): cargo test
+- Test (macOS + Linux): cargo nextest run
 - Benchmark
 - SDK tests: C, Go, Lua, Node.js, Python, Ruby
 - Installer validation: npm, PyPI

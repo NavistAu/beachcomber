@@ -13,7 +13,7 @@ Thanks for your interest in contributing! beachcomber is a Rust project that ben
 git clone https://github.com/OWNER/beachcomber.git
 cd beachcomber
 cargo build
-cargo test
+cargo nextest run    # or: cargo test (no timeout safety net)
 ```
 
 The binary is `comb` (not `beachcomber`):
@@ -32,10 +32,15 @@ cargo run -- get hostname.name
 ### Running Tests
 
 ```sh
-cargo test
+cargo nextest run                                                              # preferred
+cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'   # skip env-sensitive tests
 ```
 
-Some tests require filesystem watching (FSEvents) and may not work inside sandboxed environments. These are the `watcher` tests and the `uptime_provider_executes` test.
+`cargo-nextest` is the blessed test runner. Install once with `cargo install cargo-nextest --locked`. Config at `.config/nextest.toml` enforces a 2-minute global wall-clock cap on the suite plus a 15s-warn / 30s-kill cap per test — a hung test terminates the run with a failure instead of blocking forever.
+
+Plain `cargo test -- --skip watcher_ --skip uptime_provider_executes` still works; it just lacks the kill-on-hang safety.
+
+Some tests require filesystem watching (FSEvents) and may not work inside sandboxed environments. These are the `watcher_*` tests and the `uptime_provider_executes` test; skip them as shown.
 
 ### Running Benchmarks
 
@@ -62,7 +67,7 @@ See `docs/provider-development.md` for a step-by-step walkthrough. The short ver
 1. Create `src/provider/yourprovider.rs` implementing the `Provider` trait
 2. Add tests in `tests/provider_yourprovider.rs`
 3. Register in `src/provider/mod.rs` and `src/provider/registry.rs`
-4. Run `cargo test` and `cargo bench --bench providers`
+4. Run `cargo nextest run -E 'test(provider_yourprovider)'` and `cargo bench --bench providers`
 
 **Performance guidelines:** Read a file instead of spawning a process whenever possible. See the performance tiers in `docs/performance.md`.
 
