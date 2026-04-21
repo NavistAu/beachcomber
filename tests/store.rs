@@ -43,7 +43,7 @@ async fn store_and_get_roundtrip() {
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
     // Store data
-    let store_req = r#"{"op":"store","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}"#;
+    let store_req = r#"{"op":"put","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}"#;
     let store_resp = send_recv(&mut stream, store_req).await;
     assert!(
         store_resp.ok,
@@ -77,7 +77,7 @@ async fn store_rejects_builtin_name() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
-    let req = r#"{"op":"store","key":"git","data":{"branch":"main"}}"#;
+    let req = r#"{"op":"put","key":"git","data":{"branch":"main"}}"#;
     let resp = send_recv(&mut stream, req).await;
     assert!(!resp.ok, "store under builtin name should fail");
     let err = resp.error.unwrap();
@@ -99,12 +99,12 @@ async fn store_replaces_previous_data() {
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
     // Store v1
-    let v1 = r#"{"op":"store","key":"myapp","data":{"status":"starting","old_field":"yes"}}"#;
+    let v1 = r#"{"op":"put","key":"myapp","data":{"status":"starting","old_field":"yes"}}"#;
     let r = send_recv(&mut stream, v1).await;
     assert!(r.ok);
 
     // Store v2 with different fields
-    let v2 = r#"{"op":"store","key":"myapp","data":{"status":"ready","version":"2.0"}}"#;
+    let v2 = r#"{"op":"put","key":"myapp","data":{"status":"ready","version":"2.0"}}"#;
     let r = send_recv(&mut stream, v2).await;
     assert!(r.ok);
 
@@ -131,7 +131,7 @@ async fn store_with_ttl_shows_staleness() {
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
     // Store with TTL of 1 second
-    let req = r#"{"op":"store","key":"myapp","data":{"status":"ok"},"ttl":"1s"}"#;
+    let req = r#"{"op":"put","key":"myapp","data":{"status":"ok"},"ttl":"1s"}"#;
     let r = send_recv(&mut stream, req).await;
     assert!(r.ok);
 
@@ -166,7 +166,7 @@ async fn store_appears_in_list() {
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
     // Store something
-    let req = r#"{"op":"store","key":"myapp","data":{"status":"ok"}}"#;
+    let req = r#"{"op":"put","key":"myapp","data":{"status":"ok"}}"#;
     let r = send_recv(&mut stream, req).await;
     assert!(r.ok);
 
@@ -200,7 +200,7 @@ async fn refresh_virtual_provider_is_noop() {
 
     send_recv(
         &mut stream,
-        r#"{"op":"store","key":"myapp","data":{"v":"1"}}"#,
+        r#"{"op":"put","key":"myapp","data":{"v":"1"}}"#,
     )
     .await;
 
@@ -224,12 +224,12 @@ async fn store_with_path_scope() {
 
     send_recv(
         &mut stream,
-        r#"{"op":"store","key":"myapp","data":{"v":"proj-a"},"path":"/tmp/proj-a"}"#,
+        r#"{"op":"put","key":"myapp","data":{"v":"proj-a"},"path":"/tmp/proj-a"}"#,
     )
     .await;
     send_recv(
         &mut stream,
-        r#"{"op":"store","key":"myapp","data":{"v":"proj-b"},"path":"/tmp/proj-b"}"#,
+        r#"{"op":"put","key":"myapp","data":{"v":"proj-b"},"path":"/tmp/proj-b"}"#,
     )
     .await;
 

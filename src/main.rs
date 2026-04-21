@@ -58,7 +58,7 @@ enum Commands {
     /// List active providers
     #[command(visible_alias = "l")]
     List,
-    /// Store data as a virtual provider
+    /// Put data into a virtual provider
     #[command(visible_alias = "p")]
     Put {
         /// Provider name (e.g., "myapp")
@@ -765,14 +765,14 @@ fn run_put(
     };
 
     if !data.is_object() {
-        eprintln!("Store data must be a JSON object");
+        eprintln!("Put data must be a JSON object");
         return ExitCode::from(2);
     }
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
         let client = beachcomber::client::Client::new(socket_path);
-        match client.store(key, data, ttl, path).await {
+        match client.put(key, data, ttl, path).await {
             Ok(response) => {
                 if response.ok {
                     ExitCode::SUCCESS

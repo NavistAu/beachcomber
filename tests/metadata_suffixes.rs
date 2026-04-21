@@ -72,10 +72,10 @@ async fn source_returns_builtin_for_hostname() {
     handle.abort();
 }
 
-// ── Test 2: :source returns "virtual" after a store ─────────────────────────
+// ── Test 2: :source returns "virtual" after a put ───────────────────────────
 
 #[tokio::test]
-async fn source_returns_virtual_after_store() {
+async fn source_returns_virtual_after_put() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -84,13 +84,13 @@ async fn source_returns_virtual_after_store() {
     let resps = send_many(
         &sock,
         &[
-            r#"{"op":"store","key":"myvirt","data":{"status":"ok"}}"#,
+            r#"{"op":"put","key":"myvirt","data":{"status":"ok"}}"#,
             r#"{"op":"get","key":"myvirt:source"}"#,
         ],
     )
     .await;
 
-    assert!(resps[0].ok, "store should succeed");
+    assert!(resps[0].ok, "put should succeed");
     assert!(resps[1].ok, "source query should succeed");
     assert_eq!(resps[1].data.as_ref().unwrap(), "virtual");
 

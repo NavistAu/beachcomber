@@ -581,7 +581,7 @@ async fn handle_request(
                 .collect();
             Response::ok(serde_json::json!(providers), 0, false)
         }
-        Request::Store {
+        Request::Put {
             key,
             data,
             ttl,
@@ -597,7 +597,7 @@ async fn handle_request(
             // data must be a JSON object; its top-level keys become fields.
             let obj = match data.as_object() {
                 Some(o) => o,
-                None => return Response::error("store data must be a JSON object"),
+                None => return Response::error("put data must be a JSON object"),
             };
 
             // Convert JSON object fields to ProviderResult.

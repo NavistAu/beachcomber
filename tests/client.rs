@@ -77,7 +77,7 @@ async fn client_refresh() {
 }
 
 #[tokio::test]
-async fn client_store_and_get() {
+async fn client_put_and_get() {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
     let config = beachcomber::config::Config::load();
@@ -87,7 +87,7 @@ async fn client_store_and_get() {
     let client = beachcomber::client::Client::new(sock.clone());
 
     let resp = client
-        .store("testapp", serde_json::json!({"status": "ok"}), None, None)
+        .put("testapp", serde_json::json!({"status": "ok"}), None, None)
         .await
         .unwrap();
     assert!(resp.ok);

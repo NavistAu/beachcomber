@@ -13,3 +13,10 @@ fn refresh_request_deserializes_from_refresh_op() {
         _ => panic!("expected Refresh variant"),
     }
 }
+
+#[test]
+fn put_request_deserializes_from_put_op() {
+    let payload = serde_json::json!({"op": "put", "key": "k", "data": {"a": 1}});
+    let req: beachcomber::protocol::Request = serde_json::from_value(payload).unwrap();
+    assert!(matches!(req, beachcomber::protocol::Request::Put { .. }));
+}

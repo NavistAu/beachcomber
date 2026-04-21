@@ -29,7 +29,7 @@ pub enum Request {
     },
     List,
     Status,
-    Store {
+    Put {
         key: String,
         data: serde_json::Value,
         #[serde(default)]

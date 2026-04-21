@@ -100,11 +100,11 @@ fn key_with_dotted_field() {
 }
 
 #[test]
-fn parse_store_request() {
-    let json = r#"{"op":"store","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}"#;
+fn parse_put_request() {
+    let json = r#"{"op":"put","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}"#;
     let req: Request = serde_json::from_str(json).unwrap();
     match req {
-        Request::Store {
+        Request::Put {
             key,
             data,
             ttl,
@@ -116,16 +116,16 @@ fn parse_store_request() {
             assert!(ttl.is_none());
             assert!(path.is_none());
         }
-        _ => panic!("Expected Store request"),
+        _ => panic!("Expected Put request"),
     }
 }
 
 #[test]
-fn parse_store_request_with_ttl_and_path() {
-    let json = r#"{"op":"store","key":"myapp","data":{"count":42},"ttl":"30s","path":"/home/user/project"}"#;
+fn parse_put_request_with_ttl_and_path() {
+    let json = r#"{"op":"put","key":"myapp","data":{"count":42},"ttl":"30s","path":"/home/user/project"}"#;
     let req: Request = serde_json::from_str(json).unwrap();
     match req {
-        Request::Store {
+        Request::Put {
             key,
             data,
             ttl,
@@ -136,7 +136,7 @@ fn parse_store_request_with_ttl_and_path() {
             assert_eq!(ttl.as_deref(), Some("30s"));
             assert_eq!(path.as_deref(), Some("/home/user/project"));
         }
-        _ => panic!("Expected Store request"),
+        _ => panic!("Expected Put request"),
     }
 }
 

@@ -1800,8 +1800,8 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "get", "key": "battery"}
 {"op": "get", "key": "git.branch", "path": "/home/user/project", "format": "text"}
 {"op": "refresh", "key": "git", "path": "/home/user/project"}
-{"op": "store", "key": "myapp", "data": {"status": "healthy"}}
-{"op": "store", "key": "myapp", "data": {"status": "ok"}, "ttl": "30s", "path": "/project"}
+{"op": "put", "key": "myapp", "data": {"status": "healthy"}}
+{"op": "put", "key": "myapp", "data": {"status": "ok"}, "ttl": "30s", "path": "/project"}
 {"op": "watch", "key": "git.branch", "path": "/home/user/project"}
 {"op": "context", "path": "/home/user/project"}
 {"op": "list"}
@@ -1812,7 +1812,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `refresh`, `store`, `watch`, `context`, `list`, `status` |
+| `op` | string | Operation: `get`, `refresh`, `put`, `watch`, `context`, `list`, `status` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
@@ -1842,11 +1842,11 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`refresh`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
 
-**`store`:** Write data into the cache as a virtual provider. The `data` field must be a JSON object. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success; rejected if the key conflicts with a built-in or script provider.
+**`put`:** Write data into the cache as a virtual provider. The `data` field must be a JSON object. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success; rejected if the key conflicts with a built-in or script provider.
 
 ```json
-{"op":"store","key":"myapp","data":{"status":"healthy"}}
-{"op":"store","key":"myapp","data":{"status":"ok"},"ttl":"30s","path":"/project"}
+{"op":"put","key":"myapp","data":{"status":"healthy"}}
+{"op":"put","key":"myapp","data":{"status":"ok"},"ttl":"30s","path":"/project"}
 ```
 
 **`watch`:** Open a long-lived subscription. The server emits one NDJSON response immediately with the current value, then emits additional lines each time the watched key changes. The connection stays open until the client closes it.

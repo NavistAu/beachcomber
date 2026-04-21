@@ -38,14 +38,14 @@ impl ClientSession {
         self.send_request(&request).await
     }
 
-    pub async fn store(
+    pub async fn put(
         &mut self,
         key: &str,
         data: serde_json::Value,
         ttl: Option<&str>,
         path: Option<&str>,
     ) -> std::io::Result<Response> {
-        let mut request = serde_json::json!({ "op": "store", "key": key, "data": data });
+        let mut request = serde_json::json!({ "op": "put", "key": key, "data": data });
         if let Some(t) = ttl {
             request["ttl"] = serde_json::json!(t);
         }
@@ -196,14 +196,14 @@ impl Client {
         Ok(result.trim_end_matches('\n').to_string())
     }
 
-    pub async fn store(
+    pub async fn put(
         &self,
         key: &str,
         data: serde_json::Value,
         ttl: Option<&str>,
         path: Option<&str>,
     ) -> std::io::Result<Response> {
-        let mut request = serde_json::json!({ "op": "store", "key": key, "data": data });
+        let mut request = serde_json::json!({ "op": "put", "key": key, "data": data });
         if let Some(t) = ttl {
             request["ttl"] = serde_json::json!(t);
         }
