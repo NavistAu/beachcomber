@@ -272,6 +272,7 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 
 - [ ] Dependency audit — evaluate all Rust dependencies, document each one on the website with rationale for inclusion. Remove anything not strictly necessary.
 - [ ] `llms.txt` for the website — machine-readable project summary for LLM consumption.
+- [ ] Centralise the version number — currently every release touches 13+ files (`Cargo.toml`, `beachcomber-client/Cargo.toml`, 5 SDK manifests, 3 AUR PKGBUILDs, nix flake, README deb/rpm URLs, release.yml rockspec filename, plus the Lua rockspec rename). Options: a single `VERSION` file that a release script templates into each manifest; `cargo xtask release` that reads `Cargo.toml` and rewrites the rest; a release-plz / cargo-release workflow; or a CI-side step that patches non-Rust manifests from the Cargo version before publish. Goal: one edit + one command, no per-file fanout.
 
 ### Install Methods
 
