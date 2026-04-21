@@ -301,6 +301,10 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    env:
+      NPM_CONFIG_FETCH_RETRIES: '5'
+      NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: '10000'
+      NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '120000'
     defaults:
       run:
         working-directory: sdks/node
@@ -431,6 +435,10 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    env:
+      NPM_CONFIG_FETCH_RETRIES: '5'
+      NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: '10000'
+      NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '120000'
     defaults:
       run:
         working-directory: placeholders/npm
