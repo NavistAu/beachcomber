@@ -2,6 +2,7 @@ pub mod cache;
 pub mod client;
 pub mod config;
 pub mod daemon;
+pub mod pid_check;
 pub mod protocol;
 pub mod provider;
 pub mod scheduler;

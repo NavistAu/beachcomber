@@ -1,4 +1,5 @@
 use beachcomber::config::Config;
+use beachcomber::pid_check::pid_is_our_daemon;
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
@@ -441,13 +442,6 @@ fn query_daemon_pid(socket_path: &std::path::Path) -> Option<i32> {
 
     let parsed: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
     parsed.get("data")?.get("pid")?.as_i64().map(|n| n as i32)
-}
-
-/// Return true if `pid` exists and we can signal it. `kill(pid, 0)` returns ESRCH
-/// if the process doesn't exist and EPERM if it's owned by someone else — both
-/// rule out "this is our daemon".
-fn pid_is_our_daemon(pid: i32) -> bool {
-    unsafe { libc::kill(pid, 0) == 0 }
 }
 
 fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
