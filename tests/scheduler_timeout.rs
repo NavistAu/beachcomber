@@ -26,7 +26,10 @@ impl Provider for SlowProvider {
     }
 
     fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        std::thread::sleep(std::time::Duration::from_secs(30));
+        // 2s is long enough to exceed the 1s scheduler timeout in this test but
+        // short enough that tokio's blocking-pool shutdown (which waits on in-flight
+        // spawn_blocking tasks) doesn't block the test-harness exit for 30s.
+        std::thread::sleep(std::time::Duration::from_secs(2));
         let mut result = ProviderResult::new();
         result.insert("value", Value::String("done".to_string()));
         Some(result)
