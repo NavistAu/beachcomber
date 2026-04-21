@@ -676,36 +676,7 @@ fn format_data(format: &Format, response: &Response) -> String {
         Format::Text => {
             if !response.ok {
                 return format!(
-                    "error: {}\n",
-                    response.error.as_deref().unwrap_or("unknown")
-                );
-            }
-            match &response.data {
-                Some(serde_json::Value::String(s)) => format!("{s}\n\n"),
-                Some(serde_json::Value::Number(n)) => format!("{n}\n\n"),
-                Some(serde_json::Value::Bool(b)) => format!("{b}\n\n"),
-                Some(serde_json::Value::Object(map)) => {
-                    let mut pairs: Vec<(&String, &serde_json::Value)> = map.iter().collect();
-                    pairs.sort_by_key(|(k, _)| *k);
-                    let vals: Vec<String> = pairs
-                        .iter()
-                        .map(|(_, v)| match v {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        })
-                        .collect();
-                    let mut out = vals.join("\n");
-                    out.push_str("\n\n");
-                    out
-                }
-                Some(serde_json::Value::Null) | None => "\n".to_string(),
-                Some(other) => format!("{other}\n\n"),
-            }
-        }
-        Format::Sh => {
-            if !response.ok {
-                return format!(
-                    "error: {}\n",
+                    "error: {}\n\n",
                     response.error.as_deref().unwrap_or("unknown")
                 );
             }
@@ -716,12 +687,71 @@ fn format_data(format: &Format, response: &Response) -> String {
                 Some(serde_json::Value::Object(map)) => {
                     let mut lines: Vec<String> = map
                         .iter()
-                        .map(|(k, v)| {
-                            let val = match v {
-                                serde_json::Value::String(s) => s.clone(),
-                                other => other.to_string(),
-                            };
-                            format!("{k}={val}")
+                        .flat_map(|(k, v)| {
+                            if let serde_json::Value::Object(inner) = v {
+                                // Nested object: flatten as outer.inner=value
+                                inner
+                                    .iter()
+                                    .map(|(ik, iv)| {
+                                        let val = match iv {
+                                            serde_json::Value::String(s) => s.clone(),
+                                            other => other.to_string(),
+                                        };
+                                        format!("{k}.{ik}={val}")
+                                    })
+                                    .collect::<Vec<_>>()
+                            } else {
+                                let val = match v {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    other => other.to_string(),
+                                };
+                                vec![val]
+                            }
+                        })
+                        .collect();
+                    lines.sort();
+                    let mut out = lines.join("\n");
+                    out.push_str("\n\n");
+                    out
+                }
+                Some(serde_json::Value::Null) | None => "\n".to_string(),
+                Some(other) => format!("{other}\n\n"),
+            }
+        }
+        Format::Sh => {
+            if !response.ok {
+                return format!(
+                    "error: {}\n\n",
+                    response.error.as_deref().unwrap_or("unknown")
+                );
+            }
+            match &response.data {
+                Some(serde_json::Value::String(s)) => format!("{s}\n\n"),
+                Some(serde_json::Value::Number(n)) => format!("{n}\n\n"),
+                Some(serde_json::Value::Bool(b)) => format!("{b}\n\n"),
+                Some(serde_json::Value::Object(map)) => {
+                    let mut lines: Vec<String> = map
+                        .iter()
+                        .flat_map(|(k, v)| {
+                            if let serde_json::Value::Object(inner) = v {
+                                // Nested object: flatten as outer.inner=value
+                                inner
+                                    .iter()
+                                    .map(|(ik, iv)| {
+                                        let val = match iv {
+                                            serde_json::Value::String(s) => s.clone(),
+                                            other => other.to_string(),
+                                        };
+                                        format!("{k}.{ik}={val}")
+                                    })
+                                    .collect::<Vec<_>>()
+                            } else {
+                                let val = match v {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    other => other.to_string(),
+                                };
+                                vec![format!("{k}={val}")]
+                            }
                         })
                         .collect();
                     lines.sort();

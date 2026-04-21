@@ -1,6 +1,7 @@
 use crate::provider::{
     FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct AsdfProvider;
@@ -11,7 +12,7 @@ impl Provider for AsdfProvider {
             name: "asdf".to_string(),
             fields: vec![FieldSchema {
                 name: "tools".to_string(),
-                field_type: FieldType::String,
+                field_type: FieldType::Object,
             }],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![".tool-versions".to_string()],
@@ -31,13 +32,13 @@ impl Provider for AsdfProvider {
         }
 
         let content = std::fs::read_to_string(&tool_versions).ok()?;
-        let tools: Vec<String> = content
+        let tools: HashMap<String, Value> = content
             .lines()
             .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
             .filter_map(|line| {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 2 {
-                    Some(format!("{}={}", parts[0], parts[1]))
+                    Some((parts[0].to_string(), Value::String(parts[1].to_string())))
                 } else {
                     None
                 }
@@ -45,7 +46,7 @@ impl Provider for AsdfProvider {
             .collect();
 
         let mut result = ProviderResult::new();
-        result.insert("tools", Value::String(tools.join(",")));
+        result.insert("tools", Value::Object(tools));
         Some(result)
     }
 }

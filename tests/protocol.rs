@@ -94,9 +94,9 @@ fn key_without_field() {
 
 #[test]
 fn key_with_dotted_field() {
-    let (provider, field) = beachcomber::protocol::split_key("mise.tools");
+    let (provider, field) = beachcomber::protocol::split_key("mise.project");
     assert_eq!(provider, "mise");
-    assert_eq!(field, Some("tools"));
+    assert_eq!(field, Some("project"));
 }
 
 #[test]

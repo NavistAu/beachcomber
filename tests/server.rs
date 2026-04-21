@@ -368,3 +368,76 @@ async fn server_text_format_object_returns_values_only() {
 
     handle.abort();
 }
+
+/// Format::Text on an Object-valued field must emit bare values (no key= prefix),
+/// sorted alphabetically by key, one per line. This convention applies to all
+/// object-valued provider fields (e.g. mise.project, asdf.tools).
+#[tokio::test]
+async fn text_format_object_field_emits_sorted_bare_values() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+
+    // Store a provider result with a single Object-valued field ("tools").
+    // The Object maps tool names to version strings, mirroring mise.project / asdf.tools.
+    let mut tools_map = std::collections::HashMap::new();
+    tools_map.insert("node".to_string(), Value::String("20.11.0".to_string()));
+    tools_map.insert("python".to_string(), Value::String("3.12.1".to_string()));
+    let mut result = ProviderResult::new();
+    result.insert("tools", Value::Object(tools_map));
+    cache.put("devenv", None, result);
+    // Register as virtual so the server's provider-existence guard accepts the name.
+    registry.register_virtual("devenv");
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    // Request the Object-valued field directly with format=text.
+    let request = r#"{"op": "get", "key": "devenv.tools", "format": "text"}"#;
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut lines_buf = String::new();
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await.unwrap();
+        if n == 0 || line == "\n" {
+            break;
+        }
+        lines_buf.push_str(&line);
+    }
+
+    // Expect bare values only — no "key=" prefix — sorted by key name.
+    // node (n) sorts before python (p), so "20.11.0" appears first.
+    assert!(
+        !lines_buf.contains("node="),
+        "Text format must not emit key= prefix for Object values"
+    );
+    assert!(
+        !lines_buf.contains("python="),
+        "Text format must not emit key= prefix for Object values"
+    );
+    assert!(
+        lines_buf.contains("20.11.0"),
+        "Text format should include the node version"
+    );
+    assert!(
+        lines_buf.contains("3.12.1"),
+        "Text format should include the python version"
+    );
+    let trimmed = lines_buf.trim();
+    let output_lines: Vec<&str> = trimmed.split('\n').collect();
+    assert_eq!(
+        output_lines.len(),
+        2,
+        "Object with two entries should emit exactly two lines, got: {trimmed:?}"
+    );
+    // node < python alphabetically, so node's value comes first.
+    assert_eq!(output_lines[0], "20.11.0");
+    assert_eq!(output_lines[1], "3.12.1");
+
+    handle.abort();
+}

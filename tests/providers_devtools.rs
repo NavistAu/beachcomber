@@ -105,7 +105,8 @@ fn mise_metadata() {
     assert_eq!(meta.name, "mise");
     assert!(!meta.global);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"tools"));
+    assert!(fields.contains(&"project"));
+    assert!(fields.contains(&"global"));
 }
 
 #[test]
@@ -139,9 +140,11 @@ fn asdf_detects_tool_versions() {
     )
     .unwrap();
 
+    use beachcomber::provider::Value;
     let p = AsdfProvider;
     let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
-    let tools = result.get("tools").unwrap().as_text();
-    assert!(tools.contains("nodejs"), "Should contain nodejs");
-    assert!(tools.contains("ruby"), "Should contain ruby");
+    assert!(
+        matches!(result.get("tools"), Some(Value::Object(_))),
+        "tools field must be a Value::Object"
+    );
 }

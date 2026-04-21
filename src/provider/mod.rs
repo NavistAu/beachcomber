@@ -40,6 +40,7 @@ pub enum Value {
     Int(i64),
     Bool(bool),
     Float(f64),
+    Object(HashMap<String, Value>),
 }
 
 impl Value {
@@ -49,6 +50,14 @@ impl Value {
             Value::Int(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Float(f) => f.to_string(),
+            Value::Object(map) => {
+                let mut items: Vec<String> = map
+                    .iter()
+                    .map(|(k, v)| format!("{k}={}", v.as_text()))
+                    .collect();
+                items.sort();
+                items.join(",")
+            }
         }
     }
 }
@@ -104,6 +113,7 @@ pub enum FieldType {
     Int,
     Bool,
     Float,
+    Object,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

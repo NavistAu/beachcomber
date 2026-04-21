@@ -915,6 +915,26 @@ fn run_fetch(
             return ExitCode::from(2);
         }
 
+        // For server-side formats (text/sh), delegate formatting to the server so that
+        // Object-valued fields (e.g. mise.project) are rendered consistently with `comb get`.
+        if format.is_server_side() {
+            let wire_fmt = format.server_format();
+            for key in keys {
+                match session.get_formatted(key, None, wire_fmt).await {
+                    Ok(text) => {
+                        if !text.is_empty() {
+                            println!("{text}");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error querying {key}: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            return ExitCode::SUCCESS;
+        }
+
         let mut responses = Vec::new();
         for key in keys {
             match session.get(key, None).await {
@@ -930,32 +950,6 @@ fn run_fetch(
             OutputFormat::Json => {
                 let arr: Vec<&beachcomber::protocol::Response> = responses.iter().collect();
                 println!("{}", serde_json::to_string_pretty(&arr).unwrap());
-            }
-            OutputFormat::Text => {
-                for resp in &responses {
-                    if let Some(data) = &resp.data {
-                        println!("{}", value_to_string(data));
-                    }
-                }
-            }
-            OutputFormat::Sh => {
-                for (i, resp) in responses.iter().enumerate() {
-                    if let Some(data) = &resp.data {
-                        match data {
-                            serde_json::Value::Object(map) => {
-                                let mut pairs: Vec<(&String, &serde_json::Value)> =
-                                    map.iter().collect();
-                                pairs.sort_by_key(|(k, _)| *k);
-                                for (k, v) in pairs {
-                                    println!("{k}={}", value_to_string(v));
-                                }
-                            }
-                            _ => {
-                                println!("{}={}", keys[i], value_to_string(data));
-                            }
-                        }
-                    }
-                }
             }
             OutputFormat::Csv | OutputFormat::CsvHeader => {
                 let with_header = matches!(format, OutputFormat::CsvHeader);
@@ -1040,6 +1034,8 @@ fn run_fetch(
                     format_template(&serde_json::Value::Object(merged), template)
                 );
             }
+            // Text and Sh are handled via server-side formatting above.
+            OutputFormat::Text | OutputFormat::Sh => unreachable!(),
         }
 
         ExitCode::SUCCESS

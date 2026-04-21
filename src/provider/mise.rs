@@ -1,6 +1,7 @@
 use crate::provider::{
     FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
@@ -12,16 +13,12 @@ impl Provider for MiseProvider {
             name: "mise".to_string(),
             fields: vec![
                 FieldSchema {
-                    name: "tools".to_string(),
-                    field_type: FieldType::String,
-                },
-                FieldSchema {
                     name: "project".to_string(),
-                    field_type: FieldType::String,
+                    field_type: FieldType::Object,
                 },
                 FieldSchema {
                     name: "global".to_string(),
-                    field_type: FieldType::String,
+                    field_type: FieldType::Object,
                 },
             ],
             invalidation: InvalidationStrategy::Watch {
@@ -59,8 +56,8 @@ impl Provider for MiseProvider {
             .map(|c| Path::new(&c).join("mise").to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let mut project_tools = Vec::new();
-        let mut global_tools = Vec::new();
+        let mut project_tools: HashMap<String, Value> = HashMap::new();
+        let mut global_tools: HashMap<String, Value> = HashMap::new();
 
         for (tool_name, versions) in obj {
             let arr = versions.as_array()?;
@@ -74,31 +71,17 @@ impl Provider for MiseProvider {
 
                 let is_global = source_path.starts_with(&global_config_dir);
 
-                let pair = format!("{tool_name}={version}");
                 if is_global {
-                    global_tools.push(pair);
+                    global_tools.insert(tool_name.clone(), Value::String(version.to_string()));
                 } else {
-                    project_tools.push(pair);
+                    project_tools.insert(tool_name.clone(), Value::String(version.to_string()));
                 }
             }
         }
 
-        project_tools.sort();
-        global_tools.sort();
-
-        // Combined view: project tools with P: prefix, global with G:
-        let mut combined = Vec::new();
-        for t in &project_tools {
-            combined.push(format!("P:{t}"));
-        }
-        for t in &global_tools {
-            combined.push(format!("G:{t}"));
-        }
-
         let mut result = ProviderResult::new();
-        result.insert("tools", Value::String(combined.join(",")));
-        result.insert("project", Value::String(project_tools.join(",")));
-        result.insert("global", Value::String(global_tools.join(",")));
+        result.insert("project", Value::Object(project_tools));
+        result.insert("global", Value::Object(global_tools));
         Some(result)
     }
 }
