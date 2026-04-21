@@ -1,0 +1,15 @@
+# cargo-nextest configuration.
+# Docs: https://nexte.st/docs/configuration/reference/
+
+[profile.default]
+# Hard cap on total suite wall-clock. If the run exceeds this, nextest sends
+# SIGTERM to the test process group, waits 10s for shutdown, then SIGKILLs.
+# The whole run fails spectacularly — which is what we want if something hangs.
+global-timeout = "2m"
+
+# Per-test slow detection and termination. Any single test exceeding the period
+# is reported as SLOW; after terminate-after periods it's hard-killed.
+# 15s reported, 30s killed. No single test should legitimately take that long
+# (the current slow outliers are documented separately; see scheduler_timeout
+# and demand tests).
+slow-timeout = { period = "15s", terminate-after = 2 }

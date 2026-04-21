@@ -14,17 +14,20 @@ Project-specific instructions for contributors using Claude Code.
 
 ```sh
 cargo build              # debug build
-cargo test               # all tests
+cargo nextest run        # run tests (preferred — has a 2-minute global kill)
+cargo test               # still works; no timeout safety net
 cargo bench              # criterion benchmarks (cache, protocol, providers, socket, throughput)
 cargo clippy -- -D warnings
 cargo fmt -- --check
 ```
 
+**Test runner:** `cargo-nextest` is the blessed runner. Install with `cargo install cargo-nextest --locked` (one time). Configuration lives in `.config/nextest.toml`: a 2-minute global wall-clock cap on the suite and a 15s-warn / 30s-kill cap per test. Plain `cargo test` still executes every test — it just lacks the kill-on-hang safety.
+
 Tests that require FSEvents or are environment-sensitive:
 - `watcher_*` tests — need real filesystem watching
 - `uptime_provider_executes` — needs unsandboxed environment
 
-CI skips these with `--skip watcher_ --skip uptime_provider_executes`.
+CI skips these. With nextest: `cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'`. With cargo test: `cargo test -- --skip watcher_ --skip uptime_provider_executes`.
 
 ## Architecture
 

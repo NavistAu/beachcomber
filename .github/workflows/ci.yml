@@ -61,27 +61,31 @@ jobs:
     name: Test
     needs: rust-version
     runs-on: macos-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ needs.rust-version.outputs.version }}
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - name: Run tests
-        run: cargo test -- --skip watcher_ --skip uptime_provider_executes
+        run: cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'
 
   test-linux:
     name: Test (Linux)
     needs: rust-version
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ needs.rust-version.outputs.version }}
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - name: Run tests
-        run: cargo test -- --skip watcher_
+        run: cargo nextest run -E 'not test(watcher_)'
 
   bench:
     name: Benchmark
