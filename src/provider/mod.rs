@@ -124,6 +124,20 @@ pub enum InvalidationStrategy {
     Once,
 }
 
+/// Returns the expected refresh interval for a provider's strategy, in whole seconds.
+/// Used to populate `CacheEntry::expected_interval_secs` on write paths so staleness
+/// reporting works correctly for sync-miss and rerun writes.
+pub fn expected_interval_secs(strategy: &InvalidationStrategy) -> Option<u64> {
+    match strategy {
+        InvalidationStrategy::Poll { interval_secs, .. } => Some(*interval_secs),
+        InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(*interval_secs),
+        InvalidationStrategy::Watch {
+            fallback_poll_secs, ..
+        } => *fallback_poll_secs,
+        InvalidationStrategy::Once => None,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderMetadata {
     pub name: String,

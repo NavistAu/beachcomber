@@ -495,6 +495,9 @@ impl Scheduler {
                 if let Some(rerun_provider) = registry.get(&key_for_cleanup.0) {
                     let rerun_path = key_for_cleanup.1.clone();
                     let rerun_name = key_for_cleanup.0.clone();
+                    let rerun_interval = crate::provider::expected_interval_secs(
+                        &rerun_provider.metadata().invalidation,
+                    );
                     // Mark as in-flight again for this rerun.
                     in_flight.lock().unwrap().insert(key_for_cleanup.clone());
                     tokio::spawn(async move {
@@ -532,7 +535,12 @@ impl Scheduler {
 
                         match rerun_result {
                             Ok(Ok(Some(r))) => {
-                                cache.put(&rerun_name, key_for_cleanup.1.as_deref(), r);
+                                cache.put_with_interval(
+                                    &rerun_name,
+                                    key_for_cleanup.1.as_deref(),
+                                    r,
+                                    rerun_interval,
+                                );
                                 debug!("Rerun provider '{}' completed", rerun_name);
                             }
                             Ok(Ok(None)) => {
@@ -958,7 +966,7 @@ impl Scheduler {
                 if matches!(meta.invalidation, InvalidationStrategy::Once) {
                     match provider.execute(None) {
                         Some(result) => {
-                            self.cache.put(&name, None, result);
+                            self.cache.put_with_interval(&name, None, result, None);
                             info!("Computed initial value for provider '{}'", name);
                         }
                         None => {

@@ -354,6 +354,9 @@ async fn handle_request(
                     let provider = registry.get(provider_name);
                     match provider {
                         Some(provider) => {
+                            let interval = crate::provider::expected_interval_secs(
+                                &provider.metadata().invalidation,
+                            );
                             let path_owned = effective_path.clone();
                             let result = tokio::task::spawn_blocking(move || {
                                 provider.execute(path_owned.as_deref())
@@ -364,10 +367,11 @@ async fn handle_request(
 
                             match result {
                                 Some(result) => {
-                                    cache.put(
+                                    cache.put_with_interval(
                                         provider_name,
                                         effective_path.as_deref(),
                                         result.clone(),
+                                        interval,
                                     );
                                     let data = if let Some(field_name) = field {
                                         match result.get(field_name) {
@@ -428,8 +432,16 @@ async fn handle_request(
                 }
                 match registry.get(provider_name) {
                     Some(provider) => {
+                        let interval = crate::provider::expected_interval_secs(
+                            &provider.metadata().invalidation,
+                        );
                         if let Some(result) = provider.execute(effective_path.as_deref()) {
-                            cache.put(provider_name, effective_path.as_deref(), result);
+                            cache.put_with_interval(
+                                provider_name,
+                                effective_path.as_deref(),
+                                result,
+                                interval,
+                            );
                         }
                         Response {
                             ok: true,
