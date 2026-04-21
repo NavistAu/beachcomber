@@ -15,14 +15,14 @@ beachcomber ships 19 built-in providers organized by category.
 | `user` | global | `name` (string), `uid` (int) | once at startup | 395 ns |
 | `load` | global | `one` (float), `five` (float), `fifteen` (float) | poll 10s / floor 5s | 550 ns |
 | `uptime` | global | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
-| `battery` | global | `percent` (int), `charging` (bool), `time_remaining` (int, seconds) | poll 30s / floor 5s | 6 ms |
+| `battery` | global | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s / floor 5s | 6 ms |
 | `network` | global | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
 | `sudo` | global | `active` (bool) | poll 30s | < 1 µs |
 | `op` | global | `signed_in` (bool), `account` (string) | poll 60s | varies |
 
 **Platform notes:**
 
-- **battery:** `time_remaining` requires UPower on Linux. If UPower is unavailable, the field reads `"unknown"`.
+- **battery:** `time_remaining_secs` is `0` when the platform can't compute an estimate (battery charged, or state unknown). `status` takes one of `charging` / `discharging` / `charged` / `calculating` / `unknown`. On Linux, the numeric estimate requires UPower; without it, `status` is `calculating`.
 - **network:** SSID detection uses `nmcli`/`iw` on Linux (vs `airport` on macOS).
 - **uptime:** reads `/proc/uptime` on Linux (vs `sysctl` on macOS) — transparent to consumers, same fields.
 
@@ -32,7 +32,7 @@ beachcomber ships 19 built-in providers organized by category.
 // comb g battery
 {
   "ok": true,
-  "data": { "percent": 78, "charging": false, "time_remaining": 7200 },
+  "data": { "percent": 78, "charging": false, "time_remaining_secs": 7200, "status": "discharging" },
   "age_ms": 4200
 }
 
@@ -166,9 +166,9 @@ feature/fast-cache
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
 | `python` | path | `venv` (bool), `venv_name` (string), `version` (string) | watch `.venv/`, `pyproject.toml` | < 1 µs |
-| `conda` | global | `env` (string), `version` (string) | poll 30s | < 1 µs |
-| `mise` | path | `tools` (object: tool-name → version) | watch `.mise.toml`, `mise.toml` | varies |
-| `asdf` | path | `tools` (object: tool-name → version) | watch `.tool-versions` | < 1 µs |
+| `conda` | global | `env` (string) | poll 30s | < 1 µs |
+| `mise` | path | `project` (object), `global` (object) | watch `.mise.toml`, `mise.toml` | varies |
+| `asdf` | path | `tools` (object) | watch `.tool-versions` | < 1 µs |
 | `direnv` | path | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 
 **Example output:**
@@ -178,11 +178,8 @@ feature/fast-cache
 {
   "ok": true,
   "data": {
-    "tools": {
-      "node": "20.11.0",
-      "python": "3.12.1",
-      "rust": "1.75.0"
-    }
+    "project": { "node": "20.11.0", "python": "3.12.1" },
+    "global": { "rust": "1.75.0" }
   },
   "age_ms": 890
 }

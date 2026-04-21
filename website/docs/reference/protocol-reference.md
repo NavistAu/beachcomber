@@ -36,7 +36,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | `op` | string | Operation: `get`, `poke`, `context`, `list`, `status`, `store`, `watch` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
-| `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`, `"csv"`, `"tsv"`, `"CSV"`, `"TSV"`, `"fmt"` |
+| `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
 
 ## Response Format
 
@@ -59,7 +59,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 ## Operations
 
-**`get`:** Read from cache. Always returns immediately. If the key has never been computed, `data` is null and `ok` is true. A null response means "no data yet" — retry after a moment or `poke` to trigger computation.
+**`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
 
 **`poke`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
 
@@ -106,10 +106,11 @@ When `"format": "text"` is specified:
 ## Shell Format
 
 When `"format": "sh"` is specified:
-- Single field queries return `key=value\n` (suitable for shell `eval` or `source`)
-- Full provider queries return `key=value` lines sorted alphabetically, one per line, terminated with `\n`
-- Values are not quoted — consumers are responsible for safe handling of whitespace in field values
-- Errors return nothing on stdout; `ok` is false in the JSON response
+- Single scalar-field queries return the raw value followed by `\n\n` (suitable for shell `eval` or `source` when concatenating with known prefixes).
+- Full-provider queries return `key=value` lines sorted alphabetically, one per line, terminated with `\n\n`.
+- Object-valued fields (e.g., `mise.project`) flatten to `key=value` lines for each entry.
+- Values are not quoted — consumers are responsible for safe handling of whitespace.
+- Errors emit `error: <message>\n\n`; the JSON response's `ok` is false.
 
 ## Connection Context Example
 

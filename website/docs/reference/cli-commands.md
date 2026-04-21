@@ -103,27 +103,29 @@ Show daemon health and statistics.
 ```sh
 $ comb s
 {
-  "uptime_secs": 7234,
-  "cache_entries": 14,
-  "active_watchers": 4,
-  "providers": 19,
-  "requests_total": 184291
+  "ok": true,
+  "data": {
+    "pid": 12345,
+    "version": "0.5.1",
+    "uptime_secs": 7234,
+    "active_watchers": 4,
+    "requests_total": 184291,
+    "cache_entries": 14,
+    "providers": 19
+  }
 }
 ```
 
 ## `comb l` (list)
 
-Show all active providers and their cached state age.
+Show all active providers and their cached state.
 
 ```sh
 $ comb l
-{
-  "entries": [
-    { "key": "git", "path": "/Users/me/project", "age_ms": 1240 },
-    { "key": "battery", "path": null, "age_ms": 8900 },
-    { "key": "kubecontext", "path": null, "age_ms": 22100 }
-  ]
-}
+[
+  {"name":"hostname","source":"builtin","global":true,"fields":["name","short"]},
+  {"name":"git","source":"builtin","global":false,"fields":["branch","commit","dirty","..."]}
+]
 ```
 
 ## `comb p` (put) `<key> <json-data> [--ttl <duration>] [--path <path>]`
@@ -200,41 +202,29 @@ comb f.s git .
 
 ## `comb i` (init)
 
-Initialise shell integration. Prints shell-specific setup code to stdout that you can source or redirect into your shell config.
+Detect installed tools (starship, powerlevel10k, tmux, neovim, polybar, waybar, sketchybar, oh-my-zsh, etc.) and print integration snippets for them.
 
 ```sh
-# Print zsh integration
-comb i zsh
-
-# Print bash integration
-comb i bash
-
-# Print fish integration
-comb i fish
+comb i
 ```
 
-**Subcommands:** `zsh`, `bash`, `fish`
+Takes no subcommand. The output is appropriate shell/config fragments that you can source or paste into your shell RC, tmux config, neovim config, etc.
 
 ## `comb c` (check) `[subcommand]`
 
-Check daemon and provider health. With no arguments, checks overall daemon reachability. With a key, checks that the specified provider is producing data.
+Run health checks. With no subcommand, checks daemon reachability.
 
 ```sh
-# Check daemon is reachable
-comb check
-
-# Check a specific provider
-comb c git .
-comb c battery
-
-# Subcommand: check config syntax
-comb c config
-
-# Subcommand: check provider registration
-comb c providers
+comb c                # quick daemon-reachability check
+comb c all            # run all checks
+comb c daemon         # daemon connectivity
+comb c config         # validate config syntax
+comb c providers      # provider health and backoff state
+comb c cache          # stale-entry report
+comb c procs          # process-spawn snapshot (60s sample by default)
 ```
 
-**Subcommands:** `config`, `providers`
+Subcommands: `all`, `daemon`, `config`, `providers`, `cache`, `procs`.
 
 **Exit codes:** `0` if healthy, `1` if unhealthy, `2` on error.
 
