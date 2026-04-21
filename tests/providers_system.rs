@@ -13,7 +13,8 @@ fn battery_provider_metadata() {
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"percent"));
     assert!(fields.contains(&"charging"));
-    assert!(fields.contains(&"time_remaining"));
+    assert!(fields.contains(&"time_remaining_secs"));
+    assert!(fields.contains(&"status"));
     match meta.invalidation {
         InvalidationStrategy::Poll {
             interval_secs,

@@ -18,8 +18,15 @@ impl Provider for BatteryProvider {
                     name: "charging".to_string(),
                     field_type: FieldType::Bool,
                 },
+                // time_remaining_secs uses 0 as a sentinel for "not applicable" —
+                // i.e. the battery is charged or the platform can't compute an estimate.
+                // Callers should read `status` to disambiguate.
                 FieldSchema {
-                    name: "time_remaining".to_string(),
+                    name: "time_remaining_secs".to_string(),
+                    field_type: FieldType::Int,
+                },
+                FieldSchema {
+                    name: "status".to_string(),
                     field_type: FieldType::String,
                 },
             ],
@@ -48,17 +55,15 @@ fn execute_platform(_path: Option<&str>) -> Option<ProviderResult> {
 }
 
 #[cfg(target_os = "macos")]
-fn parse_pmset_output(output: &str) -> Option<ProviderResult> {
-    // Example: " -InternalBattery-0 (id=...)	85%; charging; 1:23 remaining present: true"
+pub fn parse_pmset_output(output: &str) -> Option<ProviderResult> {
     let mut percent: i64 = 0;
     let mut charging = false;
-    let mut time_remaining = "unknown".to_string();
+    let mut time_remaining_secs: i64 = 0;
+    let mut status: String = "unknown".to_string();
 
     for line in output.lines() {
         let line = line.trim();
-        // Find the line with percentage
         if let Some(pct_pos) = line.find('%') {
-            // Walk backwards from % to find the number
             let before = &line[..pct_pos];
             let num_str: String = before
                 .chars()
@@ -73,24 +78,39 @@ fn parse_pmset_output(output: &str) -> Option<ProviderResult> {
             charging = line.contains("charging")
                 && !line.contains("discharging")
                 && !line.contains("not charging");
+            let discharging = line.contains("discharging");
 
-            if line.contains("remaining") {
-                // Extract time like "1:23 remaining"
+            if line.contains("(no estimate)") {
+                status = "calculating".into();
+                time_remaining_secs = 0;
+            } else if line.contains("charged") {
+                status = "charged".into();
+                time_remaining_secs = 0;
+            } else if line.contains("remaining") {
                 if let Some(rem_pos) = line.find("remaining") {
                     let before_rem = line[..rem_pos].trim();
-                    if let Some(time) = before_rem.rsplit(';').next() {
-                        time_remaining = time.trim().to_string();
+                    if let Some(time_str) = before_rem.rsplit(';').next() {
+                        let time_str = time_str.trim();
+                        if let Some((h, m)) = time_str.split_once(':') {
+                            let hours: i64 = h.trim().parse().unwrap_or(0);
+                            let mins: i64 = m.trim().parse().unwrap_or(0);
+                            time_remaining_secs = hours * 3600 + mins * 60;
+                        }
                     }
                 }
-            } else if line.contains("(no estimate)") {
-                time_remaining = "calculating".to_string();
-            } else if line.contains("charged") {
-                time_remaining = "full".to_string();
+                status = if charging {
+                    "charging".into()
+                } else {
+                    "discharging".into()
+                };
+            } else if charging {
+                status = "charging".into();
+            } else if discharging {
+                status = "discharging".into();
             }
         }
     }
 
-    // If we never found a percentage, there's probably no battery
     if percent == 0 && !output.contains('%') {
         return None;
     }
@@ -98,7 +118,8 @@ fn parse_pmset_output(output: &str) -> Option<ProviderResult> {
     let mut result = ProviderResult::new();
     result.insert("percent", Value::Int(percent));
     result.insert("charging", Value::Bool(charging));
-    result.insert("time_remaining", Value::String(time_remaining));
+    result.insert("time_remaining_secs", Value::Int(time_remaining_secs));
+    result.insert("status", Value::String(status));
     Some(result)
 }
 
@@ -110,21 +131,36 @@ fn execute_platform(_path: Option<&str>) -> Option<ProviderResult> {
     let percent: i64 = capacity_str.trim().parse().ok()?;
 
     let status_str = std::fs::read_to_string(battery_dir.join("status")).ok()?;
-    let status = status_str.trim();
-    let charging = status == "Charging" || status == "Full";
+    let sysfs_status = status_str.trim();
+    let charging = sysfs_status == "Charging";
 
-    let time_remaining = get_upower_time_remaining().unwrap_or_else(|| {
-        if status == "Full" {
-            "full".to_string()
+    let (time_remaining_secs, status) = if sysfs_status == "Full" {
+        (0i64, "charged".to_string())
+    } else if sysfs_status == "Charging" {
+        let secs = get_upower_time_remaining_secs().unwrap_or(0);
+        let st = if secs > 0 {
+            "charging".to_string()
         } else {
-            "unknown".to_string()
-        }
-    });
+            "calculating".to_string()
+        };
+        (secs, st)
+    } else if sysfs_status == "Discharging" {
+        let secs = get_upower_time_remaining_secs().unwrap_or(0);
+        let st = if secs > 0 {
+            "discharging".to_string()
+        } else {
+            "calculating".to_string()
+        };
+        (secs, st)
+    } else {
+        (0i64, "unknown".to_string())
+    };
 
     let mut result = ProviderResult::new();
     result.insert("percent", Value::Int(percent));
     result.insert("charging", Value::Bool(charging));
-    result.insert("time_remaining", Value::String(time_remaining));
+    result.insert("time_remaining_secs", Value::Int(time_remaining_secs));
+    result.insert("status", Value::String(status));
     Some(result)
 }
 
@@ -144,7 +180,7 @@ fn find_battery_dir() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn get_upower_time_remaining() -> Option<String> {
+fn get_upower_time_remaining_secs() -> Option<i64> {
     let output = Command::new("upower").args(["-e"]).output().ok()?;
     if !output.status.success() {
         return None;
@@ -163,7 +199,20 @@ fn get_upower_time_remaining() -> Option<String> {
     for line in info_str.lines() {
         let line = line.trim();
         if line.starts_with("time to empty:") || line.starts_with("time to full:") {
-            return line.split(':').nth(1).map(|s| s.trim().to_string());
+            // UPower reports time as "X.X hours" or "X minutes" etc.
+            // Parse into seconds as best we can.
+            let val_str = line.splitn(2, ':').nth(1)?.trim().to_string();
+            if val_str.contains("hour") {
+                let hours: f64 = val_str.split_whitespace().next()?.parse().ok()?;
+                return Some((hours * 3600.0) as i64);
+            } else if val_str.contains("minute") {
+                let mins: f64 = val_str.split_whitespace().next()?.parse().ok()?;
+                return Some((mins * 60.0) as i64);
+            } else if val_str.contains("second") {
+                let secs: f64 = val_str.split_whitespace().next()?.parse().ok()?;
+                return Some(secs as i64);
+            }
+            return None;
         }
     }
     None
