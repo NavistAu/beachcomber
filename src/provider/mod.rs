@@ -138,6 +138,19 @@ pub fn expected_interval_secs(strategy: &InvalidationStrategy) -> Option<u64> {
     }
 }
 
+/// Returns the filesystem patterns that should trigger re-execution for a provider.
+/// Trailing `/` is stripped from each pattern so ".venv/" and ".venv" are equivalent.
+pub fn watch_patterns(strategy: &InvalidationStrategy) -> Vec<String> {
+    let raw: &[String] = match strategy {
+        InvalidationStrategy::Watch { patterns, .. } => patterns,
+        InvalidationStrategy::WatchAndPoll { patterns, .. } => patterns,
+        _ => return Vec::new(),
+    };
+    raw.iter()
+        .map(|p| p.trim_end_matches('/').to_string())
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderMetadata {
     pub name: String,
@@ -157,4 +170,44 @@ pub enum ProviderSource {
 pub trait Provider: Send + Sync {
     fn metadata(&self) -> ProviderMetadata;
     fn execute(&self, path: Option<&str>) -> Option<ProviderResult>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_patterns_strips_trailing_slash() {
+        let strategy = InvalidationStrategy::Watch {
+            patterns: vec![".venv/".into(), "pyproject.toml".into()],
+            fallback_poll_secs: None,
+        };
+        let patterns = watch_patterns(&strategy);
+        assert_eq!(
+            patterns,
+            vec![".venv".to_string(), "pyproject.toml".to_string()]
+        );
+    }
+
+    #[test]
+    fn watch_patterns_handles_watch_and_poll() {
+        let strategy = InvalidationStrategy::WatchAndPoll {
+            patterns: vec![".git".into()],
+            interval_secs: 60,
+            floor_secs: 1,
+        };
+        assert_eq!(watch_patterns(&strategy), vec![".git".to_string()]);
+    }
+
+    #[test]
+    fn watch_patterns_empty_for_poll_and_once() {
+        assert!(
+            watch_patterns(&InvalidationStrategy::Poll {
+                interval_secs: 10,
+                floor_secs: 1
+            })
+            .is_empty()
+        );
+        assert!(watch_patterns(&InvalidationStrategy::Once).is_empty());
+    }
 }

@@ -67,6 +67,13 @@ pub struct PollTimerInfo {
     pub last_run_secs_ago: u64,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct Subscription {
+    pub(crate) provider: String,
+    pub(crate) path: Option<String>,
+    pub(crate) patterns: Vec<String>,
+}
+
 /// Public wrapper for parse_duration, used by script provider.
 pub fn parse_duration_secs_pub(s: &str) -> Option<u64> {
     crate::config::parse_duration(s).map(|d| d.as_secs())
@@ -241,7 +248,7 @@ impl FailureState {
 /// Build a snapshot of the current scheduler state for status reporting.
 fn build_status(
     poll_states: &HashMap<(String, Option<String>), PollState>,
-    watch_paths: &HashMap<PathBuf, Vec<(String, Option<String>)>>,
+    watch_paths: &HashMap<PathBuf, Vec<Subscription>>,
     backoff: &HashMap<(String, Option<String>), BackoffState>,
     in_flight: &std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>,
     demand: &HashMap<(String, Option<String>), Instant>,
@@ -314,6 +321,41 @@ fn start_backoff_for_key(
 
 type ProviderKeySet = Arc<std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>>;
 type ProviderFailureMap = Arc<std::sync::Mutex<HashMap<(String, Option<String>), FailureState>>>;
+
+/// Returns true if any component of the event path (relative to the watched root)
+/// equals any of the patterns. Matching happens at ANY depth — an event at
+/// `some/nested/.git/HEAD` matches the pattern `.git`. This is intentional for
+/// monorepos with nested git submodules.
+///
+/// If the event path IS the root, the root's basename is matched instead.
+///
+/// Empty patterns are fail-open (every event matches) — preserves behaviour for
+/// providers that haven't declared patterns. Returns false if event_path is not
+/// under root.
+pub(crate) fn event_matches_patterns(
+    patterns: &[String],
+    root: &std::path::Path,
+    event_path: &std::path::Path,
+) -> bool {
+    if patterns.is_empty() {
+        return true;
+    }
+    let Ok(relative) = event_path.strip_prefix(root) else {
+        return false;
+    };
+    // If event fires on the root itself, match against the root's basename.
+    if relative.as_os_str().is_empty() {
+        if let Some(name) = event_path.file_name() {
+            let name_str = name.to_string_lossy();
+            return patterns.iter().any(|p| p == name_str.as_ref());
+        }
+        return false;
+    }
+    relative.components().any(|c| {
+        let name = c.as_os_str().to_string_lossy();
+        patterns.iter().any(|p| p == name.as_ref())
+    })
+}
 
 /// The scheduler core loop: executes providers on demand and manages subscriptions.
 pub struct Scheduler {
@@ -590,8 +632,8 @@ impl Scheduler {
         // Backoff states for keys with no active subscribers.
         let mut backoff: HashMap<(String, Option<String>), BackoffState> = HashMap::new();
 
-        // Watch paths that are being monitored: path -> (provider, path_arg)
-        let mut watch_paths: HashMap<PathBuf, Vec<(String, Option<String>)>> = HashMap::new();
+        // Watch paths that are being monitored: path -> subscriptions
+        let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
 
         // Demand tracking: (provider, path) -> last query time.
         // Keys queried within the demand window are kept warm with default polling.
@@ -692,10 +734,17 @@ impl Scheduler {
                                         if let Err(e) = fs_watcher.watch(&watch_path) {
                                             warn!("Failed to watch {:?}: {}", watch_path, e);
                                         } else {
+                                            let patterns = crate::provider::watch_patterns(
+                                                &meta.invalidation,
+                                            );
                                             watch_paths
                                                 .entry(watch_path)
                                                 .or_default()
-                                                .push((provider.clone(), path.clone()));
+                                                .push(Subscription {
+                                                    provider: provider.clone(),
+                                                    path: path.clone(),
+                                                    patterns,
+                                                });
                                             debug!("Demand: watching path {:?} for provider={}", path, provider);
                                         }
                                     }
@@ -761,7 +810,7 @@ impl Scheduler {
                         // Remove watch for this key (watches are only active during live demand).
                         let mut paths_to_unwatch = Vec::new();
                         for (watch_path, subscriptions) in watch_paths.iter_mut() {
-                            subscriptions.retain(|(p, pa)| !(p == &key.0 && pa == &key.1));
+                            subscriptions.retain(|sub| !(sub.provider == key.0 && sub.path == key.1));
                             if subscriptions.is_empty() {
                                 paths_to_unwatch.push(watch_path.clone());
                             }
@@ -826,7 +875,7 @@ impl Scheduler {
                             // No-op without watcher.
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
-                            let empty_watch_paths: HashMap<PathBuf, Vec<(String, Option<String>)>> = HashMap::new();
+                            let empty_watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
                             let status = build_status(&poll_states, &empty_watch_paths, &backoff, &self.in_flight, &demand);
                             let _ = reply.send(status);
                         }
@@ -984,21 +1033,94 @@ impl Scheduler {
     fn handle_fs_event(
         &self,
         paths: Vec<PathBuf>,
-        watch_paths: &HashMap<PathBuf, Vec<(String, Option<String>)>>,
+        watch_paths: &HashMap<PathBuf, Vec<Subscription>>,
     ) {
         for changed_path in &paths {
-            // Find all subscriptions whose watch path is a prefix of the changed path.
             for (watch_path, subscriptions) in watch_paths {
-                if changed_path.starts_with(watch_path) || changed_path == watch_path {
-                    for (provider, path) in subscriptions {
+                if !(changed_path.starts_with(watch_path) || changed_path == watch_path) {
+                    continue;
+                }
+                for sub in subscriptions {
+                    if event_matches_patterns(&sub.patterns, watch_path, changed_path) {
                         debug!(
                             "FS event: re-executing provider={} path={:?}",
-                            provider, path
+                            sub.provider, sub.path
                         );
-                        self.execute_provider(provider, path.as_deref());
+                        self.execute_provider(&sub.provider, sub.path.as_deref());
                     }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn event_matches_pattern_component_equality() {
+        let root = PathBuf::from("/proj");
+        assert!(event_matches_patterns(
+            &[".git".into()],
+            &root,
+            Path::new("/proj/.git/HEAD")
+        ));
+        assert!(event_matches_patterns(
+            &["pyproject.toml".into()],
+            &root,
+            Path::new("/proj/pyproject.toml")
+        ));
+        assert!(!event_matches_patterns(
+            &[".git".into()],
+            &root,
+            Path::new("/proj/src/main.rs")
+        ));
+        assert!(!event_matches_patterns(
+            &["pyproject.toml".into()],
+            &root,
+            Path::new("/proj/foo.txt")
+        ));
+    }
+
+    #[test]
+    fn event_matches_patterns_empty_is_fail_open() {
+        let root = PathBuf::from("/proj");
+        assert!(event_matches_patterns(
+            &[],
+            &root,
+            Path::new("/proj/foo.txt")
+        ));
+    }
+
+    #[test]
+    fn event_matches_patterns_matches_deep_subdirectory() {
+        let root = PathBuf::from("/proj");
+        assert!(event_matches_patterns(
+            &[".git".into()],
+            &root,
+            Path::new("/proj/packages/foo/.git/COMMIT_EDITMSG"),
+        ));
+    }
+
+    #[test]
+    fn event_matches_patterns_event_on_root_uses_basename() {
+        let root = PathBuf::from("/proj/.git");
+        assert!(event_matches_patterns(
+            &[".git".into()],
+            &root,
+            Path::new("/proj/.git"),
+        ));
+    }
+
+    #[test]
+    fn event_matches_patterns_event_on_root_no_match() {
+        let root = PathBuf::from("/proj");
+        assert!(!event_matches_patterns(
+            &["pyproject.toml".into()],
+            &root,
+            Path::new("/proj"),
+        ));
     }
 }
