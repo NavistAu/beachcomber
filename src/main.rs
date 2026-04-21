@@ -233,30 +233,6 @@ fn preprocess_args() -> (Vec<String>, Option<String>) {
     (args, fmt_template)
 }
 
-/// Parse metadata suffix from a key: "git.branch:age" → ("git.branch", Some("age")).
-fn split_metadata(key: &str) -> (&str, Option<&str>) {
-    match key.rsplit_once(':') {
-        Some((base, meta)) if matches!(meta, "age" | "stale" | "source") => (base, Some(meta)),
-        _ => (key, None),
-    }
-}
-
-/// Extract a metadata field from a response.
-fn extract_metadata(response: &beachcomber::protocol::Response, field: &str) -> String {
-    match field {
-        "age" => response.age_ms.map(|ms| ms.to_string()).unwrap_or_default(),
-        "stale" => response.stale.map(|s| s.to_string()).unwrap_or_default(),
-        "source" => {
-            if response.data.is_some() {
-                "cache".to_string()
-            } else {
-                "miss".to_string()
-            }
-        }
-        _ => String::new(),
-    }
-}
-
 /// Format a JSON value as a single display string.
 fn value_to_string(v: &serde_json::Value) -> String {
     match v {
@@ -526,7 +502,6 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
 }
 
 fn run_get(config: &Config, key: &str, path: Option<&str>, format: OutputFormat) -> ExitCode {
-    let (actual_key, metadata_field) = split_metadata(key);
     let socket_path = config.resolve_socket_path();
 
     if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
@@ -538,32 +513,9 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: OutputFormat)
     rt.block_on(async {
         let client = beachcomber::client::Client::new(socket_path);
 
-        // Metadata queries always use JSON to access response fields.
-        if let Some(meta) = metadata_field {
-            match client.get(actual_key, path).await {
-                Ok(response) => {
-                    if !response.ok {
-                        eprintln!("Error: {}", response.error.unwrap_or_default());
-                        ExitCode::from(2)
-                    } else {
-                        let val = extract_metadata(&response, meta);
-                        match &format {
-                            OutputFormat::Json => {
-                                println!("{}", serde_json::json!({"ok": true, "data": val}));
-                            }
-                            _ => print!("{val}"),
-                        }
-                        ExitCode::SUCCESS
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    ExitCode::from(2)
-                }
-            }
-        } else if format.is_server_side() {
+        if format.is_server_side() {
             match client
-                .get_formatted(actual_key, path, format.server_format())
+                .get_formatted(key, path, format.server_format())
                 .await
             {
                 Ok(text) => {
@@ -576,7 +528,7 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: OutputFormat)
                 }
             }
         } else {
-            match client.get(actual_key, path).await {
+            match client.get(key, path).await {
                 Ok(response) => {
                     if !response.ok {
                         eprintln!("Error: {}", response.error.unwrap_or_default());

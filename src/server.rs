@@ -263,6 +263,23 @@ async fn write_watch_line(
     writer.write_all(line.as_bytes()).await
 }
 
+/// The set of metadata suffix names the server recognises. Keep this in sync
+/// with the `match meta` post-processing arms in `handle_request`.
+const KNOWN_METADATA_SUFFIXES: &[&str] = &["age", "stale", "fresh", "cache", "source"];
+
+/// Parse a metadata suffix from a key. "git.branch:fresh" → ("git.branch", Some("fresh")).
+/// Only suffixes listed in KNOWN_METADATA_SUFFIXES are stripped; anything else passes
+/// through as part of the key. Metadata suffix splitting must run BEFORE
+/// protocol::split_key so the field/suffix disambiguation is correct.
+fn split_metadata_suffix(key: &str) -> (&str, Option<&str>) {
+    if let Some((base, meta)) = key.rsplit_once(':')
+        && KNOWN_METADATA_SUFFIXES.contains(&meta)
+    {
+        return (base, Some(meta));
+    }
+    (key, None)
+}
+
 /// Resolve the effective path for a request: explicit path > context path > None.
 /// Only applies the context for path-scoped (non-global) providers.
 /// Relative paths are canonicalized to absolute paths.
@@ -311,7 +328,8 @@ async fn handle_request(
 ) -> Response {
     match request {
         Request::Get { key, path, .. } => {
-            let (provider_name, field) = protocol::split_key(key);
+            let (stripped_key, meta) = split_metadata_suffix(key);
+            let (provider_name, field) = protocol::split_key(stripped_key);
 
             if registry.get_source(provider_name).is_none() {
                 return Response::error(format!("unknown provider: {provider_name}"));
@@ -330,7 +348,22 @@ async fn handle_request(
                     .await;
             }
 
-            match cache.get(provider_name, effective_path.as_deref()) {
+            // :source short-circuits — no cache lookup needed.
+            if matches!(meta, Some("source")) {
+                let src = registry
+                    .get_source(provider_name)
+                    .map(|s| match s {
+                        crate::provider::ProviderSource::Builtin => "builtin",
+                        crate::provider::ProviderSource::Script => "script",
+                        crate::provider::ProviderSource::Virtual => "virtual",
+                    })
+                    .unwrap_or("unknown");
+                return Response::ok(serde_json::Value::String(src.to_string()), 0, false);
+            }
+
+            let (cache_hit, normal_response) = match cache
+                .get(provider_name, effective_path.as_deref())
+            {
                 Some(entry) => {
                     let age_ms = entry.age_ms();
                     let stale = entry.is_stale();
@@ -347,7 +380,7 @@ async fn handle_request(
                     } else {
                         entry.result.to_json()
                     };
-                    Response::ok(data, age_ms, stale)
+                    (true, Response::ok(data, age_ms, stale))
                 }
                 None => {
                     // Synchronous cache miss: execute the provider inline if possible.
@@ -385,15 +418,45 @@ async fn handle_request(
                                     } else {
                                         result.to_json()
                                     };
-                                    Response::ok(data, 0, false)
+                                    (false, Response::ok(data, 0, false))
                                 }
-                                None => Response::miss(),
+                                None => (false, Response::miss()),
                             }
                         }
                         // Virtual provider or provider with no execute — return miss
-                        None => Response::miss(),
+                        None => (false, Response::miss()),
                     }
                 }
+            };
+
+            match meta {
+                None => normal_response,
+                Some("age") => Response::ok(
+                    normal_response
+                        .age_ms
+                        .map(|n| serde_json::json!(n.to_string()))
+                        .unwrap_or(serde_json::Value::Null),
+                    0,
+                    false,
+                ),
+                Some("stale") => Response::ok(
+                    normal_response
+                        .stale
+                        .map(serde_json::Value::Bool)
+                        .unwrap_or(serde_json::Value::Null),
+                    0,
+                    false,
+                ),
+                Some("fresh") => Response::ok(
+                    normal_response
+                        .stale
+                        .map(|s| serde_json::Value::Bool(!s))
+                        .unwrap_or(serde_json::Value::Null),
+                    0,
+                    false,
+                ),
+                Some("cache") => Response::ok(serde_json::Value::Bool(cache_hit), 0, false),
+                Some(other) => Response::error(format!("unknown metadata suffix: :{other}")),
             }
         }
         Request::Poke { key, path } => {

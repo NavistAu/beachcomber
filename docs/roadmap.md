@@ -229,7 +229,7 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [x] New output format: `fmt` — takes a `{field_name}` template string as an argument, applies it per field. e.g. `comb g.f '{branch} ({dirty})' git .`. Uses brace interpolation, not printf.
 - [x] `comb eval` — template interpolation. e.g. `comb eval "branch: {git.branch} load: {load.one}" .` — resolves all referenced keys in a single connection and returns the formatted string. Alias: `e`.
 - [x] Batch get — `comb fetch` (alias `f`). Single command to query multiple keys in one connection. Format-aware output.
-- [x] Field metadata access — colon delimiter on key: `comb g git.branch:age` returns the cache age in milliseconds. Metadata fields: `age`, `stale`, `source`.
+- [x] Field metadata access — colon delimiter on key: `comb g git.branch:age` returns the cache age in milliseconds. Metadata fields: `age`, `stale`, `fresh`, `cache`, `source`.
 - [x] Help screen branding — NavistAu authorship, project URL, tagline, MIT license in `comb --help` and `comb --version` output. Format suffix usage hint in after-help.
 
 ### Shell Integration
