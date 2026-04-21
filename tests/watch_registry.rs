@@ -44,3 +44,36 @@ async fn multiple_subscribers_all_receive() {
     assert!(r1.is_ok());
     assert!(r2.is_ok());
 }
+
+#[tokio::test]
+async fn entry_removed_on_notify_after_last_receiver_dropped() {
+    let registry = WatcherRegistry::new();
+    {
+        let _rx = registry.subscribe("git", Some("/proj"));
+    }
+    registry.notify("git", Some("/proj"));
+    assert_eq!(
+        registry.entry_count(),
+        0,
+        "GC should have removed the stale entry"
+    );
+    let mut rx = registry.subscribe("git", Some("/proj"));
+    registry.notify("git", Some("/proj"));
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+    assert!(
+        result.is_ok(),
+        "fresh subscription should still deliver after GC"
+    );
+}
+
+#[tokio::test]
+async fn notify_does_not_remove_entry_with_live_receiver() {
+    let registry = WatcherRegistry::new();
+    let mut rx = registry.subscribe("git", None);
+    registry.notify("git", None);
+    let first = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+    assert!(first.is_ok());
+    registry.notify("git", None);
+    let second = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+    assert!(second.is_ok());
+}
