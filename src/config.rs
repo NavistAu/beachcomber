@@ -39,18 +39,19 @@ where
 }
 use std::time::Duration;
 
-/// Parse a duration string like "500ms", "30s", "5m", "1h" into a Duration.
+/// Parse a duration string like "30s", "5m", "1h", or whole-second "ms" values (e.g. "2000ms")
+/// into a Duration. Returns None for sub-second `ms` values and non-whole-second multiples.
 pub fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim();
     if s.is_empty() {
         return None;
     }
     if let Some(stripped) = s.strip_suffix("ms") {
-        return stripped
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .map(Duration::from_millis);
+        let n = stripped.trim().parse::<u64>().ok()?;
+        if n < 1000 || n % 1000 != 0 {
+            return None;
+        }
+        return Some(Duration::from_secs(n / 1000));
     }
     let (num_str, multiplier) = if let Some(stripped) = s.strip_suffix('s') {
         (stripped, 1u64)

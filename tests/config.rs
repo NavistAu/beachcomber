@@ -120,7 +120,7 @@ fn log_path_resolves_xdg() {
 
 #[test]
 fn parse_duration_variants() {
-    assert_eq!(parse_duration("500ms"), Some(Duration::from_millis(500)));
+    assert_eq!(parse_duration("500ms"), None);
     assert_eq!(parse_duration("5s"), Some(Duration::from_secs(5)));
     assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
     assert_eq!(parse_duration("1h"), Some(Duration::from_secs(3600)));
