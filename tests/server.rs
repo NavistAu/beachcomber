@@ -369,6 +369,72 @@ async fn server_text_format_object_returns_values_only() {
     handle.abort();
 }
 
+#[tokio::test]
+async fn status_includes_uptime_and_request_counters() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    // Send two get requests first
+    stream
+        .write_all(b"{\"op\": \"get\", \"key\": \"hostname\"}\n")
+        .await
+        .unwrap();
+    stream
+        .write_all(b"{\"op\": \"get\", \"key\": \"hostname\"}\n")
+        .await
+        .unwrap();
+
+    // Read and discard the two get responses
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+    line.clear();
+    reader.read_line(&mut line).await.unwrap();
+    line.clear();
+
+    // Send status request
+    write_half
+        .write_all(b"{\"op\": \"status\"}\n")
+        .await
+        .unwrap();
+
+    reader.read_line(&mut line).await.unwrap();
+    let response: Response = serde_json::from_str(&line).unwrap();
+    assert!(response.ok, "Status response should be ok");
+    let data = response.data.unwrap();
+
+    let uptime_secs = data["uptime_secs"].as_u64();
+    assert!(
+        uptime_secs.is_some(),
+        "status response should include uptime_secs, got: {data}"
+    );
+
+    let active_watchers = data["active_watchers"].as_u64();
+    assert!(
+        active_watchers.is_some(),
+        "status response should include active_watchers, got: {data}"
+    );
+
+    let requests_total = data["requests_total"].as_u64();
+    assert!(
+        requests_total.is_some(),
+        "status response should include requests_total, got: {data}"
+    );
+    assert!(
+        requests_total.unwrap() >= 3,
+        "requests_total should be >= 3 (2 gets + 1 status), got: {}",
+        requests_total.unwrap()
+    );
+
+    handle.abort();
+}
+
 /// Format::Text on an Object-valued field must emit bare values (no key= prefix),
 /// sorted alphabetically by key, one per line. This convention applies to all
 /// object-valued provider fields (e.g. mise.project, asdf.tools).

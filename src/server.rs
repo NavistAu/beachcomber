@@ -5,6 +5,8 @@ use crate::scheduler::{SchedulerHandle, SchedulerMessage};
 use crate::watcher_registry::WatcherRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tracing::{debug, info, warn};
@@ -15,6 +17,8 @@ pub struct Server {
     registry: Arc<ProviderRegistry>,
     scheduler: Option<SchedulerHandle>,
     watchers: Arc<WatcherRegistry>,
+    start_instant: Instant,
+    requests_total: Arc<AtomicU64>,
 }
 
 impl Server {
@@ -31,6 +35,8 @@ impl Server {
             registry,
             scheduler,
             watchers,
+            start_instant: Instant::now(),
+            requests_total: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -66,9 +72,19 @@ impl Server {
                     let registry = Arc::clone(&self.registry);
                     let scheduler = self.scheduler.clone();
                     let watchers = self.watchers.clone();
+                    let start_instant = self.start_instant;
+                    let requests_total = Arc::clone(&self.requests_total);
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            handle_connection(stream, cache, registry, scheduler, watchers).await
+                        if let Err(e) = handle_connection(
+                            stream,
+                            cache,
+                            registry,
+                            scheduler,
+                            watchers,
+                            start_instant,
+                            requests_total,
+                        )
+                        .await
                         {
                             debug!("Connection error: {}", e);
                         }
@@ -88,6 +104,8 @@ async fn handle_connection(
     registry: Arc<ProviderRegistry>,
     scheduler: Option<SchedulerHandle>,
     watchers: Arc<WatcherRegistry>,
+    start_instant: Instant,
+    requests_total: Arc<AtomicU64>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -104,6 +122,7 @@ async fn handle_connection(
 
         match serde_json::from_str::<Request>(trimmed) {
             Ok(Request::Watch { key, path, format }) => {
+                requests_total.fetch_add(1, Ordering::Relaxed);
                 // Watch takes over the connection — enter streaming mode
                 handle_watch(
                     key,
@@ -120,12 +139,16 @@ async fn handle_connection(
                 return Ok(());
             }
             Ok(request) => {
+                requests_total.fetch_add(1, Ordering::Relaxed);
                 let response = handle_request(
                     &request,
                     &cache,
                     &registry,
                     scheduler.as_ref(),
                     &mut context_path,
+                    start_instant,
+                    &watchers,
+                    &requests_total,
                 )
                 .await;
                 let response_bytes = format_response(&request, &response);
@@ -319,12 +342,16 @@ fn resolve_path(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_request(
     request: &Request,
     cache: &Cache,
     registry: &ProviderRegistry,
     scheduler: Option<&SchedulerHandle>,
     context_path: &mut Option<String>,
+    start_instant: Instant,
+    watchers: &WatcherRegistry,
+    requests_total: &AtomicU64,
 ) -> Response {
     match request {
         Request::Get { key, path, .. } => {
@@ -637,6 +664,9 @@ async fn handle_request(
                 "cache_entries": cache.len(),
                 "cache": serde_json::to_value(&cache_details).unwrap_or_default(),
                 "providers": registry.list().len(),
+                "uptime_secs": start_instant.elapsed().as_secs(),
+                "active_watchers": watchers.entry_count() as u64,
+                "requests_total": requests_total.load(Ordering::Relaxed),
             });
 
             // Get scheduler status if available.
