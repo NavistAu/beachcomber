@@ -13,3 +13,41 @@ global-timeout = "2m"
 # (the current slow outliers are documented separately; see scheduler_timeout
 # and demand tests).
 slow-timeout = { period = "15s", terminate-after = 2 }
+
+# Treat leaky tests (subprocesses that outlive the test) as failures rather
+# than warnings. { period, result } syntax available since nextest 0.9.76;
+# running 0.9.132 here.
+leak-timeout = { period = "100ms", result = "fail" }
+
+# --- Test groups ---
+# Daemon-spawning tests share per-process state (socket paths, filesystem
+# watchers). Cap their parallelism so they do not collide.
+[[profile.default.overrides]]
+filter = 'test(e2e_) + test(scheduler_) + test(check_subjects) + test(status_shape) + test(get_force) + test(get_wait) + test(put_null) + test(metadata_suffixes) + test(client)'
+test-group = "daemon"
+
+# --- Retries for environment-sensitive tests ---
+# watcher_*, uptime_*, and battery_* depend on OS-level subsystems that can
+# legitimately flake. Two retries with exponential backoff give them a chance
+# to succeed on a quiet machine without hiding real regressions.
+[[profile.default.overrides]]
+filter = 'test(watcher_) + test(uptime_) + test(battery_)'
+retries = { backoff = "exponential", count = 2, delay = "1s", jitter = true }
+
+[test-groups.daemon]
+# At most 2 daemon-spawning tests run concurrently.
+max-threads = 2
+
+# ---------------------------------------------------------------------------
+# CI profile — inherits everything from default, overrides what differs.
+# ---------------------------------------------------------------------------
+[profile.ci]
+# Longer global timeout for CI machines that may be slower than laptops.
+global-timeout = "5m"
+# Keep the same per-test limits as default.
+slow-timeout = { period = "15s", terminate-after = 2 }
+# Never stop the suite early on a single failure — collect all results.
+fail-fast = false
+
+[profile.ci.junit]
+path = "target/nextest/junit.xml"

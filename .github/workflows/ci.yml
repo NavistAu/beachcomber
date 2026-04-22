@@ -70,7 +70,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: Run tests
-        run: cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'
+        run: cargo nextest run --profile ci -E 'not (test(watcher_) + test(uptime_provider_executes))'
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-macos
+          path: target/nextest/junit.xml
 
   test-linux:
     name: Test (Linux)
@@ -85,7 +91,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: Run tests
-        run: cargo nextest run -E 'not test(watcher_)'
+        run: cargo nextest run --profile ci -E 'not test(watcher_)'
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-linux
+          path: target/nextest/junit.xml
 
   bench:
     name: Benchmark
