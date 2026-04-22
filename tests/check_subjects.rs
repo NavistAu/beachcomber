@@ -1,4 +1,5 @@
-// Integration tests for the Request::Introspect per-subject payloads.
+// Integration tests for the Request::Introspect per-subject payloads
+// and the `comb check` CLI aggregation behaviour.
 // Uses the in-process test daemon pattern from tests/put_null.rs.
 
 use beachcomber::client::Client;
@@ -325,6 +326,158 @@ async fn introspect_procs_returns_sample_structure() {
             "verdict missing message"
         );
     }
+
+    handle.abort();
+}
+
+// ── CLI aggregation tests ──────────────────────────────────────────────────
+
+/// All eight fast subjects (excluding procs which requires elevated permissions)
+/// can be queried via the introspect op without error, and each returns verdicts.
+#[tokio::test]
+async fn all_subjects_reachable_via_introspect() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let subjects = [
+        "daemon", "config", "providers", "cache", "watches", "backoff", "timers", "demand",
+    ];
+
+    for subject in subjects {
+        let resp = client
+            .send_raw(serde_json::json!({"op": "introspect", "subject": subject}))
+            .await
+            .unwrap_or_else(|e| panic!("introspect {subject} failed: {e}"));
+        assert!(
+            resp.ok,
+            "subject={subject} returned error: {:?}",
+            resp.error
+        );
+        let data = resp.data.expect("payload present");
+        let verdicts = data
+            .get("verdicts")
+            .and_then(|v| v.as_array())
+            .expect("verdicts array present");
+        assert!(!verdicts.is_empty(), "subject={subject} has no verdicts");
+    }
+
+    handle.abort();
+}
+
+/// `comb check daemon` with an unreachable socket exits 2 and prints a FAIL line.
+/// Redirect via XDG_RUNTIME_DIR so `resolve_socket_path` finds a path with no daemon.
+#[test]
+fn check_daemon_unreachable_exits_two() {
+    let tmp = tempfile::TempDir::new().unwrap();
+
+    // Find the `comb` binary next to the test runner.
+    let exe = std::env::current_exe()
+        .expect("current_exe")
+        .parent()
+        .expect("parent dir")
+        .join("comb");
+
+    if !exe.exists() {
+        // Binary not built yet (e.g. running with `cargo test --no-run`). Skip.
+        return;
+    }
+
+    let output = std::process::Command::new(&exe)
+        // Point XDG_RUNTIME_DIR at a temp dir with no daemon socket inside it.
+        .env("XDG_RUNTIME_DIR", tmp.path())
+        .args(["check", "daemon"])
+        .output()
+        .expect("run comb check daemon");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit 2, got: {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("[FAIL]"),
+        "expected [FAIL] in output, got: {stdout}"
+    );
+}
+
+/// Daemon introspect payload contains at least one PASS verdict.
+#[tokio::test]
+async fn daemon_introspect_has_pass_verdict() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
+        .await
+        .expect("daemon introspect");
+
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let data = resp.data.unwrap();
+    let verdicts = data
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .expect("verdicts");
+
+    let has_pass = verdicts
+        .iter()
+        .any(|v| v.get("level").and_then(|l| l.as_str()) == Some("PASS"));
+    assert!(has_pass, "expected at least one PASS verdict: {verdicts:?}");
+
+    handle.abort();
+}
+
+/// Providers introspect lists at least one provider with all required fields.
+#[tokio::test]
+async fn providers_introspect_has_entries_with_required_fields() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "providers"}))
+        .await
+        .expect("providers introspect");
+
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let data = resp.data.unwrap();
+    let providers = data
+        .get("providers")
+        .and_then(|v| v.as_array())
+        .expect("providers array");
+    assert!(!providers.is_empty(), "expected at least one provider");
+
+    for p in providers {
+        assert!(p.get("name").is_some(), "provider missing name: {p:?}");
+        assert!(p.get("source").is_some(), "provider missing source: {p:?}");
+        assert!(p.get("scope").is_some(), "provider missing scope: {p:?}");
+        assert!(p.get("fields").is_some(), "provider missing fields: {p:?}");
+        assert!(p.get("invalidation").is_some(), "provider missing invalidation: {p:?}");
+    }
+
+    handle.abort();
+}
+
+/// Cache stale_ratio is in the valid range [0.0, 1.0].
+#[tokio::test]
+async fn cache_introspect_stale_ratio_coherent() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "cache"}))
+        .await
+        .expect("cache introspect");
+
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let data = resp.data.unwrap();
+    let ratio = data
+        .get("stale_ratio")
+        .and_then(|v| v.as_f64())
+        .expect("stale_ratio present");
+    assert!(
+        (0.0..=1.0).contains(&ratio),
+        "stale_ratio out of range: {ratio}"
+    );
 
     handle.abort();
 }

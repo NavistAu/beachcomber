@@ -118,14 +118,22 @@ enum Commands {
 enum CheckCommands {
     /// Run all health checks
     All,
-    /// Check daemon connectivity
+    /// Check daemon connectivity and stats
     Daemon,
-    /// Validate configuration
+    /// Show config path and parse status
     Config,
     /// Check provider health and backoff state
     Providers,
-    /// Check cache for stale entries
+    /// Check cache entry counts and staleness
     Cache,
+    /// Show providers currently in backoff
+    Backoff,
+    /// Show active filesystem watches
+    Watches,
+    /// Show active poll timers
+    Timers,
+    /// Show demand-tracked keys
+    Demand,
     /// Snapshot process spawns to measure beachcomber impact
     Procs {
         /// Sample duration in seconds
@@ -1130,284 +1138,520 @@ source <(curl -fsSL https://beachcomber.sh/scripts/chpwd.sh)
 }
 
 fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode {
-    match check_cmd {
-        None => {
-            println!("Usage: comb check <subcommand>");
-            println!();
-            println!("Subcommands:");
-            println!("  all        Run all health checks");
-            println!("  daemon     Check daemon connectivity");
-            println!("  config     Validate configuration");
-            println!("  providers  Check provider health and backoff state");
-            println!("  cache      Check cache for stale entries");
-            println!("  procs      Snapshot process spawns to measure impact");
-            ExitCode::SUCCESS
-        }
-        Some(CheckCommands::All) => {
-            let mut worst = 0u8;
-            worst = worst.max(check_daemon(config));
-            worst = worst.max(check_config());
-            worst = worst.max(check_providers(config));
-            worst = worst.max(check_cache(config));
-            ExitCode::from(worst)
-        }
-        Some(CheckCommands::Daemon) => ExitCode::from(check_daemon(config)),
-        Some(CheckCommands::Config) => ExitCode::from(check_config()),
-        Some(CheckCommands::Providers) => ExitCode::from(check_providers(config)),
-        Some(CheckCommands::Cache) => ExitCode::from(check_cache(config)),
-        Some(CheckCommands::Procs { duration }) => ExitCode::from(check_procs(duration)),
-    }
-}
+    const ALL_SUBJECTS: &[&str] = &[
+        "daemon", "config", "providers", "cache", "watches", "backoff", "timers", "demand",
+        "procs",
+    ];
 
-fn print_check(status: &str, label: &str, detail: &str) {
-    let icon = match status {
-        "pass" => "PASS",
-        "warn" => "WARN",
-        "fail" => "FAIL",
-        _ => "????",
+    let (subjects, procs_duration): (Vec<&str>, Option<u64>) = match &check_cmd {
+        None | Some(CheckCommands::All) => (ALL_SUBJECTS.to_vec(), None),
+        Some(CheckCommands::Daemon) => (vec!["daemon"], None),
+        Some(CheckCommands::Config) => (vec!["config"], None),
+        Some(CheckCommands::Providers) => (vec!["providers"], None),
+        Some(CheckCommands::Cache) => (vec!["cache"], None),
+        Some(CheckCommands::Backoff) => (vec!["backoff"], None),
+        Some(CheckCommands::Watches) => (vec!["watches"], None),
+        Some(CheckCommands::Timers) => (vec!["timers"], None),
+        Some(CheckCommands::Demand) => (vec!["demand"], None),
+        Some(CheckCommands::Procs { duration }) => (vec!["procs"], Some(*duration)),
     };
-    if detail.is_empty() {
-        println!("[{icon}] {label}");
-    } else {
-        println!("[{icon}] {label}: {detail}");
-    }
-}
 
-/// Returns 0 for pass, 1 for warn, 2 for fail.
-fn check_daemon(config: &Config) -> u8 {
-    println!("=== Daemon ===");
-    let socket_path = config.resolve_socket_path();
-
-    if !socket_path.exists() {
-        print_check(
-            "fail",
-            "socket",
-            &format!("{} does not exist", socket_path.display()),
-        );
-        return 2;
-    }
-
-    // Try connecting.
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    let result = rt.block_on(async {
-        let client = beachcomber::client::Client::new(socket_path.clone());
-        client.send_raw(serde_json::json!({"op": "status"})).await
-    });
-
-    match result {
-        Ok(response) => {
-            if response.ok {
-                print_check("pass", "daemon", "connected and responding");
-                0
-            } else {
-                print_check("warn", "daemon", "connected but returned error");
-                1
-            }
-        }
-        Err(e) => {
-            print_check(
-                "fail",
-                "daemon",
-                &format!("cannot connect to {}: {e}", socket_path.display()),
-            );
-            2
-        }
-    }
+    let worst = rt.block_on(run_check_subjects(config, &subjects, procs_duration));
+    ExitCode::from(worst)
 }
 
-fn check_config() -> u8 {
-    println!("=== Config ===");
-    let config_path = beachcomber::config::Config::config_path();
+async fn run_check_subjects(
+    config: &Config,
+    subjects: &[&str],
+    procs_duration: Option<u64>,
+) -> u8 {
+    let socket_path = config.resolve_socket_path();
+    let client = beachcomber::client::Client::new(socket_path);
+    let mut worst = 0u8;
 
-    if !config_path.exists() {
-        print_check("pass", "config", "no config file (using defaults)");
-        return 0;
-    }
+    for &subject in subjects {
+        let mut req = serde_json::json!({"op": "introspect", "subject": subject});
+        if subject == "procs" && let Some(d) = procs_duration {
+            req["duration_secs"] = serde_json::json!(d);
+        }
 
-    match std::fs::read_to_string(&config_path) {
-        Ok(contents) => match toml::from_str::<beachcomber::config::Config>(&contents) {
-            Ok(_) => {
-                print_check(
-                    "pass",
-                    "config",
-                    &format!("{} is valid", config_path.display()),
-                );
-                0
+        match client.send_raw(req).await {
+            Ok(resp) if resp.ok => {
+                let payload = resp.data.as_ref().cloned().unwrap_or(serde_json::Value::Null);
+                let (text, code) = render_subject(subject, &payload);
+                print!("{text}");
+                worst = worst.max(code);
+            }
+            Ok(resp) => {
+                let title = subject_title(subject);
+                let err = resp.error.as_deref().unwrap_or("unknown error");
+                println!("\n{title}\n  [FAIL] {err}");
+                worst = worst.max(2);
             }
             Err(e) => {
-                print_check("fail", "config", &format!("parse error: {e}"));
-                2
+                let title = subject_title(subject);
+                println!("\n{title}\n  [FAIL] daemon not responding: {e}");
+                worst = worst.max(2);
+                // No point continuing if daemon is unreachable.
+                break;
             }
-        },
-        Err(e) => {
-            print_check(
-                "fail",
-                "config",
-                &format!("cannot read {}: {e}", config_path.display()),
-            );
-            2
         }
+    }
+
+    worst
+}
+
+fn subject_title(subject: &str) -> &'static str {
+    match subject {
+        "daemon" => "Daemon",
+        "config" => "Config",
+        "providers" => "Providers",
+        "cache" => "Cache",
+        "backoff" => "Backoff",
+        "watches" => "Watches",
+        "timers" => "Timers",
+        "demand" => "Demand",
+        "procs" => "Procs",
+        _ => "Unknown",
     }
 }
 
-fn check_providers(config: &Config) -> u8 {
-    println!("=== Providers ===");
-    let socket_path = config.resolve_socket_path();
+/// Render a subject's introspect payload into a formatted block.
+/// Returns (text, worst_exit_code): PASS/INFO=0, WARN=1, FAIL=2.
+fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
+    let verdicts = payload
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    let result = rt.block_on(async {
-        let client = beachcomber::client::Client::new(socket_path);
-        client.send_raw(serde_json::json!({"op": "status"})).await
-    });
+    let mut worst: u8 = 0;
+    let mut lines = String::new();
 
-    match result {
-        Ok(response) => {
-            if let Some(data) = &response.data {
-                let mut worst = 0u8;
+    // Build per-subject header and detail lines before verdict lines.
+    match subject {
+        "daemon" => {
+            let version = payload
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let pid = payload
+                .get("pid")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let uptime = payload
+                .get("uptime_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let uptime_fmt = format_uptime(uptime);
+            let socket = payload
+                .get("socket_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let config_path = payload.get("config_path").and_then(|v| v.as_str());
+            let requests = payload
+                .get("requests_total")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let in_flight = payload
+                .get("in_flight")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let watchers = payload
+                .get("active_watchers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cache = payload
+                .get("cache_entries")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
 
-                // Check backoff state.
-                if let Some(backoff) = data.get("backoff")
-                    && let Some(obj) = backoff.as_object()
-                {
-                    if obj.is_empty() {
-                        print_check("pass", "backoff", "no providers in backoff");
-                    } else {
-                        for (name, info) in obj {
-                            print_check("warn", "backoff", &format!("{name}: {info}"));
-                            worst = worst.max(1);
-                        }
-                    }
-                }
+            let (vlines, vworst) = render_verdicts(&verdicts);
+            worst = worst.max(vworst);
 
-                // Check provider count.
-                if let Some(count) = data.get("providers").and_then(|v| v.as_u64()) {
-                    print_check("pass", "providers", &format!("{count} registered"));
-                }
-
-                // Check in-flight.
-                if let Some(in_flight) = data.get("in_flight").and_then(|v| v.as_u64())
-                    && in_flight > 0
-                {
-                    print_check("pass", "in-flight", &format!("{in_flight} executing"));
-                }
-
-                worst
+            lines.push_str("Daemon\n");
+            lines.push_str(&format!(
+                "  [PASS] beachcomber {version} — pid {pid} — uptime {uptime_fmt}\n"
+            ));
+            lines.push_str(&format!("  [PASS] socket   {socket}\n"));
+            if let Some(cp) = config_path {
+                lines.push_str(&format!("  [PASS] config   {cp}\n"));
             } else {
-                print_check("warn", "providers", "no status data");
-                1
+                lines.push_str("  [INFO] config   (none — using defaults)\n");
             }
+            lines.push_str(&format!(
+                "  [PASS] requests_total={requests}  in_flight={in_flight}  active_watchers={watchers}  cache_entries={cache}\n"
+            ));
+            lines.push_str(&vlines);
         }
-        Err(e) => {
-            print_check("fail", "providers", &format!("cannot query status: {e}"));
-            2
-        }
-    }
-}
+        "providers" => {
+            let providers = payload
+                .get("providers")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let count = providers.len();
 
-fn check_cache(config: &Config) -> u8 {
-    println!("=== Cache ===");
-    let socket_path = config.resolve_socket_path();
+            let (vlines, vworst) = render_verdicts(&verdicts);
+            worst = worst.max(vworst);
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    let result = rt.block_on(async {
-        let client = beachcomber::client::Client::new(socket_path);
-        client.send_raw(serde_json::json!({"op": "status"})).await
-    });
+            lines.push_str(&format!("Providers ({count} registered)\n"));
+            for p in &providers {
+                let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let source = p.get("source").and_then(|v| v.as_str()).unwrap_or("?");
+                let scope = p.get("scope").and_then(|v| v.as_str()).unwrap_or("?");
+                let fields: Vec<&str> = p
+                    .get("fields")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|f| f.get("name").and_then(|n| n.as_str()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let fields_str = if fields.is_empty() {
+                    "—".to_string()
+                } else {
+                    fields.join(",")
+                };
+                let invalidation = p
+                    .get("invalidation")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let in_backoff = !p.get("in_backoff").map(|v| v.is_null()).unwrap_or(true);
 
-    match result {
-        Ok(response) => {
-            if let Some(data) = &response.data {
-                let mut worst = 0u8;
-
-                if let Some(entries) = data.get("cache_entries").and_then(|v| v.as_u64()) {
-                    print_check("pass", "entries", &format!("{entries} cached"));
+                if in_backoff {
+                    let stage = p
+                        .get("in_backoff")
+                        .and_then(|b| b.get("stage"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let elapsed = p
+                        .get("in_backoff")
+                        .and_then(|b| b.get("elapsed_secs"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    lines.push_str(&format!(
+                        "  [WARN] {source:<8} {name:<12} {scope:<7} fields={fields_str:<30} {invalidation} — in backoff {elapsed}s (stage={stage})\n"
+                    ));
+                    worst = worst.max(1);
+                } else {
+                    lines.push_str(&format!(
+                        "  [PASS] {source:<8} {name:<12} {scope:<7} fields={fields_str:<30} {invalidation}\n"
+                    ));
                 }
+            }
+            lines.push_str(&vlines);
+        }
+        "config" => {
+            let path = payload.get("path").and_then(|v| v.as_str());
+            let parsed = payload
+                .get("parsed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let errors: Vec<&str> = payload
+                .get("errors")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|e| e.as_str()).collect())
+                .unwrap_or_default();
+            let provider_count = payload
+                .get("provider_count_from_config")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
 
-                // Check for stale entries in the cache listing.
-                if let Some(cache) = data.get("cache").and_then(|v| v.as_object()) {
-                    let mut stale_count = 0u64;
-                    for (_key, entry) in cache {
-                        if let Some(true) = entry.get("stale").and_then(|v| v.as_bool()) {
-                            stale_count += 1;
-                        }
-                    }
-                    if stale_count > 0 {
-                        print_check("warn", "stale", &format!("{stale_count} stale entries"));
+            let (vlines, vworst) = render_verdicts(&verdicts);
+            worst = worst.max(vworst);
+
+            lines.push_str("Config\n");
+            if let Some(p) = path {
+                lines.push_str(&format!("  [PASS] path   {p}\n"));
+            } else {
+                lines.push_str("  [INFO] path   (none — using defaults)\n");
+            }
+            if parsed {
+                lines.push_str(&format!(
+                    "  [PASS] parsed   ok — {provider_count} provider definitions\n"
+                ));
+            } else {
+                lines.push_str("  [FAIL] parsed   FAILED\n");
+                worst = worst.max(2);
+            }
+            for err in &errors {
+                lines.push_str(&format!("  [FAIL] error   {err}\n"));
+                worst = worst.max(2);
+            }
+            lines.push_str(&vlines);
+        }
+        "cache" => {
+            let total = payload
+                .get("total_entries")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let stale = payload
+                .get("stale_entries")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            let (vlines, vworst) = render_verdicts(&verdicts);
+            worst = worst.max(vworst);
+
+            lines.push_str("Cache\n");
+            lines.push_str(&format!("  [PASS] entries   {total} total\n"));
+            if stale > 0 {
+                lines.push_str(&format!("  [WARN] stale     {stale} stale entries\n"));
+                worst = worst.max(1);
+            } else {
+                lines.push_str("  [PASS] stale     none\n");
+            }
+            lines.push_str(&vlines);
+        }
+        "backoff" => {
+            let entries = payload
+                .get("backoff")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let (vlines, vworst) = render_verdicts(&verdicts);
+            worst = worst.max(vworst);
+
+            lines.push_str("Backoff\n");
+            if entries.is_empty() {
+                lines.push_str("  [PASS] no providers in backoff\n");
+            } else {
+                for entry in &entries {
+                    let provider = entry
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let stage = entry
+                        .get("stage")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let elapsed = entry
+                        .get("elapsed_secs")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let path = entry.get("path").and_then(|v| v.as_str());
+                    let label = match path {
+                        Some(p) => format!("{provider} ({p})"),
+                        None => provider.to_string(),
+                    };
+                    lines.push_str(&format!(
+                        "  [WARN] {label}   stage={stage} elapsed={elapsed}s\n"
+                    ));
+                    worst = worst.max(1);
+                }
+            }
+            lines.push_str(&vlines);
+        }
+        "watches" => {
+            let paths = payload
+                .get("paths")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let (vlines, vworst) = render_verdicts(&verdicts);
+            worst = worst.max(vworst);
+
+            lines.push_str(&format!("Watches ({} paths)\n", paths.len()));
+            if paths.is_empty() {
+                lines.push_str("  [WARN] not watching any paths\n");
+                worst = worst.max(1);
+            } else {
+                for path in &paths {
+                    let p = path.as_str().unwrap_or("?");
+                    lines.push_str(&format!("  [PASS] {p}\n"));
+                }
+            }
+            lines.push_str(&vlines);
+        }
+        "timers" => {
+            let timers = payload
+                .get("timers")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let (vlines, vworst) = render_verdicts(&verdicts);
+            worst = worst.max(vworst);
+
+            lines.push_str(&format!("Timers ({} poll timers)\n", timers.len()));
+            for timer in &timers {
+                let provider = timer
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let interval = timer
+                    .get("interval_secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let last = timer
+                    .get("last_run_secs_ago")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let path = timer.get("path").and_then(|v| v.as_str());
+                let label = match path {
+                    Some(p) => format!("{provider} ({p})"),
+                    None => provider.to_string(),
+                };
+                let overdue = interval > 0 && last > interval * 2;
+                if overdue {
+                    lines.push_str(&format!(
+                        "  [WARN] {label}   interval={interval}s  last={last}s ago  OVERDUE\n"
+                    ));
+                    worst = worst.max(1);
+                } else {
+                    lines.push_str(&format!(
+                        "  [PASS] {label}   interval={interval}s  last={last}s ago\n"
+                    ));
+                }
+            }
+            if timers.is_empty() {
+                lines.push_str("  [INFO] no active poll timers\n");
+            }
+            lines.push_str(&vlines);
+        }
+        "demand" => {
+            let keys = payload
+                .get("demand")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let (vlines, vworst) = render_verdicts(&verdicts);
+            worst = worst.max(vworst);
+
+            lines.push_str(&format!("Demand ({} active keys)\n", keys.len()));
+            for key in &keys {
+                let k = key.get("key").and_then(|v| v.as_str()).unwrap_or("?");
+                let state = key.get("state").and_then(|v| v.as_str()).unwrap_or("?");
+                let queries = key
+                    .get("query_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                lines.push_str(&format!(
+                    "  [INFO] {k}   state={state}  queries={queries}\n"
+                ));
+            }
+            if keys.is_empty() {
+                lines.push_str("  [INFO] no keys currently tracked by demand\n");
+            }
+            lines.push_str(&vlines);
+        }
+        "procs" => {
+            let duration = payload
+                .get("duration_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let samples = payload
+                .get("samples")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let suggestions = payload
+                .get("replacement_suggestions")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let (vlines, vworst) = render_verdicts(&verdicts);
+            worst = worst.max(vworst);
+
+            let total: u64 = samples.iter().map(|s| s.get("count").and_then(|v| v.as_u64()).unwrap_or(0)).sum();
+            lines.push_str(&format!("Procs ({duration}s sample — {total} exec events)\n"));
+
+            for s in &samples {
+                let cmd = s.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+                let count = s.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let category = s.get("category").and_then(|v| v.as_str());
+                let covered = category.map(|cat| {
+                    suggestions.iter().any(|r| {
+                        r.get("command_pattern")
+                            .and_then(|v| v.as_str())
+                            .map(|p| p == cat)
+                            .unwrap_or(false)
+                    })
+                });
+                match covered {
+                    Some(true) => {
+                        lines.push_str(&format!("  [WARN] {cmd:<20} {count:>8}  beachcomber can replace\n"));
                         worst = worst.max(1);
-                    } else {
-                        print_check("pass", "stale", "no stale entries");
+                    }
+                    Some(false) => {
+                        lines.push_str(&format!("  [INFO] {cmd:<20} {count:>8}\n"));
+                    }
+                    None => {
+                        lines.push_str(&format!("  [INFO] {cmd:<20} {count:>8}\n"));
                     }
                 }
-
-                worst
-            } else {
-                print_check("warn", "cache", "no status data");
-                1
             }
+            if !suggestions.is_empty() {
+                lines.push_str(&format!(
+                    "  [WARN] {} command(s) could be replaced by `comb get`\n",
+                    suggestions.len()
+                ));
+                worst = worst.max(1);
+            }
+            lines.push_str(&vlines);
         }
-        Err(e) => {
-            print_check("fail", "cache", &format!("cannot query status: {e}"));
-            2
+        other => {
+            lines.push_str(&format!("Unknown subject: {other}\n"));
+            lines.push_str("  [FAIL] no renderer for this subject\n");
+            worst = 2;
         }
     }
+
+    // Append aggregate summary if there are warnings or failures.
+    let warn_count = verdicts.iter().filter(|v| v.get("level").and_then(|l| l.as_str()) == Some("WARN")).count();
+    let fail_count = verdicts.iter().filter(|v| v.get("level").and_then(|l| l.as_str()) == Some("FAIL")).count();
+    if worst >= 1 {
+        lines.push('\n');
+        match (fail_count, warn_count) {
+            (f, _) if f > 0 => lines.push_str(&format!("({f} failure(s))\n")),
+            (_, w) if w > 0 => lines.push_str(&format!("({w} warning(s))\n")),
+            _ => {}
+        }
+    }
+
+    lines.push('\n');
+    (lines, worst)
 }
 
-fn check_procs(duration: u64) -> u8 {
-    println!("=== Process Snapshot ({duration}s) ===");
-    #[cfg(target_os = "macos")]
-    println!("Capturing process spawns via eslogger...");
-    #[cfg(target_os = "macos")]
-    println!("(requires SIP to be configured for endpoint security)");
-    #[cfg(not(target_os = "macos"))]
-    println!("Capturing process spawns via /proc scanning...");
-    println!();
-
-    match beachcomber::proc_snapshot::capture(duration) {
-        Err(e) => {
-            print_check("fail", "procs", &e);
-            2
-        }
-        Ok(result) => {
-            if result.total == 0 {
-                print_check("warn", "procs", "no process events captured");
-                return 1;
-            }
-
-            println!("Total process spawns: {}", result.total);
-            println!();
-            println!("{:<20} {:>8}  Beachcomber", "Category", "Count");
-            println!("{}", "-".repeat(50));
-
-            // Categorized samples first.
-            for s in &result.samples {
-                if s.category.is_some() {
-                    let covered = result
-                        .replacement_suggestions
-                        .iter()
-                        .any(|r| Some(&r.command_pattern) == s.category.as_ref());
-                    let status = if covered { "replaces" } else { "n/a" };
-                    println!("{:<20} {:>8}  {}", s.command, s.count, status);
-                }
-            }
-
-            // Uncategorized.
-            let uncategorized: Vec<_> = result.samples.iter().filter(|s| s.category.is_none()).collect();
-            if !uncategorized.is_empty() {
-                println!();
-                println!("Other frequent processes:");
-                for s in &uncategorized {
-                    println!("  {:<20} {:>8}", s.command, s.count);
-                }
-            }
-
-            println!();
-            print_check(
-                "pass",
-                "procs",
-                &format!("{} spawns captured in {}s", result.total, result.duration_secs),
-            );
-            0
-        }
+/// Render verdicts array into formatted lines and the worst exit code.
+/// PASS/INFO = 0, WARN = 1, FAIL = 2.
+fn render_verdicts(verdicts: &[serde_json::Value]) -> (String, u8) {
+    let mut out = String::new();
+    let mut worst: u8 = 0;
+    for v in verdicts {
+        let level = v.get("level").and_then(|l| l.as_str()).unwrap_or("INFO");
+        let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        let code = match level {
+            "FAIL" => 2,
+            "WARN" => 1,
+            _ => 0,
+        };
+        worst = worst.max(code);
+        // Only emit verdicts that aren't already captured by the per-subject rendering above.
+        // We include them for completeness but callers may suppress if they prefer.
+        out.push_str(&format!("  [{level}] {msg}\n"));
     }
+    (out, worst)
+}
+
+fn format_uptime(secs: u64) -> String {
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let minutes = secs / 60;
+    if minutes < 60 {
+        let s = secs % 60;
+        return format!("{minutes}m {s}s");
+    }
+    let hours = minutes / 60;
+    let m = minutes % 60;
+    format!("{hours}h {m}m")
 }
 
