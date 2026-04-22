@@ -195,6 +195,65 @@ fn csv_preset_quotes_values_with_commas() {
     );
 }
 
+#[test]
+fn custom_template_renders_per_row() {
+    let rows = sample_rows();
+    let opts = RenderOpts::default();
+    let out = render_preset("{{ provider }}.{{ field }}={{ value }}", &rows, &opts);
+    let lines: Vec<_> = out.lines().collect();
+    assert_eq!(lines.len(), rows.len());
+    assert!(lines.iter().any(|l| l.contains("git.branch=main")));
+    assert!(lines.iter().any(|l| l.contains("hostname.value=me-laptop")));
+}
+
+#[test]
+fn custom_template_supports_truncate_filter() {
+    let rows = vec![CacheRow {
+        provider: "git".into(),
+        path: None,
+        field: "sha".into(),
+        value: serde_json::json!("abcdef1234567890"),
+        age_ms: 14_000,
+        stale: false,
+    }];
+    let out = render_preset("{{ value | truncate(7) }}", &rows, &RenderOpts::default());
+    assert_eq!(out.trim(), "abcdef1...");
+}
+
+#[test]
+fn custom_template_supports_age_human() {
+    let rows = vec![CacheRow {
+        provider: "git".into(),
+        path: None,
+        field: "branch".into(),
+        value: serde_json::json!("main"),
+        age_ms: 3_600_000, // 1 hour
+        stale: false,
+    }];
+    let out = render_preset("{{ age_human }}", &rows, &RenderOpts::default());
+    // Should render as "1h" or similar
+    assert!(!out.trim().is_empty());
+    assert!(out.trim() != "3600000");
+}
+
+#[test]
+fn table_prefix_aligns_columns_and_emits_header() {
+    let rows = sample_rows();
+    let out = render_preset(
+        "table {{ provider }}\t{{ field }}\t{{ value }}",
+        &rows,
+        &RenderOpts::default(),
+    );
+    let lines: Vec<_> = out.lines().collect();
+    // First line should be a header derived from the template variables.
+    let header = lines[0];
+    assert!(header.contains("PROVIDER"));
+    assert!(header.contains("FIELD"));
+    assert!(header.contains("VALUE"));
+    // Subsequent lines contain the values.
+    assert!(lines.iter().any(|l| l.contains("git") && l.contains("main")));
+}
+
 use beachcomber::client::Client;
 use beachcomber::config::Config;
 

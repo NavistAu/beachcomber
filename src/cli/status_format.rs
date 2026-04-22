@@ -1,4 +1,6 @@
 use crate::cache::CacheRow;
+use crate::cli::format::build_env;
+use minijinja;
 
 /// Options controlling how a status preset is rendered.
 #[derive(Debug, Clone)]
@@ -27,7 +29,9 @@ impl Default for RenderOpts {
 /// Dispatch to the appropriate renderer for the given preset name.
 ///
 /// Supported presets: `human`, `json`, `tsv`, `csv`, `table`, `sh`.
-/// Unknown presets fall back to `tsv` (non-interactive safe default).
+/// Any other value is treated as a minijinja template rendered per row.
+/// If the value starts with `table ` (with a space), the remainder is rendered
+/// as a tab-separated template with aligned columns and a derived header row.
 pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> String {
     match preset {
         "json" => render_json(rows),
@@ -40,9 +44,176 @@ pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> Stri
             let color = !opts.no_color && opts.is_tty;
             render_table(rows, color, trunc, true)
         }
-        // Unknown or custom-template presets (T29 handles templates) fall through to tsv.
-        _ => render_tsv(rows),
+        custom => {
+            if let Some(body) = custom.strip_prefix("table ") {
+                render_minijinja_table(body, rows)
+            } else {
+                render_minijinja(custom, rows)
+            }
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Custom minijinja template renderers
+// ---------------------------------------------------------------------------
+
+/// Render each row using a minijinja template. One output line per row.
+pub fn render_minijinja(template: &str, rows: &[CacheRow]) -> String {
+    let env = build_env();
+    let rendered: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            let ctx = row_context(r);
+            env.render_str(template, ctx)
+                .unwrap_or_else(|e| format!("<template error: {e}>"))
+        })
+        .collect();
+    let mut out = rendered.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+/// Render rows using a tab-separated minijinja template, then align columns.
+///
+/// The template body (after stripping the `table ` prefix) is rendered per row.
+/// Column widths are computed across all rendered rows plus the derived header,
+/// and the output is printed as a left-aligned block.
+pub fn render_minijinja_table(body: &str, rows: &[CacheRow]) -> String {
+    let env = build_env();
+
+    // 1. Render each row.
+    let rendered: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            let ctx = row_context(r);
+            env.render_str(body, ctx)
+                .unwrap_or_else(|e| format!("<template error: {e}>"))
+        })
+        .collect();
+
+    // 2. Split each rendered string on '\t' → matrix.
+    let matrix: Vec<Vec<&str>> = rendered.iter().map(|s| s.split('\t').collect()).collect();
+
+    // 3. Derive header from variable names in `body`.
+    let header: Vec<String> = extract_template_header(body);
+
+    // 4. Compute per-column widths.
+    let n_cols = header
+        .len()
+        .max(matrix.iter().map(|r| r.len()).max().unwrap_or(0));
+    let mut widths = vec![0usize; n_cols];
+    for (i, h) in header.iter().enumerate() {
+        widths[i] = widths[i].max(h.len());
+    }
+    for row in &matrix {
+        for (i, cell) in row.iter().enumerate() {
+            if i < n_cols {
+                widths[i] = widths[i].max(cell.len());
+            }
+        }
+    }
+
+    // 5. Render aligned.
+    let mut out = String::new();
+
+    // Header row.
+    for (i, h) in header.iter().enumerate() {
+        if i > 0 {
+            out.push_str("  ");
+        }
+        if i + 1 < header.len() {
+            out.push_str(&format!("{:<width$}", h, width = widths[i]));
+        } else {
+            out.push_str(h);
+        }
+    }
+    out.push('\n');
+
+    // Data rows.
+    for row in &matrix {
+        for (i, cell) in row.iter().enumerate() {
+            if i > 0 {
+                out.push_str("  ");
+            }
+            if i + 1 < row.len() {
+                let w = if i < n_cols { widths[i] } else { 0 };
+                out.push_str(&format!("{:<width$}", cell, width = w));
+            } else {
+                out.push_str(cell);
+            }
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
+/// Build a minijinja context `Value` from a `CacheRow`.
+fn row_context(r: &CacheRow) -> minijinja::Value {
+    let mut ctx = serde_json::Map::new();
+    ctx.insert(
+        "provider".into(),
+        serde_json::Value::String(r.provider.clone()),
+    );
+    ctx.insert(
+        "path".into(),
+        match &r.path {
+            Some(p) => serde_json::Value::String(p.clone()),
+            None => serde_json::Value::Null,
+        },
+    );
+    ctx.insert(
+        "field".into(),
+        serde_json::Value::String(r.field.clone()),
+    );
+    ctx.insert("value".into(), r.value.clone());
+    ctx.insert("age_ms".into(), serde_json::json!(r.age_ms));
+    ctx.insert(
+        "age_human".into(),
+        serde_json::Value::String(format_age(r.age_ms)),
+    );
+    ctx.insert("stale".into(), serde_json::Value::Bool(r.stale));
+    minijinja::Value::from_serialize(serde_json::Value::Object(ctx))
+}
+
+/// Scan `template` for `{{ varname }}` patterns and return uppercased names
+/// in order of first appearance. Only simple top-level variable references
+/// (identifiers immediately after `{{`) are extracted; dotted paths and filter
+/// expressions are ignored.
+fn extract_template_header(template: &str) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    let bytes = template.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i + 1 < len {
+        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
+            i += 2;
+            // Skip whitespace.
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            // Read identifier.
+            let start = i;
+            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let name = &template[start..i];
+            if !name.is_empty() {
+                let upper = name.to_uppercase();
+                if !seen.contains(&upper) {
+                    seen.push(upper);
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    seen
 }
 
 // ---------------------------------------------------------------------------
