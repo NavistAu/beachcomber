@@ -2,6 +2,17 @@
 
 Project-specific instructions for contributors using Claude Code.
 
+## Read first
+
+Before proposing changes or reasoning about behavior, read these. They are the authoritative project state — code alone will mislead you.
+
+- **`docs/roadmap.md`** — what's built, what's deferred, what's broken. Contains the "Known Core Issues" section; check it before claiming anything is working. If behavior seems odd, look here first.
+- **`docs/architecture.md`** — module map, request lifecycle, provider execution lifecycle, concurrency model, key design decisions.
+- **`docs/provider-development.md`** — Provider trait, InvalidationStrategy guide, performance tiers, testing patterns.
+- **`CHANGELOG.md`** — what shipped when, at what version.
+
+If a section of the code looks like a half-wired state machine or a config key that does nothing, check `docs/roadmap.md` → "Known Core Issues" before writing a fix. Some scaffolding is known-aspirational and has a planned rebuild.
+
 ## Basics
 
 - **Project:** beachcomber — a daemon that caches shell environment state
