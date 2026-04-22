@@ -29,18 +29,35 @@ Quick start::
     status = client.status()
 """
 
-from .client import Client, Session
+from .client import Client, Session, WatchStream
 from .exceptions import CombError, DaemonNotRunning, ProtocolError, ServerError
 from .result import CombResult
+from .types import (
+    CacheRow,
+    DaemonHealth,
+    HelloInfo,
+    IntrospectResponse,
+    IntrospectSubject,
+    Verdict,
+    WatchEvent,
+)
 
 __all__ = [
     "Client",
     "Session",
+    "WatchStream",
     "CombResult",
     "CombError",
     "DaemonNotRunning",
     "ProtocolError",
     "ServerError",
+    "CacheRow",
+    "DaemonHealth",
+    "HelloInfo",
+    "IntrospectResponse",
+    "IntrospectSubject",
+    "Verdict",
+    "WatchEvent",
 ]
 
 __version__ = "0.1.0"
