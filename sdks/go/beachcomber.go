@@ -30,6 +30,109 @@ import (
 	"time"
 )
 
+// ---------------------------------------------------------------------------
+// New types
+// ---------------------------------------------------------------------------
+
+// HelloInfo is returned by Hello.
+type HelloInfo struct {
+	ProtocolVersion string
+	DaemonVersion   string
+}
+
+// CacheRow is one row of Status response.
+type CacheRow struct {
+	Provider string
+	Field    string      // empty when not set
+	Path     string      // empty when not set
+	Value    interface{}
+	AgeMs    uint64
+	Stale    bool
+}
+
+// Verdict is one daemon-health assertion.
+type Verdict struct {
+	Level   string
+	Message string
+}
+
+// DaemonHealth is the typed response for Introspect(SubjectDaemon).
+type DaemonHealth struct {
+	PID            int64
+	Version        string
+	UptimeSecs     uint64
+	SocketPath     string
+	ConfigPath     string // empty when null
+	RequestsTotal  uint64
+	InFlight       uint64
+	ActiveWatchers uint64
+	CacheEntries   uint64
+	Verdicts       []Verdict
+}
+
+// IntrospectSubject names an introspect target.
+type IntrospectSubject string
+
+const (
+	SubjectDaemon    IntrospectSubject = "daemon"
+	SubjectProviders IntrospectSubject = "providers"
+	SubjectConfig    IntrospectSubject = "config"
+	SubjectCache     IntrospectSubject = "cache"
+	SubjectBackoff   IntrospectSubject = "backoff"
+	SubjectWatches   IntrospectSubject = "watches"
+	SubjectTimers    IntrospectSubject = "timers"
+	SubjectDemand    IntrospectSubject = "demand"
+	SubjectProcs     IntrospectSubject = "procs"
+)
+
+// IntrospectResponse wraps an Introspect reply. When Subject==Daemon,
+// Daemon is populated; otherwise Other holds the raw JSON value.
+type IntrospectResponse struct {
+	Subject IntrospectSubject
+	Daemon  *DaemonHealth
+	Other   interface{}
+}
+
+// WatchEvent is one event from a watch stream.
+type WatchEvent struct {
+	Data  interface{}
+	AgeMs uint64
+	Stale bool
+}
+
+// WatchStream holds a dedicated connection for watching key changes.
+// Drop it (call Close) to disconnect.
+type WatchStream struct {
+	conn    net.Conn
+	scanner *bufio.Scanner
+}
+
+// NextEvent blocks until the daemon emits the next change. Returns nil, nil on
+// connection close.
+func (w *WatchStream) NextEvent() (*WatchEvent, error) {
+	if !w.scanner.Scan() {
+		if err := w.scanner.Err(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	var resp response
+	if err := json.Unmarshal(w.scanner.Bytes(), &resp); err != nil {
+		return nil, &ProtocolError{msg: "watch event parse: " + err.Error()}
+	}
+	if !resp.OK {
+		return nil, &ServerError{Message: resp.Error}
+	}
+	var data interface{}
+	if len(resp.Data) > 0 && string(resp.Data) != "null" {
+		json.Unmarshal(resp.Data, &data) //nolint:errcheck
+	}
+	return &WatchEvent{Data: data, AgeMs: resp.AgeMs, Stale: resp.Stale}, nil
+}
+
+// Close closes the underlying watch connection.
+func (w *WatchStream) Close() error { return w.conn.Close() }
+
 const defaultTimeout = 100 * time.Millisecond
 
 // ErrDaemonNotRunning is returned when the Unix socket cannot be reached.
@@ -117,6 +220,85 @@ func (c *Client) Session() (*Session, error) {
 		conn:    conn,
 		scanner: bufio.NewScanner(conn),
 	}, nil
+}
+
+// GetWithFlags is like Get but supports force and wait flags.
+func (c *Client) GetWithFlags(key, path string, force, wait bool) (*Result, error) {
+	req := map[string]interface{}{"op": "get", "key": key}
+	if path != "" {
+		req["path"] = path
+	}
+	if force {
+		req["force"] = true
+	}
+	if wait {
+		req["wait"] = true
+	}
+	return c.roundtrip(req)
+}
+
+// Hello returns the daemon's protocol and build versions.
+func (c *Client) Hello() (*HelloInfo, error) {
+	result, err := c.roundtrip(map[string]interface{}{"op": "hello"})
+	if err != nil {
+		return nil, err
+	}
+	return parseHelloFromResult(result)
+}
+
+// Put stores data into a virtual provider. data should be a JSON object.
+// ttl and path are optional; pass "" to omit them.
+func (c *Client) Put(key string, data interface{}, ttl, path string) error {
+	req := map[string]interface{}{"op": "put", "key": key, "data": data}
+	if ttl != "" {
+		req["ttl"] = ttl
+	}
+	if path != "" {
+		req["path"] = path
+	}
+	_, err := c.roundtrip(req)
+	return err
+}
+
+// Introspect runs a diagnostic query. durationSecs is only consulted for
+// SubjectProcs; pass 0 otherwise.
+func (c *Client) Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error) {
+	req := map[string]interface{}{"op": "introspect", "subject": string(subject)}
+	if durationSecs > 0 {
+		req["duration_secs"] = durationSecs
+	}
+	result, err := c.roundtrip(req)
+	if err != nil {
+		return nil, err
+	}
+	return parseIntrospectFromResult(subject, result)
+}
+
+// StatusRows returns the typed cache-row array from Status.
+func (c *Client) StatusRows() ([]CacheRow, error) {
+	result, err := c.Status()
+	if err != nil {
+		return nil, err
+	}
+	return parseCacheRowsFromResult(result)
+}
+
+// Watch subscribes to changes on a key. The returned stream holds a dedicated
+// connection; call Close on it to disconnect.
+func (c *Client) Watch(key, path string) (*WatchStream, error) {
+	conn, err := c.dial()
+	if err != nil {
+		return nil, err
+	}
+	req := map[string]interface{}{"op": "watch", "key": key}
+	if path != "" {
+		req["path"] = path
+	}
+	if err := writeJSON(conn, req); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return &WatchStream{conn: conn, scanner: bufio.NewScanner(conn)}, nil
 }
 
 // roundtrip dials, sends one request, reads one response, and closes.
