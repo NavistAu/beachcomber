@@ -116,6 +116,7 @@ fn parse_put_request() {
             path,
         } => {
             assert_eq!(key, "myapp");
+            let data = data.unwrap();
             assert_eq!(data["status"], "healthy");
             assert_eq!(data["version"], "1.2.3");
             assert!(ttl.is_none());
@@ -137,9 +138,23 @@ fn parse_put_request_with_ttl_and_path() {
             path,
         } => {
             assert_eq!(key, "myapp");
+            let data = data.unwrap();
             assert_eq!(data["count"], 42);
             assert_eq!(ttl.as_deref(), Some("30s"));
             assert_eq!(path.as_deref(), Some("/home/user/project"));
+        }
+        _ => panic!("Expected Put request"),
+    }
+}
+
+#[test]
+fn parse_put_null_request() {
+    let json = r#"{"op":"put","key":"myapp"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Put { key, data, .. } => {
+            assert_eq!(key, "myapp");
+            assert!(data.is_none(), "data should be None for null put");
         }
         _ => panic!("Expected Put request"),
     }

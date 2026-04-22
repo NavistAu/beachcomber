@@ -71,6 +71,24 @@ impl ClientSession {
         self.send_request(&request).await
     }
 
+    /// Clear the cached entry for a virtual provider key without dropping the registry entry.
+    /// A subsequent `put` under the same key still works.
+    pub async fn put_null(
+        &mut self,
+        key: &str,
+        ttl: Option<&str>,
+        path: Option<&str>,
+    ) -> std::io::Result<Response> {
+        let mut request = serde_json::json!({ "op": "put", "key": key });
+        if let Some(t) = ttl {
+            request["ttl"] = serde_json::json!(t);
+        }
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        self.send_request(&request).await
+    }
+
     pub async fn get_text(&mut self, key: &str, path: Option<&str>) -> std::io::Result<String> {
         self.get_formatted(key, path, "text").await
     }
@@ -254,6 +272,24 @@ impl Client {
         path: Option<&str>,
     ) -> std::io::Result<Response> {
         let mut request = serde_json::json!({ "op": "put", "key": key, "data": data });
+        if let Some(t) = ttl {
+            request["ttl"] = serde_json::json!(t);
+        }
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        self.send_request(&request).await
+    }
+
+    /// Clear the cached entry for a virtual provider key without dropping the registry entry.
+    /// A subsequent `put` under the same key still works.
+    pub async fn put_null(
+        &self,
+        key: &str,
+        ttl: Option<&str>,
+        path: Option<&str>,
+    ) -> std::io::Result<Response> {
+        let mut request = serde_json::json!({ "op": "put", "key": key });
         if let Some(t) = ttl {
             request["ttl"] = serde_json::json!(t);
         }

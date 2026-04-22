@@ -213,6 +213,26 @@ impl Client {
         self.send_recv(&mut stream, &request)
     }
 
+    /// Clear the cached entry for a virtual provider key without dropping the registry entry.
+    /// A subsequent `put` under the same key still works.
+    pub fn put_null(&self, key: &str, path: Option<&str>) -> Result<(), CombError> {
+        let socket_path = self.find_or_start_socket()?;
+        let mut stream = self.connect(&socket_path)?;
+
+        let mut request = serde_json::json!({ "op": "put", "key": key });
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        stream.write_all(msg.as_bytes())?;
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        Ok(())
+    }
+
     /// Trigger recomputation of a provider. Fire-and-forget.
     pub fn refresh(&self, key: &str, path: Option<&str>) -> Result<(), CombError> {
         let socket_path = self.find_or_start_socket()?;
@@ -359,6 +379,20 @@ impl Session {
     /// Set connection context so subsequent queries don't need explicit paths.
     pub fn set_context(&mut self, path: &str) -> Result<(), CombError> {
         let request = serde_json::json!({ "op": "context", "path": path });
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        self.reader.get_mut().write_all(msg.as_bytes())?;
+
+        let mut line = String::new();
+        self.reader.read_line(&mut line)?;
+        Ok(())
+    }
+
+    /// Clear the cached entry for a virtual provider key without dropping the registry entry.
+    pub fn put_null(&mut self, key: &str, path: Option<&str>) -> Result<(), CombError> {
+        let mut request = serde_json::json!({ "op": "put", "key": key });
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
         self.reader.get_mut().write_all(msg.as_bytes())?;
 

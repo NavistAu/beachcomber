@@ -35,7 +35,8 @@ pub enum Request {
     Status,
     Put {
         key: String,
-        data: serde_json::Value,
+        #[serde(default)]
+        data: Option<serde_json::Value>,
         #[serde(default)]
         ttl: Option<String>,
         #[serde(default)]

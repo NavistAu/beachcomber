@@ -634,6 +634,33 @@ async fn handle_request(
                 ));
             }
 
+            // data=None means "clear the cache entry" — remove the row but keep the registry.
+            let Some(data) = data else {
+                let effective_path: Option<String> = path.as_deref().map(|p| {
+                    let path_obj = std::path::Path::new(p);
+                    if path_obj.is_relative() {
+                        std::env::current_dir()
+                            .ok()
+                            .and_then(|cwd| cwd.join(path_obj).canonicalize().ok())
+                            .map(|abs| abs.to_string_lossy().to_string())
+                            .unwrap_or_else(|| p.to_string())
+                    } else {
+                        path_obj
+                            .canonicalize()
+                            .map(|abs| abs.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| p.to_string())
+                    }
+                });
+                cache.remove(key, effective_path.as_deref());
+                return Response {
+                    ok: true,
+                    data: None,
+                    age_ms: None,
+                    stale: None,
+                    error: None,
+                };
+            };
+
             // data must be a JSON object; its top-level keys become fields.
             let obj = match data.as_object() {
                 Some(o) => o,

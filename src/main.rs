@@ -64,8 +64,11 @@ enum Commands {
     Put {
         /// Provider name (e.g., "myapp")
         key: String,
-        /// JSON data (e.g., '{"status":"healthy"}')
-        data: String,
+        /// JSON data (e.g., '{"status":"healthy"}'); omit when using --null
+        data: Option<String>,
+        /// Clear the cached entry (removes the cache row; registry entry is kept)
+        #[arg(long)]
+        null: bool,
         /// Expected refresh interval (e.g., "30s", "5m")
         #[arg(long)]
         ttl: Option<String>,
@@ -276,9 +279,10 @@ fn main() -> ExitCode {
         Commands::Put {
             key,
             data,
+            null,
             ttl,
             path,
-        } => run_put(&config, &key, &data, ttl.as_deref(), path.as_deref()),
+        } => run_put(&config, &key, data.as_deref(), null, ttl.as_deref(), path.as_deref()),
         Commands::Watch { key, path, format } => {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
             run_watch(&config, &key, path.as_deref(), output_format)
@@ -870,10 +874,21 @@ fn run_watch(config: &Config, key: &str, path: Option<&str>, format: OutputForma
 fn run_put(
     config: &Config,
     key: &str,
-    data_str: &str,
+    data_str: Option<&str>,
+    null: bool,
     ttl: Option<&str>,
     path: Option<&str>,
 ) -> ExitCode {
+    // Validate argument combinations.
+    if null && data_str.is_some() {
+        eprintln!("cannot combine --null with a data argument");
+        return ExitCode::from(2);
+    }
+    if !null && data_str.is_none() {
+        eprintln!("put requires either a data argument or --null");
+        return ExitCode::from(2);
+    }
+
     let socket_path = config.resolve_socket_path();
 
     if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
@@ -881,34 +896,53 @@ fn run_put(
         return ExitCode::from(2);
     }
 
-    let data: serde_json::Value = match serde_json::from_str(data_str) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Invalid JSON: {e}");
-            return ExitCode::from(2);
-        }
-    };
-
-    if !data.is_object() {
-        eprintln!("Put data must be a JSON object");
-        return ExitCode::from(2);
-    }
-
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
         let client = beachcomber::client::Client::new(socket_path);
-        match client.put(key, data, ttl, path).await {
-            Ok(response) => {
-                if response.ok {
-                    ExitCode::SUCCESS
-                } else {
-                    eprintln!("Error: {}", response.error.unwrap_or_default());
+
+        if null {
+            match client.put_null(key, ttl, path).await {
+                Ok(response) => {
+                    if response.ok {
+                        ExitCode::SUCCESS
+                    } else {
+                        eprintln!("Error: {}", response.error.unwrap_or_default());
+                        ExitCode::from(2)
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
                     ExitCode::from(2)
                 }
             }
-            Err(e) => {
-                eprintln!("Error: {e}");
-                ExitCode::from(2)
+        } else {
+            let data_str = data_str.unwrap();
+            let data: serde_json::Value = match serde_json::from_str(data_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("Invalid JSON: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+
+            if !data.is_object() {
+                eprintln!("put data must be a JSON object");
+                return ExitCode::from(2);
+            }
+
+            match client.put(key, data, ttl, path).await {
+                Ok(response) => {
+                    if response.ok {
+                        ExitCode::SUCCESS
+                    } else {
+                        eprintln!("Error: {}", response.error.unwrap_or_default());
+                        ExitCode::from(2)
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    ExitCode::from(2)
+                }
             }
         }
     })
