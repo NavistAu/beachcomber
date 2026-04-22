@@ -46,7 +46,7 @@ fn status_returns_typed_cache_rows() {
     let _ = rows.iter().filter(|r| r.stale || !r.stale).count();
 }
 
-use libbeachcomber::CombResult;
+use libbeachcomber::{CombResult, IntrospectResponse, IntrospectSubject};
 
 #[test]
 fn put_with_data_then_get_round_trips() {
@@ -67,5 +67,34 @@ fn put_with_data_then_get_round_trips() {
             assert_eq!(data.as_text().as_deref(), Some("purple"));
         }
         CombResult::Miss => panic!("put followed by get should not miss"),
+    }
+}
+
+#[test]
+fn introspect_daemon_returns_typed_health() {
+    let (_tmp, sock) = spawn_daemon();
+    let client = client_for(&sock);
+    let resp = client
+        .introspect(IntrospectSubject::Daemon, None)
+        .expect("introspect");
+    match resp {
+        IntrospectResponse::Daemon(health) => {
+            assert!(health.pid > 0, "pid must be positive, got {}", health.pid);
+            assert!(!health.version.is_empty());
+        }
+        IntrospectResponse::Other(_) => panic!("daemon subject must return Daemon variant"),
+    }
+}
+
+#[test]
+fn introspect_providers_returns_other_variant() {
+    let (_tmp, sock) = spawn_daemon();
+    let client = client_for(&sock);
+    let resp = client
+        .introspect(IntrospectSubject::Providers, None)
+        .expect("introspect providers");
+    match resp {
+        IntrospectResponse::Other(_) => {}
+        IntrospectResponse::Daemon(_) => panic!("providers must return Other variant"),
     }
 }

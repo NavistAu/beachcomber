@@ -145,6 +145,65 @@ impl CacheRow {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Verdict {
+    pub level: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DaemonHealth {
+    pub pid: i64,
+    pub version: String,
+    pub uptime_secs: u64,
+    pub socket_path: String,
+    pub config_path: Option<String>,
+    pub requests_total: u64,
+    pub in_flight: u64,
+    pub active_watchers: u64,
+    pub cache_entries: u64,
+    pub verdicts: Vec<Verdict>,
+}
+
+/// Introspect subjects. See `docs/protocol-spec.md` for shape details.
+#[derive(Debug, Clone, Copy)]
+pub enum IntrospectSubject {
+    Daemon,
+    Providers,
+    Config,
+    Cache,
+    Backoff,
+    Watches,
+    Timers,
+    Demand,
+    Procs,
+}
+
+impl IntrospectSubject {
+    fn wire_name(&self) -> &'static str {
+        match self {
+            Self::Daemon => "daemon",
+            Self::Providers => "providers",
+            Self::Config => "config",
+            Self::Cache => "cache",
+            Self::Backoff => "backoff",
+            Self::Watches => "watches",
+            Self::Timers => "timers",
+            Self::Demand => "demand",
+            Self::Procs => "procs",
+        }
+    }
+}
+
+/// Introspect response. Daemon subject is typed as DaemonHealth;
+/// other subjects are returned as raw JSON pending per-subject typing
+/// in later phases.
+#[derive(Debug, Clone)]
+pub enum IntrospectResponse {
+    Daemon(DaemonHealth),
+    Other(serde_json::Value),
+}
+
 /// Error type for client operations.
 #[derive(Debug)]
 pub enum CombError {
@@ -366,6 +425,30 @@ impl Client {
         let mut line = String::new();
         reader.read_line(&mut line)?;
         parse_cache_rows(&line)
+    }
+
+    /// Run an introspect query. `duration_secs` is only consulted by the
+    /// `procs` subject; ignored by others.
+    pub fn introspect(
+        &self,
+        subject: IntrospectSubject,
+        duration_secs: Option<u64>,
+    ) -> Result<IntrospectResponse, CombError> {
+        let socket_path = self.find_or_start_socket()?;
+        let mut stream = self.connect(&socket_path)?;
+        let mut request = serde_json::json!({
+            "op": "introspect",
+            "subject": subject.wire_name(),
+        });
+        if let Some(d) = duration_secs {
+            request["duration_secs"] = serde_json::json!(d);
+        }
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        stream.write_all(msg.as_bytes())?;
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        parse_introspect(subject, &line)
     }
 
     /// Ask the daemon for its protocol and build versions.
@@ -597,6 +680,25 @@ impl Session {
         parse_cache_rows(&line)
     }
 
+    pub fn introspect(
+        &mut self,
+        subject: IntrospectSubject,
+        duration_secs: Option<u64>,
+    ) -> Result<IntrospectResponse, CombError> {
+        let mut request = serde_json::json!({
+            "op": "introspect",
+            "subject": subject.wire_name(),
+        });
+        if let Some(d) = duration_secs {
+            request["duration_secs"] = serde_json::json!(d);
+        }
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        self.reader.get_mut().write_all(msg.as_bytes())?;
+        let mut line = String::new();
+        self.reader.read_line(&mut line)?;
+        parse_introspect(subject, &line)
+    }
+
     /// Ask the daemon for its protocol and build versions.
     pub fn hello(&mut self) -> Result<HelloInfo, CombError> {
         let request = serde_json::json!({ "op": "hello" });
@@ -694,6 +796,91 @@ fn parse_hello_response(line: &str) -> Result<HelloInfo, CombError> {
         protocol_version,
         daemon_version,
     })
+}
+
+fn parse_daemon_health(data: &serde_json::Value) -> Result<DaemonHealth, CombError> {
+    let pid = data
+        .get("pid")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| CombError::ParseError("daemon health missing pid".into()))?;
+    let version = data
+        .get("version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| CombError::ParseError("daemon health missing version".into()))?
+        .to_string();
+    let uptime_secs = data
+        .get("uptime_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let socket_path = data
+        .get("socket_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let config_path = data
+        .get("config_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let requests_total = data
+        .get("requests_total")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let in_flight = data.get("in_flight").and_then(|v| v.as_u64()).unwrap_or(0);
+    let active_watchers = data
+        .get("active_watchers")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cache_entries = data
+        .get("cache_entries")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let verdicts = data
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| {
+                    let level = v.get("level")?.as_str()?.to_string();
+                    let message = v.get("message")?.as_str()?.to_string();
+                    Some(Verdict { level, message })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(DaemonHealth {
+        pid,
+        version,
+        uptime_secs,
+        socket_path,
+        config_path,
+        requests_total,
+        in_flight,
+        active_watchers,
+        cache_entries,
+        verdicts,
+    })
+}
+
+fn parse_introspect(
+    subject: IntrospectSubject,
+    line: &str,
+) -> Result<IntrospectResponse, CombError> {
+    let resp: serde_json::Value =
+        serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !ok {
+        let error = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error")
+            .to_string();
+        return Err(CombError::ServerError(error));
+    }
+    let data = resp.get("data").cloned().unwrap_or(serde_json::Value::Null);
+    match subject {
+        IntrospectSubject::Daemon => Ok(IntrospectResponse::Daemon(parse_daemon_health(&data)?)),
+        _ => Ok(IntrospectResponse::Other(data)),
+    }
 }
 
 /// Find the beachcomber socket path.
