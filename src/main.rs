@@ -1,3 +1,4 @@
+use beachcomber::cli::format::render_fmt_template_json;
 use beachcomber::config::Config;
 use beachcomber::pid_check::pid_is_our_daemon;
 use clap::{Parser, Subcommand};
@@ -263,27 +264,6 @@ fn format_sv(data: &serde_json::Value, sep: &str, with_header: bool) -> String {
 }
 
 /// Format response data using a template string with {field_name} placeholders.
-fn format_template(data: &serde_json::Value, template: &str) -> String {
-    let mut result = template.to_string();
-
-    // Replace escaped braces first (use temporary placeholders).
-    result = result.replace("{{", "\x00LBRACE\x00");
-    result = result.replace("}}", "\x00RBRACE\x00");
-
-    if let serde_json::Value::Object(map) = data {
-        for (key, val) in map {
-            let placeholder = format!("{{{key}}}");
-            result = result.replace(&placeholder, &value_to_string(val));
-        }
-    }
-
-    // Restore escaped braces.
-    result = result.replace("\x00LBRACE\x00", "{");
-    result = result.replace("\x00RBRACE\x00", "}");
-
-    result
-}
-
 fn main() -> ExitCode {
     let (args, fmt_template) = preprocess_args();
     let cli = Cli::parse_from(args);
@@ -551,7 +531,13 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: OutputFormat)
                                 print!("{}", format_sv(data, "\t", true));
                             }
                             OutputFormat::Fmt(template) => {
-                                print!("{}", format_template(data, template));
+                                match render_fmt_template_json(template, data) {
+                                    Ok(rendered) => print!("{}", rendered),
+                                    Err(e) => {
+                                        eprintln!("Template error: {e}");
+                                        return ExitCode::from(2);
+                                    }
+                                }
                             }
                             _ => unreachable!(),
                         }
@@ -723,7 +709,13 @@ fn run_watch(config: &Config, key: &str, path: Option<&str>, format: OutputForma
                                     println!("{}", format_sv(data, "\t", true));
                                 }
                                 OutputFormat::Fmt(template) => {
-                                    println!("{}", format_template(data, template));
+                                    match render_fmt_template_json(template, data) {
+                                        Ok(rendered) => println!("{}", rendered),
+                                        Err(e) => {
+                                            eprintln!("Template error: {e}");
+                                            return ExitCode::from(2);
+                                        }
+                                    }
                                 }
                                 _ => unreachable!(),
                             }
@@ -1029,10 +1021,13 @@ fn run_fetch(
                         }
                     }
                 }
-                print!(
-                    "{}",
-                    format_template(&serde_json::Value::Object(merged), template)
-                );
+                match render_fmt_template_json(template, &serde_json::Value::Object(merged)) {
+                    Ok(rendered) => print!("{}", rendered),
+                    Err(e) => {
+                        eprintln!("Template error: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
             }
             // Text and Sh are handled via server-side formatting above.
             OutputFormat::Text | OutputFormat::Sh => unreachable!(),
