@@ -120,6 +120,109 @@ type response struct {
 	Error string          `json:"error"`
 }
 
+// ---------------------------------------------------------------------------
+// Parse helpers for typed responses
+// ---------------------------------------------------------------------------
+
+func parseHelloFromResult(r *Result) (*HelloInfo, error) {
+	m, ok := r.Data.(map[string]interface{})
+	if !ok {
+		return nil, &ProtocolError{msg: "hello data is not an object"}
+	}
+	pv, _ := m["protocol_version"].(string)
+	dv, _ := m["daemon_version"].(string)
+	if pv == "" || dv == "" {
+		return nil, &ProtocolError{msg: "hello response missing versions"}
+	}
+	return &HelloInfo{ProtocolVersion: pv, DaemonVersion: dv}, nil
+}
+
+func parseCacheRowsFromResult(r *Result) ([]CacheRow, error) {
+	arr, ok := r.Data.([]interface{})
+	if !ok {
+		return nil, &ProtocolError{msg: "status data is not an array"}
+	}
+	rows := make([]CacheRow, 0, len(arr))
+	for _, v := range arr {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		row := CacheRow{}
+		if s, ok := m["provider"].(string); ok {
+			row.Provider = s
+		}
+		if s, ok := m["field"].(string); ok {
+			row.Field = s
+		}
+		if s, ok := m["path"].(string); ok {
+			row.Path = s
+		}
+		row.Value = m["value"]
+		if f, ok := m["age_ms"].(float64); ok {
+			row.AgeMs = uint64(f)
+		}
+		if b, ok := m["stale"].(bool); ok {
+			row.Stale = b
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func parseIntrospectFromResult(subject IntrospectSubject, r *Result) (*IntrospectResponse, error) {
+	resp := &IntrospectResponse{Subject: subject}
+	if subject == SubjectDaemon {
+		m, ok := r.Data.(map[string]interface{})
+		if !ok {
+			return nil, &ProtocolError{msg: "daemon introspect data is not an object"}
+		}
+		h := &DaemonHealth{}
+		if f, ok := m["pid"].(float64); ok {
+			h.PID = int64(f)
+		}
+		if s, ok := m["version"].(string); ok {
+			h.Version = s
+		}
+		if f, ok := m["uptime_secs"].(float64); ok {
+			h.UptimeSecs = uint64(f)
+		}
+		if s, ok := m["socket_path"].(string); ok {
+			h.SocketPath = s
+		}
+		if s, ok := m["config_path"].(string); ok {
+			h.ConfigPath = s
+		}
+		if f, ok := m["requests_total"].(float64); ok {
+			h.RequestsTotal = uint64(f)
+		}
+		if f, ok := m["in_flight"].(float64); ok {
+			h.InFlight = uint64(f)
+		}
+		if f, ok := m["active_watchers"].(float64); ok {
+			h.ActiveWatchers = uint64(f)
+		}
+		if f, ok := m["cache_entries"].(float64); ok {
+			h.CacheEntries = uint64(f)
+		}
+		if arr, ok := m["verdicts"].([]interface{}); ok {
+			for _, v := range arr {
+				vm, ok := v.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				lv, _ := vm["level"].(string)
+				mv, _ := vm["message"].(string)
+				h.Verdicts = append(h.Verdicts, Verdict{Level: lv, Message: mv})
+			}
+		}
+		resp.Daemon = h
+		return resp, nil
+	}
+	resp.Other = r.Data
+	return resp, nil
+}
+
 func parseResponse(raw []byte) (*Result, error) {
 	var resp response
 	if err := json.Unmarshal(raw, &resp); err != nil {

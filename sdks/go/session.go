@@ -46,6 +46,67 @@ func (s *Session) SetContext(path string) error {
 	return err
 }
 
+// GetWithFlags is like Get but supports force and wait flags.
+func (s *Session) GetWithFlags(key, path string, force, wait bool) (*Result, error) {
+	req := map[string]interface{}{"op": "get", "key": key}
+	if path != "" {
+		req["path"] = path
+	}
+	if force {
+		req["force"] = true
+	}
+	if wait {
+		req["wait"] = true
+	}
+	return s.roundtrip(req)
+}
+
+// Hello returns the daemon's protocol and build versions.
+func (s *Session) Hello() (*HelloInfo, error) {
+	result, err := s.roundtrip(map[string]interface{}{"op": "hello"})
+	if err != nil {
+		return nil, err
+	}
+	return parseHelloFromResult(result)
+}
+
+// Put stores data into a virtual provider. data should be a JSON object.
+// ttl and path are optional; pass "" to omit them.
+func (s *Session) Put(key string, data interface{}, ttl, path string) error {
+	req := map[string]interface{}{"op": "put", "key": key, "data": data}
+	if ttl != "" {
+		req["ttl"] = ttl
+	}
+	if path != "" {
+		req["path"] = path
+	}
+	_, err := s.roundtrip(req)
+	return err
+}
+
+// Introspect runs a diagnostic query. durationSecs is only consulted for
+// SubjectProcs; pass 0 otherwise.
+func (s *Session) Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error) {
+	req := map[string]interface{}{"op": "introspect", "subject": string(subject)}
+	if durationSecs > 0 {
+		req["duration_secs"] = durationSecs
+	}
+	result, err := s.roundtrip(req)
+	if err != nil {
+		return nil, err
+	}
+	return parseIntrospectFromResult(subject, result)
+}
+
+// StatusRows returns the typed cache-row array from Status.
+func (s *Session) StatusRows() ([]CacheRow, error) {
+	result, err := s.roundtrip(map[string]interface{}{"op": "status"})
+	if err != nil {
+		return nil, err
+	}
+	return parseCacheRowsFromResult(result)
+}
+
 // Close closes the underlying connection.
 func (s *Session) Close() error {
 	return s.conn.Close()
