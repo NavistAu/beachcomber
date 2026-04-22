@@ -7,8 +7,9 @@ Thanks for your interest in contributing! beachcomber is a Rust project that ben
 ```sh
 git clone https://github.com/OWNER/beachcomber.git
 cd beachcomber
+mise install         # installs Rust + cargo-nextest
 cargo build
-cargo nextest run    # or: cargo test (no timeout safety net)
+cargo nextest run    # or: cargo test (aliased to nextest via .cargo/config.toml)
 ```
 
 The binary is `comb` (not `beachcomber`):
@@ -31,9 +32,9 @@ cargo nextest run                                                              #
 cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'   # skip env-sensitive tests
 ```
 
-`cargo-nextest` is the blessed test runner. Install once with `cargo install cargo-nextest --locked`. Config at `.config/nextest.toml` enforces a 2-minute global wall-clock cap on the suite plus a 15s-warn / 30s-kill cap per test — a hung test terminates the run with a failure instead of blocking forever.
+`cargo-nextest` is the blessed test runner. It is declared in `mise.toml`, so `mise install` provides it automatically. Config at `.config/nextest.toml` enforces a 2-minute global wall-clock cap on the suite plus a 15s-warn / 30s-kill cap per test — a hung test terminates the run with a failure instead of blocking forever.
 
-Plain `cargo test -- --skip watcher_ --skip uptime_provider_executes` still works; it just lacks the kill-on-hang safety.
+`.cargo/config.toml` aliases `cargo test` to `cargo nextest run`, so both invocations go through nextest and get the kill-on-hang safety.
 
 Some tests require filesystem watching (FSEvents) and may not work inside sandboxed environments. These are the `watcher_*` tests and the `uptime_provider_executes` test; skip them as shown.
 

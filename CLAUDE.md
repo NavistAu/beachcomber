@@ -15,19 +15,19 @@ Project-specific instructions for contributors using Claude Code.
 ```sh
 cargo build              # debug build
 cargo nextest run        # run tests (preferred — has a 2-minute global kill)
-cargo test               # still works; no timeout safety net
+cargo test               # aliased to `cargo nextest run` via .cargo/config.toml
 cargo bench              # criterion benchmarks (cache, protocol, providers, socket, throughput)
 cargo clippy -- -D warnings
 cargo fmt -- --check
 ```
 
-**Test runner:** `cargo-nextest` is the blessed runner. Install with `cargo install cargo-nextest --locked` (one time). Configuration lives in `.config/nextest.toml`: a 2-minute global wall-clock cap on the suite and a 15s-warn / 30s-kill cap per test. Plain `cargo test` still executes every test — it just lacks the kill-on-hang safety.
+**Test runner:** `cargo-nextest` is the blessed runner. `.cargo/config.toml` aliases `cargo test` to `cargo nextest run`, so muscle-memory invocations get the same 2-minute global wall-clock cap and 30s per-test kill from `.config/nextest.toml`. Run `mise install` to get `cargo-nextest` alongside Rust — it is declared in `mise.toml`.
 
 Tests that require FSEvents or are environment-sensitive:
 - `watcher_*` tests — need real filesystem watching
 - `uptime_provider_executes` — needs unsandboxed environment
 
-CI skips these. With nextest: `cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'`. With cargo test: `cargo test -- --skip watcher_ --skip uptime_provider_executes`.
+CI skips these with: `cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'`.
 
 ## Architecture
 
