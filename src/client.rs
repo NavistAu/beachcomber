@@ -30,6 +30,13 @@ impl ClientSession {
         self.send_request(&request).await
     }
 
+    /// Ask the daemon for its protocol and build versions. Clients should
+    /// call this on connection establishment to verify compatibility.
+    pub async fn hello(&mut self) -> std::io::Result<Response> {
+        let request = serde_json::json!({ "op": "hello" });
+        self.send_request(&request).await
+    }
+
     pub async fn get(&mut self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
         self.get_with_flags(key, path, false, false).await
     }
@@ -327,6 +334,14 @@ impl Client {
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
         }
+        self.send_request(&request).await
+    }
+
+    /// Ask the daemon for its protocol and build versions. Opens a new
+    /// one-shot connection. Use `ClientSession::hello` instead if you
+    /// already hold a persistent session.
+    pub async fn hello(&self) -> std::io::Result<Response> {
+        let request = serde_json::json!({ "op": "hello" });
         self.send_request(&request).await
     }
 
