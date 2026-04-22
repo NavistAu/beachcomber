@@ -1,0 +1,9 @@
+{
+  "name": "get_unknown_provider_returns_error",
+  "description": "Unknown provider name produces an error response.",
+  "test": { "op": "get", "args": { "key": "definitely_nonexistent.field" } },
+  "expect": {
+    "status": "error",
+    "error_contains": "unknown provider"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "put_object_data_succeeds",
+  "description": "Put with an object data payload succeeds.",
+  "test": {
+    "op": "put",
+    "args": { "key": "fixture_p", "data": { "color": "blue", "n": 42 } }
+  },
+  "expect": { "status": "ok" }
+}

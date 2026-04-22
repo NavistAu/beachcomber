@@ -1,0 +1,6 @@
+{
+  "name": "context_set_returns_ok",
+  "description": "Setting a connection context succeeds.",
+  "test": { "op": "context", "args": { "path": "/tmp" } },
+  "expect": { "status": "ok" }
+}

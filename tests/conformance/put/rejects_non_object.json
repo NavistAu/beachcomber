@@ -1,0 +1,12 @@
+{
+  "name": "put_non_object_data_rejected",
+  "description": "Put with a scalar data field returns an error.",
+  "test": {
+    "op": "put",
+    "args": { "key": "fixture_pe", "data": "not-an-object" }
+  },
+  "expect": {
+    "status": "error",
+    "error_contains": "must be a JSON object"
+  }
+}
