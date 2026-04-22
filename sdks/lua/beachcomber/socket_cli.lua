@@ -29,6 +29,14 @@ local function find_comb()
   return nil
 end
 
+--- Shell-escape a string for safe use in a command.
+-- @param s string
+-- @return string
+local function shell_escape(s)
+  if not s then return "''" end
+  return "'" .. s:gsub("'", "'\\''") .. "'"
+end
+
 --- Create a CLI-based handle.
 -- The socket_path argument is accepted for interface compatibility but
 -- is not used — the comb binary handles socket discovery itself.
@@ -90,21 +98,34 @@ function M.connect(socket_path)
       local output = pipe:read("*a")
       local success = pipe:close()
       if not output or output == "" then
-        -- Exit code 1 = cache miss
-        return json.encode({ ok = true })
+        -- Empty output with a successful exit = cache miss.
+        -- Empty output with a failing exit = command-level failure; propagate.
+        if success then
+          return json.encode({ ok = true })
+        end
+        return json.encode({ ok = false, error = "comb get failed" })
       end
       -- The CLI outputs pretty-printed JSON; return it as-is (it's valid JSON)
       -- But we need a single line, so strip newlines
       return output:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
 
     elseif op == "refresh" then
-      local cmd = comb_bin .. " refresh " .. shell_escape(req.key)
+      -- The `comb refresh` subcommand was removed; use `comb get --force` to
+      -- trigger a fresh provider execution with equivalent semantics.
+      local cmd = comb_bin .. " get --force " .. shell_escape(req.key)
       if req.path then
         cmd = cmd .. " " .. shell_escape(req.path)
       end
-      cmd = cmd .. " 2>/dev/null"
+      cmd = cmd .. " >/dev/null 2>&1"
       local pipe = io.popen(cmd, "r")
-      if pipe then pipe:close() end
+      if not pipe then
+        return json.encode({ ok = false, error = "failed to run comb" })
+      end
+      pipe:read("*a")
+      local success = pipe:close()
+      if not success then
+        return json.encode({ ok = false, error = "comb get --force failed" })
+      end
       return json.encode({ ok = true })
 
     elseif op == "status" then
@@ -134,14 +155,6 @@ function M.connect(socket_path)
   end
 
   return handle
-end
-
---- Shell-escape a string for safe use in a command.
--- @param s string
--- @return string
-function shell_escape(s)
-  if not s then return "''" end
-  return "'" .. s:gsub("'", "'\\''") .. "'"
 end
 
 return M
