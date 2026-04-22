@@ -5,10 +5,11 @@ use beachcomber::provider::script::ScriptProvider;
 use beachcomber::provider::{Provider, Value};
 
 fn base_cfg(cmd: &str, output: &str) -> ScriptProviderConfig {
-    let mut cfg = ScriptProviderConfig::default();
-    cfg.command = cmd.to_string();
-    cfg.output = Some(output.to_string());
-    cfg
+    ScriptProviderConfig {
+        command: cmd.to_string(),
+        output: Some(output.to_string()),
+        ..Default::default()
+    }
 }
 
 #[test]
