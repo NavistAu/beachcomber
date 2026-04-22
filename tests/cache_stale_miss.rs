@@ -1,31 +1,5 @@
 use beachcomber::cache::Cache;
-use beachcomber::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult,
-    Value, expected_interval_secs,
-};
-
-struct FakeProvider;
-impl Provider for FakeProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "fake".into(),
-            fields: vec![FieldSchema {
-                name: "x".into(),
-                field_type: FieldType::String,
-            }],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 7,
-                floor_secs: 1,
-            },
-            global: true,
-        }
-    }
-    fn execute(&self, _: Option<&str>) -> Option<ProviderResult> {
-        let mut r = ProviderResult::new();
-        r.insert("x", Value::String("hello".into()));
-        Some(r)
-    }
-}
+use beachcomber::provider::{InvalidationStrategy, ProviderResult, Value, expected_interval_secs};
 
 #[test]
 fn expected_interval_secs_maps_all_strategies() {

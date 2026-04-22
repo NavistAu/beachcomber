@@ -286,7 +286,7 @@ fn filter_by_path_glob() {
     let out = apply_filters(rows, &["path=/home/*".to_string()]).unwrap();
     assert!(out
         .iter()
-        .all(|r| r.path.as_deref().map_or(false, |p: &str| p.starts_with("/home/"))));
+        .all(|r| r.path.as_deref().is_some_and(|p: &str| p.starts_with("/home/"))));
 }
 
 #[test]
