@@ -173,7 +173,7 @@ pub struct CacheEntryInfo {
 }
 
 /// One row in the `Request::Status` tabular response — one per (provider, path, field).
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CacheRow {
     pub provider: String,
     pub path: Option<String>,

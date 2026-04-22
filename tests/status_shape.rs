@@ -1,6 +1,199 @@
 // Integration test for the reshaped Request::Status response.
 // Status now returns an array of rows, one per (provider, path, field) tuple,
 // describing everything currently warm in the cache.
+//
+// Also contains unit tests for the status_format preset renderers (T28).
+
+use beachcomber::cache::CacheRow;
+use beachcomber::cli::status_format::{RenderOpts, render_preset};
+
+fn sample_rows() -> Vec<CacheRow> {
+    vec![
+        CacheRow {
+            provider: "git".into(),
+            path: Some("/home/me/ws/foo".into()),
+            field: "branch".into(),
+            value: serde_json::json!("main"),
+            age_ms: 14_000,
+            stale: false,
+        },
+        CacheRow {
+            provider: "git".into(),
+            path: Some("/home/me/ws/foo".into()),
+            field: "dirty".into(),
+            value: serde_json::json!(false),
+            age_ms: 14_000,
+            stale: false,
+        },
+        CacheRow {
+            provider: "hostname".into(),
+            path: None,
+            field: "value".into(),
+            value: serde_json::json!("me-laptop"),
+            age_ms: 52_000,
+            stale: false,
+        },
+    ]
+}
+
+#[test]
+fn json_preset_emits_ndjson() {
+    let out = render_preset("json", &sample_rows(), &RenderOpts::default());
+    for line in out.lines().filter(|l| !l.is_empty()) {
+        serde_json::from_str::<serde_json::Value>(line).expect("valid JSON per line");
+    }
+    assert!(out.lines().filter(|l| !l.is_empty()).count() >= 3);
+}
+
+#[test]
+fn tsv_preset_is_tab_separated_no_header() {
+    let out = render_preset("tsv", &sample_rows(), &RenderOpts::default());
+    let lines: Vec<_> = out.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 3, "tsv should have exactly one line per row, no header");
+    for line in lines {
+        // PROVIDER<TAB>PATH<TAB>FIELD<TAB>VALUE<TAB>AGE<TAB>STALE — 6 cols, 5 tabs
+        assert_eq!(
+            line.matches('\t').count(),
+            5,
+            "expected 5 tabs per tsv row, got: {line:?}"
+        );
+    }
+}
+
+#[test]
+fn csv_preset_has_header_and_quotes_values() {
+    let out = render_preset("csv", &sample_rows(), &RenderOpts::default());
+    let lines: Vec<_> = out.lines().collect();
+    assert!(
+        lines[0].contains("PROVIDER") && lines[0].contains("FIELD"),
+        "first line should be a header: {:?}",
+        lines[0]
+    );
+    // 3 data rows + 1 header = 4 non-empty lines.
+    let non_empty: Vec<_> = lines.iter().filter(|l| !l.is_empty()).collect();
+    assert_eq!(non_empty.len(), 4, "csv should have header + 3 data rows");
+}
+
+#[test]
+fn table_preset_has_header_no_color_no_trunc() {
+    let out = render_preset("table", &sample_rows(), &RenderOpts::default());
+    let first = out.lines().next().expect("table output should not be empty");
+    assert!(
+        first.contains("PROVIDER"),
+        "first line of table should be the header: {first:?}"
+    );
+    // table preset must never emit ANSI escape codes.
+    assert!(!out.contains('\x1b'), "table preset must not emit ANSI color codes");
+}
+
+#[test]
+fn sh_preset_emits_sourceable_assignments() {
+    let out = render_preset("sh", &sample_rows(), &RenderOpts::default());
+    // Path /home/me/ws/foo → home_me_ws_foo; key = git_home_me_ws_foo_branch
+    assert!(
+        out.contains("git_home_me_ws_foo_branch="),
+        "expected git_home_me_ws_foo_branch= in sh output:\n{out}"
+    );
+    assert!(
+        out.contains("hostname_value="),
+        "expected hostname_value= in sh output:\n{out}"
+    );
+    // Values must be shell-quoted (single-quoted).
+    assert!(
+        out.contains("='main'") || out.contains("=main"),
+        "branch value should be shell-quoted: {out}"
+    );
+}
+
+#[test]
+fn human_preset_truncates_long_values_to_default_40() {
+    let mut rows = sample_rows();
+    rows.push(CacheRow {
+        provider: "git".into(),
+        path: Some("/home/me/ws/foo".into()),
+        field: "commit_summary".into(),
+        value: serde_json::json!("a".repeat(100)),
+        age_ms: 14_000,
+        stale: false,
+    });
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: true,
+        ..Default::default()
+    };
+    let out = render_preset("human", &rows, &opts);
+    // Output should contain truncated version, not the full 100 'a's.
+    assert!(
+        !out.contains(&"a".repeat(100)),
+        "human preset should truncate 100-char value to 40 chars"
+    );
+    // Should still contain the truncated prefix.
+    assert!(
+        out.contains(&"a".repeat(37)),
+        "human preset should preserve at least 37 chars before ellipsis"
+    );
+}
+
+#[test]
+fn human_preset_color_on_stale_rows() {
+    let rows = vec![CacheRow {
+        provider: "git".into(),
+        path: None,
+        field: "branch".into(),
+        value: serde_json::json!("main"),
+        age_ms: 9999,
+        stale: true,
+    }];
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: false,
+        max_width: Some(40),
+        no_trunc: false,
+    };
+    let out = render_preset("human", &rows, &opts);
+    assert!(
+        out.contains('\x1b'),
+        "human preset with is_tty=true and stale row should emit ANSI codes"
+    );
+}
+
+#[test]
+fn json_preset_path_none_serializes_as_null() {
+    let rows = vec![CacheRow {
+        provider: "hostname".into(),
+        path: None,
+        field: "value".into(),
+        value: serde_json::json!("myhost"),
+        age_ms: 1000,
+        stale: false,
+    }];
+    let out = render_preset("json", &rows, &RenderOpts::default());
+    let parsed: serde_json::Value =
+        serde_json::from_str(out.trim()).expect("valid JSON line");
+    assert!(
+        parsed["path"].is_null(),
+        "path=None should serialize as JSON null, got: {:?}",
+        parsed["path"]
+    );
+}
+
+#[test]
+fn csv_preset_quotes_values_with_commas() {
+    let rows = vec![CacheRow {
+        provider: "test".into(),
+        path: None,
+        field: "tags".into(),
+        value: serde_json::json!("a,b,c"),
+        age_ms: 0,
+        stale: false,
+    }];
+    let out = render_preset("csv", &rows, &RenderOpts::default());
+    // Value containing comma must be quoted in RFC 4180 style.
+    assert!(
+        out.contains("\"a,b,c\""),
+        "csv should quote values containing commas: {out}"
+    );
+}
 
 use beachcomber::client::Client;
 use beachcomber::config::Config;

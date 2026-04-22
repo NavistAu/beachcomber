@@ -55,7 +55,11 @@ enum Commands {
     },
     /// Show daemon status
     #[command(visible_alias = "s")]
-    Status,
+    Status {
+        /// Output format: human (default on TTY), tsv (default when piped), json, csv, table, sh
+        #[arg(long, short = 'f', default_value = "")]
+        format: String,
+    },
     /// Put data into a virtual provider
     #[command(visible_alias = "p")]
     Put {
@@ -279,7 +283,10 @@ fn main() -> ExitCode {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
             run_get(&config, &keys, path.as_deref(), output_format, force, wait)
         }
-        Commands::Status => run_status(&config),
+        Commands::Status { format } => {
+            let fmt = if format.is_empty() { None } else { Some(format.as_str()) };
+            run_status(&config, fmt)
+        }
         Commands::Put {
             key,
             data,
@@ -724,7 +731,10 @@ fn run_get(
     })
 }
 
-fn run_status(config: &Config) -> ExitCode {
+fn run_status(config: &Config, format: Option<&str>) -> ExitCode {
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+    use std::io::IsTerminal;
+
     let socket_path = config.resolve_socket_path();
 
     if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
@@ -732,19 +742,30 @@ fn run_status(config: &Config) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    let is_tty = std::io::stdout().is_terminal();
+    let no_color = std::env::var("NO_COLOR").is_ok() || !is_tty;
+
+    let preset = format.unwrap_or(if is_tty { "human" } else { "tsv" });
+    let opts = RenderOpts {
+        is_tty,
+        no_color,
+        max_width: Some(40),
+        no_trunc: false,
+    };
+
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
         let client = beachcomber::client::Client::new(socket_path);
         match client.send_raw(serde_json::json!({"op": "status"})).await {
             Ok(response) => {
                 if response.ok {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(
-                            &response.data.unwrap_or(serde_json::Value::Null)
-                        )
-                        .unwrap()
-                    );
+                    let rows: Vec<beachcomber::cache::CacheRow> = response
+                        .data
+                        .as_ref()
+                        .and_then(|d| serde_json::from_value(d.clone()).ok())
+                        .unwrap_or_default();
+                    let out = render_preset(preset, &rows, &opts);
+                    print!("{out}");
                     ExitCode::SUCCESS
                 } else {
                     eprintln!("Error: {}", response.error.unwrap_or_default());
