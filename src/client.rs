@@ -31,9 +31,25 @@ impl ClientSession {
     }
 
     pub async fn get(&mut self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
+        self.get_with_flags(key, path, false, false).await
+    }
+
+    pub async fn get_with_flags(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: bool,
+    ) -> std::io::Result<Response> {
         let mut request = serde_json::json!({ "op": "get", "key": key });
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
+        }
+        if force {
+            request["force"] = serde_json::json!(true);
+        }
+        if wait {
+            request["wait"] = serde_json::json!(true);
         }
         self.send_request(&request).await
     }
@@ -144,12 +160,28 @@ impl Client {
     }
 
     pub async fn get(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
+        self.get_with_flags(key, path, false, false).await
+    }
+
+    pub async fn get_with_flags(
+        &self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: bool,
+    ) -> std::io::Result<Response> {
         let mut request = serde_json::json!({
             "op": "get",
             "key": key,
         });
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
+        }
+        if force {
+            request["force"] = serde_json::json!(true);
+        }
+        if wait {
+            request["wait"] = serde_json::json!(true);
         }
         self.send_request(&request).await
     }
@@ -164,6 +196,18 @@ impl Client {
         path: Option<&str>,
         format: &str,
     ) -> std::io::Result<String> {
+        self.get_formatted_with_flags(key, path, format, false, false)
+            .await
+    }
+
+    pub async fn get_formatted_with_flags(
+        &self,
+        key: &str,
+        path: Option<&str>,
+        format: &str,
+        force: bool,
+        wait: bool,
+    ) -> std::io::Result<String> {
         let mut request = serde_json::json!({
             "op": "get",
             "key": key,
@@ -171,6 +215,12 @@ impl Client {
         });
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
+        }
+        if force {
+            request["force"] = serde_json::json!(true);
+        }
+        if wait {
+            request["wait"] = serde_json::json!(true);
         }
 
         let mut stream = UnixStream::connect(&self.socket_path).await?;

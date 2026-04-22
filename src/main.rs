@@ -44,6 +44,12 @@ enum Commands {
         /// Output format (text, json, sh, csv, tsv, CSV, TSV, fmt)
         #[arg(short, long, default_value = "text")]
         format: String,
+        /// Evict cache entry, re-execute provider, return fresh value
+        #[arg(long)]
+        force: bool,
+        /// (Reserved for T14) Block until a fresh value is available
+        #[arg(long)]
+        wait: bool,
     },
     /// Trigger immediate recomputation of a provider
     #[command(visible_alias = "r")]
@@ -273,9 +279,15 @@ fn main() -> ExitCode {
             let socket_path = socket.unwrap_or_else(|| config.resolve_socket_path());
             run_daemon(socket_path, config)
         }
-        Commands::Get { key, path, format } => {
+        Commands::Get {
+            key,
+            path,
+            format,
+            force,
+            wait,
+        } => {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
-            run_get(&config, &key, path.as_deref(), output_format)
+            run_get(&config, &key, path.as_deref(), output_format, force, wait)
         }
         Commands::Refresh { key, path } => run_refresh(&config, &key, path.as_deref()),
         Commands::Status => run_status(&config),
@@ -480,7 +492,14 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_get(config: &Config, key: &str, path: Option<&str>, format: OutputFormat) -> ExitCode {
+fn run_get(
+    config: &Config,
+    key: &str,
+    path: Option<&str>,
+    format: OutputFormat,
+    force: bool,
+    _wait: bool,
+) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
     if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
@@ -494,7 +513,7 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: OutputFormat)
 
         if format.is_server_side() {
             match client
-                .get_formatted(key, path, format.server_format())
+                .get_formatted_with_flags(key, path, format.server_format(), force, false)
                 .await
             {
                 Ok(text) => {
@@ -507,7 +526,7 @@ fn run_get(config: &Config, key: &str, path: Option<&str>, format: OutputFormat)
                 }
             }
         } else {
-            match client.get(key, path).await {
+            match client.get_with_flags(key, path, force, false).await {
                 Ok(response) => {
                     if !response.ok {
                         eprintln!("Error: {}", response.error.unwrap_or_default());

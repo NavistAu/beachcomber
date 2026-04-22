@@ -18,6 +18,10 @@ pub enum Request {
         path: Option<String>,
         #[serde(default)]
         format: Format,
+        #[serde(default)]
+        force: bool,
+        #[serde(default)]
+        wait: bool,
     },
     Refresh {
         key: String,

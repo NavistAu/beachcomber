@@ -354,7 +354,12 @@ async fn handle_request(
     requests_total: &AtomicU64,
 ) -> Response {
     match request {
-        Request::Get { key, path, .. } => {
+        Request::Get {
+            key,
+            path,
+            force,
+            ..
+        } => {
             let (stripped_key, meta) = split_metadata_suffix(key);
             let (provider_name, field) = protocol::split_key(stripped_key);
 
@@ -364,6 +369,11 @@ async fn handle_request(
 
             let effective_path =
                 resolve_path(path.as_deref(), context_path, provider_name, registry);
+
+            // Force evict: drop the cache entry so the normal miss path re-executes.
+            if *force {
+                cache.remove(provider_name, effective_path.as_deref());
+            }
 
             // Signal demand to scheduler — this keeps the data warm.
             if let Some(sched) = scheduler {

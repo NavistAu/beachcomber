@@ -182,12 +182,32 @@ impl Client {
     /// - `client.get("git", Some("/path/to/repo"))` — all fields
     /// - `client.get("hostname.short", None)` — global provider
     pub fn get(&self, key: &str, path: Option<&str>) -> Result<CombResult, CombError> {
+        self.get_with_flags(key, path, false, false)
+    }
+
+    /// Query a key with optional flags.
+    ///
+    /// `force = true`: evict the cache entry and re-execute the provider before returning.
+    /// `wait = true`: reserved for T14; currently a no-op.
+    pub fn get_with_flags(
+        &self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: bool,
+    ) -> Result<CombResult, CombError> {
         let socket_path = self.find_or_start_socket()?;
         let mut stream = self.connect(&socket_path)?;
 
         let mut request = serde_json::json!({ "op": "get", "key": key });
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
+        }
+        if force {
+            request["force"] = serde_json::json!(true);
+        }
+        if wait {
+            request["wait"] = serde_json::json!(true);
         }
 
         self.send_recv(&mut stream, &request)
@@ -302,9 +322,29 @@ impl Session {
 
     /// Query a single key on this persistent connection.
     pub fn get(&mut self, key: &str, path: Option<&str>) -> Result<CombResult, CombError> {
+        self.get_with_flags(key, path, false, false)
+    }
+
+    /// Query a key with optional flags on this persistent connection.
+    ///
+    /// `force = true`: evict the cache entry and re-execute the provider before returning.
+    /// `wait = true`: reserved for T14; currently a no-op.
+    pub fn get_with_flags(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: bool,
+    ) -> Result<CombResult, CombError> {
         let mut request = serde_json::json!({ "op": "get", "key": key });
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
+        }
+        if force {
+            request["force"] = serde_json::json!(true);
+        }
+        if wait {
+            request["wait"] = serde_json::json!(true);
         }
 
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());

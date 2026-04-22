@@ -5,7 +5,12 @@ fn parse_get_request_with_path() {
     let json = r#"{"op": "get", "key": "git.branch", "path": "/home/user/project"}"#;
     let req: Request = serde_json::from_str(json).unwrap();
     match req {
-        Request::Get { key, path, format } => {
+        Request::Get {
+            key,
+            path,
+            format,
+            ..
+        } => {
             assert_eq!(key, "git.branch");
             assert_eq!(path.as_deref(), Some("/home/user/project"));
             assert_eq!(format, Format::Json, "Default format should be Json");
