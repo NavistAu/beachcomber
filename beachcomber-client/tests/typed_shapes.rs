@@ -41,9 +41,13 @@ fn status_returns_typed_cache_rows() {
     // still succeed. What we're really asserting is the typed shape.
     let rows = client.status().expect("status");
 
-    // Rows is a typed Vec<CacheRow> — just confirming the shape deserialized.
-    // Content assertion happens in Task 2 after Client::put (with data) lands.
-    let _ = rows.iter().filter(|r| r.stale || !r.stale).count();
+    // The shape deserialized — each row has a `provider` string and a
+    // boolean `stale`. Content assertions live in the conformance suite
+    // and the round-trip test below; here we just confirm the typed
+    // decoding path didn't panic.
+    for row in &rows {
+        assert!(!row.provider.is_empty());
+    }
 }
 
 use libbeachcomber::{CombResult, IntrospectResponse, IntrospectSubject};
