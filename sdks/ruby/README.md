@@ -43,9 +43,14 @@ Opens a fresh socket connection for each call. Simple and stateless.
 | Method | Description |
 |--------|-------------|
 | `get(key, path: nil)` | Read a cached value. Returns a `Result`. |
+| `get_with_flags(key, path: nil, force: false, wait: false)` | Read with protocol flags. Returns a `Result`. |
 | `refresh(key, path: nil)` | Force recomputation. Returns `nil`. |
-| `list` | List available providers. Returns a `Result`. |
+| `hello` | Handshake. Returns a `HelloInfo`. |
+| `put(key, data = nil, ttl: nil, path: nil)` | Write a value into the cache. Returns `nil`. |
+| `introspect(subject, duration_secs: nil)` | Inspect a daemon subsystem. Returns an `IntrospectResponse`. |
+| `watch(key, path: nil)` | Subscribe to live updates. Returns a `WatchStream` (Enumerable). |
 | `status` | Daemon scheduler/cache status. Returns a `Result`. |
+| `status_rows` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
 | `session { \|s\| }` | Open a persistent connection (see below). |
 
 ### `Beachcomber::Session`
@@ -66,9 +71,13 @@ end
 |--------|-------------|
 | `set_context(path)` | Set default path for subsequent queries. |
 | `get(key, path: nil)` | Read a cached value. |
+| `get_with_flags(key, path: nil, force: false, wait: false)` | Read with protocol flags. |
 | `refresh(key, path: nil)` | Force recomputation. |
-| `list` | List providers. |
+| `hello` | Handshake. Returns a `HelloInfo`. |
+| `put(key, data = nil, ttl: nil, path: nil)` | Write a value into the cache. |
+| `introspect(subject, duration_secs: nil)` | Inspect a daemon subsystem. Returns an `IntrospectResponse`. |
 | `status` | Daemon status. |
+| `status_rows` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
 | `close` | Close the connection (called automatically by `Client#session`). |
 
 ### `Beachcomber::Result`
