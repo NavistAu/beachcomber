@@ -173,3 +173,91 @@ async fn introspect_cache_reports_totals_and_stale_ratio() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn introspect_backoff_returns_list_and_verdicts() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "backoff"}))
+        .await
+        .unwrap();
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let d = resp.data.unwrap();
+    assert!(d.get("backoff").and_then(|v| v.as_array()).is_some(), "backoff array missing");
+    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).expect("verdicts array");
+    assert!(!verdicts.is_empty(), "at least one verdict expected");
+    for v in verdicts {
+        let level = v.get("level").and_then(|x| x.as_str()).expect("verdict has level");
+        assert!(["PASS", "WARN", "FAIL"].contains(&level), "unexpected verdict level: {level}");
+        assert!(v.get("message").and_then(|x| x.as_str()).is_some(), "verdict missing message");
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn introspect_watches_returns_paths_and_verdicts() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "watches"}))
+        .await
+        .unwrap();
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let d = resp.data.unwrap();
+    assert!(d.get("paths").and_then(|v| v.as_array()).is_some(), "paths array missing");
+    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).expect("verdicts array");
+    assert!(!verdicts.is_empty(), "at least one verdict expected");
+    for v in verdicts {
+        let level = v.get("level").and_then(|x| x.as_str()).expect("verdict has level");
+        assert!(["PASS", "WARN", "FAIL"].contains(&level), "unexpected verdict level: {level}");
+        assert!(v.get("message").and_then(|x| x.as_str()).is_some(), "verdict missing message");
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn introspect_timers_returns_timers_and_verdicts() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "timers"}))
+        .await
+        .unwrap();
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let d = resp.data.unwrap();
+    assert!(d.get("timers").and_then(|v| v.as_array()).is_some(), "timers array missing");
+    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).expect("verdicts array");
+    assert!(!verdicts.is_empty(), "at least one verdict expected");
+    for v in verdicts {
+        let level = v.get("level").and_then(|x| x.as_str()).expect("verdict has level");
+        assert!(["PASS", "WARN", "FAIL"].contains(&level), "unexpected verdict level: {level}");
+        assert!(v.get("message").and_then(|x| x.as_str()).is_some(), "verdict missing message");
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn introspect_demand_returns_active_keys() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "demand"}))
+        .await
+        .unwrap();
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let d = resp.data.unwrap();
+    assert!(d.get("demand").and_then(|v| v.as_array()).is_some(), "demand array missing");
+    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).expect("verdicts array");
+    assert!(!verdicts.is_empty(), "at least one verdict expected");
+    for v in verdicts {
+        let level = v.get("level").and_then(|x| x.as_str()).expect("verdict has level");
+        assert!(["PASS", "WARN", "FAIL"].contains(&level), "unexpected verdict level: {level}");
+        assert!(v.get("message").and_then(|x| x.as_str()).is_some(), "verdict missing message");
+    }
+
+    handle.abort();
+}

@@ -4,7 +4,7 @@ use crate::provider::InvalidationStrategy;
 use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::ProviderSource;
-use crate::scheduler::{BackoffInfo, SchedulerHandle, SchedulerMessage};
+use crate::scheduler::{BackoffInfo, DemandInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage};
 use crate::watcher_registry::WatcherRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -797,6 +797,18 @@ async fn handle_request(
             IntrospectSubject::Cache => {
                 handle_introspect_cache(cache)
             }
+            IntrospectSubject::Backoff => {
+                handle_introspect_backoff(scheduler).await
+            }
+            IntrospectSubject::Watches => {
+                handle_introspect_watches(scheduler).await
+            }
+            IntrospectSubject::Timers => {
+                handle_introspect_timers(scheduler).await
+            }
+            IntrospectSubject::Demand => {
+                handle_introspect_demand(scheduler).await
+            }
             _ => Response::error(format!(
                 "introspect subject '{:?}' not yet implemented",
                 subject
@@ -1033,6 +1045,143 @@ fn handle_introspect_cache(cache: &Cache) -> Response {
             "stale_entries": stale,
             "stale_ratio": ratio,
             "verdicts": verdicts,
+        }),
+        0,
+        false,
+    )
+}
+
+async fn handle_introspect_backoff(scheduler: Option<&SchedulerHandle>) -> Response {
+    let backoff: Vec<BackoffInfo> = if let Some(s) = scheduler {
+        s.get_status().await.map(|st| st.backoff).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let mut verdicts = Vec::new();
+    if backoff.is_empty() {
+        verdicts.push(serde_json::json!({"level": "PASS", "message": "no providers in backoff"}));
+    } else {
+        for entry in &backoff {
+            let label = match &entry.path {
+                Some(p) => format!("{} ({p})", entry.provider),
+                None => entry.provider.clone(),
+            };
+            verdicts.push(serde_json::json!({
+                "level": "WARN",
+                "message": format!("{label} — stage={} elapsed={}s", entry.stage, entry.elapsed_secs),
+            }));
+        }
+    }
+
+    let backoff_json: Vec<serde_json::Value> = backoff
+        .iter()
+        .map(|b| serde_json::to_value(b).unwrap_or(serde_json::Value::Null))
+        .collect();
+
+    Response::ok(
+        serde_json::json!({
+            "backoff": backoff_json,
+            "verdicts": verdicts,
+        }),
+        0,
+        false,
+    )
+}
+
+async fn handle_introspect_watches(scheduler: Option<&SchedulerHandle>) -> Response {
+    let paths: Vec<String> = if let Some(s) = scheduler {
+        s.get_status()
+            .await
+            .map(|st| st.watched_paths)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let verdict = if paths.is_empty() {
+        serde_json::json!({"level": "WARN", "message": "not watching any paths"})
+    } else {
+        serde_json::json!({"level": "PASS", "message": format!("watching {} paths", paths.len())})
+    };
+
+    Response::ok(
+        serde_json::json!({
+            "paths": paths,
+            "verdicts": [verdict],
+        }),
+        0,
+        false,
+    )
+}
+
+async fn handle_introspect_timers(scheduler: Option<&SchedulerHandle>) -> Response {
+    let timers: Vec<PollTimerInfo> = if let Some(s) = scheduler {
+        s.get_status()
+            .await
+            .map(|st| st.poll_timers)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let mut verdicts = vec![serde_json::json!({
+        "level": "PASS",
+        "message": format!("{} poll timers", timers.len()),
+    })];
+
+    for t in &timers {
+        if t.interval_secs > 0 && t.last_run_secs_ago > t.interval_secs * 2 {
+            let label = match &t.path {
+                Some(p) => format!("{} ({p})", t.provider),
+                None => t.provider.clone(),
+            };
+            verdicts.push(serde_json::json!({
+                "level": "WARN",
+                "message": format!("{label} overdue (interval={}s, last={}s ago)", t.interval_secs, t.last_run_secs_ago),
+            }));
+        }
+    }
+
+    let timers_json: Vec<serde_json::Value> = timers
+        .iter()
+        .map(|t| serde_json::to_value(t).unwrap_or(serde_json::Value::Null))
+        .collect();
+
+    Response::ok(
+        serde_json::json!({
+            "timers": timers_json,
+            "verdicts": verdicts,
+        }),
+        0,
+        false,
+    )
+}
+
+async fn handle_introspect_demand(scheduler: Option<&SchedulerHandle>) -> Response {
+    let demand: Vec<DemandInfo> = if let Some(s) = scheduler {
+        s.get_status()
+            .await
+            .map(|st| st.demand)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let verdict = serde_json::json!({
+        "level": "PASS",
+        "message": format!("{} active keys", demand.len()),
+    });
+
+    let demand_json: Vec<serde_json::Value> = demand
+        .iter()
+        .map(|d| serde_json::to_value(d).unwrap_or(serde_json::Value::Null))
+        .collect();
+
+    Response::ok(
+        serde_json::json!({
+            "demand": demand_json,
+            "verdicts": [verdict],
         }),
         0,
         false,
