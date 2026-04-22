@@ -694,6 +694,401 @@ done:
 }
 
 /* -------------------------------------------------------------------------
+ * New API tests: comb_hello
+ * ---------------------------------------------------------------------- */
+
+static void test_hello(void) {
+    const char *resp =
+        "{\"ok\":true,\"data\":"
+        "{\"protocol_version\":\"1\",\"daemon_version\":\"0.4.0\"}}";
+    const char *responses[] = { resp, NULL };
+    char sock_path[256];
+    int srv_fd;
+    pthread_t tid;
+    multi_mock_args_t args;
+
+    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
+                                         &tid, &args);
+    CHECK(c != NULL);
+    if (!c) goto done;
+
+    comb_hello_info_t info;
+    memset(&info, 0, sizeof(info));
+    int rc = comb_hello(c, &info);
+    CHECK(rc == 0);
+    CHECK_STR_EQ(info.protocol_version, "1");
+    CHECK_STR_EQ(info.daemon_version, "0.4.0");
+
+    comb_disconnect(c);
+done:
+    pthread_join(tid, NULL);
+    close(srv_fd);
+    unlink(sock_path);
+}
+
+static void test_hello_null_args(void) {
+    /* NULL client and NULL out both return -1 without crashing */
+    CHECK(comb_hello(NULL, NULL) == -1);
+}
+
+/* -------------------------------------------------------------------------
+ * New API tests: comb_get_with_flags
+ * ---------------------------------------------------------------------- */
+
+static void test_get_with_flags_no_flags(void) {
+    /* force=0, wait=0 — behaves like a plain get */
+    const char *resp =
+        "{\"ok\":true,\"data\":\"main\",\"age_ms\":10,\"stale\":false}";
+    comb_result_t *r = get_with_mock(resp);
+    /* get_with_mock issues comb_get; this test exercises the same path via
+     * get_with_flags using a dedicated mock. */
+    comb_result_free(r);
+
+    const char *responses[] = {
+        "{\"ok\":true,\"data\":\"dev\",\"age_ms\":5,\"stale\":false}",
+        NULL
+    };
+    char sock_path[256];
+    int srv_fd;
+    pthread_t tid;
+    multi_mock_args_t margs;
+    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
+                                         &tid, &margs);
+    CHECK(c != NULL);
+    if (!c) goto done;
+
+    comb_result_t *r2 = comb_get_with_flags(c, "git.branch", NULL, 0, 0);
+    CHECK(comb_result_ok(r2) == 1);
+    CHECK(comb_result_is_hit(r2) == 1);
+    CHECK_STR_EQ(comb_result_get_str(r2, NULL), "dev");
+    comb_result_free(r2);
+
+    comb_disconnect(c);
+done:
+    pthread_join(tid, NULL);
+    close(srv_fd);
+    unlink(sock_path);
+}
+
+static void test_get_with_flags_force(void) {
+    const char *responses[] = {
+        "{\"ok\":true,\"data\":\"fresh\",\"age_ms\":1,\"stale\":false}",
+        NULL
+    };
+    char sock_path[256];
+    int srv_fd;
+    pthread_t tid;
+    multi_mock_args_t margs;
+    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
+                                         &tid, &margs);
+    CHECK(c != NULL);
+    if (!c) goto done;
+
+    comb_result_t *r = comb_get_with_flags(c, "git.branch", "/repo", 1, 0);
+    CHECK(comb_result_ok(r) == 1);
+    CHECK_STR_EQ(comb_result_get_str(r, NULL), "fresh");
+    comb_result_free(r);
+
+    comb_disconnect(c);
+done:
+    pthread_join(tid, NULL);
+    close(srv_fd);
+    unlink(sock_path);
+}
+
+static void test_get_with_flags_null_key(void) {
+    comb_result_t *r = comb_get_with_flags(NULL, NULL, NULL, 0, 0);
+    CHECK(r != NULL);
+    CHECK(comb_result_ok(r) == 0);
+    comb_result_free(r);
+}
+
+/* -------------------------------------------------------------------------
+ * New API tests: comb_put / comb_put_null
+ * ---------------------------------------------------------------------- */
+
+static void test_put(void) {
+    const char *responses[] = { "{\"ok\":true}", NULL };
+    char sock_path[256];
+    int srv_fd;
+    pthread_t tid;
+    multi_mock_args_t args;
+    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
+                                         &tid, &args);
+    CHECK(c != NULL);
+    if (!c) goto done;
+
+    int rc = comb_put(c, "mykey", "{\"val\":1}", NULL, NULL);
+    CHECK(rc == 0);
+
+    comb_disconnect(c);
+done:
+    pthread_join(tid, NULL);
+    close(srv_fd);
+    unlink(sock_path);
+}
+
+static void test_put_error_response(void) {
+    const char *responses[] = {
+        "{\"ok\":false,\"error\":\"must be a JSON object\"}",
+        NULL
+    };
+    char sock_path[256];
+    int srv_fd;
+    pthread_t tid;
+    multi_mock_args_t args;
+    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
+                                         &tid, &args);
+    CHECK(c != NULL);
+    if (!c) goto done;
+
+    int rc = comb_put(c, "mykey", "\"not-an-object\"", NULL, NULL);
+    CHECK(rc == -1);
+
+    comb_disconnect(c);
+done:
+    pthread_join(tid, NULL);
+    close(srv_fd);
+    unlink(sock_path);
+}
+
+static void test_put_null(void) {
+    const char *responses[] = { "{\"ok\":true}", NULL };
+    char sock_path[256];
+    int srv_fd;
+    pthread_t tid;
+    multi_mock_args_t args;
+    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
+                                         &tid, &args);
+    CHECK(c != NULL);
+    if (!c) goto done;
+
+    int rc = comb_put_null(c, "mykey", NULL);
+    CHECK(rc == 0);
+
+    comb_disconnect(c);
+done:
+    pthread_join(tid, NULL);
+    close(srv_fd);
+    unlink(sock_path);
+}
+
+static void test_put_null_args(void) {
+    CHECK(comb_put(NULL, "k", "{}", NULL, NULL) == -1);
+    CHECK(comb_put_null(NULL, "k", NULL) == -1);
+}
+
+/* -------------------------------------------------------------------------
+ * New API tests: comb_introspect
+ * ---------------------------------------------------------------------- */
+
+static void test_introspect_raw(void) {
+    const char *resp =
+        "{\"ok\":true,\"data\":{\"pid\":1234,\"version\":\"0.4.0\"}}";
+    const char *responses[] = { resp, NULL };
+    char sock_path[256];
+    int srv_fd;
+    pthread_t tid;
+    multi_mock_args_t args;
+    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
+                                         &tid, &args);
+    CHECK(c != NULL);
+    if (!c) goto done;
+
+    comb_result_t *r = comb_introspect(c, COMB_INTROSPECT_DAEMON, 0);
+    CHECK(r != NULL);
+    CHECK(comb_result_ok(r) == 1);
+    CHECK(comb_result_is_hit(r) == 1);
+
+    int64_t pid = 0;
+    CHECK(comb_result_get_int(r, "pid", &pid) == 1);
+    CHECK(pid == 1234);
+    comb_result_free(r);
+
+    comb_disconnect(c);
+done:
+    pthread_join(tid, NULL);
+    close(srv_fd);
+    unlink(sock_path);
+}
+
+static void test_introspect_daemon_typed(void) {
+    const char *resp =
+        "{\"ok\":true,\"data\":{"
+        "\"pid\":5678,\"version\":\"0.4.0\","
+        "\"uptime_secs\":120,\"socket_path\":\"/tmp/comb.sock\","
+        "\"config_path\":\"\","
+        "\"requests_total\":99,\"in_flight\":2,"
+        "\"active_watchers\":3,\"cache_entries\":10}}";
+    const char *responses[] = { resp, NULL };
+    char sock_path[256];
+    int srv_fd;
+    pthread_t tid;
+    multi_mock_args_t args;
+    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
+                                         &tid, &args);
+    CHECK(c != NULL);
+    if (!c) goto done;
+
+    comb_daemon_health_t h;
+    int rc = comb_introspect_daemon(c, &h);
+    CHECK(rc == 0);
+    CHECK(h.pid == 5678);
+    CHECK_STR_EQ(h.version, "0.4.0");
+    CHECK(h.uptime_secs == 120);
+    CHECK_STR_EQ(h.socket_path, "/tmp/comb.sock");
+    CHECK_STR_EQ(h.config_path, "");
+    CHECK(h.requests_total == 99);
+    CHECK(h.in_flight == 2);
+    CHECK(h.active_watchers == 3);
+    CHECK(h.cache_entries == 10);
+
+    comb_disconnect(c);
+done:
+    pthread_join(tid, NULL);
+    close(srv_fd);
+    unlink(sock_path);
+}
+
+static void test_introspect_daemon_null_args(void) {
+    CHECK(comb_introspect_daemon(NULL, NULL) == -1);
+}
+
+/* -------------------------------------------------------------------------
+ * New API tests: comb_status_rows
+ * ---------------------------------------------------------------------- */
+
+static void test_status_rows(void) {
+    const char *resp =
+        "{\"ok\":true,\"data\":["
+        "{\"provider\":\"git\",\"field\":\"branch\","
+        "\"path\":\"/repo\",\"value\":\"main\","
+        "\"age_ms\":50,\"stale\":false},"
+        "{\"provider\":\"hostname\",\"field\":\"\","
+        "\"path\":\"\",\"value\":\"myhost\","
+        "\"age_ms\":100,\"stale\":true}"
+        "]}";
+    const char *responses[] = { resp, NULL };
+    char sock_path[256];
+    int srv_fd;
+    pthread_t tid;
+    multi_mock_args_t args;
+    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
+                                         &tid, &args);
+    CHECK(c != NULL);
+    if (!c) goto done;
+
+    comb_cache_row_t rows[8];
+    int n = comb_status_rows(c, rows, 8);
+    CHECK(n == 2);
+
+    CHECK_STR_EQ(rows[0].provider, "git");
+    CHECK_STR_EQ(rows[0].field, "branch");
+    CHECK_STR_EQ(rows[0].path, "/repo");
+    CHECK(rows[0].age_ms == 50);
+    CHECK(rows[0].stale == 0);
+
+    CHECK_STR_EQ(rows[1].provider, "hostname");
+    CHECK(rows[1].age_ms == 100);
+    CHECK(rows[1].stale == 1);
+
+    comb_disconnect(c);
+done:
+    pthread_join(tid, NULL);
+    close(srv_fd);
+    unlink(sock_path);
+}
+
+static void test_status_rows_cap(void) {
+    /* Cap of 1 — only first row returned even if daemon sends 2 */
+    const char *resp =
+        "{\"ok\":true,\"data\":["
+        "{\"provider\":\"a\",\"field\":\"\",\"path\":\"\","
+        "\"value\":\"x\",\"age_ms\":1,\"stale\":false},"
+        "{\"provider\":\"b\",\"field\":\"\",\"path\":\"\","
+        "\"value\":\"y\",\"age_ms\":2,\"stale\":false}"
+        "]}";
+    const char *responses[] = { resp, NULL };
+    char sock_path[256];
+    int srv_fd;
+    pthread_t tid;
+    multi_mock_args_t args;
+    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
+                                         &tid, &args);
+    CHECK(c != NULL);
+    if (!c) goto done;
+
+    comb_cache_row_t rows[1];
+    int n = comb_status_rows(c, rows, 1);
+    CHECK(n == 1);
+    CHECK_STR_EQ(rows[0].provider, "a");
+
+    comb_disconnect(c);
+done:
+    pthread_join(tid, NULL);
+    close(srv_fd);
+    unlink(sock_path);
+}
+
+static void test_status_rows_null_args(void) {
+    CHECK(comb_status_rows(NULL, NULL, 0) == -1);
+}
+
+/* -------------------------------------------------------------------------
+ * New API tests: comb_watch
+ * ---------------------------------------------------------------------- */
+
+/* Watch mock server: sends the watch response on the same connection the
+ * client opens for the watch stream. We use the multi_mock infrastructure
+ * but the watch handle opens its own fd to the listening socket. */
+static void test_watch_next(void) {
+    const char *resp =
+        "{\"ok\":true,\"data\":7,\"age_ms\":30,\"stale\":false}";
+    const char *responses[] = { resp, NULL };
+    char sock_path[256];
+    int srv_fd;
+    pthread_t tid;
+    multi_mock_args_t args;
+
+    /* We use start_multi_mock but connect the client ourselves so the
+     * watch handle can open its own connection to the same srv_fd. */
+    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
+                                         &tid, &args);
+    CHECK(c != NULL);
+    if (!c) goto done;
+
+    comb_watch_handle_t *wh = comb_watch(c, "fixture_w.count", NULL);
+    CHECK(wh != NULL);
+
+    if (wh) {
+        comb_watch_event_t ev;
+        memset(&ev, 0, sizeof(ev));
+        int ret = comb_watch_next(wh, &ev, 2000);
+        CHECK(ret == 1);
+        CHECK_STR_EQ(ev.data_json, "7");
+        CHECK(ev.age_ms == 30);
+        CHECK(ev.stale == 0);
+        comb_watch_free(wh);
+    }
+
+    comb_disconnect(c);
+done:
+    pthread_join(tid, NULL);
+    close(srv_fd);
+    unlink(sock_path);
+}
+
+static void test_watch_free_null(void) {
+    /* Must not crash */
+    comb_watch_free(NULL);
+}
+
+static void test_watch_null_args(void) {
+    CHECK(comb_watch(NULL, NULL, NULL) == NULL);
+    CHECK(comb_watch_next(NULL, NULL, 0) == -1);
+}
+
+/* -------------------------------------------------------------------------
  * Main
  * ---------------------------------------------------------------------- */
 
@@ -754,6 +1149,36 @@ int main(void) {
     test_connect_fail();
     test_refresh_on_null_client();
     test_multiple_requests();
+
+    SUITE("New API — comb_hello");
+    test_hello();
+    test_hello_null_args();
+
+    SUITE("New API — comb_get_with_flags");
+    test_get_with_flags_no_flags();
+    test_get_with_flags_force();
+    test_get_with_flags_null_key();
+
+    SUITE("New API — comb_put / comb_put_null");
+    test_put();
+    test_put_error_response();
+    test_put_null();
+    test_put_null_args();
+
+    SUITE("New API — comb_introspect");
+    test_introspect_raw();
+    test_introspect_daemon_typed();
+    test_introspect_daemon_null_args();
+
+    SUITE("New API — comb_status_rows");
+    test_status_rows();
+    test_status_rows_cap();
+    test_status_rows_null_args();
+
+    SUITE("New API — comb_watch");
+    test_watch_next();
+    test_watch_free_null();
+    test_watch_null_args();
 
     printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
