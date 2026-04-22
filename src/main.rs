@@ -614,7 +614,10 @@ fn run_get(
             let wire_fmt = format.server_format();
             let mut any_error = false;
             for key in keys {
-                match session.get_formatted(key, None, wire_fmt).await {
+                match session
+                    .get_formatted_with_flags(key, None, wire_fmt, force, wait)
+                    .await
+                {
                     Ok(text) => {
                         if !text.is_empty() {
                             println!("{text}");
