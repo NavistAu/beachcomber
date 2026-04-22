@@ -1,0 +1,82 @@
+// Verify that run_get's path for single-key server-side formats (text/sh)
+// and the multi-key client-side loop propagate wait=true to the wire.
+//
+// Phase 1 Round 3 bug: wait was captured and discarded. This test drives
+// the Client API as run_get does (after the fix) and asserts behavior that
+// depends on wait=true actually reaching the server (stale-re-execute).
+
+use beachcomber::cache::Cache;
+use beachcomber::client::Client;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::provider::{ProviderResult, Value};
+use beachcomber::server::Server;
+use std::sync::Arc;
+use tempfile::TempDir;
+
+async fn setup_stale() -> (TempDir, std::path::PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+
+    // Seed hostname with a stale entry. interval=0 => stale after 0 elapsed secs.
+    let mut result = ProviderResult::new();
+    result.insert("name", Value::String("stale-seed".to_string()));
+    result.insert("short", Value::String("stale".to_string()));
+    cache.put_with_interval("hostname", None, result, Some(0));
+
+    // Ensure elapsed().as_secs() > 0 so is_stale() is true.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    (tmp, sock)
+}
+
+#[tokio::test]
+async fn single_key_text_wait_true_re_executes_stale_entry() {
+    // run_get's single-key server-side path (format=text, keys.len()==1) must
+    // forward wait=true. If it does, the stale seeded value is evicted and the
+    // live provider runs inline — the returned text must not contain the seed.
+    let (_tmp, sock) = setup_stale().await;
+    let client = Client::new(sock);
+
+    let text = client
+        .get_formatted_with_flags("hostname.name", None, "text", false, true)
+        .await
+        .unwrap();
+
+    assert!(
+        !text.contains("stale-seed"),
+        "wait=true on a stale entry must trigger re-execution; got {text:?}"
+    );
+}
+
+#[tokio::test]
+async fn multi_key_client_side_wait_true_re_executes_stale_entry() {
+    // run_get's multi-key client-side path (e.g. format=json) calls
+    // session.get_with_flags per key. It must forward wait=true.
+    let (_tmp, sock) = setup_stale().await;
+    let client = Client::new(sock);
+    let mut session = client.connect().await.unwrap();
+
+    let response = session
+        .get_with_flags("hostname.name", None, false, true)
+        .await
+        .unwrap();
+
+    assert!(response.ok);
+    let data = response.data.expect("data present");
+    let name = data.as_str().expect("name field is a string");
+    assert_ne!(
+        name, "stale-seed",
+        "wait=true on a stale entry must trigger re-execution; got {name:?}"
+    );
+    assert_eq!(
+        response.age_ms,
+        Some(0),
+        "wait re-execution must return age_ms=0"
+    );
+}

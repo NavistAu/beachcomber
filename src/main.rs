@@ -559,7 +559,7 @@ fn run_get(
     path: Option<&str>,
     format: OutputFormat,
     force: bool,
-    _wait: bool,
+    wait: bool,
 ) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
@@ -577,7 +577,7 @@ fn run_get(
         if keys.len() == 1 && format.is_server_side() {
             let key = &keys[0];
             match client
-                .get_formatted_with_flags(key, path, format.server_format(), force, false)
+                .get_formatted_with_flags(key, path, format.server_format(), force, wait)
                 .await
             {
                 Ok(text) => {
@@ -638,7 +638,7 @@ fn run_get(
         let mut responses: Vec<(String, beachcomber::protocol::Response)> = Vec::new();
         let mut any_error = false;
         for key in keys {
-            match session.get_with_flags(key, None, force, false).await {
+            match session.get_with_flags(key, None, force, wait).await {
                 Ok(response) => {
                     if !response.ok {
                         eprintln!(
