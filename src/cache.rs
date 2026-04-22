@@ -109,6 +109,36 @@ impl Cache {
         self.entries.is_empty()
     }
 
+    /// List one row per field across all cache entries.
+    /// Used by `Request::Status` to return the tabular "what is warm?" payload.
+    pub fn list_rows(&self) -> Vec<CacheRow> {
+        let mut out = Vec::new();
+        for entry in self.entries.iter() {
+            let key = entry.key();
+            let (provider, path) = if let Some(sep) = key.find('\0') {
+                (key[..sep].to_string(), Some(key[sep + 1..].to_string()))
+            } else {
+                (key.clone(), None)
+            };
+            let ce = entry.value();
+            let age = ce.age_ms();
+            let stale = ce.is_stale();
+            for (field, v) in &ce.result.fields {
+                // Value implements Serialize with #[serde(untagged)] — to_value is lossless.
+                let value = serde_json::to_value(v).unwrap_or(serde_json::Value::Null);
+                out.push(CacheRow {
+                    provider: provider.clone(),
+                    path: path.clone(),
+                    field: field.clone(),
+                    value,
+                    age_ms: age,
+                    stale,
+                });
+            }
+        }
+        out
+    }
+
     /// List all cache entries with their keys parsed back into (provider, path) and age info.
     pub fn list_entries(&self) -> Vec<CacheEntryInfo> {
         self.entries
@@ -140,6 +170,17 @@ pub struct CacheEntryInfo {
     pub age_ms: u128,
     pub stale: bool,
     pub field_count: usize,
+}
+
+/// One row in the `Request::Status` tabular response — one per (provider, path, field).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CacheRow {
+    pub provider: String,
+    pub path: Option<String>,
+    pub field: String,
+    pub value: serde_json::Value,
+    pub age_ms: u128,
+    pub stale: bool,
 }
 
 impl Default for Cache {

@@ -734,35 +734,11 @@ async fn handle_request(
             }
         }
         Request::Status => {
-            let cache_details = cache.list_entries();
-            let mut status_data = serde_json::json!({
-                "pid": std::process::id(),
-                "version": env!("CARGO_PKG_VERSION"),
-                "cache_entries": cache.len(),
-                "cache": serde_json::to_value(&cache_details).unwrap_or_default(),
-                "providers": registry.list().len(),
-                "uptime_secs": start_instant.elapsed().as_secs(),
-                "active_watchers": watchers.entry_count() as u64,
-                "requests_total": requests_total.load(Ordering::Relaxed),
-            });
-
-            // Get scheduler status if available.
-            if let Some(sched) = scheduler
-                && let Some(sched_status) = sched.get_status().await
-            {
-                status_data["watched_paths"] =
-                    serde_json::to_value(&sched_status.watched_paths).unwrap_or_default();
-                status_data["in_flight"] =
-                    serde_json::to_value(&sched_status.in_flight).unwrap_or_default();
-                status_data["backoff"] =
-                    serde_json::to_value(&sched_status.backoff).unwrap_or_default();
-                status_data["poll_timers"] =
-                    serde_json::to_value(&sched_status.poll_timers).unwrap_or_default();
-                status_data["demand"] =
-                    serde_json::to_value(&sched_status.demand).unwrap_or_default();
+            let rows = cache.list_rows();
+            match serde_json::to_value(&rows) {
+                Ok(v) => Response::ok(v, 0, false),
+                Err(e) => Response::error(format!("serialization failed: {e}")),
             }
-
-            Response::ok(status_data, 0, false)
         }
         Request::Introspect {
             subject,

@@ -370,7 +370,9 @@ async fn server_text_format_object_returns_values_only() {
 }
 
 #[tokio::test]
-async fn status_includes_uptime_and_request_counters() {
+async fn daemon_introspect_includes_uptime_and_request_counters() {
+    // uptime_secs, active_watchers, requests_total moved from Request::Status to
+    // Request::Introspect{daemon} in T27.
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -379,7 +381,7 @@ async fn status_includes_uptime_and_request_counters() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
-    // Send two get requests first
+    // Send two get requests first to bump the counter.
     stream
         .write_all(b"{\"op\": \"get\", \"key\": \"hostname\"}\n")
         .await
@@ -389,7 +391,7 @@ async fn status_includes_uptime_and_request_counters() {
         .await
         .unwrap();
 
-    // Read and discard the two get responses
+    // Read and discard the two get responses.
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
@@ -398,37 +400,37 @@ async fn status_includes_uptime_and_request_counters() {
     reader.read_line(&mut line).await.unwrap();
     line.clear();
 
-    // Send status request
+    // Send introspect daemon request — this is where counters now live.
     write_half
-        .write_all(b"{\"op\": \"status\"}\n")
+        .write_all(b"{\"op\": \"introspect\", \"subject\": \"daemon\"}\n")
         .await
         .unwrap();
 
     reader.read_line(&mut line).await.unwrap();
     let response: Response = serde_json::from_str(&line).unwrap();
-    assert!(response.ok, "Status response should be ok");
+    assert!(response.ok, "Introspect daemon response should be ok");
     let data = response.data.unwrap();
 
     let uptime_secs = data["uptime_secs"].as_u64();
     assert!(
         uptime_secs.is_some(),
-        "status response should include uptime_secs, got: {data}"
+        "introspect daemon response should include uptime_secs, got: {data}"
     );
 
     let active_watchers = data["active_watchers"].as_u64();
     assert!(
         active_watchers.is_some(),
-        "status response should include active_watchers, got: {data}"
+        "introspect daemon response should include active_watchers, got: {data}"
     );
 
     let requests_total = data["requests_total"].as_u64();
     assert!(
         requests_total.is_some(),
-        "status response should include requests_total, got: {data}"
+        "introspect daemon response should include requests_total, got: {data}"
     );
     assert!(
         requests_total.unwrap() >= 3,
-        "requests_total should be >= 3 (2 gets + 1 status), got: {}",
+        "requests_total should be >= 3 (2 gets + 1 introspect), got: {}",
         requests_total.unwrap()
     );
 
