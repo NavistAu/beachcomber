@@ -49,7 +49,11 @@ fn json_preset_emits_ndjson() {
 fn tsv_preset_is_tab_separated_no_header() {
     let out = render_preset("tsv", &sample_rows(), &RenderOpts::default());
     let lines: Vec<_> = out.lines().filter(|l| !l.is_empty()).collect();
-    assert_eq!(lines.len(), 3, "tsv should have exactly one line per row, no header");
+    assert_eq!(
+        lines.len(),
+        3,
+        "tsv should have exactly one line per row, no header"
+    );
     for line in lines {
         // PROVIDER<TAB>PATH<TAB>FIELD<TAB>VALUE<TAB>AGE<TAB>STALE — 6 cols, 5 tabs
         assert_eq!(
@@ -77,13 +81,19 @@ fn csv_preset_has_header_and_quotes_values() {
 #[test]
 fn table_preset_has_header_no_color_no_trunc() {
     let out = render_preset("table", &sample_rows(), &RenderOpts::default());
-    let first = out.lines().next().expect("table output should not be empty");
+    let first = out
+        .lines()
+        .next()
+        .expect("table output should not be empty");
     assert!(
         first.contains("PROVIDER"),
         "first line of table should be the header: {first:?}"
     );
     // table preset must never emit ANSI escape codes.
-    assert!(!out.contains('\x1b'), "table preset must not emit ANSI color codes");
+    assert!(
+        !out.contains('\x1b'),
+        "table preset must not emit ANSI color codes"
+    );
 }
 
 #[test]
@@ -168,8 +178,7 @@ fn json_preset_path_none_serializes_as_null() {
         stale: false,
     }];
     let out = render_preset("json", &rows, &RenderOpts::default());
-    let parsed: serde_json::Value =
-        serde_json::from_str(out.trim()).expect("valid JSON line");
+    let parsed: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON line");
     assert!(
         parsed["path"].is_null(),
         "path=None should serialize as JSON null, got: {:?}",
@@ -251,7 +260,11 @@ fn table_prefix_aligns_columns_and_emits_header() {
     assert!(header.contains("FIELD"));
     assert!(header.contains("VALUE"));
     // Subsequent lines contain the values.
-    assert!(lines.iter().any(|l| l.contains("git") && l.contains("main")));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("git") && l.contains("main"))
+    );
 }
 
 use beachcomber::cli::status_format::{apply_filters, apply_sort};
@@ -284,9 +297,11 @@ fn filter_by_stale_true() {
 fn filter_by_path_glob() {
     let rows = sample_rows();
     let out = apply_filters(rows, &["path=/home/*".to_string()]).unwrap();
-    assert!(out
-        .iter()
-        .all(|r| r.path.as_deref().is_some_and(|p: &str| p.starts_with("/home/"))));
+    assert!(out.iter().all(|r| {
+        r.path
+            .as_deref()
+            .is_some_and(|p: &str| p.starts_with("/home/"))
+    }));
 }
 
 #[test]
@@ -435,7 +450,10 @@ async fn status_returns_rows_per_field() {
             "row missing 'field' string: {row:?}"
         );
         // value can be any JSON type
-        assert!(row.get("value").is_some(), "row missing 'value' key: {row:?}");
+        assert!(
+            row.get("value").is_some(),
+            "row missing 'value' key: {row:?}"
+        );
         assert!(
             row.get("age_ms").and_then(|v| v.as_u64()).is_some(),
             "row missing 'age_ms' number: {row:?}"
@@ -448,7 +466,10 @@ async fn status_returns_rows_per_field() {
 
     // hostname should be warm — at least one row with provider=="hostname".
     let has_hostname = rows.iter().any(|r| r["provider"] == "hostname");
-    assert!(has_hostname, "expected hostname rows in status after get, got: {rows:?}");
+    assert!(
+        has_hostname,
+        "expected hostname rows in status after get, got: {rows:?}"
+    );
 
     // Old blob keys must not be present anywhere in the response.
     let data_str = serde_json::to_string(&data).unwrap();
@@ -478,7 +499,11 @@ async fn status_empty_cache_returns_empty_array() {
         .await
         .expect("status");
 
-    assert!(resp.ok, "status should succeed on empty cache: {:?}", resp.error);
+    assert!(
+        resp.ok,
+        "status should succeed on empty cache: {:?}",
+        resp.error
+    );
     let data = resp.data.expect("status data present");
     let rows = data.as_array().expect("status response is an array");
     // May be empty — that's fine. Just verify it's a valid array.

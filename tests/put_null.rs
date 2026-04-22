@@ -35,10 +35,7 @@ async fn put_null_clears_entry_but_keeps_provider() {
     );
 
     // 3. put --null: send a Put request with data=null to clear the cache entry.
-    let resp = client
-        .put_null("nulltest", None, None)
-        .await
-        .unwrap();
+    let resp = client.put_null("nulltest", None, None).await.unwrap();
     assert!(resp.ok, "put_null failed: {:?}", resp.error);
 
     // 4. get should now return miss (no data).

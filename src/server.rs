@@ -1,9 +1,9 @@
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::provider::InvalidationStrategy;
 use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
-use crate::provider::registry::ProviderRegistry;
+use crate::provider::InvalidationStrategy;
 use crate::provider::ProviderSource;
+use crate::provider::registry::ProviderRegistry;
 use crate::scheduler::{BackoffInfo, DemandInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage};
 use crate::watcher_registry::WatcherRegistry;
 use std::path::PathBuf;
@@ -764,34 +764,20 @@ async fn handle_request(
                     cache_entries,
                 )
             }
-            IntrospectSubject::Providers => {
-                handle_introspect_providers(registry, scheduler).await
-            }
-            IntrospectSubject::Config => {
-                handle_introspect_config(config)
-            }
-            IntrospectSubject::Cache => {
-                handle_introspect_cache(cache)
-            }
-            IntrospectSubject::Backoff => {
-                handle_introspect_backoff(scheduler).await
-            }
-            IntrospectSubject::Watches => {
-                handle_introspect_watches(scheduler).await
-            }
-            IntrospectSubject::Timers => {
-                handle_introspect_timers(scheduler).await
-            }
-            IntrospectSubject::Demand => {
-                handle_introspect_demand(scheduler).await
-            }
+            IntrospectSubject::Providers => handle_introspect_providers(registry, scheduler).await,
+            IntrospectSubject::Config => handle_introspect_config(config),
+            IntrospectSubject::Cache => handle_introspect_cache(cache),
+            IntrospectSubject::Backoff => handle_introspect_backoff(scheduler).await,
+            IntrospectSubject::Watches => handle_introspect_watches(scheduler).await,
+            IntrospectSubject::Timers => handle_introspect_timers(scheduler).await,
+            IntrospectSubject::Demand => handle_introspect_demand(scheduler).await,
             IntrospectSubject::Procs => {
                 let dur = *duration_secs;
                 tokio::task::spawn_blocking(move || handle_introspect_procs(dur))
                     .await
                     .unwrap_or_else(|e| Response::error(format!("procs task panicked: {e}")))
             }
-        }
+        },
         // Watch is intercepted in handle_connection before reaching here
         Request::Watch { .. } => unreachable!("Watch handled before handle_request"),
     }
@@ -811,9 +797,7 @@ fn handle_introspect_daemon(
 
     let uptime_secs = start_instant.elapsed().as_secs();
 
-    let mut verdicts = vec![
-        serde_json::json!({"level": "PASS", "message": "daemon responsive"}),
-    ];
+    let mut verdicts = vec![serde_json::json!({"level": "PASS", "message": "daemon responsive"})];
 
     if in_flight_count > 50 {
         verdicts.push(serde_json::json!({
@@ -923,7 +907,10 @@ async fn handle_introspect_providers(
             ("global", Vec::new(), "data-only".to_string())
         };
 
-        let relevant: Vec<&BackoffInfo> = backoff_list.iter().filter(|b| &b.provider == name).collect();
+        let relevant: Vec<&BackoffInfo> = backoff_list
+            .iter()
+            .filter(|b| &b.provider == name)
+            .collect();
         let in_backoff = if relevant.is_empty() {
             serde_json::Value::Null
         } else {
@@ -1031,7 +1018,10 @@ fn handle_introspect_cache(cache: &Cache) -> Response {
 
 async fn handle_introspect_backoff(scheduler: Option<&SchedulerHandle>) -> Response {
     let backoff: Vec<BackoffInfo> = if let Some(s) = scheduler {
-        s.get_status().await.map(|st| st.backoff).unwrap_or_default()
+        s.get_status()
+            .await
+            .map(|st| st.backoff)
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -1138,10 +1128,7 @@ async fn handle_introspect_timers(scheduler: Option<&SchedulerHandle>) -> Respon
 
 async fn handle_introspect_demand(scheduler: Option<&SchedulerHandle>) -> Response {
     let demand: Vec<DemandInfo> = if let Some(s) = scheduler {
-        s.get_status()
-            .await
-            .map(|st| st.demand)
-            .unwrap_or_default()
+        s.get_status().await.map(|st| st.demand).unwrap_or_default()
     } else {
         Vec::new()
     };

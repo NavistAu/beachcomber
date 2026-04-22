@@ -10,7 +10,12 @@ async fn scheduler_refresh_populates_cache() {
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = beachcomber::config::Config::default();
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config, Arc::new(WatcherRegistry::new()));
+    let (handle, scheduler) = Scheduler::new(
+        cache.clone(),
+        registry,
+        config,
+        Arc::new(WatcherRegistry::new()),
+    );
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle
@@ -44,7 +49,12 @@ async fn scheduler_refresh_unknown_provider() {
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = beachcomber::config::Config::default();
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config, Arc::new(WatcherRegistry::new()));
+    let (handle, scheduler) = Scheduler::new(
+        cache.clone(),
+        registry,
+        config,
+        Arc::new(WatcherRegistry::new()),
+    );
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle
@@ -66,7 +76,8 @@ async fn scheduler_shutdown() {
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = beachcomber::config::Config::default();
 
-    let (handle, scheduler) = Scheduler::new(cache, registry, config, Arc::new(WatcherRegistry::new()));
+    let (handle, scheduler) =
+        Scheduler::new(cache, registry, config, Arc::new(WatcherRegistry::new()));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle.send(SchedulerMessage::Shutdown).await;

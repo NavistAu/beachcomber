@@ -41,11 +41,7 @@ fn fmt_template_conditional_works() {
         ("branch", Value::String("main".into())),
         ("dirty", Value::Bool(true)),
     ]);
-    let out = render_fmt_template(
-        "{% if dirty %}*{% endif %}{{ branch }}",
-        &r,
-    )
-    .unwrap();
+    let out = render_fmt_template("{% if dirty %}*{% endif %}{{ branch }}", &r).unwrap();
     assert_eq!(out, "*main");
 }
 
@@ -65,11 +61,8 @@ fn eval_template_renders_provider_field_refs() {
         "hostname": {"value": "me-laptop"},
         "load": {"one": 0.42, "five": 0.3, "fifteen": 0.25}
     });
-    let out = render_eval_template(
-        "hostname: {{ hostname.value }}, load: {{ load.one }}",
-        &ctx,
-    )
-    .unwrap();
+    let out =
+        render_eval_template("hostname: {{ hostname.value }}, load: {{ load.one }}", &ctx).unwrap();
     assert_eq!(out, "hostname: me-laptop, load: 0.42");
 }
 
@@ -87,11 +80,7 @@ fn eval_template_conditional_works() {
     let ctx = serde_json::json!({
         "git": {"dirty": true, "branch": "main"}
     });
-    let out = render_eval_template(
-        "{% if git.dirty %}*{% endif %}{{ git.branch }}",
-        &ctx,
-    )
-    .unwrap();
+    let out = render_eval_template("{% if git.dirty %}*{% endif %}{{ git.branch }}", &ctx).unwrap();
     assert_eq!(out, "*main");
 }
 
@@ -144,11 +133,7 @@ fn find_eval_template_refs_deduplicates_providers() {
 fn eval_template_accepts_tab_and_newline_whitespace_inside_braces() {
     let ctx = serde_json::json!({"git": {"branch": "main"}});
     // Tab after {{ — scanner must still detect git.branch
-    let out = render_eval_template(
-        "{{\tgit.branch }}",
-        &ctx,
-    )
-    .unwrap();
+    let out = render_eval_template("{{\tgit.branch }}", &ctx).unwrap();
     assert_eq!(out, "main");
 
     // Also verify the pair extraction sees the ref

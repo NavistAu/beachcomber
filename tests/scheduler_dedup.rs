@@ -49,7 +49,12 @@ async fn rapid_refreshes_are_deduplicated() {
     let registry = Arc::new(registry);
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config, Arc::new(WatcherRegistry::new()));
+    let (handle, scheduler) = Scheduler::new(
+        cache.clone(),
+        registry,
+        config,
+        Arc::new(WatcherRegistry::new()),
+    );
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // Send 10 rapid refreshes

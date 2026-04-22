@@ -343,7 +343,14 @@ fn main() -> ExitCode {
                     .ok()
                     .map(|p| p.to_string_lossy().into_owned())
             });
-            run_get(&config, &keys, effective_path.as_deref(), output_format, force, wait)
+            run_get(
+                &config,
+                &keys,
+                effective_path.as_deref(),
+                output_format,
+                force,
+                wait,
+            )
         }
         Commands::Status {
             format,
@@ -353,7 +360,11 @@ fn main() -> ExitCode {
             max_width,
             no_color,
         } => {
-            let fmt = if format.is_empty() { None } else { Some(format.as_str()) };
+            let fmt = if format.is_empty() {
+                None
+            } else {
+                Some(format.as_str())
+            };
             run_status(&config, fmt, &filter, &sort, no_trunc, max_width, no_color)
         }
         Commands::Put {
@@ -362,7 +373,14 @@ fn main() -> ExitCode {
             null,
             ttl,
             path,
-        } => run_put(&config, &key, data.as_deref(), null, ttl.as_deref(), path.as_deref()),
+        } => run_put(
+            &config,
+            &key,
+            data.as_deref(),
+            null,
+            ttl.as_deref(),
+            path.as_deref(),
+        ),
         Commands::Watch { key, path, format } => {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
             run_watch(&config, &key, path.as_deref(), output_format)
@@ -422,9 +440,10 @@ fn run_kill(socket_path: &std::path::Path, timeout_secs: u64) -> ExitCode {
     ExitCode::from(1)
 }
 
-/// Find the pid of the running daemon. Asks the daemon itself via the status socket —
-/// that is the only source that cannot go stale. Falls back to the pid file only if
-/// the status query doesn't return a pid (older daemons pre-dating the `pid` field).
+/// Find the pid of the running daemon. Asks the daemon itself via
+/// `introspect{daemon}` — that is the only source that cannot go stale.
+/// Falls back to the pid file only if the introspect query doesn't return
+/// a pid (older daemons pre-dating the `pid` field on introspect).
 fn resolve_daemon_pid(
     pid_path: &std::path::Path,
     socket_path: &std::path::Path,
@@ -451,7 +470,7 @@ fn resolve_daemon_pid(
     ))
 }
 
-/// Open a one-shot connection to the daemon and read `pid` out of the status response.
+/// Open a one-shot connection to the daemon and read `pid` out of the introspect{daemon} response.
 fn query_daemon_pid(socket_path: &std::path::Path) -> Option<i32> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
@@ -462,7 +481,9 @@ fn query_daemon_pid(socket_path: &std::path::Path) -> Option<i32> {
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))
         .ok()?;
-    stream.write_all(b"{\"op\":\"status\"}\n").ok()?;
+    stream
+        .write_all(b"{\"op\":\"introspect\",\"subject\":\"daemon\"}\n")
+        .ok()?;
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -559,7 +580,7 @@ fn run_get(
     path: Option<&str>,
     format: OutputFormat,
     force: bool,
-    _wait: bool,
+    wait: bool,
 ) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
@@ -577,7 +598,7 @@ fn run_get(
         if keys.len() == 1 && format.is_server_side() {
             let key = &keys[0];
             match client
-                .get_formatted_with_flags(key, path, format.server_format(), force, false)
+                .get_formatted_with_flags(key, path, format.server_format(), force, wait)
                 .await
             {
                 Ok(text) => {
@@ -614,7 +635,10 @@ fn run_get(
             let wire_fmt = format.server_format();
             let mut any_error = false;
             for key in keys {
-                match session.get_formatted(key, None, wire_fmt).await {
+                match session
+                    .get_formatted_with_flags(key, None, wire_fmt, force, wait)
+                    .await
+                {
                     Ok(text) => {
                         if !text.is_empty() {
                             println!("{text}");
@@ -638,7 +662,7 @@ fn run_get(
         let mut responses: Vec<(String, beachcomber::protocol::Response)> = Vec::new();
         let mut any_error = false;
         for key in keys {
-            match session.get_with_flags(key, None, force, false).await {
+            match session.get_with_flags(key, None, force, wait).await {
                 Ok(response) => {
                     if !response.ok {
                         eprintln!(
@@ -820,14 +844,17 @@ fn run_status(
     }
 
     let is_tty = std::io::stdout().is_terminal();
-    let no_color =
-        no_color_flag || std::env::var("NO_COLOR").is_ok() || !is_tty;
+    let no_color = no_color_flag || std::env::var("NO_COLOR").is_ok() || !is_tty;
 
     let preset = format.unwrap_or(if is_tty { "human" } else { "tsv" });
     let opts = RenderOpts {
         is_tty,
         no_color,
-        max_width: if no_trunc { None } else { Some(max_width.unwrap_or(40)) },
+        max_width: if no_trunc {
+            None
+        } else {
+            Some(max_width.unwrap_or(40))
+        },
         no_trunc,
     };
 
@@ -1040,9 +1067,16 @@ fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
     // If the template has no provider.field references, render it directly
     // (it may still contain jinja conditionals, literals, etc.).
     if pairs.is_empty() {
-        return match render_eval_template(template, &serde_json::Value::Object(Default::default())) {
-            Ok(s) => { print!("{s}"); ExitCode::SUCCESS }
-            Err(e) => { eprintln!("template render error: {e}"); ExitCode::from(2) }
+        return match render_eval_template(template, &serde_json::Value::Object(Default::default()))
+        {
+            Ok(s) => {
+                print!("{s}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("template render error: {e}");
+                ExitCode::from(2)
+            }
         };
     }
 
@@ -1095,8 +1129,14 @@ fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
 
         // Render the template with the nested context.
         match render_eval_template(template, &serde_json::Value::Object(ctx)) {
-            Ok(s) => { print!("{s}"); ExitCode::SUCCESS }
-            Err(e) => { eprintln!("template render error: {e}"); ExitCode::from(2) }
+            Ok(s) => {
+                print!("{s}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("template render error: {e}");
+                ExitCode::from(2)
+            }
         }
     })
 }
@@ -1246,7 +1286,14 @@ source <(curl -fsSL https://beachcomber.sh/scripts/chpwd.sh)
 
 fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode {
     const ALL_SUBJECTS: &[&str] = &[
-        "daemon", "config", "providers", "cache", "watches", "backoff", "timers", "demand",
+        "daemon",
+        "config",
+        "providers",
+        "cache",
+        "watches",
+        "backoff",
+        "timers",
+        "demand",
         "procs",
     ];
 
@@ -1268,24 +1315,26 @@ fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode {
     ExitCode::from(worst)
 }
 
-async fn run_check_subjects(
-    config: &Config,
-    subjects: &[&str],
-    procs_duration: Option<u64>,
-) -> u8 {
+async fn run_check_subjects(config: &Config, subjects: &[&str], procs_duration: Option<u64>) -> u8 {
     let socket_path = config.resolve_socket_path();
     let client = beachcomber::client::Client::new(socket_path);
     let mut worst = 0u8;
 
     for &subject in subjects {
         let mut req = serde_json::json!({"op": "introspect", "subject": subject});
-        if subject == "procs" && let Some(d) = procs_duration {
+        if subject == "procs"
+            && let Some(d) = procs_duration
+        {
             req["duration_secs"] = serde_json::json!(d);
         }
 
         match client.send_raw(req).await {
             Ok(resp) if resp.ok => {
-                let payload = resp.data.as_ref().cloned().unwrap_or(serde_json::Value::Null);
+                let payload = resp
+                    .data
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
                 let (text, code) = render_subject(subject, &payload);
                 print!("{text}");
                 worst = worst.max(code);
@@ -1343,10 +1392,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .get("version")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            let pid = payload
-                .get("pid")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let pid = payload.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
             let uptime = payload
                 .get("uptime_secs")
                 .and_then(|v| v.as_u64())
@@ -1532,10 +1578,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                         .get("provider")
                         .and_then(|v| v.as_str())
                         .unwrap_or("?");
-                    let stage = entry
-                        .get("stage")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
+                    let stage = entry.get("stage").and_then(|v| v.as_str()).unwrap_or("?");
                     let elapsed = entry
                         .get("elapsed_secs")
                         .and_then(|v| v.as_u64())
@@ -1635,10 +1678,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
             for key in &keys {
                 let k = key.get("key").and_then(|v| v.as_str()).unwrap_or("?");
                 let state = key.get("state").and_then(|v| v.as_str()).unwrap_or("?");
-                let queries = key
-                    .get("query_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                let queries = key.get("query_count").and_then(|v| v.as_u64()).unwrap_or(0);
                 lines.push_str(&format!(
                     "  [INFO] {k}   state={state}  queries={queries}\n"
                 ));
@@ -1667,8 +1707,13 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
             let (vlines, vworst) = render_verdicts(&verdicts);
             worst = worst.max(vworst);
 
-            let total: u64 = samples.iter().map(|s| s.get("count").and_then(|v| v.as_u64()).unwrap_or(0)).sum();
-            lines.push_str(&format!("Procs ({duration}s sample — {total} exec events)\n"));
+            let total: u64 = samples
+                .iter()
+                .map(|s| s.get("count").and_then(|v| v.as_u64()).unwrap_or(0))
+                .sum();
+            lines.push_str(&format!(
+                "Procs ({duration}s sample — {total} exec events)\n"
+            ));
 
             for s in &samples {
                 let cmd = s.get("command").and_then(|v| v.as_str()).unwrap_or("?");
@@ -1684,7 +1729,9 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 });
                 match covered {
                     Some(true) => {
-                        lines.push_str(&format!("  [WARN] {cmd:<20} {count:>8}  beachcomber can replace\n"));
+                        lines.push_str(&format!(
+                            "  [WARN] {cmd:<20} {count:>8}  beachcomber can replace\n"
+                        ));
                         worst = worst.max(1);
                     }
                     Some(false) => {
@@ -1712,8 +1759,14 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
     }
 
     // Append aggregate summary if there are warnings or failures.
-    let warn_count = verdicts.iter().filter(|v| v.get("level").and_then(|l| l.as_str()) == Some("WARN")).count();
-    let fail_count = verdicts.iter().filter(|v| v.get("level").and_then(|l| l.as_str()) == Some("FAIL")).count();
+    let warn_count = verdicts
+        .iter()
+        .filter(|v| v.get("level").and_then(|l| l.as_str()) == Some("WARN"))
+        .count();
+    let fail_count = verdicts
+        .iter()
+        .filter(|v| v.get("level").and_then(|l| l.as_str()) == Some("FAIL"))
+        .count();
     if worst >= 1 {
         lines.push('\n');
         match (fail_count, warn_count) {
@@ -1847,8 +1900,7 @@ mod path_disambiguation_tests {
     #[test]
     fn two_keys_trailing_dot_pops_path() {
         // `comb get git.branch user.name .`
-        let (ks, path) =
-            split_keys_and_path(keys(&["git.branch", "user.name", "."]), None);
+        let (ks, path) = split_keys_and_path(keys(&["git.branch", "user.name", "."]), None);
         assert_eq!(ks, vec!["git.branch", "user.name"]);
         assert_eq!(path.as_deref(), Some("."));
     }
@@ -1886,4 +1938,3 @@ mod path_disambiguation_tests {
         assert_eq!(path.as_deref(), Some("~/myrepo"));
     }
 }
-

@@ -64,7 +64,9 @@ async fn get_force_evicts_and_re_executes() {
 
     // The provider was re-executed inline: the result comes from the real
     // hostname provider, not the seeded "stale-host" value.
-    let name = data["name"].as_str().expect("hostname.name should be a string");
+    let name = data["name"]
+        .as_str()
+        .expect("hostname.name should be a string");
     assert!(
         !name.is_empty(),
         "hostname.name should not be empty after force re-execution"
@@ -175,13 +177,12 @@ async fn force_on_virtual_provider_returns_error() {
     reader.read_line(&mut line).await.unwrap();
 
     let response: Response = serde_json::from_str(&line).unwrap();
-    assert!(!response.ok, "force on virtual provider should return error");
     assert!(
-        response
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("virtual"),
+        !response.ok,
+        "force on virtual provider should return error"
+    );
+    assert!(
+        response.error.as_deref().unwrap_or("").contains("virtual"),
         "error message should mention 'virtual', got: {:?}",
         response.error
     );

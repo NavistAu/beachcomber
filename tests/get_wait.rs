@@ -37,7 +37,10 @@ async fn wait_fresh_entry_is_served_from_cache() {
 
     // Sanity-check the entry is not stale.
     let entry = cache.get("hostname", None).expect("entry must be present");
-    assert!(!entry.is_stale(), "entry with 60s interval must not be stale immediately");
+    assert!(
+        !entry.is_stale(),
+        "entry with 60s interval must not be stale immediately"
+    );
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -55,7 +58,9 @@ async fn wait_fresh_entry_is_served_from_cache() {
 
     let response: Response = serde_json::from_str(&line).unwrap();
     assert!(response.ok, "wait on fresh entry should succeed");
-    let data = response.data.expect("wait on fresh entry should return data");
+    let data = response
+        .data
+        .expect("wait on fresh entry should return data");
 
     // Fresh path: must return the seeded value, not the live provider output.
     assert_eq!(
@@ -90,7 +95,10 @@ async fn wait_stale_entry_evicts_and_re_executes() {
 
     // Confirm it is stale before we send the request.
     let entry = cache.get("hostname", None).expect("entry must be present");
-    assert!(entry.is_stale(), "entry with interval=0 must be stale after 1s");
+    assert!(
+        entry.is_stale(),
+        "entry with interval=0 must be stale after 1s"
+    );
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -107,11 +115,18 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     reader.read_line(&mut line).await.unwrap();
 
     let response: Response = serde_json::from_str(&line).unwrap();
-    assert!(response.ok, "wait on stale entry should succeed after re-execution");
-    let data = response.data.expect("wait on stale entry should return data");
+    assert!(
+        response.ok,
+        "wait on stale entry should succeed after re-execution"
+    );
+    let data = response
+        .data
+        .expect("wait on stale entry should return data");
 
     // The provider was re-executed: the result must not be the seeded stale value.
-    let name = data["name"].as_str().expect("hostname.name must be a string");
+    let name = data["name"]
+        .as_str()
+        .expect("hostname.name must be a string");
     assert!(
         !name.is_empty(),
         "hostname.name must not be empty after re-execution"
@@ -149,7 +164,10 @@ async fn wait_virtual_provider_returns_cached_ignoring_stale() {
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
     let entry = cache.get("mystore", None).expect("entry must be present");
-    assert!(entry.is_stale(), "virtual entry with interval=0 must be stale after 1s");
+    assert!(
+        entry.is_stale(),
+        "virtual entry with interval=0 must be stale after 1s"
+    );
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -171,7 +189,9 @@ async fn wait_virtual_provider_returns_cached_ignoring_stale() {
         response.ok,
         "wait on stale virtual provider must succeed (return cached, not error)"
     );
-    let data = response.data.expect("wait on virtual provider must return data");
+    let data = response
+        .data
+        .expect("wait on virtual provider must return data");
     assert_eq!(
         data["val"].as_str(),
         Some("virtual-value"),
@@ -212,7 +232,9 @@ async fn force_wins_over_wait() {
     assert!(response.ok, "force+wait should succeed");
     let data = response.data.expect("force+wait should return data");
 
-    let name = data["name"].as_str().expect("hostname.name must be a string");
+    let name = data["name"]
+        .as_str()
+        .expect("hostname.name must be a string");
     assert!(
         !name.is_empty(),
         "hostname.name must not be empty after force re-execution"

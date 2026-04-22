@@ -165,10 +165,7 @@ fn row_context(r: &CacheRow) -> minijinja::Value {
             None => serde_json::Value::Null,
         },
     );
-    ctx.insert(
-        "field".into(),
-        serde_json::Value::String(r.field.clone()),
-    );
+    ctx.insert("field".into(), serde_json::Value::String(r.field.clone()));
     ctx.insert("value".into(), r.value.clone());
     ctx.insert("age_ms".into(), serde_json::json!(r.age_ms));
     ctx.insert(
@@ -347,12 +344,7 @@ const ANSI_RESET: &str = "\x1b[0m";
 /// - `color`: apply ANSI dim to stale rows.
 /// - `trunc`: maximum width for the VALUE column (in characters). `None` = no truncation.
 /// - `header`: prepend a PROVIDER / PATH / FIELD / VALUE / AGE / STALE header row.
-fn render_table(
-    rows: &[CacheRow],
-    color: bool,
-    trunc: Option<usize>,
-    header: bool,
-) -> String {
+fn render_table(rows: &[CacheRow], color: bool, trunc: Option<usize>, header: bool) -> String {
     // Column indices: PROVIDER, PATH, FIELD, VALUE, AGE, STALE
     const COLS: usize = 6;
 
@@ -509,10 +501,9 @@ impl Predicate {
         match self {
             Predicate::ProviderEq(v) => &r.provider == v,
             Predicate::ProviderGlob(pat) => simple_glob_match(pat, &r.provider),
-            Predicate::PathGlob(pat) => r
-                .path
-                .as_deref()
-                .is_some_and(|p| simple_glob_match(pat, p)),
+            Predicate::PathGlob(pat) => {
+                r.path.as_deref().is_some_and(|p| simple_glob_match(pat, p))
+            }
             Predicate::PathDash => r.path.is_none(),
             Predicate::FieldEq(v) => &r.field == v,
             Predicate::Stale(b) => r.stale == *b,

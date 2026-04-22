@@ -72,7 +72,13 @@ async fn get_variadic_partial_failure_still_emits_successful_key() {
     // The server returns ok:false for the missing key rather than closing the connection,
     // allowing the caller to continue fetching remaining keys.
     assert!(!resp_bad.ok);
-    assert!(resp_bad.error.as_deref().unwrap_or("").contains("unknown provider"));
+    assert!(
+        resp_bad
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("unknown provider")
+    );
 }
 
 #[tokio::test]

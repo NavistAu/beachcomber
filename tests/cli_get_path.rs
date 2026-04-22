@@ -115,6 +115,10 @@ async fn explicit_path_in_get_resolves_correctly() {
     // Pass path directly to get() rather than using set_context.
     let resp = client.get("git.branch", Some(path)).await.unwrap();
 
-    assert!(resp.ok, "expected ok response with explicit path: {:?}", resp.error);
+    assert!(
+        resp.ok,
+        "expected ok response with explicit path: {:?}",
+        resp.error
+    );
     assert_eq!(resp.data.as_ref().unwrap(), "main");
 }
