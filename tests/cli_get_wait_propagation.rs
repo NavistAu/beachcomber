@@ -1,9 +1,13 @@
-// Verify that run_get's path for single-key server-side formats (text/sh)
-// and the multi-key client-side loop propagate wait=true to the wire.
+// Locks in wait=true semantics at the Client API layer that run_get delegates
+// to: Client::get_formatted_with_flags (single-key server-side text path) and
+// ClientSession::get_with_flags (multi-key client-side loop).
 //
-// Phase 1 Round 3 bug: wait was captured and discarded. This test drives
-// the Client API as run_get does (after the fix) and asserts behavior that
-// depends on wait=true actually reaching the server (stale-re-execute).
+// run_get itself lives in the binary crate and cannot be called from an
+// integration test; its flag-threading is guarded by the compiler + clippy
+// (the previously-unused `_wait` would re-trigger a warning if it came back).
+//
+// Phase 1 Round 3 bug: run_get captured `wait` then discarded it via `_wait`,
+// so every CLI --wait invocation silently behaved as wait=false.
 
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
