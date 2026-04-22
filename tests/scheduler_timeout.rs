@@ -5,6 +5,7 @@ use beachcomber::provider::{
     FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
 };
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
+use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
 
 struct SlowProvider;
@@ -46,7 +47,7 @@ async fn slow_provider_times_out() {
     let mut config = Config::default();
     config.daemon.provider_timeout_secs = Some(1);
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
+    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config, Arc::new(WatcherRegistry::new()));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle
@@ -77,7 +78,7 @@ async fn fast_provider_completes_within_timeout() {
     let mut config = Config::default();
     config.daemon.provider_timeout_secs = Some(5);
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
+    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config, Arc::new(WatcherRegistry::new()));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle

@@ -26,7 +26,7 @@ impl TestServer {
         let registry = Arc::new(ProviderRegistry::with_defaults());
         let config = Config::default();
 
-        let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config);
+        let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config, Arc::new(WatcherRegistry::new()));
         rt.spawn(async move { scheduler.run().await });
 
         // Wait for scheduler to compute Once providers.

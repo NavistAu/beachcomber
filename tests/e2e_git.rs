@@ -52,7 +52,7 @@ async fn setup_daemon() -> (
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config);
+    let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config, watchers.clone());
     tokio::spawn(async move { scheduler.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 

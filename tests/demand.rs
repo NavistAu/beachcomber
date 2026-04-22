@@ -2,6 +2,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
+use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -10,7 +11,7 @@ async fn query_activity_triggers_provider_execution() {
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
+    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config, Arc::new(WatcherRegistry::new()));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // Send query activity for hostname (a Once provider — should execute immediately)
@@ -39,7 +40,7 @@ async fn query_activity_sets_up_polling() {
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
+    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config, Arc::new(WatcherRegistry::new()));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // Query load provider (Poll with 10s interval)
@@ -77,7 +78,7 @@ async fn repeated_queries_keep_data_warm() {
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
+    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config, Arc::new(WatcherRegistry::new()));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // Simulate repeated queries (like a statusline)

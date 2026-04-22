@@ -12,6 +12,7 @@ use crate::config::Config;
 use crate::provider::InvalidationStrategy;
 use crate::provider::registry::ProviderRegistry;
 use crate::watcher::FsWatcher;
+use crate::watcher_registry::WatcherRegistry;
 
 /// Messages sent from the Server to the Scheduler.
 #[derive(Debug)]
@@ -372,6 +373,8 @@ pub struct Scheduler {
     /// Monotonically increasing counter bumped on every tick. Used by the watchdog
     /// to detect scheduler stalls.
     heartbeat: Arc<AtomicU64>,
+    /// WatcherRegistry — gc() called periodically to remove dead channel entries.
+    watchers: Arc<WatcherRegistry>,
 }
 
 impl Scheduler {
@@ -379,6 +382,7 @@ impl Scheduler {
         cache: Arc<Cache>,
         registry: Arc<ProviderRegistry>,
         config: Config,
+        watchers: Arc<WatcherRegistry>,
     ) -> (SchedulerHandle, Scheduler) {
         let (tx, rx) = mpsc::channel(256);
         let handle = SchedulerHandle::new(tx);
@@ -392,6 +396,7 @@ impl Scheduler {
             pending_rerun: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             failure_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
             heartbeat,
+            watchers,
         };
         (handle, scheduler)
     }
@@ -647,6 +652,10 @@ impl Scheduler {
         // Tick every second to check poll timers.
         let mut tick = interval(Duration::from_secs(1));
 
+        // Periodic GC tick to remove dead channel entries from WatcherRegistry.
+        let mut gc_tick = interval(Duration::from_secs(60));
+        gc_tick.tick().await; // skip the immediate first tick
+
         loop {
             tokio::select! {
                 // Scheduler messages from server.
@@ -764,6 +773,11 @@ impl Scheduler {
                     self.handle_fs_event(paths, &watch_paths);
                 }
 
+                // Periodic GC: remove dead broadcast channel entries.
+                _ = gc_tick.tick() => {
+                    self.watchers.gc();
+                }
+
                 // Poll tick — check which subscriptions are due.
                 _ = tick.tick() => {
                     self.heartbeat.fetch_add(1, Ordering::Relaxed);
@@ -858,6 +872,10 @@ impl Scheduler {
 
         let mut tick = interval(Duration::from_secs(1));
 
+        // Periodic GC tick to remove dead channel entries from WatcherRegistry.
+        let mut gc_tick = interval(Duration::from_secs(60));
+        gc_tick.tick().await; // skip the immediate first tick
+
         // Idle shutdown tracking.
         let mut last_activity = Instant::now();
         let idle_shutdown_secs = self.config.lifecycle.idle_shutdown_secs;
@@ -941,6 +959,10 @@ impl Scheduler {
                             }
                         }
                     }
+                }
+                // Periodic GC: remove dead broadcast channel entries.
+                _ = gc_tick.tick() => {
+                    self.watchers.gc();
                 }
                 _ = tick.tick() => {
                     self.heartbeat.fetch_add(1, Ordering::Relaxed);
@@ -1122,5 +1144,53 @@ mod tests {
             &root,
             Path::new("/proj"),
         ));
+    }
+}
+
+/// Test helpers for exercising scheduler internals without spinning up the full daemon.
+/// This module is always compiled so integration tests in `tests/` can access it.
+#[doc(hidden)]
+pub mod test_support {
+    use super::WatcherRegistry;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    /// Spin a lightweight task that fires the GC tick at `gc_interval_dur` using the
+    /// real `WatcherRegistry`. Dropping the returned `GcHarness` cancels the task.
+    pub fn start_with_gc_interval(
+        watchers: Arc<WatcherRegistry>,
+        gc_interval_dur: Duration,
+    ) -> GcHarness {
+        let token = CancellationToken::new();
+        let child_token = token.clone();
+        let handle = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(gc_interval_dur);
+            tick.tick().await; // skip the immediate first tick
+            loop {
+                tokio::select! {
+                    _ = child_token.cancelled() => break,
+                    _ = tick.tick() => { watchers.gc(); }
+                }
+            }
+        });
+        GcHarness {
+            token,
+            handle: Some(handle),
+        }
+    }
+
+    pub struct GcHarness {
+        token: CancellationToken,
+        handle: Option<tokio::task::JoinHandle<()>>,
+    }
+
+    impl Drop for GcHarness {
+        fn drop(&mut self) {
+            self.token.cancel();
+            if let Some(h) = self.handle.take() {
+                h.abort();
+            }
+        }
     }
 }

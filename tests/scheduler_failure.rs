@@ -5,6 +5,7 @@ use beachcomber::provider::{
     FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult,
 };
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
+use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -44,7 +45,7 @@ async fn repeated_failures_trigger_backoff() {
     let registry = Arc::new(registry);
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config);
+    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config, Arc::new(WatcherRegistry::new()));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // Refresh 10 times with small delays
