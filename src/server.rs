@@ -1,4 +1,5 @@
 use crate::cache::Cache;
+use crate::config::Config;
 use crate::provider::InvalidationStrategy;
 use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
@@ -21,6 +22,7 @@ pub struct Server {
     watchers: Arc<WatcherRegistry>,
     start_instant: Instant,
     requests_total: Arc<AtomicU64>,
+    config: Arc<Config>,
 }
 
 impl Server {
@@ -39,6 +41,27 @@ impl Server {
             watchers,
             start_instant: Instant::now(),
             requests_total: Arc::new(AtomicU64::new(0)),
+            config: Arc::new(Config::load()),
+        }
+    }
+
+    pub fn new_with_config(
+        socket_path: PathBuf,
+        cache: Arc<Cache>,
+        registry: Arc<ProviderRegistry>,
+        scheduler: Option<SchedulerHandle>,
+        watchers: Arc<WatcherRegistry>,
+        config: Config,
+    ) -> Self {
+        Self {
+            socket_path,
+            cache,
+            registry,
+            scheduler,
+            watchers,
+            start_instant: Instant::now(),
+            requests_total: Arc::new(AtomicU64::new(0)),
+            config: Arc::new(config),
         }
     }
 
@@ -77,6 +100,7 @@ impl Server {
                     let start_instant = self.start_instant;
                     let requests_total = Arc::clone(&self.requests_total);
                     let socket_path = self.socket_path.clone();
+                    let config = Arc::clone(&self.config);
                     tokio::spawn(async move {
                         if let Err(e) = handle_connection(
                             stream,
@@ -87,6 +111,7 @@ impl Server {
                             start_instant,
                             requests_total,
                             socket_path,
+                            config,
                         )
                         .await
                         {
@@ -112,6 +137,7 @@ async fn handle_connection(
     start_instant: Instant,
     requests_total: Arc<AtomicU64>,
     socket_path: PathBuf,
+    config: Arc<Config>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -156,6 +182,7 @@ async fn handle_connection(
                     &watchers,
                     &requests_total,
                     &socket_path,
+                    &config,
                 )
                 .await;
                 let response_bytes = format_response(&request, &response);
@@ -360,6 +387,7 @@ async fn handle_request(
     watchers: &WatcherRegistry,
     requests_total: &AtomicU64,
     socket_path: &std::path::Path,
+    config: &Config,
 ) -> Response {
     match request {
         Request::Get {
@@ -763,6 +791,12 @@ async fn handle_request(
             IntrospectSubject::Providers => {
                 handle_introspect_providers(registry, scheduler).await
             }
+            IntrospectSubject::Config => {
+                handle_introspect_config(config)
+            }
+            IntrospectSubject::Cache => {
+                handle_introspect_cache(cache)
+            }
             _ => Response::error(format!(
                 "introspect subject '{:?}' not yet implemented",
                 subject
@@ -939,6 +973,65 @@ async fn handle_introspect_providers(
     Response::ok(
         serde_json::json!({
             "providers": providers_out,
+            "verdicts": verdicts,
+        }),
+        0,
+        false,
+    )
+}
+
+fn handle_introspect_config(config: &Config) -> Response {
+    let path = Config::config_path_if_exists();
+    let path_json = match path {
+        Some(ref p) => serde_json::Value::String(p.display().to_string()),
+        None => serde_json::Value::Null,
+    };
+    let provider_count = config.providers.len() as u64;
+    let verdicts = vec![
+        serde_json::json!({"level": "PASS", "message": "config parsed"}),
+        serde_json::json!({"level": "PASS", "message": format!("{provider_count} provider definitions loaded")}),
+    ];
+    Response::ok(
+        serde_json::json!({
+            "path": path_json,
+            "parsed": true,
+            "errors": [],
+            "provider_count_from_config": provider_count,
+            "verdicts": verdicts,
+        }),
+        0,
+        false,
+    )
+}
+
+fn handle_introspect_cache(cache: &Cache) -> Response {
+    let entries = cache.list_entries();
+    let total = entries.len() as u64;
+    let stale = entries.iter().filter(|e| e.stale).count() as u64;
+    let ratio = if total == 0 {
+        0.0_f64
+    } else {
+        stale as f64 / total as f64
+    };
+
+    let mut verdicts = vec![serde_json::json!({
+        "level": "PASS",
+        "message": format!("{total} entries"),
+    })];
+    if stale > 0 {
+        verdicts.push(serde_json::json!({
+            "level": "WARN",
+            "message": format!("{stale} stale — run `comb status --filter stale=true` to inspect"),
+        }));
+    } else if total > 0 {
+        verdicts.push(serde_json::json!({"level": "PASS", "message": "no stale entries"}));
+    }
+
+    Response::ok(
+        serde_json::json!({
+            "total_entries": total,
+            "stale_entries": stale,
+            "stale_ratio": ratio,
             "verdicts": verdicts,
         }),
         0,

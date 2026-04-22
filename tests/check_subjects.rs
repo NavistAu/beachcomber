@@ -126,3 +126,50 @@ async fn introspect_providers_lists_catalog_with_scope_and_fields() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn introspect_config_reports_path_and_parse_status() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "config"}))
+        .await
+        .unwrap();
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let d = resp.data.unwrap();
+    assert!(d.get("path").is_some(), "path key present (may be null)");
+    assert!(d.get("parsed").and_then(|v| v.as_bool()).is_some());
+    assert!(d.get("errors").and_then(|v| v.as_array()).is_some());
+    assert!(
+        d.get("provider_count_from_config").and_then(|v| v.as_u64()).is_some(),
+        "provider_count_from_config missing or not a number"
+    );
+    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).unwrap();
+    assert!(!verdicts.is_empty());
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn introspect_cache_reports_totals_and_stale_ratio() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "cache"}))
+        .await
+        .unwrap();
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let d = resp.data.unwrap();
+    assert!(d.get("total_entries").and_then(|v| v.as_u64()).is_some());
+    assert!(d.get("stale_entries").and_then(|v| v.as_u64()).is_some());
+    assert!(d.get("stale_ratio").and_then(|v| v.as_f64()).is_some());
+    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).unwrap();
+    assert!(!verdicts.is_empty());
+    // PASS count message should be present
+    let has_count = verdicts.iter().any(|v| {
+        v["level"] == "PASS" && v["message"].as_str().unwrap_or("").contains("entries")
+    });
+    assert!(has_count, "count PASS verdict missing: {verdicts:?}");
+
+    handle.abort();
+}
