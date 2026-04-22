@@ -23,11 +23,12 @@ cargo fmt -- --check
 
 **Test runner:** `cargo-nextest` is the blessed runner. Run `mise install` to get it alongside Rust — it is declared in `mise.toml`. Use `cargo nextest run` (full runner, 2m kill-on-hang + 30s per-test) or the shorter `cargo t` alias we ship. Plain `cargo test` triggers an advisory that fires immediately on binary startup (via `ctor`) before any test runs — it prints an instructive message and exits with code 2. Set `NEXTEST=1` in the environment to bypass it intentionally.
 
-Tests that require FSEvents or are environment-sensitive:
-- `watcher_*` tests — need real filesystem watching
+Tests that are environment-sensitive:
 - `uptime_provider_executes` — needs unsandboxed environment
 
-CI skips these with: `cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'`.
+CI skips with: `cargo nextest run -E 'not test(uptime_provider_executes)'`.
+
+**Watcher tests** use `FsWatcher::new_polling` (Phase 13 stabilization), so they run reliably under sandboxed hosts that can't use FSEvents / inotify. Production code still uses `FsWatcher::new` which picks the kernel-native backend.
 
 ## Architecture
 
