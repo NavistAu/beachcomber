@@ -44,6 +44,21 @@ module Beachcomber
       roundtrip(req)
     end
 
+    # Reads a cached value with protocol flags.
+    #
+    # @param key [String]
+    # @param path [String, nil]
+    # @param force [Boolean] bypass cache and recompute
+    # @param wait [Boolean] block until a fresh value is available
+    # @return [Result]
+    def get_with_flags(key, path: nil, force: false, wait: false)
+      req = { op: 'get', key: key }
+      req[:path]  = path if path
+      req[:force] = true if force
+      req[:wait]  = true if wait
+      roundtrip(req)
+    end
+
     # Forces the daemon to recompute a provider/key.
     #
     # @param key [String]
@@ -55,11 +70,55 @@ module Beachcomber
       nil
     end
 
-    # Returns daemon status.
+    # Returns daemon status as a raw Result.
     #
     # @return [Result]
     def status
       roundtrip({ op: 'status' })
+    end
+
+    # Returns daemon status as an array of CacheRow structs.
+    #
+    # @return [Array<CacheRow>]
+    def status_rows
+      resp_obj = roundtrip_raw({ op: 'status' })
+      parse_cache_rows(resp_obj)
+    end
+
+    # Sends a hello handshake and returns server info.
+    #
+    # @return [HelloInfo]
+    def hello
+      resp = roundtrip_raw({ op: 'hello' })
+      parse_hello(resp)
+    end
+
+    # Writes a value into the daemon cache.
+    #
+    # @param key [String]
+    # @param data [Object, nil]
+    # @param ttl [Numeric, nil] time-to-live in seconds
+    # @param path [String, nil]
+    # @return [nil]
+    def put(key, data = nil, ttl: nil, path: nil)
+      req = { op: 'put', key: key }
+      req[:data] = data unless data.nil?
+      req[:ttl]  = ttl  if ttl
+      req[:path] = path if path
+      roundtrip(req)
+      nil
+    end
+
+    # Introspects a daemon subsystem.
+    #
+    # @param subject [String] one of the IntrospectSubject constants
+    # @param duration_secs [Numeric, nil]
+    # @return [IntrospectResponse]
+    def introspect(subject, duration_secs: nil)
+      req = { op: 'introspect', subject: subject.to_s }
+      req[:duration_secs] = duration_secs if duration_secs
+      resp = roundtrip_raw(req)
+      parse_introspect(subject.to_s, resp)
     end
 
     # Closes the underlying socket connection.
@@ -70,15 +129,20 @@ module Beachcomber
     private
 
     def roundtrip(req)
+      resp = roundtrip_raw(req)
+      build_result(resp)
+    end
+
+    def roundtrip_raw(req)
       line = JSON.generate(req) + "\n"
       @socket.write(line)
       raw = @socket.gets
       raise ProtocolError, "connection closed before response" if raw.nil?
 
-      parse_response(raw.chomp)
+      parse_response_hash(raw.chomp)
     end
 
-    def parse_response(raw)
+    def parse_response_hash(raw)
       begin
         resp = JSON.parse(raw)
       rescue JSON::ParserError => e
@@ -89,17 +153,70 @@ module Beachcomber
         raise ProtocolError, "expected JSON object, got #{resp.class}"
       end
 
-      ok     = resp['ok']
-      data   = resp['data']
-      age_ms = (resp['age_ms'] || 0).to_i
-      stale  = resp['stale'] == true
-      error  = resp['error']
-
-      unless ok
-        raise ServerError, (error || 'unknown error')
+      unless resp['ok']
+        raise ServerError, (resp['error'] || 'unknown error')
       end
 
-      Result.new(ok: ok, data: data, age_ms: age_ms, stale: stale, error: error)
+      resp
+    end
+
+    def build_result(resp)
+      Result.new(
+        ok:     resp['ok'],
+        data:   resp['data'],
+        age_ms: (resp['age_ms'] || 0).to_i,
+        stale:  resp['stale'] == true,
+        error:  resp['error'],
+      )
+    end
+
+    def parse_hello(resp)
+      data = resp["data"] || {}
+      HelloInfo.new(
+        protocol_version: data["protocol_version"].to_s,
+        daemon_version:   data["daemon_version"].to_s,
+      )
+    end
+
+    def parse_cache_rows(resp)
+      arr = resp["data"]
+      raise ProtocolError, "status data is not an array" unless arr.is_a?(Array)
+      arr.map do |row|
+        CacheRow.new(
+          provider: row["provider"].to_s,
+          field:    row["field"],
+          path:     row["path"],
+          value:    row["value"],
+          age_ms:   Integer(row["age_ms"] || 0),
+          stale:    row["stale"] == true,
+        )
+      end
+    end
+
+    def parse_daemon_health(data)
+      DaemonHealth.new(
+        pid:             Integer(data["pid"] || 0),
+        version:         data["version"].to_s,
+        uptime_secs:     Integer(data["uptime_secs"] || 0),
+        socket_path:     data["socket_path"].to_s,
+        config_path:     data["config_path"],
+        requests_total:  Integer(data["requests_total"] || 0),
+        in_flight:       Integer(data["in_flight"] || 0),
+        active_watchers: Integer(data["active_watchers"] || 0),
+        cache_entries:   Integer(data["cache_entries"] || 0),
+        verdicts: (data["verdicts"] || []).map do |v|
+          Verdict.new(level: v["level"].to_s, message: v["message"].to_s)
+        end,
+      )
+    end
+
+    def parse_introspect(subject, resp)
+      data = resp["data"]
+      if subject == IntrospectSubject::DAEMON && data.is_a?(Hash)
+        IntrospectResponse.new(subject: subject, daemon: parse_daemon_health(data), other: nil)
+      else
+        IntrospectResponse.new(subject: subject, daemon: nil, other: data)
+      end
     end
   end
 
@@ -130,7 +247,18 @@ module Beachcomber
     def get(key, path: nil)
       req = { op: 'get', key: key }
       req[:path] = path if path
-      roundtrip(req)
+      with_session { |s| s.send(:roundtrip, req) }
+    end
+
+    # Reads a cached value with protocol flags.
+    #
+    # @param key [String]
+    # @param path [String, nil]
+    # @param force [Boolean] bypass cache and recompute
+    # @param wait [Boolean] block until a fresh value is available
+    # @return [Result]
+    def get_with_flags(key, path: nil, force: false, wait: false)
+      with_session { |s| s.get_with_flags(key, path: path, force: force, wait: wait) }
     end
 
     # Forces the daemon to recompute a provider/key.
@@ -142,15 +270,63 @@ module Beachcomber
     def refresh(key, path: nil)
       req = { op: 'refresh', key: key }
       req[:path] = path if path
-      roundtrip(req)
+      with_session { |s| s.send(:roundtrip, req) }
       nil
     end
 
-    # Returns scheduler and cache status from the daemon.
+    # Returns daemon status as a raw Result.
     #
     # @return [Result]
     def status
-      roundtrip({ op: 'status' })
+      with_session { |s| s.status }
+    end
+
+    # Returns daemon status as an array of CacheRow structs.
+    #
+    # @return [Array<CacheRow>]
+    def status_rows
+      with_session { |s| s.status_rows }
+    end
+
+    # Sends a hello handshake and returns server info.
+    #
+    # @return [HelloInfo]
+    def hello
+      with_session { |s| s.hello }
+    end
+
+    # Writes a value into the daemon cache.
+    #
+    # @param key [String]
+    # @param data [Object, nil]
+    # @param ttl [Numeric, nil] time-to-live in seconds
+    # @param path [String, nil]
+    # @return [nil]
+    def put(key, data = nil, ttl: nil, path: nil)
+      with_session { |s| s.put(key, data, ttl: ttl, path: path) }
+    end
+
+    # Introspects a daemon subsystem.
+    #
+    # @param subject [String] one of the IntrospectSubject constants
+    # @param duration_secs [Numeric, nil]
+    # @return [IntrospectResponse]
+    def introspect(subject, duration_secs: nil)
+      with_session { |s| s.introspect(subject, duration_secs: duration_secs) }
+    end
+
+    # Opens a persistent watch subscription. Returns a WatchStream (Enumerable).
+    # The caller is responsible for closing the stream.
+    #
+    # @param key [String]
+    # @param path [String, nil]
+    # @return [WatchStream]
+    def watch(key, path: nil)
+      sock = open_socket
+      req  = { op: 'watch', key: key }
+      req[:path] = path if path
+      sock.write(JSON.generate(req) + "\n")
+      WatchStream.new(sock)
     end
 
     # Opens a persistent session and yields it to the block. The connection is
@@ -159,30 +335,29 @@ module Beachcomber
     # @yield [Session]
     # @return the block's return value
     def session
-      sock    = dial
-      session = Session.new(sock, @timeout)
-      yield session
+      sock = open_socket
+      sess = Session.new(sock, @timeout)
+      yield sess
     ensure
-      session&.close
+      sess&.close
     end
 
     private
 
-    def roundtrip(req)
-      sock = dial
+    def with_session(&block)
+      sock = open_socket
       begin
         s = Session.new(sock, @timeout)
-        s.send(:roundtrip, req)
+        block.call(s)
       ensure
         sock.close unless sock.closed?
       end
     end
 
-    def dial
+    def open_socket
       sock = Socket.new(:UNIX, :STREAM)
       addr = Socket.pack_sockaddr_un(@socket_path)
 
-      # Apply timeout to both connect and subsequent reads/writes.
       sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_SNDTIMEO, timeval(@timeout))
       sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVTIMEO, timeval(@timeout))
 
