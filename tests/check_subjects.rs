@@ -86,3 +86,43 @@ async fn introspect_daemon_returns_expected_fields() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn introspect_providers_lists_catalog_with_scope_and_fields() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "providers"}))
+        .await
+        .expect("providers introspect");
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let data = resp.data.expect("payload present");
+
+    let providers = data.get("providers").and_then(|v| v.as_array()).expect("providers array");
+    assert!(!providers.is_empty(), "at least one provider registered");
+
+    // Check a known global provider like hostname
+    let hostname = providers.iter().find(|p| p["name"] == "hostname");
+    if let Some(h) = hostname {
+        assert_eq!(h["source"].as_str(), Some("builtin"));
+        assert_eq!(h["scope"].as_str(), Some("global"));
+        assert!(h.get("fields").and_then(|v| v.as_array()).is_some());
+        assert!(h.get("invalidation").is_some());
+    }
+
+    // Check a path-scoped provider (git)
+    let git = providers.iter().find(|p| p["name"] == "git");
+    if let Some(g) = git {
+        assert_eq!(g["scope"].as_str(), Some("path"));
+    }
+
+    let verdicts = data.get("verdicts").and_then(|v| v.as_array()).expect("verdicts");
+    assert!(!verdicts.is_empty());
+    // PASS with count message should be present
+    let has_count_pass = verdicts.iter().any(|v| {
+        v["level"] == "PASS" && v["message"].as_str().unwrap_or("").contains("registered")
+    });
+    assert!(has_count_pass, "count PASS verdict missing: {verdicts:?}");
+
+    handle.abort();
+}

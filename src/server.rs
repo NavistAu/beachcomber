@@ -1,7 +1,9 @@
 use crate::cache::Cache;
+use crate::provider::InvalidationStrategy;
 use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
-use crate::scheduler::{SchedulerHandle, SchedulerMessage};
+use crate::provider::ProviderSource;
+use crate::scheduler::{BackoffInfo, SchedulerHandle, SchedulerMessage};
 use crate::watcher_registry::WatcherRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -758,6 +760,9 @@ async fn handle_request(
                     cache_entries,
                 )
             }
+            IntrospectSubject::Providers => {
+                handle_introspect_providers(registry, scheduler).await
+            }
             _ => Response::error(format!(
                 "introspect subject '{:?}' not yet implemented",
                 subject
@@ -812,6 +817,133 @@ fn handle_introspect_daemon(
     });
 
     Response::ok(data, 0, false)
+}
+
+fn summarize_invalidation(strategy: &InvalidationStrategy) -> String {
+    match strategy {
+        InvalidationStrategy::Once => "once".to_string(),
+        InvalidationStrategy::Poll { interval_secs, .. } => format!("poll {interval_secs}s"),
+        InvalidationStrategy::Watch {
+            patterns,
+            fallback_poll_secs,
+        } => {
+            let pats = patterns.join(",");
+            match fallback_poll_secs {
+                Some(s) => format!("watch {pats} + poll {s}s"),
+                None => format!("watch {pats}"),
+            }
+        }
+        InvalidationStrategy::WatchAndPoll {
+            patterns,
+            interval_secs,
+            ..
+        } => {
+            let pats = patterns.join(",");
+            format!("watch {pats} + poll {interval_secs}s")
+        }
+    }
+}
+
+async fn handle_introspect_providers(
+    registry: &ProviderRegistry,
+    scheduler: Option<&SchedulerHandle>,
+) -> Response {
+    let backoff_list: Vec<BackoffInfo> = if let Some(s) = scheduler {
+        s.get_status()
+            .await
+            .map(|st| st.backoff)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let mut providers_out = Vec::new();
+    let mut verdicts = Vec::new();
+
+    let mut names = registry.list();
+    names.sort();
+
+    for name in &names {
+        let source = registry
+            .get_source(name)
+            .map(|s| match s {
+                ProviderSource::Builtin => "builtin",
+                ProviderSource::Script => "script",
+                ProviderSource::Virtual => "virtual",
+            })
+            .unwrap_or("unknown");
+
+        let (scope, fields, invalidation) = if let Some(p) = registry.get(name) {
+            let meta = p.metadata();
+            let scope = if meta.global { "global" } else { "path" };
+            let fields: Vec<serde_json::Value> = meta
+                .fields
+                .iter()
+                .map(|f| {
+                    let type_str = match f.field_type {
+                        crate::provider::FieldType::String => "string",
+                        crate::provider::FieldType::Int => "int",
+                        crate::provider::FieldType::Bool => "bool",
+                        crate::provider::FieldType::Float => "float",
+                        crate::provider::FieldType::Object => "object",
+                    };
+                    serde_json::json!({
+                        "name": f.name,
+                        "type": type_str,
+                    })
+                })
+                .collect();
+            let invalidation = summarize_invalidation(&meta.invalidation);
+            (scope, fields, invalidation)
+        } else {
+            ("global", Vec::new(), "data-only".to_string())
+        };
+
+        let relevant: Vec<&BackoffInfo> = backoff_list.iter().filter(|b| &b.provider == name).collect();
+        let in_backoff = if relevant.is_empty() {
+            serde_json::Value::Null
+        } else {
+            let worst = relevant.iter().max_by_key(|b| b.elapsed_secs).unwrap();
+            serde_json::json!({
+                "stage": worst.stage,
+                "elapsed_secs": worst.elapsed_secs,
+            })
+        };
+
+        if !relevant.is_empty() {
+            let worst = relevant.iter().max_by_key(|b| b.elapsed_secs).unwrap();
+            verdicts.push(serde_json::json!({
+                "level": "WARN",
+                "message": format!("{name} in backoff {}s (stage={})", worst.elapsed_secs, worst.stage)
+            }));
+        }
+
+        providers_out.push(serde_json::json!({
+            "name": name,
+            "source": source,
+            "scope": scope,
+            "fields": fields,
+            "invalidation": invalidation,
+            "in_backoff": in_backoff,
+        }));
+    }
+
+    verdicts.insert(
+        0,
+        serde_json::json!({
+            "level": "PASS",
+            "message": format!("{} providers registered", names.len()),
+        }),
+    );
+
+    Response::ok(
+        serde_json::json!({
+            "providers": providers_out,
+            "verdicts": verdicts,
+        }),
+        0,
+        false,
+    )
 }
 
 fn format_response(request: &Request, response: &Response) -> String {
