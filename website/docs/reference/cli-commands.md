@@ -68,11 +68,23 @@ comb g.s git .
 # branch=main
 # dirty=false
 
-# Field metadata — append :age, :stale, or :source to any key
+# Field metadata — append a colon suffix to retrieve metadata instead of the value
 comb g git.branch:age            # → 1523 (age in ms)
 comb g git.branch:stale          # → false
-comb g git.branch:source         # → cache
+comb g git.branch:fresh          # → true (inverse of :stale)
+comb g git.branch:cache          # → true (served from cache vs freshly computed)
+comb g git.branch:source         # → builtin (provider kind: builtin, script, or virtual)
 ```
+
+**Metadata suffixes:**
+
+| Suffix | Type | Description |
+|--------|------|-------------|
+| `:age` | int | Milliseconds since the value was last computed |
+| `:stale` | bool | Whether the value is past its expected refresh time |
+| `:fresh` | bool | Inverse of `:stale` — true when the value is within its refresh window |
+| `:cache` | bool | Whether the value was served from cache (`true`) or freshly computed (`false`) |
+| `:source` | string | Provider kind: `builtin`, `script`, or `virtual` |
 
 **Exit codes:**
 - `0` — success, data returned
