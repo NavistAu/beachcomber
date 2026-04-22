@@ -372,6 +372,13 @@ async fn handle_request(
 
             // Force evict: drop the cache entry so the normal miss path re-executes.
             if *force {
+                if registry.get_source(provider_name)
+                    == Some(crate::provider::ProviderSource::Virtual)
+                {
+                    return Response::error(format!(
+                        "cannot --force virtual provider '{provider_name}': no source to re-execute from"
+                    ));
+                }
                 cache.remove(provider_name, effective_path.as_deref());
             }
 
