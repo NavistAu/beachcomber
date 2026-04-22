@@ -1,4 +1,6 @@
 use dashmap::DashMap;
+use std::mem::ManuallyDrop;
+use std::sync::Arc;
 use tokio::sync::broadcast;
 
 type WatchKey = String;
@@ -14,6 +16,44 @@ pub struct WatcherRegistry {
     channels: DashMap<WatchKey, broadcast::Sender<()>>,
 }
 
+/// A subscription guard that holds a broadcast receiver and a weak reference back to
+/// the registry. When dropped, it calls `gc_key` to remove the map entry if no
+/// receivers remain.
+///
+/// The receiver is wrapped in `ManuallyDrop` so we can drop it explicitly before
+/// querying `receiver_count` — otherwise our own receiver would still count and
+/// gc_key would see `receiver_count > 0`.
+pub struct Subscription {
+    inner: ManuallyDrop<broadcast::Receiver<()>>,
+    registry: std::sync::Weak<WatcherRegistry>,
+    key: WatchKey,
+}
+
+impl Subscription {
+    /// Await the next notification on the subscribed key.
+    pub async fn recv(&mut self) -> Result<(), broadcast::error::RecvError> {
+        self.inner.recv().await
+    }
+
+    /// Try to receive without awaiting.
+    pub fn try_recv(&mut self) -> Result<(), broadcast::error::TryRecvError> {
+        self.inner.try_recv()
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        // Drop the receiver first so it is no longer counted by receiver_count.
+        // SAFETY: `inner` is never used after this point — we are in Drop.
+        unsafe {
+            ManuallyDrop::drop(&mut self.inner);
+        }
+        if let Some(reg) = self.registry.upgrade() {
+            reg.gc_key(&self.key);
+        }
+    }
+}
+
 impl WatcherRegistry {
     pub fn new() -> Self {
         Self {
@@ -21,13 +61,21 @@ impl WatcherRegistry {
         }
     }
 
-    pub fn subscribe(&self, provider: &str, path: Option<&str>) -> broadcast::Receiver<()> {
+    /// Subscribe to notifications for the given provider/path pair. Requires the registry
+    /// to be behind an `Arc` so the returned `Subscription` guard can hold a weak back-
+    /// reference for drop-time cleanup.
+    pub fn subscribe(self: &Arc<Self>, provider: &str, path: Option<&str>) -> Subscription {
         let key = make_watch_key(provider, path);
-        let entry = self.channels.entry(key).or_insert_with(|| {
+        let entry = self.channels.entry(key.clone()).or_insert_with(|| {
             let (tx, _) = broadcast::channel(64);
             tx
         });
-        entry.value().subscribe()
+        let receiver = entry.value().subscribe();
+        Subscription {
+            inner: ManuallyDrop::new(receiver),
+            registry: Arc::downgrade(self),
+            key,
+        }
     }
 
     pub fn notify(&self, provider: &str, path: Option<&str>) {
@@ -48,6 +96,12 @@ impl WatcherRegistry {
 
     pub fn gc(&self) {
         self.channels.retain(|_, tx| tx.receiver_count() > 0);
+    }
+
+    /// Remove the key if no receivers remain. Called by `Subscription::drop`.
+    pub(crate) fn gc_key(&self, key: &WatchKey) {
+        self.channels
+            .remove_if(key, |_, tx| tx.receiver_count() == 0);
     }
 
     /// Internal accessor exposed for integration tests in `tests/watch_registry.rs`

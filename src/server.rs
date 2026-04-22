@@ -176,7 +176,7 @@ async fn handle_watch(
     cache: &Cache,
     registry: &ProviderRegistry,
     scheduler: Option<&SchedulerHandle>,
-    watchers: &WatcherRegistry,
+    watchers: &Arc<WatcherRegistry>,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) {
     let (provider_name, field) = protocol::split_key(&key);
