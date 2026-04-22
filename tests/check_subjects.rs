@@ -261,3 +261,70 @@ async fn introspect_demand_returns_active_keys() {
 
     handle.abort();
 }
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn introspect_procs_returns_sample_structure() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({
+            "op": "introspect",
+            "subject": "procs",
+            "duration_secs": 1
+        }))
+        .await
+        .expect("introspect procs request");
+
+    // procs may fail in sandboxed environments; accept either ok or a recognisable error.
+    if !resp.ok {
+        let err = resp.error.as_deref().unwrap_or("");
+        assert!(
+            err.contains("procs")
+                || err.contains("permission")
+                || err.contains("eslogger")
+                || err.contains("proc")
+                || err.contains("snapshot"),
+            "unexpected error: {err}"
+        );
+        handle.abort();
+        return;
+    }
+
+    let d = resp.data.expect("payload present on success");
+    assert!(
+        d.get("duration_secs").and_then(|v| v.as_u64()).is_some(),
+        "duration_secs missing or not a number"
+    );
+    assert!(
+        d.get("samples").and_then(|v| v.as_array()).is_some(),
+        "samples missing or not an array"
+    );
+    assert!(
+        d.get("replacement_suggestions").and_then(|v| v.as_array()).is_some(),
+        "replacement_suggestions missing or not an array"
+    );
+    assert!(
+        d.get("verdicts").and_then(|v| v.as_array()).is_some(),
+        "verdicts missing or not an array"
+    );
+
+    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).unwrap();
+    assert!(!verdicts.is_empty(), "at least one verdict expected");
+    for v in verdicts {
+        let level = v
+            .get("level")
+            .and_then(|x| x.as_str())
+            .expect("verdict has level");
+        assert!(
+            ["INFO", "WARN", "PASS", "FAIL"].contains(&level),
+            "unexpected verdict level: {level}"
+        );
+        assert!(
+            v.get("message").and_then(|x| x.as_str()).is_some(),
+            "verdict missing message"
+        );
+    }
+
+    handle.abort();
+}

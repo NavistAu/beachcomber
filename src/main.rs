@@ -1352,230 +1352,62 @@ fn check_cache(config: &Config) -> u8 {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn check_procs(duration: u64) -> u8 {
     println!("=== Process Snapshot ({duration}s) ===");
+    #[cfg(target_os = "macos")]
     println!("Capturing process spawns via eslogger...");
+    #[cfg(target_os = "macos")]
     println!("(requires SIP to be configured for endpoint security)");
-    println!();
-
-    // eslogger exec captures process exec events on macOS.
-    let output = std::process::Command::new("eslogger")
-        .args(["exec"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-
-    let mut child = match output {
-        Ok(c) => c,
-        Err(e) => {
-            print_check(
-                "fail",
-                "procs",
-                &format!("cannot start eslogger: {e}. Try: sudo eslogger exec"),
-            );
-            return 2;
-        }
-    };
-
-    // Let it capture for the specified duration.
-    std::thread::sleep(std::time::Duration::from_secs(duration));
-    let _ = child.kill();
-
-    let output = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(e) => {
-            print_check("fail", "procs", &format!("eslogger error: {e}"));
-            return 2;
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    let mut total = 0u64;
-
-    for line in stdout.lines() {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line)
-            && let Some(path) = json
-                .pointer("/process/executable/path")
-                .or(json.pointer("/event/exec/target/executable/path"))
-                .and_then(|v| v.as_str())
-        {
-            let basename = path.rsplit('/').next().unwrap_or(path);
-            *counts.entry(basename.to_string()).or_insert(0) += 1;
-            total += 1;
-        }
-    }
-
-    if total == 0 {
-        print_check(
-            "warn",
-            "procs",
-            "no process events captured (eslogger may need elevated privileges)",
-        );
-        return 1;
-    }
-
-    println!("Total process spawns: {total}");
-    println!();
-
-    // Known categories and their process names.
-    let categories: &[(&str, &[&str], bool)] = &[
-        ("git", &["git", "git-remote-https"], true),
-        ("kubectl", &["kubectl"], true),
-        ("gcloud", &["gcloud", "bq", "gsutil"], true),
-        ("aws", &["aws"], true),
-        ("terraform", &["terraform"], true),
-        ("mise", &["mise"], true),
-        ("direnv", &["direnv"], true),
-        ("python", &["python", "python3", "pip", "pip3"], false),
-        ("node", &["node", "npm", "npx", "yarn", "pnpm"], false),
-        ("ruby", &["ruby", "gem", "bundle", "bundler"], false),
-        ("shell", &["bash", "zsh", "sh", "fish"], false),
-    ];
-
-    println!("{:<20} {:>8}  Beachcomber", "Category", "Count");
-    println!("{}", "-".repeat(50));
-
-    for (name, procs, covered) in categories {
-        let count: u64 = procs.iter().map(|p| counts.get(*p).unwrap_or(&0)).sum();
-        if count > 0 {
-            let status = if *covered { "replaces" } else { "n/a" };
-            println!("{:<20} {:>8}  {}", name, count, status);
-        }
-    }
-
-    // Show uncategorized top processes.
-    let categorized: std::collections::HashSet<&str> = categories
-        .iter()
-        .flat_map(|(_, procs, _)| procs.iter().copied())
-        .collect();
-
-    let mut uncategorized: Vec<(&String, &u64)> = counts
-        .iter()
-        .filter(|(k, _)| !categorized.contains(k.as_str()))
-        .collect();
-    uncategorized.sort_by(|a, b| b.1.cmp(a.1));
-
-    if !uncategorized.is_empty() {
-        println!();
-        println!("Other frequent processes:");
-        for (name, count) in uncategorized.iter().take(10) {
-            println!("  {:<20} {:>8}", name, count);
-        }
-    }
-
-    println!();
-    print_check(
-        "pass",
-        "procs",
-        &format!("{total} spawns captured in {duration}s"),
-    );
-    0
-}
-
-#[cfg(not(target_os = "macos"))]
-fn check_procs(duration: u64) -> u8 {
-    println!("=== Process Snapshot ({duration}s) ===");
+    #[cfg(not(target_os = "macos"))]
     println!("Capturing process spawns via /proc scanning...");
     println!();
 
-    // On Linux, poll /proc for new PIDs.
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    let start = std::time::Instant::now();
-    let sample_duration = std::time::Duration::from_secs(duration);
-
-    // Initial scan to establish baseline.
-    if let Ok(entries) = std::fs::read_dir("/proc") {
-        for entry in entries.flatten() {
-            if let Ok(name) = entry.file_name().into_string()
-                && name.chars().all(|c| c.is_ascii_digit())
-            {
-                seen.insert(name);
-            }
+    match beachcomber::proc_snapshot::capture(duration) {
+        Err(e) => {
+            print_check("fail", "procs", &e);
+            2
         }
-    }
+        Ok(result) => {
+            if result.total == 0 {
+                print_check("warn", "procs", "no process events captured");
+                return 1;
+            }
 
-    // Poll for new processes.
-    while start.elapsed() < sample_duration {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        if let Ok(entries) = std::fs::read_dir("/proc") {
-            for entry in entries.flatten() {
-                if let Ok(pid) = entry.file_name().into_string()
-                    && pid.chars().all(|c| c.is_ascii_digit())
-                    && !seen.contains(&pid)
-                {
-                    seen.insert(pid.clone());
-                    // Read the command name.
-                    let comm_path = format!("/proc/{pid}/comm");
-                    if let Ok(comm) = std::fs::read_to_string(&comm_path) {
-                        let name = comm.trim().to_string();
-                        *counts.entry(name).or_insert(0) += 1;
-                    }
+            println!("Total process spawns: {}", result.total);
+            println!();
+            println!("{:<20} {:>8}  Beachcomber", "Category", "Count");
+            println!("{}", "-".repeat(50));
+
+            // Categorized samples first.
+            for s in &result.samples {
+                if s.category.is_some() {
+                    let covered = result
+                        .replacement_suggestions
+                        .iter()
+                        .any(|r| Some(&r.command_pattern) == s.category.as_ref());
+                    let status = if covered { "replaces" } else { "n/a" };
+                    println!("{:<20} {:>8}  {}", s.command, s.count, status);
                 }
             }
+
+            // Uncategorized.
+            let uncategorized: Vec<_> = result.samples.iter().filter(|s| s.category.is_none()).collect();
+            if !uncategorized.is_empty() {
+                println!();
+                println!("Other frequent processes:");
+                for s in &uncategorized {
+                    println!("  {:<20} {:>8}", s.command, s.count);
+                }
+            }
+
+            println!();
+            print_check(
+                "pass",
+                "procs",
+                &format!("{} spawns captured in {}s", result.total, result.duration_secs),
+            );
+            0
         }
     }
-
-    let total: u64 = counts.values().sum();
-    if total == 0 {
-        print_check("warn", "procs", "no new processes detected");
-        return 1;
-    }
-
-    println!("New processes detected: {total}");
-    println!();
-
-    let categories: &[(&str, &[&str], bool)] = &[
-        ("git", &["git", "git-remote-https"], true),
-        ("kubectl", &["kubectl"], true),
-        ("gcloud", &["gcloud", "bq", "gsutil"], true),
-        ("aws", &["aws"], true),
-        ("terraform", &["terraform"], true),
-        ("mise", &["mise"], true),
-        ("direnv", &["direnv"], true),
-        ("python", &["python", "python3", "pip", "pip3"], false),
-        ("node", &["node", "npm", "npx", "yarn", "pnpm"], false),
-        ("ruby", &["ruby", "gem", "bundle", "bundler"], false),
-        ("shell", &["bash", "zsh", "sh", "fish"], false),
-    ];
-
-    println!("{:<20} {:>8}  Beachcomber", "Category", "Count");
-    println!("{}", "-".repeat(50));
-
-    for (name, procs, covered) in categories {
-        let count: u64 = procs.iter().map(|p| counts.get(*p).unwrap_or(&0)).sum();
-        if count > 0 {
-            let status = if *covered { "replaces" } else { "n/a" };
-            println!("{:<20} {:>8}  {}", name, count, status);
-        }
-    }
-
-    let categorized: std::collections::HashSet<&str> = categories
-        .iter()
-        .flat_map(|(_, procs, _)| procs.iter().copied())
-        .collect();
-
-    let mut uncategorized: Vec<(&String, &u64)> = counts
-        .iter()
-        .filter(|(k, _)| !categorized.contains(k.as_str()))
-        .collect();
-    uncategorized.sort_by(|a, b| b.1.cmp(a.1));
-
-    if !uncategorized.is_empty() {
-        println!();
-        println!("Other frequent processes:");
-        for (name, count) in uncategorized.iter().take(10) {
-            println!("  {:<20} {:>8}", name, count);
-        }
-    }
-
-    println!();
-    print_check(
-        "pass",
-        "procs",
-        &format!("{total} spawns captured in {duration}s"),
-    );
-    0
 }
+

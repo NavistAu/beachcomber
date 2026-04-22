@@ -4,6 +4,7 @@ pub mod client;
 pub mod config;
 pub mod daemon;
 pub mod pid_check;
+pub mod proc_snapshot;
 pub mod protocol;
 pub mod provider;
 pub mod scheduler;

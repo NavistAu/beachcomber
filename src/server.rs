@@ -766,7 +766,7 @@ async fn handle_request(
         }
         Request::Introspect {
             subject,
-            duration_secs: _,
+            duration_secs,
         } => match subject {
             IntrospectSubject::Daemon => {
                 // Gather in_flight from scheduler status if available.
@@ -809,10 +809,12 @@ async fn handle_request(
             IntrospectSubject::Demand => {
                 handle_introspect_demand(scheduler).await
             }
-            _ => Response::error(format!(
-                "introspect subject '{:?}' not yet implemented",
-                subject
-            )),
+            IntrospectSubject::Procs => {
+                let dur = *duration_secs;
+                tokio::task::spawn_blocking(move || handle_introspect_procs(dur))
+                    .await
+                    .unwrap_or_else(|e| Response::error(format!("procs task panicked: {e}")))
+            }
         }
         // Watch is intercepted in handle_connection before reaching here
         Request::Watch { .. } => unreachable!("Watch handled before handle_request"),
@@ -1186,6 +1188,61 @@ async fn handle_introspect_demand(scheduler: Option<&SchedulerHandle>) -> Respon
         0,
         false,
     )
+}
+
+fn handle_introspect_procs(duration_secs: Option<u64>) -> Response {
+    let dur = duration_secs.unwrap_or(2);
+    match crate::proc_snapshot::capture(dur) {
+        Ok(result) => {
+            let samples: Vec<serde_json::Value> = result
+                .samples
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "command": s.command,
+                        "count": s.count,
+                        "category": s.category,
+                    })
+                })
+                .collect();
+            let suggestions: Vec<serde_json::Value> = result
+                .replacement_suggestions
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "command_pattern": r.command_pattern,
+                        "provider": r.provider,
+                        "field": r.field,
+                    })
+                })
+                .collect();
+            let mut verdicts = vec![serde_json::json!({
+                "level": "INFO",
+                "message": format!("{}s sample: {} exec events", result.duration_secs, result.total),
+            })];
+            if !result.replacement_suggestions.is_empty() {
+                verdicts.push(serde_json::json!({
+                    "level": "WARN",
+                    "message": format!(
+                        "{} replacement opportunit{}: consider using `comb get` instead",
+                        result.replacement_suggestions.len(),
+                        if result.replacement_suggestions.len() == 1 { "y" } else { "ies" }
+                    ),
+                }));
+            }
+            Response::ok(
+                serde_json::json!({
+                    "duration_secs": result.duration_secs,
+                    "samples": samples,
+                    "replacement_suggestions": suggestions,
+                    "verdicts": verdicts,
+                }),
+                0,
+                false,
+            )
+        }
+        Err(e) => Response::error(format!("procs snapshot failed: {e}")),
+    }
 }
 
 fn format_response(request: &Request, response: &Response) -> String {
