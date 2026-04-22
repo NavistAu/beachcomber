@@ -106,7 +106,10 @@ function M.connect(socket_path)
         return json.encode({ ok = false, error = "comb get failed" })
       end
       -- The CLI outputs pretty-printed JSON; return it as-is (it's valid JSON)
-      -- But we need a single line, so strip newlines
+      -- But we need a single line, so strip newlines.
+      -- Non-empty output is returned as-is regardless of exit status; `comb get -f json`
+      -- is expected to exit 0 whenever it writes JSON (hits), and to produce empty
+      -- output on misses and on I/O failures (handled in the empty-output branch above).
       return output:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
 
     elseif op == "refresh" then
