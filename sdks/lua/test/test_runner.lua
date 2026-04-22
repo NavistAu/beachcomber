@@ -75,6 +75,7 @@ require("test.test_json")(suite, test, skip, assert_eq, assert_true, assert_nil,
 require("test.test_discovery")(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
 require("test.test_client")(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
 require("test.test_socket_cli")(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
+require("test.test_ops")(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
 
 -- ── Summary ──────────────────────────────────────────────────────────────────
 

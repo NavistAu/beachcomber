@@ -148,6 +148,22 @@ function M.connect(socket_path)
       -- Context is a no-op for CLI backend — each call is a separate process
       return json.encode({ ok = true })
 
+    elseif op == "hello" then
+      -- CLI fallback cannot interrogate the daemon for version information.
+      return json.encode({ ok = false, error = "hello not supported in CLI fallback" })
+
+    elseif op == "put" then
+      -- CLI fallback does not support writing virtual cache entries.
+      return json.encode({ ok = false, error = "put not supported in CLI fallback" })
+
+    elseif op == "introspect" then
+      -- CLI fallback cannot perform structured daemon introspection.
+      return json.encode({ ok = false, error = "introspect not supported in CLI fallback" })
+
+    elseif op == "watch" then
+      -- CLI fallback has no persistent connection; watch is not supported.
+      return json.encode({ ok = false, error = "watch not supported in CLI fallback" })
+
     else
       return json.encode({ ok = false, error = "unsupported op: " .. tostring(op) })
     end

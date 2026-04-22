@@ -91,9 +91,10 @@ function M.connect(opts)
 end
 
 -- Re-export sub-modules for advanced use
-M.discovery = discovery
-M.json      = require("beachcomber.json")
-M.Client    = client_mod.Client
-M.Result    = client_mod.Result
+M.discovery   = discovery
+M.json        = require("beachcomber.json")
+M.Client      = client_mod.Client
+M.Result      = client_mod.Result
+M.WatchStream = require("beachcomber.watch_stream")
 
 return M
