@@ -98,7 +98,35 @@ Set the default working-directory path for this connection.
 
 ### `Client:status()` → `table | nil, error`
 
-Return the daemon's internal status (scheduler queue depth, cache entries, etc.).
+Return the daemon's internal status (scheduler queue depth, cache entries, etc.) as a raw table.
+
+### `Client:status_rows()` → `table[] | nil, error`
+
+Return typed cache rows (one per warm cache entry) as an array of tables with `provider`, `field`, `value`, `age_ms`, and `stale` keys.
+
+### `Client:hello()` → `table | nil, error`
+
+Handshake — returns a table with `daemon_version`, `protocol_version`, and `build_info` fields.
+
+### `Client:put(key, data, ttl, path)` → `true | nil, error`
+
+Write a value into the cache as a virtual provider. Pass `nil` for `data` to clear the entry.
+
+### `Client:put_null(key, path)` → `true | nil, error`
+
+Clear a virtual provider entry (shorthand for `put` with `data=nil`).
+
+### `Client:introspect(subject, duration_secs)` → `table | nil, error`
+
+Inspect a daemon subsystem. `subject` is a string: `"daemon"`, `"providers"`, `"config"`, `"cache"`, `"backoff"`, or `"watches"`.
+
+### `Client:watch(key, path)` → `WatchStream | nil, error`
+
+Subscribe to live cache updates. Returns a `WatchStream` — call `:next()` to receive `WatchEvent` tables and `:close()` when done.
+
+### `Client:get_with_flags(key, path, force, wait)` → `Result | nil, error`
+
+Read a cached value with optional `force` (recompute) or `wait` (block for fresh value) flags.
 
 ### `Client:close()`
 
@@ -117,9 +145,9 @@ Close the underlying socket.
 | `result:is_hit()` | boolean | True when `data ~= nil` |
 | `result:get_str(field)` | string\|nil, error | Get a string field from object data |
 
-## Unsupported operations
+## Wire protocol reference
 
-The `put` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for put, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+All operations follow the wire contract defined in [docs/protocol-spec.md](https://github.com/NavistAu/beachcomber/blob/main/docs/protocol-spec.md).
 
 ## Socket path discovery
 

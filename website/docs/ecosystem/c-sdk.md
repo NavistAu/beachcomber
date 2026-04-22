@@ -124,7 +124,16 @@ cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber
 | `comb_get(c, key, path)` | Read a cached value (`path` may be NULL) |
 | `comb_refresh(c, key, path)` | Force recomputation |
 | `comb_set_context(c, path)` | Set default path for this connection |
-| `comb_status(c)` | Query daemon status |
+| `comb_status(c)` | Query cache status (raw result) |
+| `comb_status_rows(c, rows, cap, out_count)` | Return typed cache rows into a caller-supplied array |
+| `comb_hello(c, out)` | Handshake — fills a `comb_hello_info_t` with version info |
+| `comb_put(c, key, data, ttl, path)` | Write a value into the cache as a virtual provider |
+| `comb_put_null(c, key, path)` | Clear a virtual provider entry |
+| `comb_introspect(c, subject, dur_secs)` | Inspect a daemon subsystem (returns raw result) |
+| `comb_introspect_daemon(c, out)` | Inspect daemon health into a typed `comb_daemon_health_t` |
+| `comb_watch(c, key, path)` | Subscribe to live cache updates; returns a `comb_watch_handle_t *` |
+| `comb_watch_next(handle, event, timeout_ms)` | Receive the next watch event into `comb_watch_event_t` |
+| `comb_watch_free(handle)` | Release a watch handle and close the connection |
 
 ### Result accessors
 
@@ -151,9 +160,9 @@ All operations that return data return a `comb_result_t *`. Always free it with 
 
 For scalar results, pass `NULL` (or any field name) to `comb_result_get_str`. For object results, pass the field name to select a member.
 
-## Unsupported operations
+## Wire protocol reference
 
-The `put` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for put, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+All operations follow the wire contract defined in [docs/protocol-spec.md](https://github.com/NavistAu/beachcomber/blob/main/docs/protocol-spec.md).
 
 ## Socket discovery
 

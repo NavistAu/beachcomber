@@ -62,7 +62,31 @@ await client.refresh('git', '/some/repo');
 
 #### `client.status()`
 
-Return daemon status information.
+Return daemon status information (raw `CombResult`).
+
+#### `client.statusRows()`
+
+Return typed cache rows as `CacheRow[]` (one per warm cache entry).
+
+#### `client.hello()`
+
+Handshake — returns a `HelloInfo` with daemon and protocol version strings.
+
+#### `client.put(key, data?, opts?)`
+
+Write a value into the cache as a virtual provider. Omit `data` or pass `null` to clear the entry.
+
+#### `client.introspect(subject, opts?)`
+
+Inspect a daemon subsystem (`"daemon"` | `"providers"` | `"config"` | `"cache"` | `"backoff"` | `"watches"`).
+
+#### `client.watch(key, path?)`
+
+Subscribe to live cache updates. Returns a `WatchStream` (async iterable) yielding `WatchEvent` values.
+
+#### `client.getWithFlags(key, path?, opts?)`
+
+Read a cached value with optional `force` (recompute) or `wait` (block for fresh value) flags.
 
 #### `client.session()`
 
@@ -108,9 +132,9 @@ result.getBool('dirty');      // false
 
 All extend `CombError` which extends `Error`.
 
-## Unsupported operations
+## Wire protocol reference
 
-The `put` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for put, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+All operations follow the wire contract defined in [docs/protocol-spec.md](https://github.com/NavistAu/beachcomber/blob/main/docs/protocol-spec.md).
 
 ## Socket discovery
 

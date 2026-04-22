@@ -29,7 +29,7 @@ If the command returns nothing, the provider has no data for the current context
 
 ## Path-scoped providers return empty or wrong data
 
-Providers like `git`, `terraform`, `conda`, `python`, `direnv`, `mise`, and `asdf` are path-scoped. They require a directory argument so beachcomber knows which project to query.
+Providers like `git`, `terraform`, `python`, `direnv`, `mise`, and `asdf` are path-scoped. They require a directory argument so beachcomber knows which project to query.
 
 In shells, pass `.` and the shell's working directory is used:
 
@@ -49,7 +49,7 @@ In bar programs (polybar, waybar, sketchybar), `.` resolves to wherever the bar 
 comb g git.branch /home/yourname/myproject
 ```
 
-Global providers (battery, load, network, kubecontext, gcloud, aws, hostname, uptime, user) do not take a path argument.
+Global providers (battery, load, network, kubecontext, gcloud, aws, hostname, uptime, user, conda) do not take a path argument.
 
 ## Stale data
 
@@ -95,7 +95,7 @@ SDKs and the CLI find the daemon socket in this order:
 2. `$XDG_RUNTIME_DIR/beachcomber/sock`
 3. `$TMPDIR/beachcomber-<uid>/sock`
 
-Run `comb s` to see the active socket path. In neovim, check what the environment resolves to: `:lua print(vim.env.XDG_RUNTIME_DIR)`.
+Run `comb check daemon` to see the active socket path and daemon status. In neovim, check what the environment resolves to: `:lua print(vim.env.XDG_RUNTIME_DIR)`. (Note: `comb s` shows cache rows, not the socket path.)
 
 ## Nerd Font glyphs not rendering
 

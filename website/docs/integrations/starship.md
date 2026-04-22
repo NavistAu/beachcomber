@@ -103,7 +103,7 @@ description = "Git stash count via beachcomber"
 
 The `git_dirty` module uses a small shell expression because the raw value is `true` or `false` — the test converts it to a displayable `*` character or suppresses output entirely.
 
-Path-scoped providers (git, terraform, conda, mise, asdf) require the current directory to be passed as the second argument. The `.` shown above tells starship to pass `$PWD` at render time. Omitting it causes beachcomber to look up data with no path context, which returns empty for path-scoped providers.
+Path-scoped providers (git, terraform, mise, asdf) require the current directory to be passed as the second argument. The `.` shown above tells starship to pass `$PWD` at render time. Omitting it causes beachcomber to look up data with no path context, which returns empty for path-scoped providers.
 
 ## System modules
 
@@ -181,18 +181,18 @@ description = "GCloud project via beachcomber"
 
 ## Environment and toolchain modules
 
-These providers are path-scoped — pass `.` so beachcomber receives the current directory.
+`terraform`, `mise`, and `asdf` are path-scoped — pass `.` so beachcomber receives the current directory. `conda` is a global provider and does not require a path argument.
 
 ```toml
 [conda]
 disabled = true
 
 [custom.conda]
-command = "comb g conda.env ."
-when = "comb g conda.env ."
+command = "comb g conda.env"
+when = "comb g conda.env"
 format = "[conda:$output]($style) "
 style = "bold green"
-description = "Conda environment via beachcomber"
+description = "Conda environment via beachcomber (global provider)"
 
 [terraform]
 disabled = true
@@ -277,11 +277,11 @@ style = "bold purple"
 description = "Terraform workspace via beachcomber"
 
 [custom.conda]
-command = "comb g conda.env ."
-when = "comb g conda.env ."
+command = "comb g conda.env"
+when = "comb g conda.env"
 format = "[conda:$output]($style) "
 style = "bold green"
-description = "Conda environment via beachcomber"
+description = "Conda environment via beachcomber (global provider)"
 
 [custom.load]
 command = "comb g load.one"
