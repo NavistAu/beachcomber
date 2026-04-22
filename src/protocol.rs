@@ -48,6 +48,25 @@ pub enum Request {
         #[serde(default)]
         format: Format,
     },
+    Introspect {
+        subject: IntrospectSubject,
+        #[serde(default)]
+        duration_secs: Option<u64>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IntrospectSubject {
+    Daemon,
+    Providers,
+    Config,
+    Cache,
+    Backoff,
+    Watches,
+    Timers,
+    Demand,
+    Procs,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

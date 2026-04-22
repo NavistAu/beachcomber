@@ -728,6 +728,17 @@ async fn handle_request(
 
             Response::ok(status_data, 0, false)
         }
+        Request::Introspect {
+            subject,
+            duration_secs: _,
+        } => {
+            // Per-subject handlers land in T20–T25. This stub keeps the op
+            // routable but returns a placeholder error for each subject.
+            Response::error(format!(
+                "introspect subject '{:?}' not yet implemented",
+                subject
+            ))
+        }
         // Watch is intercepted in handle_connection before reaching here
         Request::Watch { .. } => unreachable!("Watch handled before handle_request"),
     }
