@@ -83,6 +83,7 @@ impl Provider for ScriptProvider {
 
         match output_format {
             "kv" => parse_kv_output(&stdout),
+            "text" => parse_text_output(&stdout),
             _ => parse_json_output(&stdout),
         }
     }
@@ -132,6 +133,15 @@ fn parse_kv_output(stdout: &str) -> Option<ProviderResult> {
     if result.fields.is_empty() {
         return None;
     }
+    Some(result)
+}
+
+fn parse_text_output(stdout: &str) -> Option<ProviderResult> {
+    if stdout.is_empty() {
+        return None;
+    }
+    let mut result = ProviderResult::new();
+    result.insert("value".to_string(), Value::String(stdout.to_string()));
     Some(result)
 }
 
