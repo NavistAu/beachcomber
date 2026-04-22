@@ -461,7 +461,9 @@ async fn handle_request(
                 Some("age") => Response::ok(
                     normal_response
                         .age_ms
-                        .map(|n| serde_json::json!(n.to_string()))
+                        .map(|n| {
+                            serde_json::Value::Number(serde_json::Number::from(n as u64))
+                        })
                         .unwrap_or(serde_json::Value::Null),
                     0,
                     false,

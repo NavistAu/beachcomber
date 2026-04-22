@@ -154,10 +154,10 @@ async fn fresh_inverts_stale() {
     handle.abort();
 }
 
-// ── Test 5: :age returns a numeric string ────────────────────────────────────
+// ── Test 5: :age returns a JSON number ───────────────────────────────────────
 
 #[tokio::test]
-async fn age_returns_numeric_string() {
+async fn age_returns_number() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -167,18 +167,15 @@ async fn age_returns_numeric_string() {
     let warm = send_one(&sock, r#"{"op":"get","key":"hostname"}"#).await;
     assert!(warm.ok);
 
+    // Small sleep so age_ms > 0 on fast machines.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
     let resp = send_one(&sock, r#"{"op":"get","key":"hostname:age"}"#).await;
     assert!(resp.ok, "age query should succeed");
 
-    let age_str = resp
-        .data
-        .as_ref()
-        .unwrap()
-        .as_str()
-        .expect(":age data should be a string");
-    age_str
-        .parse::<u128>()
-        .expect(":age string should parse as u128");
+    let data = resp.data.expect("missing data");
+    assert!(data.is_number(), "age must be a JSON number, got {data:?}");
+    assert!(data.as_u64().unwrap_or(0) > 0);
 
     handle.abort();
 }
