@@ -1,4 +1,5 @@
 use beachcomber::cli::format::render_fmt_template_json;
+use beachcomber::cli::introspect_types::{DaemonIntrospect, Verdict};
 use beachcomber::config::Config;
 use beachcomber::pid_check::pid_is_our_daemon;
 use clap::{Parser, Subcommand};
@@ -489,8 +490,15 @@ fn query_daemon_pid(socket_path: &std::path::Path) -> Option<i32> {
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;
 
-    let parsed: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-    parsed.get("data")?.get("pid")?.as_i64().map(|n| n as i32)
+    // Parse the full envelope first, then deserialise the `data` field into
+    // DaemonIntrospect.  Using a typed struct here prevents the class of bug
+    // where a field name or shape changes silently (e.g. the historical
+    // regression where `status` returned cache rows instead of daemon fields,
+    // causing `comb kill` to read a pid of `None`).
+    let envelope: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    let data = envelope.get("data")?;
+    let introspect: DaemonIntrospect = serde_json::from_value(data.clone()).ok()?;
+    Some(introspect.pid as i32)
 }
 
 fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
@@ -1388,55 +1396,44 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
     // Build per-subject header and detail lines before verdict lines.
     match subject {
         "daemon" => {
-            let version = payload
-                .get("version")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let pid = payload.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
-            let uptime = payload
-                .get("uptime_secs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let uptime_fmt = format_uptime(uptime);
-            let socket = payload
-                .get("socket_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let config_path = payload.get("config_path").and_then(|v| v.as_str());
-            let requests = payload
-                .get("requests_total")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let in_flight = payload
-                .get("in_flight")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let watchers = payload
-                .get("active_watchers")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let cache = payload
-                .get("cache_entries")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            // Parse into DaemonIntrospect once so all field accesses are typed.
+            // This prevents the class of bug (e.g. `comb kill` reading a pid
+            // out of a Status response that changed shape) by failing loudly at
+            // the serde boundary rather than silently returning a wrong default.
+            match serde_json::from_value::<DaemonIntrospect>(payload.clone()) {
+                Ok(d) => {
+                    let uptime_fmt = format_uptime(d.uptime_secs);
+                    let (vlines, vworst) = render_typed_verdicts(&d.verdicts);
+                    worst = worst.max(vworst);
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
-            worst = worst.max(vworst);
-
-            lines.push_str("Daemon\n");
-            lines.push_str(&format!(
-                "  [PASS] beachcomber {version} — pid {pid} — uptime {uptime_fmt}\n"
-            ));
-            lines.push_str(&format!("  [PASS] socket   {socket}\n"));
-            if let Some(cp) = config_path {
-                lines.push_str(&format!("  [PASS] config   {cp}\n"));
-            } else {
-                lines.push_str("  [INFO] config   (none — using defaults)\n");
+                    lines.push_str("Daemon\n");
+                    lines.push_str(&format!(
+                        "  [PASS] beachcomber {} — pid {} — uptime {uptime_fmt}\n",
+                        d.version, d.pid
+                    ));
+                    lines.push_str(&format!("  [PASS] socket   {}\n", d.socket_path));
+                    if let Some(cp) = &d.config_path {
+                        lines.push_str(&format!("  [PASS] config   {cp}\n"));
+                    } else {
+                        lines.push_str("  [INFO] config   (none — using defaults)\n");
+                    }
+                    lines.push_str(&format!(
+                        "  [PASS] requests_total={}  in_flight={}  active_watchers={}  cache_entries={}\n",
+                        d.requests_total, d.in_flight, d.active_watchers, d.cache_entries
+                    ));
+                    lines.push_str(&vlines);
+                }
+                Err(e) => {
+                    // Deserialisation failure means the protocol schema has
+                    // changed incompatibly.  Surface it as a FAIL so `comb
+                    // check daemon` exits 2 and the operator knows to upgrade.
+                    lines.push_str("Daemon\n");
+                    lines.push_str(&format!(
+                        "  [FAIL] could not parse introspect{{daemon}} response: {e}\n"
+                    ));
+                    worst = worst.max(2);
+                }
             }
-            lines.push_str(&format!(
-                "  [PASS] requests_total={requests}  in_flight={in_flight}  active_watchers={watchers}  cache_entries={cache}\n"
-            ));
-            lines.push_str(&vlines);
         }
         "providers" => {
             let providers = payload
@@ -1796,6 +1793,20 @@ fn render_verdicts(verdicts: &[serde_json::Value]) -> (String, u8) {
         worst = worst.max(code);
         // Only emit verdicts that aren't already captured by the per-subject rendering above.
         // We include them for completeness but callers may suppress if they prefer.
+        out.push_str(&format!("  [{level}] {msg}\n"));
+    }
+    (out, worst)
+}
+
+/// Typed variant of render_verdicts for subjects parsed into structured types.
+/// Accepts `&[Verdict]` directly so the caller never needs to touch raw JSON.
+fn render_typed_verdicts(verdicts: &[Verdict]) -> (String, u8) {
+    let mut out = String::new();
+    let mut worst: u8 = 0;
+    for v in verdicts {
+        let level = &v.level;
+        let msg = &v.message;
+        worst = worst.max(v.severity());
         out.push_str(&format!("  [{level}] {msg}\n"));
     }
     (out, worst)
