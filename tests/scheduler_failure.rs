@@ -45,7 +45,12 @@ async fn repeated_failures_trigger_backoff() {
     let registry = Arc::new(registry);
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry, config, Arc::new(WatcherRegistry::new()));
+    let (handle, scheduler) = Scheduler::new(
+        cache.clone(),
+        registry,
+        config,
+        Arc::new(WatcherRegistry::new()),
+    );
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // Refresh 10 times with small delays

@@ -1,6 +1,6 @@
+use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
 use std::time::Duration;
-use beachcomber::watcher_registry::WatcherRegistry;
 
 #[tokio::test]
 async fn gc_removes_keys_without_receivers_on_demand() {

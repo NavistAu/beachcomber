@@ -1,5 +1,5 @@
-use serde_json::json;
 use beachcomber::protocol::Request;
+use serde_json::json;
 
 #[test]
 fn refresh_request_deserializes_from_refresh_op() {

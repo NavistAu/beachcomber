@@ -44,7 +44,12 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(ProviderRegistry::with_config(&config));
 
-    let (handle, scheduler) = Scheduler::new(cache.clone(), registry.clone(), config.clone(), watchers.clone());
+    let (handle, scheduler) = Scheduler::new(
+        cache.clone(),
+        registry.clone(),
+        config.clone(),
+        watchers.clone(),
+    );
     let heartbeat = scheduler.heartbeat();
 
     let scheduler_handle = handle.clone();
@@ -53,7 +58,14 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
     // Start watchdog if configured.
     let watchdog_task = spawn_watchdog(&config, heartbeat, cancel.clone());
 
-    let server = Server::new_with_config(socket_path, cache, registry, Some(handle), watchers, config.clone());
+    let server = Server::new_with_config(
+        socket_path,
+        cache,
+        registry,
+        Some(handle),
+        watchers,
+        config.clone(),
+    );
 
     tokio::select! {
         result = server.run() => {

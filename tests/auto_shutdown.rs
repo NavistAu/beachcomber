@@ -14,7 +14,8 @@ async fn scheduler_shuts_down_when_idle() {
     let mut config = Config::default();
     config.lifecycle.idle_shutdown_secs = Some(1); // Shut down after 1s idle
 
-    let (_handle, scheduler) = Scheduler::new(cache, registry, config, Arc::new(WatcherRegistry::new()));
+    let (_handle, scheduler) =
+        Scheduler::new(cache, registry, config, Arc::new(WatcherRegistry::new()));
 
     // Scheduler should exit on its own after idle timeout
     let result = tokio::time::timeout(

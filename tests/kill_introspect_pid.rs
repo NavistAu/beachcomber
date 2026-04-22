@@ -34,7 +34,12 @@ async fn introspect_daemon_returns_current_pid() {
     reader.read_line(&mut line).await.unwrap();
 
     let parsed: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(parsed["ok"], serde_json::json!(true), "introspect{{daemon}} must succeed: {:?}", parsed);
+    assert_eq!(
+        parsed["ok"],
+        serde_json::json!(true),
+        "introspect{{daemon}} must succeed: {:?}",
+        parsed
+    );
     let pid = parsed["data"]["pid"]
         .as_i64()
         .expect("introspect{daemon} response must include data.pid as i64");

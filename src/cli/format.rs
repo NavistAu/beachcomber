@@ -128,8 +128,10 @@ pub fn find_eval_template_pairs(template: &str) -> Vec<(String, String)> {
                     let mut in_string: Option<u8> = None; // Some(b'"') or Some(b'\'')
                     while i + 1 < len {
                         // Detect closing: -%} or %}
-                        let closing = (bytes[i] == b'-' && bytes[i + 1] == b'%'
-                            && i + 2 < len && bytes[i + 2] == b'}')
+                        let closing = (bytes[i] == b'-'
+                            && bytes[i + 1] == b'%'
+                            && i + 2 < len
+                            && bytes[i + 2] == b'}')
                             || (bytes[i] == b'%' && bytes[i + 1] == b'}');
                         if closing {
                             // Advance past the closing delimiter
@@ -160,8 +162,7 @@ pub fn find_eval_template_pairs(template: &str) -> Vec<(String, String)> {
                         } else if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
                             // Potential ident.ident — try to read it
                             let start = i;
-                            while i < len
-                                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
                             {
                                 i += 1;
                             }
@@ -232,10 +233,7 @@ pub fn find_eval_template_refs(template: &str) -> HashSet<String> {
 /// Templates use `{{ provider.field }}` double-brace syntax with full
 /// minijinja support: conditionals, filters (`truncate`, `default`, …), etc.
 /// Single-brace `{provider.field}` is treated as a literal string.
-pub fn render_eval_template(
-    template: &str,
-    context: &serde_json::Value,
-) -> Result<String, String> {
+pub fn render_eval_template(template: &str, context: &serde_json::Value) -> Result<String, String> {
     let env = build_env();
     env.render_str(template, context).map_err(|e| e.to_string())
 }

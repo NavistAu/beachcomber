@@ -49,7 +49,9 @@ async fn introspect_daemon_returns_expected_fields() {
     // config_path may be null but must be present
     assert!(data.get("config_path").is_some(), "config_path key absent");
     assert!(
-        data.get("requests_total").and_then(|v| v.as_u64()).is_some(),
+        data.get("requests_total")
+            .and_then(|v| v.as_u64())
+            .is_some(),
         "requests_total missing or not a number"
     );
     assert!(
@@ -57,7 +59,9 @@ async fn introspect_daemon_returns_expected_fields() {
         "in_flight missing or not a number"
     );
     assert!(
-        data.get("active_watchers").and_then(|v| v.as_u64()).is_some(),
+        data.get("active_watchers")
+            .and_then(|v| v.as_u64())
+            .is_some(),
         "active_watchers missing or not a number"
     );
     assert!(
@@ -99,7 +103,10 @@ async fn introspect_providers_lists_catalog_with_scope_and_fields() {
     assert!(resp.ok, "error: {:?}", resp.error);
     let data = resp.data.expect("payload present");
 
-    let providers = data.get("providers").and_then(|v| v.as_array()).expect("providers array");
+    let providers = data
+        .get("providers")
+        .and_then(|v| v.as_array())
+        .expect("providers array");
     assert!(!providers.is_empty(), "at least one provider registered");
 
     // Check a known global provider like hostname
@@ -117,7 +124,10 @@ async fn introspect_providers_lists_catalog_with_scope_and_fields() {
         assert_eq!(g["scope"].as_str(), Some("path"));
     }
 
-    let verdicts = data.get("verdicts").and_then(|v| v.as_array()).expect("verdicts");
+    let verdicts = data
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .expect("verdicts");
     assert!(!verdicts.is_empty());
     // PASS with count message should be present
     let has_count_pass = verdicts.iter().any(|v| {
@@ -142,7 +152,9 @@ async fn introspect_config_reports_path_and_parse_status() {
     assert!(d.get("parsed").and_then(|v| v.as_bool()).is_some());
     assert!(d.get("errors").and_then(|v| v.as_array()).is_some());
     assert!(
-        d.get("provider_count_from_config").and_then(|v| v.as_u64()).is_some(),
+        d.get("provider_count_from_config")
+            .and_then(|v| v.as_u64())
+            .is_some(),
         "provider_count_from_config missing or not a number"
     );
     let verdicts = d.get("verdicts").and_then(|v| v.as_array()).unwrap();
@@ -167,9 +179,9 @@ async fn introspect_cache_reports_totals_and_stale_ratio() {
     let verdicts = d.get("verdicts").and_then(|v| v.as_array()).unwrap();
     assert!(!verdicts.is_empty());
     // PASS count message should be present
-    let has_count = verdicts.iter().any(|v| {
-        v["level"] == "PASS" && v["message"].as_str().unwrap_or("").contains("entries")
-    });
+    let has_count = verdicts
+        .iter()
+        .any(|v| v["level"] == "PASS" && v["message"].as_str().unwrap_or("").contains("entries"));
     assert!(has_count, "count PASS verdict missing: {verdicts:?}");
 
     handle.abort();
@@ -185,13 +197,28 @@ async fn introspect_backoff_returns_list_and_verdicts() {
         .unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
-    assert!(d.get("backoff").and_then(|v| v.as_array()).is_some(), "backoff array missing");
-    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).expect("verdicts array");
+    assert!(
+        d.get("backoff").and_then(|v| v.as_array()).is_some(),
+        "backoff array missing"
+    );
+    let verdicts = d
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .expect("verdicts array");
     assert!(!verdicts.is_empty(), "at least one verdict expected");
     for v in verdicts {
-        let level = v.get("level").and_then(|x| x.as_str()).expect("verdict has level");
-        assert!(["PASS", "WARN", "FAIL"].contains(&level), "unexpected verdict level: {level}");
-        assert!(v.get("message").and_then(|x| x.as_str()).is_some(), "verdict missing message");
+        let level = v
+            .get("level")
+            .and_then(|x| x.as_str())
+            .expect("verdict has level");
+        assert!(
+            ["PASS", "WARN", "FAIL"].contains(&level),
+            "unexpected verdict level: {level}"
+        );
+        assert!(
+            v.get("message").and_then(|x| x.as_str()).is_some(),
+            "verdict missing message"
+        );
     }
 
     handle.abort();
@@ -207,13 +234,28 @@ async fn introspect_watches_returns_paths_and_verdicts() {
         .unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
-    assert!(d.get("paths").and_then(|v| v.as_array()).is_some(), "paths array missing");
-    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).expect("verdicts array");
+    assert!(
+        d.get("paths").and_then(|v| v.as_array()).is_some(),
+        "paths array missing"
+    );
+    let verdicts = d
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .expect("verdicts array");
     assert!(!verdicts.is_empty(), "at least one verdict expected");
     for v in verdicts {
-        let level = v.get("level").and_then(|x| x.as_str()).expect("verdict has level");
-        assert!(["PASS", "WARN", "FAIL"].contains(&level), "unexpected verdict level: {level}");
-        assert!(v.get("message").and_then(|x| x.as_str()).is_some(), "verdict missing message");
+        let level = v
+            .get("level")
+            .and_then(|x| x.as_str())
+            .expect("verdict has level");
+        assert!(
+            ["PASS", "WARN", "FAIL"].contains(&level),
+            "unexpected verdict level: {level}"
+        );
+        assert!(
+            v.get("message").and_then(|x| x.as_str()).is_some(),
+            "verdict missing message"
+        );
     }
 
     handle.abort();
@@ -229,13 +271,28 @@ async fn introspect_timers_returns_timers_and_verdicts() {
         .unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
-    assert!(d.get("timers").and_then(|v| v.as_array()).is_some(), "timers array missing");
-    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).expect("verdicts array");
+    assert!(
+        d.get("timers").and_then(|v| v.as_array()).is_some(),
+        "timers array missing"
+    );
+    let verdicts = d
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .expect("verdicts array");
     assert!(!verdicts.is_empty(), "at least one verdict expected");
     for v in verdicts {
-        let level = v.get("level").and_then(|x| x.as_str()).expect("verdict has level");
-        assert!(["PASS", "WARN", "FAIL"].contains(&level), "unexpected verdict level: {level}");
-        assert!(v.get("message").and_then(|x| x.as_str()).is_some(), "verdict missing message");
+        let level = v
+            .get("level")
+            .and_then(|x| x.as_str())
+            .expect("verdict has level");
+        assert!(
+            ["PASS", "WARN", "FAIL"].contains(&level),
+            "unexpected verdict level: {level}"
+        );
+        assert!(
+            v.get("message").and_then(|x| x.as_str()).is_some(),
+            "verdict missing message"
+        );
     }
 
     handle.abort();
@@ -251,13 +308,28 @@ async fn introspect_demand_returns_active_keys() {
         .unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
-    assert!(d.get("demand").and_then(|v| v.as_array()).is_some(), "demand array missing");
-    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).expect("verdicts array");
+    assert!(
+        d.get("demand").and_then(|v| v.as_array()).is_some(),
+        "demand array missing"
+    );
+    let verdicts = d
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .expect("verdicts array");
     assert!(!verdicts.is_empty(), "at least one verdict expected");
     for v in verdicts {
-        let level = v.get("level").and_then(|x| x.as_str()).expect("verdict has level");
-        assert!(["PASS", "WARN", "FAIL"].contains(&level), "unexpected verdict level: {level}");
-        assert!(v.get("message").and_then(|x| x.as_str()).is_some(), "verdict missing message");
+        let level = v
+            .get("level")
+            .and_then(|x| x.as_str())
+            .expect("verdict has level");
+        assert!(
+            ["PASS", "WARN", "FAIL"].contains(&level),
+            "unexpected verdict level: {level}"
+        );
+        assert!(
+            v.get("message").and_then(|x| x.as_str()).is_some(),
+            "verdict missing message"
+        );
     }
 
     handle.abort();
@@ -302,7 +374,9 @@ async fn introspect_procs_returns_sample_structure() {
         "samples missing or not an array"
     );
     assert!(
-        d.get("replacement_suggestions").and_then(|v| v.as_array()).is_some(),
+        d.get("replacement_suggestions")
+            .and_then(|v| v.as_array())
+            .is_some(),
         "replacement_suggestions missing or not an array"
     );
     assert!(
@@ -339,7 +413,14 @@ async fn all_subjects_reachable_via_introspect() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let subjects = [
-        "daemon", "config", "providers", "cache", "watches", "backoff", "timers", "demand",
+        "daemon",
+        "config",
+        "providers",
+        "cache",
+        "watches",
+        "backoff",
+        "timers",
+        "demand",
     ];
 
     for subject in subjects {
@@ -452,7 +533,10 @@ async fn providers_introspect_has_entries_with_required_fields() {
         assert!(p.get("source").is_some(), "provider missing source: {p:?}");
         assert!(p.get("scope").is_some(), "provider missing scope: {p:?}");
         assert!(p.get("fields").is_some(), "provider missing fields: {p:?}");
-        assert!(p.get("invalidation").is_some(), "provider missing invalidation: {p:?}");
+        assert!(
+            p.get("invalidation").is_some(),
+            "provider missing invalidation: {p:?}"
+        );
     }
 
     handle.abort();

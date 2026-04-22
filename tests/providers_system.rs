@@ -98,7 +98,10 @@ mod uptime_tests {
         // sysctl may be unavailable in sandboxed environments; accept None.
         // If Some, validate the primary field is present.
         if let Some(result) = p.execute(None) {
-            assert!(result.get("seconds").is_some(), "seconds field should be present");
+            assert!(
+                result.get("seconds").is_some(),
+                "seconds field should be present"
+            );
         }
     }
 }

@@ -6,10 +6,7 @@ fn parse_get_request_with_path() {
     let req: Request = serde_json::from_str(json).unwrap();
     match req {
         Request::Get {
-            key,
-            path,
-            format,
-            ..
+            key, path, format, ..
         } => {
             assert_eq!(key, "git.branch");
             assert_eq!(path.as_deref(), Some("/home/user/project"));
@@ -128,7 +125,8 @@ fn parse_put_request() {
 
 #[test]
 fn parse_put_request_with_ttl_and_path() {
-    let json = r#"{"op":"put","key":"myapp","data":{"count":42},"ttl":"30s","path":"/home/user/project"}"#;
+    let json =
+        r#"{"op":"put","key":"myapp","data":{"count":42},"ttl":"30s","path":"/home/user/project"}"#;
     let req: Request = serde_json::from_str(json).unwrap();
     match req {
         Request::Put {
