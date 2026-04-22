@@ -60,7 +60,18 @@ ahead=0
 behind=0
 stash=1
 
-$ comb g git .                   # default: full JSON response
+$ comb g git .                   # default: text (one value per line)
+a1b2c3d
+0
+0
+main
+true
+2
+clean
+1
+1
+
+$ comb g.j git .                 # .j = JSON format
 {
   "ok": true,
   "data": {
@@ -1753,7 +1764,7 @@ Logs are appended indefinitely. Rotate manually or add a logrotate rule:
 
 ## Protocol Reference
 
-beachcomber uses a simple newline-delimited JSON protocol over a Unix socket. Any language that can open a Unix socket and read/write JSON can be a client — no client library required.
+beachcomber uses a simple newline-delimited JSON protocol over a Unix socket. Any language that can open a Unix socket and read/write JSON can be a client — no client library required. The authoritative wire contract is in [docs/protocol-spec.md](docs/protocol-spec.md).
 
 ### Connection
 
@@ -1844,15 +1855,23 @@ Field-level filtering applies: watching `git.branch` only emits when the branch 
 
 **`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
 
-**`status`:** Returns daemon health information.
+**`status`:** Returns cache rows — one entry per warm cache key. Each row includes provider, field, value, age, and stale flag. For daemon health information (uptime, scheduler state, active watchers), use `{"op":"introspect","subject":"daemon"}` instead. See [docs/protocol-spec.md](docs/protocol-spec.md) for the full wire contract.
 
-### Output Formats
+### Wire Formats
 
-When a `format` other than `"json"` is specified, the response body changes and metadata fields (`age_ms`, `stale`) are omitted.
+The wire protocol supports three response formats (set via the `format` field in the request):
 
-**`text`:** Returns the raw value only, followed by `\n`. For full-provider queries, returns one raw value per field, one per line, sorted alphabetically. Use this when you want bare values with no structure.
+**`json`:** (default) Full JSON envelope with `ok`, `data`, `age_ms`, `stale`.
 
-**`sh`:** Returns `key=value` lines sorted alphabetically, one per line, terminated with `\n`. Suitable for `while IFS='=' read -r key value` parsing in bash/zsh, or `eval`. Previously the behaviour of `text` for multi-field queries.
+**`text`:** Raw value only, followed by `\n`. For full-provider queries, returns one raw value per field, one per line, sorted alphabetically.
+
+**`sh`:** `key=value` lines sorted alphabetically, one per line. Suitable for `eval` or `while IFS='=' read -r key value` parsing.
+
+For all non-JSON wire formats, errors return nothing on stdout; `ok` is false in the JSON error response.
+
+### CLI-only Output Formats
+
+The `comb` CLI adds additional output formats on top of the wire formats above (these are not part of the wire protocol):
 
 **`csv` / `tsv`:** Comma- or tab-separated values. For single-field queries: one value per line. For full-provider queries: field values in alphabetical key order, one row.
 
@@ -1860,7 +1879,7 @@ When a `format` other than `"json"` is specified, the response body changes and 
 
 **`fmt`:** Compact human-readable format, suitable for terminal display.
 
-For all non-JSON formats, errors return nothing on stdout; `ok` is false in the JSON error response.
+Use format suffixes on the CLI (`.c` csv, `.C` CSV, `.t` tsv, `.T` TSV, `.f` fmt) or the `-f` flag.
 
 ### Connection Context Example
 

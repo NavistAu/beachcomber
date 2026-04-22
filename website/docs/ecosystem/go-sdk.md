@@ -92,7 +92,27 @@ List available providers.
 
 #### `c.Status() (*Result, error)`
 
-Return daemon scheduler and cache status.
+Return daemon scheduler and cache status (raw result).
+
+#### `c.StatusRows() ([]CacheRow, error)`
+
+Return cache rows as typed structs (one per warm cache entry).
+
+#### `c.Hello() (*HelloInfo, error)`
+
+Handshake — returns daemon version, protocol version, and build info.
+
+#### `c.Put(key string, data interface{}, ttl, path string) error`
+
+Write a value into the cache as a virtual provider.
+
+#### `c.Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)`
+
+Inspect a daemon subsystem (`"daemon"`, `"providers"`, `"config"`, `"cache"`, `"backoff"`, `"watches"`).
+
+#### `c.Watch(key, path string) (*WatchStream, error)`
+
+Subscribe to live cache updates. Returns a `WatchStream`; call `NextEvent()` in a loop and `Close()` when done.
 
 #### `c.Session() (*Session, error)`
 
@@ -139,9 +159,9 @@ dirty, _  := result.GetBool("dirty")     // false
 | `*ServerError` | Daemon responded with `ok: false` |
 | `*ProtocolError` | Response could not be parsed |
 
-## Unsupported operations
+## Wire protocol reference
 
-The `put` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for put, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+All operations follow the wire contract defined in [docs/protocol-spec.md](https://github.com/NavistAu/beachcomber/blob/main/docs/protocol-spec.md).
 
 ## Socket discovery
 

@@ -96,7 +96,31 @@ Force the daemon to recompute a provider.
 
 #### `client.status()`
 
-Return daemon status information.
+Return daemon status information (raw dict).
+
+#### `client.status_rows()`
+
+Return typed cache rows as a list of `CacheRow` dataclasses (one per warm cache entry).
+
+#### `client.hello()`
+
+Handshake — returns a `HelloInfo` with daemon and protocol version strings.
+
+#### `client.put(key, data=None, ttl=None, path=None)`
+
+Write a value into the cache as a virtual provider. `data=None` clears the entry.
+
+#### `client.introspect(subject, duration_secs=None)`
+
+Inspect a daemon subsystem. `subject` is an `IntrospectSubject` enum value (`DAEMON`, `PROVIDERS`, `CONFIG`, `CACHE`, `BACKOFF`, `WATCHES`). Returns an `IntrospectResponse`.
+
+#### `client.watch(key, path=None)`
+
+Subscribe to live cache updates. Returns a `WatchStream` (context manager / iterator) yielding `WatchEvent` instances.
+
+#### `client.get_with_flags(key, path=None, force=False, wait=False)`
+
+Read a cached value with optional protocol flags: `force` triggers recomputation before returning; `wait` blocks until a fresh value is available.
 
 #### `client.session()`
 
@@ -122,6 +146,6 @@ For full provider results, `result["field"]` delegates to the underlying dict.
 | `ProtocolError` | Malformed JSON or I/O failure |
 | `CombError` | Base class for all SDK errors |
 
-## Unsupported operations
+## Wire protocol reference
 
-The `put` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for put, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+All operations follow the wire contract defined in [docs/protocol-spec.md](https://github.com/NavistAu/beachcomber/blob/main/docs/protocol-spec.md).
