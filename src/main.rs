@@ -451,7 +451,7 @@ fn resolve_daemon_pid(
     ))
 }
 
-/// Open a one-shot connection to the daemon and read `pid` out of the status response.
+/// Open a one-shot connection to the daemon and read `pid` out of the introspect{daemon} response.
 fn query_daemon_pid(socket_path: &std::path::Path) -> Option<i32> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
@@ -462,7 +462,9 @@ fn query_daemon_pid(socket_path: &std::path::Path) -> Option<i32> {
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))
         .ok()?;
-    stream.write_all(b"{\"op\":\"status\"}\n").ok()?;
+    stream
+        .write_all(b"{\"op\":\"introspect\",\"subject\":\"daemon\"}\n")
+        .ok()?;
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
