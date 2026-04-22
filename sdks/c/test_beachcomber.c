@@ -404,7 +404,7 @@ static comb_result_t *get_with_mock(const char *response_json) {
 }
 
 /* Same as get_with_mock but uses mock server that handles multiple requests,
- * for testing poke / context / status. */
+ * for testing refresh / context / status. */
 typedef struct {
     int server_fd;
     const char **responses;   /* NULL-terminated array */
