@@ -34,7 +34,7 @@ cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'   #
 
 `cargo-nextest` is the blessed test runner. It is declared in `mise.toml`, so `mise install` provides it automatically. Config at `.config/nextest.toml` enforces a 2-minute global wall-clock cap on the suite plus a 15s-warn / 30s-kill cap per test — a hung test terminates the run with a failure instead of blocking forever.
 
-`.cargo/config.toml` ships a `t` alias (`cargo t`) as a shorthand for `cargo nextest run`. Plain `cargo test` still works but triggers an advisory test that fails to prompt you to switch to nextest.
+`.cargo/config.toml` ships a `t` alias (`cargo t`) as a shorthand for `cargo nextest run`. Plain `cargo test` triggers an advisory that fires immediately on binary startup (via `ctor`) before any test runs — it prints an instructive message and exits with code 2. Set `NEXTEST=1` in the environment to bypass it intentionally.
 
 Some tests require filesystem watching (FSEvents) and may not work inside sandboxed environments. These are the `watcher_*` tests and the `uptime_provider_executes` test; skip them as shown.
 
