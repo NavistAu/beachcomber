@@ -99,14 +99,34 @@ impl ClientSession {
         path: Option<&str>,
         format: &str,
     ) -> std::io::Result<String> {
-        let mut request = serde_json::json!({ "op": "get", "key": key, "format": format });
+        self.get_formatted_with_flags(key, path, format, false, false)
+            .await
+    }
+
+    pub async fn get_formatted_with_flags(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        format: &str,
+        force: bool,
+        wait: bool,
+    ) -> std::io::Result<String> {
+        let mut request = serde_json::json!({
+            "op": "get",
+            "key": key,
+            "format": format,
+        });
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
         }
+        if force {
+            request["force"] = serde_json::json!(true);
+        }
+        if wait {
+            request["wait"] = serde_json::json!(true);
+        }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
         self.writer.write_all(msg.as_bytes()).await?;
-        // Text/sh responses may be multi-line (Object values are key=val per line),
-        // terminated by a blank line. Single-value responses are one line.
         let mut result = String::new();
         loop {
             let mut line = String::new();
