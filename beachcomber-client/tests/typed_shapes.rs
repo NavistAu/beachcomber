@@ -45,3 +45,27 @@ fn status_returns_typed_cache_rows() {
     // Content assertion happens in Task 2 after Client::put (with data) lands.
     let _ = rows.iter().filter(|r| r.stale || !r.stale).count();
 }
+
+use libbeachcomber::CombResult;
+
+#[test]
+fn put_with_data_then_get_round_trips() {
+    let (_tmp, sock) = spawn_daemon();
+    let client = client_for(&sock);
+
+    client
+        .put(
+            "phase3_put",
+            serde_json::json!({"color": "purple", "count": 3}),
+            None,
+            None,
+        )
+        .expect("put");
+
+    match client.get("phase3_put.color", None).expect("get") {
+        CombResult::Hit { data, .. } => {
+            assert_eq!(data.as_text().as_deref(), Some("purple"));
+        }
+        CombResult::Miss => panic!("put followed by get should not miss"),
+    }
+}

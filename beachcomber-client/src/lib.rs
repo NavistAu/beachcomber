@@ -292,6 +292,49 @@ impl Client {
         Ok(())
     }
 
+    /// Store data into a virtual provider. `data` must be a JSON object;
+    /// its top-level keys become provider fields.
+    pub fn put(
+        &self,
+        key: &str,
+        data: serde_json::Value,
+        ttl: Option<&str>,
+        path: Option<&str>,
+    ) -> Result<(), CombError> {
+        let socket_path = self.find_or_start_socket()?;
+        let mut stream = self.connect(&socket_path)?;
+
+        let mut request = serde_json::json!({
+            "op": "put",
+            "key": key,
+            "data": data,
+        });
+        if let Some(t) = ttl {
+            request["ttl"] = serde_json::json!(t);
+        }
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        stream.write_all(msg.as_bytes())?;
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let resp: serde_json::Value =
+            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !ok {
+            let error = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            return Err(CombError::ServerError(error));
+        }
+        Ok(())
+    }
+
     /// Trigger recomputation of a provider. Fire-and-forget.
     pub fn refresh(&self, key: &str, path: Option<&str>) -> Result<(), CombError> {
         let socket_path = self.find_or_start_socket()?;
@@ -489,6 +532,44 @@ impl Session {
 
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
+        Ok(())
+    }
+
+    /// Store data into a virtual provider.
+    pub fn put(
+        &mut self,
+        key: &str,
+        data: serde_json::Value,
+        ttl: Option<&str>,
+        path: Option<&str>,
+    ) -> Result<(), CombError> {
+        let mut request = serde_json::json!({
+            "op": "put",
+            "key": key,
+            "data": data,
+        });
+        if let Some(t) = ttl {
+            request["ttl"] = serde_json::json!(t);
+        }
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        self.reader.get_mut().write_all(msg.as_bytes())?;
+
+        let mut line = String::new();
+        self.reader.read_line(&mut line)?;
+        let resp: serde_json::Value =
+            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !ok {
+            let error = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            return Err(CombError::ServerError(error));
+        }
         Ok(())
     }
 
