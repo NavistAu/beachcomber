@@ -34,7 +34,7 @@ async fn introspect_daemon_returns_current_pid() {
     reader.read_line(&mut line).await.unwrap();
 
     let parsed: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(parsed["ok"], serde_json::json!(true));
+    assert_eq!(parsed["ok"], serde_json::json!(true), "introspect{{daemon}} must succeed: {:?}", parsed);
     let pid = parsed["data"]["pid"]
         .as_i64()
         .expect("introspect{daemon} response must include data.pid as i64");
@@ -47,10 +47,10 @@ async fn introspect_daemon_returns_current_pid() {
 
 #[tokio::test]
 async fn status_op_does_not_contain_pid_field() {
-    // Locks in the schema-shift that motivated this fix: Status now returns
-    // cache rows (array), not daemon fields. If a future change puts pid back
-    // onto Status, comb kill's legacy path would still work, but we want to
-    // document the current contract explicitly.
+    // Locks in the current schema: Status returns cache rows (an array), not
+    // a daemon-health object. This documents the contract that motivated the
+    // comb kill pid-lookup fix above — comb kill can no longer read a pid
+    // field out of Status because the shape is now an array.
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
@@ -75,10 +75,6 @@ async fn status_op_does_not_contain_pid_field() {
         parsed["data"].is_array(),
         "status data must be an array of cache rows, got {:?}",
         parsed["data"]
-    );
-    assert!(
-        parsed["data"].get("pid").is_none(),
-        "status data must not contain a top-level pid field"
     );
 }
 

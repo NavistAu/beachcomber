@@ -422,9 +422,10 @@ fn run_kill(socket_path: &std::path::Path, timeout_secs: u64) -> ExitCode {
     ExitCode::from(1)
 }
 
-/// Find the pid of the running daemon. Asks the daemon itself via the status socket —
-/// that is the only source that cannot go stale. Falls back to the pid file only if
-/// the status query doesn't return a pid (older daemons pre-dating the `pid` field).
+/// Find the pid of the running daemon. Asks the daemon itself via
+/// `introspect{daemon}` — that is the only source that cannot go stale.
+/// Falls back to the pid file only if the introspect query doesn't return
+/// a pid (older daemons pre-dating the `pid` field on introspect).
 fn resolve_daemon_pid(
     pid_path: &std::path::Path,
     socket_path: &std::path::Path,
