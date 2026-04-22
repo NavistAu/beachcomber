@@ -139,3 +139,19 @@ fn find_eval_template_refs_deduplicates_providers() {
     assert_eq!(refs.len(), 1);
     assert!(refs.contains("git"));
 }
+
+#[test]
+fn eval_template_accepts_tab_and_newline_whitespace_inside_braces() {
+    let ctx = serde_json::json!({"git": {"branch": "main"}});
+    // Tab after {{ — scanner must still detect git.branch
+    let out = render_eval_template(
+        "{{\tgit.branch }}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(out, "main");
+
+    // Also verify the pair extraction sees the ref
+    let pairs = find_eval_template_pairs("{{\tgit.branch }}");
+    assert!(pairs.iter().any(|(p, f)| p == "git" && f == "branch"));
+}

@@ -64,7 +64,7 @@ pub fn find_eval_template_pairs(template: &str) -> Vec<(String, String)> {
         if bytes[i] == b'{' && bytes[i + 1] == b'{' {
             i += 2;
             // Skip whitespace
-            while i < len && bytes[i] == b' ' {
+            while i < len && bytes[i].is_ascii_whitespace() {
                 i += 1;
             }
             // Read first identifier
@@ -77,7 +77,7 @@ pub fn find_eval_template_pairs(template: &str) -> Vec<(String, String)> {
                 continue;
             }
             // Skip whitespace
-            while i < len && bytes[i] == b' ' {
+            while i < len && bytes[i].is_ascii_whitespace() {
                 i += 1;
             }
             // Expect a dot
