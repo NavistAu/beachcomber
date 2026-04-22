@@ -16,7 +16,7 @@ def encode_request(op: str, **fields: Any) -> bytes:
     """Serialise a request object to a newline-terminated JSON bytes value.
 
     Args:
-        op: The operation name (``"get"``, ``"poke"``, ``"context"``,
+        op: The operation name (``"get"``, ``"refresh"``, ``"context"``,
             ``"list"``, or ``"status"``).
         **fields: Additional key/value pairs to include in the request.
 
@@ -81,8 +81,8 @@ def build_get_request(key: str, path: Optional[str] = None) -> bytes:
     return encode_request("get", **kwargs)
 
 
-def build_poke_request(key: str, path: Optional[str] = None) -> bytes:
-    """Build a ``poke`` request.
+def build_refresh_request(key: str, path: Optional[str] = None) -> bytes:
+    """Build a ``refresh`` request.
 
     Args:
         key: Provider key to recompute.
@@ -94,7 +94,7 @@ def build_poke_request(key: str, path: Optional[str] = None) -> bytes:
     kwargs: dict[str, Any] = {"key": key}
     if path is not None:
         kwargs["path"] = path
-    return encode_request("poke", **kwargs)
+    return encode_request("refresh", **kwargs)
 
 
 def build_context_request(path: str) -> bytes:

@@ -28,9 +28,9 @@ func (s *Session) Get(key string, path string) (*Result, error) {
 	return s.roundtrip(req)
 }
 
-// Poke forces the daemon to recompute the given provider/key.
-func (s *Session) Poke(key string, path string) error {
-	req := map[string]interface{}{"op": "poke", "key": key}
+// Refresh forces the daemon to recompute the given provider/key.
+func (s *Session) Refresh(key string, path string) error {
+	req := map[string]interface{}{"op": "refresh", "key": key}
 	if path != "" {
 		req["path"] = path
 	}
@@ -40,7 +40,7 @@ func (s *Session) Poke(key string, path string) error {
 
 // SetContext sends a "context" message, which sets the default path for all
 // subsequent queries on this connection. This avoids repeating the path in
-// every Get/Poke call.
+// every Get/Refresh call.
 func (s *Session) SetContext(path string) error {
 	_, err := s.roundtrip(map[string]interface{}{"op": "context", "path": path})
 	return err

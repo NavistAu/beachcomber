@@ -17,7 +17,7 @@ Quick start::
         print(result["branch"])   # subscript into dict data
 
     # Force recomputation
-    client.poke("git", path="/path/to/repo")
+    client.refresh("git", path="/path/to/repo")
 
     # Persistent connection for multiple queries
     with client.session() as session:

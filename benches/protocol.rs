@@ -12,10 +12,10 @@ fn bench_parse_get_request(c: &mut Criterion) {
     });
 }
 
-fn bench_parse_subscribe_request(c: &mut Criterion) {
-    let json = r#"{"op": "subscribe", "key": "git", "path": "/project", "triggers": {"watch": true, "poll": "10s"}}"#;
+fn bench_parse_refresh_request(c: &mut Criterion) {
+    let json = r#"{"op": "refresh", "key": "git", "path": "/project"}"#;
 
-    c.bench_function("parse_subscribe_request", |b| {
+    c.bench_function("parse_refresh_request", |b| {
         b.iter(|| {
             let req: Request = serde_json::from_str(criterion::black_box(json)).unwrap();
             criterion::black_box(req);
@@ -57,7 +57,7 @@ fn bench_split_key(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_parse_get_request,
-    bench_parse_subscribe_request,
+    bench_parse_refresh_request,
     bench_serialize_response_json,
     bench_split_key,
 );

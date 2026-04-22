@@ -55,4 +55,4 @@ end
 
 The hook is a no-op if `comb` is not installed — the `command -v comb` check at the top of the script exits silently when the binary is missing.
 
-All pokes run in the background (`&`), so the hook adds no delay to your prompt or directory change. If the daemon is down, the background poke fails silently; the next foreground `comb g` will surface the error.
+All refreshes run in the background (`&`), so the hook adds no delay to your prompt or directory change. If the daemon is down, the background refresh fails silently; the next foreground `comb g` will surface the error.

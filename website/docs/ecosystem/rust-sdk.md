@@ -77,12 +77,12 @@ client.get("hostname", None)?;  // global provider, no path needed
 client.get("git", Some("/path/to/repo"))?;  // full provider object
 ```
 
-#### `client.poke(key, path)`
+#### `client.refresh(key, path)`
 
 Force the daemon to recompute a provider.
 
 ```rust
-client.poke("git", Some("/path/to/repo"))?;
+client.refresh("git", Some("/path/to/repo"))?;
 ```
 
 #### `client.list()`
@@ -117,7 +117,7 @@ match result {
 
 ## Unsupported operations
 
-The `store` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for store, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+The `put` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for put, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
 
 ## Socket discovery
 

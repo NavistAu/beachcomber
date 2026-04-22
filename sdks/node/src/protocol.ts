@@ -11,8 +11,8 @@ export interface GetRequest {
   path?: string;
 }
 
-export interface PokeRequest {
-  op: 'poke';
+export interface RefreshRequest {
+  op: 'refresh';
   key: string;
   path?: string;
 }
@@ -32,7 +32,7 @@ export interface StatusRequest {
 
 export type Request =
   | GetRequest
-  | PokeRequest
+  | RefreshRequest
   | ContextRequest
   | ListRequest
   | StatusRequest;

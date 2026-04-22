@@ -45,7 +45,7 @@ if result.is_hit:
     print(result["dirty"])   # False
 
 # Force recomputation
-client.poke("git", path="/path/to/repo")
+client.refresh("git", path="/path/to/repo")
 
 # List available providers
 providers = client.list()
@@ -93,7 +93,7 @@ client = Client(socket_path="/custom/path")
 
 Read a cached value. Returns a `Result`.
 
-#### `client.poke(key, path=None)`
+#### `client.refresh(key, path=None)`
 
 Force the daemon to recompute a provider.
 
@@ -131,4 +131,4 @@ For full provider results, `result["field"]` delegates to the underlying dict.
 
 ## Unsupported operations
 
-The `store` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for store, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+The `put` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for put, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.

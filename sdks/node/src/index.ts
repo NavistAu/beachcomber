@@ -25,7 +25,7 @@ export { discoverSocketPath, getUid } from './discovery.js';
 export { CombError, DaemonNotRunning, ParseError, ServerError } from './errors.js';
 export {
   type GetRequest,
-  type PokeRequest,
+  type RefreshRequest,
   type ContextRequest,
   type ListRequest,
   type StatusRequest,

@@ -83,7 +83,7 @@ int main(void) {
     comb_result_free(r);
 
     /* Force recomputation */
-    comb_poke(c, "git", "/path/to/repo");
+    comb_refresh(c, "git", "/path/to/repo");
 
     /* List providers */
     r = comb_list(c);
@@ -127,7 +127,7 @@ cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber
 | Function | Description |
 |---|---|
 | `comb_get(c, key, path)` | Read a cached value (`path` may be NULL) |
-| `comb_poke(c, key, path)` | Force recomputation |
+| `comb_refresh(c, key, path)` | Force recomputation |
 | `comb_set_context(c, path)` | Set default path for this connection |
 | `comb_list(c)` | List available providers |
 | `comb_status(c)` | Query daemon status |
@@ -159,7 +159,7 @@ For scalar results, pass `NULL` (or any field name) to `comb_result_get_str`. Fo
 
 ## Unsupported operations
 
-The `store` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for store, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+The `put` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for put, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
 
 ## Socket discovery
 

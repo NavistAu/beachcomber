@@ -161,16 +161,16 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_true(err:find("unknown provider", 1, true) ~= nil, "error should mention provider: " .. err)
   end)
 
-  test("poke sends correct op", function()
+  test("refresh sends correct op", function()
     local handle = make_mock_handle({
       json.encode({ ok = true }),
     })
     local c = Client.new(handle)
-    local ok, err = c:poke("git", "/repo")
+    local ok, err = c:refresh("git", "/repo")
     assert_nil(err)
     assert_true(ok)
     local req = json.decode(handle._sent[1])
-    assert_eq(req.op, "poke")
+    assert_eq(req.op, "refresh")
     assert_eq(req.key, "git")
     assert_eq(req.path, "/repo")
   end)

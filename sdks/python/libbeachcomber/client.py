@@ -30,7 +30,7 @@ from .protocol import (
     build_context_request,
     build_get_request,
     build_list_request,
-    build_poke_request,
+    build_refresh_request,
     build_status_request,
     decode_response,
 )
@@ -157,12 +157,12 @@ class Client:
             sock.close()
         return _result_from_response(resp)
 
-    def poke(self, key: str, path: Optional[str] = None) -> None:
+    def refresh(self, key: str, path: Optional[str] = None) -> None:
         """Trigger recomputation of a provider.
 
         The daemon will recompute the value in the background. This is
         fire-and-forget — the method returns once the daemon acknowledges
-        the poke.
+        the refresh.
 
         Args:
             key: Provider key to recompute.
@@ -175,7 +175,7 @@ class Client:
         """
         sock = _connect(self._resolve_path(), self._timeout)
         try:
-            _send_recv(sock, build_poke_request(key, path))
+            _send_recv(sock, build_refresh_request(key, path))
         finally:
             sock.close()
 
@@ -256,7 +256,7 @@ class Session:
     def set_context(self, path: str) -> None:
         """Set the default working-directory path for this connection.
 
-        After calling this, :meth:`get` and :meth:`poke` calls do not
+        After calling this, :meth:`get` and :meth:`refresh` calls do not
         need an explicit ``path`` argument.
 
         Args:
@@ -287,7 +287,7 @@ class Session:
         resp = _send_recv(self._sock, build_get_request(key, path))
         return _result_from_response(resp)
 
-    def poke(self, key: str, path: Optional[str] = None) -> None:
+    def refresh(self, key: str, path: Optional[str] = None) -> None:
         """Trigger recomputation via the persistent connection.
 
         Args:
@@ -298,7 +298,7 @@ class Session:
             ServerError: If the daemon returns an error response.
             ProtocolError: On I/O or JSON parse failure.
         """
-        _send_recv(self._sock, build_poke_request(key, path))
+        _send_recv(self._sock, build_refresh_request(key, path))
 
     def list(self) -> List[dict[str, Any]]:
         """Return available providers via the persistent connection.

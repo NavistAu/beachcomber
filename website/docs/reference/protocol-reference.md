@@ -23,7 +23,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "get", "key": "git", "path": "/home/user/project"}
 {"op": "get", "key": "battery"}
 {"op": "get", "key": "git.branch", "path": "/home/user/project", "format": "text"}
-{"op": "poke", "key": "git", "path": "/home/user/project"}
+{"op": "refresh", "key": "git", "path": "/home/user/project"}
 {"op": "context", "path": "/home/user/project"}
 {"op": "list"}
 {"op": "status"}
@@ -33,7 +33,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `poke`, `context`, `list`, `status`, `store`, `watch` |
+| `op` | string | Operation: `get`, `refresh`, `context`, `list`, `status`, `put`, `watch` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
@@ -61,7 +61,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
 
-**`poke`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
+**`refresh`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
 
 **`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
 
@@ -69,11 +69,11 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`status`:** Returns daemon health information.
 
-**`store`:** Write data as a virtual provider. The `key` names the virtual provider, and `data` must be a JSON object. An optional `ttl` duration string (e.g. `"30s"`) marks entries stale if the writer stops updating. An optional `path` scopes the entry to a directory.
+**`put`:** Write data as a virtual provider. The `key` names the virtual provider, and `data` must be a JSON object. An optional `ttl` duration string (e.g. `"30s"`) marks entries stale if the writer stops updating. An optional `path` scopes the entry to a directory.
 
 ```json
-{"op":"store","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}
-{"op":"store","key":"myapp","data":{"status":"ok"},"ttl":"30s","path":"/project"}
+{"op":"put","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}
+{"op":"put","key":"myapp","data":{"status":"ok"},"ttl":"30s","path":"/project"}
 ```
 
 Response: `{"ok":true}`

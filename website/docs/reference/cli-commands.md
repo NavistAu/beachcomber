@@ -133,13 +133,13 @@ $ comb l
 Write data into the cache as a virtual provider. External processes use this to expose state to prompt/statusline consumers without writing a script provider.
 
 ```sh
-# Store application status
+# Put application status into cache
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
 
-# Store with TTL — consumers see staleness if writer stops updating
+# Put with TTL — consumers see staleness if writer stops updating
 comb p myapp '{"status":"healthy"}' --ttl 30s
 
-# Store with path scope
+# Put with path scope
 comb p myapp '{"status":"building"}' --path /home/user/project
 ```
 

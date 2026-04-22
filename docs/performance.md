@@ -100,7 +100,7 @@ fn execute_provider(&self, name: &str, path: Option<&str>) {
 
 #### 1.4 Client — persistent connection via ClientSession
 
-**Problem:** Each `Client` method (get, poke) opened a new Unix socket connection, sent one request, read one response, and closed the connection. A prompt querying 3 values paid 3× the connection overhead.
+**Problem:** Each `Client` method (get, refresh) opened a new Unix socket connection, sent one request, read one response, and closed the connection. A prompt querying 3 values paid 3× the connection overhead.
 
 **Fix:** Added `ClientSession` that holds an open `UnixStream` split into reader/writer halves. Multiple requests share the same connection.
 

@@ -18,18 +18,18 @@ describe('serialiseRequest', () => {
     assert.deepEqual(parsed, { op: 'get', key: 'git.branch', path: '/some/repo' });
   });
 
-  it('serialises a poke request', () => {
-    const req: Request = { op: 'poke', key: 'git', path: '/repo' };
+  it('serialises a refresh request', () => {
+    const req: Request = { op: 'refresh', key: 'git', path: '/repo' };
     const line = serialiseRequest(req);
     const parsed = JSON.parse(line.trim());
-    assert.deepEqual(parsed, { op: 'poke', key: 'git', path: '/repo' });
+    assert.deepEqual(parsed, { op: 'refresh', key: 'git', path: '/repo' });
   });
 
-  it('serialises a poke request without path', () => {
-    const req: Request = { op: 'poke', key: 'hostname' };
+  it('serialises a refresh request without path', () => {
+    const req: Request = { op: 'refresh', key: 'hostname' };
     const line = serialiseRequest(req);
     const parsed = JSON.parse(line.trim());
-    assert.deepEqual(parsed, { op: 'poke', key: 'hostname' });
+    assert.deepEqual(parsed, { op: 'refresh', key: 'hostname' });
   });
 
   it('serialises a context request', () => {

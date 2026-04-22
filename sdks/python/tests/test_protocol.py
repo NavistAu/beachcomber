@@ -11,7 +11,7 @@ from libbeachcomber.protocol import (
     build_context_request,
     build_get_request,
     build_list_request,
-    build_poke_request,
+    build_refresh_request,
     build_status_request,
     decode_response,
     encode_request,
@@ -102,12 +102,12 @@ class TestBuildRequests:
         obj = json.loads(build_get_request("hostname", None))
         assert "path" not in obj
 
-    def test_poke_request_key_only(self) -> None:
-        obj = json.loads(build_poke_request("git"))
-        assert obj == {"op": "poke", "key": "git"}
+    def test_refresh_request_key_only(self) -> None:
+        obj = json.loads(build_refresh_request("git"))
+        assert obj == {"op": "refresh", "key": "git"}
 
-    def test_poke_request_with_path(self) -> None:
-        obj = json.loads(build_poke_request("git", "/repo"))
+    def test_refresh_request_with_path(self) -> None:
+        obj = json.loads(build_refresh_request("git", "/repo"))
         assert obj["path"] == "/repo"
 
     def test_context_request(self) -> None:

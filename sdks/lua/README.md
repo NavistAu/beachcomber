@@ -56,8 +56,8 @@ if r:is_hit() then
   print(r:get_str('branch'))  -- "main"
 end
 
--- poke (force recompute)
-client:poke('git', '/my/repo')
+-- refresh (force recompute)
+client:refresh('git', '/my/repo')
 
 -- persistent context — path applies to all subsequent queries
 client:set_context('/my/repo')
@@ -102,7 +102,7 @@ Returns `nil, error_message` on failure.
 Read a cached value. `key` is `"provider"` or `"provider.field"`.
 `path` overrides any connection context.
 
-### `Client:poke(key [, path])` → `true | nil, error`
+### `Client:refresh(key [, path])` → `true | nil, error`
 
 Force the daemon to recompute `key`.
 

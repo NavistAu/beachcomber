@@ -97,8 +97,8 @@ function M.connect(socket_path)
       -- But we need a single line, so strip newlines
       return output:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
 
-    elseif op == "poke" then
-      local cmd = comb_bin .. " poke " .. shell_escape(req.key)
+    elseif op == "refresh" then
+      local cmd = comb_bin .. " refresh " .. shell_escape(req.key)
       if req.path then
         cmd = cmd .. " " .. shell_escape(req.path)
       end

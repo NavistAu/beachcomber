@@ -10,7 +10,7 @@ description = {
   summary  = "Lua client SDK for the beachcomber daemon",
   detailed = [[
     Client library for the beachcomber Unix-socket daemon.
-    Provides synchronous get/poke/list/status operations with automatic
+    Provides synchronous get/refresh/list/status operations with automatic
     backend detection: vim.uv inside Neovim, luasocket everywhere else.
     Ships a minimal JSON encoder/decoder — no external JSON dependency.
   ]],

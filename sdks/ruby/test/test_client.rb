@@ -72,26 +72,26 @@ class TestClient < Minitest::Test
     assert_match(/unknown provider: foo/, err.message)
   end
 
-  # --- poke ---
+  # --- refresh ---
 
-  def test_poke_sends_correct_op
+  def test_refresh_sends_correct_op
     @server.enqueue('{"ok":true}')
-    @client.poke('git')
+    @client.refresh('git')
     req = @server.requests.last
-    assert_equal 'poke', req['op']
-    assert_equal 'git',  req['key']
+    assert_equal 'refresh', req['op']
+    assert_equal 'git',     req['key']
   end
 
-  def test_poke_with_path
+  def test_refresh_with_path
     @server.enqueue('{"ok":true}')
-    @client.poke('git', path: '/repo')
+    @client.refresh('git', path: '/repo')
     req = @server.requests.last
     assert_equal '/repo', req['path']
   end
 
-  def test_poke_returns_nil
+  def test_refresh_returns_nil
     @server.enqueue('{"ok":true}')
-    result = @client.poke('git')
+    result = @client.refresh('git')
     assert_nil result
   end
 

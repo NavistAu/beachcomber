@@ -206,7 +206,7 @@ describe('Client.get', () => {
   });
 });
 
-describe('Client.poke', () => {
+describe('Client.refresh', () => {
   let server: MockServer;
 
   before(async () => {
@@ -217,35 +217,35 @@ describe('Client.poke', () => {
     await server.stop();
   });
 
-  it('sends a poke request', async () => {
+  it('sends a refresh request', async () => {
     let received: Record<string, unknown> = {};
     server.handle((req) => {
       received = req.parsed;
       return { ok: true };
     });
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    await client.poke('git', '/repo');
-    assert.equal(received['op'], 'poke');
+    await client.refresh('git', '/repo');
+    assert.equal(received['op'], 'refresh');
     assert.equal(received['key'], 'git');
     assert.equal(received['path'], '/repo');
   });
 
-  it('sends poke without path', async () => {
+  it('sends refresh without path', async () => {
     let received: Record<string, unknown> = {};
     server.handle((req) => {
       received = req.parsed;
       return { ok: true };
     });
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    await client.poke('hostname');
-    assert.equal(received['op'], 'poke');
+    await client.refresh('hostname');
+    assert.equal(received['op'], 'refresh');
     assert.ok(!('path' in received));
   });
 
   it('throws ServerError on failure', async () => {
-    server.handle(() => ({ ok: false, error: 'poke failed' }));
+    server.handle(() => ({ ok: false, error: 'refresh failed' }));
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    await assert.rejects(() => client.poke('git'), ServerError);
+    await assert.rejects(() => client.refresh('git'), ServerError);
   });
 });
 
@@ -390,7 +390,7 @@ describe('Client.session', () => {
     assert.equal(received['path'], '/my/project');
   });
 
-  it('session.poke sends op:poke', async () => {
+  it('session.refresh sends op:refresh', async () => {
     let received: Record<string, unknown> = {};
     server.handle((req) => {
       received = req.parsed;
@@ -399,10 +399,10 @@ describe('Client.session', () => {
 
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
     const session = await client.session();
-    await session.poke('git', '/repo');
+    await session.refresh('git', '/repo');
     session.close();
 
-    assert.equal(received['op'], 'poke');
+    assert.equal(received['op'], 'refresh');
     assert.equal(received['path'], '/repo');
   });
 });

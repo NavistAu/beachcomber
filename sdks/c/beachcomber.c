@@ -398,11 +398,11 @@ comb_result_t *comb_get(comb_client_t *client, const char *key,
     return r;
 }
 
-int comb_poke(comb_client_t *client, const char *key, const char *path) {
+int comb_refresh(comb_client_t *client, const char *key, const char *path) {
     if (!client || client->fd < 0) return -1;
     if (!key) return -1;
 
-    char *req = build_request("poke", key, path);
+    char *req = build_request("refresh", key, path);
     if (!req) return -1;
 
     comb_result_t *r = do_request(client, req);

@@ -52,12 +52,12 @@ const result = await client.get('hostname');           // global provider, no pa
 const result = await client.get('git', '/some/repo');  // full provider (returns object)
 ```
 
-#### `client.poke(key, path?)`
+#### `client.refresh(key, path?)`
 
 Force the daemon to recompute a provider.
 
 ```typescript
-await client.poke('git', '/some/repo');
+await client.refresh('git', '/some/repo');
 ```
 
 #### `client.list()`
@@ -82,7 +82,7 @@ const session = await client.session();
 await session.setContext('/some/repo');   // optional — sets default path
 const branch = await session.get('git.branch');
 const dirty  = await session.get('git.dirty');
-await session.poke('git');
+await session.refresh('git');
 session.close();
 ```
 
@@ -119,7 +119,7 @@ All extend `CombError` which extends `Error`.
 
 ## Unsupported operations
 
-The `store` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for store, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+The `put` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for put, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
 
 ## Socket discovery
 

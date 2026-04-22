@@ -47,7 +47,7 @@ class MockDaemon:
         """Register a response handler for a given op.
 
         Args:
-            op: Operation name (``"get"``, ``"poke"``, etc.).
+            op: Operation name (``"get"``, ``"refresh"``, etc.).
             handler: Callable that receives the parsed request dict and
                 returns a response dict.
 
@@ -170,7 +170,7 @@ def git_daemon(mock_daemon: MockDaemon) -> MockDaemon:
             "stale": False,
         },
     )
-    mock_daemon.respond("poke", {"ok": True})
+    mock_daemon.respond("refresh", {"ok": True})
     mock_daemon.respond("context", {"ok": True})
     mock_daemon.respond(
         "list",

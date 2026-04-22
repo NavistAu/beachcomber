@@ -158,20 +158,20 @@ func TestClient_Get_ServerError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Client.Poke
+// Client.Refresh
 // ---------------------------------------------------------------------------
 
-func TestClient_Poke(t *testing.T) {
+func TestClient_Refresh(t *testing.T) {
 	h, reqs := fixedHandler(`{"ok":true}`)
 	sock := startMockServer(t, h)
 
 	c := beachcomber.NewClientWithPath(sock)
-	if err := c.Poke("git", "/repo"); err != nil {
-		t.Fatalf("Poke: %v", err)
+	if err := c.Refresh("git", "/repo"); err != nil {
+		t.Fatalf("Refresh: %v", err)
 	}
 	req := reqs()[0]
-	if req["op"] != "poke" {
-		t.Errorf("op = %v, want poke", req["op"])
+	if req["op"] != "refresh" {
+		t.Errorf("op = %v, want refresh", req["op"])
 	}
 	if req["path"] != "/repo" {
 		t.Errorf("path = %v, want /repo", req["path"])
@@ -320,7 +320,7 @@ func TestSession_SetContext(t *testing.T) {
 	}
 }
 
-func TestSession_Poke(t *testing.T) {
+func TestSession_Refresh(t *testing.T) {
 	var lastReq map[string]interface{}
 	h := func(req map[string]interface{}) string {
 		lastReq = req
@@ -335,11 +335,11 @@ func TestSession_Poke(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if err := sess.Poke("git", ""); err != nil {
-		t.Fatalf("Poke: %v", err)
+	if err := sess.Refresh("git", ""); err != nil {
+		t.Fatalf("Refresh: %v", err)
 	}
-	if lastReq["op"] != "poke" {
-		t.Errorf("op = %v, want poke", lastReq["op"])
+	if lastReq["op"] != "refresh" {
+		t.Errorf("op = %v, want refresh", lastReq["op"])
 	}
 	if _, hasPath := lastReq["path"]; hasPath {
 		t.Error("path field should be absent when path is empty string")

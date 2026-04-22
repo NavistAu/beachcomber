@@ -404,7 +404,7 @@ static comb_result_t *get_with_mock(const char *response_json) {
 }
 
 /* Same as get_with_mock but uses mock server that handles multiple requests,
- * for testing poke / context / list / status. */
+ * for testing refresh / context / list / status. */
 typedef struct {
     int server_fd;
     const char **responses;   /* NULL-terminated array */
@@ -582,10 +582,10 @@ static void test_result_null_args(void) {
 }
 
 /* -------------------------------------------------------------------------
- * Integration tests: poke, context, list, status
+ * Integration tests: refresh, context, list, status
  * ---------------------------------------------------------------------- */
 
-static void test_poke(void) {
+static void test_refresh(void) {
     const char *responses[] = { "{\"ok\":true}", NULL };
     char sock_path[256];
     int srv_fd;
@@ -597,7 +597,7 @@ static void test_poke(void) {
     CHECK(c != NULL);
     if (!c) goto done;
 
-    int rc = comb_poke(c, "git", "/some/path");
+    int rc = comb_refresh(c, "git", "/some/path");
     CHECK(rc == 0);
 
     comb_disconnect(c);
@@ -666,8 +666,8 @@ static void test_connect_fail(void) {
     CHECK(c == NULL);
 }
 
-static void test_poke_on_null_client(void) {
-    CHECK(comb_poke(NULL, "git", NULL) == -1);
+static void test_refresh_on_null_client(void) {
+    CHECK(comb_refresh(NULL, "git", NULL) == -1);
     CHECK(comb_set_context(NULL, "/x") == -1);
 }
 
@@ -763,12 +763,12 @@ int main(void) {
     test_result_null_args();
 
     SUITE("Integration — mock server");
-    test_poke();
+    test_refresh();
     test_set_context();
     test_list();
     test_status();
     test_connect_fail();
-    test_poke_on_null_client();
+    test_refresh_on_null_client();
     test_multiple_requests();
 
     printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);

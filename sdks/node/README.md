@@ -52,12 +52,12 @@ const result = await client.get('git', '/some/repo'); // full provider (returns 
 
 Returns a `CombResult`.
 
-#### `client.poke(key, path?)`
+#### `client.refresh(key, path?)`
 
 Force the daemon to recompute a provider.
 
 ```typescript
-await client.poke('git', '/some/repo');
+await client.refresh('git', '/some/repo');
 ```
 
 #### `client.list()`
@@ -88,7 +88,7 @@ const session = await client.session();
 await session.setContext('/some/repo');   // optional — sets default path
 const branch = await session.get('git.branch');
 const dirty  = await session.get('git.dirty');
-await session.poke('git');
+await session.refresh('git');
 session.close();
 ```
 

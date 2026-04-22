@@ -43,7 +43,7 @@ Opens a fresh socket connection for each call. Simple and stateless.
 | Method | Description |
 |--------|-------------|
 | `get(key, path: nil)` | Read a cached value. Returns a `Result`. |
-| `poke(key, path: nil)` | Force recomputation. Returns `nil`. |
+| `refresh(key, path: nil)` | Force recomputation. Returns `nil`. |
 | `list` | List available providers. Returns a `Result`. |
 | `status` | Daemon scheduler/cache status. Returns a `Result`. |
 | `session { \|s\| }` | Open a persistent connection (see below). |
@@ -57,7 +57,7 @@ client.session do |s|
   s.set_context('/path/to/repo')   # sets default path for this connection
   r1 = s.get('git.branch')
   r2 = s.get('git.dirty')
-  s.poke('git')
+  s.refresh('git')
 end
 # connection closed automatically
 ```
@@ -66,7 +66,7 @@ end
 |--------|-------------|
 | `set_context(path)` | Set default path for subsequent queries. |
 | `get(key, path: nil)` | Read a cached value. |
-| `poke(key, path: nil)` | Force recomputation. |
+| `refresh(key, path: nil)` | Force recomputation. |
 | `list` | List providers. |
 | `status` | Daemon status. |
 | `close` | Close the connection (called automatically by `Client#session`). |

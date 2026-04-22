@@ -48,8 +48,8 @@ module Beachcomber
     #
     # @param key [String]
     # @param path [String, nil]
-    def poke(key, path: nil)
-      req = { op: 'poke', key: key }
+    def refresh(key, path: nil)
+      req = { op: 'refresh', key: key }
       req[:path] = path if path
       roundtrip(req)
       nil
@@ -146,8 +146,8 @@ module Beachcomber
     # @param path [String, nil]
     # @raise [DaemonNotRunning]
     # @raise [ServerError]
-    def poke(key, path: nil)
-      req = { op: 'poke', key: key }
+    def refresh(key, path: nil)
+      req = { op: 'refresh', key: key }
       req[:path] = path if path
       roundtrip(req)
       nil

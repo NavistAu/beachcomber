@@ -101,36 +101,36 @@ class TestClientGet:
 
 
 # ---------------------------------------------------------------------------
-# Client.poke
+# Client.refresh
 # ---------------------------------------------------------------------------
 
 
-class TestClientPoke:
-    def test_poke_sends_correct_request(self, mock_daemon: MockDaemon) -> None:
-        mock_daemon.respond("poke", {"ok": True})
+class TestClientRefresh:
+    def test_refresh_sends_correct_request(self, mock_daemon: MockDaemon) -> None:
+        mock_daemon.respond("refresh", {"ok": True})
         client = make_client(mock_daemon)
-        client.poke("git", path="/repo")
+        client.refresh("git", path="/repo")
         req = mock_daemon.received[0]
-        assert req["op"] == "poke"
+        assert req["op"] == "refresh"
         assert req["key"] == "git"
         assert req["path"] == "/repo"
 
-    def test_poke_no_path(self, mock_daemon: MockDaemon) -> None:
-        mock_daemon.respond("poke", {"ok": True})
+    def test_refresh_no_path(self, mock_daemon: MockDaemon) -> None:
+        mock_daemon.respond("refresh", {"ok": True})
         client = make_client(mock_daemon)
-        client.poke("hostname")
+        client.refresh("hostname")
         assert "path" not in mock_daemon.received[0]
 
-    def test_poke_server_error_raises(self, mock_daemon: MockDaemon) -> None:
-        mock_daemon.respond("poke", {"ok": False, "error": "no such provider"})
+    def test_refresh_server_error_raises(self, mock_daemon: MockDaemon) -> None:
+        mock_daemon.respond("refresh", {"ok": False, "error": "no such provider"})
         client = make_client(mock_daemon)
         with pytest.raises(ServerError):
-            client.poke("nonexistent")
+            client.refresh("nonexistent")
 
-    def test_poke_returns_none(self, mock_daemon: MockDaemon) -> None:
-        mock_daemon.respond("poke", {"ok": True})
+    def test_refresh_returns_none(self, mock_daemon: MockDaemon) -> None:
+        mock_daemon.respond("refresh", {"ok": True})
         client = make_client(mock_daemon)
-        result = client.poke("git")
+        result = client.refresh("git")
         assert result is None
 
 
@@ -228,13 +228,13 @@ class TestClientSession:
         assert len(ctx_reqs) == 1
         assert ctx_reqs[0]["path"] == "/workspace"
 
-    def test_session_poke(self, mock_daemon: MockDaemon) -> None:
-        mock_daemon.respond("poke", {"ok": True})
+    def test_session_refresh(self, mock_daemon: MockDaemon) -> None:
+        mock_daemon.respond("refresh", {"ok": True})
         client = make_client(mock_daemon)
         with client.session() as session:
-            session.poke("git", "/repo")
+            session.refresh("git", "/repo")
         req = mock_daemon.received[0]
-        assert req["op"] == "poke"
+        assert req["op"] == "refresh"
 
     def test_session_list(self, git_daemon: MockDaemon) -> None:
         client = make_client(git_daemon)
@@ -269,12 +269,12 @@ class TestErrorPaths:
             client.get("git.branch")
         assert sock_path in str(exc_info.value)
 
-    def test_daemon_not_running_for_poke(
+    def test_daemon_not_running_for_refresh(
         self, tmp_path: pytest.TempPathFixture
     ) -> None:
         client = Client(socket_path=str(tmp_path / "nosock"))
         with pytest.raises(DaemonNotRunning):
-            client.poke("git")
+            client.refresh("git")
 
     def test_daemon_not_running_for_list(
         self, tmp_path: pytest.TempPathFixture

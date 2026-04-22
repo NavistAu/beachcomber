@@ -41,7 +41,7 @@ if result.is_hit:
     print(result["dirty"])   # False
 
 # Force recomputation
-client.poke("git", path="/path/to/repo")
+client.refresh("git", path="/path/to/repo")
 
 # List available providers
 providers = client.list()

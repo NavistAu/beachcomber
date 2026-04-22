@@ -92,9 +92,9 @@ func (c *Client) Get(key string, path string) (*Result, error) {
 	return c.roundtrip(req)
 }
 
-// Poke forces the daemon to recompute the given provider/key.
-func (c *Client) Poke(key string, path string) error {
-	req := map[string]interface{}{"op": "poke", "key": key}
+// Refresh forces the daemon to recompute the given provider/key.
+func (c *Client) Refresh(key string, path string) error {
+	req := map[string]interface{}{"op": "refresh", "key": key}
 	if path != "" {
 		req["path"] = path
 	}

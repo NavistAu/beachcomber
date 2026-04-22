@@ -43,7 +43,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/lib.rs` | Module declarations; no logic |
 | `src/daemon.rs` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel`; watchdog task monitors scheduler heartbeat |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
-| `src/scheduler.rs` | Single event loop: handles Poke/FsEvent/QueryActivity/poll tick; owns all demand and watch state; contains `BackoffState`/`BackoffStage`; heartbeat counter for watchdog liveness detection |
+| `src/scheduler.rs` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; owns all demand and watch state; contains `BackoffState`/`BackoffStage`; heartbeat counter for watchdog liveness detection |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; generation counter |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
 | `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`; `split_key()` |

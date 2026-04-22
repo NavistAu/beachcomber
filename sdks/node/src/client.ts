@@ -243,7 +243,7 @@ export class Session {
 
   /**
    * Set the default path for subsequent queries on this connection.
-   * After calling this, `get` and `poke` calls can omit the path.
+   * After calling this, `get` and `refresh` calls can omit the path.
    */
   async setContext(repoPath: string): Promise<void> {
     const req = serialiseRequest({ op: 'context', path: repoPath });
@@ -266,9 +266,9 @@ export class Session {
   /**
    * Trigger recomputation of a provider.
    */
-  async poke(key: string, path?: string): Promise<void> {
+  async refresh(key: string, path?: string): Promise<void> {
     const req = serialiseRequest(
-      path !== undefined ? { op: 'poke', key, path } : { op: 'poke', key },
+      path !== undefined ? { op: 'refresh', key, path } : { op: 'refresh', key },
     );
     const line = await this.sendAndReceive(req);
     parseAndCheck(line);
@@ -325,9 +325,9 @@ export class Client {
    * @param key   Provider key, e.g. `"git"`.
    * @param path  Optional repository path.
    */
-  async poke(key: string, path?: string): Promise<void> {
+  async refresh(key: string, path?: string): Promise<void> {
     const req = serialiseRequest(
-      path !== undefined ? { op: 'poke', key, path } : { op: 'poke', key },
+      path !== undefined ? { op: 'refresh', key, path } : { op: 'refresh', key },
     );
     await this.doRequest(req);
   }

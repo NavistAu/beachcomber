@@ -82,7 +82,7 @@ result, err := c.Get("hostname", "")       // global provider
 result, err := c.Get("git", "/path/to/repo") // full provider object
 ```
 
-#### `c.Poke(key, path) error`
+#### `c.Refresh(key, path) error`
 
 Force the daemon to recompute a provider.
 
@@ -103,7 +103,7 @@ Open a persistent connection.
 | Method | Description |
 |---|---|
 | `Get(key, path string) (*Result, error)` | Read a cached value |
-| `Poke(key, path string) error` | Force recomputation |
+| `Refresh(key, path string) error` | Force recomputation |
 | `SetContext(path string) error` | Set default path for subsequent queries |
 | `Close() error` | Close the connection |
 
@@ -141,7 +141,7 @@ dirty, _  := result.GetBool("dirty")     // false
 
 ## Unsupported operations
 
-The `store` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for store, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
+The `put` and `watch` protocol operations are not currently exposed in this SDK. Use the CLI (`comb p` for put, `comb w` for watch) or speak the [raw protocol](/docs/reference/protocol-reference) directly over a Unix socket.
 
 ## Socket discovery
 

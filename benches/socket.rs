@@ -85,16 +85,16 @@ fn bench_socket_roundtrip_text(c: &mut Criterion) {
     });
 }
 
-/// Poke latency.
-fn bench_socket_poke(c: &mut Criterion) {
+/// Refresh latency.
+fn bench_socket_refresh(c: &mut Criterion) {
     let server = TestServer::new();
 
-    c.bench_function("socket_poke", |b| {
+    c.bench_function("socket_refresh", |b| {
         b.to_async(&server.rt).iter(|| {
             let sock = server.sock.clone();
             async move {
                 let client = Client::new(sock);
-                let resp = client.poke("hostname", None).await.unwrap();
+                let resp = client.refresh("hostname", None).await.unwrap();
                 criterion::black_box(resp);
             }
         })
@@ -152,7 +152,7 @@ criterion_group!(
     benches,
     bench_socket_roundtrip_cold,
     bench_socket_roundtrip_text,
-    bench_socket_poke,
+    bench_socket_refresh,
     bench_sequential_gets,
     bench_socket_session_gets,
 );

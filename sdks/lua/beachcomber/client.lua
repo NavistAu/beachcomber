@@ -1,7 +1,7 @@
 --- Client implementation for the beachcomber daemon.
 --
 -- Wraps a socket handle and exposes the five protocol operations:
--- get, poke, context, list, status.
+-- get, refresh, context, list, status.
 
 local json = require("beachcomber.json")
 
@@ -102,8 +102,8 @@ end
 -- @param key string    Provider key to recompute
 -- @param path string?  Optional working-directory path
 -- @return true, or nil, error_message
-function Client:poke(key, path)
-  local req = { op = "poke", key = key }
+function Client:refresh(key, path)
+  local req = { op = "refresh", key = key }
   if path ~= nil then req.path = path end
   local resp, err = send_request(self._sock, req)
   if not resp then

@@ -32,9 +32,9 @@ Shelling out to `comb g.` is fine for one-off queries from shell scripts, prompt
 
 ## Feature matrix
 
-All SDKs cover the common read path. `store` and `watch` are protocol-level operations that are not yet exposed in any language SDK — use the raw [protocol](../reference/protocol-reference.md) over a Unix socket to drive them, or call `comb w` / `comb p` on the CLI.
+All SDKs cover the common read path. `put` and `watch` are protocol-level operations that are not yet exposed in any language SDK — use the raw [protocol](../reference/protocol-reference.md) over a Unix socket to drive them, or call `comb w` / `comb p` on the CLI.
 
-| SDK | `get` | `poke` | `context` / session | `list` | `status` | `store` | `watch` |
+| SDK | `get` | `refresh` | `context` / session | `list` | `status` | `put` | `watch` |
 |---|---|---|---|---|---|---|---|
 | Rust | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
 | Python | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
