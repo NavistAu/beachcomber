@@ -15,13 +15,13 @@ Project-specific instructions for contributors using Claude Code.
 ```sh
 cargo build              # debug build
 cargo nextest run        # run tests (preferred — has a 2-minute global kill)
-cargo test               # aliased to `cargo nextest run` via .cargo/config.toml
+cargo t                  # shorthand alias for `cargo nextest run`
 cargo bench              # criterion benchmarks (cache, protocol, providers, socket, throughput)
 cargo clippy -- -D warnings
 cargo fmt -- --check
 ```
 
-**Test runner:** `cargo-nextest` is the blessed runner. `.cargo/config.toml` aliases `cargo test` to `cargo nextest run`, so muscle-memory invocations get the same 2-minute global wall-clock cap and 30s per-test kill from `.config/nextest.toml`. Run `mise install` to get `cargo-nextest` alongside Rust — it is declared in `mise.toml`.
+**Test runner:** `cargo-nextest` is the blessed runner. Run `mise install` to get it alongside Rust — it is declared in `mise.toml`. Use `cargo nextest run` (full runner, 2m kill-on-hang + 30s per-test) or the shorter `cargo t` alias we ship. Plain `cargo test` still works but triggers an advisory test that fails to remind you to use nextest.
 
 Tests that require FSEvents or are environment-sensitive:
 - `watcher_*` tests — need real filesystem watching

@@ -9,7 +9,7 @@ git clone https://github.com/OWNER/beachcomber.git
 cd beachcomber
 mise install         # installs Rust + cargo-nextest
 cargo build
-cargo nextest run    # or: cargo test (aliased to nextest via .cargo/config.toml)
+cargo nextest run    # or: cargo t (shorthand alias we ship)
 ```
 
 The binary is `comb` (not `beachcomber`):
@@ -34,7 +34,7 @@ cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'   #
 
 `cargo-nextest` is the blessed test runner. It is declared in `mise.toml`, so `mise install` provides it automatically. Config at `.config/nextest.toml` enforces a 2-minute global wall-clock cap on the suite plus a 15s-warn / 30s-kill cap per test — a hung test terminates the run with a failure instead of blocking forever.
 
-`.cargo/config.toml` aliases `cargo test` to `cargo nextest run`, so both invocations go through nextest and get the kill-on-hang safety.
+`.cargo/config.toml` ships a `t` alias (`cargo t`) as a shorthand for `cargo nextest run`. Plain `cargo test` still works but triggers an advisory test that fails to prompt you to switch to nextest.
 
 Some tests require filesystem watching (FSEvents) and may not work inside sandboxed environments. These are the `watcher_*` tests and the `uptime_provider_executes` test; skip them as shown.
 

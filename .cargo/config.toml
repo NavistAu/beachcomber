@@ -1,2 +1,2 @@
 [alias]
-test = "nextest run"
+t = "nextest run"
