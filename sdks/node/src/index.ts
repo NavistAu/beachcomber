@@ -20,7 +20,19 @@
  * ```
  */
 
-export { Client, Session, type CombResult } from './client.js';
+export {
+  Client,
+  Session,
+  WatchStream,
+  type CombResult,
+  type HelloInfo,
+  type CacheRow,
+  type DaemonHealth,
+  type IntrospectSubject,
+  type IntrospectResponse,
+  type Verdict,
+  type WatchEvent,
+} from './client.js';
 export { discoverSocketPath, getUid } from './discovery.js';
 export { CombError, DaemonNotRunning, ParseError, ServerError } from './errors.js';
 export {
@@ -28,6 +40,10 @@ export {
   type RefreshRequest,
   type ContextRequest,
   type StatusRequest,
+  type HelloRequest,
+  type PutRequest,
+  type IntrospectRequest,
+  type WatchRequest,
   type Request,
   parseResponseLine,
   serialiseRequest,

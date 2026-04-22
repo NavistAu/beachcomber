@@ -26,11 +26,39 @@ export interface StatusRequest {
   op: 'status';
 }
 
+export interface HelloRequest {
+  op: 'hello';
+}
+
+export interface PutRequest {
+  op: 'put';
+  key: string;
+  data?: unknown;
+  ttl?: string;
+  path?: string;
+}
+
+export interface IntrospectRequest {
+  op: 'introspect';
+  subject: string;
+  duration_secs?: number;
+}
+
+export interface WatchRequest {
+  op: 'watch';
+  key: string;
+  path?: string;
+}
+
 export type Request =
   | GetRequest
   | RefreshRequest
   | ContextRequest
-  | StatusRequest;
+  | StatusRequest
+  | HelloRequest
+  | PutRequest
+  | IntrospectRequest
+  | WatchRequest;
 
 // ---- Responses ----
 
