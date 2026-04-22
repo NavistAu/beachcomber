@@ -136,6 +136,8 @@ fn parse_kv_output(stdout: &str) -> Option<ProviderResult> {
     Some(result)
 }
 
+// `stdout` arrives pre-trimmed from the caller at `execute()`; the
+// empty-check here is defensive and in normal flow unreachable.
 fn parse_text_output(stdout: &str) -> Option<ProviderResult> {
     if stdout.is_empty() {
         return None;

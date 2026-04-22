@@ -24,7 +24,8 @@ fn text_output_wraps_stdout_in_value_field() {
 
 #[test]
 fn text_output_trims_trailing_whitespace() {
-    // echo adds a newline; the parser should trim trailing whitespace so value is clean.
+    // Trimming happens upstream in execute() before dispatch; this test confirms the
+    // "text" path still sees the trimmed result.
     let provider = ScriptProvider::new("trim", base_cfg("printf 'trim-me\\n\\n'", "text"));
     let result = provider.execute(None).expect("text output should not be None");
     let v = result.get("value").expect("value field missing");
@@ -49,4 +50,13 @@ fn text_output_preserves_multiline_content() {
         Value::String(s) => assert_eq!(s, "line1\nline2"),
         other => panic!("expected String, got {:?}", other),
     }
+}
+
+#[test]
+fn unknown_output_format_falls_through_to_json_parser() {
+    // Misspelled output values still route to JSON (the wildcard arm), which
+    // will fail on non-JSON stdout and return None. This locks in the
+    // "text" branch being explicit rather than the default.
+    let provider = ScriptProvider::new("typo", base_cfg("echo not-json-data", "typo"));
+    assert!(provider.execute(None).is_none());
 }
