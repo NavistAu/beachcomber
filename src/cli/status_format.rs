@@ -447,6 +447,122 @@ fn render_table(
 }
 
 // ---------------------------------------------------------------------------
+// Filter and sort helpers (T30 / T31)
+// ---------------------------------------------------------------------------
+
+/// Apply a list of `key=value` filter strings to `rows`, returning only the rows
+/// that match ALL predicates (AND semantics).
+///
+/// Supported keys: `provider`, `path`, `field`, `stale`.
+/// Returns `Err` if any filter string uses an unknown key or invalid value.
+pub fn apply_filters(rows: Vec<CacheRow>, filters: &[String]) -> Result<Vec<CacheRow>, String> {
+    let preds: Vec<Predicate> = filters
+        .iter()
+        .map(|s| parse_filter(s))
+        .collect::<Result<_, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|r| preds.iter().all(|p| p.matches(r)))
+        .collect())
+}
+
+enum Predicate {
+    ProviderEq(String),
+    ProviderGlob(String),
+    PathGlob(String),
+    PathDash,
+    FieldEq(String),
+    Stale(bool),
+}
+
+fn parse_filter(s: &str) -> Result<Predicate, String> {
+    let (k, v) = s
+        .split_once('=')
+        .ok_or_else(|| format!("filter must be key=value: {s}"))?;
+    match k {
+        "provider" => {
+            if v.contains('*') {
+                Ok(Predicate::ProviderGlob(v.to_string()))
+            } else {
+                Ok(Predicate::ProviderEq(v.to_string()))
+            }
+        }
+        "path" => {
+            if v == "-" {
+                Ok(Predicate::PathDash)
+            } else {
+                Ok(Predicate::PathGlob(v.to_string()))
+            }
+        }
+        "field" => Ok(Predicate::FieldEq(v.to_string())),
+        "stale" => match v {
+            "true" => Ok(Predicate::Stale(true)),
+            "false" => Ok(Predicate::Stale(false)),
+            other => Err(format!("stale= must be true or false, got {other}")),
+        },
+        other => Err(format!("unknown filter key: {other}")),
+    }
+}
+
+impl Predicate {
+    fn matches(&self, r: &CacheRow) -> bool {
+        match self {
+            Predicate::ProviderEq(v) => &r.provider == v,
+            Predicate::ProviderGlob(pat) => simple_glob_match(pat, &r.provider),
+            Predicate::PathGlob(pat) => r
+                .path
+                .as_deref()
+                .is_some_and(|p| simple_glob_match(pat, p)),
+            Predicate::PathDash => r.path.is_none(),
+            Predicate::FieldEq(v) => &r.field == v,
+            Predicate::Stale(b) => r.stale == *b,
+        }
+    }
+}
+
+/// Simple glob matcher supporting only `*` as a wildcard. Anchored start and end.
+fn simple_glob_match(pattern: &str, text: &str) -> bool {
+    fn helper(p: &[char], t: &[char]) -> bool {
+        match (p.first(), t.first()) {
+            (None, None) => true,
+            (None, _) => false,
+            (Some('*'), _) => {
+                for i in 0..=t.len() {
+                    if helper(&p[1..], &t[i..]) {
+                        return true;
+                    }
+                }
+                false
+            }
+            (Some(_), None) => false,
+            (Some(pc), Some(tc)) if pc == tc => helper(&p[1..], &t[1..]),
+            _ => false,
+        }
+    }
+    helper(
+        &pattern.chars().collect::<Vec<_>>(),
+        &text.chars().collect::<Vec<_>>(),
+    )
+}
+
+/// Sort `rows` by the given column name (ascending, stable).
+///
+/// Valid columns: `provider`, `path`, `field`, `value`, `age`, `stale`.
+/// Returns `Err` for any other column name.
+pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, String> {
+    match col {
+        "provider" => rows.sort_by(|a, b| a.provider.cmp(&b.provider)),
+        "path" => rows.sort_by(|a, b| a.path.cmp(&b.path)),
+        "field" => rows.sort_by(|a, b| a.field.cmp(&b.field)),
+        "value" => rows.sort_by(|a, b| a.value.to_string().cmp(&b.value.to_string())),
+        "age" => rows.sort_by_key(|r| r.age_ms),
+        "stale" => rows.sort_by_key(|r| r.stale),
+        other => return Err(format!("invalid sort column: {other}")),
+    }
+    Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 

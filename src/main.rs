@@ -59,6 +59,21 @@ enum Commands {
         /// Output format: human (default on TTY), tsv (default when piped), json, csv, table, sh
         #[arg(long, short = 'f', default_value = "")]
         format: String,
+        /// Filter rows (e.g. provider=git, path=/home/*, stale=true); repeatable, AND semantics
+        #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        filter: Vec<String>,
+        /// Sort by column: provider, path, field, value, age, stale (default: path)
+        #[arg(long, default_value = "path")]
+        sort: String,
+        /// Disable value truncation
+        #[arg(long)]
+        no_trunc: bool,
+        /// Maximum width for VALUE in human format (default 40)
+        #[arg(long)]
+        max_width: Option<usize>,
+        /// Disable ANSI color codes
+        #[arg(long, visible_alias = "no-colour")]
+        no_color: bool,
     },
     /// Put data into a virtual provider
     #[command(visible_alias = "p")]
@@ -283,9 +298,16 @@ fn main() -> ExitCode {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
             run_get(&config, &keys, path.as_deref(), output_format, force, wait)
         }
-        Commands::Status { format } => {
+        Commands::Status {
+            format,
+            filter,
+            sort,
+            no_trunc,
+            max_width,
+            no_color,
+        } => {
             let fmt = if format.is_empty() { None } else { Some(format.as_str()) };
-            run_status(&config, fmt)
+            run_status(&config, fmt, &filter, &sort, no_trunc, max_width, no_color)
         }
         Commands::Put {
             key,
@@ -731,8 +753,16 @@ fn run_get(
     })
 }
 
-fn run_status(config: &Config, format: Option<&str>) -> ExitCode {
-    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+fn run_status(
+    config: &Config,
+    format: Option<&str>,
+    filters: &[String],
+    sort_col: &str,
+    no_trunc: bool,
+    max_width: Option<usize>,
+    no_color_flag: bool,
+) -> ExitCode {
+    use beachcomber::cli::status_format::{RenderOpts, apply_filters, apply_sort, render_preset};
     use std::io::IsTerminal;
 
     let socket_path = config.resolve_socket_path();
@@ -743,14 +773,15 @@ fn run_status(config: &Config, format: Option<&str>) -> ExitCode {
     }
 
     let is_tty = std::io::stdout().is_terminal();
-    let no_color = std::env::var("NO_COLOR").is_ok() || !is_tty;
+    let no_color =
+        no_color_flag || std::env::var("NO_COLOR").is_ok() || !is_tty;
 
     let preset = format.unwrap_or(if is_tty { "human" } else { "tsv" });
     let opts = RenderOpts {
         is_tty,
         no_color,
-        max_width: Some(40),
-        no_trunc: false,
+        max_width: if no_trunc { None } else { Some(max_width.unwrap_or(40)) },
+        no_trunc,
     };
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
@@ -764,6 +795,14 @@ fn run_status(config: &Config, format: Option<&str>) -> ExitCode {
                         .as_ref()
                         .and_then(|d| serde_json::from_value(d.clone()).ok())
                         .unwrap_or_default();
+                    let rows = apply_filters(rows, filters).unwrap_or_else(|e| {
+                        eprintln!("filter error: {e}");
+                        std::process::exit(2);
+                    });
+                    let rows = apply_sort(rows, sort_col).unwrap_or_else(|e| {
+                        eprintln!("sort error: {e}");
+                        std::process::exit(2);
+                    });
                     let out = render_preset(preset, &rows, &opts);
                     print!("{out}");
                     ExitCode::SUCCESS

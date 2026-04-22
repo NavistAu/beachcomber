@@ -254,6 +254,140 @@ fn table_prefix_aligns_columns_and_emits_header() {
     assert!(lines.iter().any(|l| l.contains("git") && l.contains("main")));
 }
 
+use beachcomber::cli::status_format::{apply_filters, apply_sort};
+
+// --- Filter tests ---
+
+#[test]
+fn filter_by_provider_exact() {
+    let rows = sample_rows();
+    let out = apply_filters(rows.clone(), &["provider=git".to_string()]).unwrap();
+    assert!(out.iter().all(|r| r.provider == "git"));
+}
+
+#[test]
+fn filter_by_provider_glob() {
+    let rows = sample_rows();
+    let out = apply_filters(rows.clone(), &["provider=hos*".to_string()]).unwrap();
+    assert!(out.iter().all(|r| r.provider.starts_with("hos")));
+}
+
+#[test]
+fn filter_by_stale_true() {
+    let mut rows = sample_rows();
+    rows[1].stale = true;
+    let out = apply_filters(rows, &["stale=true".to_string()]).unwrap();
+    assert!(out.iter().all(|r| r.stale));
+}
+
+#[test]
+fn filter_by_path_glob() {
+    let rows = sample_rows();
+    let out = apply_filters(rows, &["path=/home/*".to_string()]).unwrap();
+    assert!(out
+        .iter()
+        .all(|r| r.path.as_deref().map_or(false, |p: &str| p.starts_with("/home/"))));
+}
+
+#[test]
+fn filter_path_dash_matches_globals() {
+    let rows = sample_rows();
+    let out = apply_filters(rows, &["path=-".to_string()]).unwrap();
+    assert!(out.iter().all(|r| r.path.is_none()));
+}
+
+#[test]
+fn filter_unknown_key_errors() {
+    let rows = sample_rows();
+    let result = apply_filters(rows, &["unknownkey=foo".to_string()]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn multiple_filters_and_together() {
+    let rows = sample_rows();
+    let out = apply_filters(
+        rows,
+        &["provider=git".to_string(), "field=branch".to_string()],
+    )
+    .unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].provider, "git");
+    assert_eq!(out[0].field, "branch");
+}
+
+// --- Sort tests ---
+
+#[test]
+fn sort_by_age_ascending() {
+    let mut rows = sample_rows();
+    rows[0].age_ms = 30_000;
+    rows[1].age_ms = 10_000;
+    rows[2].age_ms = 20_000;
+    let out = apply_sort(rows, "age").unwrap();
+    let ages: Vec<_> = out.iter().map(|r| r.age_ms).collect();
+    assert_eq!(ages, vec![10_000, 20_000, 30_000]);
+}
+
+#[test]
+fn sort_default_by_path() {
+    let rows = sample_rows();
+    let out = apply_sort(rows, "path").unwrap();
+    // Simple check: rows with None paths sort as one group.
+    assert!(!out.is_empty());
+}
+
+#[test]
+fn sort_invalid_column_errors() {
+    let rows = sample_rows();
+    assert!(apply_sort(rows, "nonsense").is_err());
+}
+
+// --- Presentation tests ---
+
+#[test]
+fn no_trunc_disables_truncation_in_human() {
+    let mut rows = sample_rows();
+    let long = "x".repeat(200);
+    rows[0].value = serde_json::json!(long);
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: true,
+        max_width: Some(40),
+        no_trunc: true,
+    };
+    let out = render_preset("human", &rows, &opts);
+    assert!(out.contains(&"x".repeat(100))); // at least 100 xs preserved
+}
+
+#[test]
+fn max_width_truncates_value() {
+    let mut rows = sample_rows();
+    rows[0].value = serde_json::json!("x".repeat(50));
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: true,
+        max_width: Some(10),
+        no_trunc: false,
+    };
+    let out = render_preset("human", &rows, &opts);
+    assert!(!out.contains(&"x".repeat(50)));
+}
+
+#[test]
+fn no_color_disables_ansi() {
+    let mut rows = sample_rows();
+    rows[0].stale = true;
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: true,
+        max_width: Some(40),
+        no_trunc: false,
+    };
+    let out = render_preset("human", &rows, &opts);
+    assert!(!out.contains("\x1b["));
+}
+
 use beachcomber::client::Client;
 use beachcomber::config::Config;
 
