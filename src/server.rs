@@ -358,6 +358,7 @@ async fn handle_request(
             key,
             path,
             force,
+            wait,
             ..
         } => {
             let (stripped_key, meta) = split_metadata_suffix(key);
@@ -371,6 +372,8 @@ async fn handle_request(
                 resolve_path(path.as_deref(), context_path, provider_name, registry);
 
             // Force evict: drop the cache entry so the normal miss path re-executes.
+            // force wins over wait — if force triggered eviction (or a virtual-provider
+            // error), we never reach the wait block below.
             if *force {
                 if registry.get_source(provider_name)
                     == Some(crate::provider::ProviderSource::Virtual)
@@ -380,6 +383,23 @@ async fn handle_request(
                     ));
                 }
                 cache.remove(provider_name, effective_path.as_deref());
+            }
+
+            // Wait semantics: if the cached entry is stale, evict it so the normal
+            // miss path below re-executes the provider inline and returns fresh data.
+            // Skipped for virtual providers — they have no source to re-execute; the
+            // cached value is all there is, and we return it regardless of staleness.
+            // force wins over wait — force is handled above; !force guards this block.
+            if *wait
+                && !*force
+                && registry.get_source(provider_name)
+                    != Some(crate::provider::ProviderSource::Virtual)
+                && cache
+                    .get(provider_name, effective_path.as_deref())
+                    .is_some_and(|e| e.is_stale())
+            {
+                cache.remove(provider_name, effective_path.as_deref());
+                // Fall through to the normal miss path, which executes inline.
             }
 
             // Signal demand to scheduler — this keeps the data warm.
