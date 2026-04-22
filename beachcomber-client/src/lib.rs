@@ -105,6 +105,46 @@ pub struct HelloInfo {
     pub daemon_version: String,
 }
 
+/// One row of the daemon's cache as returned by the `status` op.
+#[derive(Debug, Clone)]
+pub struct CacheRow {
+    pub provider: String,
+    pub field: Option<String>,
+    pub path: Option<String>,
+    pub value: serde_json::Value,
+    pub age_ms: u64,
+    pub stale: bool,
+}
+
+impl CacheRow {
+    fn from_json(v: &serde_json::Value) -> Result<Self, CombError> {
+        let provider = v
+            .get("provider")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| CombError::ParseError("cache row missing provider".into()))?
+            .to_string();
+        let field = v
+            .get("field")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
+        let path = v
+            .get("path")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
+        let value = v.get("value").cloned().unwrap_or(serde_json::Value::Null);
+        let age_ms = v.get("age_ms").and_then(|x| x.as_u64()).unwrap_or(0);
+        let stale = v.get("stale").and_then(|x| x.as_bool()).unwrap_or(false);
+        Ok(CacheRow {
+            provider,
+            field,
+            path,
+            value,
+            age_ms,
+            stale,
+        })
+    }
+}
+
 /// Error type for client operations.
 #[derive(Debug)]
 pub enum CombError {
@@ -167,6 +207,7 @@ impl Default for ClientConfig {
 /// queries in sequence, use [`Session`] instead.
 pub struct Client {
     config: ClientConfig,
+    socket_path_override: Option<PathBuf>,
 }
 
 impl Client {
@@ -174,12 +215,23 @@ impl Client {
     pub fn new() -> Self {
         Self {
             config: ClientConfig::default(),
+            socket_path_override: None,
         }
     }
 
     /// Create a client with custom configuration.
     pub fn with_config(config: ClientConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            socket_path_override: None,
+        }
+    }
+
+    /// Override the socket path (bypassing auto-discovery). Primarily
+    /// useful for tests that spawn a daemon on a custom socket.
+    pub fn with_socket_path(mut self, path: PathBuf) -> Self {
+        self.socket_path_override = Some(path);
+        self
     }
 
     /// Query a single key. Returns Hit with data, Miss, or an error.
@@ -260,6 +312,19 @@ impl Client {
         Ok(())
     }
 
+    /// List all cache entries currently held by the daemon.
+    pub fn status(&self) -> Result<Vec<CacheRow>, CombError> {
+        let socket_path = self.find_or_start_socket()?;
+        let mut stream = self.connect(&socket_path)?;
+        let request = serde_json::json!({ "op": "status" });
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        stream.write_all(msg.as_bytes())?;
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        parse_cache_rows(&line)
+    }
+
     /// Ask the daemon for its protocol and build versions.
     pub fn hello(&self) -> Result<HelloInfo, CombError> {
         let socket_path = self.find_or_start_socket()?;
@@ -283,6 +348,10 @@ impl Client {
     }
 
     fn find_or_start_socket(&self) -> Result<PathBuf, CombError> {
+        if let Some(p) = &self.socket_path_override {
+            return Ok(p.clone());
+        }
+
         let path = socket_path();
 
         // Check if daemon is listening
@@ -437,6 +506,16 @@ impl Session {
         Ok(())
     }
 
+    /// List all cache entries currently held by the daemon.
+    pub fn status(&mut self) -> Result<Vec<CacheRow>, CombError> {
+        let request = serde_json::json!({ "op": "status" });
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        self.reader.get_mut().write_all(msg.as_bytes())?;
+        let mut line = String::new();
+        self.reader.read_line(&mut line)?;
+        parse_cache_rows(&line)
+    }
+
     /// Ask the daemon for its protocol and build versions.
     pub fn hello(&mut self) -> Result<HelloInfo, CombError> {
         let request = serde_json::json!({ "op": "hello" });
@@ -484,6 +563,25 @@ fn parse_response(line: &str) -> Result<CombResult, CombError> {
             })
         }
     }
+}
+
+fn parse_cache_rows(line: &str) -> Result<Vec<CacheRow>, CombError> {
+    let resp: serde_json::Value =
+        serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !ok {
+        let error = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error")
+            .to_string();
+        return Err(CombError::ServerError(error));
+    }
+    let arr = resp
+        .get("data")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| CombError::ParseError("status response data is not an array".into()))?;
+    arr.iter().map(CacheRow::from_json).collect()
 }
 
 fn parse_hello_response(line: &str) -> Result<HelloInfo, CombError> {
