@@ -34,12 +34,14 @@ enum Commands {
         #[arg(long)]
         socket: Option<PathBuf>,
     },
-    /// Query a cached value
+    /// Query one or more cached values
     #[command(visible_alias = "g")]
     Get {
-        /// Provider key (e.g., "hostname.name", "git.branch")
-        key: String,
+        /// Provider key(s) (e.g., "hostname.name", "git.branch")
+        #[arg(required = true, num_args = 1..)]
+        keys: Vec<String>,
         /// Path context for directory-scoped providers
+        #[arg(long, short)]
         path: Option<String>,
         /// Output format (text, json, sh, csv, tsv, CSV, TSV, fmt)
         #[arg(short, long, default_value = "text")]
@@ -47,7 +49,7 @@ enum Commands {
         /// Evict cache entry, re-execute provider, return fresh value
         #[arg(long)]
         force: bool,
-        /// (Reserved for T14) Block until a fresh value is available
+        /// Block until a fresh value is available
         #[arg(long)]
         wait: bool,
     },
@@ -280,14 +282,14 @@ fn main() -> ExitCode {
             run_daemon(socket_path, config)
         }
         Commands::Get {
-            key,
+            keys,
             path,
             format,
             force,
             wait,
         } => {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
-            run_get(&config, &key, path.as_deref(), output_format, force, wait)
+            run_get(&config, &keys, path.as_deref(), output_format, force, wait)
         }
         Commands::Refresh { key, path } => run_refresh(&config, &key, path.as_deref()),
         Commands::Status => run_status(&config),
@@ -494,7 +496,7 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
 
 fn run_get(
     config: &Config,
-    key: &str,
+    keys: &[String],
     path: Option<&str>,
     format: OutputFormat,
     force: bool,
@@ -509,66 +511,232 @@ fn run_get(
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let client = beachcomber::client::Client::new(socket_path);
+        let client = beachcomber::client::Client::new(socket_path.clone());
 
-        if format.is_server_side() {
+        // Single-key shortcut for server-side formats (text / sh): delegate directly to the
+        // client helper so the daemon renders the value consistently.
+        if keys.len() == 1 && format.is_server_side() {
+            let key = &keys[0];
             match client
                 .get_formatted_with_flags(key, path, format.server_format(), force, false)
                 .await
             {
                 Ok(text) => {
                     print!("{text}");
-                    ExitCode::SUCCESS
+                    return ExitCode::SUCCESS;
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
-                    ExitCode::from(2)
+                    return ExitCode::from(2);
                 }
             }
-        } else {
-            match client.get_with_flags(key, path, force, false).await {
+        }
+
+        // Multi-key (or single-key with client-side format): open one session and issue one
+        // Request::Get per key.  Results are aggregated before rendering so that formats like
+        // JSON / CSV / TSV can produce a single coherent output document.
+        let mut session = match client.connect().await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                return ExitCode::from(2);
+            }
+        };
+
+        if let Some(p) = path
+            && let Err(e) = session.set_context(p).await
+        {
+            eprintln!("Error: {e}");
+            return ExitCode::from(2);
+        }
+
+        // Server-side formats (text / sh) for multi-key: emit each key's output on its own line.
+        if format.is_server_side() {
+            let wire_fmt = format.server_format();
+            let mut any_error = false;
+            for key in keys {
+                match session.get_formatted(key, None, wire_fmt).await {
+                    Ok(text) => {
+                        if !text.is_empty() {
+                            println!("{text}");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error querying {key}: {e}");
+                        any_error = true;
+                    }
+                }
+            }
+            return if any_error {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            };
+        }
+
+        // Client-side formats: collect all responses (preserving per-key association), then
+        // render.  Errors are recorded but do not prevent successful keys from being emitted.
+        let mut responses: Vec<(String, beachcomber::protocol::Response)> = Vec::new();
+        let mut any_error = false;
+        for key in keys {
+            match session.get_with_flags(key, None, force, false).await {
                 Ok(response) => {
                     if !response.ok {
-                        eprintln!("Error: {}", response.error.unwrap_or_default());
-                        ExitCode::from(2)
-                    } else if let Some(data) = &response.data {
-                        match &format {
-                            OutputFormat::Json => {
-                                println!("{}", serde_json::to_string_pretty(&response).unwrap());
-                            }
-                            OutputFormat::Csv => {
-                                print!("{}", format_sv(data, ",", false));
-                            }
-                            OutputFormat::Tsv => {
-                                print!("{}", format_sv(data, "\t", false));
-                            }
-                            OutputFormat::CsvHeader => {
-                                print!("{}", format_sv(data, ",", true));
-                            }
-                            OutputFormat::TsvHeader => {
-                                print!("{}", format_sv(data, "\t", true));
-                            }
-                            OutputFormat::Fmt(template) => {
-                                match render_fmt_template_json(template, data) {
-                                    Ok(rendered) => print!("{}", rendered),
-                                    Err(e) => {
-                                        eprintln!("Template error: {e}");
-                                        return ExitCode::from(2);
-                                    }
-                                }
-                            }
-                            _ => unreachable!(),
-                        }
-                        ExitCode::SUCCESS
+                        eprintln!(
+                            "Error querying {key}: {}",
+                            response.error.as_deref().unwrap_or("unknown error")
+                        );
+                        any_error = true;
                     } else {
-                        ExitCode::from(1)
+                        responses.push((key.clone(), response));
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error: {e}");
-                    ExitCode::from(2)
+                    eprintln!("Error querying {key}: {e}");
+                    any_error = true;
                 }
             }
+        }
+
+        // Single-key client-side rendering: preserve the original single-key output shape.
+        if keys.len() == 1 {
+            if let Some((_, response)) = responses.first() {
+                if let Some(data) = &response.data {
+                    match &format {
+                        OutputFormat::Json => {
+                            println!("{}", serde_json::to_string_pretty(response).unwrap());
+                        }
+                        OutputFormat::Csv => {
+                            print!("{}", format_sv(data, ",", false));
+                        }
+                        OutputFormat::Tsv => {
+                            print!("{}", format_sv(data, "\t", false));
+                        }
+                        OutputFormat::CsvHeader => {
+                            print!("{}", format_sv(data, ",", true));
+                        }
+                        OutputFormat::TsvHeader => {
+                            print!("{}", format_sv(data, "\t", true));
+                        }
+                        OutputFormat::Fmt(template) => {
+                            match render_fmt_template_json(template, data) {
+                                Ok(rendered) => print!("{}", rendered),
+                                Err(e) => {
+                                    eprintln!("Template error: {e}");
+                                    return ExitCode::from(2);
+                                }
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                } else {
+                    any_error = true;
+                }
+            }
+            return if any_error {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            };
+        }
+
+        // Multi-key client-side aggregation.
+        match &format {
+            OutputFormat::Json => {
+                let arr: Vec<&beachcomber::protocol::Response> =
+                    responses.iter().map(|(_, r)| r).collect();
+                println!("{}", serde_json::to_string_pretty(&arr).unwrap());
+            }
+            OutputFormat::Csv | OutputFormat::CsvHeader => {
+                let with_header = matches!(format, OutputFormat::CsvHeader);
+                let mut all_keys: Vec<String> = Vec::new();
+                let mut all_vals: Vec<String> = Vec::new();
+                for (key, resp) in &responses {
+                    if let Some(data) = &resp.data {
+                        match data {
+                            serde_json::Value::Object(map) => {
+                                let mut pairs: Vec<(&String, &serde_json::Value)> =
+                                    map.iter().collect();
+                                pairs.sort_by_key(|(k, _)| *k);
+                                for (k, v) in pairs {
+                                    all_keys.push(k.clone());
+                                    all_vals.push(value_to_string(v));
+                                }
+                            }
+                            _ => {
+                                all_keys.push(key.clone());
+                                all_vals.push(value_to_string(data));
+                            }
+                        }
+                    }
+                }
+                if with_header {
+                    println!("{}", all_keys.join(","));
+                }
+                println!("{}", all_vals.join(","));
+            }
+            OutputFormat::Tsv | OutputFormat::TsvHeader => {
+                let with_header = matches!(format, OutputFormat::TsvHeader);
+                let mut all_keys: Vec<String> = Vec::new();
+                let mut all_vals: Vec<String> = Vec::new();
+                for (key, resp) in &responses {
+                    if let Some(data) = &resp.data {
+                        match data {
+                            serde_json::Value::Object(map) => {
+                                let mut pairs: Vec<(&String, &serde_json::Value)> =
+                                    map.iter().collect();
+                                pairs.sort_by_key(|(k, _)| *k);
+                                for (k, v) in pairs {
+                                    all_keys.push(k.clone());
+                                    all_vals.push(value_to_string(v));
+                                }
+                            }
+                            _ => {
+                                all_keys.push(key.clone());
+                                all_vals.push(value_to_string(data));
+                            }
+                        }
+                    }
+                }
+                if with_header {
+                    println!("{}", all_keys.join("\t"));
+                }
+                println!("{}", all_vals.join("\t"));
+            }
+            OutputFormat::Fmt(template) => {
+                let mut merged = serde_json::Map::new();
+                for (key, resp) in &responses {
+                    if let Some(data) = &resp.data {
+                        match data {
+                            serde_json::Value::Object(map) => {
+                                let provider = key.split('.').next().unwrap_or(key);
+                                for (k, v) in map {
+                                    merged.insert(format!("{provider}.{k}"), v.clone());
+                                    merged.insert(k.clone(), v.clone());
+                                }
+                            }
+                            _ => {
+                                merged.insert(key.clone(), data.clone());
+                            }
+                        }
+                    }
+                }
+                match render_fmt_template_json(template, &serde_json::Value::Object(merged)) {
+                    Ok(rendered) => print!("{}", rendered),
+                    Err(e) => {
+                        eprintln!("Template error: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            // Text and Sh multi-key handled above via server-side path.
+            OutputFormat::Text | OutputFormat::Sh => unreachable!(),
+        }
+
+        if any_error {
+            ExitCode::from(2)
+        } else {
+            ExitCode::SUCCESS
         }
     })
 }
