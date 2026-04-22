@@ -102,11 +102,6 @@ func (c *Client) Refresh(key string, path string) error {
 	return err
 }
 
-// List returns the available providers registered with the daemon.
-func (c *Client) List() (*Result, error) {
-	return c.roundtrip(map[string]interface{}{"op": "list"})
-}
-
 // Status returns scheduler and cache status from the daemon.
 func (c *Client) Status() (*Result, error) {
 	return c.roundtrip(map[string]interface{}{"op": "status"})

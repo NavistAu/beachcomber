@@ -426,14 +426,6 @@ int comb_set_context(comb_client_t *client, const char *path) {
     return ok ? 0 : -1;
 }
 
-comb_result_t *comb_list(comb_client_t *client) {
-    char *req = build_request("list", NULL, NULL);
-    if (!req) return result_error("out of memory");
-    comb_result_t *r = do_request(client, req);
-    free(req);
-    return r;
-}
-
 comb_result_t *comb_status(comb_client_t *client) {
     char *req = build_request("status", NULL, NULL);
     if (!req) return result_error("out of memory");

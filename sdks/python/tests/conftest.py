@@ -173,16 +173,6 @@ def git_daemon(mock_daemon: MockDaemon) -> MockDaemon:
     mock_daemon.respond("refresh", {"ok": True})
     mock_daemon.respond("context", {"ok": True})
     mock_daemon.respond(
-        "list",
-        {
-            "ok": True,
-            "data": [
-                {"name": "git", "global": False, "fields": ["branch", "dirty"]},
-                {"name": "hostname", "global": True, "fields": ["short", "full"]},
-            ],
-        },
-    )
-    mock_daemon.respond(
         "status",
         {"ok": True, "data": {"cache_entries": 3, "scheduler": "running"}},
     )

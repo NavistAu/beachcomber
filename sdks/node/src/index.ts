@@ -27,10 +27,8 @@ export {
   type GetRequest,
   type RefreshRequest,
   type ContextRequest,
-  type ListRequest,
   type StatusRequest,
   type Request,
-  type ProviderInfo,
   parseResponseLine,
   serialiseRequest,
 } from './protocol.js';

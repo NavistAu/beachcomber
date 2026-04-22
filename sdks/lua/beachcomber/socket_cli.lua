@@ -107,19 +107,6 @@ function M.connect(socket_path)
       if pipe then pipe:close() end
       return json.encode({ ok = true })
 
-    elseif op == "list" then
-      local cmd = comb_bin .. " list 2>/dev/null"
-      local pipe = io.popen(cmd, "r")
-      if not pipe then
-        return json.encode({ ok = false, error = "failed to run comb" })
-      end
-      local output = pipe:read("*a")
-      pipe:close()
-      if not output or output == "" then
-        return json.encode({ ok = true, data = {} })
-      end
-      return output:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-
     elseif op == "status" then
       local cmd = comb_bin .. " status 2>/dev/null"
       local pipe = io.popen(cmd, "r")

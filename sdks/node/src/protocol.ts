@@ -22,10 +22,6 @@ export interface ContextRequest {
   path: string;
 }
 
-export interface ListRequest {
-  op: 'list';
-}
-
 export interface StatusRequest {
   op: 'status';
 }
@@ -34,7 +30,6 @@ export type Request =
   | GetRequest
   | RefreshRequest
   | ContextRequest
-  | ListRequest
   | StatusRequest;
 
 // ---- Responses ----
@@ -63,19 +58,6 @@ export interface OkResponse {
 }
 
 export type SimpleResponse = ErrorResponse | OkResponse;
-
-export interface ProviderInfo {
-  name: string;
-  global: boolean;
-  fields: string[];
-}
-
-export interface ListResponse {
-  ok: true;
-  data: ProviderInfo[];
-}
-
-export type ListResponseFull = ErrorResponse | ListResponse;
 
 export interface StatusResponse {
   ok: true;

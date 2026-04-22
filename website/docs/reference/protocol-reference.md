@@ -25,7 +25,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "get", "key": "git.branch", "path": "/home/user/project", "format": "text"}
 {"op": "refresh", "key": "git", "path": "/home/user/project"}
 {"op": "context", "path": "/home/user/project"}
-{"op": "list"}
 {"op": "status"}
 ```
 
@@ -33,7 +32,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `refresh`, `context`, `list`, `status`, `put`, `watch` |
+| `op` | string | Operation: `get`, `refresh`, `context`, `status`, `put`, `watch` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
@@ -64,8 +63,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 **`refresh`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
 
 **`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
-
-**`list`:** Returns an array of all active cache entries with their metadata.
 
 **`status`:** Returns daemon health information.
 

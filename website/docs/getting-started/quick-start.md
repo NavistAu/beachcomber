@@ -66,7 +66,6 @@ The daemon started in the background. Ask it what it's doing:
 
 ```sh
 comb s          # status — uptime, cache entries, watcher count
-comb l          # list — every cache entry and its age
 ```
 
 You can stop the daemon at any time with `comb kill` (short form `comb k`). The next `comb` query will start a fresh one. You rarely need to do this.

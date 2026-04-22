@@ -17,7 +17,7 @@ def encode_request(op: str, **fields: Any) -> bytes:
 
     Args:
         op: The operation name (``"get"``, ``"refresh"``, ``"context"``,
-            ``"list"``, or ``"status"``).
+            or ``"status"``).
         **fields: Additional key/value pairs to include in the request.
 
     Returns:
@@ -107,11 +107,6 @@ def build_context_request(path: str) -> bytes:
         Encoded request bytes.
     """
     return encode_request("context", path=path)
-
-
-def build_list_request() -> bytes:
-    """Build a ``list`` request."""
-    return encode_request("list")
 
 
 def build_status_request() -> bytes:

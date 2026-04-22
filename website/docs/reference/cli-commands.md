@@ -25,7 +25,6 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 |-------|------|--------------------------|
 | `comb g` | `comb get` | all of them |
 | `comb s` | `comb status` | — |
-| `comb l` | `comb list` | — |
 | `comb p` | `comb put` | — |
 | `comb w` | `comb watch` | `.p` `.j` `.s` |
 | `comb e` | `comb eval` | — |
@@ -107,18 +106,6 @@ $ comb s
     "providers": 19
   }
 }
-```
-
-## `comb l` (list)
-
-Show all active providers and their cached state.
-
-```sh
-$ comb l
-[
-  {"name":"hostname","source":"builtin","global":true,"fields":["name","short"]},
-  {"name":"git","source":"builtin","global":false,"fields":["branch","commit","dirty","..."]}
-]
 ```
 
 ## `comb p` (put) `<key> <json-data> [--ttl <duration>] [--path <path>]`

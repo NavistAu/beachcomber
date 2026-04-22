@@ -56,9 +56,6 @@ enum Commands {
     /// Show daemon status
     #[command(visible_alias = "s")]
     Status,
-    /// List active providers
-    #[command(visible_alias = "l")]
-    List,
     /// Put data into a virtual provider
     #[command(visible_alias = "p")]
     Put {
@@ -275,7 +272,6 @@ fn main() -> ExitCode {
             run_get(&config, &keys, path.as_deref(), output_format, force, wait)
         }
         Commands::Status => run_status(&config),
-        Commands::List => run_list(&config),
         Commands::Put {
             key,
             data,
@@ -732,41 +728,6 @@ fn run_status(config: &Config) -> ExitCode {
     rt.block_on(async {
         let client = beachcomber::client::Client::new(socket_path);
         match client.send_raw(serde_json::json!({"op": "status"})).await {
-            Ok(response) => {
-                if response.ok {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(
-                            &response.data.unwrap_or(serde_json::Value::Null)
-                        )
-                        .unwrap()
-                    );
-                    ExitCode::SUCCESS
-                } else {
-                    eprintln!("Error: {}", response.error.unwrap_or_default());
-                    ExitCode::from(2)
-                }
-            }
-            Err(e) => {
-                eprintln!("Error: {e}");
-                ExitCode::from(2)
-            }
-        }
-    })
-}
-
-fn run_list(config: &Config) -> ExitCode {
-    let socket_path = config.resolve_socket_path();
-
-    if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
-        eprintln!("Failed to start daemon: {e}");
-        return ExitCode::from(2);
-    }
-
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    rt.block_on(async {
-        let client = beachcomber::client::Client::new(socket_path);
-        match client.send_raw(serde_json::json!({"op": "list"})).await {
             Ok(response) => {
                 if response.ok {
                     println!(

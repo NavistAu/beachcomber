@@ -10,7 +10,6 @@ from libbeachcomber.exceptions import ProtocolError, ServerError
 from libbeachcomber.protocol import (
     build_context_request,
     build_get_request,
-    build_list_request,
     build_refresh_request,
     build_status_request,
     decode_response,
@@ -31,7 +30,7 @@ class TestEncodeRequest:
         assert obj["path"] == "/repo"
 
     def test_ends_with_newline(self) -> None:
-        raw = encode_request("list")
+        raw = encode_request("status")
         assert raw.endswith(b"\n")
 
     def test_is_bytes(self) -> None:
@@ -113,10 +112,6 @@ class TestBuildRequests:
     def test_context_request(self) -> None:
         obj = json.loads(build_context_request("/my/dir"))
         assert obj == {"op": "context", "path": "/my/dir"}
-
-    def test_list_request(self) -> None:
-        obj = json.loads(build_list_request())
-        assert obj == {"op": "list"}
 
     def test_status_request(self) -> None:
         obj = json.loads(build_status_request())

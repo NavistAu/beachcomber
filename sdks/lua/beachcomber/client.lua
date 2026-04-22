@@ -1,7 +1,7 @@
 --- Client implementation for the beachcomber daemon.
 --
--- Wraps a socket handle and exposes the five protocol operations:
--- get, refresh, context, list, status.
+-- Wraps a socket handle and exposes the four protocol operations:
+-- get, refresh, context, status.
 
 local json = require("beachcomber.json")
 
@@ -122,18 +122,6 @@ function Client:set_context(path)
     return nil, err
   end
   return true
-end
-
---- List available providers.
---
--- @return table[] array of provider descriptors, or nil, error_message
---   Each descriptor has: name (string), global (boolean), fields (string[])
-function Client:list()
-  local resp, err = send_request(self._sock, { op = "list" })
-  if not resp then
-    return nil, err
-  end
-  return resp.data
 end
 
 --- Return daemon status information.

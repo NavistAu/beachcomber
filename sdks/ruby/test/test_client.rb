@@ -95,17 +95,6 @@ class TestClient < Minitest::Test
     assert_nil result
   end
 
-  # --- list ---
-
-  def test_list_sends_op
-    payload = [{ 'name' => 'git', 'global' => false, 'fields' => ['branch', 'dirty'] }]
-    @server.enqueue(JSON.generate({ ok: true, data: payload }))
-    result = @client.list
-    assert result.hit?
-    assert_equal 'git', result.data.first['name']
-    assert_equal 'list', @server.requests.last['op']
-  end
-
   # --- status ---
 
   def test_status_sends_op
@@ -188,12 +177,6 @@ class TestClient < Minitest::Test
     @server.enqueue('{"ok":true}')
     @client.get('hostname')
     assert_equal 'get', @server.requests.last['op']
-  end
-
-  def test_list_op_field
-    @server.enqueue('{"ok":true,"data":[]}')
-    @client.list
-    assert_equal 'list', @server.requests.last['op']
   end
 
   def test_status_op_field

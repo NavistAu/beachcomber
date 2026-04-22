@@ -43,9 +43,6 @@ if result.is_hit:
 # Force recomputation
 client.refresh("git", path="/path/to/repo")
 
-# List available providers
-providers = client.list()
-
 # Daemon status
 status = client.status()
 ```

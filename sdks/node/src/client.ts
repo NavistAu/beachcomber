@@ -6,7 +6,6 @@ import * as net from 'net';
 import { discoverSocketPath } from './discovery.js';
 import { DaemonNotRunning, ParseError, ServerError } from './errors.js';
 import {
-  type ProviderInfo,
   parseResponseLine,
   serialiseRequest,
 } from './protocol.js';
@@ -330,18 +329,6 @@ export class Client {
       path !== undefined ? { op: 'refresh', key, path } : { op: 'refresh', key },
     );
     await this.doRequest(req);
-  }
-
-  /**
-   * List all available providers.
-   */
-  async list(): Promise<ProviderInfo[]> {
-    const req = serialiseRequest({ op: 'list' });
-    const parsed = await this.doRequest(req);
-    if (!Array.isArray(parsed['data'])) {
-      throw new ParseError(JSON.stringify(parsed), 'expected data array in list response');
-    }
-    return parsed['data'] as ProviderInfo[];
   }
 
   /**

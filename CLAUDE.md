@@ -49,7 +49,7 @@ Demand-driven warming: only actively-queried keys are polled. Idle keys go throu
 
 ## Protocol
 
-NDJSON over Unix socket. Requests use `{"op":"..."}` tag dispatch. Operations: `get`, `refresh`, `put`, `watch`, `context`, `list`, `status`.
+NDJSON over Unix socket. Requests use `{"op":"..."}` tag dispatch. Operations: `get`, `refresh`, `put`, `watch`, `context`, `status`.
 
 Key format: `provider.field` (e.g., `git.branch`). `split_key()` splits on first `.`.
 

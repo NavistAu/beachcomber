@@ -85,10 +85,6 @@ Force the daemon to recompute a provider.
 client.refresh("git", Some("/path/to/repo"))?;
 ```
 
-#### `client.list()`
-
-List available providers.
-
 #### `client.status()`
 
 Return daemon scheduler and cache status.

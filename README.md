@@ -330,18 +330,6 @@ $ comb s
 }
 ```
 
-### `comb l` (list)
-
-Show all active providers and their cached state age.
-
-```sh
-$ comb l
-[
-  {"name":"hostname","source":"builtin","global":true,"fields":["name","short"]},
-  {"name":"git","source":"builtin","global":false,"fields":["branch","commit","dirty","..."]}
-]
-```
-
 ### `comb d` (daemon) `[--socket <path>]`
 
 Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
@@ -1804,7 +1792,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "put", "key": "myapp", "data": {"status": "ok"}, "ttl": "30s", "path": "/project"}
 {"op": "watch", "key": "git.branch", "path": "/home/user/project"}
 {"op": "context", "path": "/home/user/project"}
-{"op": "list"}
 {"op": "status"}
 ```
 
@@ -1812,7 +1799,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `refresh`, `put`, `watch`, `context`, `list`, `status` |
+| `op` | string | Operation: `get`, `refresh`, `put`, `watch`, `context`, `status` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
@@ -1865,8 +1852,6 @@ Server streams responses:
 Field-level filtering applies: watching `git.branch` only emits when the branch value changes, not on every git provider update.
 
 **`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
-
-**`list`:** Returns an array of all active cache entries with their metadata.
 
 **`status`:** Returns daemon health information.
 

@@ -79,11 +79,7 @@ If this returns nothing, either:
 
 If a key always returns empty, the provider may not be enabled or supported on your platform:
 
-```sh
-comb l
-```
-
-This shows all registered providers. Check your `~/.config/beachcomber/config.toml` if a provider you expect is missing. See the [built-in providers reference](../reference/built-in-providers.md) for every provider and its fields, and [platform notes](../reference/built-in-providers.md) for fields that need optional components (e.g. UPower on Linux for `battery.time_remaining`).
+Check your `~/.config/beachcomber/config.toml` if a provider you expect is missing. See the [built-in providers reference](../reference/built-in-providers.md) for every provider and its fields, and [platform notes](../reference/built-in-providers.md) for fields that need optional components (e.g. UPower on Linux for `battery.time_remaining`).
 
 ## First query is slow
 

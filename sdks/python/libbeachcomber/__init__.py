@@ -25,8 +25,7 @@ Quick start::
         branch = session.get("git.branch")
         host = session.get("hostname")
 
-    # List providers and daemon status
-    providers = client.list()
+    # Daemon status
     status = client.status()
 """
 

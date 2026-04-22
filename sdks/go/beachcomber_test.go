@@ -179,28 +179,6 @@ func TestClient_Refresh(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Client.List
-// ---------------------------------------------------------------------------
-
-func TestClient_List(t *testing.T) {
-	listData := `[{"name":"git","global":false,"fields":["branch","dirty"]}]`
-	h, reqs := fixedHandler(`{"ok":true,"data":` + listData + `}`)
-	sock := startMockServer(t, h)
-
-	c := beachcomber.NewClientWithPath(sock)
-	result, err := c.List()
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if !result.IsHit() {
-		t.Error("expected IsHit() = true")
-	}
-	if reqs()[0]["op"] != "list" {
-		t.Errorf("op = %v, want list", reqs()[0]["op"])
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Client.Status
 // ---------------------------------------------------------------------------
 

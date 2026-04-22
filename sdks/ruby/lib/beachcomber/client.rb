@@ -55,13 +55,6 @@ module Beachcomber
       nil
     end
 
-    # Lists available providers.
-    #
-    # @return [Result]
-    def list
-      roundtrip({ op: 'list' })
-    end
-
     # Returns daemon status.
     #
     # @return [Result]
@@ -151,13 +144,6 @@ module Beachcomber
       req[:path] = path if path
       roundtrip(req)
       nil
-    end
-
-    # Lists available providers registered with the daemon.
-    #
-    # @return [Result]
-    def list
-      roundtrip({ op: 'list' })
     end
 
     # Returns scheduler and cache status from the daemon.

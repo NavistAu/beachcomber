@@ -47,9 +47,6 @@ if result.is_hit:
 # Force recomputation
 client.refresh("git", path="/path/to/repo")
 
-# List available providers
-providers = client.list()
-
 # Daemon status
 status = client.status()
 ```
@@ -96,10 +93,6 @@ Read a cached value. Returns a `Result`.
 #### `client.refresh(key, path=None)`
 
 Force the daemon to recompute a provider.
-
-#### `client.list()`
-
-List available providers.
 
 #### `client.status()`
 

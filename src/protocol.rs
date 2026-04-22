@@ -31,7 +31,6 @@ pub enum Request {
     Context {
         path: String,
     },
-    List,
     Status,
     Put {
         key: String,

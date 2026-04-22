@@ -188,25 +188,6 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(req.path, "/some/dir")
   end)
 
-  test("list returns provider array", function()
-    local handle = make_mock_handle({
-      json.encode({
-        ok = true,
-        data = {
-          { name = "git", global = false, fields = {"branch", "dirty"} },
-          { name = "hostname", global = true, fields = {"value"} },
-        }
-      }),
-    })
-    local c = Client.new(handle)
-    local providers, err = c:list()
-    assert_nil(err)
-    assert_not_nil(providers)
-    assert_eq(#providers, 2)
-    assert_eq(providers[1].name, "git")
-    assert_eq(providers[2].name, "hostname")
-  end)
-
   test("status returns data table", function()
     local handle = make_mock_handle({
       json.encode({ ok = true, data = { queue_depth = 0, cache_entries = 42 } }),
@@ -312,21 +293,6 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
         assert_not_nil(request_line)
         local req = json.decode(request_line)
         assert_eq(req.op, "get")
-      end
-    )
-  end)
-
-  test("list over real Unix socket", function()
-    local path = tmppath()
-    with_mock_server(
-      path,
-      json.encode({ ok = true, data = { { name = "git", global = false, fields = {"branch"} } } }),
-      function(handle)
-        local c = Client.new(handle)
-        local providers, err = c:list()
-        assert_nil(err)
-        assert_eq(#providers, 1)
-        assert_eq(providers[1].name, "git")
       end
     )
   end)

@@ -60,15 +60,6 @@ Force the daemon to recompute a provider.
 await client.refresh('git', '/some/repo');
 ```
 
-#### `client.list()`
-
-List available providers.
-
-```typescript
-const providers = await client.list();
-// [{ name: 'git', global: false, fields: ['branch', 'dirty', ...] }, ...]
-```
-
 #### `client.status()`
 
 Return daemon status information.

@@ -39,13 +39,6 @@ describe('serialiseRequest', () => {
     assert.deepEqual(parsed, { op: 'context', path: '/my/project' });
   });
 
-  it('serialises a list request', () => {
-    const req: Request = { op: 'list' };
-    const line = serialiseRequest(req);
-    const parsed = JSON.parse(line.trim());
-    assert.deepEqual(parsed, { op: 'list' });
-  });
-
   it('serialises a status request', () => {
     const req: Request = { op: 'status' };
     const line = serialiseRequest(req);
@@ -54,7 +47,7 @@ describe('serialiseRequest', () => {
   });
 
   it('produces exactly one newline at the end', () => {
-    const req: Request = { op: 'list' };
+    const req: Request = { op: 'status' };
     const line = serialiseRequest(req);
     assert.equal(line.slice(-1), '\n');
     assert.notEqual(line.slice(-2, -1), '\n');

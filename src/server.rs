@@ -595,32 +595,6 @@ async fn handle_request(
                 error: None,
             }
         }
-        Request::List => {
-            let providers: Vec<serde_json::Value> = registry
-                .list()
-                .into_iter()
-                .map(|name| {
-                    if let Some(provider) = registry.get(&name) {
-                        let meta = provider.metadata();
-                        serde_json::json!({
-                            "name": name,
-                            "source": registry.get_source(&name),
-                            "global": meta.global,
-                            "fields": meta.fields.iter().map(|f| &f.name).collect::<Vec<_>>(),
-                        })
-                    } else {
-                        // Virtual provider — no backing Provider trait object.
-                        serde_json::json!({
-                            "name": name,
-                            "source": registry.get_source(&name),
-                            "global": true,
-                            "fields": serde_json::Value::Array(vec![]),
-                        })
-                    }
-                })
-                .collect();
-            Response::ok(serde_json::json!(providers), 0, false)
-        }
         Request::Put {
             key,
             data,

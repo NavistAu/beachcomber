@@ -135,32 +135,6 @@ class TestClientRefresh:
 
 
 # ---------------------------------------------------------------------------
-# Client.list
-# ---------------------------------------------------------------------------
-
-
-class TestClientList:
-    def test_list_returns_provider_list(self, git_daemon: MockDaemon) -> None:
-        client = make_client(git_daemon)
-        providers = client.list()
-        assert isinstance(providers, list)
-        names = [p["name"] for p in providers]
-        assert "git" in names
-        assert "hostname" in names
-
-    def test_list_sends_correct_op(self, git_daemon: MockDaemon) -> None:
-        client = make_client(git_daemon)
-        client.list()
-        reqs = [r for r in git_daemon.received if r["op"] == "list"]
-        assert len(reqs) == 1
-
-    def test_list_empty_on_no_data(self, mock_daemon: MockDaemon) -> None:
-        mock_daemon.respond("list", {"ok": True})
-        client = make_client(mock_daemon)
-        assert client.list() == []
-
-
-# ---------------------------------------------------------------------------
 # Client.status
 # ---------------------------------------------------------------------------
 
@@ -236,12 +210,6 @@ class TestClientSession:
         req = mock_daemon.received[0]
         assert req["op"] == "refresh"
 
-    def test_session_list(self, git_daemon: MockDaemon) -> None:
-        client = make_client(git_daemon)
-        with client.session() as session:
-            providers = session.list()
-        assert any(p["name"] == "git" for p in providers)
-
     def test_session_status(self, git_daemon: MockDaemon) -> None:
         client = make_client(git_daemon)
         with client.session() as session:
@@ -276,12 +244,6 @@ class TestErrorPaths:
         with pytest.raises(DaemonNotRunning):
             client.refresh("git")
 
-    def test_daemon_not_running_for_list(
-        self, tmp_path: pytest.TempPathFixture
-    ) -> None:
-        client = Client(socket_path=str(tmp_path / "nosock"))
-        with pytest.raises(DaemonNotRunning):
-            client.list()
 
     def test_daemon_not_running_for_status(
         self, tmp_path: pytest.TempPathFixture

@@ -157,39 +157,6 @@ async fn store_with_ttl_shows_staleness() {
 }
 
 #[tokio::test]
-async fn store_appears_in_list() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-
-    // Store something
-    let req = r#"{"op":"put","key":"myapp","data":{"status":"ok"}}"#;
-    let r = send_recv(&mut stream, req).await;
-    assert!(r.ok);
-
-    // List should include "myapp"
-    let list_req = r#"{"op":"list"}"#;
-    let list_resp = send_recv(&mut stream, list_req).await;
-    assert!(list_resp.ok);
-    let providers = list_resp.data.unwrap();
-    let names: Vec<&str> = providers
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|p| p["name"].as_str().unwrap())
-        .collect();
-    assert!(
-        names.contains(&"myapp"),
-        "myapp should appear in list, got: {names:?}"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test]
 async fn refresh_virtual_provider_is_noop() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);

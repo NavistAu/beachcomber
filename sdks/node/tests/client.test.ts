@@ -249,46 +249,6 @@ describe('Client.refresh', () => {
   });
 });
 
-describe('Client.list', () => {
-  let server: MockServer;
-
-  before(async () => {
-    server = await MockServer.start();
-  });
-
-  after(async () => {
-    await server.stop();
-  });
-
-  it('returns provider list', async () => {
-    server.handle(() => ({
-      ok: true,
-      data: [
-        { name: 'git', global: false, fields: ['branch', 'dirty'] },
-        { name: 'hostname', global: true, fields: ['short', 'full'] },
-      ],
-    }));
-    const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    const providers = await client.list();
-    assert.equal(providers.length, 2);
-    assert.equal(providers[0]!.name, 'git');
-    assert.equal(providers[1]!.name, 'hostname');
-    assert.equal(providers[1]!.global, true);
-    assert.deepEqual(providers[0]!.fields, ['branch', 'dirty']);
-  });
-
-  it('sends op:list', async () => {
-    let received: Record<string, unknown> = {};
-    server.handle((req) => {
-      received = req.parsed;
-      return { ok: true, data: [] };
-    });
-    const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    await client.list();
-    assert.equal(received['op'], 'list');
-  });
-});
-
 describe('Client.status', () => {
   let server: MockServer;
 

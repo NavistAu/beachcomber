@@ -404,7 +404,7 @@ static comb_result_t *get_with_mock(const char *response_json) {
 }
 
 /* Same as get_with_mock but uses mock server that handles multiple requests,
- * for testing poke / context / list / status. */
+ * for testing poke / context / status. */
 typedef struct {
     int server_fd;
     const char **responses;   /* NULL-terminated array */
@@ -629,21 +629,6 @@ done:
     unlink(sock_path);
 }
 
-static void test_list(void) {
-    const char *resp =
-        "{\"ok\":true,\"data\":["
-        "{\"name\":\"git\",\"global\":false,\"fields\":[\"branch\",\"dirty\"]},"
-        "{\"name\":\"hostname\",\"global\":true,\"fields\":[\"short\",\"fqdn\"]}"
-        "]}";
-    comb_result_t *r = get_with_mock(resp);
-    CHECK(r != NULL);
-    CHECK(comb_result_ok(r) == 1);
-    CHECK(comb_result_is_hit(r) == 1);
-    const char *raw = comb_result_raw_json(r);
-    CHECK(raw != NULL && strstr(raw, "git") != NULL);
-    comb_result_free(r);
-}
-
 static void test_status(void) {
     const char *resp =
         "{\"ok\":true,\"data\":{\"queued\":0,\"running\":1,\"cache_entries\":42}}";
@@ -765,7 +750,6 @@ int main(void) {
     SUITE("Integration — mock server");
     test_poke();
     test_set_context();
-    test_list();
     test_status();
     test_connect_fail();
     test_poke_on_null_client();

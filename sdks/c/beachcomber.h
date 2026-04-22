@@ -16,7 +16,7 @@
  * Memory model:
  *   - comb_connect / comb_connect_path return a heap-allocated client.
  *     Free with comb_disconnect().
- *   - All comb_get / comb_list / comb_status calls return a heap-allocated
+ *   - All comb_get / comb_status calls return a heap-allocated
  *     comb_result_t. Free with comb_result_free(). NULL is never returned
  *     from these functions — on allocation failure the process aborts.
  *   - Strings returned by comb_result_get_str / comb_result_error /
@@ -108,14 +108,6 @@ int comb_poke(comb_client_t *client, const char *key, const char *path);
 int comb_set_context(comb_client_t *client, const char *path);
 
 /*
- * List available providers.
- *
- * On success, comb_result_raw_json() contains the full response.
- * The data field is a JSON array; iterate with comb_result_child().
- */
-comb_result_t *comb_list(comb_client_t *client);
-
-/*
  * Query daemon status (scheduler, cache statistics, etc.).
  *
  * On success, comb_result_raw_json() contains the full response.
@@ -199,7 +191,7 @@ int comb_result_stale(const comb_result_t *r);
 const char *comb_result_raw_json(const comb_result_t *r);
 
 /*
- * Free a result returned by comb_get / comb_list / comb_status.
+ * Free a result returned by comb_get / comb_status.
  * Safe to call with NULL.
  */
 void comb_result_free(comb_result_t *r);

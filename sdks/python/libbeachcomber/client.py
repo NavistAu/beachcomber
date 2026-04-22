@@ -19,17 +19,15 @@ For multiple queries on one connection use a session::
 
 from __future__ import annotations
 
-import io
 import socket
 from contextlib import contextmanager
-from typing import Any, Generator, List, Optional
+from typing import Any, Generator, Optional
 
 from .discovery import discover_socket_path
 from .exceptions import DaemonNotRunning, ProtocolError
 from .protocol import (
     build_context_request,
     build_get_request,
-    build_list_request,
     build_refresh_request,
     build_status_request,
     decode_response,
@@ -179,25 +177,6 @@ class Client:
         finally:
             sock.close()
 
-    def list(self) -> List[dict[str, Any]]:
-        """Return available providers from the daemon.
-
-        Returns:
-            List of provider dicts. Each dict has at least ``"name"``,
-            ``"global"``, and ``"fields"`` keys.
-
-        Raises:
-            DaemonNotRunning: If the socket cannot be reached.
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
-        """
-        sock = _connect(self._resolve_path(), self._timeout)
-        try:
-            resp = _send_recv(sock, build_list_request())
-        finally:
-            sock.close()
-        return resp.get("data", [])
-
     def status(self) -> dict[str, Any]:
         """Return daemon scheduler and cache status.
 
@@ -299,15 +278,6 @@ class Session:
             ProtocolError: On I/O or JSON parse failure.
         """
         _send_recv(self._sock, build_refresh_request(key, path))
-
-    def list(self) -> List[dict[str, Any]]:
-        """Return available providers via the persistent connection.
-
-        Returns:
-            List of provider dicts.
-        """
-        resp = _send_recv(self._sock, build_list_request())
-        return resp.get("data", [])
 
     def status(self) -> dict[str, Any]:
         """Return daemon status via the persistent connection.
