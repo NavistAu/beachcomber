@@ -1,0 +1,13 @@
+{
+  "name": "watch_emits_initial_event_for_seeded_key",
+  "description": "First watch event is the current value.",
+  "setup": [
+    { "op": "put", "args": { "key": "fixture_w", "data": { "count": 7 } } }
+  ],
+  "test": { "op": "watch", "args": { "key": "fixture_w.count" } },
+  "expect": {
+    "status": "hit",
+    "data_type": "number",
+    "data_equals": 7
+  }
+}

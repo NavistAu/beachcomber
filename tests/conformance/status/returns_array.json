@@ -1,0 +1,12 @@
+{
+  "name": "status_returns_cache_row_array",
+  "description": "Status response data is an array of cache rows, not a daemon-health object.",
+  "setup": [
+    { "op": "put", "args": { "key": "fixture_s", "data": { "k": "v" } } }
+  ],
+  "test": { "op": "status", "args": {} },
+  "expect": {
+    "status": "ok",
+    "data_type": "array"
+  }
+}

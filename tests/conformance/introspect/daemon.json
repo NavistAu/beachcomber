@@ -1,0 +1,10 @@
+{
+  "name": "introspect_daemon_returns_pid_and_version",
+  "description": "Introspect{daemon} response carries pid and version fields.",
+  "test": { "op": "introspect", "args": { "subject": "daemon" } },
+  "expect": {
+    "status": "ok",
+    "data_type": "object",
+    "data_contains_field": "pid"
+  }
+}

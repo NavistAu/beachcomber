@@ -1,0 +1,9 @@
+{
+  "name": "refresh_on_virtual_provider_is_ok",
+  "description": "Refresh on a virtual provider succeeds (no-op) without error.",
+  "setup": [
+    { "op": "put", "args": { "key": "fixture_r", "data": { "x": 1 } } }
+  ],
+  "test": { "op": "refresh", "args": { "key": "fixture_r" } },
+  "expect": { "status": "ok" }
+}

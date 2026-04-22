@@ -17,7 +17,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Result of a cache query.
@@ -971,7 +971,7 @@ pub fn socket_path() -> PathBuf {
 }
 
 /// Attempt to start the comb daemon via socket activation.
-fn start_daemon(socket_path: &PathBuf) -> Result<(), CombError> {
+fn start_daemon(socket_path: &Path) -> Result<(), CombError> {
     use std::process::Command;
 
     // Find comb binary

@@ -1,0 +1,9 @@
+{
+  "name": "introspect_watches_returns_object",
+  "description": "Introspect{watches} response is a non-null object.",
+  "test": { "op": "introspect", "args": { "subject": "watches" } },
+  "expect": {
+    "status": "ok",
+    "data_type": "object"
+  }
+}

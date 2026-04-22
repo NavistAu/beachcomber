@@ -1,0 +1,10 @@
+{
+  "name": "hello_returns_protocol_and_daemon_version",
+  "description": "Hello response must carry protocol_version and daemon_version strings.",
+  "test": { "op": "hello", "args": {} },
+  "expect": {
+    "status": "ok",
+    "data_type": "object",
+    "data_contains_field": "protocol_version"
+  }
+}
