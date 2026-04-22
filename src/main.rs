@@ -88,7 +88,7 @@ enum Commands {
     /// Interpolate a template string with cached values
     #[command(visible_alias = "e")]
     Eval {
-        /// Template string with {provider.field} placeholders
+        /// Template string with {{ provider.field }} placeholders
         template: String,
         /// Path context for directory-scoped providers
         path: Option<String>,
@@ -263,7 +263,6 @@ fn format_sv(data: &serde_json::Value, sep: &str, with_header: bool) -> String {
     }
 }
 
-/// Format response data using a template string with {field_name} placeholders.
 fn main() -> ExitCode {
     let (args, fmt_template) = preprocess_args();
     let cli = Cli::parse_from(args);
@@ -781,32 +780,9 @@ fn run_put(
     })
 }
 
-/// Extract {provider.field} placeholders from a template string.
-fn extract_template_keys(template: &str) -> Vec<String> {
-    let mut keys = Vec::new();
-    let mut chars = template.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '{' {
-            if chars.peek() == Some(&'{') {
-                chars.next(); // skip escaped brace
-                continue;
-            }
-            let mut key = String::new();
-            for c in chars.by_ref() {
-                if c == '}' {
-                    break;
-                }
-                key.push(c);
-            }
-            if !key.is_empty() && !keys.contains(&key) {
-                keys.push(key);
-            }
-        }
-    }
-    keys
-}
-
 fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
+    use beachcomber::cli::format::{find_eval_template_pairs, render_eval_template};
+
     let socket_path = config.resolve_socket_path();
 
     if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
@@ -814,11 +790,24 @@ fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let keys = extract_template_keys(template);
-    if keys.is_empty() {
-        print!("{template}");
-        return ExitCode::SUCCESS;
+    // Discover (provider, field) pairs referenced in the template.
+    let pairs = find_eval_template_pairs(template);
+
+    // If the template has no provider.field references, render it directly
+    // (it may still contain jinja conditionals, literals, etc.).
+    if pairs.is_empty() {
+        return match render_eval_template(template, &serde_json::Value::Object(Default::default())) {
+            Ok(s) => { print!("{s}"); ExitCode::SUCCESS }
+            Err(e) => { eprintln!("template render error: {e}"); ExitCode::from(2) }
+        };
     }
+
+    // Deduplicate provider.field pairs before querying.
+    let mut seen = std::collections::HashSet::new();
+    let unique_pairs: Vec<(String, String)> = pairs
+        .into_iter()
+        .filter(|pair| seen.insert(pair.clone()))
+        .collect();
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
@@ -838,14 +827,19 @@ fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
             return ExitCode::from(2);
         }
 
-        // Query all keys over a single connection.
-        let mut values: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        for key in &keys {
-            match session.get(key, None).await {
+        // Fetch each provider.field and assemble a nested JSON context.
+        let mut ctx: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        for (provider, field) in &unique_pairs {
+            let key = format!("{provider}.{field}");
+            match session.get(&key, None).await {
                 Ok(response) => {
                     if let Some(data) = &response.data {
-                        values.insert(key.clone(), value_to_string(data));
+                        let provider_entry = ctx
+                            .entry(provider.clone())
+                            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                        if let serde_json::Value::Object(m) = provider_entry {
+                            m.insert(field.clone(), data.clone());
+                        }
                     }
                 }
                 Err(e) => {
@@ -855,24 +849,11 @@ fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
             }
         }
 
-        // Interpolate the template.
-        let mut result = template.to_string();
-        result = result.replace("{{", "\x00LBRACE\x00");
-        result = result.replace("}}", "\x00RBRACE\x00");
-        for (key, val) in &values {
-            let placeholder = format!("{{{key}}}");
-            result = result.replace(&placeholder, val);
+        // Render the template with the nested context.
+        match render_eval_template(template, &serde_json::Value::Object(ctx)) {
+            Ok(s) => { print!("{s}"); ExitCode::SUCCESS }
+            Err(e) => { eprintln!("template render error: {e}"); ExitCode::from(2) }
         }
-        // Replace unresolved placeholders with empty string.
-        for key in &keys {
-            let placeholder = format!("{{{key}}}");
-            result = result.replace(&placeholder, "");
-        }
-        result = result.replace("\x00LBRACE\x00", "{");
-        result = result.replace("\x00RBRACE\x00", "}");
-
-        print!("{result}");
-        ExitCode::SUCCESS
     })
 }
 

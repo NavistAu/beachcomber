@@ -1,4 +1,6 @@
-use beachcomber::cli::format::render_fmt_template;
+use beachcomber::cli::format::{
+    find_eval_template_pairs, find_eval_template_refs, render_eval_template, render_fmt_template,
+};
 use beachcomber::provider::{ProviderResult, Value};
 
 fn result_with_fields(fields: &[(&str, Value)]) -> ProviderResult {
@@ -53,4 +55,87 @@ fn fmt_template_single_brace_is_literal() {
     let r = result_with_fields(&[("branch", Value::String("main".into()))]);
     let out = render_fmt_template("{branch}", &r).unwrap();
     assert_eq!(out, "{branch}");
+}
+
+// --- eval template tests ---
+
+#[test]
+fn eval_template_renders_provider_field_refs() {
+    let ctx = serde_json::json!({
+        "hostname": {"value": "me-laptop"},
+        "load": {"one": 0.42, "five": 0.3, "fifteen": 0.25}
+    });
+    let out = render_eval_template(
+        "hostname: {{ hostname.value }}, load: {{ load.one }}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(out, "hostname: me-laptop, load: 0.42");
+}
+
+#[test]
+fn eval_template_truncate_filter_works_on_fields() {
+    let ctx = serde_json::json!({
+        "git": {"sha": "abcdef1234567890"}
+    });
+    let out = render_eval_template("{{ git.sha | truncate(7) }}", &ctx).unwrap();
+    assert_eq!(out, "abcdef1...");
+}
+
+#[test]
+fn eval_template_conditional_works() {
+    let ctx = serde_json::json!({
+        "git": {"dirty": true, "branch": "main"}
+    });
+    let out = render_eval_template(
+        "{% if git.dirty %}*{% endif %}{{ git.branch }}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(out, "*main");
+}
+
+#[test]
+fn eval_template_default_filter_for_missing_field() {
+    let ctx = serde_json::json!({"git": {"branch": "main"}});
+    let out = render_eval_template("{{ git.tag | default('no-tag') }}", &ctx).unwrap();
+    assert_eq!(out, "no-tag");
+}
+
+#[test]
+fn eval_template_single_brace_is_literal() {
+    let ctx = serde_json::json!({"git": {"branch": "main"}});
+    let out = render_eval_template("{git.branch}", &ctx).unwrap();
+    assert_eq!(out, "{git.branch}");
+}
+
+#[test]
+fn find_eval_template_refs_extracts_provider_names() {
+    let refs = find_eval_template_refs(
+        "{{ git.branch }} {{ hostname.value }} {{ git.sha | truncate(7) }}",
+    );
+    assert!(refs.contains("git"));
+    assert!(refs.contains("hostname"));
+}
+
+#[test]
+fn find_eval_template_pairs_extracts_provider_field_pairs() {
+    let pairs = find_eval_template_pairs("{{ git.branch }} {{ hostname.value }} {{ git.sha }}");
+    assert!(pairs.contains(&("git".to_string(), "branch".to_string())));
+    assert!(pairs.contains(&("hostname".to_string(), "value".to_string())));
+    assert!(pairs.contains(&("git".to_string(), "sha".to_string())));
+}
+
+#[test]
+fn find_eval_template_pairs_ignores_bare_vars() {
+    // {{ name }} with no dot should not produce a pair
+    let pairs = find_eval_template_pairs("{{ name }}");
+    assert!(pairs.is_empty());
+}
+
+#[test]
+fn find_eval_template_refs_deduplicates_providers() {
+    let refs = find_eval_template_refs("{{ git.branch }} {{ git.sha }}");
+    assert_eq!(refs.len(), 1);
+    assert!(refs.contains("git"));
 }
