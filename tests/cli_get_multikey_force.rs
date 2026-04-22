@@ -49,9 +49,10 @@ async fn session_get_formatted_with_flags_exists_and_forwards_force() {
 
 #[tokio::test]
 async fn session_get_formatted_with_flags_forwards_wait() {
-    // wait must also be forwarded. A fresh entry with wait=true must be
-    // served from cache (no-op for wait when not stale). This test locks
-    // in that the parameter reaches the wire without error.
+    // Calling get_formatted_with_flags with wait=true on a fresh entry must
+    // not error. This locks in that wait is an accepted parameter; the
+    // behavioral wait=true semantics (stale-re-execute) are covered in
+    // tests/cli_get_wait_propagation.rs and tests/get_wait.rs.
     let (_tmp, sock) = setup_seeded().await;
     let client = Client::new(sock);
     let mut session = client.connect().await.unwrap();
@@ -65,5 +66,19 @@ async fn session_get_formatted_with_flags_forwards_wait() {
     assert!(
         text.contains("seeded-value"),
         "wait=true on a fresh entry must return the cached value; got {text:?}"
+    );
+}
+
+#[test]
+fn run_get_multikey_server_side_uses_get_formatted_with_flags() {
+    // The multi-key server-side loop must call get_formatted_with_flags,
+    // not the flag-less get_formatted. This guards against regression to
+    // the Round 3 bug where force and wait were silently dropped at
+    // src/main.rs:617 (line numbers may drift; search the file).
+    let src = std::fs::read_to_string("src/main.rs").unwrap();
+    assert!(
+        src.contains("get_formatted_with_flags(key, None, wire_fmt, force, wait)"),
+        "run_get's multi-key server-side loop must forward force and wait via \
+         get_formatted_with_flags"
     );
 }
