@@ -53,14 +53,6 @@ enum Commands {
         #[arg(long)]
         wait: bool,
     },
-    /// Trigger immediate recomputation of a provider
-    #[command(visible_alias = "r")]
-    Refresh {
-        /// Provider key
-        key: String,
-        /// Path context
-        path: Option<String>,
-    },
     /// Show daemon status
     #[command(visible_alias = "s")]
     Status,
@@ -100,18 +92,6 @@ enum Commands {
         template: String,
         /// Path context for directory-scoped providers
         path: Option<String>,
-    },
-    /// Query multiple keys in a single connection
-    #[command(visible_alias = "f")]
-    Fetch {
-        /// Provider keys (e.g., "git.branch" "hostname.name")
-        keys: Vec<String>,
-        /// Path context for directory-scoped providers
-        #[arg(long)]
-        path: Option<String>,
-        /// Output format (text, json, sh, csv, tsv, CSV, TSV, fmt)
-        #[arg(short, long, default_value = "text")]
-        format: String,
     },
     /// Detect installed tools and show integration snippets
     #[command(visible_alias = "i")]
@@ -291,7 +271,6 @@ fn main() -> ExitCode {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
             run_get(&config, &keys, path.as_deref(), output_format, force, wait)
         }
-        Commands::Refresh { key, path } => run_refresh(&config, &key, path.as_deref()),
         Commands::Status => run_status(&config),
         Commands::List => run_list(&config),
         Commands::Put {
@@ -305,10 +284,6 @@ fn main() -> ExitCode {
             run_watch(&config, &key, path.as_deref(), output_format)
         }
         Commands::Eval { template, path } => run_eval(&config, &template, path.as_deref()),
-        Commands::Fetch { keys, path, format } => {
-            let output_format = parse_output_format(&format, fmt_template.as_deref());
-            run_fetch(&config, &keys, path.as_deref(), output_format)
-        }
         Commands::Init => run_init(),
         Commands::Check { check_cmd } => run_check(&config, check_cmd),
         Commands::Kill { timeout, socket } => {
@@ -741,34 +716,6 @@ fn run_get(
     })
 }
 
-fn run_refresh(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
-    let socket_path = config.resolve_socket_path();
-
-    if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
-        eprintln!("Failed to start daemon: {e}");
-        return ExitCode::from(2);
-    }
-
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    rt.block_on(async {
-        let client = beachcomber::client::Client::new(socket_path);
-        match client.refresh(key, path).await {
-            Ok(response) => {
-                if response.ok {
-                    ExitCode::SUCCESS
-                } else {
-                    eprintln!("Error: {}", response.error.unwrap_or_default());
-                    ExitCode::from(2)
-                }
-            }
-            Err(e) => {
-                eprintln!("Error: {e}");
-                ExitCode::from(2)
-            }
-        }
-    })
-}
-
 fn run_status(config: &Config) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
@@ -1041,167 +988,6 @@ fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
             Ok(s) => { print!("{s}"); ExitCode::SUCCESS }
             Err(e) => { eprintln!("template render error: {e}"); ExitCode::from(2) }
         }
-    })
-}
-
-fn run_fetch(
-    config: &Config,
-    keys: &[String],
-    path: Option<&str>,
-    format: OutputFormat,
-) -> ExitCode {
-    let socket_path = config.resolve_socket_path();
-
-    if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
-        eprintln!("Failed to start daemon: {e}");
-        return ExitCode::from(2);
-    }
-
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    rt.block_on(async {
-        let client = beachcomber::client::Client::new(socket_path);
-        let mut session = match client.connect().await {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Error: {e}");
-                return ExitCode::from(2);
-            }
-        };
-
-        if let Some(p) = path
-            && let Err(e) = session.set_context(p).await
-        {
-            eprintln!("Error: {e}");
-            return ExitCode::from(2);
-        }
-
-        // For server-side formats (text/sh), delegate formatting to the server so that
-        // Object-valued fields (e.g. mise.project) are rendered consistently with `comb get`.
-        if format.is_server_side() {
-            let wire_fmt = format.server_format();
-            for key in keys {
-                match session.get_formatted(key, None, wire_fmt).await {
-                    Ok(text) => {
-                        if !text.is_empty() {
-                            println!("{text}");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Error querying {key}: {e}");
-                        return ExitCode::from(2);
-                    }
-                }
-            }
-            return ExitCode::SUCCESS;
-        }
-
-        let mut responses = Vec::new();
-        for key in keys {
-            match session.get(key, None).await {
-                Ok(response) => responses.push(response),
-                Err(e) => {
-                    eprintln!("Error querying {key}: {e}");
-                    return ExitCode::from(2);
-                }
-            }
-        }
-
-        match &format {
-            OutputFormat::Json => {
-                let arr: Vec<&beachcomber::protocol::Response> = responses.iter().collect();
-                println!("{}", serde_json::to_string_pretty(&arr).unwrap());
-            }
-            OutputFormat::Csv | OutputFormat::CsvHeader => {
-                let with_header = matches!(format, OutputFormat::CsvHeader);
-                // Merge all response data into columns.
-                let mut all_keys: Vec<String> = Vec::new();
-                let mut all_vals: Vec<String> = Vec::new();
-                for (i, resp) in responses.iter().enumerate() {
-                    if let Some(data) = &resp.data {
-                        match data {
-                            serde_json::Value::Object(map) => {
-                                let mut pairs: Vec<(&String, &serde_json::Value)> =
-                                    map.iter().collect();
-                                pairs.sort_by_key(|(k, _)| *k);
-                                for (k, v) in pairs {
-                                    all_keys.push(k.clone());
-                                    all_vals.push(value_to_string(v));
-                                }
-                            }
-                            _ => {
-                                all_keys.push(keys[i].clone());
-                                all_vals.push(value_to_string(data));
-                            }
-                        }
-                    }
-                }
-                if with_header {
-                    println!("{}", all_keys.join(","));
-                }
-                println!("{}", all_vals.join(","));
-            }
-            OutputFormat::Tsv | OutputFormat::TsvHeader => {
-                let with_header = matches!(format, OutputFormat::TsvHeader);
-                let mut all_keys: Vec<String> = Vec::new();
-                let mut all_vals: Vec<String> = Vec::new();
-                for (i, resp) in responses.iter().enumerate() {
-                    if let Some(data) = &resp.data {
-                        match data {
-                            serde_json::Value::Object(map) => {
-                                let mut pairs: Vec<(&String, &serde_json::Value)> =
-                                    map.iter().collect();
-                                pairs.sort_by_key(|(k, _)| *k);
-                                for (k, v) in pairs {
-                                    all_keys.push(k.clone());
-                                    all_vals.push(value_to_string(v));
-                                }
-                            }
-                            _ => {
-                                all_keys.push(keys[i].clone());
-                                all_vals.push(value_to_string(data));
-                            }
-                        }
-                    }
-                }
-                if with_header {
-                    println!("{}", all_keys.join("\t"));
-                }
-                println!("{}", all_vals.join("\t"));
-            }
-            OutputFormat::Fmt(template) => {
-                // Merge all response data into a single map for template interpolation.
-                let mut merged = serde_json::Map::new();
-                for (i, resp) in responses.iter().enumerate() {
-                    if let Some(data) = &resp.data {
-                        match data {
-                            serde_json::Value::Object(map) => {
-                                // Prefix with key name for disambiguation.
-                                let provider = keys[i].split('.').next().unwrap_or(&keys[i]);
-                                for (k, v) in map {
-                                    merged.insert(format!("{provider}.{k}"), v.clone());
-                                    // Also insert unprefixed for convenience.
-                                    merged.insert(k.clone(), v.clone());
-                                }
-                            }
-                            _ => {
-                                merged.insert(keys[i].clone(), data.clone());
-                            }
-                        }
-                    }
-                }
-                match render_fmt_template_json(template, &serde_json::Value::Object(merged)) {
-                    Ok(rendered) => print!("{}", rendered),
-                    Err(e) => {
-                        eprintln!("Template error: {e}");
-                        return ExitCode::from(2);
-                    }
-                }
-            }
-            // Text and Sh are handled via server-side formatting above.
-            OutputFormat::Text | OutputFormat::Sh => unreachable!(),
-        }
-
-        ExitCode::SUCCESS
     })
 }
 

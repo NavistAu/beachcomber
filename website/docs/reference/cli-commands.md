@@ -24,13 +24,11 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 | Short | Long | Accepts format suffixes? |
 |-------|------|--------------------------|
 | `comb g` | `comb get` | all of them |
-| `comb r` | `comb refresh` | — |
 | `comb s` | `comb status` | — |
 | `comb l` | `comb list` | — |
 | `comb p` | `comb put` | — |
 | `comb w` | `comb watch` | `.p` `.j` `.s` |
 | `comb e` | `comb eval` | — |
-| `comb f` | `comb fetch` | all (same as get) |
 | `comb i` | `comb init` | — |
 | `comb c` | `comb check` | — |
 | `comb d` | `comb daemon` | — |
@@ -90,23 +88,6 @@ comb g git.branch:source         # → builtin (provider kind: builtin, script, 
 - `0` — success, data returned
 - `1` — provider returned no data (e.g. `git` queried outside a git repository)
 - `2` — error (daemon unreachable, unknown provider, invalid key)
-
-## `comb r` (refresh) `<key> [path]`
-
-Trigger immediate recomputation of a provider. Returns immediately after acknowledging the request — does not wait for the result. The next `get` will return the fresh value.
-
-```sh
-# Force git status refresh after a branch switch
-comb r git .
-
-# Force network info refresh after connecting to VPN
-comb r network
-
-# After modifying kubeconfig manually
-comb r kubecontext
-```
-
-**Exit codes:** `0` on success, `2` on error.
 
 ## `comb s` (status)
 
@@ -194,23 +175,6 @@ comb e 'git.ahead > 0' --path /home/user/project
 ```
 
 **Exit codes:** `0` on success, `2` on error.
-
-## `comb f` (fetch) `<key>... [--path <path>] [-f format]`
-
-Like `get`, but waits for a fresh value if the cache is cold or stale. Blocks until the provider executes and returns data.
-
-```sh
-# Fetch fresh git state
-comb f git.branch .
-
-# Fetch with a specific output format
-comb f.s git .
-```
-
-**Exit codes:**
-- `0` — success, data returned
-- `1` — provider returned no data
-- `2` — error (timeout, daemon unreachable, unknown provider)
 
 ## `comb i` (init)
 
