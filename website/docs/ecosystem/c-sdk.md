@@ -85,11 +85,6 @@ int main(void) {
     /* Force recomputation */
     comb_refresh(c, "git", "/path/to/repo");
 
-    /* List providers */
-    r = comb_list(c);
-    printf("raw list response: %s\n", comb_result_raw_json(r));
-    comb_result_free(r);
-
     /* Daemon status */
     r = comb_status(c);
     printf("raw status: %s\n", comb_result_raw_json(r));
@@ -129,7 +124,6 @@ cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber
 | `comb_get(c, key, path)` | Read a cached value (`path` may be NULL) |
 | `comb_refresh(c, key, path)` | Force recomputation |
 | `comb_set_context(c, path)` | Set default path for this connection |
-| `comb_list(c)` | List available providers |
 | `comb_status(c)` | Query daemon status |
 
 ### Result accessors

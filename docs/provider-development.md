@@ -15,7 +15,7 @@ pub trait Provider: Send + Sync {
 }
 ```
 
-**`metadata()`** is called at registration time and on every `comb list` request. It must be fast and allocation-light (it currently allocates; a future optimisation may switch to `Cow<'static, str>`). Return a `ProviderMetadata` describing:
+**`metadata()`** is called at registration time and on every `comb check providers` request. It must be fast and allocation-light (it currently allocates; a future optimisation may switch to `Cow<'static, str>`). Return a `ProviderMetadata` describing:
 
 - `name`: the provider's key used in `comb get <name>.<field>`
 - `fields`: a list of `FieldSchema { name, field_type }` describing what fields `execute()` will populate

@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-22
+
+### Breaking
+
+- **Wire:** `{"op":"poke"}` renamed to `{"op":"refresh"}` — all clients must update
+- **Wire:** `{"op":"store"}` renamed to `{"op":"put"}` — all clients must update
+- **Wire:** `Request::List` removed — the `list` op is no longer accepted
+- **Wire:** `{"op":"status"}` response reshaped from a daemon-health object to an array of cache-entry row objects (`[{provider, path, field, value, age_ms, stale}, ...]`). Use `{"op":"introspect","subject":"daemon"}` for the old health fields
+- **CLI:** `comb refresh` / `comb r` removed — use `comb get --force` to trigger immediate recomputation
+- **CLI:** `comb fetch` / `comb f` removed — `comb get` now accepts variadic keys
+- **CLI:** `comb list` / `comb l` removed — no replacement (provider introspection via `comb check providers`)
+- **Templates:** single-brace `{field}` placeholder syntax removed from `.f` format and `comb eval`. Use minijinja double-brace `{{ field }}` syntax everywhere
+- **`:age`:** now returns a JSON number (integer milliseconds), not a quoted string
+
+### Added
+
+- `Request::Introspect` wire op with 9 subjects: `daemon`, `providers`, `config`, `cache`, `backoff`, `watches`, `timers`, `demand`, `procs`
+- `comb check` rewired onto `Introspect` — top-level aggregation when no subcommand given; each subject is a standalone subcommand (`backoff`, `watches`, `timers`, `demand` are new)
+- `comb get --force` — trigger immediate provider recomputation before returning the result
+- `comb get --wait` — block until a fresh value arrives (useful after an external trigger)
+- `comb get` variadic keys — query multiple keys in a single connection: `comb g git.branch git.dirty battery.percent .`
+- `comb put --null` — clear a previously written virtual provider entry
+- `comb status` tabular output — one row per warm cache entry with provider/field/value/age_ms/stale columns
+- `comb status` flags: `--format <template>`, `--filter <provider>`, `--sort <field|age|stale>`, `--no-trunc`, `--max-width <n>`, `--no-color` / `--no-colour`
+- `comb status` custom minijinja templates via `--format "{{ provider }}.{{ field }}={{ value }}"`
+- minijinja templating across `comb eval`, `.f` format suffix, and `comb status --format`; available filters: `truncate`, `default`, `upper`, `lower`, `length`
+- Script provider `output = "text"` produces `{value: <stdout>}` in cache — field is `value`
+- Watcher GC subscription lifecycle hook — watcher registrations are cleaned up when cache entries are evicted
+- Watcher GC periodic tick — background task evicts stale watcher registrations on a fixed schedule
+
+### Fixed
+
+- `:age` metadata suffix now returns a JSON number, not a string
+- Watcher registry could leak registrations when cache entries were evicted without triggering the GC hook
+- `uptime_provider_executes` test marked as sandbox-unsafe to avoid flakiness in CI environments
+- Various doc drift between shipped behaviour and reference pages (this release)
+
 ## [0.5.1] - 2026-04-21
 
 ### Fixed

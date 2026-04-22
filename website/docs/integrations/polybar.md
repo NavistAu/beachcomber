@@ -59,7 +59,7 @@ label = k8s: %output%
 
 [module/uptime]
 type = custom/script
-exec = comb g.f '{days}d {hours}h' uptime
+exec = comb g.f '{{ days }}d {{ hours }}h' uptime
 interval = 60
 format = <label>
 label = up %output%

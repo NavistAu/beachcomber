@@ -199,7 +199,7 @@ poll = "86400s"
 | `failure_reattempts` | int | `3` | Number of retries after consecutive provider failures before backing off |
 | `failure_backoff_interval` | duration | `"1s"` | Wait time between failure retry attempts |
 
-> Duration strings use a number followed by a unit: `"30s"` (seconds), `"2m"` (minutes), `"1h"` (hours).
+> Duration strings use whole-second values: `"30s"` (seconds), `"2m"` (minutes), `"1h"` (hours), `"2h30m"` (compound). Sub-second values (e.g. `"500ms"`) are not accepted.
 
 **`[providers.<name>]` section (built-in overrides):**
 

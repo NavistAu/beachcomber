@@ -79,22 +79,14 @@ $ comb g git .                   # default: full JSON response
   "stale": false
 }
 
-$ comb s                         # status
-{
-  "ok": true,
-  "data": {
-    "pid": 12345,
-    "version": "0.5.1",
-    "uptime_secs": 3642,
-    "active_watchers": 2,
-    "requests_total": 184291,
-    "cache_entries": 12,
-    "providers": 19
-  }
-}
+$ comb s                         # status: one row per warm cache entry
+provider   field      value      age_ms  stale
+git        branch     main          234  false
+git        dirty      false         234  false
+battery    percent    85           4200  false
 ```
 
-All commands use single-letter shorthands (`g` get, `s` status, `r` refresh, `w` watch, `l` list, `p` put, `e` eval, `f` fetch, `i` init, `c` check, `d` daemon). Format suffixes (`.s` shell, `.t` tsv, `.T` TSV+header, `.f` template, `.c` csv, `.C` CSV+header, `.j` json) replace the `-f` flag. Text is the default — `comb g` and `comb g git.branch .` both return plain text. Long forms always work too: `comb get git.branch . -f text` is the same as `comb g git.branch .`
+All commands use single-letter shorthands (`g` get, `s` status, `w` watch, `p` put, `e` eval, `i` init, `c` check, `d` daemon). Format suffixes (`.s` shell, `.t` tsv, `.T` TSV+header, `.f` template, `.c` csv, `.C` CSV+header, `.j` json) replace the `-f` flag. Text is the default — `comb g` and `comb g git.branch .` both return plain text. Long forms always work too: `comb get git.branch . -f text` is the same as `comb g git.branch .`
 
 ---
 
@@ -279,10 +271,19 @@ comb g.c git .                   # csv: comma-separated values
 comb g.C git .                   # CSV: with header row
 comb g.t git .                   # tsv: tab-separated values
 comb g.T git .                   # TSV: with header row
-comb g.f '{branch} ({dirty})' git .  # template: → main (false)
+comb g.f '{{ branch }} ({{ dirty }})' git .  # template: → main (false)
 
 # Long form always works too (default format is text, so -f is usually unnecessary)
 comb get git.branch .            # same as comb g git.branch .
+
+# Multiple keys in one connection (variadic)
+comb g git.branch git.dirty battery.percent .
+
+# Force immediate recomputation before returning
+comb g --force git .
+
+# Block until a fresh value arrives (useful after a trigger)
+comb g --wait git.branch .
 
 # Global providers (no path needed)
 comb g battery.percent
@@ -298,37 +299,33 @@ comb g git.branch:stale        # whether value is past refresh time
 - `1` — cache miss (provider has no data yet)
 - `2` — error (daemon unreachable, unknown provider, invalid key)
 
-### `comb r` (refresh) `<key> [path]`
-
-Trigger immediate recomputation of a provider. Returns immediately after acknowledging the request — does not wait for the result. The next `g` will return the fresh value.
-
-```sh
-comb r git .              # force git refresh after a branch switch
-comb r network            # after connecting to VPN
-comb r kubecontext        # after modifying kubeconfig
-```
-
-**Exit codes:** `0` on success, `2` on error.
-
 ### `comb s` (status)
 
-Show daemon health and statistics.
+Show all warm cache entries as a table — one row per provider field.
 
 ```sh
 $ comb s
-{
-  "ok": true,
-  "data": {
-    "pid": 12345,
-    "version": "0.5.1",
-    "uptime_secs": 7234,
-    "active_watchers": 4,
-    "requests_total": 184291,
-    "cache_entries": 14,
-    "providers": 19
-  }
-}
+provider   field      value      age_ms  stale
+git        branch     main          234  false
+git        dirty      false         234  false
+battery    percent    85           4200  false
+
+# Filter to a specific provider
+comb s --filter git
+
+# Sort by age (oldest first)
+comb s --sort age
+
+# Custom per-row template
+comb s --format "{{ provider }}.{{ field }}={{ value }}"
+
+# Compact table with column header
+comb s --format "table {{ provider }} {{ field }} {{ value }}"
 ```
+
+**Flags:** `--format <template>`, `--filter <provider>`, `--sort <field|age|stale>`, `--no-trunc`, `--max-width <n>`, `--no-color` / `--no-colour`.
+
+Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
 
 ### `comb d` (daemon) `[--socket <path>]`
 
@@ -341,7 +338,7 @@ comb d --socket /tmp/beachcomber-debug.sock            # override socket path
 
 The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 
-### `comb p` (put) `<key> <json-data> [--ttl <duration>] [--path <path>]`
+### `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--null]`
 
 Write data into the cache as a virtual provider. External processes can use this to expose state to prompt/statusline consumers without writing a script provider.
 
@@ -349,7 +346,10 @@ Write data into the cache as a virtual provider. External processes can use this
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
 comb p myapp '{"status":"healthy"}' --ttl 30s             # with TTL
 comb p myapp '{"status":"building"}' --path ~/project     # path-scoped
+comb p myapp --null                                        # clear the entry
 ```
+
+`--null` clears a previously written virtual provider entry. Omitting `--null` requires a JSON object argument.
 
 Read back with `comb g`:
 
@@ -376,20 +376,15 @@ Field-level filtering: watching `git.branch` only emits when the branch value ch
 
 ### `comb e` (eval) `<template> [path]`
 
-Interpolate `{provider.field}` placeholders in a template string using cached values. Resolves all referenced keys in a single connection.
+Evaluate a minijinja template string against cached provider data. Resolves all referenced keys in a single connection.
 
 ```sh
-comb e "{git.branch} | {battery.percent}%" .     # → main | 82%
-PS1="$(comb e '{git.branch} \$ ' . 2>/dev/null)"
-```
+comb e "{{ git.branch }} | {{ battery.percent }}%" .     # → main | 82%
+PS1="$(comb e '{{ git.branch }} \$ ' . 2>/dev/null)"
 
-### `comb f` (fetch) `<key>... [--path <path>]`
-
-Batch get: query multiple keys in a single connection. Format suffixes work: `comb f`, `comb f.s`, etc.
-
-```sh
-comb f git.branch git.dirty battery.percent
-comb f.s git.branch git.staged --path ~/repo
+# Conditionals and filters
+comb e '{% if git.dirty %}*{{ git.branch }}{% else %}{{ git.branch }}{% endif %}' .
+comb e '{{ git.branch | truncate(20) }}' .
 ```
 
 ### `comb i` (init)
@@ -404,24 +399,30 @@ comb i
 
 ### `comb c` (check) `[subcommand]`
 
-Run health checks. Without a subcommand, prints help. Subcommands: `all`, `daemon`, `config`, `providers`, `cache`, `procs`.
+Run health checks and introspect daemon internals. Without a subcommand, runs top-level aggregation.
 
 ```sh
-comb c all               # run all checks
-comb c daemon            # verify daemon is running and responsive
+comb c                   # aggregate across all subjects
+comb c daemon            # daemon health: pid, version, uptime, request counts, watchers
+comb c providers         # provider health and backoff state
 comb c config            # validate config file syntax
-comb c providers         # check provider health and backoff state
-comb c cache             # inspect cache state and stale entries
+comb c cache             # cache entries, staleness, hit/miss summary
+comb c backoff           # keys in the backoff/drain sequence
+comb c watches           # active filesystem watch registrations
+comb c timers            # poll timers and last-run times
+comb c demand            # demand-tracked keys and last-query times
 comb c procs             # 1-minute process snapshot, categorize against providers
 ```
 
 Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
 
+> Use `comb check daemon` to see what `comb s` used to show (pid, uptime, request counts, watcher count).
+
 ---
 
 ## Format Suffix Syntax
 
-The `get`, `watch`, and `fetch` commands support a shorthand suffix on the subcommand itself, saving characters in prompts and scripts. **Plain text is the default** — no suffix needed.
+The `get` and `watch` commands support a shorthand suffix on the subcommand itself, saving characters in prompts and scripts. **Plain text is the default** — no suffix needed.
 
 | Suffix | Equivalent | Format |
 |---|---|---|
@@ -433,7 +434,7 @@ The `get`, `watch`, and `fetch` commands support a shorthand suffix on the subco
 | `g.C` | `get -f CSV` | CSV with header row |
 | `g.t` | `get -f tsv` | Tab-separated values |
 | `g.T` | `get -f TSV` | TSV with header row |
-| `g.f` | `get -f fmt` | Template interpolation with `{field}` placeholders |
+| `g.f` | `get -f fmt` | minijinja template — `{{ field }}` placeholders |
 
 ```sh
 # These are all equivalent:
@@ -442,7 +443,7 @@ comb g.p git.branch .            # explicit plain text
 comb get git.branch . -f text    # long form with flag
 ```
 
-The suffix is appended to the command (`g`, `w`, `f`) with a dot separator.
+The suffix is appended to the command (`g`, `w`) with a dot separator.
 
 ---
 
@@ -665,7 +666,7 @@ poll = "86400s"
 | `failure_reattempts` | int | `3` | Consecutive failures before backing off retries |
 | `failure_backoff_interval` | duration | `"1s"` | Initial retry delay after failure_reattempts exceeded |
 
-> Duration fields accept strings like `"30s"`, `"5m"`, `"1h"`, `"500ms"`.
+> Duration fields accept whole-second strings: `"30s"`, `"5m"`, `"1h"`, `"2h30m"`. Sub-second values (e.g. `"500ms"`) are not accepted.
 
 **`[providers.<name>]` section (built-in overrides):**
 
@@ -1654,46 +1655,29 @@ comb d --socket /tmp/beachcomber-debug.sock
 
 Logs print directly to your terminal. Press Ctrl+C to shut down.
 
-### Checking active state with `comb s`
+### Checking active state
 
-`comb s` returns a JSON snapshot of the daemon's internal state:
+`comb s` shows warm cache entries as a table — one row per provider field:
 
 ```sh
-comb s
+$ comb s
+provider   field      value      age_ms  stale
+git        branch     main          234  false
+battery    percent    85           4200  false
+
+# Filter to a specific provider
+comb s --filter git
 ```
 
-```json
-{
-  "cache_entries": 3,
-  "providers": 12,
-  "watched_paths": ["/Users/you/project"],
-  "in_flight": [],
-  "backoff": [],
-  "poll_timers": [
-    {
-      "provider": "battery",
-      "path": null,
-      "interval_secs": 30,
-      "last_run_secs_ago": 12
-    }
-  ],
-  "demand": [
-    {
-      "provider": "git",
-      "path": "/Users/you/project",
-      "last_query_secs_ago": 5
-    }
-  ]
-}
+For daemon internals (pid, uptime, watchers, request counts, backoff state, poll timers), use `comb check`:
+
+```sh
+comb check daemon     # pid, version, uptime, request counts, active watchers
+comb check watches    # active filesystem watch registrations, paths being watched
+comb check backoff    # keys in the drain/eviction sequence after demand expired
+comb check timers     # active poll timers and when they last ran
+comb check demand     # demand-tracked keys and last-query times
 ```
-
-Key fields:
-
-- `watched_paths` — filesystem paths currently being watched for changes
-- `in_flight` — providers currently executing (non-empty means a computation is running right now)
-- `backoff` — keys in the drain/eviction sequence after demand expired
-- `poll_timers` — active poll timers and when they last ran
-- `demand` — providers kept warm by recent queries and when they were last queried
 
 ### Killing and restarting the daemon
 
@@ -1729,8 +1713,8 @@ If the socket is missing, run `comb d` in the foreground to see why it failed to
 Check whether the provider is in a failure backoff loop:
 
 ```sh
-comb s
-# Look at the "backoff" field and the daemon log for "suppressed due to failure backoff"
+comb check backoff
+# Also check the daemon log for "suppressed due to failure backoff"
 ```
 
 Run the provider directly to check for errors:
@@ -1749,7 +1733,7 @@ Enable debug logging and watch the log file. Look for repeated `Executed provide
 RUST_LOG=debug comb d 2>&1 | grep 'Executed provider'
 ```
 
-If a provider is executing too frequently, check whether a filesystem watcher is triggering on a high-churn path (e.g., a build output directory). Check `watched_paths` in `comb s`.
+If a provider is executing too frequently, check whether a filesystem watcher is triggering on a high-churn path (e.g., a build output directory). Run `comb check watches` to see which paths are being watched.
 
 **Log file grows too large**
 
@@ -1787,22 +1771,29 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "get", "key": "git", "path": "/home/user/project"}
 {"op": "get", "key": "battery"}
 {"op": "get", "key": "git.branch", "path": "/home/user/project", "format": "text"}
+{"op": "get", "key": "git", "path": "/home/user/project", "force": true}
+{"op": "get", "key": "git.branch", "path": "/home/user/project", "wait": true}
 {"op": "refresh", "key": "git", "path": "/home/user/project"}
 {"op": "put", "key": "myapp", "data": {"status": "healthy"}}
 {"op": "put", "key": "myapp", "data": {"status": "ok"}, "ttl": "30s", "path": "/project"}
+{"op": "put", "key": "myapp", "data": null}
 {"op": "watch", "key": "git.branch", "path": "/home/user/project"}
 {"op": "context", "path": "/home/user/project"}
 {"op": "status"}
+{"op": "introspect", "subject": "daemon"}
+{"op": "introspect", "subject": "providers"}
 ```
 
 **Fields:**
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `refresh`, `put`, `watch`, `context`, `status` |
+| `op` | string | Operation: `get`, `refresh`, `put`, `watch`, `context`, `status`, `introspect` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
+| `force` | bool | (`get` only) Trigger immediate recomputation before returning. |
+| `wait` | bool | (`get` only) Block until a fresh value is available. |
 
 ### Response Format
 
@@ -1988,7 +1979,7 @@ On a system with 20 shells and typical usage, expect the daemon to use 10-30MB o
 
 The socket file is cleaned up on graceful exit. If the daemon crashes unexpectedly, the stale socket file may remain. The next client connection will attempt to connect, fail, detect the stale socket, remove it, start a fresh daemon instance, and retry. This is handled transparently — `comb g` will succeed with a slight delay on the restart.
 
-You can verify the daemon is responsive at any time with `comb s`. If the daemon is unhealthy, `comb r` on any key will trigger a restart if needed.
+You can verify the daemon is responsive at any time with `comb s`. If the daemon is unhealthy, `comb get --force <key>` on any key will trigger a restart if needed.
 
 ### Can I use this on Linux?
 

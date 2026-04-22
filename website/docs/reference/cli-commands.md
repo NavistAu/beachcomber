@@ -19,7 +19,7 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 | `.s` | sh (key=value lines) | sourceable output for `eval`/`source` |
 | `.c` / `.C` | csv / csv+header | spreadsheet-style field dumps |
 | `.t` / `.T` | tsv / tsv+header | tab-separated for `awk`/`cut` |
-| `.f` | template | interpolate provider fields via `{field}` placeholders |
+| `.f` | template | minijinja template — `{{ field }}` placeholders |
 
 | Short | Long | Accepts format suffixes? |
 |-------|------|--------------------------|
@@ -33,9 +33,11 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 | `comb d` | `comb daemon` | — |
 | `comb k` | `comb kill` | — |
 
-## `comb g` (get) `<key> [path] [-f format]`
+## `comb g` (get) `<key>... [path] [-f format]`
 
 Query a cached value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay.
+
+**Flags:** `--force` (trigger immediate recomputation before returning), `--wait` (block until a fresh value arrives). Multiple keys can be passed in a single connection (variadic).
 
 ```sh
 # Query a specific field — text is the default
@@ -56,7 +58,7 @@ comb g.t git .                   # → tab-separated values
 comb g.T git .                   # → TSV with header row
 
 # Template formatting
-comb g.f '{branch} ({dirty})' git .      # → main (false)
+comb g.f '{{ branch }} ({{ dirty }})' git .      # → main (false)
 
 # Shell-variable output (key=value lines, sourceable)
 comb g.s git .
@@ -64,6 +66,15 @@ comb g.s git .
 # behind=0
 # branch=main
 # dirty=false
+
+# Multiple keys in one connection (variadic)
+comb g git.branch git.dirty battery.percent .
+
+# Force immediate recomputation before returning
+comb g --force git .
+
+# Block until a fresh value arrives (useful after a trigger)
+comb g --wait git.branch .
 
 # Field metadata — append a colon suffix to retrieve metadata instead of the value
 comb g git.branch:age            # → 1523 (age in ms)
@@ -90,25 +101,30 @@ comb g git.branch:source         # → builtin (provider kind: builtin, script, 
 
 ## `comb s` (status)
 
-Show daemon health and statistics.
+Show all warm cache entries as a table — one row per provider field.
 
 ```sh
 $ comb s
-{
-  "ok": true,
-  "data": {
-    "pid": 12345,
-    "version": "0.5.1",
-    "uptime_secs": 7234,
-    "active_watchers": 4,
-    "requests_total": 184291,
-    "cache_entries": 14,
-    "providers": 19
-  }
-}
+provider   field      value      age_ms  stale
+git        branch     main          234  false
+git        dirty      false         234  false
+battery    percent    85           4200  false
+
+# Filter to a specific provider
+comb s --filter git
+
+# Sort by age (oldest first)
+comb s --sort age
+
+# Custom per-row template
+comb s --format "{{ provider }}.{{ field }}={{ value }}"
 ```
 
-## `comb p` (put) `<key> <json-data> [--ttl <duration>] [--path <path>]`
+**Flags:** `--format <template>`, `--filter <provider>`, `--sort <field|age|stale>`, `--no-trunc`, `--max-width <n>`, `--no-color` / `--no-colour`.
+
+Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
+
+## `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--null]`
 
 Write data into the cache as a virtual provider. External processes use this to expose state to prompt/statusline consumers without writing a script provider.
 
@@ -121,7 +137,12 @@ comb p myapp '{"status":"healthy"}' --ttl 30s
 
 # Put with path scope
 comb p myapp '{"status":"building"}' --path /home/user/project
+
+# Clear a previously written entry
+comb p myapp --null
 ```
+
+`--null` clears a previously written virtual provider entry. Omitting `--null` requires a JSON object argument.
 
 Read back with standard `comb g`:
 
@@ -151,15 +172,21 @@ Field-level filtering: `comb w git.branch` only emits when the branch value chan
 
 ## `comb e` (eval) `<template> [path]`
 
-Evaluate an expression against cached provider data. Expressions can reference provider fields and combine multiple values.
+Evaluate a minijinja template string against cached provider data. Resolves all referenced keys in a single connection.
 
 ```sh
-# Print a formatted prompt segment
-comb e 'git.branch + " " + git.dirty'
+# Formatted prompt segment
+comb e "{{ git.branch }} | {{ battery.percent }}%" .
 
-# Evaluate with an explicit path
-comb e 'git.ahead > 0' --path /home/user/project
+# With path
+comb e "{{ git.branch }}" /home/user/project
+
+# Conditionals and filters
+comb e '{% if git.dirty %}*{{ git.branch }}{% else %}{{ git.branch }}{% endif %}' .
+comb e '{{ git.branch | truncate(20) }}' .
 ```
+
+Available filters: `truncate`, `default`, `upper`, `lower`, `length`.
 
 **Exit codes:** `0` on success, `2` on error.
 
@@ -175,19 +202,22 @@ Takes no subcommand. The output is appropriate shell/config fragments that you c
 
 ## `comb c` (check) `[subcommand]`
 
-Run health checks. With no subcommand, checks daemon reachability.
+Run health checks and introspect daemon internals. Without a subcommand, runs top-level aggregation across all subjects.
 
 ```sh
-comb c                # quick daemon-reachability check
-comb c all            # run all checks
-comb c daemon         # daemon connectivity
-comb c config         # validate config syntax
-comb c providers      # provider health and backoff state
-comb c cache          # stale-entry report
-comb c procs          # process-spawn snapshot (60s sample by default)
+comb c                   # aggregate across all subjects
+comb c daemon            # daemon health: pid, version, uptime, request counts, watchers
+comb c providers         # provider health and backoff state
+comb c config            # validate config file syntax
+comb c cache             # cache entries, staleness, hit/miss summary
+comb c backoff           # keys in the backoff/drain sequence
+comb c watches           # active filesystem watch registrations
+comb c timers            # poll timers and last-run times
+comb c demand            # demand-tracked keys and last-query times
+comb c procs             # 1-minute process snapshot, categorize against providers
 ```
 
-Subcommands: `all`, `daemon`, `config`, `providers`, `cache`, `procs`.
+Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
 
 **Exit codes:** `0` if healthy, `1` if unhealthy, `2` on error.
 

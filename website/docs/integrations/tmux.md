@@ -79,7 +79,7 @@ Network SSID (macOS):
 Uptime (days and hours, via template format):
 
 ```
-#(comb g.f '{days}d {hours}h' uptime)
+#(comb g.f '{{ days }}d {{ hours }}h' uptime)
 ```
 
 Hostname:

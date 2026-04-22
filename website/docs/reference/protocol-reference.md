@@ -26,13 +26,14 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "refresh", "key": "git", "path": "/home/user/project"}
 {"op": "context", "path": "/home/user/project"}
 {"op": "status"}
+{"op": "introspect", "subject": "daemon"}
 ```
 
 **Fields:**
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `refresh`, `context`, `status`, `put`, `watch` |
+| `op` | string | Operation: `get`, `refresh`, `context`, `status`, `introspect`, `put`, `watch` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
@@ -64,7 +65,27 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
 
-**`status`:** Returns daemon health information.
+**`status`:** Returns warm cache entries as an array of row objects. Each row has `provider`, `path`, `field`, `value`, `age_ms`, and `stale` fields. This is the data that `comb s` renders as a table. For daemon internals (pid, uptime, etc.), use `{"op":"introspect","subject":"daemon"}`.
+
+```json
+{"op":"status"}
+```
+
+Response:
+
+```json
+{"ok":true,"data":[
+  {"provider":"git","path":"/project","field":"branch","value":"main","age_ms":234,"stale":false},
+  {"provider":"battery","path":null,"field":"percent","value":85,"age_ms":4200,"stale":false}
+]}
+```
+
+**`introspect`:** Inspect daemon internals. The `subject` field selects what to inspect: `daemon`, `providers`, `config`, `cache`, `backoff`, `watches`, `timers`, `demand`, `procs`.
+
+```json
+{"op":"introspect","subject":"daemon"}
+{"op":"introspect","subject":"watches"}
+```
 
 **`put`:** Write data as a virtual provider. The `key` names the virtual provider, and `data` must be a JSON object. An optional `ttl` duration string (e.g. `"30s"`) marks entries stale if the writer stops updating. An optional `path` scopes the entry to a directory.
 

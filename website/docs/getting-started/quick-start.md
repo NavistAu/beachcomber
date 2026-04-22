@@ -50,14 +50,14 @@ When you need a different output format, append a suffix:
 | `.s` | shell `key=value` lines — sourceable |
 | `.c` / `.C` | CSV (optionally with header) |
 | `.t` / `.T` | TSV (optionally with header) |
-| `.f` | template string with `{field}` placeholders |
+| `.f` | minijinja template — `{{ field }}` placeholders |
 
 See the [CLI reference](../reference/cli-commands.md) for the full list. Examples:
 
 ```sh
 comb g.j git.branch .           # JSON envelope
 comb g.s git .                  # all git fields as key=value
-comb g.f '{branch} ({dirty})' git .   # templated
+comb g.f '{{ branch }} ({{ dirty }})' git .   # templated
 ```
 
 ## What's running
@@ -65,7 +65,7 @@ comb g.f '{branch} ({dirty})' git .   # templated
 The daemon started in the background. Ask it what it's doing:
 
 ```sh
-comb s          # status — uptime, cache entries, watcher count
+comb s          # status — table of warm cache entries (one row per provider field)
 ```
 
 You can stop the daemon at any time with `comb kill` (short form `comb k`). The next `comb` query will start a fresh one. You rarely need to do this.

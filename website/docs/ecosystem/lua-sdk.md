@@ -58,15 +58,9 @@ client:refresh('git', '/my/repo')
 client:set_context('/my/repo')
 local r2 = client:get('git.branch')  -- uses context path
 
--- list providers
-local providers = client:list()
-for _, p in ipairs(providers) do
-  print(p.name, p.global, table.concat(p.fields, ', '))
-end
-
 -- daemon status
 local s = client:status()
-print(s.cache_entries)
+print(s.pid, s.uptime_secs)
 
 client:close()
 ```
@@ -101,10 +95,6 @@ Force the daemon to recompute `key`.
 ### `Client:set_context(path)` → `true | nil, error`
 
 Set the default working-directory path for this connection.
-
-### `Client:list()` → `table[] | nil, error`
-
-Return an array of provider descriptors: `{ name = "git", global = false, fields = {"branch", "dirty", ...} }`.
 
 ### `Client:status()` → `table | nil, error`
 

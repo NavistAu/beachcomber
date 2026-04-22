@@ -45,46 +45,31 @@ comb d --socket /tmp/beachcomber-debug.sock
 
 Logs print directly to your terminal. Press Ctrl+C to shut down.
 
-## Checking active state with `comb s`
+## Checking active state with `comb s` and `comb check`
 
-`comb s` returns a JSON snapshot of the daemon's internal state:
+`comb s` shows warm cache entries as a table — one row per provider field:
 
 ```sh
-comb s
+$ comb s
+provider   field      value      age_ms  stale
+git        branch     main          234  false
+git        dirty      false         234  false
+battery    percent    85           4200  false
+
+# Filter to a specific provider
+comb s --filter git
 ```
 
-```json
-{
-  "cache_entries": 3,
-  "providers": 12,
-  "watched_paths": ["/Users/you/project"],
-  "in_flight": [],
-  "backoff": [],
-  "poll_timers": [
-    {
-      "provider": "battery",
-      "path": null,
-      "interval_secs": 30,
-      "last_run_secs_ago": 12
-    }
-  ],
-  "demand": [
-    {
-      "provider": "git",
-      "path": "/Users/you/project",
-      "last_query_secs_ago": 5
-    }
-  ]
-}
+For daemon internals, use `comb check` subjects:
+
+```sh
+comb check daemon     # pid, version, uptime, request counts, active watchers
+comb check watches    # filesystem paths currently being watched for changes
+comb check backoff    # keys in the drain/eviction sequence after demand expired
+comb check timers     # active poll timers and when they last ran
+comb check demand     # demand-tracked keys and last-query times
+comb check providers  # provider health and backoff state
 ```
-
-Key fields:
-
-- `watched_paths` — filesystem paths currently being watched for changes
-- `in_flight` — providers currently executing (non-empty means a computation is running right now)
-- `backoff` — keys in the drain/eviction sequence after demand expired
-- `poll_timers` — active poll timers and when they last ran
-- `demand` — providers kept warm by recent queries and when they were last queried
 
 ## Killing and restarting the daemon
 
@@ -119,8 +104,8 @@ If the socket is missing, run `comb d` in the foreground to see why it failed to
 Check whether the provider is in a failure backoff loop:
 
 ```sh
-comb s
-# Look at the "backoff" field and the daemon log for "suppressed due to failure backoff"
+comb check backoff
+# Look for the provider in the backoff list; also check the daemon log for "suppressed due to failure backoff"
 ```
 
 Run the provider directly to check for errors:
@@ -139,7 +124,7 @@ Enable debug logging and watch the log file. Look for repeated `Executed provide
 RUST_LOG=debug comb d 2>&1 | grep 'Executed provider'
 ```
 
-If a provider is executing too frequently, check whether a filesystem watcher is triggering on a high-churn path (e.g., a build output directory). Check `watched_paths` in `comb s`.
+If a provider is executing too frequently, check whether a filesystem watcher is triggering on a high-churn path (e.g., a build output directory). Run `comb check watches` to see which paths are being watched.
 
 **Log file grows too large**
 

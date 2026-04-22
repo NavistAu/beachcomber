@@ -34,14 +34,14 @@ Shelling out to `comb g.` is fine for one-off queries from shell scripts, prompt
 
 All SDKs cover the common read path. `put` and `watch` are protocol-level operations that are not yet exposed in any language SDK — use the raw [protocol](../reference/protocol-reference.md) over a Unix socket to drive them, or call `comb w` / `comb p` on the CLI.
 
-| SDK | `get` | `refresh` | `context` / session | `list` | `status` | `put` | `watch` |
-|---|---|---|---|---|---|---|---|
-| Rust | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
-| Python | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
-| Node.js | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
-| Go | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
-| Lua | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
-| Ruby | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
-| C | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
+| SDK | `get` | `refresh` | `context` / session | `status` | `put` | `watch` |
+|---|---|---|---|---|---|---|
+| Rust | ✓ | ✓ | ✓ | ✓ | — | — |
+| Python | ✓ | ✓ | ✓ | ✓ | — | — |
+| Node.js | ✓ | ✓ | ✓ | ✓ | — | — |
+| Go | ✓ | ✓ | ✓ | ✓ | — | — |
+| Lua | ✓ | ✓ | ✓ | ✓ | — | — |
+| Ruby | ✓ | ✓ | ✓ | ✓ | — | — |
+| C | ✓ | ✓ | ✓ | ✓ | — | — |
 
 Need a language that isn't listed? The [protocol](../reference/protocol-reference.md) is newline-delimited JSON over a Unix socket — any language that can open a socket can be a client in a few dozen lines.

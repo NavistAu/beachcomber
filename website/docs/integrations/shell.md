@@ -204,6 +204,6 @@ source ~/.local/share/beachcomber/polyfill.sh
 ## Troubleshooting
 
 - **Prompt shows no dynamic data:** the `2>/dev/null` in the examples silences errors, so if the daemon is not running you get an empty prompt with no error message. Remove `2>/dev/null` temporarily to see what `comb g` reports.
-- **Wrong branch after switching:** the cache updates on its next poll cycle. Run `comb r git .` to force an immediate refresh.
+- **Wrong branch after switching:** the cache updates on its next poll cycle. Run `comb g --force git .` to force an immediate recomputation.
 
 See the [Troubleshooting](./troubleshooting.md) guide for general diagnostics.

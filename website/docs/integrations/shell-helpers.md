@@ -10,7 +10,7 @@ beachcomber ships a cache-warming hook that fires on directory changes. It is no
 
 ## chpwd hook
 
-`scripts/chpwd.sh` is a directory-change hook that pokes beachcomber whenever you `cd` into a new directory. It sends pokes for `git`, `mise`, `terraform`, `python`, `direnv`, and `asdf` — so by the time you run your first command in a new directory, the cache is already warm. Without this hook, the first query after a `cd` pays the cold-cache synchronous execution cost (see [Troubleshooting → first query is slow](./troubleshooting.md)).
+`scripts/chpwd.sh` is a directory-change hook that refreshes beachcomber whenever you `cd` into a new directory. It triggers background refreshes for `git`, `mise`, `terraform`, `python`, `direnv`, and `asdf` — so by the time you run your first command in a new directory, the cache is already warm. Without this hook, the first query after a `cd` pays the cold-cache synchronous execution cost (see [Troubleshooting → first query is slow](./troubleshooting.md)).
 
 ### Install
 

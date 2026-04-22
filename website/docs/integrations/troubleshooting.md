@@ -53,10 +53,10 @@ Global providers (battery, load, network, kubecontext, gcloud, aws, hostname, up
 
 ## Stale data
 
-The daemon polls providers on a timer. If you just switched branches or changed a context, the cache may not have refreshed yet. Force an immediate refresh (`r` is the short form of `refresh`):
+The daemon polls providers on a timer. If you just switched branches or changed a context, the cache may not have refreshed yet. Force an immediate recomputation using `--force`:
 
 ```sh
-comb r git .
+comb g --force git .
 ```
 
 See [CLI commands](../reference/cli-commands.md) for every command and its short form.
