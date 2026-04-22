@@ -155,3 +155,48 @@ fn eval_template_accepts_tab_and_newline_whitespace_inside_braces() {
     let pairs = find_eval_template_pairs("{{\tgit.branch }}");
     assert!(pairs.iter().any(|(p, f)| p == "git" && f == "branch"));
 }
+
+// --- block tag scanner tests ---
+
+#[test]
+fn eval_scanner_finds_refs_in_if_block() {
+    let pairs = find_eval_template_pairs("{% if git.dirty %}*{% endif %}");
+    assert!(pairs.iter().any(|(p, f)| p == "git" && f == "dirty"));
+}
+
+#[test]
+fn eval_scanner_finds_refs_in_for_block() {
+    let pairs = find_eval_template_pairs("{% for x in items.list %}{{ x }}{% endfor %}");
+    assert!(pairs.iter().any(|(p, f)| p == "items" && f == "list"));
+}
+
+#[test]
+fn eval_scanner_finds_multiple_refs_in_one_block() {
+    let pairs = find_eval_template_pairs("{% if git.dirty and load.one > 2 %}!{% endif %}");
+    let got: std::collections::HashSet<(String, String)> = pairs.into_iter().collect();
+    assert!(got.contains(&("git".into(), "dirty".into())));
+    assert!(got.contains(&("load".into(), "one".into())));
+}
+
+#[test]
+fn eval_scanner_skips_comment_blocks() {
+    let pairs = find_eval_template_pairs("{# git.dirty #}{{ hostname.name }}");
+    assert!(!pairs.iter().any(|(p, _)| p == "git"));
+    assert!(pairs.iter().any(|(p, f)| p == "hostname" && f == "name"));
+}
+
+#[test]
+fn eval_scanner_combines_block_and_expression_refs() {
+    let pairs = find_eval_template_pairs(
+        "{% if git.dirty %}dirty:{{ git.branch }}{% else %}{{ git.branch }}{% endif %}",
+    );
+    let got: std::collections::HashSet<(String, String)> = pairs.into_iter().collect();
+    assert!(got.contains(&("git".into(), "dirty".into())));
+    assert!(got.contains(&("git".into(), "branch".into())));
+}
+
+#[test]
+fn eval_scanner_handles_whitespace_control_dashes() {
+    let pairs = find_eval_template_pairs("{%- if git.dirty -%}*{%- endif -%}");
+    assert!(pairs.iter().any(|(p, f)| p == "git" && f == "dirty"));
+}

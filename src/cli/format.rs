@@ -48,11 +48,26 @@ pub fn render_fmt_template_json(
 
 /// Extract `(provider, field)` pairs from an eval template.
 ///
-/// Scans for `{{ ident.ident ... }}` patterns using a simple char-level
-/// scanner — no regex dependency. Returns pairs like `("git", "branch")`.
-/// Unknown or unconstrained expressions (e.g., bare `{{ name }}` without a
-/// dot) are silently ignored; they will resolve against whatever context is
-/// provided at render time.
+/// Scans for `ident.ident` patterns inside minijinja tag boundaries using a
+/// simple byte-level state machine — no regex dependency. Returns pairs like
+/// `("git", "branch")`.
+///
+/// Tag handling:
+/// - `{{ ... }}` — expression tags: scan for the first `ident.ident` after
+///   the opening braces (the existing behaviour).
+/// - `{% ... %}` and `{%- ... -%}` — block tags: scan the entire block body
+///   for all `ident.ident` occurrences. Handles whitespace-control dashes.
+/// - `{# ... #}` — comment tags: skipped entirely; no scanning.
+///
+/// Within block tags, simple string-literal tracking skips content inside
+/// `"..."` and `'...'` so that a literal like `{% if x == "foo.bar" %}` does
+/// not produce a spurious `("foo", "bar")` pair. Escape sequences (`\"`, `\'`)
+/// are handled minimally: a backslash advances past the next byte, which is
+/// sufficient to avoid being fooled by `"\""` ending a string early.
+///
+/// Bare identifiers without a dot (e.g., `{{ name }}`, `{% for x in list %}`)
+/// are silently ignored; they will resolve against whatever context is provided
+/// at render time.
 pub fn find_eval_template_pairs(template: &str) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
     let bytes = template.as_bytes();
@@ -60,42 +75,137 @@ pub fn find_eval_template_pairs(template: &str) -> Vec<(String, String)> {
     let mut i = 0;
 
     while i + 1 < len {
-        // Find "{{"
-        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
-            i += 2;
-            // Skip whitespace
-            while i < len && bytes[i].is_ascii_whitespace() {
-                i += 1;
+        if bytes[i] == b'{' {
+            match bytes[i + 1] {
+                // Expression tag: {{ ... }}
+                // Scan for the first ident.ident only (existing behaviour).
+                b'{' => {
+                    i += 2;
+                    // Skip whitespace
+                    while i < len && bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    // Read first identifier
+                    let start = i;
+                    while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                        i += 1;
+                    }
+                    let provider = &template[start..i];
+                    if provider.is_empty() {
+                        continue;
+                    }
+                    // Skip whitespace
+                    while i < len && bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    // Expect a dot
+                    if i >= len || bytes[i] != b'.' {
+                        continue;
+                    }
+                    i += 1;
+                    // Read second identifier
+                    let start2 = i;
+                    while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                        i += 1;
+                    }
+                    let field = &template[start2..i];
+                    if field.is_empty() {
+                        continue;
+                    }
+                    // We have a provider.field — record it (dedup via the caller)
+                    pairs.push((provider.to_string(), field.to_string()));
+                }
+
+                // Block tag: {% ... %} or {%- ... -%}
+                // Scan the entire block body for all ident.ident patterns.
+                b'%' => {
+                    i += 2;
+                    // Consume optional whitespace-control dash: {%-
+                    if i < len && bytes[i] == b'-' {
+                        i += 1;
+                    }
+                    // Walk the block body until closing %} or -%}
+                    let mut in_string: Option<u8> = None; // Some(b'"') or Some(b'\'')
+                    while i + 1 < len {
+                        // Detect closing: -%} or %}
+                        let closing = (bytes[i] == b'-' && bytes[i + 1] == b'%'
+                            && i + 2 < len && bytes[i + 2] == b'}')
+                            || (bytes[i] == b'%' && bytes[i + 1] == b'}');
+                        if closing {
+                            // Advance past the closing delimiter
+                            if bytes[i] == b'-' {
+                                i += 3; // -%}
+                            } else {
+                                i += 2; // %}
+                            }
+                            break;
+                        }
+
+                        if let Some(delim) = in_string {
+                            // Inside a string literal
+                            if bytes[i] == b'\\' {
+                                // Skip escaped byte (handles \", \', \\, etc.)
+                                i += 2;
+                            } else if bytes[i] == delim {
+                                // End of string literal
+                                in_string = None;
+                                i += 1;
+                            } else {
+                                i += 1;
+                            }
+                        } else if bytes[i] == b'"' || bytes[i] == b'\'' {
+                            // Start of string literal
+                            in_string = Some(bytes[i]);
+                            i += 1;
+                        } else if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+                            // Potential ident.ident — try to read it
+                            let start = i;
+                            while i < len
+                                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                            {
+                                i += 1;
+                            }
+                            // Skip any whitespace between ident and dot
+                            // (minijinja does allow `ident . ident` but it's unusual;
+                            //  we only capture the no-whitespace form to stay conservative)
+                            if i < len && bytes[i] == b'.' {
+                                let provider = &template[start..i];
+                                i += 1; // consume the dot
+                                let start2 = i;
+                                while i < len
+                                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                                {
+                                    i += 1;
+                                }
+                                let field = &template[start2..i];
+                                if !provider.is_empty() && !field.is_empty() {
+                                    pairs.push((provider.to_string(), field.to_string()));
+                                }
+                            }
+                            // else: bare identifier, no dot — skip (already advanced past it)
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+
+                // Comment tag: {# ... #}  — skip entirely, do not scan.
+                b'#' => {
+                    i += 2;
+                    while i + 1 < len {
+                        if bytes[i] == b'#' && bytes[i + 1] == b'}' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+
+                // Lone `{` that doesn't start a recognized tag — advance.
+                _ => {
+                    i += 1;
+                }
             }
-            // Read first identifier
-            let start = i;
-            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                i += 1;
-            }
-            let provider = &template[start..i];
-            if provider.is_empty() {
-                continue;
-            }
-            // Skip whitespace
-            while i < len && bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            // Expect a dot
-            if i >= len || bytes[i] != b'.' {
-                continue;
-            }
-            i += 1;
-            // Read second identifier
-            let start2 = i;
-            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                i += 1;
-            }
-            let field = &template[start2..i];
-            if field.is_empty() {
-                continue;
-            }
-            // We have a provider.field — record it (dedup via the caller)
-            pairs.push((provider.to_string(), field.to_string()));
         } else {
             i += 1;
         }
