@@ -175,7 +175,7 @@ async fn age_returns_number() {
 
     let data = resp.data.expect("missing data");
     assert!(data.is_number(), "age must be a JSON number, got {data:?}");
-    assert!(data.as_u64().unwrap_or(0) > 0);
+    assert!(data.as_u64().expect("age must be u64") > 0);
 
     handle.abort();
 }

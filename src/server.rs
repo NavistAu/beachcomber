@@ -462,6 +462,7 @@ async fn handle_request(
                     normal_response
                         .age_ms
                         .map(|n| {
+                            // age_ms is u128 but realistic daemon ages fit in u64 (~585M years).
                             serde_json::Value::Number(serde_json::Number::from(n as u64))
                         })
                         .unwrap_or(serde_json::Value::Null),
