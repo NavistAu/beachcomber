@@ -1,5 +1,5 @@
 use crate::cache::Cache;
-use crate::protocol::{self, Format, Request, Response};
+use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
 use crate::scheduler::{SchedulerHandle, SchedulerMessage};
 use crate::watcher_registry::WatcherRegistry;
@@ -74,6 +74,7 @@ impl Server {
                     let watchers = self.watchers.clone();
                     let start_instant = self.start_instant;
                     let requests_total = Arc::clone(&self.requests_total);
+                    let socket_path = self.socket_path.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handle_connection(
                             stream,
@@ -83,6 +84,7 @@ impl Server {
                             watchers,
                             start_instant,
                             requests_total,
+                            socket_path,
                         )
                         .await
                         {
@@ -98,6 +100,7 @@ impl Server {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     cache: Arc<Cache>,
@@ -106,6 +109,7 @@ async fn handle_connection(
     watchers: Arc<WatcherRegistry>,
     start_instant: Instant,
     requests_total: Arc<AtomicU64>,
+    socket_path: PathBuf,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -149,6 +153,7 @@ async fn handle_connection(
                     start_instant,
                     &watchers,
                     &requests_total,
+                    &socket_path,
                 )
                 .await;
                 let response_bytes = format_response(&request, &response);
@@ -352,6 +357,7 @@ async fn handle_request(
     start_instant: Instant,
     watchers: &WatcherRegistry,
     requests_total: &AtomicU64,
+    socket_path: &std::path::Path,
 ) -> Response {
     match request {
         Request::Get {
@@ -731,17 +737,81 @@ async fn handle_request(
         Request::Introspect {
             subject,
             duration_secs: _,
-        } => {
-            // Per-subject handlers land in T20–T25. This stub keeps the op
-            // routable but returns a placeholder error for each subject.
-            Response::error(format!(
+        } => match subject {
+            IntrospectSubject::Daemon => {
+                // Gather in_flight from scheduler status if available.
+                let in_flight_count = if let Some(sched) = scheduler
+                    && let Some(sched_status) = sched.get_status().await
+                {
+                    sched_status.in_flight.len() as u64
+                } else {
+                    0
+                };
+                let active_watchers = watchers.entry_count() as u64;
+                let cache_entries = cache.len() as u64;
+                handle_introspect_daemon(
+                    socket_path,
+                    start_instant,
+                    requests_total,
+                    in_flight_count,
+                    active_watchers,
+                    cache_entries,
+                )
+            }
+            _ => Response::error(format!(
                 "introspect subject '{:?}' not yet implemented",
                 subject
-            ))
+            )),
         }
         // Watch is intercepted in handle_connection before reaching here
         Request::Watch { .. } => unreachable!("Watch handled before handle_request"),
     }
+}
+
+fn handle_introspect_daemon(
+    socket_path: &std::path::Path,
+    start_instant: Instant,
+    requests_total: &AtomicU64,
+    in_flight_count: u64,
+    active_watchers: u64,
+    cache_entries: u64,
+) -> Response {
+    let config_path = crate::config::Config::config_path_if_exists()
+        .map(|p| serde_json::Value::String(p.to_string_lossy().into_owned()))
+        .unwrap_or(serde_json::Value::Null);
+
+    let uptime_secs = start_instant.elapsed().as_secs();
+
+    let mut verdicts = vec![
+        serde_json::json!({"level": "PASS", "message": "daemon responsive"}),
+    ];
+
+    if in_flight_count > 50 {
+        verdicts.push(serde_json::json!({
+            "level": "WARN",
+            "message": format!("{in_flight_count} in-flight requests (threshold 50)")
+        }));
+    } else {
+        verdicts.push(serde_json::json!({
+            "level": "PASS",
+            "message": format!("in_flight={in_flight_count}")
+        }));
+    }
+
+    let data = serde_json::json!({
+        "pid": std::process::id(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_secs": uptime_secs,
+        "socket_path": socket_path.to_string_lossy().as_ref(),
+        "config_path": config_path,
+        "requests_total": requests_total.load(Ordering::Relaxed),
+        "in_flight": in_flight_count,
+        "active_watchers": active_watchers,
+        "cache_entries": cache_entries,
+        "verdicts": verdicts,
+    });
+
+    Response::ok(data, 0, false)
 }
 
 fn format_response(request: &Request, response: &Response) -> String {
