@@ -9,6 +9,17 @@ import {
   parseResponseLine,
   serialiseRequest,
 } from './protocol.js';
+import type {
+  HelloInfo,
+  CacheRow,
+  DaemonHealth,
+  IntrospectSubject,
+  IntrospectResponse,
+  Verdict,
+  WatchEvent,
+} from './types.js';
+
+export type { HelloInfo, CacheRow, DaemonHealth, IntrospectSubject, IntrospectResponse, Verdict, WatchEvent };
 
 // ---- CombResult ----
 
@@ -176,6 +187,110 @@ function parseAndCheck(line: string): Record<string, unknown> {
   return parsed;
 }
 
+// ---- Parse helpers ----
+
+function parseHello(resp: Record<string, unknown>): HelloInfo {
+  const data = (resp['data'] ?? {}) as Record<string, unknown>;
+  return {
+    protocolVersion: String(data['protocol_version'] ?? ''),
+    daemonVersion: String(data['daemon_version'] ?? ''),
+  };
+}
+
+function parseCacheRows(resp: Record<string, unknown>): CacheRow[] {
+  if (!Array.isArray(resp['data'])) {
+    throw new ParseError(JSON.stringify(resp), 'status data is not an array');
+  }
+  return (resp['data'] as unknown[]).map((row: unknown) => {
+    const r = row as Record<string, unknown>;
+    return {
+      provider: String(r['provider'] ?? ''),
+      field: r['field'] != null ? String(r['field']) : null,
+      path: r['path'] != null ? String(r['path']) : null,
+      value: r['value'],
+      ageMs: Number(r['age_ms'] ?? 0),
+      stale: Boolean(r['stale']),
+    };
+  });
+}
+
+function parseDaemonHealth(data: unknown): DaemonHealth {
+  const d = (data ?? {}) as Record<string, unknown>;
+  const verdicts: Verdict[] = Array.isArray(d['verdicts'])
+    ? (d['verdicts'] as unknown[]).map((v: unknown) => {
+        const vr = v as Record<string, unknown>;
+        return {
+          level: String(vr['level'] ?? ''),
+          message: String(vr['message'] ?? ''),
+        };
+      })
+    : [];
+  return {
+    pid: Number(d['pid'] ?? 0),
+    version: String(d['version'] ?? ''),
+    uptimeSecs: Number(d['uptime_secs'] ?? 0),
+    socketPath: String(d['socket_path'] ?? ''),
+    configPath: d['config_path'] != null ? String(d['config_path']) : null,
+    requestsTotal: Number(d['requests_total'] ?? 0),
+    inFlight: Number(d['in_flight'] ?? 0),
+    activeWatchers: Number(d['active_watchers'] ?? 0),
+    cacheEntries: Number(d['cache_entries'] ?? 0),
+    verdicts,
+  };
+}
+
+function parseIntrospect(subject: IntrospectSubject, resp: Record<string, unknown>): IntrospectResponse {
+  if (subject === 'daemon') {
+    return { subject: 'daemon', daemon: parseDaemonHealth(resp['data']) };
+  }
+  return { subject, other: resp['data'] ?? null } as IntrospectResponse;
+}
+
+// ---- WatchStream ----
+
+/**
+ * An AsyncIterable that yields WatchEvent values from a persistent socket
+ * connection opened for an 'op:watch' request.
+ *
+ * Iterate with `for await (const event of stream)`.  Call `stream.close()`
+ * to stop watching.
+ */
+export class WatchStream implements AsyncIterable<WatchEvent> {
+  constructor(private readonly socket: net.Socket) {}
+
+  async *[Symbol.asyncIterator](): AsyncIterator<WatchEvent> {
+    let buffer = '';
+    for await (const chunk of this.socket) {
+      buffer += (chunk as Buffer).toString('utf8');
+      let idx: number;
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (!line) continue;
+        let resp: Record<string, unknown>;
+        try {
+          resp = parseResponseLine(line);
+        } catch (e) {
+          throw new ParseError(line, e instanceof Error ? e.message : String(e));
+        }
+        if (resp['ok'] === false) {
+          const msg = typeof resp['error'] === 'string' ? resp['error'] : 'watch error';
+          throw new ServerError(msg);
+        }
+        yield {
+          data: resp['data'] ?? null,
+          ageMs: Number(resp['age_ms'] ?? 0),
+          stale: Boolean(resp['stale']),
+        };
+      }
+    }
+  }
+
+  close(): void {
+    this.socket.destroy();
+  }
+}
+
 // ---- Session ----
 
 /**
@@ -263,6 +378,28 @@ export class Session {
   }
 
   /**
+   * Query a key with optional force/wait flags.
+   *
+   * @param key   Provider key.
+   * @param path  Optional path.
+   * @param opts  Optional flags: force recomputation, wait for fresh value.
+   */
+  async getWithFlags(
+    key: string,
+    path?: string,
+    opts?: { force?: boolean; wait?: boolean },
+  ): Promise<CombResult> {
+    const baseReq: Record<string, unknown> = { op: 'get', key };
+    if (path !== undefined) baseReq['path'] = path;
+    if (opts?.force) baseReq['force'] = true;
+    if (opts?.wait) baseReq['wait'] = true;
+    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
+    const line = await this.sendAndReceive(req);
+    const parsed = parseAndCheck(line);
+    return makeCombResult(parsed);
+  }
+
+  /**
    * Trigger recomputation of a provider.
    */
   async refresh(key: string, path?: string): Promise<void> {
@@ -271,6 +408,62 @@ export class Session {
     );
     const line = await this.sendAndReceive(req);
     parseAndCheck(line);
+  }
+
+  /**
+   * Store data in the cache under the given key.
+   *
+   * @param key   Provider key (e.g. "myprovider").
+   * @param data  Object payload to store.
+   * @param opts  Optional ttl string and path.
+   */
+  async put(
+    key: string,
+    data?: unknown,
+    opts?: { ttl?: string; path?: string },
+  ): Promise<void> {
+    const baseReq: Record<string, unknown> = { op: 'put', key };
+    if (data !== undefined) baseReq['data'] = data;
+    if (opts?.ttl !== undefined) baseReq['ttl'] = opts.ttl;
+    if (opts?.path !== undefined) baseReq['path'] = opts.path;
+    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
+    const line = await this.sendAndReceive(req);
+    parseAndCheck(line);
+  }
+
+  /**
+   * Query daemon health/hello information.
+   */
+  async hello(): Promise<HelloInfo> {
+    const req = serialiseRequest({ op: 'hello' });
+    const line = await this.sendAndReceive(req);
+    const parsed = parseAndCheck(line);
+    return parseHello(parsed);
+  }
+
+  /**
+   * Introspect an internal daemon subject.
+   */
+  async introspect(
+    subject: IntrospectSubject,
+    opts?: { durationSecs?: number },
+  ): Promise<IntrospectResponse> {
+    const baseReq: Record<string, unknown> = { op: 'introspect', subject };
+    if (opts?.durationSecs !== undefined) baseReq['duration_secs'] = opts.durationSecs;
+    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
+    const line = await this.sendAndReceive(req);
+    const parsed = parseAndCheck(line);
+    return parseIntrospect(subject, parsed);
+  }
+
+  /**
+   * Return a typed array of cache rows (the status response).
+   */
+  async statusRows(): Promise<CacheRow[]> {
+    const req = serialiseRequest({ op: 'status' });
+    const line = await this.sendAndReceive(req);
+    const parsed = parseAndCheck(line);
+    return parseCacheRows(parsed);
   }
 
   /** Close the underlying socket. */
@@ -332,7 +525,83 @@ export class Client {
   }
 
   /**
-   * Return daemon status information.
+   * Read a cached value with optional force/wait flags.
+   *
+   * @param key   Provider key.
+   * @param path  Optional path.
+   * @param opts  Optional flags: force recomputation, wait for fresh value.
+   */
+  async getWithFlags(
+    key: string,
+    path?: string,
+    opts?: { force?: boolean; wait?: boolean },
+  ): Promise<CombResult> {
+    const baseReq: Record<string, unknown> = { op: 'get', key };
+    if (path !== undefined) baseReq['path'] = path;
+    if (opts?.force) baseReq['force'] = true;
+    if (opts?.wait) baseReq['wait'] = true;
+    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
+    const parsed = await this.doRequest(req);
+    return makeCombResult(parsed);
+  }
+
+  /**
+   * Query daemon protocol and version information.
+   */
+  async hello(): Promise<HelloInfo> {
+    const req = serialiseRequest({ op: 'hello' });
+    const parsed = await this.doRequest(req);
+    return parseHello(parsed);
+  }
+
+  /**
+   * Store data in the cache under the given key.
+   *
+   * @param key   Provider key (e.g. "myprovider").
+   * @param data  Object payload to store.
+   * @param opts  Optional ttl string and path.
+   */
+  async put(
+    key: string,
+    data?: unknown,
+    opts?: { ttl?: string; path?: string },
+  ): Promise<void> {
+    const baseReq: Record<string, unknown> = { op: 'put', key };
+    if (data !== undefined) baseReq['data'] = data;
+    if (opts?.ttl !== undefined) baseReq['ttl'] = opts.ttl;
+    if (opts?.path !== undefined) baseReq['path'] = opts.path;
+    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
+    await this.doRequest(req);
+  }
+
+  /**
+   * Introspect an internal daemon subject.
+   *
+   * @param subject  The subsystem to inspect.
+   * @param opts     Optional durationSecs for profiling subjects.
+   */
+  async introspect(
+    subject: IntrospectSubject,
+    opts?: { durationSecs?: number },
+  ): Promise<IntrospectResponse> {
+    const baseReq: Record<string, unknown> = { op: 'introspect', subject };
+    if (opts?.durationSecs !== undefined) baseReq['duration_secs'] = opts.durationSecs;
+    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
+    const parsed = await this.doRequest(req);
+    return parseIntrospect(subject, parsed);
+  }
+
+  /**
+   * Return daemon status as a typed array of cache rows.
+   */
+  async statusRows(): Promise<CacheRow[]> {
+    const req = serialiseRequest({ op: 'status' });
+    const parsed = await this.doRequest(req);
+    return parseCacheRows(parsed);
+  }
+
+  /**
+   * Return raw daemon status information (legacy untyped form).
    */
   async status(): Promise<Record<string, unknown>> {
     const req = serialiseRequest({ op: 'status' });
@@ -341,6 +610,40 @@ export class Client {
       throw new ParseError(JSON.stringify(parsed), 'expected data object in status response');
     }
     return parsed['data'] as Record<string, unknown>;
+  }
+
+  /**
+   * Open a watch stream for a key.  The stream is an AsyncIterable<WatchEvent>.
+   * Call `stream.close()` to stop watching.
+   *
+   * @param key   Provider key, e.g. `"git.branch"`.
+   * @param path  Optional repository path.
+   */
+  async watch(key: string, path?: string): Promise<WatchStream> {
+    return new Promise((resolve, reject) => {
+      const socket = net.createConnection(this.socketPath);
+      const timer = setTimeout(() => {
+        socket.destroy();
+        reject(new DaemonNotRunning(this.socketPath));
+      }, this.timeoutMs);
+
+      socket.on('connect', () => {
+        clearTimeout(timer);
+        const baseReq: Record<string, unknown> = { op: 'watch', key };
+        if (path !== undefined) baseReq['path'] = path;
+        socket.write(serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]));
+        resolve(new WatchStream(socket));
+      });
+
+      socket.on('error', (err: NodeJS.ErrnoException) => {
+        clearTimeout(timer);
+        if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
+          reject(new DaemonNotRunning(this.socketPath));
+        } else {
+          reject(err);
+        }
+      });
+    });
   }
 
   /**
