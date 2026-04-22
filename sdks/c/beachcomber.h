@@ -97,7 +97,7 @@ comb_result_t *comb_get(comb_client_t *client, const char *key,
  *
  * Returns 0 on success, -1 on error.
  */
-int comb_refresh(comb_client_t *client, const char *key, const char *path);
+int comb_poke(comb_client_t *client, const char *key, const char *path);
 
 /*
  * Set the default path for subsequent queries on this connection.

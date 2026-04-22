@@ -35,7 +35,7 @@ sdks/ruby/*.gem
 placeholders/ruby/*.gem
 placeholders/pypi/dist/
 placeholders/pypi/**/__pycache__/
-sdks/c/test_beachcomber
+sdks/c/test_beachcomber*
 sdks/c/*.o
 sdks/c/*.a
 sdks/c/*.so

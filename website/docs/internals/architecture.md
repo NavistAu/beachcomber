@@ -270,6 +270,6 @@ Watching `git.branch` only emits a line when the branch value itself changes, no
 
 `src/watcher_registry.rs` maintains a `tokio::sync::broadcast` channel per (provider, path) key. `Cache::put()` notifies the registry after every write. Watch connections subscribe to the relevant channel. Using broadcast rather than mpsc allows multiple simultaneous watchers on the same key without coordination between them.
 
-**Virtual providers via store**
+**Virtual providers via put**
 
-External processes can write arbitrary data into the cache via the `store` protocol op. The server creates a virtual provider entry — a `CacheEntry` with no associated `Arc<dyn Provider>` — and inserts it directly. Virtual providers have no `execute()` method and are never polled or evicted by the scheduler. Namespace hierarchy (builtin > script > virtual) prevents a `store` call from shadowing a real provider: if a built-in or script provider already owns the namespace, the store op is rejected.
+External processes can write arbitrary data into the cache via the `put` protocol op. The server creates a virtual provider entry — a `CacheEntry` with no associated `Arc<dyn Provider>` — and inserts it directly. Virtual providers have no `execute()` method and are never polled or evicted by the scheduler. Namespace hierarchy (builtin > script > virtual) prevents a `put` call from shadowing a real provider: if a built-in or script provider already owns the namespace, the put op is rejected.

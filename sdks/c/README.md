@@ -53,7 +53,7 @@ int main(void) {
     comb_result_free(r);
 
     /* Force recomputation */
-    comb_refresh(c, "git", "/path/to/repo");
+    comb_poke(c, "git", "/path/to/repo");
 
     /* List providers */
     r = comb_list(c);
@@ -103,7 +103,7 @@ Socket discovery order:
 | Function | Description |
 |---|---|
 | `comb_get(c, key, path)` | Read a cached value (`path` may be NULL) |
-| `comb_refresh(c, key, path)` | Force recomputation |
+| `comb_poke(c, key, path)` | Force recomputation |
 | `comb_set_context(c, path)` | Set default path for this connection |
 | `comb_list(c)` | List available providers |
 | `comb_status(c)` | Query daemon status |
