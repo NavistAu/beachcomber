@@ -98,6 +98,13 @@ impl CombData {
     }
 }
 
+/// Protocol and build version information returned by the daemon on `hello`.
+#[derive(Debug, Clone)]
+pub struct HelloInfo {
+    pub protocol_version: String,
+    pub daemon_version: String,
+}
+
 /// Error type for client operations.
 #[derive(Debug)]
 pub enum CombError {
@@ -251,6 +258,21 @@ impl Client {
         let mut line = String::new();
         reader.read_line(&mut line)?;
         Ok(())
+    }
+
+    /// Ask the daemon for its protocol and build versions.
+    pub fn hello(&self) -> Result<HelloInfo, CombError> {
+        let socket_path = self.find_or_start_socket()?;
+        let mut stream = self.connect(&socket_path)?;
+
+        let request = serde_json::json!({ "op": "hello" });
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        stream.write_all(msg.as_bytes())?;
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        parse_hello_response(&line)
     }
 
     /// Open a persistent session for multiple queries on one connection.
@@ -414,6 +436,17 @@ impl Session {
         self.reader.read_line(&mut line)?;
         Ok(())
     }
+
+    /// Ask the daemon for its protocol and build versions.
+    pub fn hello(&mut self) -> Result<HelloInfo, CombError> {
+        let request = serde_json::json!({ "op": "hello" });
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        self.reader.get_mut().write_all(msg.as_bytes())?;
+
+        let mut line = String::new();
+        self.reader.read_line(&mut line)?;
+        parse_hello_response(&line)
+    }
 }
 
 // --- Internal helpers ---
@@ -451,6 +484,37 @@ fn parse_response(line: &str) -> Result<CombResult, CombError> {
             })
         }
     }
+}
+
+fn parse_hello_response(line: &str) -> Result<HelloInfo, CombError> {
+    let resp: serde_json::Value =
+        serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !ok {
+        let error = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error")
+            .to_string();
+        return Err(CombError::ServerError(error));
+    }
+    let data = resp
+        .get("data")
+        .ok_or_else(|| CombError::ParseError("hello response missing data field".into()))?;
+    let protocol_version = data
+        .get("protocol_version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| CombError::ParseError("hello response missing protocol_version".into()))?
+        .to_string();
+    let daemon_version = data
+        .get("daemon_version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| CombError::ParseError("hello response missing daemon_version".into()))?
+        .to_string();
+    Ok(HelloInfo {
+        protocol_version,
+        daemon_version,
+    })
 }
 
 /// Find the beachcomber socket path.

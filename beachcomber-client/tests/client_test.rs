@@ -63,3 +63,14 @@ fn client_and_session_refresh_methods_exist() {
     let _: fn(&Client, &str, Option<&str>) -> Result<(), libbeachcomber::CombError> =
         Client::refresh;
 }
+
+// Compile-time check: Client::hello and Session::hello must exist with
+// the correct signatures. Guards the Phase 2 addition against accidental
+// removal.
+#[test]
+fn client_hello_method_exists() {
+    let _: fn(
+        &libbeachcomber::Client,
+    ) -> Result<libbeachcomber::HelloInfo, libbeachcomber::CombError> =
+        libbeachcomber::Client::hello;
+}
