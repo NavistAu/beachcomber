@@ -98,3 +98,25 @@ fn introspect_providers_returns_other_variant() {
         IntrospectResponse::Daemon(_) => panic!("providers must return Other variant"),
     }
 }
+
+#[test]
+fn watch_receives_initial_event() {
+    let (_tmp, sock) = spawn_daemon();
+    let client = client_for(&sock);
+
+    client
+        .put("phase3_watch", serde_json::json!({"x": 1}), None, None)
+        .expect("put");
+
+    let mut stream = client.watch("phase3_watch.x", None).expect("watch");
+    let event = stream
+        .next_event()
+        .expect("watch event")
+        .expect("non-empty stream");
+    assert!(
+        event.data.is_some(),
+        "initial watch event must include data"
+    );
+    let v = event.data.unwrap();
+    assert_eq!(v.get_i64("phase3_watch.x"), Some(1));
+}

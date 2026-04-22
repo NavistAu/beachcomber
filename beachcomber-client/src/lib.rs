@@ -204,6 +204,56 @@ pub enum IntrospectResponse {
     Other(serde_json::Value),
 }
 
+/// A single event emitted by the daemon on a watched key.
+#[derive(Debug, Clone)]
+pub struct WatchEvent {
+    pub data: Option<CombData>,
+    pub age_ms: u64,
+    pub stale: bool,
+}
+
+/// Streaming iterator over watch events. Each `next_event` call blocks
+/// until the daemon emits the next change (or the connection closes).
+///
+/// The underlying connection is held open for the lifetime of this
+/// stream; drop it to disconnect.
+pub struct WatchStream {
+    reader: BufReader<UnixStream>,
+}
+
+impl WatchStream {
+    /// Read the next watch event. Returns Ok(None) on connection close.
+    pub fn next_event(&mut self) -> Result<Option<WatchEvent>, CombError> {
+        let mut line = String::new();
+        let n = self.reader.read_line(&mut line)?;
+        if n == 0 {
+            return Ok(None);
+        }
+        let resp: serde_json::Value =
+            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !ok {
+            let error = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            return Err(CombError::ServerError(error));
+        }
+        let data = match resp.get("data") {
+            Some(serde_json::Value::Null) | None => None,
+            Some(d) => Some(CombData::from_json(d.clone())),
+        };
+        let age_ms = resp.get("age_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        let stale = resp.get("stale").and_then(|v| v.as_bool()).unwrap_or(false);
+        Ok(Some(WatchEvent {
+            data,
+            age_ms,
+            stale,
+        }))
+    }
+}
+
 /// Error type for client operations.
 #[derive(Debug)]
 pub enum CombError {
@@ -449,6 +499,27 @@ impl Client {
         let mut line = String::new();
         reader.read_line(&mut line)?;
         parse_introspect(subject, &line)
+    }
+
+    /// Subscribe to changes on a key. Returns a stream that blocks on
+    /// `next_event` until the daemon emits a change (or the connection
+    /// closes). The first event is always the current value.
+    ///
+    /// Watch is NOT available on Session because the daemon puts the
+    /// connection into streaming mode once a watch is issued — no other
+    /// ops can share that connection afterward.
+    pub fn watch(&self, key: &str, path: Option<&str>) -> Result<WatchStream, CombError> {
+        let socket_path = self.find_or_start_socket()?;
+        let mut stream = self.connect(&socket_path)?;
+        let mut request = serde_json::json!({ "op": "watch", "key": key });
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        stream.write_all(msg.as_bytes())?;
+        Ok(WatchStream {
+            reader: BufReader::new(stream),
+        })
     }
 
     /// Ask the daemon for its protocol and build versions.
