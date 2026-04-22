@@ -39,8 +39,57 @@ extern "C" {
  * Opaque types
  * ---------------------------------------------------------------------- */
 
-typedef struct comb_client  comb_client_t;
-typedef struct comb_result  comb_result_t;
+typedef struct comb_client      comb_client_t;
+typedef struct comb_result      comb_result_t;
+typedef struct comb_watch_handle comb_watch_handle_t;
+
+/* -------------------------------------------------------------------------
+ * Typed response shapes
+ * ---------------------------------------------------------------------- */
+
+typedef struct comb_hello_info {
+    char protocol_version[32];
+    char daemon_version[32];
+} comb_hello_info_t;
+
+typedef struct comb_daemon_health {
+    int64_t  pid;
+    char     version[32];
+    uint64_t uptime_secs;
+    char     socket_path[256];
+    char     config_path[256];  /* empty string when null */
+    uint64_t requests_total;
+    uint64_t in_flight;
+    uint64_t active_watchers;
+    uint64_t cache_entries;
+} comb_daemon_health_t;
+
+typedef struct comb_cache_row {
+    char     provider[64];
+    char     field[64];        /* empty if absent */
+    char     path[256];        /* empty if absent */
+    char     value_json[1024]; /* JSON-encoded scalar or "" for null */
+    uint64_t age_ms;
+    int      stale;
+} comb_cache_row_t;
+
+typedef struct comb_watch_event {
+    char     data_json[1024];  /* JSON-encoded data, or "" if absent */
+    uint64_t age_ms;
+    int      stale;
+} comb_watch_event_t;
+
+typedef enum {
+    COMB_INTROSPECT_DAEMON,
+    COMB_INTROSPECT_PROVIDERS,
+    COMB_INTROSPECT_CONFIG,
+    COMB_INTROSPECT_CACHE,
+    COMB_INTROSPECT_BACKOFF,
+    COMB_INTROSPECT_WATCHES,
+    COMB_INTROSPECT_TIMERS,
+    COMB_INTROSPECT_DEMAND,
+    COMB_INTROSPECT_PROCS,
+} comb_introspect_subject_t;
 
 /* -------------------------------------------------------------------------
  * Connection
@@ -90,6 +139,21 @@ comb_result_t *comb_get(comb_client_t *client, const char *key,
                         const char *path);
 
 /*
+ * Read a cached value with optional force recompute and/or wait-for-data.
+ *
+ *   key   — e.g. "git.branch" (required)
+ *   path  — directory context (optional)
+ *   force — non-zero to trigger immediate recomputation
+ *   wait  — non-zero to block until a value is available
+ */
+comb_result_t *comb_get_with_flags(
+    comb_client_t *client,
+    const char    *key,
+    const char    *path,
+    int            force,
+    int            wait);
+
+/*
  * Force recomputation of a provider.
  *
  *   key  — provider name, e.g. "git"  (required)
@@ -113,6 +177,88 @@ int comb_set_context(comb_client_t *client, const char *path);
  * On success, comb_result_raw_json() contains the full response.
  */
 comb_result_t *comb_status(comb_client_t *client);
+
+/*
+ * Query the Hello op — fills protocol_version and daemon_version.
+ * Returns 0 on success, -1 on error.
+ */
+int comb_hello(comb_client_t *client, comb_hello_info_t *out);
+
+/*
+ * Store a virtual provider entry. data_json must be a JSON object string.
+ * ttl and path are optional (pass NULL to omit).
+ * Returns 0 on success, -1 on error.
+ */
+int comb_put(
+    comb_client_t *client,
+    const char    *key,
+    const char    *data_json,
+    const char    *ttl,
+    const char    *path);
+
+/*
+ * Clear a virtual provider's cache entry (put with no data).
+ * Returns 0 on success, -1 on error.
+ */
+int comb_put_null(comb_client_t *client, const char *key, const char *path);
+
+/*
+ * Introspect the daemon — typed fill into *out.
+ * Returns 0 on success, -1 on error.
+ */
+int comb_introspect_daemon(comb_client_t *client, comb_daemon_health_t *out);
+
+/*
+ * Introspect any subject, returning the raw result. Caller frees with
+ * comb_result_free(). duration_secs is only used for some subjects (pass 0).
+ */
+comb_result_t *comb_introspect(
+    comb_client_t            *client,
+    comb_introspect_subject_t subject,
+    uint64_t                  duration_secs);
+
+/*
+ * Typed status: fills up to cap rows from the cache-row array.
+ * Returns the number of rows written, or -1 on error.
+ */
+int comb_status_rows(
+    comb_client_t  *client,
+    comb_cache_row_t *rows,
+    size_t           cap);
+
+/* -------------------------------------------------------------------------
+ * Watch (blocking poll — Option A)
+ * ---------------------------------------------------------------------- */
+
+/*
+ * Open a watch stream for a key. Returns NULL on error.
+ * The handle owns a dedicated socket connection that stays open until
+ * comb_watch_free() is called.
+ */
+comb_watch_handle_t *comb_watch(
+    comb_client_t *client,
+    const char    *key,
+    const char    *path);
+
+/*
+ * Read the next watch event.
+ *
+ * Blocks up to timeout_ms for the next event (negative = block forever).
+ *
+ * Returns:
+ *   1  — event ready; *event filled
+ *   0  — timeout (no event within timeout_ms)
+ *  -1  — error or connection closed
+ */
+int comb_watch_next(
+    comb_watch_handle_t *handle,
+    comb_watch_event_t  *event,
+    int                  timeout_ms);
+
+/*
+ * Close the watch stream and free the handle. Safe to call with NULL.
+ */
+void comb_watch_free(comb_watch_handle_t *handle);
 
 /* -------------------------------------------------------------------------
  * Result accessors

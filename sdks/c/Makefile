@@ -48,6 +48,9 @@ LIB_OBJS := $(LIB_SRCS:.c=.o)
 TEST_SRC := test_beachcomber.c
 TEST_BIN := test_beachcomber
 
+CONFORM_SRC := conformance_runner.c
+CONFORM_BIN := conformance_runner
+
 # ---------------------------------------------------------------------------
 # Default target: both libraries
 # ---------------------------------------------------------------------------
@@ -94,6 +97,16 @@ test: $(TEST_BIN)
 	./$(TEST_BIN)
 
 # ---------------------------------------------------------------------------
+# Conformance runner
+# ---------------------------------------------------------------------------
+
+$(CONFORM_BIN): $(CONFORM_SRC) $(LIB_SRCS) beachcomber.h json.h
+	$(CC) $(CFLAGS) -o $@ $(CONFORM_SRC) $(LIB_SRCS)
+
+.PHONY: conformance
+conformance: $(CONFORM_BIN)
+
+# ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
 
@@ -122,4 +135,4 @@ install: all libbeachcomber.pc
 
 .PHONY: clean
 clean:
-	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(TEST_BIN) libbeachcomber.pc
+	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(TEST_BIN) $(CONFORM_BIN) libbeachcomber.pc
