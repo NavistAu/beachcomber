@@ -778,6 +778,13 @@ async fn handle_request(
                     .unwrap_or_else(|e| Response::error(format!("procs task panicked: {e}")))
             }
         },
+        Request::Hello => {
+            let data = serde_json::json!({
+                "protocol_version": crate::protocol::PROTOCOL_VERSION,
+                "daemon_version": env!("CARGO_PKG_VERSION"),
+            });
+            Response::ok(data, 0, false)
+        }
         // Watch is intercepted in handle_connection before reaching here
         Request::Watch { .. } => unreachable!("Watch handled before handle_request"),
     }

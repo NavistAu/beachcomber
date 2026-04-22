@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+/// Wire protocol version. Semver: minor = additive, major = breaking.
+/// See `docs/protocol-spec.md` for what counts as additive vs breaking.
+pub const PROTOCOL_VERSION: &str = "1.0";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Format {
@@ -53,6 +57,10 @@ pub enum Request {
         #[serde(default)]
         duration_secs: Option<u64>,
     },
+    /// First op a client should send on a new connection. Returns the
+    /// daemon's protocol version and build version so clients can verify
+    /// compatibility before sending further ops.
+    Hello,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
