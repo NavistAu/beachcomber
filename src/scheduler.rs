@@ -406,6 +406,14 @@ impl Scheduler {
         Arc::clone(&self.heartbeat)
     }
 
+    /// Build the GC tick interval with the immediate first tick consumed.
+    /// The first production GC runs ~60s after startup, not at startup.
+    async fn gc_tick_for_prod() -> tokio::time::Interval {
+        let mut t = tokio::time::interval(Duration::from_secs(60));
+        t.tick().await;
+        t
+    }
+
     /// Execute a provider on the blocking thread pool and write result to cache.
     /// This is fire-and-forget: returns immediately while the provider runs in the background.
     /// Deduplicates concurrent executions: if a provider is already running, marks it for
@@ -653,8 +661,7 @@ impl Scheduler {
         let mut tick = interval(Duration::from_secs(1));
 
         // Periodic GC tick to remove dead channel entries from WatcherRegistry.
-        let mut gc_tick = interval(Duration::from_secs(60));
-        gc_tick.tick().await; // skip the immediate first tick
+        let mut gc_tick = Self::gc_tick_for_prod().await;
 
         loop {
             tokio::select! {
@@ -873,8 +880,7 @@ impl Scheduler {
         let mut tick = interval(Duration::from_secs(1));
 
         // Periodic GC tick to remove dead channel entries from WatcherRegistry.
-        let mut gc_tick = interval(Duration::from_secs(60));
-        gc_tick.tick().await; // skip the immediate first tick
+        let mut gc_tick = Self::gc_tick_for_prod().await;
 
         // Idle shutdown tracking.
         let mut last_activity = Instant::now();
@@ -1148,7 +1154,9 @@ mod tests {
 }
 
 /// Test helpers for exercising scheduler internals without spinning up the full daemon.
-/// This module is always compiled so integration tests in `tests/` can access it.
+/// Compiled only under `cfg(test)` or when the `test-helpers` Cargo feature is enabled.
+/// Release binaries do not include this module.
+#[cfg(any(test, feature = "test-helpers"))]
 #[doc(hidden)]
 pub mod test_support {
     use super::WatcherRegistry;
