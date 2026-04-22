@@ -1,5 +1,4 @@
 use dashmap::DashMap;
-use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -19,12 +18,9 @@ pub struct WatcherRegistry {
 /// A subscription guard that holds a broadcast receiver and a weak reference back to
 /// the registry. When dropped, it calls `gc_key` to remove the map entry if no
 /// receivers remain.
-///
-/// The receiver is wrapped in `ManuallyDrop` so we can drop it explicitly before
-/// querying `receiver_count` — otherwise our own receiver would still count and
-/// gc_key would see `receiver_count > 0`.
+#[must_use = "dropping a Subscription immediately unsubscribes; bind it to a variable"]
 pub struct Subscription {
-    inner: ManuallyDrop<broadcast::Receiver<()>>,
+    inner: Option<broadcast::Receiver<()>>,
     registry: std::sync::Weak<WatcherRegistry>,
     key: WatchKey,
 }
@@ -32,22 +28,26 @@ pub struct Subscription {
 impl Subscription {
     /// Await the next notification on the subscribed key.
     pub async fn recv(&mut self) -> Result<(), broadcast::error::RecvError> {
-        self.inner.recv().await
+        self.inner
+            .as_mut()
+            .expect("subscription receiver already dropped")
+            .recv()
+            .await
     }
 
     /// Try to receive without awaiting.
     pub fn try_recv(&mut self) -> Result<(), broadcast::error::TryRecvError> {
-        self.inner.try_recv()
+        self.inner
+            .as_mut()
+            .expect("subscription receiver already dropped")
+            .try_recv()
     }
 }
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        // Drop the receiver first so it is no longer counted by receiver_count.
-        // SAFETY: `inner` is never used after this point — we are in Drop.
-        unsafe {
-            ManuallyDrop::drop(&mut self.inner);
-        }
+        // Drop the receiver first so its ref-count decrements before gc_key checks.
+        drop(self.inner.take());
         if let Some(reg) = self.registry.upgrade() {
             reg.gc_key(&self.key);
         }
@@ -72,7 +72,7 @@ impl WatcherRegistry {
         });
         let receiver = entry.value().subscribe();
         Subscription {
-            inner: ManuallyDrop::new(receiver),
+            inner: Some(receiver),
             registry: Arc::downgrade(self),
             key,
         }
@@ -99,7 +99,7 @@ impl WatcherRegistry {
     }
 
     /// Remove the key if no receivers remain. Called by `Subscription::drop`.
-    pub(crate) fn gc_key(&self, key: &WatchKey) {
+    fn gc_key(&self, key: &WatchKey) {
         self.channels
             .remove_if(key, |_, tx| tx.receiver_count() == 0);
     }
