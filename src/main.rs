@@ -34,13 +34,20 @@ enum Commands {
         #[arg(long)]
         socket: Option<PathBuf>,
     },
-    /// Query one or more cached values
+    /// Query one or more cached values.
+    ///
+    /// Positionals are keys (`provider.field`). If the last positional looks like a path
+    /// (contains `/`, or starts with `.`, `~`, or `/`), it is treated as a path applied to
+    /// every key. Use `--path` to set a path explicitly without ambiguity.
+    /// When no path is given, the CLI's current working directory is used automatically.
     #[command(visible_alias = "g")]
     Get {
-        /// Provider key(s) (e.g., "hostname.name", "git.branch")
+        /// Provider key(s) (e.g., "hostname.name", "git.branch"). If the last positional
+        /// looks like a path (starts with `.`/`~`/`/`, or contains `/`), it is used as the
+        /// path context instead of a key.
         #[arg(required = true, num_args = 1..)]
         keys: Vec<String>,
-        /// Path context for directory-scoped providers
+        /// Path context for directory-scoped providers (overrides any trailing positional path)
         #[arg(long, short)]
         path: Option<String>,
         /// Output format (text, json, sh, csv, tsv, CSV, TSV, fmt)
@@ -221,6 +228,40 @@ fn suffix_to_format(suffix: &str) -> Option<&'static str> {
     }
 }
 
+/// Returns true if `s` looks like a filesystem path rather than a provider key.
+///
+/// A positional is treated as a path when it:
+/// - equals `.` literally
+/// - starts with `.` (relative dot-prefix like `./subdir`)
+/// - starts with `~` (home-relative)
+/// - starts with `/` (absolute)
+/// - contains `/` anywhere (e.g., `some/dir`)
+fn is_path_like(s: &str) -> bool {
+    s == "." || s.starts_with('.') || s.starts_with('~') || s.starts_with('/') || s.contains('/')
+}
+
+/// Separate keys from an optional trailing path positional.
+///
+/// Rules:
+/// 1. If `--path` flag was already set, all positionals are keys.
+/// 2. Otherwise, if the last positional is path-like (per `is_path_like`), pop it as the path.
+/// 3. If still no path, return `None` — the caller should default to CWD.
+fn split_keys_and_path(
+    mut positionals: Vec<String>,
+    explicit_path: Option<String>,
+) -> (Vec<String>, Option<String>) {
+    if explicit_path.is_some() {
+        return (positionals, explicit_path);
+    }
+    if let Some(last) = positionals.last()
+        && is_path_like(last)
+    {
+        let path = positionals.pop();
+        return (positionals, path);
+    }
+    (positionals, None)
+}
+
 /// Pre-process argv to handle format suffix syntax (e.g., `comb g.p` → `comb g -f text`).
 /// Returns the modified args and an optional fmt template string.
 fn preprocess_args() -> (Vec<String>, Option<String>) {
@@ -296,7 +337,13 @@ fn main() -> ExitCode {
             wait,
         } => {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
-            run_get(&config, &keys, path.as_deref(), output_format, force, wait)
+            let (keys, resolved_path) = split_keys_and_path(keys, path);
+            let effective_path = resolved_path.or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned())
+            });
+            run_get(&config, &keys, effective_path.as_deref(), output_format, force, wait)
         }
         Commands::Status {
             format,
@@ -1713,5 +1760,130 @@ fn format_uptime(secs: u64) -> String {
     let hours = minutes / 60;
     let m = minutes % 60;
     format!("{hours}h {m}m")
+}
+
+#[cfg(test)]
+mod path_disambiguation_tests {
+    use super::{is_path_like, split_keys_and_path};
+
+    // --- is_path_like ---
+
+    #[test]
+    fn dot_alone_is_path_like() {
+        assert!(is_path_like("."));
+    }
+
+    #[test]
+    fn dot_prefix_is_path_like() {
+        assert!(is_path_like("./subdir"));
+        assert!(is_path_like(".hidden"));
+    }
+
+    #[test]
+    fn tilde_prefix_is_path_like() {
+        assert!(is_path_like("~/repos"));
+        assert!(is_path_like("~"));
+    }
+
+    #[test]
+    fn absolute_path_is_path_like() {
+        assert!(is_path_like("/home/me/repo"));
+        assert!(is_path_like("/"));
+    }
+
+    #[test]
+    fn slash_containing_is_path_like() {
+        assert!(is_path_like("some/dir"));
+        assert!(is_path_like("a/b/c"));
+    }
+
+    #[test]
+    fn provider_key_is_not_path_like() {
+        // Keys contain `.` but not `/` or any path prefix.
+        assert!(!is_path_like("git.branch"));
+        assert!(!is_path_like("hostname.name"));
+        assert!(!is_path_like("git"));
+        assert!(!is_path_like("user"));
+    }
+
+    // --- split_keys_and_path ---
+
+    fn keys(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn single_key_trailing_dot_is_path() {
+        // `comb get git.branch .` → key=git.branch, path=.
+        let (ks, path) = split_keys_and_path(keys(&["git.branch", "."]), None);
+        assert_eq!(ks, vec!["git.branch"]);
+        assert_eq!(path.as_deref(), Some("."));
+    }
+
+    #[test]
+    fn single_key_trailing_absolute_path_is_path() {
+        // `comb get git.branch /home/me/repo`
+        let (ks, path) = split_keys_and_path(keys(&["git.branch", "/home/me/repo"]), None);
+        assert_eq!(ks, vec!["git.branch"]);
+        assert_eq!(path.as_deref(), Some("/home/me/repo"));
+    }
+
+    #[test]
+    fn single_key_trailing_relative_dot_prefix_is_path() {
+        // `comb get git.branch ./subdir`
+        let (ks, path) = split_keys_and_path(keys(&["git.branch", "./subdir"]), None);
+        assert_eq!(ks, vec!["git.branch"]);
+        assert_eq!(path.as_deref(), Some("./subdir"));
+    }
+
+    #[test]
+    fn two_keys_no_path_returns_no_path() {
+        // `comb get git.branch git.sha` → no path extracted; caller defaults to CWD
+        let (ks, path) = split_keys_and_path(keys(&["git.branch", "git.sha"]), None);
+        assert_eq!(ks, vec!["git.branch", "git.sha"]);
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn two_keys_trailing_dot_pops_path() {
+        // `comb get git.branch user.name .`
+        let (ks, path) =
+            split_keys_and_path(keys(&["git.branch", "user.name", "."]), None);
+        assert_eq!(ks, vec!["git.branch", "user.name"]);
+        assert_eq!(path.as_deref(), Some("."));
+    }
+
+    #[test]
+    fn explicit_flag_overrides_positional_dot() {
+        // `--path /other` is set; the positional `.` is NOT treated as path — flag wins.
+        let (ks, path) =
+            split_keys_and_path(keys(&["git.branch", "."]), Some("/other".to_string()));
+        // With explicit flag, no positional popping occurs — `.` stays as a key.
+        assert_eq!(ks, vec!["git.branch", "."]);
+        assert_eq!(path.as_deref(), Some("/other"));
+    }
+
+    #[test]
+    fn single_key_that_looks_like_key_returns_no_path() {
+        // `comb get git.branch` → key only, no path extracted
+        let (ks, path) = split_keys_and_path(keys(&["git.branch"]), None);
+        assert_eq!(ks, vec!["git.branch"]);
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn provider_only_key_is_not_path_like() {
+        // `comb get git` — bare provider name, no dot, no slash
+        let (ks, path) = split_keys_and_path(keys(&["git"]), None);
+        assert_eq!(ks, vec!["git"]);
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn tilde_path_is_popped() {
+        let (ks, path) = split_keys_and_path(keys(&["git.branch", "~/myrepo"]), None);
+        assert_eq!(ks, vec!["git.branch"]);
+        assert_eq!(path.as_deref(), Some("~/myrepo"));
+    }
 }
 
