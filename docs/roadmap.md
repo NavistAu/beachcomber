@@ -236,6 +236,17 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [x] `sudo` provider — detect whether the user has an active sudo timestamp (`/var/run/sudo/ts/$USER` on Linux, `/var/db/sudo/` on macOS). Global, poll. Useful as a prompt indicator for elevated privilege awareness.
 - [x] `op` provider — detect active 1Password CLI session. Check agent socket liveness or `op whoami` state. Global, poll. Useful for prompt indicators showing authenticated credential access.
 - [x] Synchronous cache miss — when `comb get` hits a cold cache, execute the provider inline and return the result instead of returning empty and waiting for the next poll. Accept slightly higher latency on the first query rather than returning blank. Critical for prompt integrations where a blank first prompt looks broken.
+- [ ] Per-cache-entry absolute-path watches — the current scheduler registers fs watches relative to the cache entry's path. Global (pathless) cache entries receive no watches and rely on fallback polling for invalidation.
+
+  **Specific case:** `mise.global` cannot directly observe `~/.config/mise/config.toml` changes; it gets them within the 30s fallback poll window. Acceptable today, but other plausible providers want the same shape — an HTTP provider watching a local credentials file for rotation, a library provider watching an absolute-path state file, etc.
+
+  **Design questions when picked up:**
+  - Extend `InvalidationStrategy::Watch` to accept both relative patterns and absolute paths? Or a new `InvalidationStrategy::WatchAbsolute` variant?
+  - Watch registration keyed per-`(provider, cache_path)` rather than per-provider, so each cache entry can have its own distinct watch set.
+  - Path expansion for `~` and `$XDG_CONFIG_HOME` at registration time — who owns that?
+  - Interaction with `fsevents_reinstate` (cache lifecycle) — orthogonal; watches still persist through decay only if that flag is true.
+
+  **Scope when picked up:** affects `src/scheduler.rs` watch-registration code, `src/provider/mod.rs` `InvalidationStrategy`, and any provider that wants to use the new shape (starting with mise.global). Independent of the decay rebuild — doesn't block that work and isn't blocked by it.
 
 ### CLI Ergonomics
 
