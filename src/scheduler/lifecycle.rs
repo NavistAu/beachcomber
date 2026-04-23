@@ -192,8 +192,32 @@ impl LifecycleRegistry {
         }
     }
 
-    pub fn on_fsevent(&mut self, _key: Key, _now: Instant) -> FseventOutcome {
-        unimplemented!("Task 4")
+    pub fn on_fsevent(&mut self, key: Key, now: Instant) -> FseventOutcome {
+        let Some(entry) = self.entries.get(&key) else {
+            return FseventOutcome {
+                transition: None,
+                refresh: false,
+            };
+        };
+
+        let is_active = matches!(entry.state, LifecycleState::Active);
+        let reinstate_allowed = entry.config.fsevents_reinstate;
+
+        if is_active || reinstate_allowed {
+            // Treat as demand. Clone config (on_demand consumes it).
+            let config = entry.config.clone();
+            let outcome = self.on_demand(key, config, now);
+            FseventOutcome {
+                transition: Some(outcome.transition),
+                refresh: true,
+            }
+        } else {
+            // In Decay with fsevents_reinstate=false — ignore idempotently.
+            FseventOutcome {
+                transition: None,
+                refresh: false,
+            }
+        }
     }
 
     pub fn tick(&mut self, _now: Instant) -> TickActions {
@@ -334,5 +358,84 @@ mod tests {
         let outcome = reg.on_demand(key.clone(), cfg, t1);
 
         assert_eq!(outcome.watch_registration, WatchAction::Preserve);
+    }
+
+    /// fsevent while Active: treated as demand, refresh triggered.
+    #[test]
+    fn on_fsevent_on_active_triggers_refresh_and_resets() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("git", "/repo");
+        let t0 = Instant::now();
+
+        reg.on_demand(key.clone(), test_config(), t0);
+        let t1 = t0 + Duration::from_secs(30);
+
+        let outcome = reg.on_fsevent(key.clone(), t1);
+
+        assert!(outcome.refresh);
+        assert!(matches!(
+            outcome.transition,
+            Some(StateTransition::ResetKeepAlive)
+        ));
+
+        let entry = reg.entries.get(&key).expect("entry exists");
+        assert_eq!(entry.decay_timer.last_demand, t1);
+    }
+
+    /// fsevent while decaying with fsevents_reinstate = true: reinstates to Active.
+    #[test]
+    fn on_fsevent_on_decay_with_fsevents_reinstate_true_reinstates() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("mise", "/repo");
+        let t0 = Instant::now();
+        let cfg = ProviderLifecycleConfig {
+            fsevents_reinstate: true,
+            ..test_config()
+        };
+
+        reg.on_demand(key.clone(), cfg, t0);
+
+        {
+            let entry = reg.entries.get_mut(&key).expect("entry exists");
+            entry.state = LifecycleState::Decay(DecayStep::Step3);
+        }
+
+        let t1 = t0 + Duration::from_secs(1000);
+        let outcome = reg.on_fsevent(key.clone(), t1);
+
+        assert!(outcome.refresh);
+        assert!(matches!(
+            outcome.transition,
+            Some(StateTransition::Reinstated {
+                from: DecayStep::Step3
+            })
+        ));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
+    }
+
+    /// fsevent while decaying with fsevents_reinstate = false: ignored.
+    #[test]
+    fn on_fsevent_on_decay_with_fsevents_reinstate_false_is_ignored() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("git", "/repo");
+        let t0 = Instant::now();
+        let cfg = test_config(); // fsevents_reinstate = false
+
+        reg.on_demand(key.clone(), cfg, t0);
+
+        {
+            let entry = reg.entries.get_mut(&key).expect("entry exists");
+            entry.state = LifecycleState::Decay(DecayStep::Step2);
+        }
+
+        let t1 = t0 + Duration::from_secs(500);
+        let outcome = reg.on_fsevent(key.clone(), t1);
+
+        assert!(!outcome.refresh);
+        assert!(outcome.transition.is_none());
+        assert_eq!(
+            reg.state(&key),
+            Some(&LifecycleState::Decay(DecayStep::Step2))
+        );
     }
 }
