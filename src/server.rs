@@ -5,7 +5,9 @@ use crate::provider::FieldScope;
 use crate::provider::InvalidationStrategy;
 use crate::provider::ProviderSource;
 use crate::provider::registry::ProviderRegistry;
-use crate::scheduler::{BackoffInfo, DemandInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage};
+use crate::scheduler::{
+    DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
+};
 use crate::watcher_registry::WatcherRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -809,7 +811,7 @@ async fn handle_request(
             IntrospectSubject::Providers => handle_introspect_providers(registry, scheduler).await,
             IntrospectSubject::Config => handle_introspect_config(config),
             IntrospectSubject::Cache => handle_introspect_cache(cache),
-            IntrospectSubject::Backoff => handle_introspect_backoff(scheduler).await,
+            IntrospectSubject::Lifecycle => handle_introspect_lifecycle(scheduler).await,
             IntrospectSubject::Watches => handle_introspect_watches(scheduler).await,
             IntrospectSubject::Timers => handle_introspect_timers(scheduler).await,
             IntrospectSubject::Demand => handle_introspect_demand(scheduler).await,
@@ -905,10 +907,10 @@ async fn handle_introspect_providers(
     registry: &ProviderRegistry,
     scheduler: Option<&SchedulerHandle>,
 ) -> Response {
-    let backoff_list: Vec<BackoffInfo> = if let Some(s) = scheduler {
+    let backoff_list: Vec<LifecycleInfo> = if let Some(s) = scheduler {
         s.get_status()
             .await
-            .map(|st| st.backoff)
+            .map(|st| st.lifecycle)
             .unwrap_or_default()
     } else {
         Vec::new()
@@ -960,7 +962,7 @@ async fn handle_introspect_providers(
             ("global", Vec::new(), "data-only".to_string())
         };
 
-        let relevant: Vec<&BackoffInfo> = backoff_list
+        let relevant: Vec<&LifecycleInfo> = backoff_list
             .iter()
             .filter(|b| &b.provider == name)
             .collect();
@@ -1069,21 +1071,21 @@ fn handle_introspect_cache(cache: &Cache) -> Response {
     )
 }
 
-async fn handle_introspect_backoff(scheduler: Option<&SchedulerHandle>) -> Response {
-    let backoff: Vec<BackoffInfo> = if let Some(s) = scheduler {
+async fn handle_introspect_lifecycle(scheduler: Option<&SchedulerHandle>) -> Response {
+    let lifecycle: Vec<LifecycleInfo> = if let Some(s) = scheduler {
         s.get_status()
             .await
-            .map(|st| st.backoff)
+            .map(|st| st.lifecycle)
             .unwrap_or_default()
     } else {
         Vec::new()
     };
 
     let mut verdicts = Vec::new();
-    if backoff.is_empty() {
-        verdicts.push(serde_json::json!({"level": "PASS", "message": "no providers in backoff"}));
+    if lifecycle.is_empty() {
+        verdicts.push(serde_json::json!({"level": "PASS", "message": "no providers in decay"}));
     } else {
-        for entry in &backoff {
+        for entry in &lifecycle {
             let label = match &entry.path {
                 Some(p) => format!("{} ({p})", entry.provider),
                 None => entry.provider.clone(),
@@ -1095,14 +1097,14 @@ async fn handle_introspect_backoff(scheduler: Option<&SchedulerHandle>) -> Respo
         }
     }
 
-    let backoff_json: Vec<serde_json::Value> = backoff
+    let lifecycle_json: Vec<serde_json::Value> = lifecycle
         .iter()
         .map(|b| serde_json::to_value(b).unwrap_or(serde_json::Value::Null))
         .collect();
 
     Response::ok(
         serde_json::json!({
-            "backoff": backoff_json,
+            "lifecycle": lifecycle_json,
             "verdicts": verdicts,
         }),
         0,

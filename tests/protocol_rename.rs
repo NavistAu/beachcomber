@@ -41,7 +41,7 @@ fn introspect_request_deserializes_all_subjects() {
         ("providers", IntrospectSubject::Providers),
         ("config", IntrospectSubject::Config),
         ("cache", IntrospectSubject::Cache),
-        ("backoff", IntrospectSubject::Backoff),
+        ("lifecycle", IntrospectSubject::Lifecycle),
         ("watches", IntrospectSubject::Watches),
         ("timers", IntrospectSubject::Timers),
         ("demand", IntrospectSubject::Demand),

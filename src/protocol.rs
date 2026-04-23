@@ -70,7 +70,7 @@ pub enum IntrospectSubject {
     Providers,
     Config,
     Cache,
-    Backoff,
+    Lifecycle,
     Watches,
     Timers,
     Demand,

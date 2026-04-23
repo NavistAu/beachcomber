@@ -51,7 +51,7 @@ pub enum SchedulerMessage {
 pub struct SchedulerStatus {
     pub watched_paths: Vec<String>,
     pub in_flight: Vec<String>,
-    pub backoff: Vec<BackoffInfo>,
+    pub lifecycle: Vec<LifecycleInfo>,
     pub poll_timers: Vec<PollTimerInfo>,
     pub demand: Vec<DemandInfo>,
 }
@@ -64,7 +64,7 @@ pub struct DemandInfo {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct BackoffInfo {
+pub struct LifecycleInfo {
     pub provider: String,
     pub path: Option<String>,
     pub stage: String,
@@ -189,7 +189,7 @@ fn build_status(
         })
         .collect();
 
-    let mut backoff_info: Vec<BackoffInfo> = Vec::new();
+    let mut backoff_info: Vec<LifecycleInfo> = Vec::new();
     let mut poll_timer_info: Vec<PollTimerInfo> = Vec::new();
     let mut demand_info: Vec<DemandInfo> = Vec::new();
 
@@ -212,8 +212,8 @@ fn build_status(
                 });
             }
             LifecycleState::Decay(step) => {
-                // Decaying entries go in the backoff list (keeps existing wire format).
-                backoff_info.push(BackoffInfo {
+                // Decaying entries go in the lifecycle list.
+                backoff_info.push(LifecycleInfo {
                     provider: provider.clone(),
                     path: path.clone(),
                     stage: format!("Decay{}", step.as_u8()),
@@ -226,7 +226,7 @@ fn build_status(
     SchedulerStatus {
         watched_paths: watched,
         in_flight: in_flight_keys,
-        backoff: backoff_info,
+        lifecycle: backoff_info,
         poll_timers: poll_timer_info,
         demand: demand_info,
     }

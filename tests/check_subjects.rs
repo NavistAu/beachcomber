@@ -188,18 +188,18 @@ async fn introspect_cache_reports_totals_and_stale_ratio() {
 }
 
 #[tokio::test]
-async fn introspect_backoff_returns_list_and_verdicts() {
+async fn introspect_lifecycle_returns_list_and_verdicts() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "backoff"}))
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "lifecycle"}))
         .await
         .unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(
-        d.get("backoff").and_then(|v| v.as_array()).is_some(),
-        "backoff array missing"
+        d.get("lifecycle").and_then(|v| v.as_array()).is_some(),
+        "lifecycle array missing"
     );
     let verdicts = d
         .get("verdicts")
@@ -418,7 +418,7 @@ async fn all_subjects_reachable_via_introspect() {
         "providers",
         "cache",
         "watches",
-        "backoff",
+        "lifecycle",
         "timers",
         "demand",
     ];

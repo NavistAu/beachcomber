@@ -134,16 +134,16 @@ async fn integration_active_entry_appears_in_status() {
         status.poll_timers
     );
 
-    // Active entries appear in demand, not backoff.
+    // Active entries appear in demand, not lifecycle (decay).
     assert!(
         status.demand.iter().any(|d| d.provider == "lc_counter"),
         "lc_counter should appear in demand when Active; got {:?}",
         status.demand
     );
     assert!(
-        !status.backoff.iter().any(|b| b.provider == "lc_counter"),
-        "lc_counter should NOT be in backoff when Active; got {:?}",
-        status.backoff
+        !status.lifecycle.iter().any(|b| b.provider == "lc_counter"),
+        "lc_counter should NOT be in lifecycle when Active; got {:?}",
+        status.lifecycle
     );
 
     handle.send(SchedulerMessage::Shutdown).await;

@@ -1,0 +1,9 @@
+{
+  "name": "introspect_lifecycle_returns_object",
+  "description": "Introspect{lifecycle} response is a non-null object.",
+  "test": { "op": "introspect", "args": { "subject": "lifecycle" } },
+  "expect": {
+    "status": "ok",
+    "data_type": "object"
+  }
+}

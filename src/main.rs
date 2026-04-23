@@ -149,12 +149,12 @@ enum CheckCommands {
     Daemon,
     /// Show config path and parse status
     Config,
-    /// Check provider health and backoff state
+    /// Check provider health and lifecycle state
     Providers,
     /// Check cache entry counts and staleness
     Cache,
-    /// Show providers currently in backoff
-    Backoff,
+    /// Show providers currently in a decay lifecycle state
+    Lifecycle,
     /// Show active filesystem watches
     Watches,
     /// Show active poll timers
@@ -1299,7 +1299,7 @@ fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode {
         "providers",
         "cache",
         "watches",
-        "backoff",
+        "lifecycle",
         "timers",
         "demand",
         "procs",
@@ -1311,7 +1311,7 @@ fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode {
         Some(CheckCommands::Config) => (vec!["config"], None),
         Some(CheckCommands::Providers) => (vec!["providers"], None),
         Some(CheckCommands::Cache) => (vec!["cache"], None),
-        Some(CheckCommands::Backoff) => (vec!["backoff"], None),
+        Some(CheckCommands::Lifecycle) => (vec!["lifecycle"], None),
         Some(CheckCommands::Watches) => (vec!["watches"], None),
         Some(CheckCommands::Timers) => (vec!["timers"], None),
         Some(CheckCommands::Demand) => (vec!["demand"], None),
@@ -1372,7 +1372,7 @@ fn subject_title(subject: &str) -> &'static str {
         "config" => "Config",
         "providers" => "Providers",
         "cache" => "Cache",
-        "backoff" => "Backoff",
+        "lifecycle" => "Lifecycle",
         "watches" => "Watches",
         "timers" => "Timers",
         "demand" => "Demand",
@@ -1556,9 +1556,9 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
             }
             lines.push_str(&vlines);
         }
-        "backoff" => {
+        "lifecycle" => {
             let entries = payload
-                .get("backoff")
+                .get("lifecycle")
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
@@ -1566,9 +1566,9 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
             let (vlines, vworst) = render_verdicts(&verdicts);
             worst = worst.max(vworst);
 
-            lines.push_str("Backoff\n");
+            lines.push_str("Lifecycle\n");
             if entries.is_empty() {
-                lines.push_str("  [PASS] no providers in backoff\n");
+                lines.push_str("  [PASS] no providers in decay\n");
             } else {
                 for entry in &entries {
                     let provider = entry
