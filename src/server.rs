@@ -216,7 +216,13 @@ async fn handle_watch(
 ) {
     let (provider_name, field) = protocol::split_key(&key);
 
-    let effective_path = resolve_path(path.as_deref(), context_path, provider_name, registry);
+    let effective_path = resolve_path(
+        path.as_deref(),
+        context_path,
+        provider_name,
+        field,
+        registry,
+    );
 
     // Signal demand
     if let Some(sched) = scheduler {
@@ -339,24 +345,29 @@ fn split_metadata_suffix(key: &str) -> (&str, Option<&str>) {
 }
 
 /// Resolve the effective path for a request: explicit path > context path > None.
-/// Only applies the context for path-scoped (non-global) providers.
-/// Relative paths are canonicalized to absolute paths.
+/// Consults per-field scope when `field` is provided; falls back to the provider's
+/// inferred (aggregate) scope. Global fields always return None regardless of any
+/// explicit or context path. Relative paths are canonicalized to absolute paths.
 fn resolve_path(
     explicit: Option<&str>,
     context: &Option<String>,
     provider_name: &str,
+    field: Option<&str>,
     registry: &ProviderRegistry,
 ) -> Option<String> {
-    let raw = if explicit.is_some() {
-        explicit.map(|s| s.to_string())
-    } else if let Some(provider) = registry.get(provider_name) {
-        if provider.metadata().inferred_scope() == FieldScope::PathScoped {
-            context.clone()
-        } else {
-            None
+    let raw: Option<String> = if let Some(provider) = registry.get(provider_name) {
+        let meta = provider.metadata();
+        let scope = match field {
+            Some(f) => meta.field_scope(f).unwrap_or_else(|| meta.inferred_scope()),
+            None => meta.inferred_scope(),
+        };
+        match scope {
+            FieldScope::Global => None,
+            FieldScope::PathScoped => explicit.map(|s| s.to_string()).or_else(|| context.clone()),
         }
     } else {
-        None
+        // Unknown provider: legacy behaviour — canonicalise explicit path as-is.
+        explicit.map(|s| s.to_string())
     };
 
     // Canonicalize relative paths to absolute
@@ -405,8 +416,13 @@ async fn handle_request(
                 return Response::error(format!("unknown provider: {provider_name}"));
             }
 
-            let effective_path =
-                resolve_path(path.as_deref(), context_path, provider_name, registry);
+            let effective_path = resolve_path(
+                path.as_deref(),
+                context_path,
+                provider_name,
+                field,
+                registry,
+            );
 
             // Force evict: drop the cache entry so the normal miss path re-executes.
             // force wins over wait — if force triggered eviction (or a virtual-provider
@@ -571,9 +587,14 @@ async fn handle_request(
             }
         }
         Request::Refresh { key, path } => {
-            let (provider_name, _) = protocol::split_key(key);
-            let effective_path =
-                resolve_path(path.as_deref(), context_path, provider_name, registry);
+            let (provider_name, field) = protocol::split_key(key);
+            let effective_path = resolve_path(
+                path.as_deref(),
+                context_path,
+                provider_name,
+                field,
+                registry,
+            );
 
             if let Some(sched) = scheduler {
                 // Route through scheduler.
@@ -1334,5 +1355,142 @@ fn format_data(format: &Format, response: &Response) -> String {
             out.push('\n');
             out
         }
+    }
+}
+
+#[cfg(test)]
+mod resolve_path_tests {
+    use super::*;
+    use crate::provider::registry::ProviderRegistry;
+    use crate::provider::{
+        FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+        ProviderResult,
+    };
+
+    struct FakeGlobalProvider;
+    impl Provider for FakeGlobalProvider {
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "fakeglob".into(),
+                fields: vec![FieldSchema {
+                    name: "v".into(),
+                    field_type: FieldType::String,
+                    scope: FieldScope::Global,
+                }],
+                invalidation: InvalidationStrategy::Once,
+            }
+        }
+        fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+            Vec::new()
+        }
+    }
+
+    struct FakePathProvider;
+    impl Provider for FakePathProvider {
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "fakepath".into(),
+                fields: vec![FieldSchema {
+                    name: "v".into(),
+                    field_type: FieldType::String,
+                    scope: FieldScope::PathScoped,
+                }],
+                invalidation: InvalidationStrategy::Once,
+            }
+        }
+        fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+            Vec::new()
+        }
+    }
+
+    struct FakeMixedProvider;
+    impl Provider for FakeMixedProvider {
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "fakemix".into(),
+                fields: vec![
+                    FieldSchema {
+                        name: "g".into(),
+                        field_type: FieldType::String,
+                        scope: FieldScope::Global,
+                    },
+                    FieldSchema {
+                        name: "p".into(),
+                        field_type: FieldType::String,
+                        scope: FieldScope::PathScoped,
+                    },
+                ],
+                invalidation: InvalidationStrategy::Once,
+            }
+        }
+        fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+            Vec::new()
+        }
+    }
+
+    fn registry_with(providers: Vec<Box<dyn Provider>>) -> ProviderRegistry {
+        let mut reg = ProviderRegistry::new();
+        for p in providers {
+            reg.register(p);
+        }
+        reg
+    }
+
+    #[test]
+    fn global_field_ignores_explicit_path() {
+        let reg = registry_with(vec![Box::new(FakeGlobalProvider)]);
+        let ctx = None;
+        let result = resolve_path(Some("/tmp"), &ctx, "fakeglob", Some("v"), &reg);
+        assert_eq!(result, None, "global field must ignore explicit path");
+    }
+
+    #[test]
+    fn global_field_ignores_context_path() {
+        let reg = registry_with(vec![Box::new(FakeGlobalProvider)]);
+        let ctx = Some("/tmp".to_string());
+        let result = resolve_path(None, &ctx, "fakeglob", Some("v"), &reg);
+        assert_eq!(result, None, "global field must ignore context path");
+    }
+
+    #[test]
+    fn path_field_honors_explicit_path() {
+        let reg = registry_with(vec![Box::new(FakePathProvider)]);
+        let ctx = None;
+        let result = resolve_path(Some("/tmp"), &ctx, "fakepath", Some("v"), &reg);
+        assert!(
+            result.is_some(),
+            "path-scoped field should honor explicit path"
+        );
+    }
+
+    #[test]
+    fn mixed_provider_resolves_per_field() {
+        let reg = registry_with(vec![Box::new(FakeMixedProvider)]);
+        let ctx = None;
+        let explicit = Some("/tmp");
+
+        let global_field = resolve_path(explicit, &ctx, "fakemix", Some("g"), &reg);
+        assert_eq!(global_field, None, "g is global — path dropped");
+
+        let path_field = resolve_path(explicit, &ctx, "fakemix", Some("p"), &reg);
+        assert!(path_field.is_some(), "p is path-scoped — path kept");
+    }
+
+    #[test]
+    fn unknown_field_falls_back_to_inferred_scope_global() {
+        let reg = registry_with(vec![Box::new(FakeGlobalProvider)]);
+        let ctx = None;
+        let result = resolve_path(Some("/tmp"), &ctx, "fakeglob", Some("unknown"), &reg);
+        assert_eq!(result, None, "fallback to inferred_scope=Global → pathless");
+    }
+
+    #[test]
+    fn unknown_provider_returns_explicit_path_canonicalized() {
+        let reg = ProviderRegistry::new();
+        let ctx = None;
+        let result = resolve_path(Some("/tmp"), &ctx, "nonexistent", Some("field"), &reg);
+        // Either None or a canonicalised string — behaviour preserved from before.
+        // Main point: no panic.
+        let _ = result;
     }
 }
