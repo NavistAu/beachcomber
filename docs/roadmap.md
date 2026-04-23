@@ -14,7 +14,7 @@ Last updated: 2026-04-11
 
 **Cache:** Concurrent DashMap. 157ns read latency. Staleness computation with expected refresh intervals. Auto-refresh on cache miss (triggers background computation so next query hits). Detailed cache listing via `comb status`.
 
-**Scheduler:** Poll timers, filesystem watching (notify/FSEvents), refresh triggers. Provider execution on `spawn_blocking` (non-blocking). Execution timeouts (configurable, default 10s). Deduplication (in-flight tracking + pending rerun). Failure backoff (exponential after 3 consecutive failures, max 60s). Demand-driven cache warming (QueryActivity keeps providers warm while actively queried). Backoff/drain lifecycle is NOT wired — see Known Core Issues.
+**Scheduler:** Poll timers, filesystem watching (notify/FSEvents), refresh triggers. Provider execution on `spawn_blocking` (non-blocking). Execution timeouts (configurable, default 10s). Deduplication (in-flight tracking + pending rerun). Failure backoff (exponential after 3 consecutive failures, max 60s). Demand-driven cache warming (QueryActivity keeps providers warm while actively queried). Cache-entry lifecycle (Active → Decay1..4 → Evicted) with exponential-backoff decay polling — see `docs/cache-lifecycle.md`.
 
 **Protocol:** get, refresh, put, watch, context, list, status. JSON and text output formats. Connection context for implicit path resolution. Staleness flag in responses. Path canonicalization (relative -> absolute). Subscribe/unsubscribe removed — demand-driven warming replaced explicit subscriptions (ephemeral consumers can't maintain persistent connections).
 
