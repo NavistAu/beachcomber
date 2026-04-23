@@ -20,8 +20,11 @@ fn hostname_provider_metadata() {
 #[test]
 fn hostname_provider_executes() {
     let p = HostnameProvider;
-    let mut results = p.execute(None);
-    let (_, result) = results.pop().expect("hostname should always succeed");
+    let (_, result) = p
+        .execute(None)
+        .into_iter()
+        .next()
+        .expect("hostname should always succeed");
     let name = result.get("name").expect("Should have 'name' field");
     assert!(!name.as_text().is_empty(), "Hostname should not be empty");
 }
