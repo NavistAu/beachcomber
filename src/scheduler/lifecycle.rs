@@ -5,10 +5,6 @@
 //! held in `LifecycleEntry`; scheduler dispatches on demand/fsevent/tick
 //! via `LifecycleRegistry`.
 
-// Fields and methods are exercised progressively in Tasks 3-7; dead_code
-// warnings are expected until then and suppressed here rather than per-item.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -262,11 +258,16 @@ impl LifecycleRegistry {
                         actions.transitions.push((key.clone(), new_state));
                     }
                     None => {
-                        // Decay4 → Evicted transition handled in Task 7.
-                        continue;
+                        // Decay4 → Evicted.
+                        actions.evictions.push(key.clone());
                     }
                 }
             }
+        }
+
+        // Remove evicted entries after iteration.
+        for key in &actions.evictions {
+            self.entries.remove(key);
         }
 
         actions
@@ -642,6 +643,80 @@ mod tests {
         assert_eq!(
             actual_deadline, expected_deadline,
             "step_deadline should be exactly now + K*P*2 for Decay1"
+        );
+    }
+
+    /// Scenario: Decay4 expiry evicts the entry.
+    #[test]
+    fn tick_evicts_entry_at_decay4_expiry() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("git", "/repo");
+        let t0 = Instant::now();
+
+        reg.on_demand(key.clone(), test_config(), t0);
+
+        // Walk through all 4 decay steps.
+        // Keep-alive = 720s → Decay1 at 721.
+        let t_decay1 = t0 + Duration::from_secs(721);
+        reg.tick(t_decay1);
+
+        // Decay1 step_deadline = t_decay1 + 1440. Advance to Decay2.
+        let t_decay2 = t_decay1 + Duration::from_secs(1441);
+        reg.tick(t_decay2);
+
+        // Decay2 step_deadline = t_decay2 + 2880. Advance to Decay3.
+        let t_decay3 = t_decay2 + Duration::from_secs(2881);
+        reg.tick(t_decay3);
+
+        // Decay3 step_deadline = t_decay3 + 5760. Advance to Decay4.
+        let t_decay4 = t_decay3 + Duration::from_secs(5761);
+        reg.tick(t_decay4);
+
+        assert_eq!(
+            reg.state(&key),
+            Some(&LifecycleState::Decay(DecayStep::Step4))
+        );
+
+        // Decay4 step_deadline = t_decay4 + 11520. Advance past it.
+        let t_evict = t_decay4 + Duration::from_secs(11521);
+        let actions = reg.tick(t_evict);
+
+        assert!(
+            actions.evictions.contains(&key),
+            "Decay4 expiry should evict; got actions {actions:?}"
+        );
+        assert!(reg.state(&key).is_none(), "entry should be removed");
+    }
+
+    /// Scenario: Total lifetime from last demand to eviction is 31KP seconds.
+    /// Active K*P + Decay (2+4+8+16) * K * P = 31 * K * P.
+    /// With K=12, P=60s: 31 * 12 * 60 = 22320s.
+    #[test]
+    fn total_lifetime_is_31_k_p_from_last_demand_to_eviction() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("git", "/repo");
+        let t0 = Instant::now();
+
+        reg.on_demand(key.clone(), test_config(), t0);
+
+        // Active boundary: 720. Decay1 at 721.
+        reg.tick(t0 + Duration::from_secs(721));
+
+        // Decay1 boundary (t=721 + 1440 = 2161).
+        reg.tick(t0 + Duration::from_secs(2161));
+
+        // Decay2 boundary (t=2161 + 2880 = 5041).
+        reg.tick(t0 + Duration::from_secs(5041));
+
+        // Decay3 boundary (t=5041 + 5760 = 10801).
+        reg.tick(t0 + Duration::from_secs(10801));
+
+        // Decay4 boundary (t=10801 + 11520 = 22321).
+        reg.tick(t0 + Duration::from_secs(22321));
+
+        assert!(
+            reg.state(&key).is_none(),
+            "entry should be evicted after 31KP seconds"
         );
     }
 
