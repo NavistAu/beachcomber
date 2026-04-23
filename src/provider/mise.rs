@@ -16,12 +16,12 @@ impl Provider for MiseProvider {
                 FieldSchema {
                     name: "project".to_string(),
                     field_type: FieldType::Object,
-                    scope: FieldScope::Global,
+                    scope: FieldScope::PathScoped,
                 },
                 FieldSchema {
                     name: "global".to_string(),
                     field_type: FieldType::Object,
-                    scope: FieldScope::Global,
+                    scope: FieldScope::PathScoped,
                 },
             ],
             invalidation: InvalidationStrategy::Watch {

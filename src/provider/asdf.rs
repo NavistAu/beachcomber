@@ -14,7 +14,7 @@ impl Provider for AsdfProvider {
             fields: vec![FieldSchema {
                 name: "tools".to_string(),
                 field_type: FieldType::Object,
-                scope: FieldScope::Global,
+                scope: FieldScope::PathScoped,
             }],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![".tool-versions".to_string()],

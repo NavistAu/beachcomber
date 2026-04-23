@@ -14,17 +14,17 @@ impl Provider for PythonProvider {
                 FieldSchema {
                     name: "venv".to_string(),
                     field_type: FieldType::Bool,
-                    scope: FieldScope::Global,
+                    scope: FieldScope::PathScoped,
                 },
                 FieldSchema {
                     name: "venv_name".to_string(),
                     field_type: FieldType::String,
-                    scope: FieldScope::Global,
+                    scope: FieldScope::PathScoped,
                 },
                 FieldSchema {
                     name: "version".to_string(),
                     field_type: FieldType::String,
-                    scope: FieldScope::Global,
+                    scope: FieldScope::PathScoped,
                 },
             ],
             invalidation: InvalidationStrategy::Watch {

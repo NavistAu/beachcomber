@@ -15,12 +15,12 @@ impl Provider for DirenvProvider {
                 FieldSchema {
                     name: "status".to_string(),
                     field_type: FieldType::String,
-                    scope: FieldScope::Global,
+                    scope: FieldScope::PathScoped,
                 },
                 FieldSchema {
                     name: "allowed".to_string(),
                     field_type: FieldType::Bool,
-                    scope: FieldScope::Global,
+                    scope: FieldScope::PathScoped,
                 },
             ],
             invalidation: InvalidationStrategy::Watch {

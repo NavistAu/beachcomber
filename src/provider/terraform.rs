@@ -13,7 +13,7 @@ impl Provider for TerraformProvider {
             fields: vec![FieldSchema {
                 name: "workspace".to_string(),
                 field_type: FieldType::String,
-                scope: FieldScope::Global,
+                scope: FieldScope::PathScoped,
             }],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![".terraform".to_string()],
