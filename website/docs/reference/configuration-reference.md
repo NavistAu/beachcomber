@@ -57,11 +57,6 @@ provider_timeout_secs = 10
 # Default: "30s"
 cache_lifespan = "30s"
 
-# How long after demand expires before a cache entry is fully evicted.
-# The daemon enters a progressive backoff between cache_lifespan expiry and eviction.
-# Default: 900 (15 minutes)
-eviction_timeout_secs = 900
-
 # How many times to retry a provider after consecutive failures before backing off.
 # Default: 3
 failure_reattempts = 3
@@ -194,7 +189,6 @@ poll = "86400s"
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `cache_lifespan` | duration | `"30s"` | How long cached data stays warm after last query |
-| `eviction_timeout_secs` | int | `900` | Seconds until cache entry is fully evicted |
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
 | `failure_reattempts` | int | `3` | Number of retries after consecutive provider failures before backing off |
 | `failure_backoff_interval` | duration | `"1s"` | Wait time between failure retry attempts |

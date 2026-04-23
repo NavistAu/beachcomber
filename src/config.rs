@@ -137,7 +137,6 @@ pub struct LifecycleConfig {
         deserialize_with = "deserialize_duration_string"
     )]
     pub cache_lifespan: String,
-    pub eviction_timeout_secs: u64,
     pub idle_shutdown_secs: Option<u64>,
     pub failure_reattempts: u32,
     pub failure_backoff_interval: String,
@@ -147,7 +146,6 @@ impl Default for LifecycleConfig {
     fn default() -> Self {
         Self {
             cache_lifespan: "30s".to_string(),
-            eviction_timeout_secs: 900,
             idle_shutdown_secs: None,
             failure_reattempts: 3,
             failure_backoff_interval: "1s".to_string(),

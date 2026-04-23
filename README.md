@@ -532,12 +532,6 @@ provider_timeout_secs = 10
 # Default: "30s"
 cache_lifespan = "30s"
 
-# How long (in seconds) after demand expires before a cache entry is fully
-# evicted. The daemon enters a progressive drain between cache lifespan expiry
-# and eviction.
-# Default: 900 (15 minutes)
-eviction_timeout_secs = 900
-
 # How long (in seconds) the daemon waits with no active connections before
 # shutting itself down. The next client connection will socket-activate a
 # fresh instance.
@@ -672,7 +666,6 @@ poll = "86400s"
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `cache_lifespan` | duration | `"30s"` | How long cached data stays warm after last query |
-| `eviction_timeout_secs` | int | `900` | Seconds until cache entry is fully evicted |
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
 | `failure_reattempts` | int | `3` | Consecutive failures before backing off retries |
 | `failure_backoff_interval` | duration | `"1s"` | Initial retry delay after failure_reattempts exceeded |

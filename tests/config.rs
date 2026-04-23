@@ -38,7 +38,6 @@ fn parse_lifecycle_section() {
     let toml_str = r#"
 [lifecycle]
 cache_lifespan = "1m"
-eviction_timeout_secs = 900
 failure_reattempts = 5
 failure_backoff_interval = "2s"
 "#;
@@ -48,7 +47,6 @@ failure_backoff_interval = "2s"
         config.lifecycle.cache_lifespan_duration(),
         std::time::Duration::from_secs(60)
     );
-    assert_eq!(config.lifecycle.eviction_timeout_secs, 900);
     assert_eq!(config.lifecycle.failure_reattempts, 5);
     assert_eq!(config.lifecycle.failure_backoff_interval, "2s");
 }
