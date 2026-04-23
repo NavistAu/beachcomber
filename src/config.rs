@@ -130,6 +130,14 @@ impl DaemonConfig {
     }
 }
 
+fn default_poll_interval() -> String {
+    "60s".to_string()
+}
+
+fn default_poll_live_count() -> u32 {
+    12
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LifecycleConfig {
@@ -141,6 +149,12 @@ pub struct LifecycleConfig {
     pub idle_shutdown_secs: Option<u64>,
     pub failure_reattempts: u32,
     pub failure_backoff_interval: String,
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval: String,
+    #[serde(default = "default_poll_live_count")]
+    pub poll_live_count: u32,
+    #[serde(default)]
+    pub fsevents_reinstate: bool,
 }
 
 impl Default for LifecycleConfig {
@@ -150,6 +164,9 @@ impl Default for LifecycleConfig {
             idle_shutdown_secs: None,
             failure_reattempts: 3,
             failure_backoff_interval: "1s".to_string(),
+            poll_interval: default_poll_interval(),
+            poll_live_count: default_poll_live_count(),
+            fsevents_reinstate: false,
         }
     }
 }
@@ -243,6 +260,10 @@ pub struct ScriptProviderConfig {
     pub cache_lifespan: Option<String>,
     pub failure_reattempts: Option<u32>,
     pub failure_backoff_interval: Option<String>,
+    // New lifecycle config fields (Task 8)
+    pub poll_interval: Option<String>,
+    pub poll_live_count: Option<u32>,
+    pub fsevents_reinstate: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -301,6 +322,30 @@ impl Config {
                 parse_duration(&self.lifecycle.failure_backoff_interval)
                     .unwrap_or(Duration::from_secs(1))
             })
+    }
+
+    pub fn resolve_poll_interval(&self, provider_name: &str) -> Duration {
+        self.providers
+            .get(provider_name)
+            .and_then(|p| p.poll_interval.as_ref())
+            .and_then(|s| parse_duration(s))
+            .unwrap_or_else(|| {
+                parse_duration(&self.lifecycle.poll_interval).unwrap_or(Duration::from_secs(60))
+            })
+    }
+
+    pub fn resolve_poll_live_count(&self, provider_name: &str) -> u32 {
+        self.providers
+            .get(provider_name)
+            .and_then(|p| p.poll_live_count)
+            .unwrap_or(self.lifecycle.poll_live_count)
+    }
+
+    pub fn resolve_fsevents_reinstate(&self, provider_name: &str) -> bool {
+        self.providers
+            .get(provider_name)
+            .and_then(|p| p.fsevents_reinstate)
+            .unwrap_or(self.lifecycle.fsevents_reinstate)
     }
 
     pub fn resolve_poll_idle_interval(&self, provider_name: &str) -> Option<Duration> {

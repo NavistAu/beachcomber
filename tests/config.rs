@@ -256,3 +256,83 @@ fields = { branch = "string" }
         beachcomber::provider::FieldScope::Global
     );
 }
+
+#[test]
+fn lifecycle_config_accepts_new_lifecycle_fields() {
+    let toml = r#"
+[lifecycle]
+poll_interval = "60s"
+poll_live_count = 12
+fsevents_reinstate = false
+cache_lifespan = "30s"
+failure_reattempts = 3
+failure_backoff_interval = "1s"
+"#;
+    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
+    assert_eq!(config.lifecycle.poll_interval, "60s");
+    assert_eq!(config.lifecycle.poll_live_count, 12);
+    assert!(!config.lifecycle.fsevents_reinstate);
+}
+
+#[test]
+fn resolve_poll_interval_uses_provider_override() {
+    let toml = r#"
+[lifecycle]
+poll_interval = "60s"
+poll_live_count = 12
+fsevents_reinstate = false
+cache_lifespan = "30s"
+failure_reattempts = 3
+failure_backoff_interval = "1s"
+
+[providers.git]
+poll_interval = "10s"
+"#;
+    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
+    assert_eq!(
+        config.resolve_poll_interval("git"),
+        std::time::Duration::from_secs(10)
+    );
+    assert_eq!(
+        config.resolve_poll_interval("unknown"),
+        std::time::Duration::from_secs(60)
+    );
+}
+
+#[test]
+fn resolve_poll_live_count_uses_provider_override() {
+    let toml = r#"
+[lifecycle]
+poll_interval = "60s"
+poll_live_count = 12
+fsevents_reinstate = false
+cache_lifespan = "30s"
+failure_reattempts = 3
+failure_backoff_interval = "1s"
+
+[providers.git]
+poll_live_count = 24
+"#;
+    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
+    assert_eq!(config.resolve_poll_live_count("git"), 24);
+    assert_eq!(config.resolve_poll_live_count("unknown"), 12);
+}
+
+#[test]
+fn resolve_fsevents_reinstate_uses_provider_override() {
+    let toml = r#"
+[lifecycle]
+poll_interval = "60s"
+poll_live_count = 12
+fsevents_reinstate = false
+cache_lifespan = "30s"
+failure_reattempts = 3
+failure_backoff_interval = "1s"
+
+[providers.mise]
+fsevents_reinstate = true
+"#;
+    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
+    assert!(config.resolve_fsevents_reinstate("mise"));
+    assert!(!config.resolve_fsevents_reinstate("unknown"));
+}
