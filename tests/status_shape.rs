@@ -16,6 +16,7 @@ fn sample_rows() -> Vec<CacheRow> {
             value: serde_json::json!("main"),
             age_ms: 14_000,
             stale: false,
+            decay: None,
         },
         CacheRow {
             provider: "git".into(),
@@ -24,6 +25,7 @@ fn sample_rows() -> Vec<CacheRow> {
             value: serde_json::json!(false),
             age_ms: 14_000,
             stale: false,
+            decay: None,
         },
         CacheRow {
             provider: "hostname".into(),
@@ -32,6 +34,7 @@ fn sample_rows() -> Vec<CacheRow> {
             value: serde_json::json!("me-laptop"),
             age_ms: 52_000,
             stale: false,
+            decay: None,
         },
     ]
 }
@@ -125,6 +128,7 @@ fn human_preset_truncates_long_values_to_default_40() {
         value: serde_json::json!("a".repeat(100)),
         age_ms: 14_000,
         stale: false,
+        decay: None,
     });
     let opts = RenderOpts {
         is_tty: true,
@@ -153,6 +157,7 @@ fn human_preset_color_on_stale_rows() {
         value: serde_json::json!("main"),
         age_ms: 9999,
         stale: true,
+        decay: None,
     }];
     let opts = RenderOpts {
         is_tty: true,
@@ -176,6 +181,7 @@ fn json_preset_path_none_serializes_as_null() {
         value: serde_json::json!("myhost"),
         age_ms: 1000,
         stale: false,
+        decay: None,
     }];
     let out = render_preset("json", &rows, &RenderOpts::default());
     let parsed: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON line");
@@ -195,6 +201,7 @@ fn csv_preset_quotes_values_with_commas() {
         value: serde_json::json!("a,b,c"),
         age_ms: 0,
         stale: false,
+        decay: None,
     }];
     let out = render_preset("csv", &rows, &RenderOpts::default());
     // Value containing comma must be quoted in RFC 4180 style.
@@ -224,6 +231,7 @@ fn custom_template_supports_truncate_filter() {
         value: serde_json::json!("abcdef1234567890"),
         age_ms: 14_000,
         stale: false,
+        decay: None,
     }];
     let out = render_preset("{{ value | truncate(7) }}", &rows, &RenderOpts::default());
     assert_eq!(out.trim(), "abcdef1...");
@@ -238,6 +246,7 @@ fn custom_template_supports_age_human() {
         value: serde_json::json!("main"),
         age_ms: 3_600_000, // 1 hour
         stale: false,
+        decay: None,
     }];
     let out = render_preset("{{ age_human }}", &rows, &RenderOpts::default());
     // Should render as "1h" or similar

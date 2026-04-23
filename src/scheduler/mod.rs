@@ -14,6 +14,9 @@ use crate::config::Config;
 use crate::provider::FieldScope;
 use crate::provider::InvalidationStrategy;
 use crate::provider::registry::ProviderRegistry;
+use crate::scheduler::lifecycle::{
+    LifecycleRegistry, LifecycleState, ProviderLifecycleConfig, StateTransition, WatchAction,
+};
 use crate::watcher::FsWatcher;
 use crate::watcher_registry::WatcherRegistry;
 
@@ -108,112 +111,6 @@ impl SchedulerHandle {
     }
 }
 
-// Decay ladder is aspirational — only Grace is wired. SlowPoll / Frozen / Evict
-// exist as placeholders for a future rebuild tracked in
-// docs/roadmap.md → Known Core Issues. Do not delete variants: removing the
-// shape erases the record of what the decay model is supposed to become.
-#[derive(Debug, Clone, PartialEq)]
-pub enum BackoffStage {
-    Grace,
-    SlowPoll,
-    Frozen,
-    Evict,
-}
-
-pub struct BackoffState {
-    stage: BackoffStage,
-    started_at: Instant,
-    grace_duration: std::time::Duration,
-}
-
-impl BackoffState {
-    pub fn new(grace_duration: std::time::Duration) -> Self {
-        Self {
-            stage: BackoffStage::Grace,
-            started_at: Instant::now(),
-            grace_duration,
-        }
-    }
-
-    pub fn stage(&self) -> &BackoffStage {
-        &self.stage
-    }
-
-    pub fn advance(&mut self) {
-        self.stage = match self.stage {
-            BackoffStage::Grace => BackoffStage::SlowPoll,
-            BackoffStage::SlowPoll => BackoffStage::Frozen,
-            BackoffStage::Frozen => BackoffStage::Evict,
-            BackoffStage::Evict => BackoffStage::Evict,
-        };
-        self.started_at = Instant::now();
-    }
-
-    pub fn reset(&mut self, grace_duration: std::time::Duration) {
-        self.stage = BackoffStage::Grace;
-        self.started_at = Instant::now();
-        self.grace_duration = grace_duration;
-    }
-
-    pub fn elapsed(&self) -> std::time::Duration {
-        self.started_at.elapsed()
-    }
-
-    pub fn grace_expired(&self) -> bool {
-        matches!(self.stage, BackoffStage::Grace)
-            && self.started_at.elapsed() >= self.grace_duration
-    }
-
-    // Never called in production — placeholder for decay ladder (see BackoffStage comment).
-    pub fn should_watch(&self) -> bool {
-        matches!(self.stage, BackoffStage::Grace)
-    }
-}
-
-/// Tracks the last execution time for polling purposes.
-struct PollState {
-    last_run: Instant,
-    interval_secs: u64,
-}
-
-/// Advance backoff states. Returns the list of keys that should be evicted from cache.
-fn check_backoff(
-    backoff: &mut HashMap<(String, Option<String>), BackoffState>,
-) -> Vec<(String, Option<String>)> {
-    let mut to_evict = Vec::new();
-    let mut to_advance = Vec::new();
-
-    for (key, state) in backoff.iter() {
-        match state.stage() {
-            BackoffStage::Grace if state.grace_expired() => {
-                to_advance.push(key.clone());
-            }
-            BackoffStage::Evict => {
-                to_evict.push(key.clone());
-            }
-            _ => {}
-        }
-    }
-
-    for key in &to_advance {
-        if let Some(state) = backoff.get_mut(key) {
-            debug!("Advancing backoff for provider={} path={:?}", key.0, key.1);
-            state.advance();
-        }
-    }
-
-    // Remove evicted keys from backoff tracking.
-    for key in &to_evict {
-        debug!(
-            "Removing backoff entry (evict) for provider={} path={:?}",
-            key.0, key.1
-        );
-        backoff.remove(key);
-    }
-
-    to_evict
-}
-
 /// Tracks consecutive failures and suppression state for a provider key.
 struct FailureState {
     consecutive_failures: u32,
@@ -256,11 +153,9 @@ impl FailureState {
 
 /// Build a snapshot of the current scheduler state for status reporting.
 fn build_status(
-    poll_states: &HashMap<(String, Option<String>), PollState>,
+    lifecycle: &LifecycleRegistry,
     watch_paths: &HashMap<PathBuf, Vec<Subscription>>,
-    backoff: &HashMap<(String, Option<String>), BackoffState>,
     in_flight: &std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>,
-    demand: &HashMap<(String, Option<String>), Instant>,
 ) -> SchedulerStatus {
     let watched: Vec<String> = watch_paths
         .keys()
@@ -277,34 +172,39 @@ fn build_status(
         })
         .collect();
 
-    let backoff_info: Vec<BackoffInfo> = backoff
-        .iter()
-        .map(|((provider, path), state)| BackoffInfo {
-            provider: provider.clone(),
-            path: path.clone(),
-            stage: format!("{:?}", state.stage()),
-            elapsed_secs: state.elapsed().as_secs(),
-        })
-        .collect();
+    let mut backoff_info: Vec<BackoffInfo> = Vec::new();
+    let mut poll_timer_info: Vec<PollTimerInfo> = Vec::new();
+    let mut demand_info: Vec<DemandInfo> = Vec::new();
 
-    let poll_timer_info: Vec<PollTimerInfo> = poll_states
-        .iter()
-        .map(|((provider, path), state)| PollTimerInfo {
+    for ((provider, path), entry) in lifecycle.iter() {
+        // Poll timer info for all entries.
+        poll_timer_info.push(PollTimerInfo {
             provider: provider.clone(),
             path: path.clone(),
-            interval_secs: state.interval_secs,
-            last_run_secs_ago: state.last_run.elapsed().as_secs(),
-        })
-        .collect();
+            interval_secs: entry.poll_timer.interval.as_secs(),
+            last_run_secs_ago: entry.poll_timer.last_fired.elapsed().as_secs(),
+        });
 
-    let demand_info: Vec<DemandInfo> = demand
-        .iter()
-        .map(|((provider, path), last_query)| DemandInfo {
-            provider: provider.clone(),
-            path: path.clone(),
-            last_query_secs_ago: last_query.elapsed().as_secs(),
-        })
-        .collect();
+        match entry.state {
+            LifecycleState::Active => {
+                // Active entries have demand — report last_demand time.
+                demand_info.push(DemandInfo {
+                    provider: provider.clone(),
+                    path: path.clone(),
+                    last_query_secs_ago: entry.decay_timer.last_demand.elapsed().as_secs(),
+                });
+            }
+            LifecycleState::Decay(step) => {
+                // Decaying entries go in the backoff list (keeps existing wire format).
+                backoff_info.push(BackoffInfo {
+                    provider: provider.clone(),
+                    path: path.clone(),
+                    stage: format!("Decay{}", step.as_u8()),
+                    elapsed_secs: entry.decay_timer.last_demand.elapsed().as_secs(),
+                });
+            }
+        }
+    }
 
     SchedulerStatus {
         watched_paths: watched,
@@ -313,20 +213,6 @@ fn build_status(
         poll_timers: poll_timer_info,
         demand: demand_info,
     }
-}
-
-/// Start backoff for a single key if not already in backoff.
-fn start_backoff_for_key(
-    key: &(String, Option<String>),
-    backoff: &mut HashMap<(String, Option<String>), BackoffState>,
-    config: &Config,
-) {
-    let grace_duration =
-        config.resolve_poll_interval(&key.0) * config.resolve_poll_live_count(&key.0);
-    backoff.entry(key.clone()).or_insert_with(|| {
-        debug!("Starting backoff for provider={} path={:?}", key.0, key.1);
-        BackoffState::new(grace_duration)
-    });
 }
 
 type ProviderKeySet = Arc<std::sync::Mutex<std::collections::HashSet<(String, Option<String>)>>>;
@@ -657,19 +543,11 @@ impl Scheduler {
         // Compute Once providers at startup.
         self.compute_once_providers();
 
-        // Poll states: (provider, path) -> PollState
-        let mut poll_states: HashMap<(String, Option<String>), PollState> = HashMap::new();
-
-        // Backoff states for keys with no active subscribers.
-        let mut backoff: HashMap<(String, Option<String>), BackoffState> = HashMap::new();
+        // Lifecycle registry: replaces the three old maps (demand, backoff, poll_states).
+        let mut lifecycle = LifecycleRegistry::new();
 
         // Watch paths that are being monitored: path -> subscriptions
         let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
-
-        // Demand tracking: (provider, path) -> last query time.
-        // Keys queried within the demand window are kept warm with default polling.
-        let mut demand: HashMap<(String, Option<String>), Instant> = HashMap::new();
-        let demand_window_secs: u64 = 120; // Keep warm for 2 minutes after last query
 
         // Idle shutdown tracking.
         let mut last_activity = Instant::now();
@@ -704,104 +582,75 @@ impl Scheduler {
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
-                            let status = build_status(&poll_states, &watch_paths, &backoff, &self.in_flight, &demand);
+                            let status = build_status(&lifecycle, &watch_paths, &self.in_flight);
                             let _ = reply.send(status);
                         }
                         Some(SchedulerMessage::QueryActivity { provider, path }) => {
+                            let cfg = ProviderLifecycleConfig {
+                                poll_interval: self.resolve_poll_interval_for(&provider),
+                                keep_alive_polls: self.config.resolve_poll_live_count(&provider),
+                                fsevents_reinstate: self.config.resolve_fsevents_reinstate(&provider),
+                            };
                             let key = (provider.clone(), path.clone());
-                            let is_new = !demand.contains_key(&key);
-                            demand.insert(key.clone(), Instant::now());
-                            last_activity = Instant::now();
+                            let outcome = lifecycle.on_demand(key.clone(), cfg, Instant::now());
 
-                            // Cancel backoff if this key was draining.
-                            if backoff.remove(&key).is_some() {
-                                debug!("Cancelled backoff for provider={} path={:?} (query demand)", provider, path);
-                            }
-
-                            // Restore live polling interval if we were in idle mode.
-                            if let Some(prov) = self.registry.get(&provider) {
-                                let meta = prov.metadata();
-                                let meta_poll_secs = match &meta.invalidation {
-                                    InvalidationStrategy::Poll { interval_secs, .. } => *interval_secs,
-                                    InvalidationStrategy::WatchAndPoll { interval_secs, .. } => *interval_secs,
-                                    InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
-                                    InvalidationStrategy::Once => 0,
-                                };
-                                let live_poll_secs = if self.config.providers.contains_key(&provider) {
-                                    self.config.resolve_poll_interval(&provider).as_secs()
-                                } else {
-                                    meta_poll_secs
-                                };
-                                if let Some(state) = poll_states.get_mut(&key)
-                                    && state.interval_secs != live_poll_secs
-                                    && live_poll_secs > 0
-                                {
-                                    debug!("Restored live polling for provider={} path={:?} every {}s", provider, path, live_poll_secs);
-                                    state.interval_secs = live_poll_secs;
-                                }
-                            }
-
-                            // If this is new demand, set up default polling based on provider metadata.
-                            if is_new {
-                                if let Some(prov) = self.registry.get(&provider) {
-                                    let meta = prov.metadata();
-                                    let poll_secs = match &meta.invalidation {
-                                        InvalidationStrategy::Poll { interval_secs, .. } => *interval_secs,
-                                        InvalidationStrategy::WatchAndPoll { interval_secs, .. } => *interval_secs,
-                                        InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
-                                        InvalidationStrategy::Once => 0, // No polling for Once providers
-                                    };
-
-                                    // Apply config override if set
-                                    let poll_secs = if self.config.providers.contains_key(&provider) {
-                                        self.config.resolve_poll_interval(&provider).as_secs()
-                                    } else {
-                                        poll_secs
-                                    };
-
-                                    if poll_secs > 0 {
-                                        poll_states.entry(key.clone()).or_insert(PollState {
-                                            last_run: Instant::now(),
-                                            interval_secs: poll_secs,
-                                        });
-                                        debug!("Demand: started polling provider={} path={:?} every {}s", provider, path, poll_secs);
-                                    }
-
-                                    // Set up filesystem watching for path-scoped providers.
-                                    if meta.inferred_scope() == FieldScope::PathScoped
-                                        && let Some(ref path_str) = path {
-                                        let watch_path = PathBuf::from(path_str);
-                                        if let Err(e) = fs_watcher.watch(&watch_path) {
-                                            warn!("Failed to watch {:?}: {}", watch_path, e);
-                                        } else {
+                            match outcome.watch_registration {
+                                WatchAction::Register | WatchAction::Reinstate => {
+                                    // Register fs watches for path-scoped providers.
+                                    if let Some(prov) = self.registry.get(&provider) {
+                                        let meta = prov.metadata();
+                                        if meta.inferred_scope() == FieldScope::PathScoped
+                                            && let Some(ref path_str) = path
+                                        {
+                                            let watch_path = PathBuf::from(path_str);
                                             let patterns = crate::provider::watch_patterns(
                                                 &meta.invalidation,
                                             );
-                                            watch_paths
-                                                .entry(watch_path)
-                                                .or_default()
-                                                .push(Subscription {
-                                                    provider: provider.clone(),
-                                                    path: path.clone(),
-                                                    patterns,
-                                                });
-                                            debug!("Demand: watching path {:?} for provider={}", path, provider);
+                                            if let Err(e) = fs_watcher.watch(&watch_path) {
+                                                warn!("Failed to watch {:?}: {}", watch_path, e);
+                                            } else {
+                                                watch_paths
+                                                    .entry(watch_path)
+                                                    .or_default()
+                                                    .push(Subscription {
+                                                        provider: provider.clone(),
+                                                        path: path.clone(),
+                                                        patterns,
+                                                    });
+                                                debug!(
+                                                    "Demand: watching path {:?} for provider={}",
+                                                    path, provider
+                                                );
+                                            }
                                         }
                                     }
                                 }
+                                WatchAction::Preserve => {
+                                    // Watches are already live. Nothing to do.
+                                }
+                            }
 
-                                // Execute immediately if not cached.
+                            if matches!(outcome.transition, StateTransition::NewlyActive) {
+                                // Cold → Active: execute inline to populate cache.
                                 if self.cache.get(&provider, path.as_deref()).is_none() {
                                     self.execute_provider(&provider, path.as_deref());
                                 }
                             }
+                            last_activity = Instant::now();
                         }
                     }
                 }
 
                 // Filesystem events from watcher.
                 Some(paths) = fs_rx.recv() => {
-                    self.handle_fs_event(paths, &watch_paths);
+                    let affected_keys = resolve_keys_from_paths(&paths, &watch_paths);
+                    for key in affected_keys {
+                        let outcome = lifecycle.on_fsevent(key.clone(), Instant::now());
+                        if outcome.refresh {
+                            self.execute_provider(&key.0, key.1.as_deref());
+                        }
+                    }
+                    last_activity = Instant::now();
                 }
 
                 // Periodic GC: remove dead broadcast channel entries.
@@ -812,70 +661,34 @@ impl Scheduler {
                 // Poll tick — check which subscriptions are due.
                 _ = tick.tick() => {
                     self.heartbeat.fetch_add(1, Ordering::Relaxed);
+                    let actions = lifecycle.tick(Instant::now());
 
-                    let now = Instant::now();
-                    let keys_to_run: Vec<(String, Option<String>)> = poll_states
-                        .iter()
-                        .filter(|(_, state)| {
-                            now.duration_since(state.last_run).as_secs() >= state.interval_secs
-                        })
-                        .map(|(key, _)| key.clone())
-                        .collect();
-
-                    for (provider, path) in keys_to_run {
-                        debug!("Poll tick: executing provider={} path={:?}", provider, path);
-                        self.execute_provider(&provider, path.as_deref());
-                        if let Some(state) = poll_states.get_mut(&(provider, path)) {
-                            state.last_run = Instant::now();
-                        }
+                    for key in &actions.polls_due {
+                        debug!("Poll tick: executing provider={} path={:?}", key.0, key.1);
+                        self.execute_provider(&key.0, key.1.as_deref());
                     }
 
-                    // Check demand expiry — stop polling/watching keys nobody has queried recently.
-                    let now = Instant::now();
-                    let expired_demand: Vec<(String, Option<String>)> = demand
-                        .iter()
-                        .filter(|(_, last_query)| now.duration_since(**last_query).as_secs() >= demand_window_secs)
-                        .map(|(key, _)| key.clone())
-                        .collect();
-
-                    for key in expired_demand {
-                        debug!("Demand expired for provider={} path={:?}", key.0, key.1);
-                        demand.remove(&key);
-
-                        // poll_idle_interval removed; stop polling on demand expiry.
-                        poll_states.remove(&key);
-
-                        // Remove watch for this key (watches are only active during live demand).
-                        let mut paths_to_unwatch = Vec::new();
-                        for (watch_path, subscriptions) in watch_paths.iter_mut() {
-                            subscriptions.retain(|sub| !(sub.provider == key.0 && sub.path == key.1));
-                            if subscriptions.is_empty() {
-                                paths_to_unwatch.push(watch_path.clone());
-                            }
-                        }
-                        for wp in paths_to_unwatch {
-                            watch_paths.remove(&wp);
-                            let _ = fs_watcher.unwatch(&wp);
-                        }
-
-                        // Start backoff for eviction.
-                        start_backoff_for_key(&key, &mut backoff, &self.config);
+                    for key in &actions.watch_drops {
+                        drop_watches_for_key(key, &mut watch_paths, &mut fs_watcher);
                     }
 
-                    // Advance backoff states and evict cache entries when needed.
-                    let keys_to_evict = check_backoff(&mut backoff);
-                    for (provider, path) in keys_to_evict {
-                        debug!("Evicting cache for provider={} path={:?} (backoff evict)", provider, path);
-                        self.cache.remove(&provider, path.as_deref());
+                    for key in &actions.evictions {
+                        debug!("Evicting cache for provider={} path={:?}", key.0, key.1);
+                        self.cache.remove(&key.0, key.1.as_deref());
+                        drop_watches_for_key(key, &mut watch_paths, &mut fs_watcher);
                     }
 
-                    // Check idle shutdown condition.
+                    for (key, new_state) in &actions.transitions {
+                        debug!("lifecycle: key {:?} -> {:?}", key, new_state);
+                    }
+
+                    // Idle shutdown.
                     if let Some(idle_secs) = idle_shutdown_secs
                         && self.cache.is_empty()
-                        && demand.is_empty()
+                        && lifecycle.is_empty()
                         && last_activity.elapsed().as_secs() >= idle_secs
                     {
-                        info!("Idle shutdown: no cache entries, no demand, idle for {}s", idle_secs);
+                        info!("Idle shutdown: no entries, idle for {}s", idle_secs);
                         break;
                     }
                 }
@@ -887,12 +700,8 @@ impl Scheduler {
     async fn run_without_watcher(mut self, mut _dummy_rx: mpsc::Receiver<Vec<PathBuf>>) {
         self.compute_once_providers();
 
-        let mut poll_states: HashMap<(String, Option<String>), PollState> = HashMap::new();
-        let mut backoff: HashMap<(String, Option<String>), BackoffState> = HashMap::new();
-
-        // Demand tracking: (provider, path) -> last query time.
-        let mut demand: HashMap<(String, Option<String>), Instant> = HashMap::new();
-        let demand_window_secs: u64 = 120;
+        // Lifecycle registry: replaces the three old maps (demand, backoff, poll_states).
+        let mut lifecycle = LifecycleRegistry::new();
 
         let mut tick = interval(Duration::from_secs(1));
 
@@ -917,75 +726,28 @@ impl Scheduler {
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
                             let empty_watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
-                            let status = build_status(&poll_states, &empty_watch_paths, &backoff, &self.in_flight, &demand);
+                            let status = build_status(&lifecycle, &empty_watch_paths, &self.in_flight);
                             let _ = reply.send(status);
                         }
                         Some(SchedulerMessage::QueryActivity { provider, path }) => {
+                            let cfg = ProviderLifecycleConfig {
+                                poll_interval: self.resolve_poll_interval_for(&provider),
+                                keep_alive_polls: self.config.resolve_poll_live_count(&provider),
+                                fsevents_reinstate: self.config.resolve_fsevents_reinstate(&provider),
+                            };
                             let key = (provider.clone(), path.clone());
-                            let is_new = !demand.contains_key(&key);
-                            demand.insert(key.clone(), Instant::now());
-                            last_activity = Instant::now();
+                            let outcome = lifecycle.on_demand(key.clone(), cfg, Instant::now());
 
-                            // Cancel backoff if this key was draining.
-                            if backoff.remove(&key).is_some() {
-                                debug!("Cancelled backoff for provider={} path={:?} (query demand)", provider, path);
-                            }
+                            // No filesystem watching in this path.
+                            let _ = outcome.watch_registration;
 
-                            // Restore live polling interval if we were in idle mode.
-                            if let Some(prov) = self.registry.get(&provider) {
-                                let meta = prov.metadata();
-                                let meta_poll_secs = match &meta.invalidation {
-                                    InvalidationStrategy::Poll { interval_secs, .. } => *interval_secs,
-                                    InvalidationStrategy::WatchAndPoll { interval_secs, .. } => *interval_secs,
-                                    InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
-                                    InvalidationStrategy::Once => 0,
-                                };
-                                let live_poll_secs = if self.config.providers.contains_key(&provider) {
-                                    self.config.resolve_poll_interval(&provider).as_secs()
-                                } else {
-                                    meta_poll_secs
-                                };
-                                if let Some(state) = poll_states.get_mut(&key)
-                                    && state.interval_secs != live_poll_secs
-                                    && live_poll_secs > 0
-                                {
-                                    debug!("Restored live polling for provider={} path={:?} every {}s", provider, path, live_poll_secs);
-                                    state.interval_secs = live_poll_secs;
-                                }
-                            }
-
-                            // If this is new demand, set up default polling based on provider metadata.
-                            if is_new {
-                                if let Some(prov) = self.registry.get(&provider) {
-                                    let meta = prov.metadata();
-                                    let poll_secs = match &meta.invalidation {
-                                        InvalidationStrategy::Poll { interval_secs, .. } => *interval_secs,
-                                        InvalidationStrategy::WatchAndPoll { interval_secs, .. } => *interval_secs,
-                                        InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
-                                        InvalidationStrategy::Once => 0,
-                                    };
-
-                                    // Apply config override if set
-                                    let poll_secs = if self.config.providers.contains_key(&provider) {
-                                        self.config.resolve_poll_interval(&provider).as_secs()
-                                    } else {
-                                        poll_secs
-                                    };
-
-                                    if poll_secs > 0 {
-                                        poll_states.entry(key.clone()).or_insert(PollState {
-                                            last_run: Instant::now(),
-                                            interval_secs: poll_secs,
-                                        });
-                                        debug!("Demand: started polling provider={} path={:?} every {}s", provider, path, poll_secs);
-                                    }
-                                }
-
-                                // Execute immediately if not cached.
+                            if matches!(outcome.transition, StateTransition::NewlyActive) {
+                                // Cold → Active: execute inline to populate cache.
                                 if self.cache.get(&provider, path.as_deref()).is_none() {
                                     self.execute_provider(&provider, path.as_deref());
                                 }
                             }
+                            last_activity = Instant::now();
                         }
                     }
                 }
@@ -995,61 +757,66 @@ impl Scheduler {
                 }
                 _ = tick.tick() => {
                     self.heartbeat.fetch_add(1, Ordering::Relaxed);
+                    let actions = lifecycle.tick(Instant::now());
 
-                    let now = Instant::now();
-                    let keys_to_run: Vec<(String, Option<String>)> = poll_states
-                        .iter()
-                        .filter(|(_, state)| {
-                            now.duration_since(state.last_run).as_secs() >= state.interval_secs
-                        })
-                        .map(|(key, _)| key.clone())
-                        .collect();
-
-                    for (provider, path) in keys_to_run {
-                        self.execute_provider(&provider, path.as_deref());
-                        if let Some(state) = poll_states.get_mut(&(provider, path)) {
-                            state.last_run = Instant::now();
-                        }
+                    for key in &actions.polls_due {
+                        self.execute_provider(&key.0, key.1.as_deref());
                     }
 
-                    // Check demand expiry — stop polling keys nobody has queried recently.
-                    let now = Instant::now();
-                    let expired_demand: Vec<(String, Option<String>)> = demand
-                        .iter()
-                        .filter(|(_, last_query)| now.duration_since(**last_query).as_secs() >= demand_window_secs)
-                        .map(|(key, _)| key.clone())
-                        .collect();
+                    // No watches to drop in the no-watcher path.
 
-                    for key in expired_demand {
-                        debug!("Demand expired for provider={} path={:?}", key.0, key.1);
-                        demand.remove(&key);
-
-                        // poll_idle_interval removed; stop polling on demand expiry.
-                        poll_states.remove(&key);
-
-                        // Start backoff for eviction.
-                        start_backoff_for_key(&key, &mut backoff, &self.config);
+                    for key in &actions.evictions {
+                        debug!("Evicting cache for provider={} path={:?}", key.0, key.1);
+                        self.cache.remove(&key.0, key.1.as_deref());
                     }
 
-                    // Advance backoff states and evict cache entries when needed.
-                    let keys_to_evict = check_backoff(&mut backoff);
-                    for (provider, path) in keys_to_evict {
-                        debug!("Evicting cache for provider={} path={:?} (backoff evict)", provider, path);
-                        self.cache.remove(&provider, path.as_deref());
+                    for (key, new_state) in &actions.transitions {
+                        debug!("lifecycle: key {:?} -> {:?}", key, new_state);
                     }
 
-                    // Check idle shutdown condition.
+                    // Idle shutdown.
                     if let Some(idle_secs) = idle_shutdown_secs
                         && self.cache.is_empty()
-                        && demand.is_empty()
+                        && lifecycle.is_empty()
                         && last_activity.elapsed().as_secs() >= idle_secs
                     {
-                        info!("Idle shutdown: no cache entries, no demand, idle for {}s", idle_secs);
+                        info!("Idle shutdown: no entries, idle for {}s", idle_secs);
                         break;
                     }
                 }
             }
         }
+    }
+
+    /// Resolve the effective poll interval for a provider, using the provider's
+    /// own metadata as the fallback when no config override is present.
+    /// This matches the old scheduler behaviour: metadata interval wins unless
+    /// the provider appears in [providers.*] config.
+    fn resolve_poll_interval_for(&self, provider_name: &str) -> Duration {
+        // If there's an explicit per-provider config entry, use the config resolver
+        // (which already handles the per-provider override and lifecycle default).
+        if self.config.providers.contains_key(provider_name) {
+            return self.config.resolve_poll_interval(provider_name);
+        }
+
+        // Otherwise, prefer the provider's own metadata interval.
+        if let Some(provider) = self.registry.get(provider_name) {
+            let meta = provider.metadata();
+            let secs = match &meta.invalidation {
+                InvalidationStrategy::Poll { interval_secs, .. } => *interval_secs,
+                InvalidationStrategy::WatchAndPoll { interval_secs, .. } => *interval_secs,
+                InvalidationStrategy::Watch {
+                    fallback_poll_secs, ..
+                } => fallback_poll_secs.unwrap_or(60),
+                InvalidationStrategy::Once => 0,
+            };
+            if secs > 0 {
+                return Duration::from_secs(secs);
+            }
+        }
+
+        // Final fallback: lifecycle config default.
+        self.config.resolve_poll_interval(provider_name)
     }
 
     fn compute_once_providers(&self) {
@@ -1100,6 +867,47 @@ impl Scheduler {
                 }
             }
         }
+    }
+}
+
+/// Resolve affected lifecycle keys from a set of changed paths using watch_paths + patterns.
+fn resolve_keys_from_paths(
+    changed_paths: &[PathBuf],
+    watch_paths: &HashMap<PathBuf, Vec<Subscription>>,
+) -> Vec<(String, Option<String>)> {
+    let mut keys = Vec::new();
+    for changed_path in changed_paths {
+        for (watch_path, subscriptions) in watch_paths {
+            if !(changed_path.starts_with(watch_path) || changed_path == watch_path) {
+                continue;
+            }
+            for sub in subscriptions {
+                if event_matches_patterns(&sub.patterns, watch_path, changed_path) {
+                    keys.push((sub.provider.clone(), sub.path.clone()));
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// Remove watch subscriptions for a specific key and unwatch the path if no subscriptions remain.
+fn drop_watches_for_key(
+    key: &(String, Option<String>),
+    watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
+    fs_watcher: &mut FsWatcher,
+) {
+    let mut paths_to_unwatch = Vec::new();
+    for (watch_path, subscriptions) in watch_paths.iter_mut() {
+        subscriptions.retain(|sub| !(sub.provider == key.0 && sub.path == key.1));
+        if subscriptions.is_empty() {
+            paths_to_unwatch.push(watch_path.clone());
+        }
+    }
+    for wp in paths_to_unwatch {
+        watch_paths.remove(&wp);
+        let _ = fs_watcher.unwatch(&wp);
+        debug!("Unwatched path {:?} (no subscriptions remaining)", wp);
     }
 }
 

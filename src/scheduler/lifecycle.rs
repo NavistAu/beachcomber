@@ -285,8 +285,21 @@ impl LifecycleRegistry {
         self.entries.remove(key);
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&Key, &LifecycleEntry)> {
         self.entries.iter()
+    }
+}
+
+/// Convert a `LifecycleState` to a numeric decay level: 0 = Active, 1–4 = Decay steps.
+/// Used by the scheduler and status renderer to populate `CacheRow::decay`.
+pub fn to_decay_level(state: &LifecycleState) -> u8 {
+    match state {
+        LifecycleState::Active => 0,
+        LifecycleState::Decay(step) => step.as_u8(),
     }
 }
 
