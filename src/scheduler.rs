@@ -105,6 +105,10 @@ impl SchedulerHandle {
     }
 }
 
+// Decay ladder is aspirational — only Grace is wired. SlowPoll / Frozen / Evict
+// exist as placeholders for a future rebuild tracked in
+// docs/roadmap.md → Known Core Issues. Do not delete variants: removing the
+// shape erases the record of what the decay model is supposed to become.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackoffStage {
     Grace,
@@ -157,6 +161,7 @@ impl BackoffState {
             && self.started_at.elapsed() >= self.grace_duration
     }
 
+    // Never called in production — placeholder for decay ladder (see BackoffStage comment).
     pub fn should_watch(&self) -> bool {
         matches!(self.stage, BackoffStage::Grace)
     }
