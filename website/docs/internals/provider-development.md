@@ -16,18 +16,17 @@ Every provider implements this trait (defined in `src/provider/mod.rs`):
 ```rust
 pub trait Provider: Send + Sync {
     fn metadata(&self) -> ProviderMetadata;
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult>;
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)>;
 }
 ```
 
 **`metadata()`** is called at registration time. It must be fast and allocation-light (it currently allocates; a future optimisation may switch to `Cow<'static, str>`). Return a `ProviderMetadata` describing:
 
 - `name`: the provider's key used in `comb g <name>.<field>`
-- `fields`: a list of `FieldSchema { name, field_type }` describing what fields `execute()` will populate
+- `fields`: a list of `FieldSchema { name, field_type, scope }` describing what fields `execute()` will populate. `scope` is `FieldScope::Global` (pathless cache entry) or `FieldScope::PathScoped` (path-keyed cache entry).
 - `invalidation`: when the cached value should be refreshed (see §3)
-- `global`: `true` if the provider ignores the `path` argument (e.g., `hostname`, `user`); `false` if it is path-scoped (e.g., `git`, `terraform`)
 
-**`execute(path)`** runs the provider and returns the result. It is called on a blocking thread pool (`tokio::task::spawn_blocking`), so it may safely call `std::process::Command`, `std::fs::read_to_string`, and other blocking operations. Return `None` to indicate that no value is available (the cache will not be updated). Return `Some(ProviderResult)` on success.
+**`execute(path)`** runs the provider and returns a list of scoped cache entries. It is called on a blocking thread pool (`tokio::task::spawn_blocking`), so it may safely call `std::process::Command`, `std::fs::read_to_string`, and other blocking operations. Each returned tuple is `(cache_path, result)` — `None` means a global (pathless) cache entry, `Some(p)` means an entry keyed under path `p`. Return an empty `Vec` to indicate no value is available. Most providers return a one-element Vec; mixed-scope providers like `mise` return two.
 
 `ProviderResult` is a `HashMap<String, Value>` wrapper. Insert fields with `result.insert("fieldname", Value::String("..."))`.
 
@@ -45,7 +44,7 @@ Create `src/provider/dockercontext.rs`:
 
 ```rust
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
     ProviderResult, Value,
 };
 use std::path::PathBuf;
@@ -57,8 +56,8 @@ impl Provider for DockerContextProvider {
         ProviderMetadata {
             name: "dockercontext".to_string(),
             fields: vec![
-                FieldSchema { name: "name".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "endpoint".to_string(), field_type: FieldType::String },
+                FieldSchema { name: "name".to_string(), field_type: FieldType::String, scope: FieldScope::Global },
+                FieldSchema { name: "endpoint".to_string(), field_type: FieldType::String, scope: FieldScope::Global },
             ],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![
@@ -67,16 +66,15 @@ impl Provider for DockerContextProvider {
                 ],
                 fallback_poll_secs: Some(60),
             },
-            global: true,
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        let home = std::env::var("HOME").ok()?;
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Ok(home) = std::env::var("HOME") else { return Vec::new(); };
         let config_path = PathBuf::from(&home).join(".docker").join("config.json");
 
-        let config_text = std::fs::read_to_string(&config_path).ok()?;
-        let config: serde_json::Value = serde_json::from_str(&config_text).ok()?;
+        let Ok(config_text) = std::fs::read_to_string(&config_path) else { return Vec::new(); };
+        let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_text) else { return Vec::new(); };
 
         let context_name = config
             .get("currentContext")
@@ -91,7 +89,7 @@ impl Provider for DockerContextProvider {
         let mut result = ProviderResult::new();
         result.insert("name", Value::String(context_name));
         result.insert("endpoint", Value::String(endpoint));
-        Some(result)
+        vec![(None, result)]
     }
 }
 
