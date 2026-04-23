@@ -194,3 +194,65 @@ poll_secs = 10
     let config: Config = toml::from_str(toml_str).unwrap();
     assert_eq!(config.resolve_poll_live_interval("my_api"), Some(10));
 }
+
+#[test]
+fn script_provider_per_field_scope_overrides_provider_default() {
+    let toml = r#"
+[providers.example]
+type = "script"
+command = "echo hello"
+scope = "path"
+
+[providers.example.fields.branch]
+type = "string"
+
+[providers.example.fields.status]
+type = "string"
+scope = "global"
+"#;
+    let config: Config = toml::from_str(toml).unwrap();
+    let p = config.providers.get("example").expect("provider present");
+
+    let branch_scope = beachcomber::config::resolve_field_scope(p, "branch");
+    let status_scope = beachcomber::config::resolve_field_scope(p, "status");
+
+    assert_eq!(branch_scope, beachcomber::provider::FieldScope::PathScoped);
+    assert_eq!(status_scope, beachcomber::provider::FieldScope::Global);
+}
+
+#[test]
+fn script_provider_legacy_simple_fields_inherit_provider_scope() {
+    let toml = r#"
+[providers.legacy]
+type = "script"
+command = "echo hi"
+scope = "path"
+fields = { branch = "string", dirty = "bool" }
+"#;
+    let config: Config = toml::from_str(toml).unwrap();
+    let p = config.providers.get("legacy").expect("provider present");
+    assert_eq!(
+        beachcomber::config::resolve_field_scope(p, "branch"),
+        beachcomber::provider::FieldScope::PathScoped
+    );
+    assert_eq!(
+        beachcomber::config::resolve_field_scope(p, "dirty"),
+        beachcomber::provider::FieldScope::PathScoped
+    );
+}
+
+#[test]
+fn script_provider_default_scope_is_global_when_not_declared() {
+    let toml = r#"
+[providers.noscope]
+type = "script"
+command = "echo hi"
+fields = { branch = "string" }
+"#;
+    let config: Config = toml::from_str(toml).unwrap();
+    let p = config.providers.get("noscope").expect("provider present");
+    assert_eq!(
+        beachcomber::config::resolve_field_scope(p, "branch"),
+        beachcomber::provider::FieldScope::Global
+    );
+}

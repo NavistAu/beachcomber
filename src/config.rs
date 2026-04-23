@@ -1,3 +1,4 @@
+use crate::provider::FieldScope;
 use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -163,6 +164,58 @@ impl LifecycleConfig {
     }
 }
 
+/// A script/library field declaration. Either a bare type string (legacy:
+/// inherits provider-level scope) or a table with explicit type + optional
+/// per-field scope override.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum FieldSpec {
+    Simple(String),
+    Detailed {
+        #[serde(rename = "type")]
+        field_type: String,
+        scope: Option<String>,
+    },
+}
+
+impl FieldSpec {
+    pub fn field_type(&self) -> &str {
+        match self {
+            FieldSpec::Simple(t) => t,
+            FieldSpec::Detailed { field_type, .. } => field_type,
+        }
+    }
+
+    pub fn explicit_scope(&self) -> Option<FieldScope> {
+        match self {
+            FieldSpec::Simple(_) => None,
+            FieldSpec::Detailed { scope, .. } => scope.as_deref().and_then(|s| match s {
+                "global" => Some(FieldScope::Global),
+                "path" | "pathscoped" => Some(FieldScope::PathScoped),
+                _ => None,
+            }),
+        }
+    }
+}
+
+/// Resolve the effective FieldScope for a named field under a script/library
+/// provider: use the field's explicit scope if declared, else the
+/// provider-level default (`scope = "path"` → PathScoped, otherwise Global).
+pub fn resolve_field_scope(config: &ScriptProviderConfig, field: &str) -> FieldScope {
+    let explicit = config
+        .fields
+        .as_ref()
+        .and_then(|fields| fields.get(field))
+        .and_then(|spec| spec.explicit_scope());
+    if let Some(s) = explicit {
+        return s;
+    }
+    match config.scope.as_deref() {
+        Some("path") | Some("pathscoped") => FieldScope::PathScoped,
+        _ => FieldScope::Global,
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct ScriptProviderConfig {
@@ -170,7 +223,7 @@ pub struct ScriptProviderConfig {
     pub provider_type: Option<String>,
     pub command: String,
     pub invalidation: Option<ScriptInvalidation>,
-    pub fields: Option<HashMap<String, String>>,
+    pub fields: Option<HashMap<String, FieldSpec>>,
     pub output: Option<String>,
     pub scope: Option<String>,
     pub enabled: Option<bool>,
