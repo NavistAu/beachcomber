@@ -37,32 +37,26 @@ socket_path = "/tmp/test.sock"
 fn parse_lifecycle_section() {
     let toml_str = r#"
 [lifecycle]
-cache_lifespan = "1m"
 failure_reattempts = 5
 failure_backoff_interval = "2s"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.lifecycle.cache_lifespan, "1m");
-    assert_eq!(
-        config.lifecycle.cache_lifespan_duration(),
-        std::time::Duration::from_secs(60)
-    );
     assert_eq!(config.lifecycle.failure_reattempts, 5);
     assert_eq!(config.lifecycle.failure_backoff_interval, "2s");
 }
 
 #[test]
-fn parse_lifecycle_backwards_compat() {
+fn parse_lifecycle_legacy_keys_ignored() {
+    // cache_lifespan and grace_period_secs are no longer struct fields; serde ignores them.
     let toml_str = r#"
 [lifecycle]
+cache_lifespan = "1m"
 grace_period_secs = 60
+failure_reattempts = 3
+failure_backoff_interval = "1s"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.lifecycle.cache_lifespan, "60s");
-    assert_eq!(
-        config.lifecycle.cache_lifespan_duration(),
-        std::time::Duration::from_secs(60)
-    );
+    assert_eq!(config.lifecycle.failure_reattempts, 3);
 }
 
 #[test]
@@ -130,58 +124,46 @@ fn parse_duration_variants() {
 fn per_provider_backoff_overrides() {
     let toml_str = r#"
 [lifecycle]
-cache_lifespan = "30s"
 failure_reattempts = 3
 failure_backoff_interval = "1s"
 
 [providers.my_api]
 command = "curl http://example.com"
-cache_lifespan = "2m"
 failure_reattempts = 5
 failure_backoff_interval = "2s"
-poll_idle_interval = "30s"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
 
     // Per-provider overrides
-    assert_eq!(
-        config.resolve_cache_lifespan("my_api"),
-        Duration::from_secs(120)
-    );
     assert_eq!(config.resolve_failure_reattempts("my_api"), 5);
     assert_eq!(
         config.resolve_failure_backoff_interval("my_api"),
         Duration::from_secs(2)
     );
-    assert_eq!(
-        config.resolve_poll_idle_interval("my_api"),
-        Some(Duration::from_secs(30))
-    );
 
     // Unknown provider falls back to lifecycle defaults
-    assert_eq!(
-        config.resolve_cache_lifespan("unknown"),
-        Duration::from_secs(30)
-    );
     assert_eq!(config.resolve_failure_reattempts("unknown"), 3);
     assert_eq!(
         config.resolve_failure_backoff_interval("unknown"),
         Duration::from_secs(1)
     );
-    assert_eq!(config.resolve_poll_idle_interval("unknown"), None);
 }
 
 #[test]
-fn poll_live_interval_overrides_poll_secs() {
+fn poll_live_interval_legacy_key_ignored() {
+    // poll_live_interval is no longer a struct field; serde ignores it.
+    // poll_interval is the replacement.
     let toml_str = r#"
 [providers.my_api]
 command = "echo test"
-poll_secs = 10
 poll_live_interval = "5s"
+poll_interval = "15s"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    // poll_live_interval takes precedence
-    assert_eq!(config.resolve_poll_live_interval("my_api"), Some(5));
+    assert_eq!(
+        config.resolve_poll_interval("my_api"),
+        Duration::from_secs(15)
+    );
 }
 
 #[test]
@@ -192,7 +174,13 @@ command = "echo test"
 poll_secs = 10
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.resolve_poll_live_interval("my_api"), Some(10));
+    // poll_secs is still a recognized field in ScriptProviderConfig (not removed).
+    // resolve_poll_interval does not read poll_secs — that was part of the removed
+    // resolve_poll_live_interval logic. poll_secs falls back to the global default.
+    assert_eq!(
+        config.resolve_poll_interval("my_api"),
+        Duration::from_secs(60) // global default
+    );
 }
 
 #[test]
@@ -264,7 +252,6 @@ fn lifecycle_config_accepts_new_lifecycle_fields() {
 poll_interval = "60s"
 poll_live_count = 12
 fsevents_reinstate = false
-cache_lifespan = "30s"
 failure_reattempts = 3
 failure_backoff_interval = "1s"
 "#;
@@ -281,7 +268,6 @@ fn resolve_poll_interval_uses_provider_override() {
 poll_interval = "60s"
 poll_live_count = 12
 fsevents_reinstate = false
-cache_lifespan = "30s"
 failure_reattempts = 3
 failure_backoff_interval = "1s"
 
@@ -306,7 +292,6 @@ fn resolve_poll_live_count_uses_provider_override() {
 poll_interval = "60s"
 poll_live_count = 12
 fsevents_reinstate = false
-cache_lifespan = "30s"
 failure_reattempts = 3
 failure_backoff_interval = "1s"
 
@@ -325,7 +310,6 @@ fn resolve_fsevents_reinstate_uses_provider_override() {
 poll_interval = "60s"
 poll_live_count = 12
 fsevents_reinstate = false
-cache_lifespan = "30s"
 failure_reattempts = 3
 failure_backoff_interval = "1s"
 
@@ -335,4 +319,93 @@ fsevents_reinstate = true
     let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
     assert!(config.resolve_fsevents_reinstate("mise"));
     assert!(!config.resolve_fsevents_reinstate("unknown"));
+}
+
+#[test]
+fn legacy_cache_lifespan_parses_without_error() {
+    // Legacy configs with cache_lifespan should parse cleanly, key ignored.
+    let toml = r#"
+[lifecycle]
+cache_lifespan = "30s"
+poll_interval = "60s"
+poll_live_count = 12
+fsevents_reinstate = false
+failure_reattempts = 3
+failure_backoff_interval = "1s"
+"#;
+    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
+    assert_eq!(config.lifecycle.poll_interval, "60s");
+}
+
+#[test]
+fn legacy_poll_idle_interval_parses_without_error() {
+    let toml = r#"
+[lifecycle]
+poll_interval = "60s"
+poll_live_count = 12
+fsevents_reinstate = false
+failure_reattempts = 3
+failure_backoff_interval = "1s"
+
+[providers.git]
+poll_idle_interval = "5m"
+poll_interval = "10s"
+"#;
+    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
+    assert_eq!(
+        config.resolve_poll_interval("git"),
+        std::time::Duration::from_secs(10)
+    );
+}
+
+#[test]
+fn legacy_poll_live_interval_parses_without_error() {
+    let toml = r#"
+[lifecycle]
+poll_interval = "60s"
+poll_live_count = 12
+fsevents_reinstate = false
+failure_reattempts = 3
+failure_backoff_interval = "1s"
+
+[providers.git]
+poll_live_interval = "10s"
+"#;
+    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
+    // poll_live_interval is ignored; falls back to global.
+    assert_eq!(
+        config.resolve_poll_interval("git"),
+        std::time::Duration::from_secs(60)
+    );
+}
+
+#[test]
+fn deprecated_keys_detected_in_raw_toml() {
+    use beachcomber::config::detect_deprecated_keys;
+
+    let toml = r#"
+[lifecycle]
+cache_lifespan = "30s"
+
+[providers.git]
+poll_idle_interval = "5m"
+poll_live_interval = "10s"
+"#;
+    let warnings = detect_deprecated_keys(toml);
+    assert_eq!(warnings.len(), 3);
+    assert!(
+        warnings
+            .iter()
+            .any(|w: &String| w.contains("cache_lifespan"))
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w: &String| w.contains("poll_idle_interval"))
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w: &String| w.contains("poll_live_interval"))
+    );
 }

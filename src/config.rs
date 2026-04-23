@@ -1,44 +1,9 @@
 use crate::provider::FieldScope;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-
-/// Deserialize a value that can be either a string ("30s") or an integer (30, treated as seconds).
-fn deserialize_duration_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use serde::de;
-
-    struct StringOrInt;
-
-    impl<'de> de::Visitor<'de> for StringOrInt {
-        type Value = String;
-
-        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            f.write_str("a duration string (\"30s\") or integer (seconds)")
-        }
-
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<String, E> {
-            Ok(v.to_string())
-        }
-
-        fn visit_string<E: de::Error>(self, v: String) -> Result<String, E> {
-            Ok(v)
-        }
-
-        fn visit_i64<E: de::Error>(self, v: i64) -> Result<String, E> {
-            Ok(format!("{v}s"))
-        }
-
-        fn visit_u64<E: de::Error>(self, v: u64) -> Result<String, E> {
-            Ok(format!("{v}s"))
-        }
-    }
-
-    deserializer.deserialize_any(StringOrInt)
-}
 use std::time::Duration;
+use tracing::warn;
 
 /// Parse a duration string like "30s", "5m", "1h", or whole-second "ms" values (e.g. "2000ms")
 /// into a Duration. Returns None for sub-second `ms` values and non-whole-second multiples.
@@ -141,11 +106,6 @@ fn default_poll_live_count() -> u32 {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LifecycleConfig {
-    #[serde(
-        alias = "grace_period_secs",
-        deserialize_with = "deserialize_duration_string"
-    )]
-    pub cache_lifespan: String,
     pub idle_shutdown_secs: Option<u64>,
     pub failure_reattempts: u32,
     pub failure_backoff_interval: String,
@@ -160,7 +120,6 @@ pub struct LifecycleConfig {
 impl Default for LifecycleConfig {
     fn default() -> Self {
         Self {
-            cache_lifespan: "30s".to_string(),
             idle_shutdown_secs: None,
             failure_reattempts: 3,
             failure_backoff_interval: "1s".to_string(),
@@ -172,10 +131,6 @@ impl Default for LifecycleConfig {
 }
 
 impl LifecycleConfig {
-    pub fn cache_lifespan_duration(&self) -> Duration {
-        parse_duration(&self.cache_lifespan).unwrap_or(Duration::from_secs(30))
-    }
-
     pub fn failure_backoff_duration(&self) -> Duration {
         parse_duration(&self.failure_backoff_interval).unwrap_or(Duration::from_secs(1))
     }
@@ -255,9 +210,6 @@ pub struct ScriptProviderConfig {
     // Library provider fields (used when type = "library")
     pub library_path: Option<String>,
     // New configurable backoff fields (override lifecycle defaults)
-    pub poll_live_interval: Option<String>,
-    pub poll_idle_interval: Option<String>,
-    pub cache_lifespan: Option<String>,
     pub failure_reattempts: Option<u32>,
     pub failure_backoff_interval: Option<String>,
     // New lifecycle config fields (Task 8)
@@ -293,17 +245,6 @@ impl Config {
             .and_then(|p| p.enabled)
             .map(|e| !e)
             .unwrap_or(false)
-    }
-
-    /// Resolve the cache lifespan for a provider. Per-provider overrides lifecycle default.
-    pub fn resolve_cache_lifespan(&self, provider_name: &str) -> Duration {
-        self.providers
-            .get(provider_name)
-            .and_then(|p| p.cache_lifespan.as_ref())
-            .and_then(|s| parse_duration(s))
-            .unwrap_or_else(|| {
-                parse_duration(&self.lifecycle.cache_lifespan).unwrap_or(Duration::from_secs(30))
-            })
     }
 
     pub fn resolve_failure_reattempts(&self, provider_name: &str) -> u32 {
@@ -346,27 +287,6 @@ impl Config {
             .get(provider_name)
             .and_then(|p| p.fsevents_reinstate)
             .unwrap_or(self.lifecycle.fsevents_reinstate)
-    }
-
-    pub fn resolve_poll_idle_interval(&self, provider_name: &str) -> Option<Duration> {
-        self.providers
-            .get(provider_name)
-            .and_then(|p| p.poll_idle_interval.as_ref())
-            .and_then(|s| parse_duration(s))
-    }
-
-    pub fn resolve_poll_live_interval(&self, provider_name: &str) -> Option<u64> {
-        // poll_live_interval takes precedence over poll_secs
-        let provider_config = self.providers.get(provider_name);
-        if let Some(config) = provider_config {
-            if let Some(ref interval) = config.poll_live_interval {
-                return parse_duration(interval).map(|d| d.as_secs());
-            }
-            if let Some(secs) = config.poll_secs {
-                return Some(secs);
-            }
-        }
-        None
     }
 
     pub fn script_providers(&self) -> Vec<(String, ScriptProviderConfig)> {
@@ -413,6 +333,9 @@ impl Config {
         match Self::config_path_if_exists() {
             Some(path) => {
                 let content = std::fs::read_to_string(&path).unwrap_or_default();
+                for warning in detect_deprecated_keys(&content) {
+                    warn!("{}", warning);
+                }
                 toml::from_str(&content).unwrap_or_default()
             }
             None => Self::default(),
@@ -520,6 +443,64 @@ impl Config {
             })
             .join("daemon.log")
     }
+}
+
+/// Returns a list of warning messages for deprecated config keys present
+/// in the raw TOML. Does not mutate anything — just a pre-parse pass for
+/// startup logging.
+pub fn detect_deprecated_keys(toml_text: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    let parsed: toml::Value = match toml::from_str(toml_text) {
+        Ok(v) => v,
+        Err(_) => return warnings,
+    };
+
+    // [lifecycle].{cache_lifespan, grace_period_secs}
+    if let Some(lifecycle) = parsed.get("lifecycle").and_then(|v| v.as_table()) {
+        if lifecycle.contains_key("cache_lifespan") {
+            warnings.push(
+                "[lifecycle] cache_lifespan is deprecated and ignored; \
+                 cache lifetime is now poll_interval × poll_live_count"
+                    .to_string(),
+            );
+        }
+        if lifecycle.contains_key("grace_period_secs") {
+            warnings.push(
+                "[lifecycle] grace_period_secs is deprecated and ignored; \
+                 use poll_interval and poll_live_count instead"
+                    .to_string(),
+            );
+        }
+    }
+
+    // [providers.*].{poll_idle_interval, poll_live_interval, cache_lifespan}
+    if let Some(providers) = parsed.get("providers").and_then(|v| v.as_table()) {
+        for (name, provider) in providers {
+            if let Some(table) = provider.as_table() {
+                if table.contains_key("poll_idle_interval") {
+                    warnings.push(format!(
+                        "[providers.{name}] poll_idle_interval is deprecated and \
+                         ignored; use fsevents_reinstate and the decay ladder"
+                    ));
+                }
+                if table.contains_key("poll_live_interval") {
+                    warnings.push(format!(
+                        "[providers.{name}] poll_live_interval is deprecated; \
+                         renamed to poll_interval"
+                    ));
+                }
+                if table.contains_key("cache_lifespan") {
+                    warnings.push(format!(
+                        "[providers.{name}] cache_lifespan is deprecated and \
+                         ignored; use poll_interval × poll_live_count"
+                    ));
+                }
+            }
+        }
+    }
+
+    warnings
 }
 
 /// Expand ~ to $HOME in a path string.

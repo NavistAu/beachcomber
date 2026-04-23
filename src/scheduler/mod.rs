@@ -321,7 +321,8 @@ fn start_backoff_for_key(
     backoff: &mut HashMap<(String, Option<String>), BackoffState>,
     config: &Config,
 ) {
-    let grace_duration = config.resolve_cache_lifespan(&key.0);
+    let grace_duration =
+        config.resolve_poll_interval(&key.0) * config.resolve_poll_live_count(&key.0);
     backoff.entry(key.clone()).or_insert_with(|| {
         debug!("Starting backoff for provider={} path={:?}", key.0, key.1);
         BackoffState::new(grace_duration)
@@ -720,14 +721,17 @@ impl Scheduler {
                             // Restore live polling interval if we were in idle mode.
                             if let Some(prov) = self.registry.get(&provider) {
                                 let meta = prov.metadata();
-                                let live_poll_secs = self.config.resolve_poll_live_interval(&provider).unwrap_or(
-                                    match &meta.invalidation {
-                                        InvalidationStrategy::Poll { interval_secs, .. } => *interval_secs,
-                                        InvalidationStrategy::WatchAndPoll { interval_secs, .. } => *interval_secs,
-                                        InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
-                                        InvalidationStrategy::Once => 0,
-                                    }
-                                );
+                                let meta_poll_secs = match &meta.invalidation {
+                                    InvalidationStrategy::Poll { interval_secs, .. } => *interval_secs,
+                                    InvalidationStrategy::WatchAndPoll { interval_secs, .. } => *interval_secs,
+                                    InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
+                                    InvalidationStrategy::Once => 0,
+                                };
+                                let live_poll_secs = if self.config.providers.contains_key(&provider) {
+                                    self.config.resolve_poll_interval(&provider).as_secs()
+                                } else {
+                                    meta_poll_secs
+                                };
                                 if let Some(state) = poll_states.get_mut(&key)
                                     && state.interval_secs != live_poll_secs
                                     && live_poll_secs > 0
@@ -749,8 +753,11 @@ impl Scheduler {
                                     };
 
                                     // Apply config override if set
-                                    let poll_secs = self.config.resolve_poll_live_interval(&provider)
-                                        .unwrap_or(poll_secs);
+                                    let poll_secs = if self.config.providers.contains_key(&provider) {
+                                        self.config.resolve_poll_interval(&provider).as_secs()
+                                    } else {
+                                        poll_secs
+                                    };
 
                                     if poll_secs > 0 {
                                         poll_states.entry(key.clone()).or_insert(PollState {
@@ -835,15 +842,8 @@ impl Scheduler {
                         debug!("Demand expired for provider={} path={:?}", key.0, key.1);
                         demand.remove(&key);
 
-                        // Switch to idle polling if configured, otherwise stop polling.
-                        if let Some(idle_interval) = self.config.resolve_poll_idle_interval(&key.0) {
-                            if let Some(state) = poll_states.get_mut(&key) {
-                                state.interval_secs = idle_interval.as_secs().max(1);
-                                debug!("Switched provider={} path={:?} to idle polling every {}s", key.0, key.1, idle_interval.as_secs());
-                            }
-                        } else {
-                            poll_states.remove(&key);
-                        }
+                        // poll_idle_interval removed; stop polling on demand expiry.
+                        poll_states.remove(&key);
 
                         // Remove watch for this key (watches are only active during live demand).
                         let mut paths_to_unwatch = Vec::new();
@@ -934,14 +934,17 @@ impl Scheduler {
                             // Restore live polling interval if we were in idle mode.
                             if let Some(prov) = self.registry.get(&provider) {
                                 let meta = prov.metadata();
-                                let live_poll_secs = self.config.resolve_poll_live_interval(&provider).unwrap_or(
-                                    match &meta.invalidation {
-                                        InvalidationStrategy::Poll { interval_secs, .. } => *interval_secs,
-                                        InvalidationStrategy::WatchAndPoll { interval_secs, .. } => *interval_secs,
-                                        InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
-                                        InvalidationStrategy::Once => 0,
-                                    }
-                                );
+                                let meta_poll_secs = match &meta.invalidation {
+                                    InvalidationStrategy::Poll { interval_secs, .. } => *interval_secs,
+                                    InvalidationStrategy::WatchAndPoll { interval_secs, .. } => *interval_secs,
+                                    InvalidationStrategy::Watch { fallback_poll_secs, .. } => fallback_poll_secs.unwrap_or(60),
+                                    InvalidationStrategy::Once => 0,
+                                };
+                                let live_poll_secs = if self.config.providers.contains_key(&provider) {
+                                    self.config.resolve_poll_interval(&provider).as_secs()
+                                } else {
+                                    meta_poll_secs
+                                };
                                 if let Some(state) = poll_states.get_mut(&key)
                                     && state.interval_secs != live_poll_secs
                                     && live_poll_secs > 0
@@ -963,8 +966,11 @@ impl Scheduler {
                                     };
 
                                     // Apply config override if set
-                                    let poll_secs = self.config.resolve_poll_live_interval(&provider)
-                                        .unwrap_or(poll_secs);
+                                    let poll_secs = if self.config.providers.contains_key(&provider) {
+                                        self.config.resolve_poll_interval(&provider).as_secs()
+                                    } else {
+                                        poll_secs
+                                    };
 
                                     if poll_secs > 0 {
                                         poll_states.entry(key.clone()).or_insert(PollState {
@@ -1018,15 +1024,8 @@ impl Scheduler {
                         debug!("Demand expired for provider={} path={:?}", key.0, key.1);
                         demand.remove(&key);
 
-                        // Switch to idle polling if configured, otherwise stop polling.
-                        if let Some(idle_interval) = self.config.resolve_poll_idle_interval(&key.0) {
-                            if let Some(state) = poll_states.get_mut(&key) {
-                                state.interval_secs = idle_interval.as_secs().max(1);
-                                debug!("Switched provider={} path={:?} to idle polling every {}s", key.0, key.1, idle_interval.as_secs());
-                            }
-                        } else {
-                            poll_states.remove(&key);
-                        }
+                        // poll_idle_interval removed; stop polling on demand expiry.
+                        poll_states.remove(&key);
 
                         // Start backoff for eviction.
                         start_backoff_for_key(&key, &mut backoff, &self.config);
