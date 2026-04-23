@@ -46,7 +46,7 @@ CI skips with: `cargo nextest run -E 'not test(uptime_provider_executes)'`.
 
 Async tokio daemon listening on a Unix socket. One task per connection.
 
-- `src/scheduler.rs` — core loop: poll timers, filesystem watching (notify), demand tracking, backoff, provider execution
+- `src/scheduler/` — core loop: poll timers, filesystem watching (notify), demand tracking, cache lifecycle (Active / Decay1-4 / Evicted), provider execution. See `src/scheduler/lifecycle.rs` for the state machine.
 - `src/server.rs` — socket accept loop, spawns connection tasks
 - `src/cache.rs` — DashMap with null-byte-separated keys (`"provider\0path"`)
 - `src/protocol.rs` — NDJSON wire format, `Request`/`Response` types
@@ -58,7 +58,7 @@ Async tokio daemon listening on a Unix socket. One task per connection.
 
 Providers are synchronous — the scheduler runs them via `tokio::task::spawn_blocking`.
 
-Demand-driven warming: only actively-queried keys are polled. Idle keys go through Grace → SlowPoll → Frozen → Evict.
+Demand-driven warming: only actively-queried keys are polled at the provider's base rate. Idle keys enter an exponential-backoff decay (see `docs/cache-lifecycle.md`) and are eventually evicted.
 
 ## Protocol
 

@@ -43,7 +43,8 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/lib.rs` | Module declarations; no logic |
 | `src/daemon.rs` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel`; watchdog task monitors scheduler heartbeat |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
-| `src/scheduler.rs` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; owns all demand and watch state; contains `BackoffState`/`BackoffStage`; heartbeat counter for watchdog liveness detection |
+| `src/scheduler/mod.rs` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; dispatches lifecycle events into `LifecycleRegistry` and applies `TickActions`; heartbeat counter for watchdog liveness detection |
+| `src/scheduler/lifecycle.rs` | `LifecycleRegistry` state machine: Active → Decay1..4 → Evicted. Per-entry poll and decay timers. Canonical behaviour in `docs/cache-lifecycle.md` |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; generation counter |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
 | `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`; `split_key()` |
@@ -187,24 +188,29 @@ The scheduler's per-second tick checks all demand entries. Any key not queried w
 - Filesystem watches for that key are removed (if no other keys share the watch path).
 - A `BackoffState` is started in `Grace` stage.
 
-**Backoff/drain sequence**
+**Cache lifecycle**
 
-When a key enters the backoff sequence, `BackoffState` (in `src/scheduler.rs`) tracks its stage:
+Each cache entry advances through the states defined in `docs/cache-lifecycle.md`. `LifecycleRegistry` in `src/scheduler/lifecycle.rs` owns the state machine:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Grace : cache_lifespan (default 30s)
-    Grace --> SlowPoll
-    SlowPoll --> Frozen
-    Frozen --> Evict
-    Evict --> [*] : cache.remove()
+    [*] --> Active : first demand signal
+    Active --> Decay1 : keep-alive elapses
+    Decay1 --> Decay2 : step duration elapses
+    Decay2 --> Decay3 : step duration elapses
+    Decay3 --> Decay4 : step duration elapses
+    Decay4 --> [*] : cache.remove() (eviction)
+    Decay1 --> Active : demand signal
+    Decay2 --> Active : demand signal
+    Decay3 --> Active : demand signal
+    Decay4 --> Active : demand signal
 ```
 
-At `Evict`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any backoff stage, the backoff is cancelled immediately and the key re-enters the demand window.
+Each decay step doubles the poll interval and the step duration, so every state contains exactly `K` polls at its rate. Demand signals (consumer requests or fsevents on watched paths when `fsevents_reinstate=true`) reset the timer and reinstate any decaying entry to Active. See `docs/cache-lifecycle.md` for the full behaviour spec.
 
 **Idle shutdown**
 
-When `cache.is_empty()` and `demand.is_empty()` both hold true and no activity has been seen for `lifecycle.idle_shutdown_secs`, the daemon exits.
+When `cache.is_empty()` and `lifecycle.is_empty()` both hold true and no activity has been seen for `lifecycle.idle_shutdown_secs`, the daemon exits.
 
 ---
 
@@ -256,7 +262,7 @@ Naively, a burst of filesystem events (e.g., a `git commit` touching many `.git`
 
 **Two independent backoff mechanisms**
 
-Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Demand backoff (in `BackoffState`, Grace->SlowPoll->Frozen->Evict) handles resource cleanup when a key drops out of the demand window. They serve different purposes and are deliberately kept separate.
+Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Cache-entry lifecycle (in `LifecycleRegistry`, Active → Decay1..4 → Evicted) handles resource cleanup when a key drops out of the demand window — see `docs/cache-lifecycle.md`. They serve different purposes and are deliberately kept separate.
 
 **Watch connections are long-lived**
 

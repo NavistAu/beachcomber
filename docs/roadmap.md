@@ -179,24 +179,6 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 
 ---
 
-## Known Core Issues
-
-### Cache decay is inert — core value prop broken
-
-**What's broken:** the demand-driven-warming half works (cache hits fast, misses execute inline, active keys stay warm via polling + fs watches). The decay half does not. When demand expires on a cache entry:
-
-- `BackoffStage` advances Grace → SlowPoll, then gets stuck forever (`scheduler.rs:172-207`). No code advances past SlowPoll.
-- `BackoffState::poll_multiplier()` exists (Grace=1×, SlowPoll=4×, Frozen=0×) but is never called in production code — decorative from day one (commit `a203f89c`).
-- `should_watch()` is never called in production code either.
-- No config value anywhere causes eviction. `eviction_timeout_secs` is declared but unread. `cache_lifespan` only gates the inert Grace→SlowPoll stage flip.
-- Net effect: cache entries accumulate forever until daemon restart. Memory bloat; `comb status` shows stranded entries hours old.
-
-**Intended design:** see `docs/cache-lifecycle.md` — canonical model, state machine, sequence diagrams, BDD assertions. 4-stage exponential decay (poll interval and step duration both double each step), reinstatement on any demand signal, total decay window `30K` before eviction.
-
-**Status:** implementation deferred. Design is settled and documented (2026-04-23). Next step is a rebuild spec that maps `cache-lifecycle.md` onto concrete config keys and scheduler code, then the implementation itself. Must not be forgotten.
-
----
-
 ## Deferred: Post-Launch
 
 ### Release Infrastructure

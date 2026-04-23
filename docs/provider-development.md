@@ -323,6 +323,29 @@ Note that for path-scoped providers (e.g., `git`), patterns like `".git"` are re
 
 ---
 
+## 3b. Cache Lifecycle Tuning
+
+By default, providers inherit global lifecycle settings. Per-provider overrides live in `[providers.<name>]`:
+
+| Key | Type | Description |
+|---|---|---|
+| `poll_interval` | duration | Base poll rate for this provider while Active. Replaces `poll_live_interval`. |
+| `poll_live_count` | u32 | Number of Active polls that count as "alive" before decay begins. |
+| `fsevents_reinstate` | bool | If true, a filesystem event on a watched path reinstates a decaying entry back to Active. |
+
+Example:
+
+```toml
+[providers.git]
+poll_interval = "30s"
+poll_live_count = 4
+fsevents_reinstate = true
+```
+
+The full decay model — state machine, step durations, reinstatement rules — is specified in `docs/cache-lifecycle.md`.
+
+---
+
 ## 4. Performance Guidelines
 
 Provider execution happens on tokio's blocking thread pool. Slow providers delay cache freshness but do not block the scheduler loop. Still, keep providers fast. The tier list from `docs/performance.md`:

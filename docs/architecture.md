@@ -38,7 +38,8 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/lib.rs` | Module declarations; no logic |
 | `src/daemon.rs` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel`; watchdog task monitors scheduler heartbeat |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
-| `src/scheduler.rs` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; owns all demand and watch state; contains `BackoffState`/`BackoffStage`; heartbeat counter for watchdog liveness detection |
+| `src/scheduler/` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; owns all demand and watch state; heartbeat counter for watchdog liveness detection |
+| `src/scheduler/lifecycle.rs` | `LifecycleRegistry` — per-key cache lifecycle state machine: Active → Decay1 → Decay2 → Decay3 → Decay4 → Evicted. Exponential decay of poll interval and step duration each stage. See `docs/cache-lifecycle.md` for the full spec. |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; generation counter |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
 | `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`; `split_key()` |
@@ -196,22 +197,29 @@ The scheduler's per-second tick checks all demand entries. Any key not queried w
 
 - The poll timer for that key is removed.
 - Filesystem watches for that key are removed (if no other keys share the watch path).
-- A `BackoffState` is started in `Grace` stage.
+- The key enters the decay lifecycle managed by `LifecycleRegistry` (`src/scheduler/lifecycle.rs`).
 
-**Backoff/drain sequence**
+**Cache lifecycle (decay sequence)**
 
-When a key enters the backoff sequence, `BackoffState` (in `src/scheduler.rs`) tracks its stage:
+When a key loses demand it enters an exponential-backoff decay tracked by `LifecycleRegistry`:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Grace : cache_lifespan (default 30s)
-    Grace --> SlowPoll
-    SlowPoll --> Frozen
-    Frozen --> Evict
-    Evict --> [*] : cache.remove()
+    [*] --> Active : demand present
+    Active --> Decay1 : demand expires
+    Decay1 --> Decay2
+    Decay2 --> Decay3
+    Decay3 --> Decay4
+    Decay4 --> Evicted : cache.remove()
+    Decay1 --> Active : QueryActivity
+    Decay2 --> Active : QueryActivity
+    Decay3 --> Active : QueryActivity
+    Decay4 --> Active : QueryActivity
 ```
 
-At `Evict`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any backoff stage, the backoff is cancelled immediately and the key re-enters the demand window.
+Each decay step doubles the poll interval and the step duration relative to the previous step. At `Evicted`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any decay stage, the key is reinstated to `Active` immediately. If `fsevents_reinstate` is true for the provider, a matching filesystem event also reinstates the key.
+
+See `docs/cache-lifecycle.md` for the canonical spec: state machine, sequence diagrams, BDD assertions, and config knobs (`poll_interval`, `poll_live_count`, `fsevents_reinstate`).
 
 **Idle shutdown**
 
@@ -267,7 +275,7 @@ Naively, a burst of filesystem events (e.g., a `git commit` touching many `.git`
 
 **Two independent backoff mechanisms**
 
-Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Demand backoff (in `BackoffState`, Grace->SlowPoll->Frozen->Evict) handles resource cleanup when a key drops out of the demand window. They serve different purposes and are deliberately kept separate.
+Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Cache lifecycle decay (in `LifecycleRegistry`, Active → Decay1-4 → Evicted) handles resource cleanup when a key drops out of the demand window. They serve different purposes and are deliberately kept separate.
 
 **Watch connections are long-lived**
 

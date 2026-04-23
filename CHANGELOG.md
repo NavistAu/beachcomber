@@ -8,17 +8,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Cache decay now works as designed. Previously, `BackoffStage::SlowPoll`, `Frozen`, and `Evict` were defined but unreachable; cache entries never evicted and accumulated until daemon restart. Now: Active → Decay1 → Decay2 → Decay3 → Decay4 → Evicted runs end-to-end with exponential decay polling (poll interval and step duration both double per step). See `docs/cache-lifecycle.md` for the full behaviour spec.
 - Global providers (hostname, user, battery, etc.) no longer create ghost cache entries when queried with an explicit path. Previously `comb get hostname.short /some/dir` cached hostname under `/some/dir` in addition to the real pathless entry.
 - `mise.global` is no longer duplicated per project directory. The `mise` provider now emits its global tool state as a pathless cache entry and its project tool state as a path-scoped cache entry.
 
+### Added
+
+- Per-provider cache lifecycle tuning: `poll_interval` (base poll rate `P`) and `poll_live_count` (keep-alive count `K` in polls) in `[lifecycle]` and `[providers.<name>]`.
+- `fsevents_reinstate` per-provider bool. When true, an fsevent on a watched path reinstates a decaying entry back to Active.
+- `DECAY` column in `comb status` showing the lifecycle level 0-4 per entry (0 = Active).
+
 ### Changed
 
+- **Protocol-breaking:** `introspect` subject renamed from `"backoff"` to `"lifecycle"`. Payload shape carries new state values (`"Active"`, `"Decay1"`–`"Decay4"`) in place of the old `"Grace"` / `"SlowPoll"` / `"Frozen"` / `"Evict"`. All SDK `IntrospectSubject` constants renamed accordingly (no legacy alias — pre-1.0).
 - Provider scope is now declared per field via `FieldSchema::scope` (`FieldScope::Global` or `FieldScope::PathScoped`). The `ProviderMetadata.global: bool` field is removed. Custom TOML and library providers can declare per-field scope; the provider-level `scope` key continues to work as a default.
 - `Provider::execute` signature widened to return `Vec<(Option<String>, ProviderResult)>`, enabling one provider to emit multiple scoped cache entries per execution. SDKs are unaffected — wire protocol is unchanged.
 
 ### Removed
 
-- The unused `[lifecycle] eviction_timeout_secs` config field. Configs that still declare it continue to parse cleanly; serde ignores unknown fields.
+- `[lifecycle] cache_lifespan` config key — now derived as `poll_interval × poll_live_count`.
+- `[providers.<name>] poll_idle_interval` config key — subsumed by the decay ladder plus `fsevents_reinstate`.
+- `[providers.<name>] poll_live_interval` config key — renamed to `poll_interval`.
+- The unused `[lifecycle] eviction_timeout_secs` config field. Configs that still declare these legacy keys continue to parse cleanly (serde ignores unknown fields); the daemon emits a `WARN` log at startup for each deprecated key detected.
 
 ## [0.6.0] - 2026-04-22
 

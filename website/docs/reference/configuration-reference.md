@@ -51,11 +51,24 @@ provider_timeout_secs = 10
 
 [lifecycle]
 
-# How long to maintain full polling cadence after demand expires
-# (i.e., after the last query for a key). During this window, cache entries
-# stay warm in case a new shell opens.
-# Default: "30s"
-cache_lifespan = "30s"
+# Base polling interval used while an entry is in Active state (P in the
+# cache lifecycle model). See docs/cache-lifecycle.md.
+# Default: "60s"
+poll_interval = "60s"
+
+# Keep-alive count in polls (K in the cache lifecycle model). An Active
+# entry stays warm for K × poll_interval seconds after the last demand
+# signal, then enters the exponential decay ladder (Decay1..4, each step
+# doubling interval and duration) until eviction.
+# Default: 12
+poll_live_count = 12
+
+# Whether an fsevent during decay reinstates the entry to Active. Default
+# false drops filesystem watches on entry to Decay1; set true to keep
+# watches live through every decay step. Useful for providers whose
+# watched files change rarely but matter quickly.
+# Default: false
+fsevents_reinstate = false
 
 # How many times to retry a provider after consecutive failures before backing off.
 # Default: 3
@@ -83,18 +96,19 @@ enabled = false
 
 # Override polling interval and floor for battery
 [providers.battery]
-poll_live_interval = "60s"    # default: "30s"
+poll_interval = "60s"         # default: "30s"
 poll_floor_secs = 10          # default: 5
 
 # Make git refresh more frequently (useful on fast machines or large repos)
 [providers.git]
-poll_live_interval = "30s"    # default: no poll (filesystem-triggered only)
+poll_interval = "30s"         # default: "60s"
 poll_floor_secs = 2           # default: not set
-cache_lifespan = "2m"         # keep git data warm for 2 minutes after last query
+poll_live_count = 24          # keep-alive = 24 × 30s = 12 min of warmth after last query
+fsevents_reinstate = true     # .git fsevent during decay reinstates to Active
 
 # Override network polling interval
 [providers.network]
-poll_live_interval = "30s"    # default: "10s"
+poll_interval = "30s"         # default: "10s"
 poll_floor_secs = 10          # default: 5
 
 
@@ -223,10 +237,14 @@ JSON metadata:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `cache_lifespan` | duration | `"30s"` | How long cached data stays warm after last query |
+| `poll_interval` | duration | `"60s"` | Base polling interval `P` used in Active state |
+| `poll_live_count` | int | `12` | Keep-alive count `K` in polls (see `docs/cache-lifecycle.md`) |
+| `fsevents_reinstate` | bool | `false` | Whether fsevents during decay reinstate the entry to Active |
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
 | `failure_reattempts` | int | `3` | Number of retries after consecutive provider failures before backing off |
 | `failure_backoff_interval` | duration | `"1s"` | Wait time between failure retry attempts |
+
+> `cache_lifespan`, `poll_idle_interval`, and `poll_live_interval` have been removed. Cache warmth is now `poll_interval × poll_live_count`; the decay ladder plus `fsevents_reinstate` replaces the single idle rate. Legacy configs parse cleanly — the daemon emits a `WARN` log at startup for each deprecated key.
 
 > Duration strings use whole-second values: `"30s"` (seconds), `"2m"` (minutes), `"1h"` (hours), `"2h30m"` (compound). Sub-second values (e.g. `"500ms"`) are not accepted.
 
@@ -235,10 +253,10 @@ JSON metadata:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` | Set `false` to disable provider entirely |
-| `poll_live_interval` | duration | provider-specific | Override poll interval while provider is actively queried |
-| `poll_idle_interval` | duration | provider-specific | Poll interval when provider is not actively queried |
+| `poll_interval` | duration | inherited from `[lifecycle]` | Override base poll rate `P` |
+| `poll_live_count` | int | inherited from `[lifecycle]` | Override keep-alive count `K` |
+| `fsevents_reinstate` | bool | inherited from `[lifecycle]` | Override fsevent-during-decay policy |
 | `poll_floor_secs` | int | provider-specific | Minimum poll interval consumers can request |
-| `cache_lifespan` | duration | inherited from `[lifecycle]` | How long cached data stays warm after last query |
 | `failure_reattempts` | int | inherited from `[lifecycle]` | Retries after consecutive failures before backing off |
 | `failure_backoff_interval` | duration | inherited from `[lifecycle]` | Wait time between failure retry attempts |
 
@@ -250,10 +268,10 @@ JSON metadata:
 | `output` | string | no | `"json"` (default), `"kv"`, or `"text"` |
 | `scope` | string | no | `"global"` (default) or `"path"` |
 | `enabled` | bool | no | `false` to disable |
-| `poll_live_interval` | duration | no | Poll interval while provider is actively queried |
-| `poll_idle_interval` | duration | no | Poll interval when provider is not actively queried |
+| `poll_interval` | duration | no | Base poll rate `P` |
+| `poll_live_count` | int | no | Keep-alive count `K` |
+| `fsevents_reinstate` | bool | no | Keep watches live during decay |
 | `poll_floor_secs` | int | no | Minimum poll interval |
-| `cache_lifespan` | duration | no | How long cached data stays warm after last query |
 | `failure_reattempts` | int | no | Retries after consecutive failures before backing off |
 | `failure_backoff_interval` | duration | no | Wait time between failure retry attempts |
 | `invalidation.poll` | string | no | Poll interval as duration string (`"30s"`, `"2m"`) |
