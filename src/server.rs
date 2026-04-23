@@ -491,21 +491,28 @@ async fn handle_request(
                                 &provider.metadata().invalidation,
                             );
                             let path_owned = effective_path.clone();
-                            let result = tokio::task::spawn_blocking(move || {
+                            let results = tokio::task::spawn_blocking(move || {
                                 provider.execute(path_owned.as_deref())
                             })
                             .await
-                            .ok()
-                            .flatten();
+                            .unwrap_or_default();
 
-                            match result {
-                                Some(result) => {
-                                    cache.put_with_interval(
-                                        provider_name,
-                                        effective_path.as_deref(),
-                                        result.clone(),
-                                        interval,
-                                    );
+                            // Write every returned entry to cache (providers may emit multiple scopes).
+                            for (scope_path, res) in &results {
+                                cache.put_with_interval(
+                                    provider_name,
+                                    scope_path.as_deref(),
+                                    res.clone(),
+                                    interval,
+                                );
+                            }
+
+                            // For the response, pick the entry whose cache_path matches effective_path.
+                            let matching = results
+                                .iter()
+                                .find(|(p, _)| p.as_deref() == effective_path.as_deref());
+                            match matching {
+                                Some((_, result)) => {
                                     let data = if let Some(field_name) = field {
                                         match result.get(field_name) {
                                             Some(value) => serde_json::to_value(value).unwrap(),
@@ -601,10 +608,11 @@ async fn handle_request(
                         let interval = crate::provider::expected_interval_secs(
                             &provider.metadata().invalidation,
                         );
-                        if let Some(result) = provider.execute(effective_path.as_deref()) {
+                        let results = provider.execute(effective_path.as_deref());
+                        for (scope_path, result) in results {
                             cache.put_with_interval(
                                 provider_name,
-                                effective_path.as_deref(),
+                                scope_path.as_deref(),
                                 result,
                                 interval,
                             );

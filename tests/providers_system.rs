@@ -52,7 +52,11 @@ fn load_provider_metadata() {
 #[test]
 fn load_provider_executes() {
     let p = LoadProvider;
-    let result = p.execute(None).expect("Load should always succeed");
+    let (_, result) = p
+        .execute(None)
+        .into_iter()
+        .next()
+        .expect("Load should always succeed");
     let one = result.get("one").unwrap().as_text();
     let val: f64 = one.parse().expect("Load should be a number");
     assert!(val >= 0.0, "Load average should be non-negative");
@@ -97,7 +101,7 @@ mod uptime_tests {
         let p = UptimeProvider;
         // sysctl may be unavailable in sandboxed environments; accept None.
         // If Some, validate the primary field is present.
-        if let Some(result) = p.execute(None) {
+        if let Some((_, result)) = p.execute(None).into_iter().next() {
             assert!(
                 result.get("seconds").is_some(),
                 "seconds field should be present"

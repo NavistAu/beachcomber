@@ -18,8 +18,10 @@ fn uname_provider_metadata() {
 #[test]
 fn uname_provider_executes() {
     let p = UnameProvider;
-    let result = p
+    let (_, result) = p
         .execute(None)
+        .into_iter()
+        .next()
         .expect("uname provider should return a result");
     let sysname = result.get("sysname").expect("should have sysname field");
     let sysname_text = sysname.as_text();

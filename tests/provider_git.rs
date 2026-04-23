@@ -88,14 +88,21 @@ fn git_provider_returns_none_for_non_repo() {
     let tmp = TempDir::new().unwrap();
     let p = GitProvider;
     let result = p.execute(Some(tmp.path().to_str().unwrap()));
-    assert!(result.is_none(), "Non-git directory should return None");
+    assert!(
+        result.is_empty(),
+        "Non-git directory should return empty Vec"
+    );
 }
 
 #[test]
 fn git_provider_returns_branch() {
     let tmp = create_test_repo();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     let branch = result.get("branch").unwrap().as_text();
     assert!(!branch.is_empty(), "Branch should not be empty");
 }
@@ -104,7 +111,11 @@ fn git_provider_returns_branch() {
 fn git_provider_clean_repo() {
     let tmp = create_test_repo();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(result.get("dirty").unwrap().as_text(), "false");
     assert_eq!(result.get("staged").unwrap().as_text(), "0");
     assert_eq!(result.get("unstaged").unwrap().as_text(), "0");
@@ -116,7 +127,11 @@ fn git_provider_dirty_repo() {
     let tmp = create_test_repo();
     std::fs::write(tmp.path().join("new_file.txt"), "content").unwrap();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(result.get("dirty").unwrap().as_text(), "true");
     assert_eq!(result.get("untracked").unwrap().as_text(), "1");
 }
@@ -131,7 +146,11 @@ fn git_provider_staged_changes() {
         .output()
         .unwrap();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(result.get("staged").unwrap().as_text(), "1");
 }
 
@@ -140,7 +159,11 @@ fn git_provider_unstaged_changes() {
     let tmp = create_test_repo();
     std::fs::write(tmp.path().join("README.md"), "modified").unwrap();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(result.get("unstaged").unwrap().as_text(), "1");
 }
 
@@ -154,7 +177,11 @@ fn git_provider_stash_count() {
         .output()
         .unwrap();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(result.get("stash").unwrap().as_text(), "1");
 }
 
@@ -162,8 +189,8 @@ fn git_provider_stash_count() {
 fn git_provider_requires_path() {
     let p = GitProvider;
     assert!(
-        p.execute(None).is_none(),
-        "Git provider should return None without a path"
+        p.execute(None).is_empty(),
+        "Git provider should return empty Vec without a path"
     );
 }
 
@@ -171,7 +198,11 @@ fn git_provider_requires_path() {
 fn git_provider_clean_repo_new_fields() {
     let tmp = create_test_repo();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
 
     // No unstaged line changes in a clean repo
     assert_eq!(result.get("lines_added").unwrap().as_text(), "0");
@@ -194,7 +225,11 @@ fn git_provider_clean_repo_new_fields() {
 fn git_provider_commit_hash_format() {
     let tmp = create_test_repo();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     let commit = result.get("commit").unwrap().as_text();
     // Short SHA: non-empty, all hex, typically 7 chars
     assert!(!commit.is_empty(), "commit should not be empty");
@@ -213,7 +248,11 @@ fn git_provider_commit_hash_format() {
 fn git_provider_last_commit_age_secs() {
     let tmp = create_test_repo();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     let age: i64 = result
         .get("last_commit_age_secs")
         .unwrap()
@@ -231,7 +270,11 @@ fn git_provider_lines_added_removed_unstaged() {
     // README.md has "# test" (1 line). Replace with 3 lines.
     std::fs::write(tmp.path().join("README.md"), "line1\nline2\nline3").unwrap();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     let added: i64 = result
         .get("lines_added")
         .unwrap()
@@ -260,7 +303,11 @@ fn git_provider_lines_staged_added_removed() {
         .output()
         .unwrap();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     let staged_added: i64 = result
         .get("lines_staged_added")
         .unwrap()
@@ -287,7 +334,11 @@ fn git_provider_lines_staged_added_removed() {
 fn git_provider_commit_summary() {
     let tmp = create_test_repo();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     let summary = result.get("commit_summary").unwrap().as_text();
     assert_eq!(
         summary, "init",
@@ -299,7 +350,11 @@ fn git_provider_commit_summary() {
 fn git_provider_push_ahead_behind_no_push_remote() {
     let tmp = create_test_repo();
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     // No push remote configured — both should be 0
     assert_eq!(result.get("push_ahead").unwrap().as_text(), "0");
     assert_eq!(result.get("push_behind").unwrap().as_text(), "0");
@@ -322,6 +377,10 @@ fn git_provider_detached_head() {
         .unwrap();
 
     let p = GitProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(result.get("detached").unwrap().as_text(), "true");
 }

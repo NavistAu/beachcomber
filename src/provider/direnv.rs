@@ -31,11 +31,14 @@ impl Provider for DirenvProvider {
         }
     }
 
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult> {
-        let path = path?;
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(path) = path else {
+            return Vec::new();
+        };
+        let path_owned = path.to_string();
         let dir = Path::new(path);
         if !dir.join(".envrc").exists() {
-            return None;
+            return Vec::new();
         }
 
         let allowed = Command::new("direnv")
@@ -54,6 +57,6 @@ impl Provider for DirenvProvider {
         let mut result = ProviderResult::new();
         result.insert("status", Value::String(status.to_string()));
         result.insert("allowed", Value::Bool(allowed));
-        Some(result)
+        vec![(Some(path_owned), result)]
     }
 }

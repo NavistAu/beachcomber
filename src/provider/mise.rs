@@ -32,27 +32,39 @@ impl Provider for MiseProvider {
         }
     }
 
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult> {
-        let path = path?;
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(path) = path else {
+            return Vec::new();
+        };
+        let path_owned = path.to_string();
         let dir = Path::new(path);
 
         // Check for mise config files
         let has_config = dir.join("mise.toml").exists() || dir.join(".mise.toml").exists();
         if !has_config {
-            return None;
+            return Vec::new();
         }
 
         // Run mise with JSON output to get source info
-        let output = Command::new("mise")
+        let Some(output) = Command::new("mise")
             .args(["ls", "--current", "--json"])
             .current_dir(dir)
             .output()
             .ok()
-            .filter(|o| o.status.success())?;
+            .filter(|o| o.status.success())
+        else {
+            return Vec::new();
+        };
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let parsed: serde_json::Value = serde_json::from_str(&stdout).ok()?;
-        let obj = parsed.as_object()?;
+        let parsed: serde_json::Value = match serde_json::from_str(&stdout) {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        };
+        let obj = match parsed.as_object() {
+            Some(o) => o,
+            None => return Vec::new(),
+        };
 
         let global_config_dir = std::env::var("XDG_CONFIG_HOME")
             .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config")))
@@ -63,9 +75,14 @@ impl Provider for MiseProvider {
         let mut global_tools: HashMap<String, Value> = HashMap::new();
 
         for (tool_name, versions) in obj {
-            let arr = versions.as_array()?;
+            let Some(arr) = versions.as_array() else {
+                continue;
+            };
             for entry in arr {
-                let version = entry.get("version")?.as_str()?;
+                let version = match entry.get("version").and_then(|v| v.as_str()) {
+                    Some(v) => v,
+                    None => continue,
+                };
                 let source_path = entry
                     .get("source")
                     .and_then(|s| s.get("path"))
@@ -85,6 +102,6 @@ impl Provider for MiseProvider {
         let mut result = ProviderResult::new();
         result.insert("project", Value::Object(project_tools));
         result.insert("global", Value::Object(global_tools));
-        Some(result)
+        vec![(Some(path_owned), result)]
     }
 }

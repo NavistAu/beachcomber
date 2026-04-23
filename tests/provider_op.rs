@@ -16,12 +16,12 @@ fn op_provider_metadata() {
 #[test]
 fn op_provider_executes() {
     let p = OpProvider;
-    let result = p.execute(None);
+    let results = p.execute(None);
     assert!(
-        result.is_some(),
+        !results.is_empty(),
         "op provider should always return a result"
     );
-    let result = result.unwrap();
+    let (_, result) = results.into_iter().next().unwrap();
     let signed_in = result.get("signed_in");
     assert!(
         signed_in.is_some(),

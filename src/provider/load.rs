@@ -34,17 +34,17 @@ impl Provider for LoadProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let mut loadavg: [f64; 3] = [0.0; 3];
         let ret = unsafe { libc::getloadavg(loadavg.as_mut_ptr(), 3) };
         if ret < 0 {
-            return None;
+            return Vec::new();
         }
 
         let mut result = ProviderResult::new();
         result.insert("one", Value::Float(loadavg[0]));
         result.insert("five", Value::Float(loadavg[1]));
         result.insert("fifteen", Value::Float(loadavg[2]));
-        Some(result)
+        vec![(None, result)]
     }
 }

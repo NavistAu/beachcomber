@@ -40,9 +40,18 @@ impl Provider for UptimeProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        let contents = fs::read_to_string("/proc/uptime").ok()?;
-        let uptime_secs = contents.split_whitespace().next()?.parse::<f64>().ok()? as i64;
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(contents) = fs::read_to_string("/proc/uptime").ok() else {
+            return Vec::new();
+        };
+        let Some(uptime_secs) = contents
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|f| f as i64)
+        else {
+            return Vec::new();
+        };
 
         let days = uptime_secs / 86400;
         let hours = (uptime_secs % 86400) / 3600;
@@ -53,6 +62,6 @@ impl Provider for UptimeProvider {
         result.insert("days", Value::Int(days));
         result.insert("hours", Value::Int(hours));
         result.insert("minutes", Value::Int(minutes));
-        Some(result)
+        vec![(None, result)]
     }
 }

@@ -29,12 +29,16 @@ impl Provider for KubecontextProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        let config_path = kubeconfig_path()?;
-        let content = std::fs::read_to_string(&config_path).ok()?;
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(config_path) = kubeconfig_path() else {
+            return Vec::new();
+        };
+        let Some(content) = std::fs::read_to_string(&config_path).ok() else {
+            return Vec::new();
+        };
 
         // Find current-context
-        let context = content
+        let Some(context) = content
             .lines()
             .find(|l| l.starts_with("current-context:"))
             .map(|l| {
@@ -43,7 +47,10 @@ impl Provider for KubecontextProvider {
                     .trim()
                     .to_string()
             })
-            .filter(|s| !s.is_empty())?;
+            .filter(|s| !s.is_empty())
+        else {
+            return Vec::new();
+        };
 
         // Find namespace for this context
         let namespace =
@@ -52,7 +59,7 @@ impl Provider for KubecontextProvider {
         let mut result = ProviderResult::new();
         result.insert("context", Value::String(context));
         result.insert("namespace", Value::String(namespace));
-        Some(result)
+        vec![(None, result)]
     }
 }
 

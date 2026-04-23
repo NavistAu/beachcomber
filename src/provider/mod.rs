@@ -223,7 +223,7 @@ pub enum ProviderSource {
 
 pub trait Provider: Send + Sync {
     fn metadata(&self) -> ProviderMetadata;
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult>;
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)>;
 }
 
 #[cfg(test)]
@@ -358,6 +358,19 @@ mod tests {
             global: true,
         };
         assert!(meta.validate().is_err());
+    }
+
+    #[test]
+    fn execute_returns_vec_of_scoped_results() {
+        // Pins the Provider trait signature. If this compiles, the signature
+        // is correct.
+        fn _accept<P: Provider + ?Sized>(
+            p: &P,
+            path: Option<&str>,
+        ) -> Vec<(Option<String>, ProviderResult)> {
+            p.execute(path)
+        }
+        let _ = _accept::<dyn Provider>;
     }
 
     #[test]

@@ -20,7 +20,8 @@ fn hostname_provider_metadata() {
 #[test]
 fn hostname_provider_executes() {
     let p = HostnameProvider;
-    let result = p.execute(None).expect("hostname should always succeed");
+    let mut results = p.execute(None);
+    let (_, result) = results.pop().expect("hostname should always succeed");
     let name = result.get("name").expect("Should have 'name' field");
     assert!(!name.as_text().is_empty(), "Hostname should not be empty");
 }
@@ -28,7 +29,7 @@ fn hostname_provider_executes() {
 #[test]
 fn hostname_provider_short_is_prefix() {
     let p = HostnameProvider;
-    let result = p.execute(None).unwrap();
+    let (_, result) = p.execute(None).into_iter().next().unwrap();
     let name = result.get("name").unwrap().as_text();
     let short = result.get("short").unwrap().as_text();
     assert!(
@@ -40,8 +41,8 @@ fn hostname_provider_short_is_prefix() {
 #[test]
 fn hostname_provider_ignores_path() {
     let p = HostnameProvider;
-    let r1 = p.execute(None).unwrap();
-    let r2 = p.execute(Some("/some/path")).unwrap();
+    let (_, r1) = p.execute(None).into_iter().next().unwrap();
+    let (_, r2) = p.execute(Some("/some/path")).into_iter().next().unwrap();
     assert_eq!(
         r1.get("name").unwrap().as_text(),
         r2.get("name").unwrap().as_text(),
@@ -67,7 +68,11 @@ fn user_provider_metadata() {
 #[test]
 fn user_provider_executes() {
     let p = UserProvider;
-    let result = p.execute(None).expect("user should always succeed");
+    let (_, result) = p
+        .execute(None)
+        .into_iter()
+        .next()
+        .expect("user should always succeed");
     let name = result.get("name").expect("Should have 'name' field");
     assert!(!name.as_text().is_empty(), "Username should not be empty");
     let uid = result.get("uid").expect("Should have 'uid' field");

@@ -26,13 +26,13 @@ impl Provider for UserProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let uid = unsafe { libc::getuid() } as i64;
         let name = get_username(uid as u32);
         let mut result = ProviderResult::new();
         result.insert("name", Value::String(name));
         result.insert("uid", Value::Int(uid));
-        Some(result)
+        vec![(None, result)]
     }
 }
 

@@ -36,14 +36,16 @@ impl Provider for UnameProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        let info = uname_info()?;
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(info) = uname_info() else {
+            return Vec::new();
+        };
         let mut result = ProviderResult::new();
         result.insert("sysname", Value::String(info.sysname));
         result.insert("release", Value::String(info.release));
         result.insert("version", Value::String(info.version));
         result.insert("machine", Value::String(info.machine));
-        Some(result)
+        vec![(None, result)]
     }
 }
 

@@ -28,7 +28,11 @@ fn network_provider_metadata() {
 #[test]
 fn network_provider_executes() {
     let p = NetworkProvider;
-    let result = p.execute(None).expect("Network should always return data");
+    let (_, result) = p
+        .execute(None)
+        .into_iter()
+        .next()
+        .expect("Network should always return data");
     // online should be a bool
     let online = result.get("online").unwrap().as_text();
     assert!(online == "true" || online == "false");

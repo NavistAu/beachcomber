@@ -30,7 +30,16 @@ impl Provider for HttpProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        match self.execute_inner() {
+            Some(result) => vec![(None, result)],
+            None => Vec::new(),
+        }
+    }
+}
+
+impl HttpProvider {
+    fn execute_inner(&self) -> Option<ProviderResult> {
         let url = expand_env_vars(&self.config.url);
         let method = self.config.method.as_deref().unwrap_or("GET");
 

@@ -39,7 +39,7 @@ impl Provider for UptimeProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let mut boottime = libc::timeval {
             tv_sec: 0,
             tv_usec: 0,
@@ -59,7 +59,7 @@ impl Provider for UptimeProvider {
         };
 
         if ret != 0 {
-            return None;
+            return Vec::new();
         }
 
         let now = unsafe { libc::time(std::ptr::null_mut()) };
@@ -74,6 +74,6 @@ impl Provider for UptimeProvider {
         result.insert("days", Value::Int(days));
         result.insert("hours", Value::Int(hours));
         result.insert("minutes", Value::Int(minutes));
-        Some(result)
+        vec![(None, result)]
     }
 }

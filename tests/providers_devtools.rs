@@ -23,7 +23,7 @@ fn terraform_metadata() {
 fn terraform_returns_none_without_terraform_dir() {
     let tmp = TempDir::new().unwrap();
     let p = TerraformProvider;
-    assert!(p.execute(Some(tmp.path().to_str().unwrap())).is_none());
+    assert!(p.execute(Some(tmp.path().to_str().unwrap())).is_empty());
 }
 
 // --- Direnv ---
@@ -43,7 +43,7 @@ fn direnv_metadata() {
 fn direnv_returns_none_without_envrc() {
     let tmp = TempDir::new().unwrap();
     let p = DirenvProvider;
-    assert!(p.execute(Some(tmp.path().to_str().unwrap())).is_none());
+    assert!(p.execute(Some(tmp.path().to_str().unwrap())).is_empty());
 }
 
 // --- Python ---
@@ -72,7 +72,11 @@ fn python_detects_venv() {
     .unwrap();
 
     let p = PythonProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(result.get("venv").unwrap().as_text(), "true");
     assert_eq!(result.get("venv_name").unwrap().as_text(), ".venv");
 }
@@ -81,7 +85,7 @@ fn python_detects_venv() {
 fn python_returns_none_without_venv() {
     let tmp = TempDir::new().unwrap();
     let p = PythonProvider;
-    assert!(p.execute(Some(tmp.path().to_str().unwrap())).is_none());
+    assert!(p.execute(Some(tmp.path().to_str().unwrap())).is_empty());
 }
 
 // --- Conda ---
@@ -142,7 +146,11 @@ fn asdf_detects_tool_versions() {
 
     use beachcomber::provider::Value;
     let p = AsdfProvider;
-    let result = p.execute(Some(tmp.path().to_str().unwrap())).unwrap();
+    let (_, result) = p
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .into_iter()
+        .next()
+        .unwrap();
     assert!(
         matches!(result.get("tools"), Some(Value::Object(_))),
         "tools field must be a Value::Object"

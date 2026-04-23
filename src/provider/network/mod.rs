@@ -55,7 +55,7 @@ impl Provider for NetworkProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let (iface, ip, vpn_active, vpn_name) = scan_interfaces();
         let ssid = get_wifi_ssid();
 
@@ -66,7 +66,7 @@ impl Provider for NetworkProvider {
         result.insert("vpn_active", Value::Bool(vpn_active));
         result.insert("vpn_name", Value::String(vpn_name));
         result.insert("ssid", Value::String(ssid));
-        Some(result)
+        vec![(None, result)]
     }
 }
 

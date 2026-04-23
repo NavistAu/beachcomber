@@ -29,12 +29,16 @@ impl Provider for GcloudProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        let config_dir = gcloud_config_dir()?;
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(config_dir) = gcloud_config_dir() else {
+            return Vec::new();
+        };
 
         // Read the active configuration's properties
         let properties_path = config_dir.join("properties");
-        let content = std::fs::read_to_string(&properties_path).ok()?;
+        let Some(content) = std::fs::read_to_string(&properties_path).ok() else {
+            return Vec::new();
+        };
 
         let mut project = String::new();
         let mut account = String::new();
@@ -58,13 +62,13 @@ impl Provider for GcloudProvider {
         }
 
         if project.is_empty() && account.is_empty() {
-            return None;
+            return Vec::new();
         }
 
         let mut result = ProviderResult::new();
         result.insert("project", Value::String(project));
         result.insert("account", Value::String(account));
-        Some(result)
+        vec![(None, result)]
     }
 }
 

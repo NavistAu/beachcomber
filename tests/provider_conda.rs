@@ -16,7 +16,11 @@ fn conda_execute_works_without_path() {
     unsafe {
         std::env::set_var("CONDA_DEFAULT_ENV", "my-env");
     }
-    let result = CondaProvider.execute(None).expect("should return Some");
+    let (_, result) = CondaProvider
+        .execute(None)
+        .into_iter()
+        .next()
+        .expect("should return Some");
     let env = result.get("env").expect("env field present");
     assert_eq!(env.as_text(), "my-env");
     unsafe {

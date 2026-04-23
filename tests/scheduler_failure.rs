@@ -31,9 +31,9 @@ impl Provider for FailingProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         FAIL_EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
-        None // Always fails
+        Vec::new() // Always fails
     }
 }
 

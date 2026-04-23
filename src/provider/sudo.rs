@@ -27,11 +27,11 @@ impl Provider for SudoProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let active = has_active_sudo();
         let mut result = ProviderResult::new();
         result.insert("active", Value::Bool(active));
-        Some(result)
+        vec![(None, result)]
     }
 }
 

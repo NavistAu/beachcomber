@@ -17,8 +17,10 @@ fn asdf_execute_returns_object_map() {
         "node 20.11.0\npython 3.12.1\n",
     )
     .unwrap();
-    let result = AsdfProvider
+    let (_, result) = AsdfProvider
         .execute(Some(d.path().to_str().unwrap()))
+        .into_iter()
+        .next()
         .unwrap();
     match result.get("tools") {
         Some(Value::Object(map)) => {

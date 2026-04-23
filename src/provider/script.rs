@@ -53,7 +53,7 @@ impl Provider for ScriptProvider {
         }
     }
 
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let output = if cfg!(target_os = "windows") {
             Command::new("cmd")
                 .args(["/C", &self.config.command])
@@ -66,28 +66,42 @@ impl Provider for ScriptProvider {
                 .output()
         };
 
-        let output = output.ok()?;
+        let output = match output.ok() {
+            Some(o) => o,
+            None => return Vec::new(),
+        };
         if !output.status.success() {
             debug!(
                 "Script provider '{}' failed with exit code {:?}",
                 self.name,
                 output.status.code()
             );
-            return None;
+            return Vec::new();
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if stdout.is_empty() {
-            return None;
+            return Vec::new();
         }
 
         let output_format = self.config.output.as_deref().unwrap_or("json");
 
-        match output_format {
+        let maybe_result = match output_format {
             "kv" => parse_kv_output(&stdout),
             "text" => parse_text_output(&stdout),
             _ => parse_json_output(&stdout),
-        }
+        };
+
+        let Some(result) = maybe_result else {
+            return Vec::new();
+        };
+        let is_global = self.config.scope.as_deref() != Some("path");
+        let scope_path = if is_global {
+            None
+        } else {
+            path.map(|p| p.to_string())
+        };
+        vec![(scope_path, result)]
     }
 }
 

@@ -39,7 +39,7 @@ impl Provider for AwsProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         // Profile detection: AWS_PROFILE (native, granted) -> AWS_VAULT (aws-vault)
         let (profile, source) = if let Ok(p) = std::env::var("AWS_PROFILE") {
             if !p.is_empty() {
@@ -67,7 +67,7 @@ impl Provider for AwsProvider {
             .unwrap_or_default();
 
         if profile.is_empty() && region.is_empty() {
-            return None;
+            return Vec::new();
         }
 
         let mut result = ProviderResult::new();
@@ -79,6 +79,6 @@ impl Provider for AwsProvider {
         if !expiration.is_empty() {
             result.insert("expiration", Value::String(expiration));
         }
-        Some(result)
+        vec![(None, result)]
     }
 }

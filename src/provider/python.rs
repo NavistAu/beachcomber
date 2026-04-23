@@ -35,8 +35,11 @@ impl Provider for PythonProvider {
         }
     }
 
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult> {
-        let path = path?;
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(path) = path else {
+            return Vec::new();
+        };
+        let path_owned = path.to_string();
         let dir = Path::new(path);
 
         // Check for common venv directory names
@@ -78,13 +81,13 @@ impl Provider for PythonProvider {
         }
 
         if !venv_found {
-            return None;
+            return Vec::new();
         }
 
         let mut result = ProviderResult::new();
         result.insert("venv", Value::Bool(true));
         result.insert("venv_name", Value::String(venv_name));
         result.insert("version", Value::String(version));
-        Some(result)
+        vec![(Some(path_owned), result)]
     }
 }

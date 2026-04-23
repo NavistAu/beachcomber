@@ -46,7 +46,7 @@ fn registry_with_defaults_has_builtins() {
 fn registry_execute_provider() {
     let registry = ProviderRegistry::with_defaults();
     let provider = registry.get("hostname").unwrap();
-    let result = provider.execute(None).unwrap();
+    let (_, result) = provider.execute(None).into_iter().next().unwrap();
     assert!(
         !result.get("name").unwrap().as_text().is_empty(),
         "Hostname provider should return a non-empty name"

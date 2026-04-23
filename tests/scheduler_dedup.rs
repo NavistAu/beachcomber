@@ -31,13 +31,13 @@ impl Provider for CountingProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let count = EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
         // Simulate some work
         std::thread::sleep(std::time::Duration::from_millis(200));
         let mut result = ProviderResult::new();
         result.insert("count", Value::Int(count as i64));
-        Some(result)
+        vec![(None, result)]
     }
 }
 

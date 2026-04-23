@@ -160,15 +160,20 @@ impl Provider for GitProvider {
         }
     }
 
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult> {
-        let path = path?;
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(path) = path else {
+            return Vec::new();
+        };
+        let path_owned = path.to_string();
         let dir = Path::new(path);
 
         if !dir.join(".git").exists() && !is_inside_git_repo(dir) {
-            return None;
+            return Vec::new();
         }
 
-        let status = parse_git_status(dir)?;
+        let Some(status) = parse_git_status(dir) else {
+            return Vec::new();
+        };
         let stash_count = count_stashes(dir);
         let (state, state_step, state_total) = detect_repo_state(dir);
 
@@ -218,7 +223,7 @@ impl Provider for GitProvider {
         result.insert("commit_summary", Value::String(commit_summary));
         result.insert("push_ahead", Value::Int(push_ahead));
         result.insert("push_behind", Value::Int(push_behind));
-        Some(result)
+        vec![(Some(path_owned), result)]
     }
 }
 

@@ -24,16 +24,21 @@ impl Provider for AsdfProvider {
         }
     }
 
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult> {
-        let path = path?;
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(path) = path else {
+            return Vec::new();
+        };
+        let path_owned = path.to_string();
         let dir = Path::new(path);
         let tool_versions = dir.join(".tool-versions");
 
         if !tool_versions.exists() {
-            return None;
+            return Vec::new();
         }
 
-        let content = std::fs::read_to_string(&tool_versions).ok()?;
+        let Some(content) = std::fs::read_to_string(&tool_versions).ok() else {
+            return Vec::new();
+        };
         let tools: HashMap<String, Value> = content
             .lines()
             .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
@@ -49,6 +54,6 @@ impl Provider for AsdfProvider {
 
         let mut result = ProviderResult::new();
         result.insert("tools", Value::Object(tools));
-        Some(result)
+        vec![(Some(path_owned), result)]
     }
 }

@@ -487,15 +487,15 @@ impl Scheduler {
         let failure_backoff = self.config.resolve_failure_backoff_interval(provider_name);
 
         tokio::spawn(async move {
-            let result = tokio::time::timeout(
+            let results = tokio::time::timeout(
                 Duration::from_secs(timeout_secs),
                 tokio::task::spawn_blocking(move || provider.execute(path_owned.as_deref())),
             )
             .await;
 
             // Record success or failure for backoff tracking.
-            match &result {
-                Ok(Ok(Some(_))) => {
+            match &results {
+                Ok(Ok(v)) if !v.is_empty() => {
                     failure_counts
                         .lock()
                         .unwrap()
@@ -513,24 +513,27 @@ impl Scheduler {
                 }
             }
 
-            match result {
-                Ok(Ok(Some(provider_result))) => {
-                    cache.put_with_interval(
-                        &name_owned,
-                        path_for_cache.as_deref(),
-                        provider_result,
-                        poll_interval_secs,
-                    );
-                    debug!(
-                        "Executed provider '{}' path={:?}",
-                        name_owned, path_for_cache
-                    );
-                }
-                Ok(Ok(None)) => {
-                    debug!(
-                        "Provider '{}' returned None for path={:?}",
-                        name_for_log, path_for_cache
-                    );
+            match results {
+                Ok(Ok(provider_results)) => {
+                    if provider_results.is_empty() {
+                        debug!(
+                            "Provider '{}' returned empty results for path={:?}",
+                            name_for_log, path_for_cache
+                        );
+                    } else {
+                        for (scope_path, provider_result) in provider_results {
+                            cache.put_with_interval(
+                                &name_owned,
+                                scope_path.as_deref(),
+                                provider_result,
+                                poll_interval_secs,
+                            );
+                        }
+                        debug!(
+                            "Executed provider '{}' path={:?}",
+                            name_owned, path_for_cache
+                        );
+                    }
                 }
                 Ok(Err(e)) => {
                     warn!("Provider '{}' panicked: {}", name_for_log, e);
@@ -561,7 +564,7 @@ impl Scheduler {
                     // Mark as in-flight again for this rerun.
                     in_flight.lock().unwrap().insert(key_for_cleanup.clone());
                     tokio::spawn(async move {
-                        let rerun_result = tokio::time::timeout(
+                        let rerun_results = tokio::time::timeout(
                             Duration::from_secs(timeout_secs),
                             tokio::task::spawn_blocking(move || {
                                 rerun_provider.execute(rerun_path.as_deref())
@@ -570,8 +573,8 @@ impl Scheduler {
                         .await;
 
                         // Record success or failure for the rerun.
-                        match &rerun_result {
-                            Ok(Ok(Some(_))) => {
+                        match &rerun_results {
+                            Ok(Ok(v)) if !v.is_empty() => {
                                 failure_counts
                                     .lock()
                                     .unwrap()
@@ -593,18 +596,24 @@ impl Scheduler {
                             }
                         }
 
-                        match rerun_result {
-                            Ok(Ok(Some(r))) => {
-                                cache.put_with_interval(
-                                    &rerun_name,
-                                    key_for_cleanup.1.as_deref(),
-                                    r,
-                                    rerun_interval,
-                                );
-                                debug!("Rerun provider '{}' completed", rerun_name);
-                            }
-                            Ok(Ok(None)) => {
-                                debug!("Rerun provider '{}' returned None", rerun_name);
+                        match rerun_results {
+                            Ok(Ok(r)) => {
+                                if r.is_empty() {
+                                    debug!(
+                                        "Rerun provider '{}' returned empty results",
+                                        rerun_name
+                                    );
+                                } else {
+                                    for (scope_path, result) in r {
+                                        cache.put_with_interval(
+                                            &rerun_name,
+                                            scope_path.as_deref(),
+                                            result,
+                                            rerun_interval,
+                                        );
+                                    }
+                                    debug!("Rerun provider '{}' completed", rerun_name);
+                                }
                             }
                             Ok(Err(e)) => {
                                 warn!("Rerun provider '{}' panicked: {}", rerun_name, e);
@@ -1046,17 +1055,22 @@ impl Scheduler {
             if let Some(provider) = self.registry.get(&name) {
                 let meta = provider.metadata();
                 if matches!(meta.invalidation, InvalidationStrategy::Once) {
-                    match provider.execute(None) {
-                        Some(result) => {
-                            self.cache.put_with_interval(&name, None, result, None);
-                            info!("Computed initial value for provider '{}'", name);
-                        }
-                        None => {
-                            warn!(
-                                "Provider '{}' returned None during initial computation",
-                                name
+                    let results = provider.execute(None);
+                    if results.is_empty() {
+                        warn!(
+                            "Provider '{}' returned empty results during initial computation",
+                            name
+                        );
+                    } else {
+                        for (scope_path, result) in results {
+                            self.cache.put_with_interval(
+                                &name,
+                                scope_path.as_deref(),
+                                result,
+                                None,
                             );
                         }
+                        info!("Computed initial value for provider '{}'", name);
                     }
                 }
             }

@@ -30,14 +30,14 @@ impl Provider for OpProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let mut result = ProviderResult::new();
 
         // Check for service account token first (non-interactive).
         if std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_ok() {
             result.insert("signed_in", Value::Bool(true));
             result.insert("account", Value::String("service-account".to_string()));
-            return Some(result);
+            return vec![(None, result)];
         }
 
         // Check if op CLI is available and authenticated.
@@ -57,7 +57,7 @@ impl Provider for OpProvider {
             }
         }
 
-        Some(result)
+        vec![(None, result)]
     }
 }
 

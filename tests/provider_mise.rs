@@ -26,9 +26,9 @@ fn mise_tools_field_type_is_object() {
 #[test]
 fn mise_execute_returns_object_map() {
     let d = mise_toml_dir(&[("node", "20.11.0"), ("python", "3.12.1")]);
-    let result = MiseProvider.execute(Some(d.path().to_str().unwrap()));
+    let results = MiseProvider.execute(Some(d.path().to_str().unwrap()));
     // Skip if mise isn't installed.
-    let Some(result) = result else {
+    let Some((_, result)) = results.into_iter().next() else {
         return;
     };
     match result.get("project") {

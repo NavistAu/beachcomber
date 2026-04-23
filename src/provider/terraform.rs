@@ -23,12 +23,15 @@ impl Provider for TerraformProvider {
         }
     }
 
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult> {
-        let path = path?;
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(path) = path else {
+            return Vec::new();
+        };
+        let path_owned = path.to_string();
         let dir = Path::new(path);
         let tf_dir = dir.join(".terraform");
         if !tf_dir.exists() {
-            return None;
+            return Vec::new();
         }
 
         // Read workspace from .terraform/environment
@@ -39,6 +42,6 @@ impl Provider for TerraformProvider {
 
         let mut result = ProviderResult::new();
         result.insert("workspace", Value::String(workspace));
-        Some(result)
+        vec![(Some(path_owned), result)]
     }
 }

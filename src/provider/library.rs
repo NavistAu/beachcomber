@@ -212,9 +212,20 @@ impl Provider for LibraryProvider {
         }
     }
 
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult> {
-        let json_str = self.call_execute_raw(path)?;
-        parse_json_result(&json_str)
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(json_str) = self.call_execute_raw(path) else {
+            return Vec::new();
+        };
+        let Some(result) = parse_json_result(&json_str) else {
+            return Vec::new();
+        };
+        let is_global = self.config.scope.as_deref() != Some("path");
+        let scope_path = if is_global {
+            None
+        } else {
+            path.map(|p| p.to_string())
+        };
+        vec![(scope_path, result)]
     }
 }
 

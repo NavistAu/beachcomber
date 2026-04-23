@@ -43,8 +43,11 @@ impl Provider for BatteryProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        execute_platform(_path)
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        match execute_platform(_path) {
+            Some(result) => vec![(None, result)],
+            None => Vec::new(),
+        }
     }
 }
 

@@ -22,13 +22,16 @@ impl Provider for CondaProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        let env = std::env::var("CONDA_DEFAULT_ENV")
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let Some(env) = std::env::var("CONDA_DEFAULT_ENV")
             .ok()
-            .filter(|s| !s.is_empty())?;
+            .filter(|s| !s.is_empty())
+        else {
+            return Vec::new();
+        };
 
         let mut result = ProviderResult::new();
         result.insert("env", Value::String(env));
-        Some(result)
+        vec![(None, result)]
     }
 }

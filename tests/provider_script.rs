@@ -21,7 +21,11 @@ fn script_provider_executes_json_output() {
         ..Default::default()
     };
     let p = ScriptProvider::new("json_test", config);
-    let result = p.execute(None).expect("Should parse JSON output");
+    let (_, result) = p
+        .execute(None)
+        .into_iter()
+        .next()
+        .expect("Should parse JSON output");
     assert_eq!(result.get("key").unwrap().as_text(), "value");
     assert_eq!(result.get("num").unwrap().as_text(), "42");
 }
@@ -34,7 +38,11 @@ fn script_provider_executes_kv_output() {
         ..Default::default()
     };
     let p = ScriptProvider::new("kv_test", config);
-    let result = p.execute(None).expect("Should parse kv output");
+    let (_, result) = p
+        .execute(None)
+        .into_iter()
+        .next()
+        .expect("Should parse kv output");
     assert_eq!(result.get("name").unwrap().as_text(), "test");
     assert_eq!(result.get("count").unwrap().as_text(), "5");
 }
@@ -59,8 +67,8 @@ fn script_provider_returns_none_on_failure() {
     };
     let p = ScriptProvider::new("fail_test", config);
     assert!(
-        p.execute(None).is_none(),
-        "Failed command should return None"
+        p.execute(None).is_empty(),
+        "Failed command should return empty Vec"
     );
 }
 

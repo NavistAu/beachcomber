@@ -26,13 +26,13 @@ impl Provider for HostnameProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let full = gethostname();
         let short = full.split('.').next().unwrap_or(&full).to_string();
         let mut result = ProviderResult::new();
         result.insert("name", Value::String(full));
         result.insert("short", Value::String(short));
-        Some(result)
+        vec![(None, result)]
     }
 }
 

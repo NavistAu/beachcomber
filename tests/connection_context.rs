@@ -32,11 +32,12 @@ impl Provider for PathScopedProvider {
         }
     }
 
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let mut result = ProviderResult::new();
         let val = path.unwrap_or("<none>").to_string();
         result.insert("active_path", Value::String(val));
-        Some(result)
+        let path_owned = path.map(|p| p.to_string());
+        vec![(path_owned, result)]
     }
 }
 
@@ -57,10 +58,10 @@ impl Provider for GlobalProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let mut result = ProviderResult::new();
         result.insert("info", Value::String("global-value".to_string()));
-        Some(result)
+        vec![(None, result)]
     }
 }
 

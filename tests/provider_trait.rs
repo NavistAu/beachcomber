@@ -22,10 +22,10 @@ impl Provider for FakeProvider {
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let mut result = ProviderResult::new();
         result.insert("value", Value::String("hello".to_string()));
-        Some(result)
+        vec![(None, result)]
     }
 }
 
@@ -52,7 +52,7 @@ fn provider_metadata_is_global() {
 #[test]
 fn provider_execute_returns_result() {
     let p = FakeProvider;
-    let result = p.execute(None).unwrap();
+    let (_, result) = p.execute(None).into_iter().next().unwrap();
     assert_eq!(
         result.get("value").unwrap().as_text(),
         "hello",
