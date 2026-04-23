@@ -220,8 +220,22 @@ impl LifecycleRegistry {
         }
     }
 
-    pub fn tick(&mut self, _now: Instant) -> TickActions {
-        unimplemented!("Tasks 5-7")
+    pub fn tick(&mut self, now: Instant) -> TickActions {
+        let mut actions = TickActions::default();
+
+        for (key, entry) in self.entries.iter_mut() {
+            // Poll timer check.
+            let next_poll_due = entry.poll_timer.last_fired + entry.poll_timer.interval;
+            if now >= next_poll_due {
+                actions.polls_due.push(key.clone());
+                entry.poll_timer.last_fired = now;
+            }
+
+            // Decay timer — implemented in Task 6.
+            // Eviction — implemented in Task 7.
+        }
+
+        actions
     }
 
     pub fn poll_interval(&self, key: &Key) -> Option<Duration> {
@@ -411,6 +425,60 @@ mod tests {
             })
         ));
         assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
+    }
+
+    /// Scenario: Polling refreshes an active entry.
+    #[test]
+    fn tick_fires_poll_when_interval_elapsed_in_active() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("git", "/repo");
+        let t0 = Instant::now();
+
+        reg.on_demand(key.clone(), test_config(), t0);
+
+        // Poll interval is 60s. Tick at 61s — should fire.
+        let t1 = t0 + Duration::from_secs(61);
+        let actions = reg.tick(t1);
+
+        assert!(actions.polls_due.contains(&key), "poll should fire");
+        let entry = reg.entries.get(&key).expect("entry exists");
+        assert_eq!(entry.poll_timer.last_fired, t1);
+    }
+
+    #[test]
+    fn tick_does_not_fire_poll_before_interval() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("git", "/repo");
+        let t0 = Instant::now();
+
+        reg.on_demand(key.clone(), test_config(), t0);
+
+        let t1 = t0 + Duration::from_secs(30);
+        let actions = reg.tick(t1);
+
+        assert!(actions.polls_due.is_empty());
+        let entry = reg.entries.get(&key).expect("entry exists");
+        assert_eq!(entry.poll_timer.last_fired, t0);
+    }
+
+    /// Scenario: Poll timer and decay timer advance independently.
+    #[test]
+    fn tick_poll_fire_does_not_reset_decay_timer() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("git", "/repo");
+        let t0 = Instant::now();
+
+        reg.on_demand(key.clone(), test_config(), t0);
+
+        // Poll fires at 61s; decay timer should still register last_demand at t0.
+        let t1 = t0 + Duration::from_secs(61);
+        reg.tick(t1);
+
+        let entry = reg.entries.get(&key).expect("entry exists");
+        assert_eq!(
+            entry.decay_timer.last_demand, t0,
+            "decay timer should not reset on poll fire"
+        );
     }
 
     /// fsevent while decaying with fsevents_reinstate = false: ignored.
