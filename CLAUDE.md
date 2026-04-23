@@ -7,6 +7,7 @@ Project-specific instructions for contributors using Claude Code.
 Before proposing changes or reasoning about behavior, read these. They are the authoritative project state — code alone will mislead you.
 
 - **`docs/roadmap.md`** — what's built, what's deferred, what's broken. Contains the "Known Core Issues" section; check it before claiming anything is working. If behavior seems odd, look here first.
+- **`docs/cache-lifecycle.md`** — canonical spec of the cache demand/decay state machine. The core of what this tool does. Tests must match this document; code that disagrees is wrong.
 - **`docs/architecture.md`** — module map, request lifecycle, provider execution lifecycle, concurrency model, key design decisions.
 - **`docs/provider-development.md`** — Provider trait, InvalidationStrategy guide, performance tiers, testing patterns.
 - **`CHANGELOG.md`** — what shipped when, at what version.

@@ -191,15 +191,9 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - No config value anywhere causes eviction. `eviction_timeout_secs` is declared but unread. `cache_lifespan` only gates the inert Grace→SlowPoll stage flip.
 - Net effect: cache entries accumulate forever until daemon restart. Memory bloat; `comb status` shows stranded entries hours old.
 
-**Intended design** (from commit `a203f89c`): 4-stage step-down — Grace (live rate, watches kept) → SlowPoll (¼ rate, watches dropped) → Frozen (no polling, still served) → Evict. Durations for SlowPoll and Frozen were never specified.
+**Intended design:** see `docs/cache-lifecycle.md` — canonical model, state machine, sequence diagrams, BDD assertions. 4-stage exponential decay (poll interval and step duration both double each step), reinstatement on any demand signal, total decay window `30K` before eviction.
 
-**Open design questions** (raised 2026-04-22, not yet answered):
-
-- What does `cache_lifespan` mean semantically — grace duration only, or total entry survival after demand ends?
-- How does `poll_idle_interval` (added later, single-rate opt-out) relate to the step-down ladder — floor, opt-out, or replaced?
-- Is the 4-stage ladder worth rebuilding, or is Grace → Evict sufficient?
-
-**Status:** deferred. Scoped out of the current round of bugfixes to avoid thrashing on decisions made without clear head. Needs a dedicated brainstorm + spec. Must not be forgotten.
+**Status:** implementation deferred. Design is settled and documented (2026-04-23). Next step is a rebuild spec that maps `cache-lifecycle.md` onto concrete config keys and scheduler code, then the implementation itself. Must not be forgotten.
 
 ---
 
