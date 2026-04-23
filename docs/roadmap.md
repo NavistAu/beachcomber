@@ -250,6 +250,27 @@ Client libraries for each language wrapping the Unix socket protocol with typed 
 - [x] Field metadata access — colon delimiter on key: `comb g git.branch:age` returns the cache age in milliseconds. Metadata fields: `age`, `stale`, `fresh`, `cache`, `source`.
 - [x] Help screen branding — NavistAu authorship, project URL, tagline, MIT license in `comb --help` and `comb --version` output. Format suffix usage hint in after-help.
 - [ ] `comb inspect <path>` (working name) — dump every applicable provider's fields for the given directory in one shot. Globals + path-scoped providers evaluated against the path; single command replaces "ask every provider one at a time". Useful for "what does beachcomber know about this dir right now?" as a diagnostic, onboarding, and integration-authoring tool. Format-aware output (json/text/human). Naming bikeshed: `inspect`, `dump`, `snapshot`, `all`, `info`.
+- [ ] `comb status` UX redesign for lifecycle visibility — **needs its own brainstorm.** After the cache-decay rebuild lands, the steady-state daemon carries rich lifecycle information per entry that `comb status` currently under-exposes. A minimum `DECAY` column (0-4, where 0=Active) ships with the decay rebuild for basic visibility; the full UX pass below is deferred to a focused session.
+
+  **Context for the brainstorm:**
+  - Current columns: `PROVIDER PATH FIELD VALUE AGE STALE`.
+  - Information worth surfacing per entry after the rebuild: current lifecycle state (Active, Decay1-4, Evicted), current poll interval, time since last demand, whether watches are active, whether the provider has `fsevents_reinstate`, age, staleness.
+  - These values interact — e.g., `AGE` + `STALE` + `DECAY` together tell the "how fresh is this" story, but today `STALE` is a redundant bool derived from `AGE > expected_interval`. Folding staleness into a colored AGE column is a natural simplification.
+
+  **Options considered (not yet decided):**
+  - **AGE column with F/S prefix + color** — `F 23s` (fresh, green) / `S 2m` (stale, amber) / etc. Removes the separate `STALE` column.
+  - **Decay column showing level 0-4** — integer with optional glyph; 0 could be blank to keep common case clean. Could also use unicode bar (▁▂▃▄▅ etc.).
+  - **fsevent policy indicator** — per-provider, probably belongs in `comb introspect providers` rather than per-entry `status`.
+  - **K and P values** — probably too noisy for `status`. Home is `comb introspect providers` or a dedicated `comb introspect lifecycle`.
+  - **`comb introspect lifecycle` subject** — new subject showing the full per-entry lifecycle state for diagnostics. Currently `comb introspect backoff` exists; it should either be renamed to `lifecycle` or kept as an alias.
+
+  **Open design questions:**
+  - Should `STALE` disappear as a distinct column (folded into colored AGE) or stay for scriptable output where colors are off?
+  - Should `DECAY 0` display as blank, or `0`, or `.`, or `Active`?
+  - Do users ever want to see K and P in `status`, or is that better in `introspect`?
+  - Is there value in a `--watch` mode for `status` (live-refreshing display of state transitions)?
+
+  **Scope when picked up:** design brainstorm → spec → implementation. Should touch `src/cli/status_format.rs` and possibly `src/server.rs` (for introspect changes). No protocol change needed if the extra data is already carried in the status response.
 
 ### Shell Integration
 
