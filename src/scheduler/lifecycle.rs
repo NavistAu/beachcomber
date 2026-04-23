@@ -231,8 +231,42 @@ impl LifecycleRegistry {
                 entry.poll_timer.last_fired = now;
             }
 
-            // Decay timer — implemented in Task 6.
-            // Eviction — implemented in Task 7.
+            // Decay timer check.
+            if now >= entry.decay_timer.step_deadline {
+                let k = entry.config.keep_alive_polls;
+                let p = entry.config.poll_interval;
+
+                let next_state: Option<LifecycleState> = match entry.state {
+                    LifecycleState::Active => Some(LifecycleState::Decay(DecayStep::Step1)),
+                    LifecycleState::Decay(step) => step.next().map(LifecycleState::Decay),
+                };
+
+                match next_state {
+                    Some(new_state) => {
+                        entry.state = new_state;
+                        if let LifecycleState::Decay(step) = new_state {
+                            // Poll interval doubles per step: 2P, 4P, 8P, 16P.
+                            let rate_mult = step.rate_multiplier();
+                            entry.poll_timer.interval = p * rate_mult;
+
+                            // Step duration contains K polls at the new rate:
+                            // step_duration = K polls × (P × rate_mult) sec/poll.
+                            let step_duration = p * rate_mult * k;
+                            entry.decay_timer.step_deadline = now + step_duration;
+
+                            // Watch drop on Active → Decay1 when fsevents_reinstate = false.
+                            if step == DecayStep::Step1 && !entry.config.fsevents_reinstate {
+                                actions.watch_drops.push(key.clone());
+                            }
+                        }
+                        actions.transitions.push((key.clone(), new_state));
+                    }
+                    None => {
+                        // Decay4 → Evicted transition handled in Task 7.
+                        continue;
+                    }
+                }
+            }
         }
 
         actions
@@ -478,6 +512,136 @@ mod tests {
         assert_eq!(
             entry.decay_timer.last_demand, t0,
             "decay timer should not reset on poll fire"
+        );
+    }
+
+    /// Scenario: Keep-alive expiry enters Decay1.
+    #[test]
+    fn tick_advances_active_to_decay1_when_keep_alive_elapses() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("git", "/repo");
+        let t0 = Instant::now();
+
+        reg.on_demand(key.clone(), test_config(), t0);
+
+        // Keep-alive = K*P = 12*60 = 720s.
+        let t1 = t0 + Duration::from_secs(721);
+        let actions = reg.tick(t1);
+
+        assert_eq!(
+            reg.state(&key),
+            Some(&LifecycleState::Decay(DecayStep::Step1))
+        );
+        assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(120)));
+        assert!(
+            actions.watch_drops.contains(&key),
+            "drop-on-decay default: watches dropped on Decay1 entry"
+        );
+        assert!(
+            actions
+                .transitions
+                .iter()
+                .any(|(k, s)| k == &key && s == &LifecycleState::Decay(DecayStep::Step1))
+        );
+    }
+
+    /// Active → Decay1 with fsevents_reinstate=true: watches NOT dropped.
+    #[test]
+    fn tick_advance_with_fsevents_reinstate_preserves_watches() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("mise", "/repo");
+        let t0 = Instant::now();
+        let cfg = ProviderLifecycleConfig {
+            fsevents_reinstate: true,
+            ..test_config()
+        };
+
+        reg.on_demand(key.clone(), cfg, t0);
+
+        let t1 = t0 + Duration::from_secs(721);
+        let actions = reg.tick(t1);
+
+        assert_eq!(
+            reg.state(&key),
+            Some(&LifecycleState::Decay(DecayStep::Step1))
+        );
+        assert!(
+            !actions.watch_drops.contains(&key),
+            "watches should be preserved when fsevents_reinstate=true"
+        );
+    }
+
+    /// Decay1 → Decay2 → Decay3 → Decay4. Each step doubles poll interval.
+    #[test]
+    fn tick_advances_through_all_decay_steps() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("git", "/repo");
+        let t0 = Instant::now();
+
+        reg.on_demand(key.clone(), test_config(), t0);
+
+        // Enter Decay1 at keep-alive = 720s.
+        let t_decay1 = t0 + Duration::from_secs(721);
+        reg.tick(t_decay1);
+
+        // Step1 duration = K * 2P = 12 * 120 = 1440s.
+        // Decay1 step_deadline = t_decay1 + 1440. Tick past it.
+        let t_decay2 = t_decay1 + Duration::from_secs(1441);
+        let actions = reg.tick(t_decay2);
+        assert_eq!(
+            reg.state(&key),
+            Some(&LifecycleState::Decay(DecayStep::Step2))
+        );
+        assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(240)));
+        assert!(
+            actions
+                .transitions
+                .iter()
+                .any(|(_, s)| s == &LifecycleState::Decay(DecayStep::Step2))
+        );
+
+        // Step2 duration = K * 4P = 2880s.
+        let t_decay3 = t_decay2 + Duration::from_secs(2881);
+        reg.tick(t_decay3);
+        assert_eq!(
+            reg.state(&key),
+            Some(&LifecycleState::Decay(DecayStep::Step3))
+        );
+        assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(480)));
+
+        // Step3 duration = K * 8P = 5760s.
+        let t_decay4 = t_decay3 + Duration::from_secs(5761);
+        reg.tick(t_decay4);
+        assert_eq!(
+            reg.state(&key),
+            Some(&LifecycleState::Decay(DecayStep::Step4))
+        );
+        assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(960)));
+    }
+
+    /// Every lifecycle step contains exactly K polls at its current rate.
+    /// Verified by checking that step_deadline = previous_deadline + K*P*2^n.
+    #[test]
+    fn tick_every_step_contains_k_polls() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("git", "/repo");
+        let t0 = Instant::now();
+        reg.on_demand(key.clone(), test_config(), t0);
+
+        // Enter Decay1 just past keep-alive.
+        let after_keep_alive = t0 + Duration::from_secs(721);
+        reg.tick(after_keep_alive);
+
+        // Decay1 has poll interval 2P = 120s and step_deadline should be
+        // after_keep_alive + K*2P = after_keep_alive + 1440s.
+        let entry = reg.entries.get(&key).expect("entry exists");
+        let expected_deadline = after_keep_alive + Duration::from_secs(1440);
+        let actual_deadline = entry.decay_timer.step_deadline;
+
+        // Exact equality; step_deadline = now + K * P * rate_mult by construction.
+        assert_eq!(
+            actual_deadline, expected_deadline,
+            "step_deadline should be exactly now + K*P*2 for Decay1"
         );
     }
 
