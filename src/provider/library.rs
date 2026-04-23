@@ -229,7 +229,7 @@ impl Provider for LibraryProvider {
 
 /// Parse the JSON metadata returned by a library's beachcomber_provider_metadata().
 ///
-/// Expected format:
+/// Expected format (legacy):
 /// ```json
 /// {
 ///   "name": "myprovider",
@@ -238,24 +238,69 @@ impl Provider for LibraryProvider {
 ///   "global": true
 /// }
 /// ```
+///
+/// Per-field scope format:
+/// ```json
+/// {
+///   "name": "myprovider",
+///   "fields": {
+///     "field1": {"type": "string", "scope": "path"},
+///     "field2": {"type": "int", "scope": "global"}
+///   },
+///   "invalidation": {"poll": "30s"}
+/// }
+/// ```
+///
+/// The top-level `global` bool acts as a fallback default scope for fields that
+/// do not declare their own scope. Missing `global` defaults to `true` (Global).
 fn parse_library_metadata(name: &str, json_str: &str) -> Option<ProviderMetadata> {
     let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
     let obj = parsed.as_object()?;
+
+    // Legacy default: top-level "global" bool acts as the provider-level
+    // fallback scope for fields that don't declare their own.
+    // Missing → default to Global (preserves legacy behaviour).
+    let legacy_global = obj.get("global").and_then(|v| v.as_bool()).unwrap_or(true);
+    let default_scope = if legacy_global {
+        FieldScope::Global
+    } else {
+        FieldScope::PathScoped
+    };
 
     let fields: Vec<FieldSchema> = obj
         .get("fields")
         .and_then(|f| f.as_object())
         .map(|f| {
             f.iter()
-                .map(|(fname, ftype)| FieldSchema {
-                    name: fname.clone(),
-                    field_type: match ftype.as_str().unwrap_or("string") {
-                        "int" => FieldType::Int,
-                        "bool" => FieldType::Bool,
-                        "float" => FieldType::Float,
-                        _ => FieldType::String,
-                    },
-                    scope: FieldScope::Global,
+                .map(|(fname, ftype)| {
+                    let (type_str, field_scope) = match ftype {
+                        serde_json::Value::String(s) => (s.as_str(), default_scope),
+                        serde_json::Value::Object(o) => {
+                            let type_str =
+                                o.get("type").and_then(|v| v.as_str()).unwrap_or("string");
+                            let scope = o
+                                .get("scope")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| match s {
+                                    "global" => Some(FieldScope::Global),
+                                    "path" | "pathscoped" => Some(FieldScope::PathScoped),
+                                    _ => None,
+                                })
+                                .unwrap_or(default_scope);
+                            (type_str, scope)
+                        }
+                        _ => ("string", default_scope),
+                    };
+                    FieldSchema {
+                        name: fname.clone(),
+                        field_type: match type_str {
+                            "int" => FieldType::Int,
+                            "bool" => FieldType::Bool,
+                            "float" => FieldType::Float,
+                            _ => FieldType::String,
+                        },
+                        scope: field_scope,
+                    }
                 })
                 .collect()
         })
@@ -268,6 +313,13 @@ fn parse_library_metadata(name: &str, json_str: &str) -> Option<ProviderMetadata
         fields,
         invalidation,
     })
+}
+
+/// Expose the library metadata JSON parser for integration tests.
+/// Hidden from docs; not part of the public API.
+#[doc(hidden)]
+pub fn parse_library_metadata_for_test(name: &str, json_str: &str) -> Option<ProviderMetadata> {
+    parse_library_metadata(name, json_str)
 }
 
 fn parse_invalidation_from_json(
