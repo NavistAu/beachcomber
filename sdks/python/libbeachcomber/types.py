@@ -48,7 +48,7 @@ class IntrospectSubject(str, Enum):
     PROVIDERS = "providers"
     CONFIG = "config"
     CACHE = "cache"
-    BACKOFF = "backoff"
+    LIFECYCLE = "lifecycle"
     WATCHES = "watches"
     TIMERS = "timers"
     DEMAND = "demand"

@@ -503,7 +503,7 @@ static comb_result_t *run_op(comb_client_t *c, const json_node_t *op_node) {
             if      (strcmp(subj, "providers") == 0) s = COMB_INTROSPECT_PROVIDERS;
             else if (strcmp(subj, "config")    == 0) s = COMB_INTROSPECT_CONFIG;
             else if (strcmp(subj, "cache")     == 0) s = COMB_INTROSPECT_CACHE;
-            else if (strcmp(subj, "backoff")   == 0) s = COMB_INTROSPECT_BACKOFF;
+            else if (strcmp(subj, "lifecycle") == 0) s = COMB_INTROSPECT_LIFECYCLE;
             else if (strcmp(subj, "watches")   == 0) s = COMB_INTROSPECT_WATCHES;
             else if (strcmp(subj, "timers")    == 0) s = COMB_INTROSPECT_TIMERS;
             else if (strcmp(subj, "demand")    == 0) s = COMB_INTROSPECT_DEMAND;

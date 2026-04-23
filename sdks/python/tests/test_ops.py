@@ -217,7 +217,7 @@ class TestClientIntrospect:
     ) -> None:
         mock_daemon.respond("introspect", {"ok": True, "data": {}})
         client = make_client(mock_daemon)
-        client.introspect(IntrospectSubject.BACKOFF)
+        client.introspect(IntrospectSubject.LIFECYCLE)
         req = mock_daemon.received[0]
         assert "duration_secs" not in req
 

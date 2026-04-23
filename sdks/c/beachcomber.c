@@ -493,7 +493,7 @@ static const char *introspect_subject_str(comb_introspect_subject_t subject) {
         case COMB_INTROSPECT_PROVIDERS: return "providers";
         case COMB_INTROSPECT_CONFIG:    return "config";
         case COMB_INTROSPECT_CACHE:     return "cache";
-        case COMB_INTROSPECT_BACKOFF:   return "backoff";
+        case COMB_INTROSPECT_LIFECYCLE: return "lifecycle";
         case COMB_INTROSPECT_WATCHES:   return "watches";
         case COMB_INTROSPECT_TIMERS:    return "timers";
         case COMB_INTROSPECT_DEMAND:    return "demand";

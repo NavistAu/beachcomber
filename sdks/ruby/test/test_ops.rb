@@ -332,7 +332,7 @@ class TestOps < Minitest::Test
     assert_equal 'providers', Beachcomber::IntrospectSubject::PROVIDERS
     assert_equal 'config',    Beachcomber::IntrospectSubject::CONFIG
     assert_equal 'cache',     Beachcomber::IntrospectSubject::CACHE
-    assert_equal 'backoff',   Beachcomber::IntrospectSubject::BACKOFF
+    assert_equal 'lifecycle', Beachcomber::IntrospectSubject::LIFECYCLE
     assert_equal 'watches',   Beachcomber::IntrospectSubject::WATCHES
     assert_equal 'timers',    Beachcomber::IntrospectSubject::TIMERS
     assert_equal 'demand',    Beachcomber::IntrospectSubject::DEMAND

@@ -78,7 +78,7 @@ const (
 	SubjectProviders IntrospectSubject = "providers"
 	SubjectConfig    IntrospectSubject = "config"
 	SubjectCache     IntrospectSubject = "cache"
-	SubjectBackoff   IntrospectSubject = "backoff"
+	SubjectLifecycle IntrospectSubject = "lifecycle"
 	SubjectWatches   IntrospectSubject = "watches"
 	SubjectTimers    IntrospectSubject = "timers"
 	SubjectDemand    IntrospectSubject = "demand"

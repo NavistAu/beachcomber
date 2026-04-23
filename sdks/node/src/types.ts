@@ -39,7 +39,7 @@ export type IntrospectSubject =
   | 'providers'
   | 'config'
   | 'cache'
-  | 'backoff'
+  | 'lifecycle'
   | 'watches'
   | 'timers'
   | 'demand'
