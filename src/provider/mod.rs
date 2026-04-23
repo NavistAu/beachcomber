@@ -178,6 +178,41 @@ pub struct ProviderMetadata {
     pub global: bool,
 }
 
+impl ProviderMetadata {
+    /// Returns the scope for a named field, or None if the field is not declared.
+    pub fn field_scope(&self, field: &str) -> Option<FieldScope> {
+        self.fields
+            .iter()
+            .find(|f| f.name == field)
+            .map(|f| f.scope)
+    }
+
+    /// Returns the provider's effective scope: PathScoped if any field is path-scoped,
+    /// else Global. Used by resolve_path for whole-provider queries and unknown-field
+    /// fallback.
+    pub fn inferred_scope(&self) -> FieldScope {
+        if self
+            .fields
+            .iter()
+            .any(|f| f.scope == FieldScope::PathScoped)
+        {
+            FieldScope::PathScoped
+        } else {
+            FieldScope::Global
+        }
+    }
+
+    /// Validates provider metadata at registration time. Called from
+    /// `ProviderRegistry::register_with_source()` to fail loudly at daemon startup
+    /// rather than silently at first query.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.fields.is_empty() {
+            return Err(format!("provider '{}' declares no fields", self.name));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ProviderSource {
     #[default]
@@ -252,5 +287,91 @@ mod tests {
         };
         let json = serde_json::to_string(&fs).unwrap();
         assert!(json.contains(r#""scope":"global""#), "got: {json}");
+    }
+
+    #[test]
+    fn inferred_scope_is_pathscoped_when_any_field_is_pathscoped() {
+        let meta = ProviderMetadata {
+            name: "mixed".to_string(),
+            fields: vec![
+                FieldSchema {
+                    name: "a".into(),
+                    field_type: FieldType::String,
+                    scope: FieldScope::Global,
+                },
+                FieldSchema {
+                    name: "b".into(),
+                    field_type: FieldType::String,
+                    scope: FieldScope::PathScoped,
+                },
+            ],
+            invalidation: InvalidationStrategy::Once,
+            global: false,
+        };
+        assert_eq!(meta.inferred_scope(), FieldScope::PathScoped);
+    }
+
+    #[test]
+    fn inferred_scope_is_global_when_all_fields_are_global() {
+        let meta = ProviderMetadata {
+            name: "globals".to_string(),
+            fields: vec![
+                FieldSchema {
+                    name: "a".into(),
+                    field_type: FieldType::String,
+                    scope: FieldScope::Global,
+                },
+                FieldSchema {
+                    name: "b".into(),
+                    field_type: FieldType::String,
+                    scope: FieldScope::Global,
+                },
+            ],
+            invalidation: InvalidationStrategy::Once,
+            global: true,
+        };
+        assert_eq!(meta.inferred_scope(), FieldScope::Global);
+    }
+
+    #[test]
+    fn field_scope_looks_up_by_name() {
+        let meta = ProviderMetadata {
+            name: "x".to_string(),
+            fields: vec![FieldSchema {
+                name: "a".into(),
+                field_type: FieldType::String,
+                scope: FieldScope::PathScoped,
+            }],
+            invalidation: InvalidationStrategy::Once,
+            global: false,
+        };
+        assert_eq!(meta.field_scope("a"), Some(FieldScope::PathScoped));
+        assert_eq!(meta.field_scope("missing"), None);
+    }
+
+    #[test]
+    fn validate_fails_on_empty_fields() {
+        let meta = ProviderMetadata {
+            name: "empty".to_string(),
+            fields: vec![],
+            invalidation: InvalidationStrategy::Once,
+            global: true,
+        };
+        assert!(meta.validate().is_err());
+    }
+
+    #[test]
+    fn validate_passes_on_normal_metadata() {
+        let meta = ProviderMetadata {
+            name: "normal".to_string(),
+            fields: vec![FieldSchema {
+                name: "a".into(),
+                field_type: FieldType::String,
+                scope: FieldScope::Global,
+            }],
+            invalidation: InvalidationStrategy::Once,
+            global: true,
+        };
+        assert!(meta.validate().is_ok());
     }
 }

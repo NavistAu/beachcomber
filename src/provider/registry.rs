@@ -143,7 +143,14 @@ impl ProviderRegistry {
 
     /// Register a provider with an explicit source.
     pub fn register_with_source(&mut self, provider: Box<dyn Provider>, source: ProviderSource) {
-        let name = provider.metadata().name.clone();
+        let meta = provider.metadata();
+        // Only validate builtin providers — script/library/HTTP providers may
+        // legitimately omit field declarations and discover fields at runtime.
+        if source == ProviderSource::Builtin {
+            meta.validate()
+                .unwrap_or_else(|e| panic!("invalid provider metadata: {}", e));
+        }
+        let name = meta.name.clone();
         self.sources.insert(name.clone(), source);
         self.providers.insert(name, Arc::from(provider));
     }
