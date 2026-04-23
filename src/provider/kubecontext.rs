@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 
 pub struct KubecontextProvider;
@@ -12,10 +13,12 @@ impl Provider for KubecontextProvider {
                 FieldSchema {
                     name: "context".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "namespace".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
             ],
             invalidation: InvalidationStrategy::Poll {

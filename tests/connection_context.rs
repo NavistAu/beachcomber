@@ -2,7 +2,8 @@ use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 use beachcomber::server::Server;
 use std::sync::Arc;
@@ -21,6 +22,7 @@ impl Provider for PathScopedProvider {
             fields: vec![FieldSchema {
                 name: "active_path".to_string(),
                 field_type: FieldType::String,
+                scope: FieldScope::Global,
             }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
@@ -48,6 +50,7 @@ impl Provider for GlobalProvider {
             fields: vec![FieldSchema {
                 name: "info".to_string(),
                 field_type: FieldType::String,
+                scope: FieldScope::Global,
             }],
             invalidation: InvalidationStrategy::Once,
             global: true,

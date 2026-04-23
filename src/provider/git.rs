@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 use std::path::Path;
 use std::process::Command;
@@ -32,98 +33,122 @@ impl Provider for GitProvider {
                 FieldSchema {
                     name: "branch".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "dirty".to_string(),
                     field_type: FieldType::Bool,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "staged".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "unstaged".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "untracked".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "conflicted".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "ahead".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "behind".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "stash".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "state".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "lines_added".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "lines_removed".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "lines_staged_added".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "lines_staged_removed".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "upstream".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "detached".to_string(),
                     field_type: FieldType::Bool,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "commit".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "tag".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "state_step".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "state_total".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "last_commit_age_secs".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "commit_summary".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "push_ahead".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "push_behind".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
             ],
             invalidation: InvalidationStrategy::WatchAndPoll {

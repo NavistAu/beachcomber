@@ -1,5 +1,6 @@
 use beachcomber::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 
 struct FakeProvider;
@@ -11,6 +12,7 @@ impl Provider for FakeProvider {
             fields: vec![FieldSchema {
                 name: "value".to_string(),
                 field_type: FieldType::String,
+                scope: FieldScope::Global,
             }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 30,

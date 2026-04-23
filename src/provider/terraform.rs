@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 use std::path::Path;
 
@@ -12,6 +13,7 @@ impl Provider for TerraformProvider {
             fields: vec![FieldSchema {
                 name: "workspace".to_string(),
                 field_type: FieldType::String,
+                scope: FieldScope::Global,
             }],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![".terraform".to_string()],

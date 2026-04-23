@@ -1,6 +1,7 @@
 use crate::config::ScriptProviderConfig;
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 use std::process::Command;
 use tracing::debug;
@@ -38,6 +39,7 @@ impl Provider for ScriptProvider {
                             "float" => FieldType::Float,
                             _ => FieldType::String,
                         },
+                        scope: FieldScope::Global,
                     })
                     .collect()
             })

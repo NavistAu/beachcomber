@@ -101,10 +101,19 @@ impl ProviderResult {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldScope {
+    Global,
+    #[serde(alias = "path")]
+    PathScoped,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldSchema {
     pub name: String,
     pub field_type: FieldType,
+    pub scope: FieldScope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,5 +228,29 @@ mod tests {
             .is_empty()
         );
         assert!(watch_patterns(&InvalidationStrategy::Once).is_empty());
+    }
+
+    #[test]
+    fn field_scope_round_trips_through_serde() {
+        let fs = FieldSchema {
+            name: "branch".to_string(),
+            field_type: FieldType::String,
+            scope: FieldScope::PathScoped,
+        };
+        let json = serde_json::to_string(&fs).unwrap();
+        let back: FieldSchema = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "branch");
+        assert_eq!(back.scope, FieldScope::PathScoped);
+    }
+
+    #[test]
+    fn field_scope_serializes_as_lowercase_string() {
+        let fs = FieldSchema {
+            name: "branch".to_string(),
+            field_type: FieldType::String,
+            scope: FieldScope::Global,
+        };
+        let json = serde_json::to_string(&fs).unwrap();
+        assert!(json.contains(r#""scope":"global""#), "got: {json}");
     }
 }

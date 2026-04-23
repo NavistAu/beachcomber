@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 
 pub struct UnameProvider;
@@ -12,18 +13,22 @@ impl Provider for UnameProvider {
                 FieldSchema {
                     name: "sysname".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "release".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "version".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "machine".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
             ],
             invalidation: InvalidationStrategy::Once,

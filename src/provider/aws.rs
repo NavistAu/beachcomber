@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 
 pub struct AwsProvider;
@@ -12,18 +13,22 @@ impl Provider for AwsProvider {
                 FieldSchema {
                     name: "profile".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "region".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "source".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "expiration".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
             ],
             invalidation: InvalidationStrategy::Poll {

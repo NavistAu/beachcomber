@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 
 pub struct LoadProvider;
@@ -12,14 +13,17 @@ impl Provider for LoadProvider {
                 FieldSchema {
                     name: "one".to_string(),
                     field_type: FieldType::Float,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "five".to_string(),
                     field_type: FieldType::Float,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "fifteen".to_string(),
                     field_type: FieldType::Float,
+                    scope: FieldScope::Global,
                 },
             ],
             invalidation: InvalidationStrategy::Poll {

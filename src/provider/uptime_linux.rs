@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 use std::fs;
 
@@ -13,18 +14,22 @@ impl Provider for UptimeProvider {
                 FieldSchema {
                     name: "seconds".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "days".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "hours".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "minutes".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
             ],
             invalidation: InvalidationStrategy::Poll {

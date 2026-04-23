@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -16,6 +17,7 @@ impl Provider for SudoProvider {
             fields: vec![FieldSchema {
                 name: "active".to_string(),
                 field_type: FieldType::Bool,
+                scope: FieldScope::Global,
             }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 30,

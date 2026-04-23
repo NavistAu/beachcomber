@@ -1,6 +1,7 @@
 use crate::config::ScriptProviderConfig;
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 use libloading::{Library, Symbol};
 use std::ffi::{CStr, CString};
@@ -197,6 +198,7 @@ impl Provider for LibraryProvider {
                             "float" => FieldType::Float,
                             _ => FieldType::String,
                         },
+                        scope: FieldScope::Global,
                     })
                     .collect()
             })
@@ -244,6 +246,7 @@ fn parse_library_metadata(name: &str, json_str: &str) -> Option<ProviderMetadata
                         "float" => FieldType::Float,
                         _ => FieldType::String,
                     },
+                    scope: FieldScope::Global,
                 })
                 .collect()
         })

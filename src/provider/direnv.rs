@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 use std::path::Path;
 use std::process::Command;
@@ -14,10 +15,12 @@ impl Provider for DirenvProvider {
                 FieldSchema {
                     name: "status".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "allowed".to_string(),
                     field_type: FieldType::Bool,
+                    scope: FieldScope::Global,
                 },
             ],
             invalidation: InvalidationStrategy::Watch {

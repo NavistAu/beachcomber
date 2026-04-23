@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -15,10 +16,12 @@ impl Provider for MiseProvider {
                 FieldSchema {
                     name: "project".to_string(),
                     field_type: FieldType::Object,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "global".to_string(),
                     field_type: FieldType::Object,
+                    scope: FieldScope::Global,
                 },
             ],
             invalidation: InvalidationStrategy::Watch {

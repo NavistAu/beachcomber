@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 
 pub struct GcloudProvider;
@@ -12,10 +13,12 @@ impl Provider for GcloudProvider {
                 FieldSchema {
                     name: "project".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "account".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
             ],
             invalidation: InvalidationStrategy::Poll {

@@ -2,7 +2,8 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
@@ -20,6 +21,7 @@ impl Provider for CountingProvider {
             fields: vec![FieldSchema {
                 name: "count".to_string(),
                 field_type: FieldType::Int,
+                scope: FieldScope::Global,
             }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,

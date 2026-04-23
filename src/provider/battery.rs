@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 use std::process::Command;
 
@@ -13,10 +14,12 @@ impl Provider for BatteryProvider {
                 FieldSchema {
                     name: "percent".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "charging".to_string(),
                     field_type: FieldType::Bool,
+                    scope: FieldScope::Global,
                 },
                 // time_remaining_secs uses 0 as a sentinel for "not applicable" —
                 // i.e. the battery is charged or the platform can't compute an estimate.
@@ -24,10 +27,12 @@ impl Provider for BatteryProvider {
                 FieldSchema {
                     name: "time_remaining_secs".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "status".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
             ],
             invalidation: InvalidationStrategy::Poll {

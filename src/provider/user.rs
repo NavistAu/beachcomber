@@ -1,5 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata, ProviderResult, Value,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    ProviderResult, Value,
 };
 
 pub struct UserProvider;
@@ -12,10 +13,12 @@ impl Provider for UserProvider {
                 FieldSchema {
                     name: "name".to_string(),
                     field_type: FieldType::String,
+                    scope: FieldScope::Global,
                 },
                 FieldSchema {
                     name: "uid".to_string(),
                     field_type: FieldType::Int,
+                    scope: FieldScope::Global,
                 },
             ],
             invalidation: InvalidationStrategy::Once,
