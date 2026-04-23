@@ -171,6 +171,41 @@ extract = "rates.AUD"           # extracts a single nested value
 poll = "86400s"
 ```
 
+### Per-field scope
+
+Script and library providers can declare scope per field. The provider-level
+`scope` acts as the default; individual fields can override.
+
+```toml
+[providers.mixed]
+type = "script"
+command = "/usr/bin/myscript --json"
+scope = "path"
+
+[providers.mixed.fields.branch]
+type = "string"
+# inherits provider-level "path"
+
+[providers.mixed.fields.status]
+type = "string"
+scope = "global"   # override — always cached globally
+```
+
+Back-compat: `fields = { branch = "string" }` continues to parse. All fields
+inherit the provider-level `scope`.
+
+Library providers (.so / .dylib) use the same per-field scope model in their
+JSON metadata:
+
+```json
+{
+  "fields": {
+    "branch": {"type": "string", "scope": "path"},
+    "system": {"type": "string", "scope": "global"}
+  }
+}
+```
+
 ## Config field summary
 
 **`[daemon]` section:**

@@ -11,20 +11,60 @@ Every provider implements this trait (defined in `src/provider/mod.rs`):
 ```rust
 pub trait Provider: Send + Sync {
     fn metadata(&self) -> ProviderMetadata;
-    fn execute(&self, path: Option<&str>) -> Option<ProviderResult>;
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)>;
 }
 ```
 
 **`metadata()`** is called at registration time and on every `comb check providers` request. It must be fast and allocation-light (it currently allocates; a future optimisation may switch to `Cow<'static, str>`). Return a `ProviderMetadata` describing:
 
 - `name`: the provider's key used in `comb get <name>.<field>`
-- `fields`: a list of `FieldSchema { name, field_type }` describing what fields `execute()` will populate
+- `fields`: a list of `FieldSchema { name, field_type, scope }` describing what fields `execute()` will populate and whether each is `FieldScope::Global` or `FieldScope::PathScoped`
 - `invalidation`: when the cached value should be refreshed (see §3)
-- `global`: `true` if the provider ignores the `path` argument (e.g., `hostname`, `user`); `false` if it is path-scoped (e.g., `git`, `terraform`)
 
-**`execute(path)`** runs the provider and returns the result. It is called on a blocking thread pool (`tokio::task::spawn_blocking`), so it may safely call `std::process::Command`, `std::fs::read_to_string`, and other blocking operations. Return `None` to indicate that no value is available (the cache will not be updated). Return `Some(ProviderResult)` on success.
+**`execute(path)`** runs the provider and returns a `Vec` of scoped cache entries. It is called on a blocking thread pool (`tokio::task::spawn_blocking`), so it may safely call `std::process::Command`, `std::fs::read_to_string`, and other blocking operations. Return an empty `Vec` to indicate that no value is available (the cache will not be updated). Each tuple in the return value is `(Option<String>, ProviderResult)` — `None` for a global (pathless) entry, `Some(path)` for a path-scoped entry. Most providers return a one-element Vec.
 
 `ProviderResult` is a `HashMap<String, Value>` wrapper. Insert fields with `result.insert("fieldname", Value::String("..."))`.
+
+---
+
+## Per-field scope
+
+Every `FieldSchema` declares a `FieldScope`:
+
+- `FieldScope::Global` — stored under the bare provider name (no path suffix). Queried regardless of any explicit or context path.
+- `FieldScope::PathScoped` — stored under `provider\0path`. Queried with an explicit or context path.
+
+A provider with all Global fields is a traditional global provider. A provider
+with all PathScoped fields is a traditional path-scoped provider. A provider
+with mixed scopes (e.g., `mise`) emits one cache entry per scope per execution.
+
+### Mixed-scope example
+
+```rust
+impl Provider for MyProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "myprov".into(),
+            fields: vec![
+                FieldSchema { name: "system".into(), field_type: FieldType::String, scope: FieldScope::Global },
+                FieldSchema { name: "project".into(), field_type: FieldType::String, scope: FieldScope::PathScoped },
+            ],
+            invalidation: InvalidationStrategy::Poll { interval_secs: 30, floor_secs: 1 },
+        }
+    }
+
+    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let mut out = Vec::new();
+        // Always emit the global part.
+        out.push((None, compute_system_state()));
+        // Emit the project part only if a path was given.
+        if let Some(p) = path {
+            out.push((Some(p.to_string()), compute_project_state(p)));
+        }
+        out
+    }
+}
+```
 
 ---
 
@@ -40,7 +80,7 @@ Create `src/provider/dockercontext.rs`:
 
 ```rust
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
     ProviderResult, Value,
 };
 use std::path::PathBuf;
@@ -52,8 +92,8 @@ impl Provider for DockerContextProvider {
         ProviderMetadata {
             name: "dockercontext".to_string(),
             fields: vec![
-                FieldSchema { name: "name".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "endpoint".to_string(), field_type: FieldType::String },
+                FieldSchema { name: "name".to_string(), field_type: FieldType::String, scope: FieldScope::Global },
+                FieldSchema { name: "endpoint".to_string(), field_type: FieldType::String, scope: FieldScope::Global },
             ],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![
@@ -62,16 +102,24 @@ impl Provider for DockerContextProvider {
                 ],
                 fallback_poll_secs: Some(60),
             },
-            global: true,
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Option<ProviderResult> {
-        let home = std::env::var("HOME").ok()?;
+    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+        let home = match std::env::var("HOME").ok() {
+            Some(h) => h,
+            None => return vec![],
+        };
         let config_path = PathBuf::from(&home).join(".docker").join("config.json");
 
-        let config_text = std::fs::read_to_string(&config_path).ok()?;
-        let config: serde_json::Value = serde_json::from_str(&config_text).ok()?;
+        let config_text = match std::fs::read_to_string(&config_path).ok() {
+            Some(t) => t,
+            None => return vec![],
+        };
+        let config: serde_json::Value = match serde_json::from_str(&config_text).ok() {
+            Some(v) => v,
+            None => return vec![],
+        };
 
         let context_name = config
             .get("currentContext")
@@ -86,7 +134,7 @@ impl Provider for DockerContextProvider {
         let mut result = ProviderResult::new();
         result.insert("name", Value::String(context_name));
         result.insert("endpoint", Value::String(endpoint));
-        Some(result)
+        vec![(None, result)]
     }
 }
 
@@ -167,20 +215,20 @@ mod tests {
         let provider = DockerContextProvider;
         let meta = provider.metadata();
         assert_eq!(meta.name, "dockercontext");
-        assert!(meta.global);
         assert_eq!(meta.fields.len(), 2);
         assert!(meta.fields.iter().any(|f| f.name == "name"));
         assert!(meta.fields.iter().any(|f| f.name == "endpoint"));
+        assert!(meta.fields.iter().all(|f| f.scope == FieldScope::Global));
     }
 
     #[test]
-    fn returns_none_without_docker_config() {
+    fn returns_empty_without_docker_config() {
         // Point HOME at a temp directory with no .docker/ directory.
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", dir.path());
         let provider = DockerContextProvider;
         let result = provider.execute(None);
-        assert!(result.is_none());
+        assert!(result.is_empty());
         // Restore HOME to avoid contaminating other tests.
         std::env::remove_var("HOME");
     }
@@ -197,7 +245,10 @@ mod tests {
 
         std::env::set_var("HOME", dir.path());
         let provider = DockerContextProvider;
-        let result = provider.execute(None).unwrap();
+        let mut results = provider.execute(None);
+        assert_eq!(results.len(), 1);
+        let (scope, result) = results.remove(0);
+        assert!(scope.is_none(), "expected global (pathless) entry");
         assert_eq!(
             result.get("name"),
             Some(&Value::String("default".to_string()))
@@ -520,7 +571,7 @@ Shared library providers load a `.so` (Linux) or `.dylib` (macOS) at daemon star
 Libraries must export three symbols:
 
 ```c
-// Return JSON metadata: {"fields":{"name":"string",...}, "invalidation":{"poll":"30s"}, "global":true}
+// Return JSON metadata: {"fields":{"name":{"type":"string","scope":"global"},...}, "invalidation":{"poll":"30s"}}
 // Caller frees the returned pointer via beachcomber_provider_free().
 const char* beachcomber_provider_metadata(void);
 
@@ -563,7 +614,7 @@ If the library's `beachcomber_provider_metadata()` returns valid JSON, that meta
 #include <stdio.h>
 
 const char* beachcomber_provider_metadata(void) {
-    const char* json = "{\"fields\":{\"value\":\"string\"},\"invalidation\":{\"poll\":\"10s\"},\"global\":true}";
+    const char* json = "{\"fields\":{\"value\":{\"type\":\"string\",\"scope\":\"global\"}},\"invalidation\":{\"poll\":\"10s\"}}";
     char* result = strdup(json);
     return result;
 }

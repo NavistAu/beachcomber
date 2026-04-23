@@ -55,6 +55,22 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 
 The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`, `sudo`, `op`) follow the same pattern as `git.rs` — each implements `Provider` for a specific domain.
 
+### Provider execution
+
+Providers implement `Provider::execute(path) -> Vec<(Option<String>, ProviderResult)>`.
+Each returned tuple is a scoped cache entry — `None` means a global (pathless)
+entry, `Some(p)` means an entry keyed under path `p`. Most providers return a
+one-element Vec; `mise` returns two (one global, one project-scoped) from a
+single execution.
+
+Scope is a property of individual fields, declared on `FieldSchema::scope`
+(`FieldScope::Global` or `FieldScope::PathScoped`). A provider's effective
+"scope shape" is inferred from its field list — a provider with any
+PathScoped field is treated as path-scoped for whole-provider queries.
+
+Cache keys use `provider\0path` for path-scoped entries and bare `provider`
+for global. A single provider can own both kinds of entries simultaneously.
+
 ---
 
 ## 3. Request Lifecycle: `comb get git.branch .`
@@ -87,7 +103,7 @@ and writes it as a single newline-terminated line.
 
 **Step 6: Path resolution**
 
-`resolve_path(Some("."), &context_path, "git", &registry)` checks whether the `git` provider is path-scoped (`global: false`). It is, so the explicit path `"."` is used. (If the CLI had omitted the path argument, the session's context path would be used instead.)
+`resolve_path(Some("."), &context_path, "git", &registry)` checks whether the `git` provider has any `PathScoped` fields (it does). The explicit path `"."` is used. (If the CLI had omitted the path argument, the session's context path would be used instead.)
 
 **Step 7: Cache lookup**
 
@@ -239,7 +255,7 @@ Early versions used a `(String, Option<String>)` tuple as the DashMap key, requi
 
 **spawn_blocking, not async providers**
 
-The `Provider` trait's `execute` method is synchronous (`fn execute(&self, path: Option<&str>) -> Option<ProviderResult>`). This is intentional. Providers need to call blocking APIs: `std::process::Command`, `std::fs::read_to_string`, `libc` syscalls. Async providers would require those calls to be wrapped in `spawn_blocking` internally anyway. Keeping the interface synchronous is simpler, and `spawn_blocking` at the callsite (the scheduler) is the right place to manage the thread pool boundary. This also means provider authors don't need to think about async.
+The `Provider` trait's `execute` method is synchronous (`fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)>`). This is intentional. Providers need to call blocking APIs: `std::process::Command`, `std::fs::read_to_string`, `libc` syscalls. Async providers would require those calls to be wrapped in `spawn_blocking` internally anyway. Keeping the interface synchronous is simpler, and `spawn_blocking` at the callsite (the scheduler) is the right place to manage the thread pool boundary. This also means provider authors don't need to think about async.
 
 **Fire-and-forget execution**
 

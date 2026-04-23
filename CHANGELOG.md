@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Global providers (hostname, user, battery, etc.) no longer create ghost cache entries when queried with an explicit path. Previously `comb get hostname.short /some/dir` cached hostname under `/some/dir` in addition to the real pathless entry.
+- `mise.global` is no longer duplicated per project directory. The `mise` provider now emits its global tool state as a pathless cache entry and its project tool state as a path-scoped cache entry.
+
+### Changed
+
+- Provider scope is now declared per field via `FieldSchema::scope` (`FieldScope::Global` or `FieldScope::PathScoped`). The `ProviderMetadata.global: bool` field is removed. Custom TOML and library providers can declare per-field scope; the provider-level `scope` key continues to work as a default.
+- `Provider::execute` signature widened to return `Vec<(Option<String>, ProviderResult)>`, enabling one provider to emit multiple scoped cache entries per execution. SDKs are unaffected — wire protocol is unchanged.
+
+### Removed
+
+- The unused `[lifecycle] eviction_timeout_secs` config field. Configs that still declare it continue to parse cleanly; serde ignores unknown fields.
+
 ## [0.6.0] - 2026-04-22
 
 ### Breaking
