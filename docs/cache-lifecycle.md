@@ -57,9 +57,23 @@ A consumer request and an fsevent on a watched path are symmetric demand signals
 
 1. Update the cache entry (the fsevent path executes the provider; the consumer path may hit cache).
 2. Reset the keep-alive timer to 0.
-3. Promote from any decay state back to Active.
+3. Promote from any non-Cold state back to Active.
 
-Filesystem watches are registered only while in Active. Watches are torn down on transition to Decay1. During decay, only consumer requests can deliver demand.
+### Filesystem watches during decay
+
+Watch behaviour during decay is per-provider configurable:
+
+- **Drop-on-decay (default):** watches torn down when the entry enters Decay1. Only consumer requests can reinstate during decay. Appropriate for providers whose watched paths fire frequently (e.g., `.git` during active development) — idle entries don't burn watch registrations.
+- **Keep-during-decay:** watches remain registered through every decay step until eviction. An fsevent can reinstate an entry all the way down to Decay4. Appropriate for providers whose watched paths fire rarely but whose refresh latency matters when they do (e.g., a config file consumers read once an hour).
+
+### Timers
+
+Two independent timers drive the lifecycle per entry:
+
+- **Poll timer** — elapses at the current poll interval (`P` in Active, `P × 2^n` in Decay step `n`). Each elapse executes the provider and refreshes the entry. Resets on every elapse and on every provider execution.
+- **Decay timer** — elapses at the current step duration (`K` in Active, `K × 2^n` in Decay step `n`). Each elapse advances the state to the next step (Active → Decay1 → … → Decay4 → Evicted). Resets to 0 on any demand signal.
+
+The poll timer refreshes data; the decay timer governs state transitions. Either can fire independently of the other.
 
 ## Sequence diagrams
 
@@ -196,10 +210,9 @@ sequenceDiagram
 1. An entry is in exactly one state: Cold (not in cache), Active, Decay1, Decay2, Decay3, Decay4, or Evicted (removed).
 2. Any demand signal in any non-Cold state promotes the entry to Active and resets the decay cycle.
 3. Absent reinstatement, decay is strictly monotonic: Active → Decay1 → Decay2 → Decay3 → Decay4 → Evicted.
-4. The decay ratio is fixed at 2. Decay step count is fixed at 4. Total decay window is `30K`.
-5. Filesystem watches are registered only during Active. During Decay, only consumer requests can deliver demand.
-6. After eviction, the next request goes through the Cold path — provider executes inline.
-7. `K` (keep-alive window) and `P` (base poll interval) are per-provider configurable. Decay ratio and step count are not.
+4. The decay ratio is fixed at 2. Decay step count is fixed at 4. Total decay window (from Active exit to eviction) is `30K`.
+5. After eviction, the next request goes through the Cold path — provider executes inline.
+6. Two timers govern each entry: the poll timer refreshes data; the decay timer advances state. They are independent.
 
 ## Parameters
 
@@ -207,10 +220,60 @@ sequenceDiagram
 |---|---|---|
 | Keep-alive window `K` | per-provider | configurable |
 | Base poll interval `P` | per-provider | configurable, with provider-declared default |
+| Watches-during-decay | per-provider | configurable, default drop-on-decay |
 | Decay step count | global | fixed at 4 |
 | Decay ratio | global | fixed at 2 |
 
-Current config keys that control these settings live in `src/config.rs`. Naming and exact semantics at the config-key level are subject to the implementation spec that closes out this design.
+Total decay window is derivable from `K` — it is always `30K`. It is not a separate knob.
+
+## Worked examples
+
+### Example 1 — `git.branch` in a monorepo
+
+Provider: `git`, path-scoped, base poll `P = 60s`, keep-alive `K = 2 min`, drop-on-decay.
+
+A developer runs `starship` (which polls `git.branch` every prompt) while coding, then switches to a long Slack conversation.
+
+| Event | State | Timeline |
+|---|---|---|
+| First prompt fires `comb get git.branch /repo` | Cold → Active | t = 0 |
+| Every prompt re-queries (< 1s apart) | Active, keep-alive resets | t = 0 .. 5 min |
+| Developer starts writing Slack messages — no prompts for 2 min | keep-alive expires | t = 7 min |
+| Enter Decay1 — poll at `2P = 2 min`, step duration `2K = 4 min`, watches dropped | Decay1 | t = 7 min |
+| Decay1 expires (no demand), advance | Decay2 | t = 11 min |
+| Decay2: poll at `4P = 4 min`, step duration `4K = 8 min` | Decay2 | t = 11 min |
+| Decay2 expires | Decay3 | t = 19 min |
+| Decay3: poll at `8P = 8 min`, step duration `8K = 16 min` | Decay3 | t = 19 min |
+| Decay3 expires | Decay4 | t = 35 min |
+| Decay4: poll at `16P = 16 min`, step duration `16K = 32 min` | Decay4 | t = 35 min |
+| Decay4 expires — no demand the whole time | Evicted | t = 67 min |
+
+If the developer came back at t = 25 min and queried `git.branch`, the entry (in Decay3) would reinstate to Active, watches would be re-registered, and the decay cycle would reset. Total decay window absent reinstatement: 60 minutes (t = 7 to t = 67, which is `30K` = `30 × 2 min`).
+
+### Example 2 — `battery.percent` on a laptop
+
+Provider: `battery`, global, base poll `P = 30s`, keep-alive `K = 2 min`, no watches (pure poll).
+
+A tmux status bar polls every 10s. The user locks the laptop and doesn't touch it for an hour.
+
+| Event | State | Timeline |
+|---|---|---|
+| tmux queries `battery.percent` | Cold → Active | t = 0 |
+| tmux queries every 10s — always hits cache, keep-alive resets | Active | t = 0 .. lock |
+| Screen locks; no more queries | keep-alive expires | t = lock + 2 min |
+| Decay1: poll at `60s`, step duration `4 min` | Decay1 | |
+| ... 4 decay steps without reinstatement ... | Decay4 | |
+| Evicted | | t = lock + 62 min |
+
+`battery.percent` is never fsevent-driven; watches behaviour is irrelevant.
+
+### Example 3 — mixed-scope `mise` provider with keep-during-decay on the global entry
+
+Provider: `mise`, emits both a pathless global entry and a path-scoped project entry (see `docs/provider-development.md`). Suppose the global entry is configured `keep-during-decay` because `~/.config/mise/config.toml` changes rarely but needs to be picked up promptly when it does.
+
+After the user hasn't queried `mise.global` for a while, the pathless entry enters Decay3. A filesystem change to `~/.config/mise/config.toml` fires an fsevent. Because watches are kept during decay for this provider, the fsevent executes the provider, writes a fresh global entry, and reinstates to Active. The user's next query hits a fresh value immediately.
+
+The project entry (path-scoped) is governed independently — it may be in any decay state at the same time and progresses on its own schedule.
 
 ## Behaviour assertions
 
@@ -295,16 +358,32 @@ Feature: Cache lifecycle
     Then the provider is executed inline
     And a fresh entry is created in Active state
 
-  Scenario: fsevent during decay is not delivered (watches dropped)
-    Given an entry for "git.branch" in Decay2
+  Scenario: fsevent during decay is not delivered when drop-on-decay
+    Given a provider configured with drop-on-decay watches
+    And an entry for that provider in Decay2
     When a file matching the provider's watch pattern is modified
     Then no refresh occurs
     And the entry remains in Decay2
+
+  Scenario: fsevent during decay reinstates when keep-during-decay
+    Given a provider configured with keep-during-decay watches
+    And an entry for that provider in Decay3
+    When a file matching the provider's watch pattern is modified
+    Then the provider is executed
+    And the entry transitions to Active
+    And the poll interval returns to P
 
   Scenario: Total decay window is 30K
     Given an entry for "git.branch" in Active
     When K + 30K seconds pass with no demand signal
     Then the entry is evicted
+
+  Scenario: Poll timer and decay timer advance independently
+    Given an entry in Active with P = 60s and K = 120s
+    When 60s pass with no demand signal
+    Then the provider is executed
+    And the entry remains in Active
+    And the decay timer has elapsed 60s
 ```
 
 ## Out of scope
@@ -314,7 +393,3 @@ Feature: Cache lifecycle
 - **`Once` providers.** Hostname, user, uname — computed at daemon startup, never again. They are not part of the decay cycle.
 - **`--force` and `--wait`.** Explicit consumer overrides that bypass or modify default read semantics. Not part of the lifecycle; documented on the request API.
 - **Demand signals from the wire protocol itself.** `comb refresh`, `comb watch`, and `comb get --force` all have distinct semantics covered in the protocol spec. This document treats them as varieties of demand signal; per-op nuances live in `docs/protocol-spec.md`.
-
-## Relationship to the current implementation
-
-As of 2026-04-23, the front half of this model (Cold → Active, warm reads, active polling, fsevent refresh) is correct and tested. The decay half is not wired — see `docs/roadmap.md` → Known Core Issues. The decay rebuild must bring the implementation into conformance with this document.
