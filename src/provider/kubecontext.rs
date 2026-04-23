@@ -25,7 +25,6 @@ impl Provider for KubecontextProvider {
                 interval_secs: 30,
                 floor_secs: 5,
             },
-            global: true,
         }
     }
 

@@ -35,7 +35,6 @@ impl Provider for AwsProvider {
                 interval_secs: 60,
                 floor_secs: 10,
             },
-            global: true,
         }
     }
 

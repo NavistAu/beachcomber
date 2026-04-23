@@ -22,13 +22,12 @@ impl Provider for PathScopedProvider {
             fields: vec![FieldSchema {
                 name: "active_path".to_string(),
                 field_type: FieldType::String,
-                scope: FieldScope::Global,
+                scope: FieldScope::PathScoped,
             }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
                 floor_secs: 1,
             },
-            global: false,
         }
     }
 
@@ -54,7 +53,6 @@ impl Provider for GlobalProvider {
                 scope: FieldScope::Global,
             }],
             invalidation: InvalidationStrategy::Once,
-            global: true,
         }
     }
 

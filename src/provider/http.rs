@@ -26,7 +26,6 @@ impl Provider for HttpProvider {
             name: self.name.clone(),
             fields: vec![], // Dynamic — fields come from the response
             invalidation,
-            global: true, // HTTP providers are always global (no path context)
         }
     }
 

@@ -20,7 +20,6 @@ impl Provider for AsdfProvider {
                 patterns: vec![".tool-versions".to_string()],
                 fallback_poll_secs: Some(30),
             },
-            global: false,
         }
     }
 

@@ -27,7 +27,6 @@ impl Provider for DirenvProvider {
                 patterns: vec![".envrc".to_string()],
                 fallback_poll_secs: Some(30),
             },
-            global: false,
         }
     }
 

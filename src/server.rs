@@ -1,6 +1,7 @@
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
+use crate::provider::FieldScope;
 use crate::provider::InvalidationStrategy;
 use crate::provider::ProviderSource;
 use crate::provider::registry::ProviderRegistry;
@@ -349,7 +350,7 @@ fn resolve_path(
     let raw = if explicit.is_some() {
         explicit.map(|s| s.to_string())
     } else if let Some(provider) = registry.get(provider_name) {
-        if !provider.metadata().global {
+        if provider.metadata().inferred_scope() == FieldScope::PathScoped {
             context.clone()
         } else {
             None
@@ -898,7 +899,11 @@ async fn handle_introspect_providers(
 
         let (scope, fields, invalidation) = if let Some(p) = registry.get(name) {
             let meta = p.metadata();
-            let scope = if meta.global { "global" } else { "path" };
+            let scope = if meta.inferred_scope() == FieldScope::Global {
+                "global"
+            } else {
+                "path"
+            };
             let fields: Vec<serde_json::Value> = meta
                 .fields
                 .iter()

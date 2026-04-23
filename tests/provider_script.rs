@@ -1,4 +1,5 @@
 use beachcomber::config::ScriptProviderConfig;
+use beachcomber::provider::FieldScope;
 use beachcomber::provider::Provider;
 use beachcomber::provider::script::ScriptProvider;
 
@@ -11,7 +12,11 @@ fn script_provider_metadata() {
     let p = ScriptProvider::new("test_script", config);
     let meta = p.metadata();
     assert_eq!(meta.name, "test_script");
-    assert!(meta.global, "Default scope is global");
+    assert_eq!(
+        meta.inferred_scope(),
+        FieldScope::Global,
+        "Default scope is global"
+    );
 }
 
 #[test]
@@ -49,14 +54,26 @@ fn script_provider_executes_kv_output() {
 
 #[test]
 fn script_provider_path_scoped() {
+    // NOTE: FieldSchema.scope is a placeholder (Global) until Task 11 wires
+    // config.scope into per-field scope. The execute() path still correctly
+    // produces path-scoped cache entries when scope = "path" is configured.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().to_str().unwrap().to_string();
     let config = ScriptProviderConfig {
-        command: "echo '{\"cwd\":\"test\"}'".to_string(),
+        command: r#"echo '{"cwd":"test"}'"#.to_string(),
         scope: Some("path".to_string()),
         ..Default::default()
     };
     let p = ScriptProvider::new("path_test", config);
-    let meta = p.metadata();
-    assert!(!meta.global, "path scope should not be global");
+    // Verify execute returns a path-keyed entry, not a global (None-keyed) entry.
+    let results = p.execute(Some(&path));
+    assert_eq!(results.len(), 1, "should produce one result");
+    let (key, _) = &results[0];
+    assert_eq!(
+        key.as_deref(),
+        Some(path.as_str()),
+        "path scope should produce a path-keyed entry"
+    );
 }
 
 #[test]

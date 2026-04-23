@@ -39,7 +39,6 @@ impl Provider for BatteryProvider {
                 interval_secs: 30,
                 floor_secs: 5,
             },
-            global: true,
         }
     }
 

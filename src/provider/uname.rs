@@ -32,7 +32,6 @@ impl Provider for UnameProvider {
                 },
             ],
             invalidation: InvalidationStrategy::Once,
-            global: true,
         }
     }
 

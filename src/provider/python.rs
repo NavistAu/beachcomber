@@ -31,7 +31,6 @@ impl Provider for PythonProvider {
                 patterns: vec![".venv".to_string(), "pyproject.toml".to_string()],
                 fallback_poll_secs: Some(30),
             },
-            global: false,
         }
     }
 

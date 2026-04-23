@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 
 use crate::cache::Cache;
 use crate::config::Config;
+use crate::provider::FieldScope;
 use crate::provider::InvalidationStrategy;
 use crate::provider::registry::ProviderRegistry;
 use crate::watcher::FsWatcher;
@@ -758,7 +759,7 @@ impl Scheduler {
                                     }
 
                                     // Set up filesystem watching for path-scoped providers.
-                                    if !meta.global
+                                    if meta.inferred_scope() == FieldScope::PathScoped
                                         && let Some(ref path_str) = path {
                                         let watch_path = PathBuf::from(path_str);
                                         if let Err(e) = fs_watcher.watch(&watch_path) {

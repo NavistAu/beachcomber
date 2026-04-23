@@ -19,7 +19,6 @@ impl Provider for TerraformProvider {
                 patterns: vec![".terraform".to_string()],
                 fallback_poll_secs: Some(30),
             },
-            global: false,
         }
     }
 

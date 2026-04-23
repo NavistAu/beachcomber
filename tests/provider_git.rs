@@ -1,3 +1,4 @@
+use beachcomber::provider::FieldScope;
 use beachcomber::provider::InvalidationStrategy;
 use beachcomber::provider::Provider;
 use beachcomber::provider::git::GitProvider;
@@ -41,7 +42,11 @@ fn git_provider_metadata() {
     let p = GitProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "git");
-    assert!(!meta.global, "git should be path-scoped");
+    assert_eq!(
+        meta.inferred_scope(),
+        FieldScope::PathScoped,
+        "git should be path-scoped"
+    );
     let field_names: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(field_names.contains(&"branch"));
     assert!(field_names.contains(&"dirty"));

@@ -18,7 +18,6 @@ impl Provider for CondaProvider {
                 interval_secs: 30,
                 floor_secs: 10,
             },
-            global: true,
         }
     }
 

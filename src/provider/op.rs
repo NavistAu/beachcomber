@@ -26,7 +26,6 @@ impl Provider for OpProvider {
                 interval_secs: 60,
                 floor_secs: 30,
             },
-            global: true,
         }
     }
 

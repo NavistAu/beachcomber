@@ -51,7 +51,6 @@ impl Provider for NetworkProvider {
                 interval_secs: 10,
                 floor_secs: 5,
             },
-            global: true,
         }
     }
 

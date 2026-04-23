@@ -1,12 +1,12 @@
 use beachcomber::provider::uname::UnameProvider;
-use beachcomber::provider::{InvalidationStrategy, Provider};
+use beachcomber::provider::{FieldScope, InvalidationStrategy, Provider};
 
 #[test]
 fn uname_provider_metadata() {
     let p = UnameProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "uname");
-    assert!(meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::Global);
     assert!(matches!(meta.invalidation, InvalidationStrategy::Once));
     let field_names: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(field_names.contains(&"sysname"));

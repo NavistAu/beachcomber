@@ -1,13 +1,17 @@
 use beachcomber::provider::hostname::HostnameProvider;
 use beachcomber::provider::user::UserProvider;
-use beachcomber::provider::{InvalidationStrategy, Provider};
+use beachcomber::provider::{FieldScope, InvalidationStrategy, Provider};
 
 #[test]
 fn hostname_provider_metadata() {
     let p = HostnameProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "hostname");
-    assert!(meta.global, "hostname should be global");
+    assert_eq!(
+        meta.inferred_scope(),
+        FieldScope::Global,
+        "hostname should be global"
+    );
     assert!(
         matches!(meta.invalidation, InvalidationStrategy::Once),
         "hostname should use Once invalidation"
@@ -58,7 +62,11 @@ fn user_provider_metadata() {
     let p = UserProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "user");
-    assert!(meta.global, "user should be global");
+    assert_eq!(
+        meta.inferred_scope(),
+        FieldScope::Global,
+        "user should be global"
+    );
     assert!(
         matches!(meta.invalidation, InvalidationStrategy::Once),
         "user should use Once invalidation"

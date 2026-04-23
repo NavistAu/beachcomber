@@ -182,7 +182,6 @@ impl Provider for LibraryProvider {
 
         // Fall back to config-based metadata (same as script provider).
         let invalidation = build_invalidation(&self.config);
-        let global = self.config.scope.as_deref() != Some("path");
 
         let fields = self
             .config
@@ -208,7 +207,6 @@ impl Provider for LibraryProvider {
             name: self.name.clone(),
             fields,
             invalidation,
-            global,
         }
     }
 
@@ -263,15 +261,12 @@ fn parse_library_metadata(name: &str, json_str: &str) -> Option<ProviderMetadata
         })
         .unwrap_or_default();
 
-    let global = obj.get("global").and_then(|v| v.as_bool()).unwrap_or(true);
-
     let invalidation = parse_invalidation_from_json(obj);
 
     Some(ProviderMetadata {
         name: name.to_string(),
         fields,
         invalidation,
-        global,
     })
 }
 

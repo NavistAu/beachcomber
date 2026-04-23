@@ -1,12 +1,12 @@
 use beachcomber::provider::network::NetworkProvider;
-use beachcomber::provider::{InvalidationStrategy, Provider};
+use beachcomber::provider::{FieldScope, InvalidationStrategy, Provider};
 
 #[test]
 fn network_provider_metadata() {
     let p = NetworkProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "network");
-    assert!(meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::Global);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"interface"));
     assert!(fields.contains(&"ip"));

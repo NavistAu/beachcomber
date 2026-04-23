@@ -175,7 +175,6 @@ pub struct ProviderMetadata {
     pub name: String,
     pub fields: Vec<FieldSchema>,
     pub invalidation: InvalidationStrategy,
-    pub global: bool,
 }
 
 impl ProviderMetadata {
@@ -306,7 +305,6 @@ mod tests {
                 },
             ],
             invalidation: InvalidationStrategy::Once,
-            global: false,
         };
         assert_eq!(meta.inferred_scope(), FieldScope::PathScoped);
     }
@@ -328,7 +326,6 @@ mod tests {
                 },
             ],
             invalidation: InvalidationStrategy::Once,
-            global: true,
         };
         assert_eq!(meta.inferred_scope(), FieldScope::Global);
     }
@@ -343,7 +340,6 @@ mod tests {
                 scope: FieldScope::PathScoped,
             }],
             invalidation: InvalidationStrategy::Once,
-            global: false,
         };
         assert_eq!(meta.field_scope("a"), Some(FieldScope::PathScoped));
         assert_eq!(meta.field_scope("missing"), None);
@@ -355,7 +351,6 @@ mod tests {
             name: "empty".to_string(),
             fields: vec![],
             invalidation: InvalidationStrategy::Once,
-            global: true,
         };
         assert!(meta.validate().is_err());
     }
@@ -383,7 +378,6 @@ mod tests {
                 scope: FieldScope::Global,
             }],
             invalidation: InvalidationStrategy::Once,
-            global: true,
         };
         assert!(meta.validate().is_ok());
     }

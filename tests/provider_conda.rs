@@ -1,11 +1,13 @@
+use beachcomber::provider::FieldScope;
 use beachcomber::provider::Provider;
 use beachcomber::provider::conda::CondaProvider;
 
 #[test]
 fn conda_provider_is_global_scoped() {
     let meta = CondaProvider.metadata();
-    assert!(
-        meta.global,
+    assert_eq!(
+        meta.inferred_scope(),
+        FieldScope::Global,
         "conda reads a shell-global env var; provider must be global-scoped"
     );
 }

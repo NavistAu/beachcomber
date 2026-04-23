@@ -1,3 +1,4 @@
+use beachcomber::provider::FieldScope;
 use beachcomber::provider::Provider;
 use beachcomber::provider::aws::AwsProvider;
 use beachcomber::provider::gcloud::GcloudProvider;
@@ -8,7 +9,7 @@ fn kubecontext_provider_metadata() {
     let p = KubecontextProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "kubecontext");
-    assert!(meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::Global);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"context"));
     assert!(fields.contains(&"namespace"));
@@ -25,7 +26,7 @@ fn aws_provider_metadata() {
     let p = AwsProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "aws");
-    assert!(meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::Global);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"profile"));
     assert!(fields.contains(&"region"));
@@ -42,7 +43,7 @@ fn gcloud_provider_metadata() {
     let p = GcloudProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "gcloud");
-    assert!(meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::Global);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"project"));
     assert!(fields.contains(&"account"));

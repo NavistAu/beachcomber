@@ -23,7 +23,6 @@ impl Provider for SudoProvider {
                 interval_secs: 30,
                 floor_secs: 10,
             },
-            global: true,
         }
     }
 

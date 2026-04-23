@@ -1,3 +1,4 @@
+use beachcomber::provider::FieldScope;
 use beachcomber::provider::Provider;
 use beachcomber::provider::asdf::AsdfProvider;
 use beachcomber::provider::conda::CondaProvider;
@@ -14,7 +15,7 @@ fn terraform_metadata() {
     let p = TerraformProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "terraform");
-    assert!(!meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::PathScoped);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"workspace"));
 }
@@ -33,7 +34,7 @@ fn direnv_metadata() {
     let p = DirenvProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "direnv");
-    assert!(!meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::PathScoped);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"status"));
     assert!(fields.contains(&"allowed"));
@@ -53,7 +54,7 @@ fn python_metadata() {
     let p = PythonProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "python");
-    assert!(!meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::PathScoped);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"venv"));
     assert!(fields.contains(&"venv_name"));
@@ -95,7 +96,7 @@ fn conda_metadata() {
     let p = CondaProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "conda");
-    assert!(meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::Global);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"env"));
 }
@@ -107,7 +108,7 @@ fn mise_metadata() {
     let p = MiseProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "mise");
-    assert!(!meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::PathScoped);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"project"));
     assert!(fields.contains(&"global"));
@@ -130,7 +131,7 @@ fn asdf_metadata() {
     let p = AsdfProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "asdf");
-    assert!(!meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::PathScoped);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"tools"));
 }

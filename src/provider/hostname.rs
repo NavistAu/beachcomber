@@ -22,7 +22,6 @@ impl Provider for HostnameProvider {
                 },
             ],
             invalidation: InvalidationStrategy::Once,
-            global: true,
         }
     }
 

@@ -1,3 +1,4 @@
+use beachcomber::provider::FieldScope;
 use beachcomber::provider::Provider;
 use beachcomber::provider::op::OpProvider;
 
@@ -6,7 +7,7 @@ fn op_provider_metadata() {
     let p = OpProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "op");
-    assert!(meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::Global);
     assert_eq!(meta.fields.len(), 2);
     let field_names: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(field_names.contains(&"signed_in"));

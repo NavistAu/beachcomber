@@ -23,7 +23,6 @@ impl ScriptProvider {
 impl Provider for ScriptProvider {
     fn metadata(&self) -> ProviderMetadata {
         let invalidation = build_invalidation(&self.config);
-        let global = self.config.scope.as_deref() != Some("path");
 
         let fields = self
             .config
@@ -49,7 +48,6 @@ impl Provider for ScriptProvider {
             name: self.name.clone(),
             fields,
             invalidation,
-            global,
         }
     }
 

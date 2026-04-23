@@ -22,7 +22,6 @@ impl Provider for UserProvider {
                 },
             ],
             invalidation: InvalidationStrategy::Once,
-            global: true,
         }
     }
 

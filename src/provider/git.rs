@@ -156,7 +156,6 @@ impl Provider for GitProvider {
                 interval_secs: 60,
                 floor_secs: 1,
             },
-            global: false,
         }
     }
 

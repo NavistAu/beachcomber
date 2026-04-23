@@ -1,6 +1,6 @@
 use beachcomber::provider::battery::BatteryProvider;
 use beachcomber::provider::load::LoadProvider;
-use beachcomber::provider::{InvalidationStrategy, Provider};
+use beachcomber::provider::{FieldScope, InvalidationStrategy, Provider};
 
 // --- Battery ---
 
@@ -9,7 +9,7 @@ fn battery_provider_metadata() {
     let p = BatteryProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "battery");
-    assert!(meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::Global);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"percent"));
     assert!(fields.contains(&"charging"));
@@ -42,7 +42,7 @@ fn load_provider_metadata() {
     let p = LoadProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "load");
-    assert!(meta.global);
+    assert_eq!(meta.inferred_scope(), FieldScope::Global);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"one"));
     assert!(fields.contains(&"five"));
@@ -80,6 +80,7 @@ mod battery_linux_tests {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod uptime_tests {
+    use beachcomber::provider::FieldScope;
     use beachcomber::provider::Provider;
     use beachcomber::provider::uptime::UptimeProvider;
 
@@ -88,7 +89,7 @@ mod uptime_tests {
         let p = UptimeProvider;
         let meta = p.metadata();
         assert_eq!(meta.name, "uptime");
-        assert!(meta.global);
+        assert_eq!(meta.inferred_scope(), FieldScope::Global);
         let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
         assert!(fields.contains(&"seconds"));
         assert!(fields.contains(&"days"));

@@ -18,7 +18,6 @@ impl Provider for FakeProvider {
                 interval_secs: 30,
                 floor_secs: 5,
             },
-            global: true,
         }
     }
 
@@ -46,7 +45,11 @@ fn provider_metadata_fields() {
 #[test]
 fn provider_metadata_is_global() {
     let p = FakeProvider;
-    assert!(p.metadata().global, "Fake provider should be global");
+    assert_eq!(
+        p.metadata().inferred_scope(),
+        FieldScope::Global,
+        "Fake provider should be global"
+    );
 }
 
 #[test]

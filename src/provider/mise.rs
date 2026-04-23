@@ -28,7 +28,6 @@ impl Provider for MiseProvider {
                 patterns: vec![".mise.toml".to_string(), "mise.toml".to_string()],
                 fallback_poll_secs: Some(30),
             },
-            global: false,
         }
     }
 
