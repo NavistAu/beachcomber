@@ -40,6 +40,11 @@ pub enum SchedulerMessage {
         provider: String,
         path: Option<String>,
     },
+    /// Request a map of all lifecycle-tracked keys to their current decay level.
+    /// Used by the status response handler to annotate CacheRows with decay info.
+    GetLifecycleDecayLevels {
+        reply: tokio::sync::oneshot::Sender<HashMap<lifecycle::Key, u8>>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -108,6 +113,18 @@ impl SchedulerHandle {
             .await
             .ok()?;
         reply_rx.await.ok()
+    }
+
+    /// Return a map of every lifecycle-tracked key to its current decay level.
+    /// 0 = Active; 1–4 = Decay steps. Missing keys are not in the lifecycle registry
+    /// (e.g. virtual/put entries).
+    pub async fn get_lifecycle_decay_levels(&self) -> Option<HashMap<lifecycle::Key, u8>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(SchedulerMessage::GetLifecycleDecayLevels { reply: tx })
+            .await
+            .ok()?;
+        rx.await.ok()
     }
 }
 
@@ -585,6 +602,15 @@ impl Scheduler {
                             let status = build_status(&lifecycle, &watch_paths, &self.in_flight);
                             let _ = reply.send(status);
                         }
+                        Some(SchedulerMessage::GetLifecycleDecayLevels { reply }) => {
+                            let map = lifecycle
+                                .iter()
+                                .map(|(k, entry)| {
+                                    (k.clone(), lifecycle::to_decay_level(&entry.state))
+                                })
+                                .collect();
+                            let _ = reply.send(map);
+                        }
                         Some(SchedulerMessage::QueryActivity { provider, path }) => {
                             let cfg = ProviderLifecycleConfig {
                                 poll_interval: self.resolve_poll_interval_for(&provider),
@@ -728,6 +754,15 @@ impl Scheduler {
                             let empty_watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
                             let status = build_status(&lifecycle, &empty_watch_paths, &self.in_flight);
                             let _ = reply.send(status);
+                        }
+                        Some(SchedulerMessage::GetLifecycleDecayLevels { reply }) => {
+                            let map = lifecycle
+                                .iter()
+                                .map(|(k, entry)| {
+                                    (k.clone(), lifecycle::to_decay_level(&entry.state))
+                                })
+                                .collect();
+                            let _ = reply.send(map);
                         }
                         Some(SchedulerMessage::QueryActivity { provider, path }) => {
                             let cfg = ProviderLifecycleConfig {

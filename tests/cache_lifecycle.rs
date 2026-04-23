@@ -9,7 +9,7 @@ use beachcomber::provider::{
     FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
     ProviderResult, Value,
 };
-use beachcomber::scheduler::{Scheduler, SchedulerMessage};
+use beachcomber::scheduler::{Scheduler, SchedulerHandle, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -144,6 +144,83 @@ async fn integration_active_entry_appears_in_status() {
         !status.backoff.iter().any(|b| b.provider == "lc_counter"),
         "lc_counter should NOT be in backoff when Active; got {:?}",
         status.backoff
+    );
+
+    handle.send(SchedulerMessage::Shutdown).await;
+    let _ = sched_task.await;
+}
+
+/// Helper: start a scheduler and register the counting provider.
+async fn setup_lifecycle_scheduler() -> (Arc<Cache>, SchedulerHandle, tokio::task::JoinHandle<()>) {
+    let cache = Arc::new(Cache::new());
+    let mut registry = ProviderRegistry::new();
+    registry.register(Box::new(CountingGlobalProvider));
+    let registry = Arc::new(registry);
+    let config = Config::default();
+
+    let (handle, scheduler) = Scheduler::new(
+        cache.clone(),
+        registry,
+        config,
+        Arc::new(WatcherRegistry::new()),
+    );
+    let task = tokio::spawn(async move { scheduler.run().await });
+    (cache, handle, task)
+}
+
+/// Verifies that the status response reports decay=0 for an Active cache entry.
+#[tokio::test]
+async fn integration_status_response_reports_decay_level() {
+    let (cache, handle, sched_task) = setup_lifecycle_scheduler().await;
+
+    // Trigger demand so the entry enters Active state.
+    handle
+        .send(SchedulerMessage::QueryActivity {
+            provider: "lc_counter".to_string(),
+            path: None,
+        })
+        .await;
+
+    // Allow async execution to complete and lifecycle to stabilise.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    assert!(
+        cache.get("lc_counter", None).is_some(),
+        "cache should be warm before status check"
+    );
+
+    // Fetch the decay map from the scheduler.
+    let decay_map = handle
+        .get_lifecycle_decay_levels()
+        .await
+        .expect("scheduler should return a decay map");
+
+    let key = ("lc_counter".to_string(), None::<String>);
+    let decay_level = decay_map.get(&key).copied();
+
+    assert_eq!(
+        decay_level,
+        Some(0),
+        "lc_counter should have decay=0 (Active) shortly after first query; got {:?}",
+        decay_level
+    );
+
+    // Now simulate what the server does: build rows and annotate them.
+    let mut rows = cache.list_rows();
+    for row in rows.iter_mut() {
+        let k = (row.provider.clone(), row.path.clone());
+        row.decay = decay_map.get(&k).copied();
+    }
+
+    let lc_row = rows
+        .iter()
+        .find(|r| r.provider == "lc_counter")
+        .expect("lc_counter row should be present");
+
+    assert_eq!(
+        lc_row.decay,
+        Some(0),
+        "row.decay should be Some(0) for Active entry"
     );
 
     handle.send(SchedulerMessage::Shutdown).await;

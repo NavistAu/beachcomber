@@ -58,11 +58,11 @@ fn tsv_preset_is_tab_separated_no_header() {
         "tsv should have exactly one line per row, no header"
     );
     for line in lines {
-        // PROVIDER<TAB>PATH<TAB>FIELD<TAB>VALUE<TAB>AGE<TAB>STALE — 6 cols, 5 tabs
+        // PROVIDER<TAB>PATH<TAB>FIELD<TAB>VALUE<TAB>AGE<TAB>STALE<TAB>DECAY — 7 cols, 6 tabs
         assert_eq!(
             line.matches('\t').count(),
-            5,
-            "expected 5 tabs per tsv row, got: {line:?}"
+            6,
+            "expected 6 tabs per tsv row, got: {line:?}"
         );
     }
 }
@@ -496,6 +496,61 @@ async fn status_returns_rows_per_field() {
     );
 
     handle.abort();
+}
+
+#[test]
+fn status_table_includes_decay_column() {
+    use beachcomber::cache::CacheRow;
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+
+    let rows = vec![CacheRow {
+        provider: "git".into(),
+        path: Some("/repo".into()),
+        field: "branch".into(),
+        value: serde_json::json!("main"),
+        age_ms: 100,
+        stale: false,
+        decay: Some(2),
+    }];
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: None,
+        no_trunc: true,
+    };
+    let out = render_preset("human", &rows, &opts);
+
+    assert!(
+        out.contains("DECAY"),
+        "header should include DECAY, got: {out}"
+    );
+    assert!(out.contains(" 2"), "cell should render the decay value 2");
+}
+
+#[test]
+fn status_table_shows_zero_for_active() {
+    use beachcomber::cache::CacheRow;
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+
+    let rows = vec![CacheRow {
+        provider: "hostname".into(),
+        path: None,
+        field: "short".into(),
+        value: serde_json::json!("myhost"),
+        age_ms: 10,
+        stale: false,
+        decay: Some(0),
+    }];
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: None,
+        no_trunc: true,
+    };
+    let out = render_preset("human", &rows, &opts);
+
+    assert!(out.contains("DECAY"));
+    assert!(out.contains(" 0"));
 }
 
 /// Status on a fresh daemon with an empty cache returns an empty array, not an error.
