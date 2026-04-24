@@ -42,12 +42,17 @@ type HelloInfo struct {
 
 // CacheRow is one row of Status response.
 type CacheRow struct {
-	Provider string
-	Field    string      // empty when not set
-	Path     string      // empty when not set
-	Value    interface{}
-	AgeMs    uint64
-	Stale    bool
+	Provider          string
+	Field             string // empty when not set
+	Path              string // empty when not set
+	Value             interface{}
+	AgeMs             uint64
+	Stale             bool
+	Kind              map[string]interface{} // e.g. {"kind":"lifecycle","decay":0,"watches_files":true}
+	PollIntervalSecs  *uint64
+	KeepAlivePolls    *uint32
+	FseventsReinstate *bool
+	Failure           map[string]interface{} // e.g. {"consecutive_failures":3}
 }
 
 // Verdict is one daemon-health assertion.

@@ -36,27 +36,27 @@ type opDescriptor struct {
 }
 
 type expectBlock struct {
-	Status            string      `json:"status"`             // hit|miss|ok|error
-	DataType          string      `json:"data_type"`          // string|number|bool|object|array|null
-	DataEquals        interface{} `json:"data_equals"`        // exact deep-equality
-	DataAsText        string      `json:"data_as_text"`       // scalar stringification
+	Status            string      `json:"status"`       // hit|miss|ok|error
+	DataType          string      `json:"data_type"`    // string|number|bool|object|array|null
+	DataEquals        interface{} `json:"data_equals"`  // exact deep-equality
+	DataAsText        string      `json:"data_as_text"` // scalar stringification
 	DataContainsField string      `json:"data_contains_field"`
 	DataFieldEquals   *struct {
 		Field string      `json:"field"`
 		Value interface{} `json:"value"`
 	} `json:"data_field_equals"`
-	AgeMsPresent *bool  `json:"age_ms_present"`
-	Stale        *bool  `json:"stale"`
+	AgeMsPresent  *bool  `json:"age_ms_present"`
+	Stale         *bool  `json:"stale"`
 	ErrorContains string `json:"error_contains"`
 }
 
 type fixture struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
 	Setup       []opDescriptor `json:"setup"`
-	Test        opDescriptor  `json:"test"`
-	Expect      expectBlock   `json:"expect"`
-	path        string        // source file path (not in JSON)
+	Test        opDescriptor   `json:"test"`
+	Expect      expectBlock    `json:"expect"`
+	path        string         // source file path (not in JSON)
 }
 
 // ---------------------------------------------------------------------------

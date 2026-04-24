@@ -324,6 +324,61 @@ func TestClient_StatusRows_NotArray(t *testing.T) {
 	}
 }
 
+func TestStatusRowExposesLifecycleFields(t *testing.T) {
+	const payload = `{"ok":true,"data":[{"provider":"git","field":"branch","path":"/repo","value":"main","age_ms":100,"stale":false,"kind":{"kind":"lifecycle","decay":0,"watches_files":true},"poll_interval_secs":30,"keep_alive_polls":3,"fsevents_reinstate":false,"failure":{"consecutive_failures":1}}]}`
+	h, _ := fixedHandler(payload)
+	sock := startMockServer(t, h)
+
+	c := beachcomber.NewClientWithPath(sock)
+	rows, err := c.StatusRows()
+	if err != nil {
+		t.Fatalf("StatusRows: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1", len(rows))
+	}
+
+	r := rows[0]
+	if r.Provider != "git" {
+		t.Errorf("Provider = %q, want git", r.Provider)
+	}
+
+	if r.Kind == nil {
+		t.Fatal("Kind is nil, want non-nil map")
+	}
+	if r.Kind["kind"] != "lifecycle" {
+		t.Errorf("Kind[\"kind\"] = %v, want lifecycle", r.Kind["kind"])
+	}
+
+	if r.PollIntervalSecs == nil {
+		t.Fatal("PollIntervalSecs is nil, want non-nil")
+	}
+	if *r.PollIntervalSecs != 30 {
+		t.Errorf("PollIntervalSecs = %d, want 30", *r.PollIntervalSecs)
+	}
+
+	if r.KeepAlivePolls == nil {
+		t.Fatal("KeepAlivePolls is nil, want non-nil")
+	}
+	if *r.KeepAlivePolls != 3 {
+		t.Errorf("KeepAlivePolls = %d, want 3", *r.KeepAlivePolls)
+	}
+
+	if r.FseventsReinstate == nil {
+		t.Fatal("FseventsReinstate is nil, want non-nil")
+	}
+	if *r.FseventsReinstate != false {
+		t.Errorf("FseventsReinstate = %v, want false", *r.FseventsReinstate)
+	}
+
+	if r.Failure == nil {
+		t.Fatal("Failure is nil, want non-nil map")
+	}
+	if r.Failure["consecutive_failures"] != float64(1) {
+		t.Errorf("Failure[\"consecutive_failures\"] = %v, want 1", r.Failure["consecutive_failures"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Client.Watch
 // ---------------------------------------------------------------------------

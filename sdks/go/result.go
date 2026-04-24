@@ -165,6 +165,23 @@ func parseCacheRowsFromResult(r *Result) ([]CacheRow, error) {
 		if b, ok := m["stale"].(bool); ok {
 			row.Stale = b
 		}
+		if k, ok := m["kind"].(map[string]interface{}); ok {
+			row.Kind = k
+		}
+		if p, ok := m["poll_interval_secs"].(float64); ok {
+			pInt := uint64(p)
+			row.PollIntervalSecs = &pInt
+		}
+		if p, ok := m["keep_alive_polls"].(float64); ok {
+			pInt := uint32(p)
+			row.KeepAlivePolls = &pInt
+		}
+		if b, ok := m["fsevents_reinstate"].(bool); ok {
+			row.FseventsReinstate = &b
+		}
+		if f, ok := m["failure"].(map[string]interface{}); ok {
+			row.Failure = f
+		}
 		rows = append(rows, row)
 	}
 	return rows, nil
