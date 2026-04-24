@@ -86,10 +86,13 @@ pub fn format_ttl_cell(
     let warn = if ascii { "!" } else { "\u{26a0}" }; // ⚠
     let times = if ascii { "x" } else { "\u{00d7}" }; // ×
     // Watches-files indicator progression:
-    //   watches only       → `●` / `-`
-    //   watches + reinstate → `◉` / `+`  (decorated with a ring)
-    let dot = if ascii { "-" } else { "\u{25cf}" }; // ●
-    let dot_ring = if ascii { "+" } else { "\u{25c9}" }; // ◉
+    //   watches only       → `•` / `-`
+    //   watches + reinstate → `⦿` / `+`  (bullet with a ring around it)
+    // Glyphs chosen to pair visually with `★` weight — earlier `●`/`◉`
+    // rendered heavier than the lead character, making the ring variant
+    // hard to spot at a glance.
+    let dot = if ascii { "-" } else { "\u{2022}" }; // •
+    let dot_ring = if ascii { "+" } else { "\u{29bf}" }; // ⦿
 
     match kind {
         None | Some(RowKind::Once) | Some(RowKind::Virtual) | Some(RowKind::Transient) => {
@@ -1146,7 +1149,7 @@ mod ttl_cell_tests {
         );
         assert_eq!(
             cell.text,
-            "\u{2605}     60s\u{00d7}12 \u{25c9}"
+            "\u{2605}     60s\u{00d7}12 \u{29bf}"
         );
         assert!(matches!(cell.color, Some(ansi::Color::BrightGreen)));
     }
@@ -1220,7 +1223,7 @@ mod ttl_cell_tests {
             6,
         );
         assert!(
-            cell.text.ends_with("12 \u{25cf}"),
+            cell.text.ends_with("12 \u{2022}"),
             "expected bare dot indicator, got {:?}",
             cell.text
         );
@@ -1362,7 +1365,7 @@ mod ttl_cell_tests {
             false,
             2,
         );
-        assert_eq!(cell.text, "\u{2605} 60s\u{00d7}12 \u{25c9}");
+        assert_eq!(cell.text, "\u{2605} 60s\u{00d7}12 \u{29bf}");
     }
 
     #[test]
