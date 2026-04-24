@@ -123,6 +123,9 @@ fn sh_preset_emits_sourceable_assignments() {
 
 #[test]
 fn human_preset_truncates_long_values_to_default_40() {
+    // max_width is now a *total table cap*. The default RenderOpts has max_width=Some(40)
+    // which is intentionally narrow to exercise truncation — VALUE shrinks to meet the budget.
+    // Use a wider total cap so the VALUE column still gets some chars before truncation.
     let mut rows = sample_rows();
     rows.push(CacheRow {
         provider: "git".into(),
@@ -137,21 +140,25 @@ fn human_preset_truncates_long_values_to_default_40() {
         fsevents_reinstate: None,
         failure: None,
     });
+    // With a 120-col total cap, the non-VALUE columns for these rows fit comfortably,
+    // leaving VALUE some room — but not enough for all 100 'a's.
     let opts = RenderOpts {
         is_tty: true,
         no_color: true,
-        ..Default::default()
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: false,
     };
     let out = render_preset("human", &rows, &opts);
     // Output should contain truncated version, not the full 100 'a's.
     assert!(
         !out.contains(&"a".repeat(100)),
-        "human preset should truncate 100-char value to 40 chars"
+        "human preset should truncate 100-char value when total table cap is 120"
     );
-    // Should still contain the truncated prefix.
+    // Should still contain some truncated prefix (at minimum 8 chars = 5 + "...").
     assert!(
-        out.contains(&"a".repeat(37)),
-        "human preset should preserve at least 37 chars before ellipsis"
+        out.contains(&"a".repeat(5)),
+        "human preset should preserve at least a few chars before ellipsis"
     );
 }
 
@@ -598,7 +605,10 @@ fn max_width_resolves_explicit_int() {
 #[test]
 fn max_width_resolves_default_when_unset() {
     use beachcomber::cli::status_format::resolve_max_width;
-    assert_eq!(resolve_max_width(None, Some(200)), 120);
+    // When no --max-width arg is given and terminal width is available, use it.
+    assert_eq!(resolve_max_width(None, Some(200)), 200);
+    // When no --max-width arg and no terminal width, fall back to 120.
+    assert_eq!(resolve_max_width(None, None), 120);
 }
 
 #[test]
@@ -611,6 +621,97 @@ fn max_width_resolves_auto_uses_terminal() {
 fn max_width_resolves_auto_falls_back_to_default() {
     use beachcomber::cli::status_format::resolve_max_width;
     assert_eq!(resolve_max_width(Some("auto"), None), 120);
+}
+
+// ---------------------------------------------------------------------------
+// max-width is a total table cap: VALUE shrinks, others keep natural widths
+// ---------------------------------------------------------------------------
+
+#[test]
+fn max_width_value_column_shrinks_not_others() {
+    use beachcomber::cache::CacheRow;
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+    use serde_json::json;
+
+    // One row: long value, short provider/path/field.
+    let row = CacheRow {
+        provider: "git".into(),
+        path: Some("/repo".into()),
+        field: "branch".into(),
+        value: json!("a".repeat(80)),
+        age_ms: 1000,
+        stale: false,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        failure: None,
+    };
+    // Use a narrow max_width that cannot fit the full value.
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(60),
+        no_trunc: false,
+        ascii: false,
+    };
+    let out = render_preset("human", &[row], &opts);
+    // The full 80-char value must not appear (it was shrunk).
+    assert!(
+        !out.contains(&"a".repeat(80)),
+        "VALUE should be truncated when max_width is a tight total cap: {out}"
+    );
+    // Provider, path and field must still be present verbatim.
+    for line in out.lines() {
+        if line.contains("git") {
+            assert!(line.contains("git"), "provider intact: {line}");
+            assert!(line.contains("/repo"), "path intact: {line}");
+            assert!(line.contains("branch"), "field intact: {line}");
+        }
+    }
+}
+
+#[test]
+fn max_width_total_row_width_does_not_exceed_cap() {
+    use beachcomber::cache::CacheRow;
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+    use serde_json::json;
+
+    // Row with a long value that would easily blow past a 80-col cap.
+    let row = CacheRow {
+        provider: "mise".into(),
+        path: Some("-".into()),
+        field: "global".into(),
+        value: json!({"ansible-base":"2.10.17","aws-vault":"7.2.0","awscli":"2.16.9","go":"1.24.9"}),
+        age_ms: 158_000,
+        stale: false,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        failure: None,
+    };
+    let total_cap = 80usize;
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(total_cap),
+        no_trunc: false,
+        ascii: true, // ascii so TTL glyph width is predictable
+    };
+    let out = render_preset("human", &[row], &opts);
+    // Every data row (skip header) must fit within total_cap columns.
+    for (i, line) in out.lines().enumerate() {
+        if i == 0 {
+            continue; // skip header — it may exceed cap if non-VALUE columns already fill it
+        }
+        let cols = line.chars().count();
+        assert!(
+            cols <= total_cap,
+            "row {} is {} chars wide, exceeds cap {}: {:?}",
+            i, cols, total_cap, line
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

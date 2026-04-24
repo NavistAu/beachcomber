@@ -138,15 +138,19 @@ pub fn resolve_color(
     is_tty || watch_interval_env
 }
 
-/// Resolve the maximum value-column width.
+/// Resolve the maximum **total table** width.
 ///
-/// - `None` arg → use the default (120).
+/// - `None` arg → use `terminal_cols` if available, else the default (120).
 /// - `Some("auto")` → use `terminal_cols` if available, else the default.
 /// - `Some(n)` → parse `n` as a `usize`, falling back to the default on error.
+///
+/// The returned value is the cap for the **entire rendered row** (all columns +
+/// padding). The renderer shrinks the VALUE column as needed to stay within this
+/// budget, keeping all other columns at their natural widths.
 pub fn resolve_max_width(arg: Option<&str>, terminal_cols: Option<usize>) -> usize {
     const DEFAULT: usize = 120;
     match arg {
-        None => DEFAULT,
+        None => terminal_cols.unwrap_or(DEFAULT),
         Some("auto") => terminal_cols.unwrap_or(DEFAULT),
         Some(s) => s.parse().unwrap_or(DEFAULT),
     }
@@ -640,6 +644,65 @@ fn render_table(
     header: bool,
     ascii: bool,
 ) -> String {
+    // `trunc` is the **total table width cap** (all columns + padding).
+    // We scan all rows first to measure natural column widths, then compute
+    // how much room the VALUE column has once other columns claim their natural
+    // widths and inter-column separators are accounted for.
+
+    // -----------------------------------------------------------------------
+    // Pass 1: measure natural widths of every column (no truncation).
+    // Columns: PROVIDER, PATH, FIELD, VALUE, AGE, TTL
+    // -----------------------------------------------------------------------
+    let mut nat_provider = HEADERS[0].len();
+    let mut nat_path = HEADERS[1].len();
+    let mut nat_field = HEADERS[2].len();
+    let mut nat_age = HEADERS[4].len();
+    let mut nat_ttl = HEADERS[5].len();
+
+    for row in rows {
+        let path = row.path.as_deref().unwrap_or("-");
+        nat_provider = nat_provider.max(row.provider.chars().count());
+        nat_path = nat_path.max(path.chars().count());
+        nat_field = nat_field.max(row.field.chars().count());
+        nat_age = nat_age.max(format_age(row.age_ms).chars().count());
+        nat_ttl = nat_ttl.max(
+            format_ttl_cell(
+                row.kind.as_ref(),
+                row.poll_interval_secs,
+                row.keep_alive_polls,
+                row.fsevents_reinstate,
+                row.failure.as_ref(),
+                ascii,
+            )
+            .text
+            .chars()
+            .count(),
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Compute effective VALUE cap from the total-table-width budget.
+    // Layout: provider(2sp)path(2sp)field(2sp)value(2sp)age(2sp)ttl
+    //   = nat_provider + 2 + nat_path + 2 + nat_field + 2 + value_w + 2 + nat_age + 2 + nat_ttl
+    // Separators: 5 × 2 = 10
+    // Non-VALUE: nat_provider + nat_path + nat_field + nat_age + nat_ttl + 10
+    // -----------------------------------------------------------------------
+    const MIN_VALUE_WIDTH: usize = 8;
+    const SEP_TOTAL: usize = 10; // 5 separators × 2 spaces
+
+    let value_cap: Option<usize> = trunc.map(|total_cap| {
+        let non_value = nat_provider + nat_path + nat_field + nat_age + nat_ttl + SEP_TOTAL;
+        if total_cap > non_value + MIN_VALUE_WIDTH {
+            total_cap - non_value
+        } else {
+            MIN_VALUE_WIDTH
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // Pass 2: build cells, applying VALUE cap only.
+    // -----------------------------------------------------------------------
+
     // Build string cells — each row is a fixed-length array of display strings.
     // The array may contain ANSI escape sequences; col_widths tracks the
     // *visible* char count (without escapes) for alignment.
@@ -657,7 +720,7 @@ fn render_table(
     for row in rows {
         let path = row.path.as_deref().unwrap_or("-").to_string();
         let mut value = value_to_string(&row.value);
-        if let Some(max) = trunc {
+        if let Some(max) = value_cap {
             value = truncate(&value, max);
         }
 
