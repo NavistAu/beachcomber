@@ -6,7 +6,7 @@
 
 - [ ] Do we still need to put in support for {% %} style tags in our jinja templates?
 - [ ] Can we / should we consider simdjson for faster json handling?
-- [ ] We have @CODE_REVIEW_REPORT_ROUND4.md currently unaddressed.
+- [x] We have @CODE_REVIEW_REPORT_ROUND4.md currently unaddressed.
   - [ ] once issues in ROUND4 are fixed, switch to a methodology where claude invokes codex
         with a prompt to do a code review and return 0-N highest priority problems/fixes. maybe
         as a skill? loop N times or until codex has no fixes. Same-same but diff prompt for doing
