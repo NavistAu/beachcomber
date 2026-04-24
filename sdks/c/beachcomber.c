@@ -707,10 +707,10 @@ comb_result_t *comb_introspect(comb_client_t *client,
     return do_request(client, buf);
 }
 
-int comb_status_rows(comb_client_t *client, comb_cache_row_t **rows_out,
-                     size_t *n_out) {
+int comb_status_rows(comb_client_t *client, comb_cache_row_t *rows,
+                     size_t cap) {
     if (!client || client->fd < 0) return -1;
-    if (!rows_out || !n_out) return -1;
+    if (!rows || cap == 0) return -1;
 
     comb_result_t *r = comb_status(client);
     if (!comb_result_ok(r)) {
@@ -724,42 +724,39 @@ int comb_status_rows(comb_client_t *client, comb_cache_row_t **rows_out,
         return -1;
     }
 
-    /* Count items */
-    size_t total = r->data->n_children;
-    comb_cache_row_t *rows = (comb_cache_row_t *)calloc(
-        total, sizeof(comb_cache_row_t));
-    if (!rows) {
-        comb_result_free(r);
-        return -1;
-    }
-
-    size_t count = 0;
+    int count = 0;
     json_node_t *item = r->data->children;
-    while (item && count < total) {
+    while (item && (size_t)count < cap) {
         comb_cache_row_t *row = &rows[count];
-        /* calloc zeroed the struct; set sentinel defaults */
-        row->decay = -1;
-        row->failure_suppressed_until_unix_ms = -1;
+        memset(row, 0, sizeof(*row));
 
         /* provider */
-        const char *provs = json_as_str(json_get(item, "provider"));
-        row->provider = strdup(provs ? provs : "");
+        json_node_t *prov = json_get(item, "provider");
+        const char *provs = json_as_str(prov);
+        if (provs) safe_strcpy(row->provider, sizeof(row->provider), provs);
 
         /* field */
-        const char *flds = json_as_str(json_get(item, "field"));
-        if (flds) row->field = strdup(flds);
+        json_node_t *fld = json_get(item, "field");
+        const char *flds = json_as_str(fld);
+        if (flds) safe_strcpy(row->field, sizeof(row->field), flds);
 
         /* path */
-        const char *paths = json_as_str(json_get(item, "path"));
-        if (paths) row->path = strdup(paths);
+        json_node_t *pathnode = json_get(item, "path");
+        const char *paths = json_as_str(pathnode);
+        if (paths) safe_strcpy(row->path, sizeof(row->path), paths);
 
-        /* value_json — serialise the value node back to JSON text */
+        /* value_json — serialise the data node back to its JSON text.
+         * For scalar types we use snprintf; for objects/arrays we use
+         * raw_json which is already set. Since we only have the parsed
+         * tree here, and json.c doesn't expose a serialiser, we handle
+         * the common scalar cases manually. */
         json_node_t *val = json_get(item, "value");
         if (val) {
             char vbuf[1024];
             vbuf[0] = '\0';
             switch (val->type) {
                 case JSON_STRING:
+                    /* Re-escape — simple approach for ASCII content */
                     snprintf(vbuf, sizeof(vbuf), "\"%s\"", val->val.string);
                     break;
                 case JSON_INT:
@@ -780,7 +777,7 @@ int comb_status_rows(comb_client_t *client, comb_cache_row_t **rows_out,
                     /* object/array: leave empty — no serialiser available */
                     break;
             }
-            if (vbuf[0]) row->value_json = strdup(vbuf);
+            safe_strcpy(row->value_json, sizeof(row->value_json), vbuf);
         }
 
         /* age_ms */
@@ -795,64 +792,7 @@ int comb_status_rows(comb_client_t *client, comb_cache_row_t **rows_out,
         json_node_t *stale_node = json_get(item, "stale");
         if (stale_node) {
             int ok2 = 0;
-            row->stale = (bool)json_as_bool(stale_node, &ok2);
-        }
-
-        /* kind discriminator — wire shape: {"kind": "lifecycle", ...} object */
-        json_node_t *kind_obj = json_get(item, "kind");
-        if (kind_obj && kind_obj->type == JSON_OBJECT) {
-            const char *kind_name = json_as_str(json_get(kind_obj, "kind"));
-            row->kind = strdup(kind_name ? kind_name : "");
-            if (strcmp(row->kind, "lifecycle") == 0) {
-                row->has_lifecycle = true;
-                {
-                    int ok2 = 0;
-                    int64_t v = json_as_int(json_get(kind_obj, "decay"), &ok2);
-                    row->decay = ok2 ? (int)v : -1;
-                }
-                {
-                    int ok2 = 0;
-                    row->watches_files = (bool)json_as_bool(
-                        json_get(kind_obj, "watches_files"), &ok2);
-                }
-                {
-                    int ok2 = 0;
-                    int64_t v = json_as_int(
-                        json_get(item, "poll_interval_secs"), &ok2);
-                    if (ok2 && v >= 0) row->poll_interval_secs = (uint64_t)v;
-                }
-                {
-                    int ok2 = 0;
-                    int64_t v = json_as_int(
-                        json_get(item, "keep_alive_polls"), &ok2);
-                    if (ok2 && v >= 0) row->keep_alive_polls = (uint32_t)v;
-                }
-                {
-                    int ok2 = 0;
-                    row->fsevents_reinstate = (bool)json_as_bool(
-                        json_get(item, "fsevents_reinstate"), &ok2);
-                }
-            }
-        } else {
-            row->kind = NULL;
-        }
-
-        /* failure object */
-        json_node_t *fail = json_get(item, "failure");
-        if (fail && fail->type == JSON_OBJECT) {
-            int ok2 = 0;
-            int64_t cf = json_as_int(
-                json_get(fail, "consecutive_failures"), &ok2);
-            if (ok2 && cf > 0) {
-                row->in_failure = true;
-                row->failure_consecutive_failures = (uint32_t)cf;
-            }
-            json_node_t *sup = json_get(fail, "suppressed_until_unix_ms");
-            if (sup) {
-                int ok3 = 0;
-                int64_t sv = json_as_int(sup, &ok3);
-                row->failure_suppressed_until_unix_ms = ok3 ? sv : -1;
-            }
+            row->stale = json_as_bool(stale_node, &ok2);
         }
 
         count++;
@@ -860,21 +800,7 @@ int comb_status_rows(comb_client_t *client, comb_cache_row_t **rows_out,
     }
 
     comb_result_free(r);
-    *rows_out = rows;
-    *n_out = count;
-    return 0;
-}
-
-void comb_free_cache_rows(comb_cache_row_t *rows, size_t n) {
-    if (!rows) return;
-    for (size_t i = 0; i < n; i++) {
-        free(rows[i].provider);
-        free(rows[i].path);
-        free(rows[i].field);
-        free(rows[i].value_json);
-        free(rows[i].kind);
-    }
-    free(rows);
+    return count;
 }
 
 /* -------------------------------------------------------------------------

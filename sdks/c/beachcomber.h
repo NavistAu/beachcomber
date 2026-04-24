@@ -28,7 +28,6 @@
 #ifndef BEACHCOMBER_H
 #define BEACHCOMBER_H
 
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -66,23 +65,12 @@ typedef struct comb_daemon_health {
 } comb_daemon_health_t;
 
 typedef struct comb_cache_row {
-    char    *provider;    /* owned; always non-NULL */
-    char    *path;        /* owned; NULL if absent */
-    char    *field;       /* owned; NULL if absent */
-    char    *value_json;  /* owned JSON string; NULL if absent */
+    char     provider[64];
+    char     field[64];        /* empty if absent */
+    char     path[256];        /* empty if absent */
+    char     value_json[1024]; /* JSON-encoded scalar or "" for null */
     uint64_t age_ms;
-    bool     stale;
-    /* Phase 2.5: lifecycle / kind fields */
-    char    *kind;                         /* owned snake_case kind name; NULL if absent. e.g. "lifecycle". */
-    int      decay;                        /* -1 if not lifecycle, else 0-4 */
-    bool     watches_files;
-    uint64_t poll_interval_secs;           /* 0 if absent */
-    uint32_t keep_alive_polls;             /* 0 if absent */
-    bool     fsevents_reinstate;
-    bool     has_lifecycle;                /* true iff lifecycle fields above are populated */
-    bool     in_failure;                   /* true iff failure object present */
-    uint32_t failure_consecutive_failures;
-    int64_t  failure_suppressed_until_unix_ms; /* -1 if absent */
+    int      stale;
 } comb_cache_row_t;
 
 typedef struct comb_watch_event {
@@ -230,24 +218,13 @@ comb_result_t *comb_introspect(
     uint64_t                  duration_secs);
 
 /*
- * Typed status: allocates an array of cache rows and writes the count.
- *
- * On success, *rows_out is set to a heap-allocated array of *n_out rows and
- * 0 is returned. The caller must free the array with comb_free_cache_rows().
- * Returns -1 on error (rows_out and n_out are unchanged).
- *
- * Note: ABI break from pre-Phase-2.5 cap-based API (pre-1.0).
+ * Typed status: fills up to cap rows from the cache-row array.
+ * Returns the number of rows written, or -1 on error.
  */
 int comb_status_rows(
-    comb_client_t     *client,
-    comb_cache_row_t **rows_out,
-    size_t            *n_out);
-
-/*
- * Free an array returned by comb_status_rows().
- * Safe to call with rows == NULL.
- */
-void comb_free_cache_rows(comb_cache_row_t *rows, size_t n);
+    comb_client_t  *client,
+    comb_cache_row_t *rows,
+    size_t           cap);
 
 /* -------------------------------------------------------------------------
  * Watch (blocking poll — Option A)

@@ -978,25 +978,20 @@ static void test_status_rows(void) {
     CHECK(c != NULL);
     if (!c) goto done;
 
-    comb_cache_row_t *rows = NULL;
-    size_t n = 0;
-    int rc = comb_status_rows(c, &rows, &n);
-    CHECK(rc == 0);
+    comb_cache_row_t rows[8];
+    int n = comb_status_rows(c, rows, 8);
     CHECK(n == 2);
 
-    if (n >= 2 && rows) {
-        CHECK_STR_EQ(rows[0].provider, "git");
-        CHECK_STR_EQ(rows[0].field, "branch");
-        CHECK_STR_EQ(rows[0].path, "/repo");
-        CHECK(rows[0].age_ms == 50);
-        CHECK(rows[0].stale == 0);
+    CHECK_STR_EQ(rows[0].provider, "git");
+    CHECK_STR_EQ(rows[0].field, "branch");
+    CHECK_STR_EQ(rows[0].path, "/repo");
+    CHECK(rows[0].age_ms == 50);
+    CHECK(rows[0].stale == 0);
 
-        CHECK_STR_EQ(rows[1].provider, "hostname");
-        CHECK(rows[1].age_ms == 100);
-        CHECK(rows[1].stale == 1);
-    }
+    CHECK_STR_EQ(rows[1].provider, "hostname");
+    CHECK(rows[1].age_ms == 100);
+    CHECK(rows[1].stale == 1);
 
-    comb_free_cache_rows(rows, n);
     comb_disconnect(c);
 done:
     pthread_join(tid, NULL);
@@ -1004,8 +999,8 @@ done:
     unlink(sock_path);
 }
 
-static void test_status_rows_two(void) {
-    /* Verify both rows returned when daemon sends 2 */
+static void test_status_rows_cap(void) {
+    /* Cap of 1 — only first row returned even if daemon sends 2 */
     const char *resp =
         "{\"ok\":true,\"data\":["
         "{\"provider\":\"a\",\"field\":\"\",\"path\":\"\","
@@ -1023,15 +1018,11 @@ static void test_status_rows_two(void) {
     CHECK(c != NULL);
     if (!c) goto done;
 
-    comb_cache_row_t *rows = NULL;
-    size_t n = 0;
-    int rc = comb_status_rows(c, &rows, &n);
-    CHECK(rc == 0);
-    CHECK(n == 2);
-    if (rows && n >= 1) CHECK_STR_EQ(rows[0].provider, "a");
-    if (rows && n >= 2) CHECK_STR_EQ(rows[1].provider, "b");
+    comb_cache_row_t rows[1];
+    int n = comb_status_rows(c, rows, 1);
+    CHECK(n == 1);
+    CHECK_STR_EQ(rows[0].provider, "a");
 
-    comb_free_cache_rows(rows, n);
     comb_disconnect(c);
 done:
     pthread_join(tid, NULL);
@@ -1040,141 +1031,7 @@ done:
 }
 
 static void test_status_rows_null_args(void) {
-    CHECK(comb_status_rows(NULL, NULL, NULL) == -1);
-}
-
-static void test_status_row_exposes_lifecycle_fields(void) {
-    /* Wire format: kind is an object with kind/decay/watches_files siblings;
-     * poll_interval_secs, keep_alive_polls, fsevents_reinstate are row-level. */
-    const char *resp =
-        "{\"ok\":true,\"data\":["
-        "{\"provider\":\"git\",\"field\":\"branch\",\"path\":\"/repo\","
-        "\"value\":\"main\",\"age_ms\":10,\"stale\":false,"
-        "\"kind\":{\"kind\":\"lifecycle\",\"decay\":0,\"watches_files\":true},"
-        "\"poll_interval_secs\":5,\"keep_alive_polls\":3,"
-        "\"fsevents_reinstate\":false}"
-        "]}";
-    const char *responses[] = { resp, NULL };
-    char sock_path[256];
-    int srv_fd;
-    pthread_t tid;
-    multi_mock_args_t args;
-    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
-                                         &tid, &args);
-    CHECK(c != NULL);
-    if (!c) goto done;
-
-    comb_cache_row_t *rows = NULL;
-    size_t n = 0;
-    int rc = comb_status_rows(c, &rows, &n);
-    CHECK(rc == 0);
-    CHECK(n == 1);
-
-    if (rows && n >= 1) {
-        CHECK_STR_EQ(rows[0].provider, "git");
-        CHECK(rows[0].kind != NULL);
-        CHECK_STR_EQ(rows[0].kind, "lifecycle");
-        CHECK(rows[0].has_lifecycle == 1);
-        CHECK(rows[0].poll_interval_secs > 0);
-        CHECK(rows[0].keep_alive_polls > 0);
-        CHECK(rows[0].decay == 0);
-        CHECK(rows[0].watches_files == 1);
-        CHECK(rows[0].in_failure == 0);
-        CHECK(rows[0].failure_suppressed_until_unix_ms == -1);
-    }
-
-    comb_free_cache_rows(rows, n);
-    comb_disconnect(c);
-done:
-    pthread_join(tid, NULL);
-    close(srv_fd);
-    unlink(sock_path);
-}
-
-static void test_status_row_non_lifecycle_kind(void) {
-    /* A "once" kind row should have kind set but has_lifecycle false */
-    const char *resp =
-        "{\"ok\":true,\"data\":["
-        "{\"provider\":\"hostname\",\"field\":\"name\",\"path\":\"\","
-        "\"value\":\"myhost\",\"age_ms\":5,\"stale\":false,"
-        "\"kind\":{\"kind\":\"once\"}}"
-        "]}";
-    const char *responses[] = { resp, NULL };
-    char sock_path[256];
-    int srv_fd;
-    pthread_t tid;
-    multi_mock_args_t args;
-    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
-                                         &tid, &args);
-    CHECK(c != NULL);
-    if (!c) goto done;
-
-    comb_cache_row_t *rows = NULL;
-    size_t n = 0;
-    int rc = comb_status_rows(c, &rows, &n);
-    CHECK(rc == 0);
-    CHECK(n == 1);
-
-    if (rows && n >= 1) {
-        CHECK(rows[0].kind != NULL);
-        CHECK_STR_EQ(rows[0].kind, "once");
-        CHECK(rows[0].has_lifecycle == 0);
-        CHECK(rows[0].decay == -1);
-        CHECK(rows[0].poll_interval_secs == 0);
-    }
-
-    comb_free_cache_rows(rows, n);
-    comb_disconnect(c);
-done:
-    pthread_join(tid, NULL);
-    close(srv_fd);
-    unlink(sock_path);
-}
-
-static void test_status_row_failure_fields(void) {
-    /* Row with failure object — in_failure should be true */
-    const char *resp =
-        "{\"ok\":true,\"data\":["
-        "{\"provider\":\"git\",\"field\":\"branch\",\"path\":\"/repo\","
-        "\"value\":\"main\",\"age_ms\":10,\"stale\":true,"
-        "\"kind\":{\"kind\":\"lifecycle\",\"decay\":2,\"watches_files\":false},"
-        "\"poll_interval_secs\":30,\"keep_alive_polls\":5,"
-        "\"fsevents_reinstate\":false,"
-        "\"failure\":{\"consecutive_failures\":3,\"suppressed_until_unix_ms\":9999}}"
-        "]}";
-    const char *responses[] = { resp, NULL };
-    char sock_path[256];
-    int srv_fd;
-    pthread_t tid;
-    multi_mock_args_t args;
-    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
-                                         &tid, &args);
-    CHECK(c != NULL);
-    if (!c) goto done;
-
-    comb_cache_row_t *rows = NULL;
-    size_t n = 0;
-    int rc = comb_status_rows(c, &rows, &n);
-    CHECK(rc == 0);
-    CHECK(n == 1);
-
-    if (rows && n >= 1) {
-        CHECK(rows[0].in_failure == 1);
-        CHECK(rows[0].failure_consecutive_failures == 3);
-        CHECK(rows[0].failure_suppressed_until_unix_ms == 9999);
-    }
-
-    comb_free_cache_rows(rows, n);
-    comb_disconnect(c);
-done:
-    pthread_join(tid, NULL);
-    close(srv_fd);
-    unlink(sock_path);
-}
-
-static void test_status_rows_free_null(void) {
-    /* Must not crash */
-    comb_free_cache_rows(NULL, 0);
+    CHECK(comb_status_rows(NULL, NULL, 0) == -1);
 }
 
 /* -------------------------------------------------------------------------
@@ -1315,12 +1172,8 @@ int main(void) {
 
     SUITE("New API — comb_status_rows");
     test_status_rows();
-    test_status_rows_two();
+    test_status_rows_cap();
     test_status_rows_null_args();
-    test_status_row_exposes_lifecycle_fields();
-    test_status_row_non_lifecycle_kind();
-    test_status_row_failure_fields();
-    test_status_rows_free_null();
 
     SUITE("New API — comb_watch");
     test_watch_next();
