@@ -163,6 +163,32 @@ fn asdf_metadata() {
 }
 
 #[test]
+fn asdf_canonical_path_returns_project_root_from_subdir() {
+    let project = TempDir::new().unwrap();
+    std::fs::write(project.path().join(".tool-versions"), "nodejs 20.0.0\n").unwrap();
+    let subdir = project.path().join("pkg");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let got = AsdfProvider.canonical_path(Some(subdir.to_str().unwrap()));
+    let expected = project.path().to_string_lossy().to_string();
+    assert_eq!(got, Some(expected));
+}
+
+#[test]
+fn asdf_canonical_path_none_outside_project() {
+    let tmp = TempDir::new().unwrap();
+    let got = AsdfProvider.canonical_path(Some(tmp.path().to_str().unwrap()));
+    if let Some(got) = got {
+        assert_ne!(got, tmp.path().to_string_lossy().to_string());
+    }
+}
+
+#[test]
+fn asdf_canonical_path_passes_none_through() {
+    assert_eq!(AsdfProvider.canonical_path(None), None);
+}
+
+#[test]
 fn asdf_detects_tool_versions() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(

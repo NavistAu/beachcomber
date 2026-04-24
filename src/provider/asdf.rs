@@ -23,6 +23,14 @@ impl Provider for AsdfProvider {
         }
     }
 
+    // Walk up from `path` to the nearest directory containing `.tool-versions`.
+    // asdf itself consults the file by walking up, so matching that means
+    // subdirs share a single cache entry with the project root.
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let p = path?;
+        find_tool_versions_root(Path::new(p))
+    }
+
     fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let Some(path) = path else {
             return Vec::new();
@@ -55,4 +63,15 @@ impl Provider for AsdfProvider {
         result.insert("tools", Value::Object(tools));
         vec![(Some(path_owned), result)]
     }
+}
+
+fn find_tool_versions_root(start: &Path) -> Option<String> {
+    let mut cur: Option<&Path> = Some(start);
+    while let Some(dir) = cur {
+        if dir.join(".tool-versions").exists() {
+            return Some(dir.to_string_lossy().to_string());
+        }
+        cur = dir.parent();
+    }
+    None
 }
