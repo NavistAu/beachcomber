@@ -55,14 +55,15 @@ Fixed column width. Auto-compute the P-padding to the widest P seen on any rende
 
 Countdown (not 0–4 forward) because the number then literally reads as "how close to eviction." Directly corresponds to the same countdown readers see for TTLs elsewhere.
 
-**Trailing indicator (fsevents_reinstate):**
+**Trailing indicator — watches-files capability, decorated by reinstate:**
 
-| Provider policy          | Glyph | Meaning                                  |
-|--------------------------|-------|------------------------------------------|
-| `fsevents_reinstate=true`| `◉`   | a file event will reinstate to Active    |
-| `fsevents_reinstate=false`| (space) | drop-on-decay; no reinstatement       |
+| Capability                                      | Unicode | ASCII | Meaning                                                      |
+|-------------------------------------------------|---------|-------|--------------------------------------------------------------|
+| No fs watches (poll-only)                       | (space) | (space) | Invalidation is purely time-based.                          |
+| `Watch` / `WatchAndPoll`, `fsevents_reinstate=false` | `●` | `-`   | File events invalidate Active entries; no reinstate from decay. |
+| `Watch` / `WatchAndPoll`, `fsevents_reinstate=true`  | `◉` | `+`   | File events also reinstate decayed entries to Active.       |
 
-`◉` (U+25C9, fisheye) chosen over `📄`/🗎 because it's monochrome, single-cell, and visually pairs with `★` instead of fighting it. ASCII fallback: `F` / (space).
+The glyph progression is visual: bare dot → dot with ring around it (decoration = reinstate-armed). Reinstate is a filterable fact (`--filter=fsevents_reinstate=true`) when it matters; the at-a-glance TTL cell answers "is this fs-event driven?" first.
 
 **`×` separator:** U+00D7. ASCII fallback: `x`.
 

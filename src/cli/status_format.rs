@@ -62,7 +62,11 @@ pub fn format_ttl_cell(
     let star = if ascii { "*" } else { "\u{2605}" }; // ★
     let warn = if ascii { "!" } else { "\u{26a0}" }; // ⚠
     let times = if ascii { "x" } else { "\u{00d7}" }; // ×
-    let fisheye = if ascii { "F" } else { "\u{25c9}" }; // ◉
+    // Watches-files indicator progression:
+    //   watches only       → `●` / `-`
+    //   watches + reinstate → `◉` / `+`  (decorated with a ring)
+    let dot = if ascii { "-" } else { "\u{25cf}" }; // ●
+    let dot_ring = if ascii { "+" } else { "\u{25c9}" }; // ◉
 
     match kind {
         None | Some(RowKind::Once) | Some(RowKind::Virtual) | Some(RowKind::Transient) => {
@@ -90,10 +94,12 @@ pub fn format_ttl_cell(
 
             let p = poll_interval_secs.unwrap_or(0).min(999_999);
             let k = keep_alive_polls.unwrap_or(0).min(99);
-            let indicator = if fsevents_reinstate.unwrap_or(false) && *watches_files {
-                fisheye
-            } else {
-                " "
+            // Indicator keyed on fs-watching capability first; reinstate-armed is
+            // the decorator. Poll-only providers render a blank cell trailer.
+            let indicator = match (*watches_files, fsevents_reinstate.unwrap_or(false)) {
+                (false, _) => " ",
+                (true, false) => dot,
+                (true, true) => dot_ring,
             };
             // " <P:6>s<×><K:02> <indicator>" — fixed width: 1 + 1 + 6 + 1 + 1 + 2 + 1 + 1 = 14.
             let text = format!("{} {:>6}s{}{:02} {}", lead, p, times, k, indicator);
@@ -1133,11 +1139,12 @@ mod ttl_cell_tests {
             None,
             true,
         );
-        assert_eq!(cell.text, "*     60sx12 F");
+        assert_eq!(cell.text, "*     60sx12 +");
     }
 
     #[test]
-    fn indicator_suppressed_when_no_watch_capability() {
+    fn indicator_blank_when_no_watch_capability() {
+        // Poll-only provider: blank trailer regardless of reinstate flag.
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
@@ -1153,7 +1160,8 @@ mod ttl_cell_tests {
     }
 
     #[test]
-    fn indicator_suppressed_when_flag_false() {
+    fn indicator_bare_dot_when_watches_files_without_reinstate() {
+        // Watches but reinstate=false: bare dot `●` (decorated glyph progression).
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
@@ -1165,7 +1173,31 @@ mod ttl_cell_tests {
             None,
             false,
         );
-        assert!(cell.text.ends_with("12  "));
+        assert!(
+            cell.text.ends_with("12 \u{25cf}"),
+            "expected bare dot indicator, got {:?}",
+            cell.text
+        );
+    }
+
+    #[test]
+    fn indicator_bare_dot_ascii() {
+        let cell = format_ttl_cell(
+            Some(&RowKind::Lifecycle {
+                decay: 0,
+                watches_files: true,
+            }),
+            Some(60),
+            Some(12),
+            Some(false),
+            None,
+            true,
+        );
+        assert!(
+            cell.text.ends_with("12 -"),
+            "expected '-' ascii dot, got {:?}",
+            cell.text
+        );
     }
 
     #[test]
