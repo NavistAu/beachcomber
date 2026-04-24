@@ -4,7 +4,7 @@
 
 ### General
 
-- [ ] Do we still need to put in support for {% %} style tags in our jinja templates?
+- [x] Do we still need to put in support for {% %} style tags in our jinja templates? — already shipped; `{% %}` works in `.f`, `comb e`, and `comb status --format` via `minijinja::Environment::render_str`, and the eval key-discovery scanner (`find_eval_template_pairs` in `src/cli/format.rs`) walks block tags, whitespace-control dashes, and comments. Tests in `tests/template.rs`; examples in `README.md` and `website/docs/reference/cli-commands.md`.
 - [ ] Can we / should we consider simdjson for faster json handling?
 - [x] We have @CODE_REVIEW_REPORT_ROUND4.md currently unaddressed.
   - [ ] once issues in ROUND4 are fixed, switch to a methodology where claude invokes codex
