@@ -86,13 +86,13 @@ pub fn format_ttl_cell(
     let warn = if ascii { "!" } else { "\u{26a0}" }; // ⚠
     let times = if ascii { "x" } else { "\u{00d7}" }; // ×
     // Watches-files indicator progression:
-    //   watches only       → `•` / `-`
-    //   watches + reinstate → `⦿` / `+`  (bullet with a ring around it)
-    // Glyphs chosen to pair visually with `★` weight — earlier `●`/`◉`
-    // rendered heavier than the lead character, making the ring variant
-    // hard to spot at a glance.
-    let dot = if ascii { "-" } else { "\u{2022}" }; // •
-    let dot_ring = if ascii { "+" } else { "\u{29bf}" }; // ⦿
+    //   watches only       → `∙` / `-`
+    //   watches + reinstate → `⊙` / `+`  (bullet with a ring around it)
+    // Both glyphs are math operator class (U+22xx / U+2299), so fonts render
+    // them at a shared baseline. Earlier pairs mixed General Punctuation and
+    // Math Symbols-B blocks and rendered vertically mis-aligned.
+    let dot = if ascii { "-" } else { "\u{2219}" }; // ∙
+    let dot_ring = if ascii { "+" } else { "\u{2299}" }; // ⊙
 
     match kind {
         None | Some(RowKind::Once) | Some(RowKind::Virtual) | Some(RowKind::Transient) => {
@@ -1149,7 +1149,7 @@ mod ttl_cell_tests {
         );
         assert_eq!(
             cell.text,
-            "\u{2605}     60s\u{00d7}12 \u{29bf}"
+            "\u{2605}     60s\u{00d7}12 \u{2299}"
         );
         assert!(matches!(cell.color, Some(ansi::Color::BrightGreen)));
     }
@@ -1223,7 +1223,7 @@ mod ttl_cell_tests {
             6,
         );
         assert!(
-            cell.text.ends_with("12 \u{2022}"),
+            cell.text.ends_with("12 \u{2219}"),
             "expected bare dot indicator, got {:?}",
             cell.text
         );
@@ -1365,7 +1365,7 @@ mod ttl_cell_tests {
             false,
             2,
         );
-        assert_eq!(cell.text, "\u{2605} 60s\u{00d7}12 \u{29bf}");
+        assert_eq!(cell.text, "\u{2605} 60s\u{00d7}12 \u{2299}");
     }
 
     #[test]

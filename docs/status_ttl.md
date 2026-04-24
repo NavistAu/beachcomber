@@ -60,10 +60,10 @@ Countdown (not 0–4 forward) because the number then literally reads as "how cl
 | Capability                                      | Unicode | ASCII | Meaning                                                      |
 |-------------------------------------------------|---------|-------|--------------------------------------------------------------|
 | No fs watches (poll-only)                       | (space) | (space) | Invalidation is purely time-based.                          |
-| `Watch` / `WatchAndPoll`, `fsevents_reinstate=false` | `•` (U+2022) | `-`   | File events invalidate Active entries; no reinstate from decay. |
-| `Watch` / `WatchAndPoll`, `fsevents_reinstate=true`  | `⦿` (U+29BF) | `+`   | File events also reinstate decayed entries to Active.       |
+| `Watch` / `WatchAndPoll`, `fsevents_reinstate=false` | `∙` (U+2219) | `-`   | File events invalidate Active entries; no reinstate from decay. |
+| `Watch` / `WatchAndPoll`, `fsevents_reinstate=true`  | `⊙` (U+2299) | `+`   | File events also reinstate decayed entries to Active.       |
 
-The glyph progression is visual: bullet → bullet with a ring around it (decoration = reinstate-armed). Glyphs are sized to pair with `★` weight rather than overwhelm it. Reinstate is a filterable fact (`--filter=fsevents_reinstate=true`) when it matters; the at-a-glance TTL cell answers "is this fs-event driven?" first.
+The glyph progression is visual: dot → dot with a ring around it (decoration = reinstate-armed). Both glyphs are math operator class, so fonts render them at a shared baseline (earlier bullet/circled-bullet pair crossed Unicode blocks and rendered with a visible vertical offset). Reinstate is a filterable fact (`--filter=fsevents_reinstate=true`) when it matters; the at-a-glance TTL cell answers "is this fs-event driven?" first.
 
 **`×` separator:** U+00D7. ASCII fallback: `x`.
 
