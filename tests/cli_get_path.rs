@@ -14,18 +14,41 @@ use beachcomber::server::Server;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-async fn setup_server_with_git(git_path: &str) -> (TempDir, std::path::PathBuf) {
-    let tmp = TempDir::new().unwrap();
-    let sock = tmp.path().join("test.sock");
+/// Set up a server with a real git repo on disk, so the git provider's
+/// `canonical_path` (which walks up looking for `.git`) actually finds a
+/// repo root and returns the expected path.
+///
+/// Returns:
+/// - the tempdir holding the socket
+/// - the socket path
+/// - the repo dir (a separate tempdir with `.git` inside; passed to the server
+///   via `set_context` / explicit path in queries)
+async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, String) {
+    let sock_tmp = TempDir::new().unwrap();
+    let sock = sock_tmp.path().join("test.sock");
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
-    // Seed a git.branch entry for the given path.
+    // Create a real git repo the canonical_path walk can resolve to.
+    let repo_tmp = TempDir::new().unwrap();
+    let repo_path = repo_tmp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+
+    // Seed a git.branch entry at the repo root (where canonical_path will land).
     let mut git = ProviderResult::new();
     git.insert("branch", Value::String("main".to_string()));
     git.insert("dirty", Value::Bool(false));
-    cache.put("git", Some(git_path), git);
+    cache.put("git", Some(&repo_path), git);
 
     // Seed a hostname entry (global — no path).
     let mut hostname = ProviderResult::new();
@@ -36,18 +59,17 @@ async fn setup_server_with_git(git_path: &str) -> (TempDir, std::path::PathBuf) 
     tokio::spawn(async move { server.run().await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    (tmp, sock)
+    (sock_tmp, sock, repo_tmp, repo_path)
 }
 
 /// Path context set via set_context reaches the correct cache entry.
 #[tokio::test]
 async fn path_context_resolves_git_branch() {
-    let path = "/tmp/myrepo";
-    let (_tmp, sock) = setup_server_with_git(path).await;
+    let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
     let client = Client::new(sock);
     let mut session = client.connect().await.unwrap();
 
-    session.set_context(path).await.unwrap();
+    session.set_context(&repo_path).await.unwrap();
     let resp = session.get("git.branch", None).await.unwrap();
 
     assert!(resp.ok, "expected ok response, got: {:?}", resp.error);
@@ -57,8 +79,7 @@ async fn path_context_resolves_git_branch() {
 /// Global providers (hostname) work regardless of path context.
 #[tokio::test]
 async fn global_provider_ignores_path_context() {
-    let path = "/tmp/irrelevant";
-    let (_tmp, sock) = setup_server_with_git(path).await;
+    let (_sock_tmp, sock, _repo_tmp, _repo_path) = setup_server_with_git_repo().await;
     let client = Client::new(sock);
     let mut session = client.connect().await.unwrap();
 
@@ -73,12 +94,11 @@ async fn global_provider_ignores_path_context() {
 /// Querying multiple keys in one session shares the same path context.
 #[tokio::test]
 async fn multiple_keys_share_path_context() {
-    let path = "/tmp/shared-context-repo";
-    let (_tmp, sock) = setup_server_with_git(path).await;
+    let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
     let client = Client::new(sock);
     let mut session = client.connect().await.unwrap();
 
-    session.set_context(path).await.unwrap();
+    session.set_context(&repo_path).await.unwrap();
 
     let branch_resp = session.get("git.branch", None).await.unwrap();
     let dirty_resp = session.get("git.dirty", None).await.unwrap();
@@ -93,31 +113,54 @@ async fn multiple_keys_share_path_context() {
 /// Without set_context, a path-scoped key is still queried (may return not-found).
 #[tokio::test]
 async fn no_context_path_scoped_query_returns_response() {
-    let (_tmp, sock) = setup_server_with_git("/tmp/no-context-repo").await;
+    let (_sock_tmp, sock, _repo_tmp, _repo_path) = setup_server_with_git_repo().await;
     let client = Client::new(sock);
 
     // Use get() without set_context — server receives no path.
-    // The cached entry is at "/tmp/no-context-repo"; without that path, it won't match.
     let resp = client.get("git.branch", None).await.unwrap();
 
     // We just verify the server responds (ok or not-ok), not that it panics.
-    // The response should be a protocol response either way.
-    let _ = resp.ok; // either result is valid — just checking no panic/error
+    let _ = resp.ok;
 }
 
 /// Passing explicit path to get() (not via set_context) also works.
 #[tokio::test]
 async fn explicit_path_in_get_resolves_correctly() {
-    let path = "/tmp/explicit-path-repo";
-    let (_tmp, sock) = setup_server_with_git(path).await;
+    let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
     let client = Client::new(sock);
 
     // Pass path directly to get() rather than using set_context.
-    let resp = client.get("git.branch", Some(path)).await.unwrap();
+    let resp = client.get("git.branch", Some(&repo_path)).await.unwrap();
 
     assert!(
         resp.ok,
         "expected ok response with explicit path: {:?}",
+        resp.error
+    );
+    assert_eq!(resp.data.as_ref().unwrap(), "main");
+}
+
+/// Canonical-path dedup: querying git from a subdir of the repo resolves to
+/// the repo root, hitting the same cache entry seeded at the root.
+#[tokio::test]
+async fn subdir_query_resolves_to_repo_root() {
+    let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
+
+    // Create a subdir inside the repo and query git.branch from there.
+    let subdir = std::path::Path::new(&repo_path).join("src").join("lib");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let client = Client::new(sock);
+    let resp = client
+        .get("git.branch", Some(subdir.to_str().unwrap()))
+        .await
+        .unwrap();
+
+    // Cache was seeded only at the repo root. If canonical_path didn't walk
+    // up, this lookup would miss. Success proves subdir→root resolution.
+    assert!(
+        resp.ok,
+        "expected ok — subdir should canonicalise to repo root: {:?}",
         resp.error
     );
     assert_eq!(resp.data.as_ref().unwrap(), "main");

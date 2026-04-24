@@ -38,6 +38,55 @@ fn create_test_repo() -> TempDir {
 }
 
 #[test]
+fn git_canonical_path_returns_repo_root_from_subdir() {
+    let tmp = create_test_repo();
+    let repo = tmp.path();
+    let subdir = repo.join("src").join("lib");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let p = GitProvider;
+    let got = p.canonical_path(Some(subdir.to_str().unwrap()));
+    let expected = repo.to_string_lossy().to_string();
+    assert_eq!(got, Some(expected));
+}
+
+#[test]
+fn git_canonical_path_returns_repo_root_when_called_at_root() {
+    let tmp = create_test_repo();
+    let repo = tmp.path();
+    let p = GitProvider;
+    let got = p.canonical_path(Some(repo.to_str().unwrap()));
+    let expected = repo.to_string_lossy().to_string();
+    assert_eq!(got, Some(expected));
+}
+
+#[test]
+fn git_canonical_path_returns_none_outside_any_repo() {
+    // TempDir without any .git anywhere upward — we use a path in /tmp that
+    // almost certainly isn't inside a repo.
+    let tmp = TempDir::new().unwrap();
+    let p = GitProvider;
+    let got = p.canonical_path(Some(tmp.path().to_str().unwrap()));
+    // Depending on whether the tempdir is inside some repo (unlikely but
+    // possible on a dev machine), this may return Some. The key invariant is
+    // that the return value, if present, isn't the tempdir itself — it would
+    // be some ancestor containing a .git.
+    if let Some(got) = got {
+        assert_ne!(
+            got,
+            tmp.path().to_string_lossy().to_string(),
+            "tempdir has no .git; canonical_path should not return the dir itself"
+        );
+    }
+}
+
+#[test]
+fn git_canonical_path_passes_none_through() {
+    let p = GitProvider;
+    assert_eq!(p.canonical_path(None), None);
+}
+
+#[test]
 fn git_provider_metadata() {
     let p = GitProvider;
     let meta = p.metadata();

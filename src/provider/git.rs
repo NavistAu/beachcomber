@@ -159,6 +159,15 @@ impl Provider for GitProvider {
         }
     }
 
+    // Walk up from `path` to find a directory containing `.git`. Returns the
+    // repo root so shells in different subdirectories of the same repo dedupe
+    // to a single cache/lifecycle/watch key. Returns `None` for paths not
+    // inside any git repo — the scheduler declines demand for those.
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let p = path?;
+        find_repo_root(Path::new(p))
+    }
+
     fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let Some(path) = path else {
             return Vec::new();
@@ -503,4 +512,21 @@ fn is_inside_git_repo(dir: &Path) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Walk upwards from `start` looking for a directory that contains `.git`.
+/// Returns the containing directory's absolute path, or `None` if no repo
+/// root is found before reaching the filesystem root.
+///
+/// Uses file-system traversal rather than shelling out to `git rev-parse` so
+/// canonicalization stays cheap for the common case (every demand path).
+fn find_repo_root(start: &Path) -> Option<String> {
+    let mut cur: Option<&Path> = Some(start);
+    while let Some(dir) = cur {
+        if dir.join(".git").exists() {
+            return Some(dir.to_string_lossy().to_string());
+        }
+        cur = dir.parent();
+    }
+    None
 }
