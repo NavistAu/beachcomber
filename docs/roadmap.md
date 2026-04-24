@@ -92,7 +92,7 @@ redundant wrapper naming convention.
 
 ## Dogfooding
 
-- [ ] In some directories/projects, our custom p10k injections that give versions for mise tools on the RHS do not render
+- [x] In some directories/projects, our custom p10k injections that give versions for mise tools on the RHS do not render
 correctly in some terminals, pushing a bunch of random looking version information over 2 lines below the prompt.
       ie: 
       ```
@@ -101,3 +101,5 @@ correctly in some terminals, pushing a bunch of random looking version informati
       22.22.1 00:34:55
       ❯
       ```
+
+      Fixed across two commits. Daemon (`f921815d`): `Format::Text` on Object fields now emits `subkey=value` lines per spec (not bare values), and `comb g provider.field.subkey` walks nested Objects to return a scalar leaf. P10k doc + local config (`7275df61`): loop splits on newline (`(@f)`) not comma, drops the stale `mise.tools` reference, strips the mise backend prefix for clean display.
