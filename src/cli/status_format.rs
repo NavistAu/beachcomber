@@ -2,6 +2,53 @@ use crate::cache::CacheRow;
 use crate::cli::format::build_env;
 use minijinja;
 
+/// Color mode for status output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMode {
+    Auto,
+    Always,
+    Never,
+}
+
+/// Resolve whether to enable color output based on the mode, environment, and TTY state.
+///
+/// Rules (in priority order):
+/// 1. `Never` → always false.
+/// 2. `NO_COLOR` env var set → always false.
+/// 3. `Always` → always true.
+/// 4. `Auto` → true if is_tty or watch_interval_env.
+pub fn resolve_color(
+    mode: ColorMode,
+    no_color_env: bool,
+    is_tty: bool,
+    watch_interval_env: bool,
+) -> bool {
+    if mode == ColorMode::Never {
+        return false;
+    }
+    if no_color_env {
+        return false;
+    }
+    if mode == ColorMode::Always {
+        return true;
+    }
+    is_tty || watch_interval_env
+}
+
+/// Resolve the maximum value-column width.
+///
+/// - `None` arg → use the default (120).
+/// - `Some("auto")` → use `terminal_cols` if available, else the default.
+/// - `Some(n)` → parse `n` as a `usize`, falling back to the default on error.
+pub fn resolve_max_width(arg: Option<&str>, terminal_cols: Option<usize>) -> usize {
+    const DEFAULT: usize = 120;
+    match arg {
+        None => DEFAULT,
+        Some("auto") => terminal_cols.unwrap_or(DEFAULT),
+        Some(s) => s.parse().unwrap_or(DEFAULT),
+    }
+}
+
 /// Options controlling how a status preset is rendered.
 #[derive(Debug, Clone)]
 pub struct RenderOpts {
@@ -13,6 +60,13 @@ pub struct RenderOpts {
     pub max_width: Option<usize>,
     /// Disable truncation regardless of `max_width`.
     pub no_trunc: bool,
+}
+
+/// Options controlling CLI-level formatting choices (flags, not render state).
+#[derive(Debug, Clone, Default)]
+pub struct FormatOptions {
+    /// Use ASCII-only characters instead of Unicode box-drawing / ellipsis glyphs.
+    pub ascii: bool,
 }
 
 impl Default for RenderOpts {
@@ -542,6 +596,12 @@ fn simple_glob_match(pattern: &str, text: &str) -> bool {
 /// Returns `Err` for any other column name.
 pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, String> {
     match col {
+        "default" => rows.sort_by(|a, b| {
+            a.provider
+                .cmp(&b.provider)
+                .then(a.path.cmp(&b.path))
+                .then(a.field.cmp(&b.field))
+        }),
         "provider" => rows.sort_by(|a, b| a.provider.cmp(&b.provider)),
         "path" => rows.sort_by(|a, b| a.path.cmp(&b.path)),
         "field" => rows.sort_by(|a, b| a.field.cmp(&b.field)),

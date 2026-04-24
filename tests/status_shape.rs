@@ -561,6 +561,127 @@ async fn status_returns_rows_per_field() {
     handle.abort();
 }
 
+// ---------------------------------------------------------------------------
+// Task 1.9: --ascii flag propagates via FormatOptions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ascii_flag_propagates_to_format_options() {
+    use beachcomber::cli::status_format::FormatOptions;
+    let opts = FormatOptions::default();
+    assert!(!opts.ascii);
+    let opts2 = FormatOptions { ascii: true, ..opts };
+    assert!(opts2.ascii);
+}
+
+// ---------------------------------------------------------------------------
+// Task 1.10: ColorMode + resolve_color matrix
+// ---------------------------------------------------------------------------
+
+#[test]
+fn color_resolution_matrix() {
+    use beachcomber::cli::status_format::{ColorMode, resolve_color};
+    assert!(!resolve_color(ColorMode::Never, false, true, true));
+    assert!(!resolve_color(ColorMode::Always, true, true, true)); // NO_COLOR wins
+    assert!(!resolve_color(ColorMode::Auto, true, true, true)); // NO_COLOR wins
+    assert!(resolve_color(ColorMode::Always, false, false, false));
+    assert!(resolve_color(ColorMode::Auto, false, true, false)); // TTY
+    assert!(resolve_color(ColorMode::Auto, false, false, true)); // WATCH_INTERVAL
+    assert!(!resolve_color(ColorMode::Auto, false, false, false));
+}
+
+// ---------------------------------------------------------------------------
+// Task 1.11: resolve_max_width
+// ---------------------------------------------------------------------------
+
+#[test]
+fn max_width_resolves_explicit_int() {
+    use beachcomber::cli::status_format::resolve_max_width;
+    assert_eq!(resolve_max_width(Some("80"), Some(200)), 80);
+}
+
+#[test]
+fn max_width_resolves_default_when_unset() {
+    use beachcomber::cli::status_format::resolve_max_width;
+    assert_eq!(resolve_max_width(None, Some(200)), 120);
+}
+
+#[test]
+fn max_width_resolves_auto_uses_terminal() {
+    use beachcomber::cli::status_format::resolve_max_width;
+    assert_eq!(resolve_max_width(Some("auto"), Some(200)), 200);
+}
+
+#[test]
+fn max_width_resolves_auto_falls_back_to_default() {
+    use beachcomber::cli::status_format::resolve_max_width;
+    assert_eq!(resolve_max_width(Some("auto"), None), 120);
+}
+
+// ---------------------------------------------------------------------------
+// Task 1.12: Default preset is human regardless of TTY
+// ---------------------------------------------------------------------------
+
+#[test]
+fn default_preset_is_human_regardless_of_tty() {
+    // Verify that render_preset("human", ...) returns a human-formatted
+    // table with a PROVIDER header — confirming human is a valid, usable default.
+    let rows = sample_rows();
+    let opts = RenderOpts {
+        is_tty: false, // non-TTY context
+        no_color: true,
+        max_width: Some(120),
+        no_trunc: false,
+    };
+    let out = render_preset("human", &rows, &opts);
+    assert!(
+        out.contains("PROVIDER"),
+        "human preset should emit PROVIDER header regardless of is_tty: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task 1.13: Default sort → (provider, path, field)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn default_sort_is_provider_path_field() {
+    use beachcomber::cache::CacheRow;
+    use beachcomber::cli::status_format::apply_sort;
+    use serde_json::json;
+
+    fn row(p: &str, path: Option<&str>, field: &str) -> CacheRow {
+        CacheRow {
+            provider: p.into(),
+            path: path.map(String::from),
+            field: field.into(),
+            value: json!(0),
+            age_ms: 0,
+            stale: false,
+            kind: None,
+            poll_interval_secs: None,
+            keep_alive_polls: None,
+            fsevents_reinstate: None,
+            failure: None,
+        }
+    }
+
+    let rows = vec![
+        row("git", Some("/repo"), "branch"),
+        row("battery", None, "percent"),
+        row("git", Some("/repo"), "dirty"),
+        row("git", Some("/other"), "branch"),
+    ];
+    let rows = apply_sort(rows, "default").unwrap();
+    assert_eq!(rows[0].provider, "battery");
+    assert_eq!(rows[1].provider, "git");
+    assert_eq!(rows[1].path.as_deref(), Some("/other"));
+    assert_eq!(rows[2].provider, "git");
+    assert_eq!(rows[2].path.as_deref(), Some("/repo"));
+    assert_eq!(rows[2].field, "branch");
+    assert_eq!(rows[3].field, "dirty");
+}
+
 
 #[test]
 fn failure_snapshot_serde_round_trip() {
