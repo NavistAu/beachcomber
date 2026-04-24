@@ -1182,3 +1182,37 @@ fn human_renders_p_zero_k_zero_without_panic() {
     let out = beachcomber::cli::status_format::render_human(&[row], &opts);
     assert!(out.contains("0s\u{00d7}00"), "P=0 K=0 expected: {}", out);
 }
+
+// ---------------------------------------------------------------------------
+// Task 1.17: Failure-state ⚠ end-to-end — warn glyph + red row
+// ---------------------------------------------------------------------------
+
+#[test]
+fn failure_state_renders_warn_and_red_row() {
+    use beachcomber::cache::{CacheRow, FailureSnapshot, RowKind};
+    use serde_json::json;
+
+    let row = CacheRow {
+        provider: "flaky".into(),
+        path: None,
+        field: "thing".into(),
+        value: json!("x"),
+        age_ms: 1000,
+        stale: false,
+        kind: Some(RowKind::Lifecycle { decay: 1, watches_files: false }),
+        poll_interval_secs: Some(60),
+        keep_alive_polls: Some(12),
+        fsevents_reinstate: Some(false),
+        failure: Some(FailureSnapshot { consecutive_failures: 3, suppressed_until_unix_ms: None }),
+    };
+    // Use render_preset("human", ...) with is_tty=true so color is enabled.
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: false,
+        max_width: Some(120),
+        no_trunc: false,
+    };
+    let out = render_preset("human", &[row], &opts);
+    assert!(out.contains("\u{26a0}"), "warn glyph missing: {:?}", out);
+    assert!(out.contains("\x1b[31m"), "red ANSI missing: {:?}", out);
+}
