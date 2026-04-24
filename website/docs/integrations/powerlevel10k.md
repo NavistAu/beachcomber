@@ -92,9 +92,13 @@ function prompt_comb_mise() {
 
   local display=()
   local entry tool ver
-  for entry in "${(@s:,:)project}"; do
+  # `comb g mise.project …` returns one `subkey=value` line per tool, so
+  # split on newline. Strip the mise backend prefix (e.g.
+  # `cargo:cargo-nextest` → `cargo-nextest`) for a tighter segment.
+  for entry in "${(@f)project}"; do
     [[ -z "$entry" ]] && continue
     tool=${entry%%=*}
+    tool=${tool##*:}
     ver=${entry#*=}
     display+=("${tool} ${ver}")
   done
@@ -102,11 +106,12 @@ function prompt_comb_mise() {
 }
 ```
 
-The beachcomber mise provider exposes three fields:
+The beachcomber mise provider exposes two fields:
 
-- `mise.project` — only tools sourced from a local `mise.toml` (project-scoped overrides)
-- `mise.global` — only tools sourced from `~/.config/mise/` (the global baseline)
-- `mise.tools` — all tools combined with `P:` and `G:` prefixes
+- `mise.project` — tools sourced from a local `mise.toml` (project-scoped overrides)
+- `mise.global` — tools sourced from `~/.config/mise/` (the global baseline)
+
+Both are `Object`-valued maps keyed by tool name. `comb g mise.project "$cwd"` returns newline-separated `subkey=value` lines. For a single tool version, use nested-key lookup: `comb g mise.project.node "$cwd"` returns just `20.11.0`.
 
 ### Adding complementary segments to the prompt
 
