@@ -1829,6 +1829,8 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 ### Operations
 
+**`hello`:** Version negotiation. Clients should send this as the first op on any new connection. Returns `{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.5.1"}}`. `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
+
 **`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
 
 **`refresh`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
@@ -1869,7 +1871,7 @@ The wire protocol supports three response formats (set via the `format` field in
 
 **`sh`:** `key=value` lines sorted alphabetically, one per line. Suitable for `eval` or `while IFS='=' read -r key value` parsing.
 
-For all non-JSON wire formats, errors return nothing on stdout; `ok` is false in the JSON error response.
+For non-JSON wire formats, errors emit `error: <message>\n\n` on stdout; `ok` is false in the JSON response.
 
 ### CLI-only Output Formats
 

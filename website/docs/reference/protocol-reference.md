@@ -33,7 +33,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `refresh`, `context`, `status`, `introspect`, `put`, `watch` |
+| `op` | string | Operation: `hello`, `get`, `refresh`, `context`, `status`, `introspect`, `put`, `watch` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
@@ -58,6 +58,20 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | `error` | string | Error message when `ok` is false |
 
 ## Operations
+
+**`hello`:** Version negotiation. Clients should send this as the first op on any new connection.
+
+```json
+{"op":"hello"}
+```
+
+Response:
+
+```json
+{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.5.1"}}
+```
+
+`protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
 
 **`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
 
@@ -119,7 +133,7 @@ The first line is emitted immediately with the current cached value (or a null d
 When `"format": "text"` is specified:
 - Single field queries return the raw value followed by `\n` (e.g., `main\n`)
 - Full provider queries return raw values only, one per line, sorted alphabetically by field name
-- Errors return nothing on stdout; `ok` is false in the JSON response
+- Errors emit `error: <message>\n\n`; the JSON response's `ok` is false
 
 ## Shell Format
 
