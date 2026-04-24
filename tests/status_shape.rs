@@ -699,3 +699,122 @@ async fn status_empty_cache_returns_empty_array() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn status_response_lifecycle_row_carries_kind_and_fields() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    // Use a git repo path that actually exists so the provider writes a cache entry.
+    // The beachcomber workspace itself is a git repo.
+    let repo_path = env!("CARGO_MANIFEST_DIR");
+    let _ = client
+        .send_raw(serde_json::json!({"op": "get", "key": "git.branch", "path": repo_path}))
+        .await
+        .expect("get git.branch");
+
+    // Give the scheduler time to populate lifecycle state.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "status"}))
+        .await
+        .expect("status");
+    assert!(resp.ok, "status failed: {:?}", resp.error);
+    let rows: Vec<CacheRow> = serde_json::from_value(resp.data.expect("data present"))
+        .expect("rows deserialize");
+
+    let git_row = rows.iter().find(|r| r.provider == "git").expect("git row present after get in a real repo");
+
+    use beachcomber::cache::RowKind;
+    match git_row.kind.as_ref().expect("kind present") {
+        RowKind::Lifecycle { decay, watches_files } => {
+            assert_eq!(*decay, 0, "freshly queried row should be Active (decay=0)");
+            let _ = watches_files;
+        }
+        other => panic!("expected Lifecycle, got {:?}", other),
+    }
+    assert!(
+        git_row.poll_interval_secs.unwrap_or(0) > 0,
+        "poll_interval_secs should be > 0"
+    );
+    assert!(
+        git_row.keep_alive_polls.unwrap_or(0) > 0,
+        "keep_alive_polls should be > 0"
+    );
+    assert_eq!(git_row.failure, None);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn status_response_once_row_has_kind_once() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    // hostname is a Once provider — querying it puts it in cache but not lifecycle.
+    let _ = client
+        .send_raw(serde_json::json!({"op": "get", "key": "hostname.short"}))
+        .await
+        .expect("get hostname.short");
+
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "status"}))
+        .await
+        .expect("status");
+    assert!(resp.ok, "status failed: {:?}", resp.error);
+    let rows: Vec<CacheRow> = serde_json::from_value(resp.data.expect("data present"))
+        .expect("rows deserialize");
+
+    let row = rows
+        .iter()
+        .find(|r| r.provider == "hostname")
+        .expect("hostname row present");
+
+    use beachcomber::cache::RowKind;
+    assert!(
+        matches!(row.kind, Some(RowKind::Once)),
+        "expected RowKind::Once for hostname, got {:?}",
+        row.kind
+    );
+    assert!(row.poll_interval_secs.is_none());
+    assert!(row.keep_alive_polls.is_none());
+    assert!(row.fsevents_reinstate.is_none());
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn status_response_virtual_row_has_kind_virtual() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    // Store a virtual entry via put.
+    let _ = client
+        .send_raw(serde_json::json!({"op": "put", "key": "custom", "data": {"color": "blue"}}))
+        .await
+        .expect("put custom");
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "status"}))
+        .await
+        .expect("status");
+    assert!(resp.ok, "status failed: {:?}", resp.error);
+    let rows: Vec<CacheRow> = serde_json::from_value(resp.data.expect("data present"))
+        .expect("rows deserialize");
+
+    let row = rows
+        .iter()
+        .find(|r| r.provider == "custom")
+        .expect("custom row present");
+
+    use beachcomber::cache::RowKind;
+    assert!(
+        matches!(row.kind, Some(RowKind::Virtual)),
+        "expected RowKind::Virtual for put entry, got {:?}",
+        row.kind
+    );
+
+    handle.abort();
+}

@@ -766,11 +766,47 @@ async fn handle_request(
             }
         }
         Request::Status => {
-            let rows = cache.list_rows();
+            let mut rows = cache.list_rows();
 
-            // Fetch lifecycle snapshots — not yet stitched into rows (Task 1.8).
-            if let Some(sched) = scheduler {
-                let _ = sched.get_lifecycle_snapshots().await;
+            let (lifecycle, failures) = if let Some(sched) = scheduler {
+                let lc = sched.get_lifecycle_snapshots().await;
+                let fs = sched.get_failure_states().await;
+                (lc, fs)
+            } else {
+                (Default::default(), Default::default())
+            };
+
+            use crate::cache::RowKind;
+            for row in rows.iter_mut() {
+                let key = (row.provider.clone(), row.path.clone());
+                // Determine RowKind. Virtual entries and Once providers are identified
+                // by registry metadata first; lifecycle snapshots only apply to Poll /
+                // Watch / WatchAndPoll providers that the scheduler actively tracks.
+                let is_virtual = registry.get_source(&row.provider)
+                    == Some(ProviderSource::Virtual);
+                let invalidation = registry
+                    .get(&row.provider)
+                    .map(|p| p.metadata().invalidation);
+                let is_once = matches!(invalidation, Some(InvalidationStrategy::Once));
+
+                if is_virtual {
+                    row.kind = Some(RowKind::Virtual);
+                } else if is_once {
+                    row.kind = Some(RowKind::Once);
+                } else if let Some(snap) = lifecycle.get(&key) {
+                    row.kind = Some(RowKind::Lifecycle {
+                        decay: snap.decay,
+                        watches_files: snap.watches_files,
+                    });
+                    row.poll_interval_secs = Some(snap.poll_interval_secs);
+                    row.keep_alive_polls = Some(snap.keep_alive_polls);
+                    row.fsevents_reinstate = Some(snap.fsevents_reinstate);
+                } else {
+                    row.kind = Some(RowKind::Transient);
+                }
+                if let Some(snap) = failures.get(&key) {
+                    row.failure = Some(snap.clone());
+                }
             }
 
             match serde_json::to_value(&rows) {
