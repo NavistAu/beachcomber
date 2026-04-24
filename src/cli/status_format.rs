@@ -728,16 +728,20 @@ fn render_table(
 
     // -----------------------------------------------------------------------
     // Compute effective VALUE cap from the total-table-width budget.
-    // Layout: provider(2sp)path(2sp)field(2sp)value(2sp)age(2sp)ttl
-    //   = nat_provider + 2 + nat_path + 2 + nat_field + 2 + value_w + 2 + nat_age + 2 + nat_ttl
+    // Layout: MARGIN provider(2sp)path(2sp)field(2sp)value(2sp)age(2sp)ttl MARGIN
     // Separators: 5 × 2 = 10
-    // Non-VALUE: nat_provider + nat_path + nat_field + nat_age + nat_ttl + 10
+    // Margins: 2 spaces each side (breathing room so the table doesn't hug
+    // the terminal edge).
+    // Non-VALUE: nat_provider + nat_path + nat_field + nat_age + nat_ttl + 10 + 4
     // -----------------------------------------------------------------------
     const MIN_VALUE_WIDTH: usize = 8;
     const SEP_TOTAL: usize = 10; // 5 separators × 2 spaces
+    const MARGIN: usize = 2; // spaces applied to both the left and right edges
+    const MARGIN_TOTAL: usize = MARGIN * 2;
 
     let value_cap: Option<usize> = trunc.map(|total_cap| {
-        let non_value = nat_provider + nat_path + nat_field + nat_age + nat_ttl + SEP_TOTAL;
+        let non_value =
+            nat_provider + nat_path + nat_field + nat_age + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
         if total_cap > non_value + MIN_VALUE_WIDTH {
             total_cap - non_value
         } else {
@@ -852,7 +856,10 @@ fn render_table(
 
     let mut out = String::new();
 
+    let left_margin: String = " ".repeat(MARGIN);
+    let right_margin: String = " ".repeat(MARGIN);
     for (row_cells, row_vis) in cells.iter().zip(visible.iter()) {
+        out.push_str(&left_margin);
         for (i, cell) in row_cells.iter().enumerate() {
             if i > 0 {
                 out.push_str("  "); // 2-space separator
@@ -866,6 +873,7 @@ fn render_table(
                 }
             }
         }
+        out.push_str(&right_margin);
         out.push('\n');
     }
 
