@@ -20,6 +20,39 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Connect to a Unix socket with 3 retries (250ms / 500ms / 1s exponential backoff).
+///
+/// Retries on `ConnectionRefused` and `NotFound` only — other errors surface
+/// immediately. Intended to cover the brief restart window when the old daemon
+/// has shut down and the new one hasn't bound yet.
+pub fn connect_with_retry(path: &Path) -> std::io::Result<UnixStream> {
+    const BACKOFFS: [Duration; 3] = [
+        Duration::from_millis(250),
+        Duration::from_millis(500),
+        Duration::from_millis(1000),
+    ];
+
+    let mut last_err: Option<std::io::Error> = None;
+    for backoff in &BACKOFFS {
+        match UnixStream::connect(path) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                let kind = e.kind();
+                if !matches!(
+                    kind,
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                ) {
+                    return Err(e);
+                }
+                last_err = Some(e);
+                std::thread::sleep(*backoff);
+            }
+        }
+    }
+    // Final attempt after all backoffs.
+    UnixStream::connect(path).map_err(|e| last_err.unwrap_or(e))
+}
+
 /// Result of a cache query.
 #[derive(Debug)]
 pub enum CombResult {
@@ -629,7 +662,7 @@ impl Client {
     }
 
     fn connect(&self, path: &PathBuf) -> Result<UnixStream, CombError> {
-        let stream = UnixStream::connect(path).map_err(CombError::ConnectionFailed)?;
+        let stream = connect_with_retry(path).map_err(CombError::ConnectionFailed)?;
         stream.set_read_timeout(Some(self.config.timeout))?;
         stream.set_write_timeout(Some(self.config.timeout))?;
         Ok(stream)

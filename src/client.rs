@@ -1,7 +1,40 @@
 use crate::protocol::Response;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+
+/// Connect to a Unix socket with 3 retries (250ms / 500ms / 1s exponential backoff).
+///
+/// Retries on `ConnectionRefused` and `NotFound` only — other errors surface
+/// immediately. Covers the brief restart window when the daemon is restarting.
+async fn connect_with_retry(path: &std::path::Path) -> std::io::Result<UnixStream> {
+    const BACKOFFS: [Duration; 3] = [
+        Duration::from_millis(250),
+        Duration::from_millis(500),
+        Duration::from_millis(1000),
+    ];
+
+    let mut last_err: Option<std::io::Error> = None;
+    for backoff in &BACKOFFS {
+        match UnixStream::connect(path).await {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                let kind = e.kind();
+                if !matches!(
+                    kind,
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                ) {
+                    return Err(e);
+                }
+                last_err = Some(e);
+                tokio::time::sleep(*backoff).await;
+            }
+        }
+    }
+    // Final attempt after all backoffs.
+    UnixStream::connect(path).await.map_err(|e| last_err.unwrap_or(e))
+}
 
 pub struct Client {
     socket_path: PathBuf,
@@ -17,7 +50,7 @@ pub struct ClientSession {
 
 impl ClientSession {
     pub async fn connect(socket_path: &std::path::Path) -> std::io::Result<Self> {
-        let stream = UnixStream::connect(socket_path).await?;
+        let stream = connect_with_retry(socket_path).await?;
         let (reader, writer) = stream.into_split();
         Ok(Self {
             reader: BufReader::new(reader),
@@ -268,7 +301,7 @@ impl Client {
             request["wait"] = serde_json::json!(true);
         }
 
-        let mut stream = UnixStream::connect(&self.socket_path).await?;
+        let mut stream = connect_with_retry(&self.socket_path).await?;
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
         stream.write_all(msg.as_bytes()).await?;
 
@@ -350,7 +383,7 @@ impl Client {
     }
 
     async fn send_request(&self, request: &serde_json::Value) -> std::io::Result<Response> {
-        let mut stream = UnixStream::connect(&self.socket_path).await?;
+        let mut stream = connect_with_retry(&self.socket_path).await?;
         let msg = format!("{}\n", serde_json::to_string(request).unwrap());
         stream.write_all(msg.as_bytes()).await?;
 
