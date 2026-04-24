@@ -2,6 +2,109 @@ use crate::cache::CacheRow;
 use crate::cli::format::build_env;
 use minijinja;
 
+// ---------------------------------------------------------------------------
+// ANSI colour helper (basic-16 palette, fg-only, no external crate)
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+mod ansi {
+    #[derive(Clone, Copy, Debug)]
+    pub enum Color {
+        BrightGreen,
+        Yellow,
+        BrightYellow,
+        Red,
+        Dim,
+    }
+
+    impl Color {
+        pub const fn code(self) -> &'static str {
+            match self {
+                Color::BrightGreen => "\x1b[92m",
+                Color::Yellow => "\x1b[33m",
+                Color::BrightYellow => "\x1b[93m",
+                Color::Red => "\x1b[31m",
+                Color::Dim => "\x1b[2m",
+            }
+        }
+    }
+
+    pub fn wrap(s: &str, c: Color, enabled: bool) -> String {
+        if !enabled {
+            return s.to_string();
+        }
+        format!("{}{}\x1b[0m", c.code(), s)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TTL cell formatter
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+pub struct TtlCell {
+    pub text: String,
+    pub color: Option<ansi::Color>,
+}
+
+#[allow(dead_code)]
+pub fn format_ttl_cell(
+    kind: Option<&crate::cache::RowKind>,
+    poll_interval_secs: Option<u64>,
+    keep_alive_polls: Option<u32>,
+    fsevents_reinstate: Option<bool>,
+    failure: Option<&crate::cache::FailureSnapshot>,
+    ascii: bool,
+) -> TtlCell {
+    use crate::cache::RowKind;
+
+    // Glyph table.
+    let star = if ascii { "*" } else { "\u{2605}" }; // ★
+    let warn = if ascii { "!" } else { "\u{26a0}" }; // ⚠
+    let times = if ascii { "x" } else { "\u{00d7}" }; // ×
+    let fisheye = if ascii { "F" } else { "\u{25c9}" }; // ◉
+
+    match kind {
+        None | Some(RowKind::Once) | Some(RowKind::Virtual) | Some(RowKind::Transient) => {
+            TtlCell {
+                text: "---".into(),
+                color: None,
+            }
+        }
+        Some(RowKind::Lifecycle {
+            decay,
+            watches_files,
+        }) => {
+            // Lead char: failure overrides decay.
+            let (lead, color) = if failure.is_some() {
+                (warn.to_string(), ansi::Color::Red)
+            } else {
+                match decay {
+                    0 => (star.to_string(), ansi::Color::BrightGreen),
+                    1 => ("3".into(), ansi::Color::Dim),
+                    2 => ("2".into(), ansi::Color::Yellow),
+                    3 => ("1".into(), ansi::Color::BrightYellow),
+                    _ => ("0".into(), ansi::Color::Red),
+                }
+            };
+
+            let p = poll_interval_secs.unwrap_or(0).min(999_999);
+            let k = keep_alive_polls.unwrap_or(0).min(99);
+            let indicator = if fsevents_reinstate.unwrap_or(false) && *watches_files {
+                fisheye
+            } else {
+                " "
+            };
+            // " <P:6>s<×><K:02> <indicator>" — fixed width: 1 + 1 + 6 + 1 + 1 + 2 + 1 + 1 = 14.
+            let text = format!("{} {:>6}s{}{:02} {}", lead, p, times, k, indicator);
+            TtlCell {
+                text,
+                color: Some(color),
+            }
+        }
+    }
+}
+
 /// Color mode for status output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {
@@ -660,5 +763,224 @@ fn truncate(s: &str, max: usize) -> String {
         let take = max.saturating_sub(3);
         let truncated: String = s.chars().take(take).collect();
         format!("{truncated}...")
+    }
+}
+
+#[cfg(test)]
+mod ansi_tests {
+    use super::ansi;
+
+    #[test]
+    fn colour_codes_match_basic_16() {
+        assert_eq!(
+            ansi::wrap("hi", ansi::Color::BrightGreen, true),
+            "\x1b[92mhi\x1b[0m"
+        );
+        assert_eq!(
+            ansi::wrap("hi", ansi::Color::Yellow, true),
+            "\x1b[33mhi\x1b[0m"
+        );
+        assert_eq!(
+            ansi::wrap("hi", ansi::Color::BrightYellow, true),
+            "\x1b[93mhi\x1b[0m"
+        );
+        assert_eq!(
+            ansi::wrap("hi", ansi::Color::Red, true),
+            "\x1b[31mhi\x1b[0m"
+        );
+        assert_eq!(
+            ansi::wrap("hi", ansi::Color::Dim, true),
+            "\x1b[2mhi\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn colour_disabled_returns_plain() {
+        assert_eq!(ansi::wrap("hi", ansi::Color::Red, false), "hi");
+    }
+}
+
+#[cfg(test)]
+mod ttl_cell_tests {
+    use super::*;
+    use crate::cache::{FailureSnapshot, RowKind};
+
+    #[test]
+    fn active_lifecycle_unicode() {
+        let cell = format_ttl_cell(
+            Some(&RowKind::Lifecycle {
+                decay: 0,
+                watches_files: true,
+            }),
+            Some(60),
+            Some(12),
+            Some(true),
+            None,
+            false,
+        );
+        assert_eq!(
+            cell.text,
+            "\u{2605}     60s\u{00d7}12 \u{25c9}"
+        );
+        assert!(matches!(cell.color, Some(ansi::Color::BrightGreen)));
+    }
+
+    #[test]
+    fn decay4_lifecycle_unicode() {
+        let cell = format_ttl_cell(
+            Some(&RowKind::Lifecycle {
+                decay: 4,
+                watches_files: false,
+            }),
+            Some(480),
+            Some(12),
+            Some(false),
+            None,
+            false,
+        );
+        assert_eq!(cell.text, "0    480s\u{00d7}12  ");
+        assert!(matches!(cell.color, Some(ansi::Color::Red)));
+    }
+
+    #[test]
+    fn ascii_fallback() {
+        let cell = format_ttl_cell(
+            Some(&RowKind::Lifecycle {
+                decay: 0,
+                watches_files: true,
+            }),
+            Some(60),
+            Some(12),
+            Some(true),
+            None,
+            true,
+        );
+        assert_eq!(cell.text, "*     60sx12 F");
+    }
+
+    #[test]
+    fn indicator_suppressed_when_no_watch_capability() {
+        let cell = format_ttl_cell(
+            Some(&RowKind::Lifecycle {
+                decay: 0,
+                watches_files: false,
+            }),
+            Some(60),
+            Some(12),
+            Some(true),
+            None,
+            false,
+        );
+        assert!(cell.text.ends_with("12  "), "no indicator: {:?}", cell.text);
+    }
+
+    #[test]
+    fn indicator_suppressed_when_flag_false() {
+        let cell = format_ttl_cell(
+            Some(&RowKind::Lifecycle {
+                decay: 0,
+                watches_files: true,
+            }),
+            Some(60),
+            Some(12),
+            Some(false),
+            None,
+            false,
+        );
+        assert!(cell.text.ends_with("12  "));
+    }
+
+    #[test]
+    fn once_renders_dashes() {
+        let cell = format_ttl_cell(Some(&RowKind::Once), None, None, None, None, false);
+        assert_eq!(cell.text, "---");
+        assert!(cell.color.is_none());
+    }
+
+    #[test]
+    fn virtual_renders_dashes() {
+        let cell = format_ttl_cell(Some(&RowKind::Virtual), None, None, None, None, false);
+        assert_eq!(cell.text, "---");
+    }
+
+    #[test]
+    fn transient_renders_dashes() {
+        let cell = format_ttl_cell(Some(&RowKind::Transient), None, None, None, None, false);
+        assert_eq!(cell.text, "---");
+    }
+
+    #[test]
+    fn failure_swaps_lead_to_warn() {
+        let snap = FailureSnapshot {
+            consecutive_failures: 3,
+            suppressed_until_unix_ms: None,
+        };
+        let cell = format_ttl_cell(
+            Some(&RowKind::Lifecycle {
+                decay: 1,
+                watches_files: true,
+            }),
+            Some(60),
+            Some(12),
+            Some(true),
+            Some(&snap),
+            false,
+        );
+        assert!(cell.text.starts_with("\u{26a0}"));
+        assert!(matches!(cell.color, Some(ansi::Color::Red)));
+    }
+
+    #[test]
+    fn failure_ascii_fallback() {
+        let snap = FailureSnapshot {
+            consecutive_failures: 3,
+            suppressed_until_unix_ms: None,
+        };
+        let cell = format_ttl_cell(
+            Some(&RowKind::Lifecycle {
+                decay: 1,
+                watches_files: true,
+            }),
+            Some(60),
+            Some(12),
+            Some(true),
+            Some(&snap),
+            true,
+        );
+        assert!(cell.text.starts_with("!"));
+    }
+
+    #[test]
+    fn p_cap_at_six_chars() {
+        let cell = format_ttl_cell(
+            Some(&RowKind::Lifecycle {
+                decay: 0,
+                watches_files: false,
+            }),
+            Some(9_999_999),
+            Some(12),
+            Some(false),
+            None,
+            false,
+        );
+        // P clamped to 999999.
+        assert!(cell.text.contains("999999s"));
+    }
+
+    #[test]
+    fn p_zero_does_not_panic() {
+        let cell = format_ttl_cell(
+            Some(&RowKind::Lifecycle {
+                decay: 0,
+                watches_files: false,
+            }),
+            Some(0),
+            Some(0),
+            Some(false),
+            None,
+            false,
+        );
+        assert!(cell.text.contains("0s"));
+        assert!(cell.text.contains("\u{00d7}00"));
     }
 }
