@@ -96,3 +96,23 @@ impl Drop for SingletonLock {
         let _ = std::fs::remove_file(&self.pid_path);
     }
 }
+
+#[derive(Debug)]
+pub enum SupersessionDecision {
+    /// Existing daemon has the same version; new daemon should exit silently.
+    ExitSilent,
+    /// Existing daemon is a different build; new daemon should kill it and take over.
+    Supersede { existing_pid: u32 },
+}
+
+/// Given the existing singleton's record and our own version, decide whether
+/// to supersede (kill and take over) or exit silently (existing daemon is fine).
+pub fn decide_supersession(existing: &PidFileRecord, our_version: &str) -> SupersessionDecision {
+    if existing.version == our_version {
+        SupersessionDecision::ExitSilent
+    } else {
+        SupersessionDecision::Supersede {
+            existing_pid: existing.pid,
+        }
+    }
+}

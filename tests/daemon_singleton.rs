@@ -63,7 +63,7 @@ fn resolve_socket_path_uses_xdg_runtime_dir_when_set() {
     assert_eq!(path, PathBuf::from("/run/user/501/beachcomber/sock"));
 }
 
-use beachcomber::singleton::{SingletonLock, SingletonLockError};
+use beachcomber::singleton::{SingletonLock, SingletonLockError, SupersessionDecision, decide_supersession, PidFileRecord};
 
 #[test]
 fn singleton_lock_creates_pid_file_and_holds_flock() {
@@ -92,4 +92,43 @@ fn singleton_lock_contested_by_same_process_fails() {
     let _first = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc").unwrap();
     let second = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc");
     assert!(matches!(second, Err(SingletonLockError::AlreadyHeld { .. })));
+}
+
+#[test]
+fn supersession_same_version_means_no_op() {
+    let existing = PidFileRecord {
+        pid: 12345,
+        version: "0.5.1+sha.abc".into(),
+        binary: "/path/to/comb".into(),
+        started_unix_ms: 0,
+    };
+    let decision = decide_supersession(&existing, "0.5.1+sha.abc");
+    assert!(matches!(decision, SupersessionDecision::ExitSilent));
+}
+
+#[test]
+fn supersession_different_version_means_supersede() {
+    let existing = PidFileRecord {
+        pid: 12345,
+        version: "0.5.0".into(),
+        binary: "/path/to/comb".into(),
+        started_unix_ms: 0,
+    };
+    let decision = decide_supersession(&existing, "0.5.1+sha.abc");
+    match decision {
+        SupersessionDecision::Supersede { existing_pid } => assert_eq!(existing_pid, 12345),
+        _ => panic!("expected Supersede, got {decision:?}"),
+    }
+}
+
+#[test]
+fn supersession_dev_build_different_sha_means_supersede() {
+    let existing = PidFileRecord {
+        pid: 12345,
+        version: "0.5.1+sha.abc11111".into(),
+        binary: "/path/to/comb".into(),
+        started_unix_ms: 0,
+    };
+    let decision = decide_supersession(&existing, "0.5.1+sha.def22222");
+    assert!(matches!(decision, SupersessionDecision::Supersede { .. }));
 }
