@@ -20,6 +20,7 @@ For multiple queries on one connection use a session::
 from __future__ import annotations
 
 import socket
+import time
 from contextlib import contextmanager
 from typing import Any, Generator, Optional
 
@@ -51,6 +52,38 @@ from .types import (
 _DEFAULT_TIMEOUT: float = 0.1
 
 
+_RETRY_BACKOFFS: list[float] = [0.250, 0.500, 1.000]
+
+
+def _connect_with_retry(socket_path: str) -> socket.socket:
+    """Connect to a Unix socket with 3 retries (250ms/500ms/1s exponential).
+
+    Retries on ConnectionRefusedError and FileNotFoundError only — other
+    errors surface immediately.  Intended to cover the brief restart window
+    when the old daemon has shut down and the new one hasn't bound yet.
+
+    Returns:
+        Connected (blocking, no timeout set) :class:`socket.socket`.
+
+    Raises:
+        ConnectionRefusedError or FileNotFoundError: After all retries
+            are exhausted.
+    """
+    last_exc: Exception | None = None
+    for backoff in _RETRY_BACKOFFS:
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.connect(socket_path)
+            return s
+        except (ConnectionRefusedError, FileNotFoundError) as e:
+            last_exc = e
+            time.sleep(backoff)
+    # Final attempt after all backoffs.
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(socket_path)  # raises if still failing
+    return s
+
+
 def _connect(socket_path: str, timeout: float) -> socket.socket:
     """Open a Unix domain socket connection to the daemon.
 
@@ -66,9 +99,8 @@ def _connect(socket_path: str, timeout: float) -> socket.socket:
             not exist.
     """
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock = _connect_with_retry(socket_path)
         sock.settimeout(timeout)
-        sock.connect(socket_path)
         return sock
     except (ConnectionRefusedError, FileNotFoundError, OSError) as exc:
         raise DaemonNotRunning(socket_path) from exc
