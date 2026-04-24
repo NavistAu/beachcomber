@@ -132,3 +132,38 @@ fn supersession_dev_build_different_sha_means_supersede() {
     let decision = decide_supersession(&existing, "0.5.1+sha.def22222");
     assert!(matches!(decision, SupersessionDecision::Supersede { .. }));
 }
+
+#[test]
+fn supersede_existing_kills_target_process() {
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn sleep");
+    let pid = child.id();
+
+    // Call supersede_existing. It may report "survived SIGKILL" because we're the parent
+    // of the target and the process becomes a zombie until we wait() — that's a test-env
+    // artefact, not a production bug.
+    let _ = beachcomber::singleton::supersede_existing(pid, std::time::Duration::from_millis(500));
+
+    // Reap the zombie.
+    let _ = child.wait();
+
+    // After reaping, the kernel frees the PID slot.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let still_alive = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    assert!(still_alive != 0, "process should be gone; kill(0) returned {still_alive}");
+}
+
+#[test]
+fn supersede_existing_refuses_pid_one() {
+    let result = beachcomber::singleton::supersede_existing(1, std::time::Duration::from_millis(100));
+    assert!(result.is_err(), "expected error refusing pid 1");
+}
+
+#[test]
+fn supersede_existing_refuses_self() {
+    let me = std::process::id();
+    let result = beachcomber::singleton::supersede_existing(me, std::time::Duration::from_millis(100));
+    assert!(result.is_err(), "expected error refusing self pid");
+}

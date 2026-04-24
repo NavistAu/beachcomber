@@ -5,7 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -115,4 +115,62 @@ pub fn decide_supersession(existing: &PidFileRecord, our_version: &str) -> Super
             existing_pid: existing.pid,
         }
     }
+}
+
+/// Send SIGTERM to `pid`, wait up to `grace` for graceful exit, then SIGKILL if still alive.
+/// Returns Ok once the target is gone; Err on unexpected failure (e.g., permission denied
+/// or refusing to kill PID 0/1/self).
+/// It is NOT an error for the target to already be dead when called.
+pub fn supersede_existing(pid: u32, grace: Duration) -> std::io::Result<()> {
+    let pid_t = pid as libc::pid_t;
+
+    if pid <= 1 || pid == std::process::id() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing to kill pid {pid}"),
+        ));
+    }
+
+    // SIGTERM
+    let rc = unsafe { libc::kill(pid_t, libc::SIGTERM) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(()); // already gone
+        }
+        return Err(err);
+    }
+
+    // Wait for grace period, polling kill(pid, 0).
+    let deadline = Instant::now() + grace;
+    while Instant::now() < deadline {
+        let alive = unsafe { libc::kill(pid_t, 0) };
+        if alive != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // SIGKILL if still alive.
+    let alive = unsafe { libc::kill(pid_t, 0) };
+    if alive == 0 {
+        let _ = unsafe { libc::kill(pid_t, libc::SIGKILL) };
+        let kill_deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < kill_deadline {
+            let still = unsafe { libc::kill(pid_t, 0) };
+            if still != 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::ESRCH) {
+                    return Ok(());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        return Err(std::io::Error::other(format!("pid {pid} survived SIGKILL")));
+    }
+
+    Ok(())
 }
