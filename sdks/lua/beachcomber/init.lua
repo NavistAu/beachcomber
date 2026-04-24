@@ -21,6 +21,40 @@ local client_mod = require("beachcomber.client")
 
 local M = {}
 
+local RETRY_BACKOFFS = { 0.250, 0.500, 1.000 }
+
+--- Connect to a Unix socket backend with 3 retries (250ms/500ms/1s exponential).
+--
+-- Retries when the backend returns nil (connection refused / socket absent).
+-- Intended to cover the brief restart window when the daemon is restarting.
+--
+-- @param backend table  Backend module with a connect(socket_path) function
+-- @param socket_path string  Path to the Unix domain socket
+-- @return handle, or nil, error_message
+function M._connect_with_retry(backend, socket_path)
+  local last_err = nil
+  -- Try luasocket sleep if available; fall back to os.execute for portability.
+  local function sleep_secs(s)
+    local ok, socket_lib = pcall(require, "socket")
+    if ok and socket_lib.sleep then
+      socket_lib.sleep(s)
+    else
+      -- Portable busy-wait fallback (coarse).
+      local t = os.time()
+      while os.time() - t < math.ceil(s) do end
+    end
+  end
+
+  for _, backoff in ipairs(RETRY_BACKOFFS) do
+    local handle, err = backend.connect(socket_path)
+    if handle then return handle end
+    last_err = err
+    sleep_secs(backoff)
+  end
+  -- Final attempt.
+  return backend.connect(socket_path)
+end
+
 --- Detect whether we are running inside Neovim.
 -- @return boolean
 local function in_neovim()
@@ -82,7 +116,7 @@ function M.connect(opts)
     backend = b
   end
 
-  local sock, conn_err = backend.connect(socket_path)
+  local sock, conn_err = M._connect_with_retry(backend, socket_path)
   if not sock then
     return nil, "could not connect to beachcomber daemon at " .. socket_path .. ": " .. tostring(conn_err)
   end
