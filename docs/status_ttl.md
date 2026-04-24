@@ -130,7 +130,7 @@ Required changes:
 1. **Default preset → `human` unconditionally.** Scripts that want raw data opt in via `-f tsv` / `-f json`. This is a breaking change for anyone piping `comb status` to another tool; we're pre-1.0, document in CHANGELOG.
 2. **Color default:** on when stdout is a TTY **or** `WATCH_INTERVAL` env var is set (procps watch exports it). `NO_COLOR` disables unconditionally.
 3. **Truncation:** always applied in `human` preset, regardless of TTY.
-4. **Stable default sort:** `(provider, path, field)` so rows don't reshuffle between refreshes. Currently defaults to `path`.
+4. **Stable default sort:** `(path, provider, field)` so rows don't reshuffle between refreshes and globals (path=None) group together at the top of the table.
 
 ## Flags (new)
 

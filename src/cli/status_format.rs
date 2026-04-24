@@ -1010,10 +1010,13 @@ fn simple_glob_match(pattern: &str, text: &str) -> bool {
 pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, String> {
     use crate::cache::RowKind;
     match col {
+        // path first so globals (path=None) bubble to the top as one group,
+        // then path-scoped rows are grouped by directory. Inside a path group,
+        // rows are ordered by provider then field.
         "default" => rows.sort_by(|a, b| {
-            a.provider
-                .cmp(&b.provider)
-                .then(a.path.cmp(&b.path))
+            a.path
+                .cmp(&b.path)
+                .then(a.provider.cmp(&b.provider))
                 .then(a.field.cmp(&b.field))
         }),
         "provider" => rows.sort_by(|a, b| a.provider.cmp(&b.provider)),

@@ -742,7 +742,7 @@ fn default_preset_is_human_regardless_of_tty() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn default_sort_is_provider_path_field() {
+fn default_sort_is_path_provider_field() {
     use beachcomber::cache::CacheRow;
     use beachcomber::cli::status_format::apply_sort;
     use serde_json::json;
@@ -763,20 +763,38 @@ fn default_sort_is_provider_path_field() {
         }
     }
 
+    // Two globals (None path), plus multiple path-scoped rows spread across
+    // two repos and two providers, so the sort exercises every tier.
     let rows = vec![
         row("git", Some("/repo"), "branch"),
         row("battery", None, "percent"),
+        row("hostname", None, "short"),
+        row("mise", Some("/repo"), "project"),
         row("git", Some("/repo"), "dirty"),
         row("git", Some("/other"), "branch"),
     ];
     let rows = apply_sort(rows, "default").unwrap();
+
+    // Globals (path=None) sort to the top, ordered by provider.
+    assert_eq!(rows[0].path, None);
     assert_eq!(rows[0].provider, "battery");
-    assert_eq!(rows[1].provider, "git");
-    assert_eq!(rows[1].path.as_deref(), Some("/other"));
+    assert_eq!(rows[1].path, None);
+    assert_eq!(rows[1].provider, "hostname");
+
+    // Then path-scoped rows grouped by path (alphabetical): /other before /repo.
+    assert_eq!(rows[2].path.as_deref(), Some("/other"));
     assert_eq!(rows[2].provider, "git");
-    assert_eq!(rows[2].path.as_deref(), Some("/repo"));
-    assert_eq!(rows[2].field, "branch");
-    assert_eq!(rows[3].field, "dirty");
+
+    // Within /repo, providers alphabetical (git before mise), then fields
+    // alphabetical within the same provider (branch before dirty).
+    assert_eq!(rows[3].path.as_deref(), Some("/repo"));
+    assert_eq!(rows[3].provider, "git");
+    assert_eq!(rows[3].field, "branch");
+    assert_eq!(rows[4].path.as_deref(), Some("/repo"));
+    assert_eq!(rows[4].provider, "git");
+    assert_eq!(rows[4].field, "dirty");
+    assert_eq!(rows[5].path.as_deref(), Some("/repo"));
+    assert_eq!(rows[5].provider, "mise");
 }
 
 
