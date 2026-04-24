@@ -163,6 +163,8 @@ pub struct RenderOpts {
     pub max_width: Option<usize>,
     /// Disable truncation regardless of `max_width`.
     pub no_trunc: bool,
+    /// Use ASCII fallback glyphs in the human preset (e.g. `*` instead of `★`).
+    pub ascii: bool,
 }
 
 /// Options controlling CLI-level formatting choices (flags, not render state).
@@ -179,6 +181,7 @@ impl Default for RenderOpts {
             no_color: true,
             max_width: Some(40),
             no_trunc: false,
+            ascii: false,
         }
     }
 }
@@ -198,8 +201,11 @@ pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> Stri
         "table" => render_table(rows, false, None, true, false),
         "human" => {
             let trunc = if opts.no_trunc { None } else { opts.max_width };
-            let color = !opts.no_color && opts.is_tty;
-            render_table(rows, color, trunc, true, false)
+            // `no_color` is the resolved color decision from the caller (already
+            // accounts for NO_COLOR, TTY, WATCH_INTERVAL). Don't re-AND with is_tty
+            // here — that would undo the WATCH_INTERVAL color promotion.
+            let color = !opts.no_color;
+            render_table(rows, color, trunc, true, opts.ascii)
         }
         custom => {
             if let Some(body) = custom.strip_prefix("table ") {

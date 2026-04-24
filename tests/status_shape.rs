@@ -175,6 +175,7 @@ fn human_preset_color_on_stale_rows() {
         no_color: false,
         max_width: Some(40),
         no_trunc: false,
+        ascii: false,
     };
     let out = render_preset("human", &rows, &opts);
     assert!(
@@ -432,6 +433,7 @@ fn no_trunc_disables_truncation_in_human() {
         no_color: true,
         max_width: Some(40),
         no_trunc: true,
+        ascii: false,
     };
     let out = render_preset("human", &rows, &opts);
     assert!(out.contains(&"x".repeat(100))); // at least 100 xs preserved
@@ -446,6 +448,7 @@ fn max_width_truncates_value() {
         no_color: true,
         max_width: Some(10),
         no_trunc: false,
+        ascii: false,
     };
     let out = render_preset("human", &rows, &opts);
     assert!(!out.contains(&"x".repeat(50)));
@@ -460,6 +463,7 @@ fn no_color_disables_ansi() {
         no_color: true,
         max_width: Some(40),
         no_trunc: false,
+        ascii: false,
     };
     let out = render_preset("human", &rows, &opts);
     assert!(!out.contains("\x1b["));
@@ -623,6 +627,7 @@ fn default_preset_is_human_regardless_of_tty() {
         no_color: true,
         max_width: Some(120),
         no_trunc: false,
+        ascii: false,
     };
     let out = render_preset("human", &rows, &opts);
     assert!(
@@ -1211,8 +1216,51 @@ fn failure_state_renders_warn_and_red_row() {
         no_color: false,
         max_width: Some(120),
         no_trunc: false,
+        ascii: false,
     };
     let out = render_preset("human", &[row], &opts);
     assert!(out.contains("\u{26a0}"), "warn glyph missing: {:?}", out);
     assert!(out.contains("\x1b[31m"), "red ANSI missing: {:?}", out);
+}
+
+#[test]
+fn render_preset_ascii_flag_swaps_glyphs() {
+    use beachcomber::cache::{CacheRow, RowKind};
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+    use serde_json::json;
+
+    let row = CacheRow {
+        provider: "git".into(), path: None, field: "branch".into(),
+        value: json!("main"), age_ms: 1000, stale: false,
+        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
+        poll_interval_secs: Some(60), keep_alive_polls: Some(12),
+        fsevents_reinstate: Some(true), failure: None,
+    };
+    let opts_unicode = RenderOpts { is_tty: true, no_color: true, max_width: Some(120), no_trunc: false, ascii: false };
+    let opts_ascii = RenderOpts { is_tty: true, no_color: true, max_width: Some(120), no_trunc: false, ascii: true };
+    let out_unicode = render_preset("human", &[row.clone()], &opts_unicode);
+    let out_ascii = render_preset("human", &[row], &opts_ascii);
+    assert!(out_unicode.contains("\u{2605}"), "unicode star expected: {}", out_unicode);
+    assert!(!out_ascii.contains("\u{2605}"), "unicode star should be absent in ascii mode: {}", out_ascii);
+    assert!(out_ascii.contains("*"), "ascii star expected: {}", out_ascii);
+}
+
+#[test]
+fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
+    use beachcomber::cache::{CacheRow, RowKind};
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+    use serde_json::json;
+
+    let row = CacheRow {
+        provider: "git".into(), path: None, field: "branch".into(),
+        value: json!("main"), age_ms: 1000, stale: false,
+        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
+        poll_interval_secs: Some(60), keep_alive_polls: Some(12),
+        fsevents_reinstate: Some(true), failure: None,
+    };
+    // Simulate the WATCH_INTERVAL case: caller resolved color=true even though
+    // stdout is a pipe (is_tty=false). The renderer must honour that decision.
+    let opts = RenderOpts { is_tty: false, no_color: false, max_width: Some(120), no_trunc: false, ascii: false };
+    let out = render_preset("human", &[row], &opts);
+    assert!(out.contains("\x1b[92m"), "bright green ANSI expected when no_color=false even with is_tty=false: {}", out);
 }

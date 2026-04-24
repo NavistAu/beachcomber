@@ -363,7 +363,7 @@ fn main() -> ExitCode {
             no_trunc,
             max_width,
             color,
-            ascii: _ascii,
+            ascii,
         } => {
             let fmt = if format.is_empty() {
                 None
@@ -378,6 +378,7 @@ fn main() -> ExitCode {
                 no_trunc,
                 max_width.as_deref(),
                 color.as_str(),
+                ascii,
             )
         }
         Commands::Put {
@@ -844,6 +845,7 @@ fn run_get(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_status(
     config: &Config,
     format: Option<&str>,
@@ -852,6 +854,7 @@ fn run_status(
     no_trunc: bool,
     max_width_arg: Option<&str>,
     color_arg: &str,
+    ascii: bool,
 ) -> ExitCode {
     use beachcomber::cli::status_format::{
         ColorMode, RenderOpts, apply_filters, apply_sort, render_preset, resolve_color,
@@ -889,6 +892,7 @@ fn run_status(
             Some(resolved_max_width)
         },
         no_trunc,
+        ascii,
     };
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
