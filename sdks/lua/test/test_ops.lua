@@ -333,6 +333,34 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_not_nil(err)
   end)
 
+  test("status_row exposes lifecycle fields as raw table fields", function()
+    local rows = {
+      {
+        provider          = "git",
+        kind              = { kind = "lifecycle", decay = 0, watches_files = true },
+        poll_interval_secs = 5,
+        keep_alive_polls  = 3,
+        fsevents_reinstate = false,
+      },
+    }
+    local handle = make_mock_handle({
+      json.encode({ ok = true, data = rows }),
+    })
+    local c = Client.new(handle)
+    local result, err = c:status_rows()
+    assert_nil(err)
+    assert_not_nil(result)
+    local git
+    for _, r in ipairs(result) do
+      if r.provider == "git" then git = r; break end
+    end
+    assert_not_nil(git)
+    assert_not_nil(git.kind)
+    assert_eq(git.kind.kind, "lifecycle")
+    assert_true(git.poll_interval_secs > 0)
+    assert_true(git.keep_alive_polls > 0)
+  end)
+
   -- ── watch / WatchStream ───────────────────────────────────────────────────
 
   suite("Client:watch and WatchStream")
