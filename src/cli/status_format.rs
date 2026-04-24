@@ -47,25 +47,26 @@ pub struct TtlCell {
     pub color: Option<ansi::Color>,
 }
 
-/// Minimum width for the P-seconds sub-field inside the TTL cell.
-pub const TTL_P_WIDTH_MIN: usize = 4;
 /// Maximum width for the P-seconds sub-field. 6 digits covers ~11 days of
 /// seconds; beyond that we clamp rather than grow the cell.
 pub const TTL_P_WIDTH_MAX: usize = 6;
 
 /// Compute the P-seconds field width for a snapshot: the widest `poll_interval_secs`
-/// value across all Lifecycle rows, clamped to `[TTL_P_WIDTH_MIN, TTL_P_WIDTH_MAX]`.
-/// Rows without a poll interval (Once/Virtual/Transient) are ignored.
+/// across all Lifecycle rows, capped at `TTL_P_WIDTH_MAX`. No lower floor — the
+/// width auto-shrinks so single-digit-P snapshots don't over-pad.
+///
+/// Rows without a poll interval (Once/Virtual/Transient) are ignored. Empty
+/// snapshots (no lifecycle rows) return 1; the value is unused in that case
+/// because every cell renders as `---`, but avoid zero so format! can't panic.
 pub fn compute_ttl_p_width(rows: &[CacheRow]) -> usize {
     use crate::cache::RowKind;
-    let max_digits = rows
-        .iter()
+    rows.iter()
         .filter(|r| matches!(r.kind, Some(RowKind::Lifecycle { .. })))
         .filter_map(|r| r.poll_interval_secs)
         .map(|p| p.min(999_999).to_string().len())
         .max()
-        .unwrap_or(0);
-    max_digits.clamp(TTL_P_WIDTH_MIN, TTL_P_WIDTH_MAX)
+        .unwrap_or(1)
+        .min(TTL_P_WIDTH_MAX)
 }
 
 #[allow(dead_code)]
@@ -1343,9 +1344,9 @@ mod ttl_cell_tests {
     }
 
     #[test]
-    fn p_width_min_narrows_cell() {
-        // With p_width=4 (min floor) and a 2-digit P, expect 2 padding spaces
-        // before "60s" rather than 4.
+    fn p_width_tight_for_two_digit_p() {
+        // With p_width=2 and a 2-digit P, zero padding: minimum visual gap
+        // between the lead and "60s" is the single literal separator space.
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
@@ -1356,9 +1357,9 @@ mod ttl_cell_tests {
             Some(true),
             None,
             false,
-            4,
+            2,
         );
-        assert_eq!(cell.text, "\u{2605}   60s\u{00d7}12 \u{25c9}");
+        assert_eq!(cell.text, "\u{2605} 60s\u{00d7}12 \u{25c9}");
     }
 
     #[test]
@@ -1383,8 +1384,8 @@ mod ttl_cell_tests {
         let mut row_large = row_small.clone();
         row_large.poll_interval_secs = Some(12_345);
 
-        // Single-row snapshot with 2-digit P → width clamped to floor (4).
-        assert_eq!(compute_ttl_p_width(&[row_small.clone()]), 4);
+        // 2-digit P → width 2 (tight, no floor).
+        assert_eq!(compute_ttl_p_width(&[row_small.clone()]), 2);
         // Widest P is 5 digits → width grows to 5.
         assert_eq!(
             compute_ttl_p_width(&[row_small.clone(), row_large.clone()]),
@@ -1417,8 +1418,9 @@ mod ttl_cell_tests {
     }
 
     #[test]
-    fn p_width_floor_when_no_lifecycle_rows() {
-        // Empty / Once-only snapshot falls back to the minimum floor.
-        assert_eq!(compute_ttl_p_width(&[]), TTL_P_WIDTH_MIN);
+    fn p_width_one_when_no_lifecycle_rows() {
+        // Empty / Once-only snapshot: value unused (all cells render as `---`),
+        // but compute_ttl_p_width returns a non-zero default so format! works.
+        assert_eq!(compute_ttl_p_width(&[]), 1);
     }
 }
