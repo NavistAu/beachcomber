@@ -189,14 +189,11 @@ async fn integration_status_response_reports_decay_level() {
         "cache should be warm before status check"
     );
 
-    // Fetch the decay map from the scheduler.
-    let decay_map = handle
-        .get_lifecycle_decay_levels()
-        .await
-        .expect("scheduler should return a decay map");
+    // Fetch the lifecycle snapshots from the scheduler.
+    let snapshots = handle.get_lifecycle_snapshots().await;
 
     let key = ("lc_counter".to_string(), None::<String>);
-    let decay_level = decay_map.get(&key).copied();
+    let decay_level = snapshots.get(&key).map(|s| s.decay);
 
     assert_eq!(
         decay_level,

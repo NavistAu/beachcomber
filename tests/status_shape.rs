@@ -476,6 +476,7 @@ fn no_color_disables_ansi() {
 
 use beachcomber::client::Client;
 use beachcomber::config::Config;
+use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 
 async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<()>) {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -603,6 +604,50 @@ fn cache_row_new_fields_serde_round_trip() {
     assert_eq!(v["kind"]["kind"], "lifecycle");
     assert!(v.get("failure").is_none(), "failure omitted when None");
     assert!(v.get("decay").is_none(), "old decay field is gone");
+}
+
+#[tokio::test]
+async fn lifecycle_snapshots_message_returns_per_entry_data() {
+    use beachcomber::cache::Cache;
+    use beachcomber::provider::registry::ProviderRegistry;
+    use beachcomber::watcher_registry::WatcherRegistry;
+    use std::sync::Arc;
+
+    let cache = Arc::new(Cache::new());
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let config = Config::default();
+
+    let (handle, scheduler) = Scheduler::new(
+        cache.clone(),
+        registry,
+        config,
+        Arc::new(WatcherRegistry::new()),
+    );
+    let task = tokio::spawn(async move { scheduler.run().await });
+
+    // Demand an entry to populate lifecycle registry.
+    handle
+        .send(SchedulerMessage::QueryActivity {
+            provider: "hostname".to_string(),
+            path: None,
+        })
+        .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let snapshots = handle.get_lifecycle_snapshots().await;
+    let entry = snapshots
+        .values()
+        .next()
+        .expect("at least one snapshot");
+    assert!(entry.poll_interval_secs > 0);
+    assert!(entry.keep_alive_polls > 0);
+    let _ = entry.fsevents_reinstate;
+    let _ = entry.decay;
+    let _ = entry.watches_files;
+
+    handle.send(SchedulerMessage::Shutdown).await;
+    let _ = task.await;
 }
 
 /// Status on a fresh daemon with an empty cache returns an empty array, not an error.

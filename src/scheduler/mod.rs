@@ -40,11 +40,26 @@ pub enum SchedulerMessage {
         provider: String,
         path: Option<String>,
     },
-    /// Request a map of all lifecycle-tracked keys to their current decay level.
-    /// Used by the status response handler to annotate CacheRows with decay info.
-    GetLifecycleDecayLevels {
-        reply: tokio::sync::oneshot::Sender<HashMap<lifecycle::Key, u8>>,
+    /// Request a full per-entry snapshot of the lifecycle registry.
+    /// Used by the status response handler to annotate CacheRows with lifecycle info.
+    GetLifecycleSnapshots {
+        reply: tokio::sync::oneshot::Sender<HashMap<lifecycle::Key, LifecycleSnapshot>>,
     },
+}
+
+/// A point-in-time snapshot of a single lifecycle registry entry.
+#[derive(Debug, Clone)]
+pub struct LifecycleSnapshot {
+    /// 0 = Active, 1–4 = Decay step.
+    pub decay: u8,
+    /// Effective poll interval in seconds (may be doubled during decay).
+    pub poll_interval_secs: u64,
+    /// Number of keep-alive polls before decay begins.
+    pub keep_alive_polls: u32,
+    /// Whether fsevents are reinstated on demand for this entry.
+    pub fsevents_reinstate: bool,
+    /// True if the provider uses Watch or WatchAndPoll invalidation strategy.
+    pub watches_files: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -115,16 +130,17 @@ impl SchedulerHandle {
         reply_rx.await.ok()
     }
 
-    /// Return a map of every lifecycle-tracked key to its current decay level.
-    /// 0 = Active; 1–4 = Decay steps. Missing keys are not in the lifecycle registry
-    /// (e.g. virtual/put entries).
-    pub async fn get_lifecycle_decay_levels(&self) -> Option<HashMap<lifecycle::Key, u8>> {
+    /// Return a full per-entry snapshot of every lifecycle-tracked key.
+    /// Missing keys are not in the lifecycle registry (e.g. virtual/put entries).
+    pub async fn get_lifecycle_snapshots(
+        &self,
+    ) -> HashMap<lifecycle::Key, LifecycleSnapshot> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(SchedulerMessage::GetLifecycleDecayLevels { reply: tx })
-            .await
-            .ok()?;
-        rx.await.ok()
+        let _ = self
+            .tx
+            .send(SchedulerMessage::GetLifecycleSnapshots { reply: tx })
+            .await;
+        rx.await.unwrap_or_default()
     }
 }
 
@@ -602,11 +618,29 @@ impl Scheduler {
                             let status = build_status(&lifecycle, &watch_paths, &self.in_flight);
                             let _ = reply.send(status);
                         }
-                        Some(SchedulerMessage::GetLifecycleDecayLevels { reply }) => {
+                        Some(SchedulerMessage::GetLifecycleSnapshots { reply }) => {
                             let map = lifecycle
                                 .iter()
                                 .map(|(k, entry)| {
-                                    (k.clone(), lifecycle::to_decay_level(&entry.state))
+                                    let watches_files = self
+                                        .registry
+                                        .get(&k.0)
+                                        .map(|p| {
+                                            matches!(
+                                                p.metadata().invalidation,
+                                                InvalidationStrategy::Watch { .. }
+                                                    | InvalidationStrategy::WatchAndPoll { .. }
+                                            )
+                                        })
+                                        .unwrap_or(false);
+                                    let snap = LifecycleSnapshot {
+                                        decay: lifecycle::to_decay_level(&entry.state),
+                                        poll_interval_secs: entry.poll_timer.interval.as_secs(),
+                                        keep_alive_polls: entry.config.keep_alive_polls,
+                                        fsevents_reinstate: entry.config.fsevents_reinstate,
+                                        watches_files,
+                                    };
+                                    (k.clone(), snap)
                                 })
                                 .collect();
                             let _ = reply.send(map);
@@ -755,11 +789,29 @@ impl Scheduler {
                             let status = build_status(&lifecycle, &empty_watch_paths, &self.in_flight);
                             let _ = reply.send(status);
                         }
-                        Some(SchedulerMessage::GetLifecycleDecayLevels { reply }) => {
+                        Some(SchedulerMessage::GetLifecycleSnapshots { reply }) => {
                             let map = lifecycle
                                 .iter()
                                 .map(|(k, entry)| {
-                                    (k.clone(), lifecycle::to_decay_level(&entry.state))
+                                    let watches_files = self
+                                        .registry
+                                        .get(&k.0)
+                                        .map(|p| {
+                                            matches!(
+                                                p.metadata().invalidation,
+                                                InvalidationStrategy::Watch { .. }
+                                                    | InvalidationStrategy::WatchAndPoll { .. }
+                                            )
+                                        })
+                                        .unwrap_or(false);
+                                    let snap = LifecycleSnapshot {
+                                        decay: lifecycle::to_decay_level(&entry.state),
+                                        poll_interval_secs: entry.poll_timer.interval.as_secs(),
+                                        keep_alive_polls: entry.config.keep_alive_polls,
+                                        fsevents_reinstate: entry.config.fsevents_reinstate,
+                                        watches_files,
+                                    };
+                                    (k.clone(), snap)
                                 })
                                 .collect();
                             let _ = reply.send(map);

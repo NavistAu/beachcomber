@@ -768,6 +768,11 @@ async fn handle_request(
         Request::Status => {
             let rows = cache.list_rows();
 
+            // Fetch lifecycle snapshots — not yet stitched into rows (Task 1.8).
+            if let Some(sched) = scheduler {
+                let _ = sched.get_lifecycle_snapshots().await;
+            }
+
             match serde_json::to_value(&rows) {
                 Ok(v) => Response::ok(v, 0, false),
                 Err(e) => Response::error(format!("serialization failed: {e}")),
