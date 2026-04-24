@@ -11,7 +11,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 #[derive(Parser)]
 #[command(
     name = "comb",
-    version,
+    version = env!("BEACHCOMBER_VERSION"),
     author = "NavistAu <https://beachcomber.sh>",
     about = "Centralized shell state daemon (beachcomber)",
     long_about = "beachcomber — a daemon that caches shell environment state.\n\n\

@@ -194,7 +194,7 @@ async fn daemon_introspect_includes_pid_and_version() {
     let version = parsed["data"]["version"]
         .as_str()
         .expect("introspect daemon response should include version");
-    assert_eq!(version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(version, env!("BEACHCOMBER_VERSION"));
 
     handle.abort();
 }

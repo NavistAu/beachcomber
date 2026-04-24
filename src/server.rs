@@ -855,7 +855,7 @@ async fn handle_request(
         Request::Hello => {
             let data = serde_json::json!({
                 "protocol_version": crate::protocol::PROTOCOL_VERSION,
-                "daemon_version": env!("CARGO_PKG_VERSION"),
+                "daemon_version": env!("BEACHCOMBER_VERSION"),
             });
             Response::ok(data, 0, false)
         }
@@ -894,7 +894,7 @@ fn handle_introspect_daemon(
 
     let data = serde_json::json!({
         "pid": std::process::id(),
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": env!("BEACHCOMBER_VERSION"),
         "uptime_secs": uptime_secs,
         "socket_path": socket_path.to_string_lossy().as_ref(),
         "config_path": config_path,
