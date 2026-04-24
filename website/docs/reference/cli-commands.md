@@ -101,26 +101,52 @@ comb g git.branch:source         # → builtin (provider kind: builtin, script, 
 
 ## `comb s` (status)
 
-Show all warm cache entries as a table — one row per provider field.
+Show all warm cache entries as a table — one row per provider field. The `TTL` column encodes each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, keep-alive count, and whether filesystem events will reinstate the entry to Active (`◉`).
+
+`watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time.
 
 ```sh
 $ comb s
-provider   field      value      age_ms  stale
-git        branch     main          234  false
-git        dirty      false         234  false
-battery    percent    85           4200  false
+PROVIDER  PATH    FIELD    VALUE    AGE   TTL
+git       /repo   branch   main     14s   ★     60s×12 ◉
+git       /repo   dirty    true     14s   ★     60s×12 ◉
+battery   -       percent  87       8s    ★     30s×04
+hostname  -       short    artemis  3h    ---
 
-# Filter to a specific provider
-comb s --filter git
+# Filter to entries in a specific lifecycle state
+comb s --filter=lifecycle=active
+comb s --filter=lifecycle=decay1
+comb s --filter=fsevents_reinstate=true
 
-# Sort by age (oldest first)
-comb s --sort age
+# Sort options
+comb s --sort age             # oldest first
+comb s --sort lifecycle       # most-decayed first
+comb s --sort poll_interval   # slowest-pollers first
 
 # Custom per-row template
 comb s --format "{{ provider }}.{{ field }}={{ value }}"
+
+# Script-friendly formats (bypass the human preset)
+comb s -f tsv
+comb s -f json
 ```
 
-**Flags:** `--format <template>`, `--filter <provider>`, `--sort <field|age|stale>`, `--no-trunc`, `--max-width <n>`, `--no-color` / `--no-colour`.
+**Flags:** `--format <template>`, `--filter <provider>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <field|age|stale|lifecycle|poll_interval>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+
+**TTL column key:**
+
+| Lead | Lifecycle | Meaning |
+|------|-----------|---------|
+| `★`  | Active    | alive, polling at base rate |
+| `3`  | Decay1    | 3 decay steps before eviction |
+| `2`  | Decay2    | 2 remaining |
+| `1`  | Decay3    | 1 remaining |
+| `0`  | Decay4    | 0 remaining — next tick evicts |
+| `---` | Once / virtual | no lifecycle (hostname, put entries) |
+
+A `◉` trailing indicator means `fsevents_reinstate=true` — a filesystem event will reinstate the entry to Active even during decay. A `⚠` lead replaces `★` when the provider is in failure-suppress (row renders red).
+
+The default output preset is `human` (coloured table) regardless of whether stdout is a TTY. Scripts that want tab-separated data should pass `-f tsv` explicitly. The `WATCH_INTERVAL` environment variable (set automatically by `watch(1)`) also enables colour when stdout is not a TTY.
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
 
@@ -207,10 +233,10 @@ Run health checks and introspect daemon internals. Without a subcommand, runs to
 ```sh
 comb c                   # aggregate across all subjects
 comb c daemon            # daemon health: pid, version, uptime, request counts, watchers
-comb c providers         # provider health and backoff state
+comb c providers         # provider health and failure-suppress state
 comb c config            # validate config file syntax
 comb c cache             # cache entries, staleness, hit/miss summary
-comb c backoff           # keys in the backoff/drain sequence
+comb c lifecycle         # keys in the decay/drain sequence
 comb c watches           # active filesystem watch registrations
 comb c timers            # poll timers and last-run times
 comb c demand            # demand-tracked keys and last-query times

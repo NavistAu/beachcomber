@@ -47,28 +47,35 @@ Logs print directly to your terminal. Press Ctrl+C to shut down.
 
 ## Checking active state with `comb s` and `comb check`
 
-`comb s` shows warm cache entries as a table — one row per provider field:
+`comb s` shows warm cache entries as a table — one row per provider field. The `TTL` column shows each entry's lifecycle position and how close it is to eviction:
 
 ```sh
 $ comb s
-provider   field      value      age_ms  stale
-git        branch     main          234  false
-git        dirty      false         234  false
-battery    percent    85           4200  false
+PROVIDER  PATH    FIELD    VALUE    AGE   TTL
+git       /repo   branch   main     14s   ★     60s×12 ◉
+git       /repo   dirty    true     14s   ★     60s×12 ◉
+battery   -       percent  87       8s    ★     30s×04
+hostname  -       short    artemis  3h    ---
 
-# Filter to a specific provider
-comb s --filter git
+# Filter to entries currently in decay
+comb s --filter=lifecycle=decay1
+comb s --filter=lifecycle=decay2
+
+# Run as a live diagnostic view — keeps colour even under watch(1)
+watch -c comb status
 ```
+
+`★` means Active (healthy, polling at base rate). `3`/`2`/`1`/`0` are the decay countdown — `0` means the entry evicts on the next scheduler tick. `◉` means filesystem events will reinstate the entry. `⚠` replaces `★` when the provider is in failure-suppress.
 
 For daemon internals, use `comb check` subjects:
 
 ```sh
 comb check daemon     # pid, version, uptime, request counts, active watchers
 comb check watches    # filesystem paths currently being watched for changes
-comb check backoff    # keys in the drain/eviction sequence after demand expired
+comb check lifecycle  # keys in the decay/eviction sequence
 comb check timers     # active poll timers and when they last ran
 comb check demand     # demand-tracked keys and last-query times
-comb check providers  # provider health and backoff state
+comb check providers  # provider health and failure-suppress state
 ```
 
 ## Killing and restarting the daemon
@@ -101,11 +108,11 @@ If the socket is missing, run `comb d` in the foreground to see why it failed to
 
 **Provider always returns stale/empty data**
 
-Check whether the provider is in a failure backoff loop:
+Check whether the provider is in failure-suppress (failure backoff):
 
 ```sh
-comb check backoff
-# Look for the provider in the backoff list; also check the daemon log for "suppressed due to failure backoff"
+comb check lifecycle
+# Look for the provider in the decay/failure list; also check the daemon log for "suppressed due to failure backoff"
 ```
 
 Run the provider directly to check for errors:
