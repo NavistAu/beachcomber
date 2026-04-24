@@ -272,6 +272,6 @@ comb kill --timeout 30    # wait longer on slow shutdowns
 comb kill --socket /tmp/beachcomber-debug.sock   # target a custom socket
 ```
 
-The command asks the daemon for its pid via the status socket, so it works even when the pid file is stale or missing.
+The command queries the daemon for its PID via `introspect{subject:"daemon"}`, so it works even when the PID file is stale or missing.
 
 **Exit codes:** `0` on success (including no-op), `1` if the daemon didn't exit within `--timeout`, `2` on error (pid could not be determined, signal failed).
