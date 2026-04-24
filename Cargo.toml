@@ -72,6 +72,13 @@ harness = false
 name = "throughput"
 harness = false
 
+[profile.dev]
+# macOS: skip dsymutil during link (keep debug info in .o files). Faster link.
+split-debuginfo = "unpacked"
+# Keep backtraces with file:line, drop variable inspection info. Much smaller
+# debug data, faster link. Trade-off: less info in `lldb` step-through sessions.
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = "z"
 lto = true
