@@ -303,7 +303,7 @@ fn read_watch_value(
             let age_ms = entry.age_ms();
             let stale = entry.is_stale();
             let data = if let Some(field_name) = field {
-                match entry.result.get(field_name) {
+                match entry.result.get_path(field_name) {
                     Some(value) => serde_json::to_value(value).unwrap(),
                     None => {
                         return Response::error(format!(
@@ -360,7 +360,14 @@ fn resolve_path(
     let raw: Option<String> = if let Some(provider) = registry.get(provider_name) {
         let meta = provider.metadata();
         let scope = match field {
-            Some(f) => meta.field_scope(f).unwrap_or_else(|| meta.inferred_scope()),
+            Some(f) => {
+                // For dotted keys (e.g. `mise.project.rust`), scope is
+                // determined by the head field (`project`), not the full
+                // dotted path, so nested lookups inherit the correct scope.
+                let head = f.split_once('.').map(|(h, _)| h).unwrap_or(f);
+                meta.field_scope(head)
+                    .unwrap_or_else(|| meta.inferred_scope())
+            }
             None => meta.inferred_scope(),
         };
         match scope {
@@ -497,7 +504,7 @@ async fn handle_request(
                     let stale = entry.is_stale();
 
                     let data = if let Some(field_name) = field {
-                        match entry.result.get(field_name) {
+                        match entry.result.get_path(field_name) {
                             Some(value) => serde_json::to_value(value).unwrap(),
                             None => {
                                 return Response::error(format!(
@@ -542,7 +549,7 @@ async fn handle_request(
                             match matching {
                                 Some((_, result)) => {
                                     let data = if let Some(field_name) = field {
-                                        match result.get(field_name) {
+                                        match result.get_path(field_name) {
                                             Some(value) => serde_json::to_value(value).unwrap(),
                                             None => {
                                                 return Response::error(format!(
@@ -1325,11 +1332,13 @@ fn format_data(format: &Format, response: &Response) -> String {
                 Some(serde_json::Value::Number(n)) => format!("{n}\n\n"),
                 Some(serde_json::Value::Bool(b)) => format!("{b}\n\n"),
                 Some(serde_json::Value::Object(map)) => {
+                    // Emit `subkey=value` lines, sorted. Nested objects flatten
+                    // as `outer.inner=value`. Matches
+                    // docs/superpowers/specs/2026-04-21-code-review-fixes-design.md C9.
                     let mut lines: Vec<String> = map
                         .iter()
                         .flat_map(|(k, v)| {
                             if let serde_json::Value::Object(inner) = v {
-                                // Nested object: flatten as outer.inner=value
                                 inner
                                     .iter()
                                     .map(|(ik, iv)| {
@@ -1345,7 +1354,7 @@ fn format_data(format: &Format, response: &Response) -> String {
                                     serde_json::Value::String(s) => s.clone(),
                                     other => other.to_string(),
                                 };
-                                vec![val]
+                                vec![format!("{k}={val}")]
                             }
                         })
                         .collect();

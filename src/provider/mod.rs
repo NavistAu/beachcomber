@@ -78,6 +78,35 @@ impl ProviderResult {
         self.fields.get(key)
     }
 
+    /// Look up a value by a dotted path, walking into nested `Value::Object`s.
+    ///
+    /// First tries `path` as a literal field name (preserves the rare case of
+    /// a provider declaring a field with a dot in its name). If not found,
+    /// splits on the first `.` and walks further into nested objects.
+    ///
+    /// Returns `None` if any step of the walk lands on a non-Object value
+    /// before the path is consumed, or if any segment is absent.
+    ///
+    /// Example: for a ProviderResult whose `project` field is
+    /// `Value::Object({"rust": "1.94.0", "cargo-nextest": "0.9.133"})`,
+    /// `get_path("project.rust")` returns `Some(Value::String("1.94.0"))`.
+    pub fn get_path(&self, path: &str) -> Option<&Value> {
+        if let Some(v) = self.fields.get(path) {
+            return Some(v);
+        }
+        let (head, rest) = path.split_once('.')?;
+        let mut current = self.fields.get(head)?;
+        for segment in rest.split('.') {
+            match current {
+                Value::Object(map) => {
+                    current = map.get(segment)?;
+                }
+                _ => return None,
+            }
+        }
+        Some(current)
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(&self.fields).unwrap_or(serde_json::Value::Null)
     }
@@ -438,6 +467,73 @@ mod tests {
     fn canonical_path_default_passes_none_through() {
         let p = NoopProvider;
         assert_eq!(p.canonical_path(None), None);
+    }
+
+    #[test]
+    fn get_path_returns_scalar_from_nested_object() {
+        let mut tools = HashMap::new();
+        tools.insert("rust".to_string(), Value::String("1.94.0".to_string()));
+        tools.insert(
+            "cargo-nextest".to_string(),
+            Value::String("0.9.133".to_string()),
+        );
+        let mut result = ProviderResult::new();
+        result.insert("project", Value::Object(tools));
+
+        match result.get_path("project.rust") {
+            Some(Value::String(s)) => assert_eq!(s, "1.94.0"),
+            other => panic!("expected String('1.94.0'), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_path_literal_dot_field_wins_over_walk() {
+        // If a provider declares a field with a literal dot in the name,
+        // that takes precedence over the hierarchical walk.
+        let mut result = ProviderResult::new();
+        result.insert("a.b", Value::String("literal".into()));
+
+        let mut inner = HashMap::new();
+        inner.insert("b".to_string(), Value::String("walked".into()));
+        result.insert("a", Value::Object(inner));
+
+        match result.get_path("a.b") {
+            Some(Value::String(s)) => assert_eq!(s, "literal"),
+            other => panic!("expected literal match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_path_returns_none_for_missing_subkey() {
+        let mut inner = HashMap::new();
+        inner.insert("rust".to_string(), Value::String("1.94.0".into()));
+        let mut result = ProviderResult::new();
+        result.insert("project", Value::Object(inner));
+
+        assert!(result.get_path("project.nonesuch").is_none());
+    }
+
+    #[test]
+    fn get_path_returns_none_when_walking_through_scalar() {
+        let mut result = ProviderResult::new();
+        result.insert("name", Value::String("host".into()));
+        // Can't walk `name` (scalar) into `.inner`.
+        assert!(result.get_path("name.inner").is_none());
+    }
+
+    #[test]
+    fn get_path_works_at_depth_three() {
+        let mut inner = HashMap::new();
+        inner.insert("leaf".to_string(), Value::String("v".into()));
+        let mut middle = HashMap::new();
+        middle.insert("mid".to_string(), Value::Object(inner));
+        let mut result = ProviderResult::new();
+        result.insert("top", Value::Object(middle));
+
+        match result.get_path("top.mid.leaf") {
+            Some(Value::String(s)) => assert_eq!(s, "v"),
+            other => panic!("expected depth-3 walk to succeed, got {other:?}"),
+        }
     }
 
     #[test]

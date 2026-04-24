@@ -324,7 +324,7 @@ async fn server_handles_get_sh_format() {
 }
 
 #[tokio::test]
-async fn server_text_format_object_returns_values_only() {
+async fn server_text_format_object_emits_key_value_lines() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let mut result = ProviderResult::new();
@@ -354,17 +354,16 @@ async fn server_text_format_object_returns_values_only() {
         lines.push_str(&line);
     }
 
-    // Text format for objects: sorted values only, no key= prefix
+    // Text format for objects: `subkey=value` sorted, one per line.
+    // Matches the sh format and the 2026-04-21 code-review-fixes design (C9).
     assert!(
-        !lines.contains("name="),
-        "Text format should not include key= prefix"
+        lines.contains("name=testhost.local"),
+        "expected 'name=testhost.local' in output, got: {lines:?}"
     );
     assert!(
-        !lines.contains("short="),
-        "Text format should not include key= prefix"
+        lines.contains("short=testhost"),
+        "expected 'short=testhost' in output, got: {lines:?}"
     );
-    assert!(lines.contains("testhost.local"));
-    assert!(lines.contains("testhost"));
 
     handle.abort();
 }
@@ -437,11 +436,97 @@ async fn daemon_introspect_includes_uptime_and_request_counters() {
     handle.abort();
 }
 
-/// Format::Text on an Object-valued field must emit bare values (no key= prefix),
-/// sorted alphabetically by key, one per line. This convention applies to all
-/// object-valued provider fields (e.g. mise.project, asdf.tools).
+/// Nested key lookup: `comb g provider.field.subkey` walks into an
+/// Object-valued field and returns the subkey's scalar value directly.
+/// Uses a virtual provider so there's no path canonicalisation walk to
+/// contend with.
 #[tokio::test]
-async fn text_format_object_field_emits_sorted_bare_values() {
+async fn nested_key_walks_into_object_field() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+
+    let mut tools_map = std::collections::HashMap::new();
+    tools_map.insert("rust".to_string(), Value::String("1.94.0".to_string()));
+    tools_map.insert(
+        "cargo-nextest".to_string(),
+        Value::String("0.9.133".to_string()),
+    );
+    let mut result = ProviderResult::new();
+    result.insert("project", Value::Object(tools_map));
+    cache.put("myproj", None, result);
+    registry.register_virtual("myproj");
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let request = r#"{"op":"get","key":"myproj.project.rust","format":"text"}"#;
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut buf = String::new();
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await.unwrap();
+        if n == 0 || line == "\n" {
+            break;
+        }
+        buf.push_str(&line);
+    }
+
+    assert_eq!(buf.trim(), "1.94.0");
+
+    handle.abort();
+}
+
+/// Nested key lookup fails loudly with a clear error when the subkey is absent.
+#[tokio::test]
+async fn nested_key_missing_subkey_errors() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+
+    let mut tools_map = std::collections::HashMap::new();
+    tools_map.insert("rust".to_string(), Value::String("1.94.0".to_string()));
+    let mut result = ProviderResult::new();
+    result.insert("project", Value::Object(tools_map));
+    cache.put("myproj", None, result);
+    registry.register_virtual("myproj");
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let request = r#"{"op":"get","key":"myproj.project.nonesuch","format":"json"}"#;
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+    let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert!(
+        resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown field: myproj.project.nonesuch"),
+        "got: {line}"
+    );
+
+    handle.abort();
+}
+
+/// Format::Text on an Object-valued field emits `subkey=value` lines sorted
+/// alphabetically by subkey. Applies to all object-valued provider fields
+/// (e.g. mise.project, asdf.tools). Matches the spec at
+/// docs/superpowers/specs/2026-04-21-code-review-fixes-design.md C9.
+#[tokio::test]
+async fn text_format_object_field_emits_subkey_equals_value_lines() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     // Store a provider result with a single Object-valued field ("tools").
@@ -478,24 +563,6 @@ async fn text_format_object_field_emits_sorted_bare_values() {
         lines_buf.push_str(&line);
     }
 
-    // Expect bare values only — no "key=" prefix — sorted by key name.
-    // node (n) sorts before python (p), so "20.11.0" appears first.
-    assert!(
-        !lines_buf.contains("node="),
-        "Text format must not emit key= prefix for Object values"
-    );
-    assert!(
-        !lines_buf.contains("python="),
-        "Text format must not emit key= prefix for Object values"
-    );
-    assert!(
-        lines_buf.contains("20.11.0"),
-        "Text format should include the node version"
-    );
-    assert!(
-        lines_buf.contains("3.12.1"),
-        "Text format should include the python version"
-    );
     let trimmed = lines_buf.trim();
     let output_lines: Vec<&str> = trimmed.split('\n').collect();
     assert_eq!(
@@ -503,9 +570,9 @@ async fn text_format_object_field_emits_sorted_bare_values() {
         2,
         "Object with two entries should emit exactly two lines, got: {trimmed:?}"
     );
-    // node < python alphabetically, so node's value comes first.
-    assert_eq!(output_lines[0], "20.11.0");
-    assert_eq!(output_lines[1], "3.12.1");
+    // node < python alphabetically, so node's line comes first.
+    assert_eq!(output_lines[0], "node=20.11.0");
+    assert_eq!(output_lines[1], "python=3.12.1");
 
     handle.abort();
 }
