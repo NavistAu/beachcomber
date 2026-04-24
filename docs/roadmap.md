@@ -20,6 +20,8 @@
 git is recorded, if the repo is active and doing things, it will keep that subpath alive due to fs events despite no fs
 events actually being inside that subpath and nothing making requests for data for that subpath.
 - [ ] should age col in comb status show 00sxN where N is the current iteration of K?
+- [ ] `comb status` default sort should be `(path, provider, field)` instead of the current `(provider, path, field)` — groups globals (path `-`) together at the top and path-scoped rows by directory. Current order at `src/cli/status_format.rs::apply_sort` "default" branch.
+- [ ] Provide a worked example of the `◉` (fsevents-reinstate) indicator rendering. Currently every built-in provider keeps the default `fsevents_reinstate = false`, so the ring glyph never shows in out-of-the-box output — only the bare dot. Candidates: ship a provider default of `true` for mise project-scoped entries (natural fit — project config is rare and the reinstate keeps it warm across shell idle), or include a config recipe in the docs users can paste to see it. Decide during roadmap pickup.
 
 ### Website (beachcomber.sh)
 
