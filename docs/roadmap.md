@@ -6,11 +6,11 @@
 
 - [x] Do we still need to put in support for {% %} style tags in our jinja templates? — already shipped; `{% %}` works in `.f`, `comb e`, and `comb status --format` via `minijinja::Environment::render_str`, and the eval key-discovery scanner (`find_eval_template_pairs` in `src/cli/format.rs`) walks block tags, whitespace-control dashes, and comments. Tests in `tests/template.rs`; examples in `README.md` and `website/docs/reference/cli-commands.md`.
 - [ ] Can we / should we consider simdjson for faster json handling?
-- [x] We have @CODE_REVIEW_REPORT_ROUND4.md currently unaddressed.
-  - [ ] once issues in ROUND4 are fixed, switch to a methodology where claude invokes codex
-        with a prompt to do a code review and return 0-N highest priority problems/fixes. maybe
-        as a skill? loop N times or until codex has no fixes. Same-same but diff prompt for doing
-        documentation/website drift?
+  - its an extra dep for a very small speed bump, we dont do that much json handling
+- [ ] implement a methodology where claude invokes codex
+      with a prompt to do a code review and return 0-N highest priority problems/fixes. maybe
+      as a skill? loop N times or until codex has no fixes. Same-same but diff prompt for doing
+      documentation/website drift?
 - [ ] Config-reload semantics for in-flight lifecycle entries — `LifecycleEntry.config` (`src/scheduler/mod.rs:615-619`) is snapshotted at last `on_demand`, so values like `fsevents_reinstate` and `keep_alive_polls` displayed in `comb status` reflect the snapshot, not the live config. No hot-reload signal exists today; if/when one is added (SIGHUP or socket op), lifecycle entries should re-resolve config on next demand. Out of scope per 2026-04-24 brainstorm; raised by the `comb status` TTL design but applies more broadly to any lifecycle-influencing config knob.
 - [x] hostname and user seem to update on a 60s cadence? but show --- in ttl. — fixed: `QueryActivity` short-circuits `Once` providers before lifecycle registration (`d6b9fa73`).
 - [x] git items, fs event driven, are not showing the fs event icon in ttl — fixed: TTL indicator now keyed on `watches_files` (`bb76d868`), lighter/aligned glyph pair (`dca3dae0`), and mise opts into `fsevents_reinstate=true` by default (`838c3793`) so the ringed variant (`⊙`) is visible out of the box.
@@ -101,5 +101,3 @@ correctly in some terminals, pushing a bunch of random looking version informati
       22.22.1 00:34:55
       ❯
       ```
-
-      Fixed across two commits. Daemon (`f921815d`): `Format::Text` on Object fields now emits `subkey=value` lines per spec (not bare values), and `comb g provider.field.subkey` walks nested Objects to return a scalar leaf. P10k doc + local config (`7275df61`): loop splits on newline (`(@f)`) not comma, drops the stale `mise.tools` reference, strips the mise backend prefix for clean display.
