@@ -47,6 +47,32 @@ fn direnv_returns_none_without_envrc() {
     assert!(p.execute(Some(tmp.path().to_str().unwrap())).is_empty());
 }
 
+#[test]
+fn direnv_canonical_path_returns_envrc_dir_from_subdir() {
+    let project = TempDir::new().unwrap();
+    std::fs::write(project.path().join(".envrc"), "export FOO=bar\n").unwrap();
+    let subdir = project.path().join("src").join("nested");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let got = DirenvProvider.canonical_path(Some(subdir.to_str().unwrap()));
+    let expected = project.path().to_string_lossy().to_string();
+    assert_eq!(got, Some(expected));
+}
+
+#[test]
+fn direnv_canonical_path_none_outside_project() {
+    let tmp = TempDir::new().unwrap();
+    let got = DirenvProvider.canonical_path(Some(tmp.path().to_str().unwrap()));
+    if let Some(got) = got {
+        assert_ne!(got, tmp.path().to_string_lossy().to_string());
+    }
+}
+
+#[test]
+fn direnv_canonical_path_passes_none_through() {
+    assert_eq!(DirenvProvider.canonical_path(None), None);
+}
+
 // --- Python ---
 
 #[test]

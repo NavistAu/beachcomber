@@ -30,6 +30,14 @@ impl Provider for DirenvProvider {
         }
     }
 
+    // Walk up from `path` to the nearest directory containing `.envrc`.
+    // direnv itself walks up, so matching that behaviour lets subdirs share
+    // a single cache entry with the project root.
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let p = path?;
+        find_envrc_root(Path::new(p))
+    }
+
     fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let Some(path) = path else {
             return Vec::new();
@@ -58,4 +66,15 @@ impl Provider for DirenvProvider {
         result.insert("allowed", Value::Bool(allowed));
         vec![(Some(path_owned), result)]
     }
+}
+
+fn find_envrc_root(start: &Path) -> Option<String> {
+    let mut cur: Option<&Path> = Some(start);
+    while let Some(dir) = cur {
+        if dir.join(".envrc").exists() {
+            return Some(dir.to_string_lossy().to_string());
+        }
+        cur = dir.parent();
+    }
+    None
 }
