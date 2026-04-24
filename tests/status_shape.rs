@@ -939,3 +939,35 @@ async fn status_response_virtual_row_has_kind_virtual() {
 
     handle.abort();
 }
+
+// ---------------------------------------------------------------------------
+// Task 1.16: human preset — TTL column, drop STALE, per-cell colour
+// ---------------------------------------------------------------------------
+
+#[test]
+fn human_preset_includes_ttl_column_and_drops_stale() {
+    use beachcomber::cache::{CacheRow, RowKind};
+    use beachcomber::cli::status_format::{FormatOptions, render_human};
+
+    let row = CacheRow {
+        provider: "git".into(),
+        path: Some("/repo".into()),
+        field: "branch".into(),
+        value: serde_json::json!("main"),
+        age_ms: 14_000,
+        stale: false,
+        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
+        poll_interval_secs: Some(60),
+        keep_alive_polls: Some(12),
+        fsevents_reinstate: Some(true),
+        failure: None,
+    };
+    let opts = FormatOptions {
+        ascii: false,
+    };
+    let out = render_human(&[row], &opts);
+    assert!(out.contains("PROVIDER"), "header missing: {}", out);
+    assert!(out.contains("TTL"), "TTL column missing: {}", out);
+    assert!(!out.contains("STALE"), "STALE should be dropped: {}", out);
+    assert!(out.contains("\u{2605}"), "active star missing: {}", out);
+}

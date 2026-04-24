@@ -195,11 +195,11 @@ pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> Stri
         "csv" => render_csv(rows),
         "tsv" => render_tsv(rows),
         "sh" => render_sh(rows),
-        "table" => render_table(rows, false, None, true),
+        "table" => render_table(rows, false, None, true, false),
         "human" => {
             let trunc = if opts.no_trunc { None } else { opts.max_width };
             let color = !opts.no_color && opts.is_tty;
-            render_table(rows, color, trunc, true)
+            render_table(rows, color, trunc, true, false)
         }
         custom => {
             if let Some(body) = custom.strip_prefix("table ") {
@@ -493,30 +493,42 @@ fn shell_quote(s: &str) -> String {
 // Table / human renderer (shared implementation)
 // ---------------------------------------------------------------------------
 
-const ANSI_DIM: &str = "\x1b[2m";
-const ANSI_RESET: &str = "\x1b[0m";
+// Column indices for the human/table preset.
+const COLS: usize = 6;
+// TTL is the last column (index 5); failure-state colouring skips it.
+const TTL_COL_IDX: usize = 5;
+const HEADERS: [&str; COLS] = ["PROVIDER", "PATH", "FIELD", "VALUE", "AGE", "TTL"];
 
-/// Render rows as aligned columns.
+/// Render rows as aligned columns for the `human` preset.
 ///
-/// - `color`: apply ANSI dim to stale rows.
+/// - `color_enabled`: apply per-cell ANSI colour (AGE yellow/green by stale, TTL by decay,
+///   failure rows red on non-TTL cells).
 /// - `trunc`: maximum width for the VALUE column (in characters). `None` = no truncation.
-/// - `header`: prepend a PROVIDER / PATH / FIELD / VALUE / AGE / STALE header row.
-fn render_table(rows: &[CacheRow], color: bool, trunc: Option<usize>, header: bool) -> String {
-    // Column indices: PROVIDER, PATH, FIELD, VALUE, AGE, STALE
-    const COLS: usize = 6;
+/// - `header`: prepend a PROVIDER / PATH / FIELD / VALUE / AGE / TTL header row.
+/// - `ascii`: use ASCII-only glyphs in the TTL cell instead of Unicode.
+pub fn render_human(rows: &[CacheRow], opts: &FormatOptions) -> String {
+    render_table(rows, false, None, true, opts.ascii)
+}
 
-    // Build string cells.
+fn render_table(
+    rows: &[CacheRow],
+    color_enabled: bool,
+    trunc: Option<usize>,
+    header: bool,
+    ascii: bool,
+) -> String {
+    // Build string cells — each row is a fixed-length array of display strings.
+    // The array may contain ANSI escape sequences; col_widths tracks the
+    // *visible* char count (without escapes) for alignment.
     let mut cells: Vec<[String; COLS]> = Vec::new();
+    // Parallel vec of visible widths for each cell (escape-stripped).
+    let mut visible: Vec<[usize; COLS]> = Vec::new();
 
     if header {
-        cells.push([
-            "PROVIDER".to_string(),
-            "PATH".to_string(),
-            "FIELD".to_string(),
-            "VALUE".to_string(),
-            "AGE".to_string(),
-            "STALE".to_string(),
-        ]);
+        let header_row: [String; COLS] = HEADERS.map(|h| h.to_string());
+        let header_vis: [usize; COLS] = HEADERS.map(|h| h.len());
+        cells.push(header_row);
+        visible.push(header_vis);
     }
 
     for row in rows {
@@ -525,27 +537,80 @@ fn render_table(rows: &[CacheRow], color: bool, trunc: Option<usize>, header: bo
         if let Some(max) = trunc {
             value = truncate(&value, max);
         }
-        let age = format_age(row.age_ms);
-        let stale = if row.stale { "true" } else { "false" }.to_string();
-        cells.push([
+
+        // AGE cell — coloured by stale state.
+        let age_text = format_age(row.age_ms);
+        let age_vis = age_text.chars().count();
+        let age_cell = if color_enabled {
+            if row.stale {
+                ansi::wrap(&age_text, ansi::Color::Yellow, true)
+            } else {
+                ansi::wrap(&age_text, ansi::Color::BrightGreen, true)
+            }
+        } else {
+            age_text
+        };
+
+        // TTL cell — built from lifecycle metadata.
+        let ttl = format_ttl_cell(
+            row.kind.as_ref(),
+            row.poll_interval_secs,
+            row.keep_alive_polls,
+            row.fsevents_reinstate,
+            row.failure.as_ref(),
+            ascii,
+        );
+        let ttl_vis = ttl.text.chars().count();
+        let ttl_cell = match (color_enabled, ttl.color) {
+            (true, Some(c)) => ansi::wrap(&ttl.text, c, true),
+            _ => ttl.text,
+        };
+
+        let provider_vis = row.provider.chars().count();
+        let path_vis = path.chars().count();
+        let field_vis = row.field.chars().count();
+        let value_vis = value.chars().count();
+
+        let mut row_cells: [String; COLS] = [
             row.provider.clone(),
             path,
             row.field.clone(),
             value,
-            age,
-            stale,
-        ]);
+            age_cell,
+            ttl_cell,
+        ];
+
+        // Failure-state colouring: red on all cells except TTL (which already
+        // has its own ⚠ + red from format_ttl_cell).
+        if color_enabled && row.failure.is_some() {
+            for (i, cell) in row_cells.iter_mut().enumerate() {
+                if i != TTL_COL_IDX {
+                    *cell = ansi::wrap(cell, ansi::Color::Red, true);
+                }
+            }
+        }
+
+        let row_vis: [usize; COLS] = [
+            provider_vis,
+            path_vis,
+            field_vis,
+            value_vis,
+            age_vis,
+            ttl_vis,
+        ];
+
+        cells.push(row_cells);
+        visible.push(row_vis);
     }
 
     if cells.is_empty() {
         return String::new();
     }
 
-    // Compute max width per column.
+    // Compute max visible width per column.
     let mut col_widths = [0usize; COLS];
-    for row in &cells {
-        for (i, cell) in row.iter().enumerate() {
-            let w = cell.chars().count();
+    for row_vis in &visible {
+        for (i, &w) in row_vis.iter().enumerate() {
             if w > col_widths[i] {
                 col_widths[i] = w;
             }
@@ -554,40 +619,19 @@ fn render_table(rows: &[CacheRow], color: bool, trunc: Option<usize>, header: bo
 
     let mut out = String::new();
 
-    // Iterate original rows alongside cells to determine stale flag per row.
-    let header_offset = if header { 1 } else { 0 };
-
-    for (cell_idx, row_cells) in cells.iter().enumerate() {
-        let is_stale = if cell_idx < header_offset {
-            // Header row is never stale.
-            false
-        } else {
-            rows[cell_idx - header_offset].stale
-        };
-
-        if color && is_stale {
-            out.push_str(ANSI_DIM);
-        }
-
-        // All columns except the last get right-padded.
+    for (row_cells, row_vis) in cells.iter().zip(visible.iter()) {
         for (i, cell) in row_cells.iter().enumerate() {
             if i > 0 {
                 out.push_str("  "); // 2-space separator
             }
+            out.push_str(cell);
+            // Pad to column width on all but the last column.
             if i < COLS - 1 {
-                let pad = col_widths[i].saturating_sub(cell.chars().count());
-                out.push_str(cell);
+                let pad = col_widths[i].saturating_sub(row_vis[i]);
                 for _ in 0..pad {
                     out.push(' ');
                 }
-            } else {
-                // Last column: no trailing padding.
-                out.push_str(cell);
             }
-        }
-
-        if color && is_stale {
-            out.push_str(ANSI_RESET);
         }
         out.push('\n');
     }
