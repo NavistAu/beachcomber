@@ -579,6 +579,23 @@ fn status_table_shows_zero_for_active() {
     assert!(out.contains(" 0"));
 }
 
+#[test]
+fn failure_snapshot_serde_round_trip() {
+    use beachcomber::cache::FailureSnapshot;
+    use serde_json::json;
+
+    let snap = FailureSnapshot { consecutive_failures: 5, suppressed_until_unix_ms: Some(1_700_000_000_000) };
+    let v = serde_json::to_value(&snap).unwrap();
+    assert_eq!(v, json!({"consecutive_failures": 5, "suppressed_until_unix_ms": 1_700_000_000_000u64}));
+    let round: FailureSnapshot = serde_json::from_value(v).unwrap();
+    assert_eq!(round, snap);
+
+    // optional field absent when None
+    let snap2 = FailureSnapshot { consecutive_failures: 1, suppressed_until_unix_ms: None };
+    let v2 = serde_json::to_value(&snap2).unwrap();
+    assert_eq!(v2, json!({"consecutive_failures": 1}));
+}
+
 /// Status on a fresh daemon with an empty cache returns an empty array, not an error.
 #[tokio::test]
 async fn status_empty_cache_returns_empty_array() {
