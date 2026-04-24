@@ -65,18 +65,23 @@ fn resolve_socket_path_uses_xdg_runtime_dir_when_set() {
 
 use beachcomber::singleton::{SingletonLock, SingletonLockError, SupersessionDecision, decide_supersession, PidFileRecord};
 
+const TEST_HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const TEST_HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
 #[test]
 fn singleton_lock_creates_pid_file_and_holds_flock() {
     let tmpdir = tempfile::tempdir().unwrap();
     let pid_path = tmpdir.path().join("pid");
 
-    let lock = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc").expect("first acquire succeeds");
+    let lock = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc", TEST_HASH_A)
+        .expect("first acquire succeeds");
     assert!(pid_path.exists(), "pid file should be created");
 
     let contents = std::fs::read_to_string(&pid_path).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
     assert_eq!(parsed["pid"].as_u64().unwrap(), std::process::id() as u64);
     assert_eq!(parsed["version"].as_str().unwrap(), "0.5.1+sha.abc");
+    assert_eq!(parsed["binary_hash"].as_str().unwrap(), TEST_HASH_A);
     assert!(parsed["binary"].is_string());
     assert!(parsed["started_unix_ms"].is_number());
 
@@ -89,32 +94,34 @@ fn singleton_lock_contested_by_same_process_fails() {
     let tmpdir = tempfile::tempdir().unwrap();
     let pid_path = tmpdir.path().join("pid");
 
-    let _first = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc").unwrap();
-    let second = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc");
+    let _first = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc", TEST_HASH_A).unwrap();
+    let second = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc", TEST_HASH_A);
     assert!(matches!(second, Err(SingletonLockError::AlreadyHeld { .. })));
 }
 
 #[test]
-fn supersession_same_version_means_no_op() {
+fn supersession_same_binary_hash_means_no_op() {
     let existing = PidFileRecord {
         pid: 12345,
         version: "0.5.1+sha.abc".into(),
         binary: "/path/to/comb".into(),
+        binary_hash: TEST_HASH_A.into(),
         started_unix_ms: 0,
     };
-    let decision = decide_supersession(&existing, "0.5.1+sha.abc");
+    let decision = decide_supersession(&existing, TEST_HASH_A);
     assert!(matches!(decision, SupersessionDecision::ExitSilent));
 }
 
 #[test]
-fn supersession_different_version_means_supersede() {
+fn supersession_different_binary_hash_means_supersede() {
     let existing = PidFileRecord {
         pid: 12345,
         version: "0.5.0".into(),
         binary: "/path/to/comb".into(),
+        binary_hash: TEST_HASH_A.into(),
         started_unix_ms: 0,
     };
-    let decision = decide_supersession(&existing, "0.5.1+sha.abc");
+    let decision = decide_supersession(&existing, TEST_HASH_B);
     match decision {
         SupersessionDecision::Supersede { existing_pid } => assert_eq!(existing_pid, 12345),
         _ => panic!("expected Supersede, got {decision:?}"),
@@ -122,14 +129,17 @@ fn supersession_different_version_means_supersede() {
 }
 
 #[test]
-fn supersession_dev_build_different_sha_means_supersede() {
+fn supersession_same_version_different_hash_still_supersedes() {
+    // Two dev builds at the same cargo version but different binaries —
+    // human version matches, but binary_hash differs, so we supersede.
     let existing = PidFileRecord {
         pid: 12345,
-        version: "0.5.1+sha.abc11111".into(),
+        version: "0.5.1".into(),
         binary: "/path/to/comb".into(),
+        binary_hash: TEST_HASH_A.into(),
         started_unix_ms: 0,
     };
-    let decision = decide_supersession(&existing, "0.5.1+sha.def22222");
+    let decision = decide_supersession(&existing, TEST_HASH_B);
     assert!(matches!(decision, SupersessionDecision::Supersede { .. }));
 }
 
@@ -194,15 +204,16 @@ fn binary_newer_than_returns_false_when_file_older_than_start() {
 }
 
 #[test]
-fn acquire_or_supersede_same_version_returns_none() {
+fn acquire_or_supersede_same_binary_hash_returns_none() {
     let tmpdir = tempfile::tempdir().unwrap();
     let pid_path = tmpdir.path().join("pid");
 
-    let _first = beachcomber::singleton::SingletonLock::acquire(&pid_path, "0.5.1").unwrap();
+    let _first =
+        beachcomber::singleton::SingletonLock::acquire(&pid_path, "0.5.1", TEST_HASH_A).unwrap();
 
-    let second = beachcomber::singleton::acquire_or_supersede(&pid_path, "0.5.1")
+    let second = beachcomber::singleton::acquire_or_supersede(&pid_path, "0.5.1", TEST_HASH_A)
         .expect("should succeed with Ok(None)");
-    assert!(second.is_none(), "same version should return None");
+    assert!(second.is_none(), "same binary hash should return None");
 }
 
 #[test]

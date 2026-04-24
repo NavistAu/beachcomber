@@ -5,7 +5,7 @@
 # Hard cap on total suite wall-clock. If the run exceeds this, nextest sends
 # SIGTERM to the test process group, waits 10s for shutdown, then SIGKILLs.
 # The whole run fails spectacularly — which is what we want if something hangs.
-global-timeout = "2m"
+global-timeout = "30s"
 
 # Per-test slow detection and termination. Any single test exceeding the period
 # is reported as SLOW; after terminate-after periods it's hard-killed.

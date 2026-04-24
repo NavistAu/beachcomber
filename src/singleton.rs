@@ -8,13 +8,51 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PidFileRecord {
     pub pid: u32,
+    /// Human-readable version string (e.g. `0.5.1` or `0.5.1+sha.abc12345`).
+    /// Advisory only — NOT used for supersession identity. Two dev builds at the
+    /// same cargo version both show `0.5.1` here but will differ in `binary_hash`.
     pub version: String,
     pub binary: PathBuf,
+    /// SHA256 of the binary file content at daemon startup. This IS the build
+    /// identity used by `decide_supersession`. Same hash = same build = no-op;
+    /// different hash = different build = supersede.
+    pub binary_hash: String,
     pub started_unix_ms: u64,
+}
+
+/// Compute SHA256 of `current_exe()` content. This is the canonical build
+/// identity for singleton comparison — independent of the cargo version string
+/// and git state, changes every time the binary is rebuilt.
+pub fn hash_current_binary() -> std::io::Result<String> {
+    let path = std::env::current_exe()?;
+    hash_binary(&path)
+}
+
+/// Compute SHA256 of the file at `path`, hex-encoded. ~50ms for a typical
+/// multi-MB binary.
+pub fn hash_binary(path: &Path) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    let mut s = String::with_capacity(digest.len() * 2);
+    for b in digest.iter() {
+        use std::fmt::Write;
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    Ok(s)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -33,7 +71,11 @@ pub struct SingletonLock {
 }
 
 impl SingletonLock {
-    pub fn acquire(pid_path: &Path, version: &str) -> Result<Self, SingletonLockError> {
+    pub fn acquire(
+        pid_path: &Path,
+        version: &str,
+        binary_hash: &str,
+    ) -> Result<Self, SingletonLockError> {
         if let Some(parent) = pid_path.parent() {
             std::fs::create_dir_all(parent)?;
             #[cfg(unix)]
@@ -67,6 +109,7 @@ impl SingletonLock {
             pid: std::process::id(),
             version: version.into(),
             binary: std::env::current_exe().unwrap_or_default(),
+            binary_hash: binary_hash.into(),
             started_unix_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
@@ -105,10 +148,17 @@ pub enum SupersessionDecision {
     Supersede { existing_pid: u32 },
 }
 
-/// Given the existing singleton's record and our own version, decide whether
+/// Given the existing singleton's record and our own binary hash, decide whether
 /// to supersede (kill and take over) or exit silently (existing daemon is fine).
-pub fn decide_supersession(existing: &PidFileRecord, our_version: &str) -> SupersessionDecision {
-    if existing.version == our_version {
+///
+/// Compares on `binary_hash` — the SHA256 of the binary file content at daemon
+/// startup. Same hash = identical binary = existing daemon is fine. Different
+/// hash = rebuilt binary = supersede.
+pub fn decide_supersession(
+    existing: &PidFileRecord,
+    our_binary_hash: &str,
+) -> SupersessionDecision {
+    if existing.binary_hash == our_binary_hash {
         SupersessionDecision::ExitSilent
     } else {
         SupersessionDecision::Supersede {
@@ -127,20 +177,23 @@ pub fn decide_supersession(existing: &PidFileRecord, our_version: &str) -> Super
 pub fn acquire_or_supersede(
     pid_path: &Path,
     our_version: &str,
+    our_binary_hash: &str,
 ) -> Result<Option<SingletonLock>, SingletonLockError> {
-    match SingletonLock::acquire(pid_path, our_version) {
+    match SingletonLock::acquire(pid_path, our_version, our_binary_hash) {
         Ok(lock) => Ok(Some(lock)),
         Err(SingletonLockError::AlreadyHeld { existing: Some(rec) }) => {
-            match decide_supersession(&rec, our_version) {
+            match decide_supersession(&rec, our_binary_hash) {
                 SupersessionDecision::ExitSilent => Ok(None),
                 SupersessionDecision::Supersede { existing_pid } => {
                     supersede_existing(existing_pid, Duration::from_secs(1))?;
                     // Retry acquire briefly; old daemon may take a moment to release.
                     let deadline = Instant::now() + Duration::from_secs(2);
                     loop {
-                        match SingletonLock::acquire(pid_path, our_version) {
+                        match SingletonLock::acquire(pid_path, our_version, our_binary_hash) {
                             Ok(lock) => return Ok(Some(lock)),
-                            Err(SingletonLockError::AlreadyHeld { .. }) if Instant::now() < deadline => {
+                            Err(SingletonLockError::AlreadyHeld { .. })
+                                if Instant::now() < deadline =>
+                            {
                                 std::thread::sleep(Duration::from_millis(50));
                             }
                             Err(e) => return Err(e),

@@ -561,10 +561,21 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
     tracing::info!("Log file: {:?}", log_path);
 
     let pid_path = socket_path.with_file_name("pid");
-    let _singleton_lock = match beachcomber::singleton::acquire_or_supersede(&pid_path, env!("BEACHCOMBER_VERSION")) {
+    let binary_hash = match beachcomber::singleton::hash_current_binary() {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("failed to hash current binary for singleton identity: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _singleton_lock = match beachcomber::singleton::acquire_or_supersede(
+        &pid_path,
+        env!("BEACHCOMBER_VERSION"),
+        &binary_hash,
+    ) {
         Ok(Some(lock)) => lock,
         Ok(None) => {
-            tracing::info!("another daemon with the same version is already running; exiting silently");
+            tracing::info!("another daemon with the same binary is already running; exiting silently");
             return ExitCode::SUCCESS;
         }
         Err(e) => {
