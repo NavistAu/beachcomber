@@ -309,7 +309,8 @@ pub fn render_minijinja_table(body: &str, rows: &[CacheRow]) -> String {
 }
 
 /// Build a minijinja context `Value` from a `CacheRow`.
-fn row_context(r: &CacheRow) -> minijinja::Value {
+pub fn row_context(r: &CacheRow) -> minijinja::Value {
+    use crate::cache::RowKind;
     let mut ctx = serde_json::Map::new();
     ctx.insert(
         "provider".into(),
@@ -330,6 +331,38 @@ fn row_context(r: &CacheRow) -> minijinja::Value {
         serde_json::Value::String(format_age(r.age_ms)),
     );
     ctx.insert("stale".into(), serde_json::Value::Bool(r.stale));
+    // kind — snake_case discriminator, empty string when None
+    let kind_str = match &r.kind {
+        Some(RowKind::Lifecycle { .. }) => "lifecycle",
+        Some(RowKind::Once) => "once",
+        Some(RowKind::Virtual) => "virtual",
+        Some(RowKind::Transient) => "transient",
+        None => "",
+    };
+    ctx.insert("kind".into(), serde_json::Value::String(kind_str.into()));
+    // decay — only for lifecycle
+    if let Some(RowKind::Lifecycle { decay, .. }) = &r.kind {
+        ctx.insert("decay".into(), serde_json::json!(*decay));
+    }
+    // optional lifecycle fields
+    if let Some(p) = r.poll_interval_secs {
+        ctx.insert("poll_interval_secs".into(), serde_json::json!(p));
+    }
+    if let Some(k) = r.keep_alive_polls {
+        ctx.insert("keep_alive_polls".into(), serde_json::json!(k));
+    }
+    if let Some(rv) = r.fsevents_reinstate {
+        ctx.insert("fsevents_reinstate".into(), serde_json::Value::Bool(rv));
+    }
+    // failure object
+    if let Some(f) = &r.failure {
+        let mut fobj = serde_json::Map::new();
+        fobj.insert("consecutive_failures".into(), serde_json::json!(f.consecutive_failures));
+        if let Some(su) = f.suppressed_until_unix_ms {
+            fobj.insert("suppressed_until_unix_ms".into(), serde_json::json!(su));
+        }
+        ctx.insert("failure".into(), serde_json::Value::Object(fobj));
+    }
     minijinja::Value::from_serialize(serde_json::Value::Object(ctx))
 }
 
@@ -389,15 +422,34 @@ fn render_json(rows: &[CacheRow]) -> String {
 // TSV renderer
 // ---------------------------------------------------------------------------
 
-fn render_tsv(rows: &[CacheRow]) -> String {
+pub fn render_tsv(rows: &[CacheRow]) -> String {
+    use crate::cache::RowKind;
     let mut out = String::new();
     for row in rows {
-        let path = row.path.as_deref().unwrap_or("-");
-        let value = value_to_string(&row.value);
-        let stale = if row.stale { "true" } else { "false" };
+        let kind = match &row.kind {
+            Some(RowKind::Lifecycle { .. }) => "lifecycle",
+            Some(RowKind::Once) => "once",
+            Some(RowKind::Virtual) => "virtual",
+            Some(RowKind::Transient) => "transient",
+            None => "",
+        };
+        let decay = match &row.kind {
+            Some(RowKind::Lifecycle { decay, .. }) => decay.to_string(),
+            _ => String::new(),
+        };
+        let path = row.path.as_deref().unwrap_or("");
+        let value = serde_json::to_string(&row.value).unwrap_or_default();
+        let p = row.poll_interval_secs.map(|n| n.to_string()).unwrap_or_default();
+        let k = row.keep_alive_polls.map(|n| n.to_string()).unwrap_or_default();
+        let r = row.fsevents_reinstate.map(|b| b.to_string()).unwrap_or_default();
+        let fc = row.failure.as_ref().map(|f| f.consecutive_failures.to_string()).unwrap_or_default();
+        let fs = row.failure.as_ref()
+            .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\n",
-            row.provider, path, row.field, value, row.age_ms, stale
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            row.provider, path, row.field, value, row.age_ms, row.stale,
+            kind, decay, p, k, r, fc, fs,
         ));
     }
     out
@@ -407,24 +459,50 @@ fn render_tsv(rows: &[CacheRow]) -> String {
 // CSV renderer (RFC 4180)
 // ---------------------------------------------------------------------------
 
-fn render_csv(rows: &[CacheRow]) -> String {
+pub fn render_csv(rows: &[CacheRow]) -> String {
+    use crate::cache::RowKind;
     let mut out = String::new();
 
     // Header row
-    out.push_str("PROVIDER,PATH,FIELD,VALUE,AGE,STALE\n");
+    out.push_str("PROVIDER,PATH,FIELD,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,KEEP_ALIVE_POLLS,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS\n");
 
     for row in rows {
-        let path = row.path.as_deref().unwrap_or("-");
-        let value = value_to_string(&row.value);
+        let path = row.path.as_deref().unwrap_or("");
+        let value = serde_json::to_string(&row.value).unwrap_or_default();
         let stale = if row.stale { "true" } else { "false" };
+        let kind = match &row.kind {
+            Some(RowKind::Lifecycle { .. }) => "lifecycle",
+            Some(RowKind::Once) => "once",
+            Some(RowKind::Virtual) => "virtual",
+            Some(RowKind::Transient) => "transient",
+            None => "",
+        };
+        let decay = match &row.kind {
+            Some(RowKind::Lifecycle { decay, .. }) => decay.to_string(),
+            _ => String::new(),
+        };
+        let p = row.poll_interval_secs.map(|n| n.to_string()).unwrap_or_default();
+        let k = row.keep_alive_polls.map(|n| n.to_string()).unwrap_or_default();
+        let r = row.fsevents_reinstate.map(|b| b.to_string()).unwrap_or_default();
+        let fc = row.failure.as_ref().map(|f| f.consecutive_failures.to_string()).unwrap_or_default();
+        let fs = row.failure.as_ref()
+            .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_quote(&row.provider),
             csv_quote(path),
             csv_quote(&row.field),
             csv_quote(&value),
             row.age_ms,
-            stale
+            stale,
+            csv_quote(kind),
+            csv_quote(&decay),
+            csv_quote(&p),
+            csv_quote(&k),
+            csv_quote(&r),
+            csv_quote(&fc),
+            csv_quote(&fs),
         ));
     }
     out
@@ -445,15 +523,54 @@ fn csv_quote(s: &str) -> String {
 // Shell-sourceable renderer
 // ---------------------------------------------------------------------------
 
-fn render_sh(rows: &[CacheRow]) -> String {
+pub fn render_sh_env(rows: &[CacheRow]) -> String {
+    use crate::cache::RowKind;
     let mut out = String::new();
     for row in rows {
         let key = sanitize_sh_key(&row.provider, row.path.as_deref(), &row.field);
         let value = value_to_string(&row.value);
         let quoted = shell_quote(&value);
         out.push_str(&format!("{key}={quoted}\n"));
+        // kind
+        let kind_str = match &row.kind {
+            Some(RowKind::Lifecycle { .. }) => Some("lifecycle"),
+            Some(RowKind::Once) => Some("once"),
+            Some(RowKind::Virtual) => Some("virtual"),
+            Some(RowKind::Transient) => Some("transient"),
+            None => None,
+        };
+        if let Some(kind_val) = kind_str {
+            out.push_str(&format!("{key}_KIND={}\n", shell_quote(kind_val)));
+        }
+        // decay (only for lifecycle)
+        if let Some(RowKind::Lifecycle { decay, .. }) = &row.kind {
+            out.push_str(&format!("{key}_DECAY={}\n", shell_quote(&decay.to_string())));
+        }
+        // poll_interval_secs
+        if let Some(p) = row.poll_interval_secs {
+            out.push_str(&format!("{key}_POLL_INTERVAL_SECS={}\n", shell_quote(&p.to_string())));
+        }
+        // keep_alive_polls
+        if let Some(k) = row.keep_alive_polls {
+            out.push_str(&format!("{key}_KEEP_ALIVE_POLLS={}\n", shell_quote(&k.to_string())));
+        }
+        // fsevents_reinstate
+        if let Some(r) = row.fsevents_reinstate {
+            out.push_str(&format!("{key}_FSEVENTS_REINSTATE={}\n", shell_quote(&r.to_string())));
+        }
+        // failure fields
+        if let Some(f) = &row.failure {
+            out.push_str(&format!("{key}_FAILURE_CONSECUTIVE_FAILURES={}\n", shell_quote(&f.consecutive_failures.to_string())));
+            if let Some(su) = f.suppressed_until_unix_ms {
+                out.push_str(&format!("{key}_FAILURE_SUPPRESSED_UNTIL_UNIX_MS={}\n", shell_quote(&su.to_string())));
+            }
+        }
     }
     out
+}
+
+fn render_sh(rows: &[CacheRow]) -> String {
+    render_sh_env(rows)
 }
 
 /// Build a shell-safe variable name: `provider_path_field`.

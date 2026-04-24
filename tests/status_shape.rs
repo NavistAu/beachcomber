@@ -5,7 +5,7 @@
 // Also contains unit tests for the status_format preset renderers (T28).
 
 use beachcomber::cache::CacheRow;
-use beachcomber::cli::status_format::{RenderOpts, render_preset};
+use beachcomber::cli::status_format::{RenderOpts, render_preset, render_tsv, render_csv, render_sh_env, row_context};
 
 fn sample_rows() -> Vec<CacheRow> {
     vec![
@@ -62,21 +62,12 @@ fn json_preset_emits_ndjson() {
 
 #[test]
 fn tsv_preset_is_tab_separated_no_header() {
-    let out = render_preset("tsv", &sample_rows(), &RenderOpts::default());
-    let lines: Vec<_> = out.lines().filter(|l| !l.is_empty()).collect();
-    assert_eq!(
-        lines.len(),
-        3,
-        "tsv should have exactly one line per row, no header"
-    );
-    for line in lines {
-        // PROVIDER<TAB>PATH<TAB>FIELD<TAB>VALUE<TAB>AGE<TAB>STALE — 6 cols, 5 tabs
-        assert_eq!(
-            line.matches('\t').count(),
-            5,
-            "expected 5 tabs per tsv row, got: {line:?}"
-        );
-    }
+    let rows = vec![sample_lifecycle_row()];
+    let out = render_tsv(&rows);
+    let line = out.lines().next().expect("at least one line");
+    let cols: Vec<&str> = line.split('\t').collect();
+    assert_eq!(cols.len(), 13, "got: {:?}", cols);
+    assert!(!out.starts_with("PROVIDER"), "no header in tsv");
 }
 
 #[test]
@@ -970,4 +961,88 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
     assert!(out.contains("TTL"), "TTL column missing: {}", out);
     assert!(!out.contains("STALE"), "STALE should be dropped: {}", out);
     assert!(out.contains("\u{2605}"), "active star missing: {}", out);
+}
+
+// ---------------------------------------------------------------------------
+// Tasks 1.18–1.21: TSV/CSV/sh/minijinja preset extensions
+// ---------------------------------------------------------------------------
+
+fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
+    use beachcomber::cache::{CacheRow, RowKind};
+    use serde_json::json;
+    CacheRow {
+        provider: "git".into(),
+        path: Some("/repo".into()),
+        field: "branch".into(),
+        value: json!("main"),
+        age_ms: 14_000,
+        stale: false,
+        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
+        poll_interval_secs: Some(60),
+        keep_alive_polls: Some(12),
+        fsevents_reinstate: Some(true),
+        failure: None,
+    }
+}
+
+// Task 1.18: TSV — 13 columns
+#[test]
+fn tsv_preset_13_columns_lifecycle_row() {
+    let rows = vec![sample_lifecycle_row()];
+    let out = render_tsv(&rows);
+    let line = out.lines().next().expect("at least one line");
+    let cols: Vec<&str> = line.split('\t').collect();
+    assert_eq!(cols.len(), 13, "got: {:?}", cols);
+    assert!(!out.starts_with("PROVIDER"), "no header in tsv");
+    // Spot-check specific columns
+    assert_eq!(cols[0], "git", "provider col");
+    assert_eq!(cols[6], "lifecycle", "kind col");
+    assert_eq!(cols[7], "0", "decay col");
+    assert_eq!(cols[8], "60", "poll_interval_secs col");
+    assert_eq!(cols[9], "12", "keep_alive_polls col");
+    assert_eq!(cols[10], "true", "fsevents_reinstate col");
+    assert_eq!(cols[11], "", "failure_consecutive_failures empty when no failure");
+    assert_eq!(cols[12], "", "failure_suppressed empty when no failure");
+}
+
+// Task 1.19: CSV — 13 columns with header
+#[test]
+fn csv_preset_has_full_header_and_all_columns() {
+    let rows = vec![sample_lifecycle_row()];
+    let out = render_csv(&rows);
+    let header = out.lines().next().unwrap();
+    assert_eq!(
+        header,
+        "PROVIDER,PATH,FIELD,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,KEEP_ALIVE_POLLS,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS"
+    );
+    let body = out.lines().nth(1).unwrap();
+    let cols: Vec<&str> = body.split(',').collect();
+    assert_eq!(cols.len(), 13);
+}
+
+// Task 1.20: sh — new env-var lines for lifecycle fields
+#[test]
+fn sh_preset_exposes_new_fields() {
+    let rows = vec![sample_lifecycle_row()];
+    let out = render_sh_env(&rows);
+    // The key pattern is sanitize_sh_key("git", Some("/repo"), "branch") = "git_repo_branch"
+    assert!(out.contains("git_repo_branch_POLL_INTERVAL_SECS='60'"), "got: {}", out);
+    assert!(out.contains("git_repo_branch_KEEP_ALIVE_POLLS='12'"), "got: {}", out);
+    assert!(out.contains("git_repo_branch_FSEVENTS_REINSTATE='true'"), "got: {}", out);
+    assert!(out.contains("git_repo_branch_KIND='lifecycle'"), "got: {}", out);
+    assert!(out.contains("git_repo_branch_DECAY='0'"), "got: {}", out);
+}
+
+// Task 1.21: minijinja row_context — exposes new fields
+#[test]
+fn minijinja_row_context_exposes_new_fields() {
+    let row = sample_lifecycle_row();
+    let ctx = row_context(&row);
+    // Serialize minijinja::Value back to serde_json::Value for easy inspection
+    let v: serde_json::Value = serde_json::to_value(&ctx).expect("serialize minijinja context");
+    assert_eq!(v.get("kind").and_then(|v| v.as_str()), Some("lifecycle"));
+    assert_eq!(v.get("decay").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(v.get("poll_interval_secs").and_then(|v| v.as_u64()), Some(60));
+    assert_eq!(v.get("keep_alive_polls").and_then(|v| v.as_u64()), Some(12));
+    assert_eq!(v.get("fsevents_reinstate").and_then(|v| v.as_bool()), Some(true));
 }
