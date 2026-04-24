@@ -258,6 +258,57 @@ pub fn binary_newer_than(
     Ok(mtime_ms > process_start_unix_ms)
 }
 
+/// Find PIDs of other processes whose binary matches `our_exe`. Used to identify
+/// orphan `comb daemon` processes that need reaping.
+///
+/// Matches the canonicalised (realpath) binary path. Excludes the current process.
+pub fn find_orphan_daemons(our_exe: &Path) -> Vec<u32> {
+    use sysinfo::System;
+
+    let our_canonical = std::fs::canonicalize(our_exe).unwrap_or_else(|_| our_exe.to_path_buf());
+    let our_pid = std::process::id();
+
+    let mut sys = System::new();
+    sys.refresh_processes();
+
+    sys.processes()
+        .iter()
+        .filter_map(|(pid, proc)| {
+            let pid_u = pid.as_u32();
+            if pid_u == our_pid {
+                return None;
+            }
+            let exe = proc.exe()?;
+            let exe_canonical =
+                std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+            if exe_canonical == our_canonical {
+                Some(pid_u)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Find and reap all orphan daemon processes (matching binary, excluding self).
+/// Logs each reap. Returns the count of orphans killed.
+pub fn reap_orphans(our_exe: &Path) -> usize {
+    let orphans = find_orphan_daemons(our_exe);
+    let mut count = 0;
+    for pid in orphans {
+        match supersede_existing(pid, Duration::from_secs(1)) {
+            Ok(()) => {
+                tracing::info!("reaped orphan daemon: pid={pid}");
+                count += 1;
+            }
+            Err(e) => {
+                tracing::warn!("failed to reap orphan pid={pid}: {e}");
+            }
+        }
+    }
+    count
+}
+
 /// Send SIGTERM to `pid`, wait up to `grace` for graceful exit, then SIGKILL if still alive.
 /// Returns Ok once the target is gone; Err on unexpected failure (e.g., permission denied
 /// or refusing to kill PID 0/1/self).

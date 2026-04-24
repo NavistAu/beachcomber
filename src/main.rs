@@ -573,6 +573,13 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
         }
     };
 
+    if let Ok(exe) = std::env::current_exe() {
+        let reaped = beachcomber::singleton::reap_orphans(&exe);
+        if reaped > 0 {
+            tracing::info!("reaped {reaped} orphan daemon(s) on startup");
+        }
+    }
+
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
         let cancel = tokio_util::sync::CancellationToken::new();

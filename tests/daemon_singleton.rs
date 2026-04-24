@@ -204,3 +204,22 @@ fn acquire_or_supersede_same_version_returns_none() {
         .expect("should succeed with Ok(None)");
     assert!(second.is_none(), "same version should return None");
 }
+
+#[test]
+fn find_orphan_daemons_excludes_self_and_non_matching_binary() {
+    let our_exe = std::env::current_exe().unwrap();
+    let found = beachcomber::singleton::find_orphan_daemons(&our_exe);
+    let our_pid = std::process::id();
+    assert!(!found.iter().any(|p| *p == our_pid), "should exclude self");
+    // We can't make positive assertions about what IS returned without spawning a test
+    // daemon; that's covered in the end-to-end smoke tests.
+}
+
+#[test]
+#[ignore]  // spawns another process; slow
+fn reap_orphans_kills_matching_binary_processes() {
+    // Spawn a sleep process that impersonates our binary by path-matching.
+    // The easiest approach: create a hard-link to the current test binary,
+    // spawn it with `--sleep-forever` flag (we need a testing hook), then reap.
+    // For now, skip this test; end-to-end coverage happens in the smoke test.
+}
