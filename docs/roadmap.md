@@ -12,16 +12,16 @@
         as a skill? loop N times or until codex has no fixes. Same-same but diff prompt for doing
         documentation/website drift?
 - [ ] Config-reload semantics for in-flight lifecycle entries — `LifecycleEntry.config` (`src/scheduler/mod.rs:615-619`) is snapshotted at last `on_demand`, so values like `fsevents_reinstate` and `keep_alive_polls` displayed in `comb status` reflect the snapshot, not the live config. No hot-reload signal exists today; if/when one is added (SIGHUP or socket op), lifecycle entries should re-resolve config on next demand. Out of scope per 2026-04-24 brainstorm; raised by the `comb status` TTL design but applies more broadly to any lifecycle-influencing config knob.
-- [ ] hostname and user seem to update on a 60s cadence? but show --- in ttl.
-- [ ] git items, fs event driven, are not showing the fs event icon in ttl
-- [ ] ttl is always 6 chars wide for P, when thats the max pad, otherwise it should right size
+- [x] hostname and user seem to update on a 60s cadence? but show --- in ttl. — fixed: `QueryActivity` short-circuits `Once` providers before lifecycle registration (`d6b9fa73`).
+- [x] git items, fs event driven, are not showing the fs event icon in ttl — fixed: TTL indicator now keyed on `watches_files` (`bb76d868`), lighter/aligned glyph pair (`dca3dae0`), and mise opts into `fsevents_reinstate=true` by default (`838c3793`) so the ringed variant (`⊙`) is visible out of the box.
+- [x] ttl is always 6 chars wide for P, when thats the max pad, otherwise it should right size — fixed: width auto-sizes per snapshot, capped at 6, no lower floor (`b4e922b0` + `dbee4f80`).
 - [ ] when we have a shell thats in a subdir of a git repo, we get a double up of the same git data. our path matching
   for properties needs to be smarter and identify partial path matches and duplicate data smarter. once a subpath for
 git is recorded, if the repo is active and doing things, it will keep that subpath alive due to fs events despite no fs
 events actually being inside that subpath and nothing making requests for data for that subpath.
 - [ ] should age col in comb status show 00sxN where N is the current iteration of K?
-- [ ] `comb status` default sort should be `(path, provider, field)` instead of the current `(provider, path, field)` — groups globals (path `-`) together at the top and path-scoped rows by directory. Current order at `src/cli/status_format.rs::apply_sort` "default" branch. — **in flight, will be marked when batch A review is accepted.**
-- [ ] Provide a worked example of the `◉` (fsevents-reinstate) indicator rendering. Currently every built-in provider keeps the default `fsevents_reinstate = false`, so the ring glyph never shows in out-of-the-box output — only the bare dot. Candidates: ship a provider default of `true` for mise project-scoped entries (natural fit — project config is rare and the reinstate keeps it warm across shell idle), or include a config recipe in the docs users can paste to see it. — **in flight, will be marked when batch A review is accepted.**
+- [x] `comb status` default sort should be `(path, provider, field)` — shipped `7fde7681`. Groups globals (path `-`) together at the top; path-scoped rows grouped by directory.
+- [x] Provide a worked example of the `⊙` (fsevents-reinstate) indicator rendering — shipped `838c3793`. `Provider::fsevents_reinstate_default()` trait method (default false); mise opts into `true`. Global/per-provider config still overrides.
 
 ### Website (beachcomber.sh)
 
