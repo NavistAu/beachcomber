@@ -183,12 +183,17 @@ module Beachcomber
       raise ProtocolError, "status data is not an array" unless arr.is_a?(Array)
       arr.map do |row|
         CacheRow.new(
-          provider: row["provider"].to_s,
-          field:    row["field"],
-          path:     row["path"],
-          value:    row["value"],
-          age_ms:   Integer(row["age_ms"] || 0),
-          stale:    row["stale"] == true,
+          provider:           row["provider"].to_s,
+          field:              row["field"],
+          path:               row["path"],
+          value:              row["value"],
+          age_ms:             Integer(row["age_ms"] || 0),
+          stale:              row["stale"] == true,
+          kind:               row["kind"],
+          poll_interval_secs: row["poll_interval_secs"],
+          keep_alive_polls:   row["keep_alive_polls"],
+          fsevents_reinstate: row["fsevents_reinstate"],
+          failure:            row["failure"],
         )
       end
     end

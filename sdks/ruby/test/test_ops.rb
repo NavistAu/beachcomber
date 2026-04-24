@@ -325,6 +325,36 @@ class TestOps < Minitest::Test
     assert_equal true, req['force']
   end
 
+  # --- lifecycle fields on CacheRow ---
+
+  def test_status_row_exposes_lifecycle_fields
+    payload = {
+      ok: true,
+      data: [
+        {
+          provider: 'git',
+          field: 'branch',
+          path: '/repo',
+          value: 'main',
+          age_ms: 100,
+          stale: false,
+          kind: { kind: 'lifecycle', decay: 0, watches_files: true },
+          poll_interval_secs: 30,
+          keep_alive_polls: 3,
+          fsevents_reinstate: false,
+        }
+      ]
+    }.to_json
+    @server.enqueue(payload)
+    rows = @client.status_rows
+    git = rows.find { |r| r.provider == 'git' }
+    refute_nil git.kind
+    assert_equal 'lifecycle', git.kind['kind']
+    assert git.poll_interval_secs > 0
+    assert git.keep_alive_polls > 0
+    refute_nil git.fsevents_reinstate
+  end
+
   # --- IntrospectSubject constants ---
 
   def test_introspect_subject_constants_defined

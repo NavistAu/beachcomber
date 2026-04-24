@@ -1,6 +1,10 @@
 module Beachcomber
   HelloInfo = Struct.new(:protocol_version, :daemon_version, keyword_init: true)
-  CacheRow = Struct.new(:provider, :field, :path, :value, :age_ms, :stale, keyword_init: true)
+  CacheRow = Struct.new(
+    :provider, :field, :path, :value, :age_ms, :stale,
+    :kind, :poll_interval_secs, :keep_alive_polls, :fsevents_reinstate, :failure,
+    keyword_init: true
+  )
   Verdict = Struct.new(:level, :message, keyword_init: true)
   DaemonHealth = Struct.new(
     :pid, :version, :uptime_secs, :socket_path, :config_path,
