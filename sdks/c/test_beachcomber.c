@@ -261,6 +261,11 @@ static void test_json_accessors(void) {
  * ---------------------------------------------------------------------- */
 
 static void test_socket_path_tmpdir(void) {
+    /* Save TMPDIR before overriding — subsequent tests rely on it. */
+    const char *saved_tmpdir = getenv("TMPDIR");
+    char saved_tmpdir_buf[4096] = {0};
+    if (saved_tmpdir) strncpy(saved_tmpdir_buf, saved_tmpdir, sizeof(saved_tmpdir_buf) - 1);
+
     /* Unset XDG_RUNTIME_DIR so we fall through to TMPDIR path */
     unsetenv("XDG_RUNTIME_DIR");
     setenv("TMPDIR", "/tmp/testdir", 1);
@@ -274,9 +279,18 @@ static void test_socket_path_tmpdir(void) {
     CHECK(strstr(buf, "/sock") != NULL);
     /* Must not start with the xdg path */
     CHECK(strncmp(buf, "/tmp/testdir/beachcomber-", 25) == 0);
+
+    /* Restore TMPDIR. */
+    if (saved_tmpdir_buf[0]) setenv("TMPDIR", saved_tmpdir_buf, 1);
+    else unsetenv("TMPDIR");
 }
 
 static void test_socket_path_xdg_nonexistent(void) {
+    /* Save TMPDIR before overriding — subsequent tests rely on it. */
+    const char *saved_tmpdir = getenv("TMPDIR");
+    char saved_tmpdir_buf[4096] = {0};
+    if (saved_tmpdir) strncpy(saved_tmpdir_buf, saved_tmpdir, sizeof(saved_tmpdir_buf) - 1);
+
     /* Set XDG to a path that will have no running socket */
     setenv("XDG_RUNTIME_DIR", "/nonexistent_xdg_8f3a2b", 1);
     setenv("TMPDIR", "/tmp/fallback99", 1);
@@ -288,6 +302,9 @@ static void test_socket_path_xdg_nonexistent(void) {
     CHECK(strncmp(buf, "/tmp/fallback99/beachcomber-", 28) == 0);
 
     unsetenv("XDG_RUNTIME_DIR");
+    /* Restore TMPDIR. */
+    if (saved_tmpdir_buf[0]) setenv("TMPDIR", saved_tmpdir_buf, 1);
+    else unsetenv("TMPDIR");
 }
 
 static void test_socket_path_too_small(void) {
@@ -297,6 +314,11 @@ static void test_socket_path_too_small(void) {
 }
 
 static void test_socket_path_no_tmpdir(void) {
+    /* Save TMPDIR before unsetting — subsequent tests rely on it. */
+    const char *saved_tmpdir = getenv("TMPDIR");
+    char saved_tmpdir_buf[4096] = {0};
+    if (saved_tmpdir) strncpy(saved_tmpdir_buf, saved_tmpdir, sizeof(saved_tmpdir_buf) - 1);
+
     unsetenv("XDG_RUNTIME_DIR");
     unsetenv("TMPDIR");
 
@@ -305,6 +327,9 @@ static void test_socket_path_no_tmpdir(void) {
     CHECK(p != NULL);
     /* Should fall back to /tmp */
     CHECK(strncmp(buf, "/tmp/beachcomber-", 17) == 0);
+
+    /* Restore TMPDIR so subsequent tests that create sockets are not affected. */
+    if (saved_tmpdir_buf[0]) setenv("TMPDIR", saved_tmpdir_buf, 1);
 }
 
 /* -------------------------------------------------------------------------
@@ -361,8 +386,16 @@ static void *mock_server_thread(void *arg) {
 static comb_result_t *get_with_mock(const char *response_json) {
     /* Create a temp socket path */
     char sock_path[256];
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !*tmpdir) tmpdir = "/tmp";
+    /* Trim trailing slash if present */
+    char tmpdir_buf[256];
+    strncpy(tmpdir_buf, tmpdir, sizeof(tmpdir_buf) - 1);
+    tmpdir_buf[sizeof(tmpdir_buf) - 1] = '\0';
+    size_t tlen = strlen(tmpdir_buf);
+    if (tlen > 0 && tmpdir_buf[tlen - 1] == '/') tmpdir_buf[tlen - 1] = '\0';
     snprintf(sock_path, sizeof(sock_path),
-             "/tmp/comb_test_%d_%d.sock", (int)getpid(), rand());
+             "%s/comb_test_%d_%d.sock", tmpdir_buf, (int)getpid(), rand());
 
     /* Set up listening socket */
     int srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -438,8 +471,15 @@ static comb_client_t *start_multi_mock(const char **responses,
                                         char *sock_path_out,
                                         pthread_t *tid_out,
                                         multi_mock_args_t *args_out) {
+    const char *tmpdir2 = getenv("TMPDIR");
+    if (!tmpdir2 || !*tmpdir2) tmpdir2 = "/tmp";
+    char tmpdir_buf2[256];
+    strncpy(tmpdir_buf2, tmpdir2, sizeof(tmpdir_buf2) - 1);
+    tmpdir_buf2[sizeof(tmpdir_buf2) - 1] = '\0';
+    size_t tlen2 = strlen(tmpdir_buf2);
+    if (tlen2 > 0 && tmpdir_buf2[tlen2 - 1] == '/') tmpdir_buf2[tlen2 - 1] = '\0';
     snprintf(sock_path_out, 256,
-             "/tmp/comb_multi_%d_%d.sock", (int)getpid(), rand());
+             "%s/comb_multi_%d_%d.sock", tmpdir_buf2, (int)getpid(), rand());
 
     int srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (srv_fd < 0) return NULL;
