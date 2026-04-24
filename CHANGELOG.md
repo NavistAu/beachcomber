@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
+- **BREAKING (pre-1.0):** daemon socket path no longer depends on `$TMPDIR`. Resolution is now: config override → `$XDG_RUNTIME_DIR/beachcomber/sock` (if set) → `/tmp/beachcomber-<uid>/sock`. On macOS this means every shell talks to the same daemon (previously each shell spawned its own via per-session TMPDIR).
+
+### Added
+- **Daemon singleton enforcement.** Only one daemon per user runs at a time. New daemon startup takes an exclusive `flock` on a PID file at `<socket-parent>/pid`. If another daemon holds it, version comparison decides: same version → new daemon exits silently; different version → new daemon kills the old (SIGTERM with 1s grace, then SIGKILL) and takes over.
+- **Automatic restart on binary change.** The daemon fs-watches its own executable; when the binary is modified (e.g., after `cargo build`), it gracefully shuts down so the next client invocation respawns with the new binary. No manual restart needed.
+- **Orphan reaping.** New daemon startup scans for other `comb daemon` processes with a matching binary path and reaps them. Daemons with different binaries (e.g., worktree builds) are untouched.
+- **`comb --version` now reports `BEACHCOMBER_VERSION`** which includes git sha for dev/dirty builds (e.g., `0.5.1+sha.abc1234.dirty`). Clean tagged builds show just the cargo version (e.g., `0.5.1`).
+- **Client connect retry.** CLI and all 6 SDKs (Python, Go, Ruby, Node, C, Lua) and `beachcomber-client` retry transient connection failures (`ECONNREFUSED`, `ENOENT`) three times with exponential backoff (250ms, 500ms, 1s). Covers the brief restart window when the old daemon has shut down and the new one hasn't bound yet.
+
+### Changed
 - **BREAKING (pre-1.0):** `comb status` now defaults to the `human` preset regardless of TTY. Scripts piping `comb status` should switch to `comb status -f tsv` or `-f json` for the previous behaviour.
 - **BREAKING (pre-1.0):** `comb status` `--no-color` removed. Use `--color=never` (or `--color=auto|always`).
 - `comb status` `--max-width` default raised from 40 to 120; new `--max-width=auto` value uses the terminal width.

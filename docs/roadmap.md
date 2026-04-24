@@ -12,6 +12,14 @@
         as a skill? loop N times or until codex has no fixes. Same-same but diff prompt for doing
         documentation/website drift?
 - [ ] Config-reload semantics for in-flight lifecycle entries — `LifecycleEntry.config` (`src/scheduler/mod.rs:615-619`) is snapshotted at last `on_demand`, so values like `fsevents_reinstate` and `keep_alive_polls` displayed in `comb status` reflect the snapshot, not the live config. No hot-reload signal exists today; if/when one is added (SIGHUP or socket op), lifecycle entries should re-resolve config on next demand. Out of scope per 2026-04-24 brainstorm; raised by the `comb status` TTL design but applies more broadly to any lifecycle-influencing config knob.
+- [ ] hostname and user seem to update on a 60s cadence? but show --- in ttl.
+- [ ] git items, fs event driven, are not showing the fs event icon in ttl
+- [ ] ttl is always 6 chars wide for P, when thats the max pad, otherwise it should right size
+- [ ] when we have a shell thats in a subdir of a git repo, we get a double up of the same git data. our path matching
+  for properties needs to be smarter and identify partial path matches and duplicate data smarter. once a subpath for
+git is recorded, if the repo is active and doing things, it will keep that subpath alive due to fs events despite no fs
+events actually being inside that subpath and nothing making requests for data for that subpath.
+- [ ] should age col in comb status show 00sxN where N is the current iteration of K?
 
 ### Website (beachcomber.sh)
 
@@ -80,7 +88,7 @@ redundant wrapper naming convention.
   this would be to do and maintain. For example, dropping all the formatting tools drops the minijinja dep. Maybe core
   dependencies go back to as old a version as makes sense to reduce supply chain attack.
 - [ ] `llms.txt` for the website — machine-readable project summary for LLM consumption.
-- [ ] Centralise the version number — currently every release touches 13+ files (`Cargo.toml`, `beachcomber-client/Cargo.toml`, 5 SDK manifests, 3 AUR PKGBUILDs, nix flake, README deb/rpm URLs, release.yml rockspec filename, plus the Lua rockspec rename). Options: a single `VERSION` file that a release script templates into each manifest; `cargo xtask release` that reads `Cargo.toml` and rewrites the rest; a release-plz / cargo-release workflow; or a CI-side step that patches non-Rust manifests from the Cargo version before publish. Goal: one edit + one command, no per-file fanout.
+- [ ] Centralise the version number — currently every release touches 13+ files (`Cargo.toml`, `beachcomber-client/Cargo.toml`, 5 SDK manifests, 3 AUR PKGBUILDs, nix flake, README deb/rpm URLs, release.yml rockspec filename, plus the Lua rockspec rename). Options: a single `VERSION` file that a release script templates into each manifest; `cargo xtask release` that reads `Cargo.toml` and rewrites the rest; a release-plz / cargo-release workflow; or a CI-side step that patches non-Rust manifests from the Cargo version before publish. Goal: one edit + one command, no per-file fanout. **Relationship to runtime version:** as of the daemon-singleton work (2026-04-24), `BEACHCOMBER_VERSION` (emitted by `build.rs`) is the canonical runtime build identity — includes git sha for dev/dirty builds. That's distinct from `CARGO_PKG_VERSION` which this centralisation work governs (semantic version for releases). Centralisation should keep `Cargo.toml` consistent with all 13+ manifests; `build.rs` continues to read `CARGO_PKG_VERSION` and append the sha suffix.
 - [ ] Script/Automate the release process so its more defined and robust rather than ad-hoc each time.
 
 ## Dogfooding
