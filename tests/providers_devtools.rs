@@ -27,6 +27,32 @@ fn terraform_returns_none_without_terraform_dir() {
     assert!(p.execute(Some(tmp.path().to_str().unwrap())).is_empty());
 }
 
+#[test]
+fn terraform_canonical_path_returns_module_root_from_subdir() {
+    let project = TempDir::new().unwrap();
+    std::fs::create_dir_all(project.path().join(".terraform")).unwrap();
+    let subdir = project.path().join("envs").join("dev");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let got = TerraformProvider.canonical_path(Some(subdir.to_str().unwrap()));
+    let expected = project.path().to_string_lossy().to_string();
+    assert_eq!(got, Some(expected));
+}
+
+#[test]
+fn terraform_canonical_path_none_outside_project() {
+    let tmp = TempDir::new().unwrap();
+    let got = TerraformProvider.canonical_path(Some(tmp.path().to_str().unwrap()));
+    if let Some(got) = got {
+        assert_ne!(got, tmp.path().to_string_lossy().to_string());
+    }
+}
+
+#[test]
+fn terraform_canonical_path_passes_none_through() {
+    assert_eq!(TerraformProvider.canonical_path(None), None);
+}
+
 // --- Direnv ---
 
 #[test]
