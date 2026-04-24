@@ -39,7 +39,7 @@ redundant wrapper naming convention.
 ### CLI Ergonomics
 
 - [ ] `comb inspect <path>` (working name) — dump every applicable provider's fields for the given directory in one shot. Globals + path-scoped providers evaluated against the path; single command replaces "ask every provider one at a time". Useful for "what does beachcomber know about this dir right now?" as a diagnostic, onboarding, and integration-authoring tool. Format-aware output (json/text/human). Naming bikeshed: `inspect`, `dump`, `snapshot`, `all`, `info`.
-- [ ] `comb status` UX redesign for lifecycle visibility — see @docs/status_ttl.md and @docs/superpowers/specs/2026-04-24-comb-status-ttl-design.md (design approved 2026-04-24, implementation pending).
+- [x] `comb status` UX redesign for lifecycle visibility — implemented 2026-04-24. See @docs/status_ttl.md and @docs/superpowers/specs/2026-04-24-comb-status-ttl-design.md.
 - [ ] `comb status` TTL cell: P × K total budget + countdown-to-next-poll display — visualise total time-to-eviction (`base_P × K`) and seconds-until-next-poll alongside the lifecycle countdown. Cell layout currently too dense; defer until the base TTL column ships and we have real-world watch usage to inform the layout. Out of scope per 2026-04-24 brainstorm.
 - [ ] `comb status` failure-state TTL cell content — when a provider is in failure-suppress (`⚠` indicator already shown per the in-scope work), swap TTL cell *content* from lifecycle data (`P × K`) to retry-state data (`next_retry_secs`, `attempt N/M`). Carve-out from the in-scope failure-state ⚠ work. Source: `FailureState` at `src/scheduler/mod.rs:131-169` (`consecutive_failures`, `suppressed_until`).
 

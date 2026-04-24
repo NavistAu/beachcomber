@@ -400,3 +400,7 @@ Feature: Cache lifecycle
 - **`Once` providers.** Hostname, user, uname — computed at daemon startup, never again. They are not part of the decay cycle.
 - **`--force` and `--wait`.** Explicit consumer overrides that bypass or modify default read semantics. Not part of the lifecycle; documented on the request API.
 - **Demand signals from the wire protocol itself.** `comb refresh`, `comb watch`, and `comb get --force` all have distinct semantics covered in the protocol spec. This document treats them as varieties of demand signal; per-op nuances live in `docs/protocol-spec.md`.
+
+## See also
+
+- [`docs/status_ttl.md`](./status_ttl.md) — visual design for the `comb status` TTL column, the watch-friendly dual of this state machine.

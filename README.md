@@ -91,10 +91,11 @@ $ comb g.j git .                 # .j = JSON format
 }
 
 $ comb s                         # status: one row per warm cache entry
-provider   field      value      age_ms  stale
-git        branch     main          234  false
-git        dirty      false         234  false
-battery    percent    85           4200  false
+PROVIDER  PATH    FIELD    VALUE    AGE   TTL
+git       /repo   branch   main     14s   ★     60s×12 ◉
+git       /repo   dirty    true     14s   ★     60s×12 ◉
+battery   -       percent  87       8s    ★     30s×04
+hostname  -       short    artemis  3h    ---
 ```
 
 All commands use single-letter shorthands (`g` get, `s` status, `w` watch, `p` put, `e` eval, `i` init, `c` check, `d` daemon). Format suffixes (`.s` shell, `.t` tsv, `.T` TSV+header, `.f` template, `.c` csv, `.C` CSV+header, `.j` json) replace the `-f` flag. Text is the default — `comb g` and `comb g git.branch .` both return plain text. Long forms always work too: `comb get git.branch . -f text` is the same as `comb g git.branch .`
@@ -312,29 +313,37 @@ comb g git.branch:stale        # whether value is past refresh time
 
 ### `comb s` (status)
 
-Show all warm cache entries as a table — one row per provider field.
+Show all warm cache entries as a table — one row per provider field. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, keep-alive count, and whether filesystem events will reinstate the entry (`◉`).
+
+`watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time.
 
 ```sh
 $ comb s
-provider   field      value      age_ms  stale
-git        branch     main          234  false
-git        dirty      false         234  false
-battery    percent    85           4200  false
+PROVIDER  PATH    FIELD    VALUE    AGE   TTL
+git       /repo   branch   main     14s   ★     60s×12 ◉
+git       /repo   dirty    true     14s   ★     60s×12 ◉
+battery   -       percent  87       8s    ★     30s×04
+hostname  -       short    artemis  3h    ---
 
-# Filter to a specific provider
-comb s --filter git
+# Filter to entries in a specific lifecycle state
+comb s --filter=lifecycle=active
+comb s --filter=lifecycle=decay1
+comb s --filter=fsevents_reinstate=true
 
-# Sort by age (oldest first)
-comb s --sort age
+# Sort options
+comb s --sort age             # oldest first
+comb s --sort lifecycle       # most-decayed first
+comb s --sort poll_interval   # slowest-pollers first
 
 # Custom per-row template
 comb s --format "{{ provider }}.{{ field }}={{ value }}"
 
-# Compact table with column header
-comb s --format "table {{ provider }} {{ field }} {{ value }}"
+# Script-friendly formats (bypass the human preset)
+comb s -f tsv
+comb s -f json
 ```
 
-**Flags:** `--format <template>`, `--filter <provider>`, `--sort <field|age|stale>`, `--no-trunc`, `--max-width <n>`, `--no-color` / `--no-colour`.
+**Flags:** `--format <template>`, `--filter <provider>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <field|age|stale|lifecycle|poll_interval>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
 

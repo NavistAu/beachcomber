@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING (pre-1.0):** `comb status` now defaults to the `human` preset regardless of TTY. Scripts piping `comb status` should switch to `comb status -f tsv` or `-f json` for the previous behaviour.
+- **BREAKING (pre-1.0):** `comb status` `--no-color` removed. Use `--color=never` (or `--color=auto|always`).
+- `comb status` `--max-width` default raised from 40 to 120; new `--max-width=auto` value uses the terminal width.
+- `comb status` default sort changed from `path` to `(provider, path, field)` for stable rows under `watch(1)`.
+- `comb status` TSV/CSV columns extended with one column per `CacheRow` field (lifecycle data, fsevents-reinstate flag, failure snapshot). TSV column count: 13.
+- **BREAKING (pre-1.0, C SDK):** `comb_status_rows` API redesigned from cap-based fixed-array (`comb_status_rows(client, rows, cap)`) to heap-allocating (`comb_status_rows(client, rows_out, n_out)`); pair with new `comb_free_cache_rows()`. `comb_cache_row_t` field types changed from fixed `char[N]` arrays to owned `char*` pointers.
+
+### Added
+- `comb status` `TTL` column showing per-entry lifecycle (`★`/`3`/`2`/`1`/`0` countdown), effective poll interval, keep-alive count, and fsevents-reinstate indicator.
+- `comb status` `--ascii` flag for ASCII-only glyphs (`*`/`!`/`x`/`F`).
+- `comb status` `--filter=lifecycle=active|decay1..4|once|virtual` and `--filter=fsevents_reinstate=true|false`.
+- `comb status` `--sort=lifecycle` (most-decayed first) and `--sort=poll_interval` (slowest-pollers first).
+- Failure-state `⚠` indicator: providers in failure-suppress show `⚠` in the TTL cell and red foreground on the row.
+- `WATCH_INTERVAL` env (set by `watch(1)`) promotes `--color=auto` from off to on when stdout is a pipe (so `watch -c comb status` stays coloured).
+- `RowKind` discriminator and `FailureSnapshot` exposed on `CacheRow` in all 7 client SDKs (Python, Go, Ruby, Node, C, Lua, beachcomber-client).
+
+### Removed
+- `comb status` `decay` field on `CacheRow` (superseded by `RowKind::Lifecycle.decay`; no SDK previously surfaced it).
+
 ### Fixed
 
 - Cache decay now works as designed. Previously, `BackoffStage::SlowPoll`, `Frozen`, and `Evict` were defined but unreachable; cache entries never evicted and accumulated until daemon restart. Now: Active → Decay1 → Decay2 → Decay3 → Decay4 → Evicted runs end-to-end with exponential decay polling (poll interval and step duration both double per step). See `docs/cache-lifecycle.md` for the full behaviour spec.
