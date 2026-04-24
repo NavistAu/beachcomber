@@ -5,11 +5,22 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 import tempfile
 import threading
 from typing import Any, Callable, Dict, List, Optional
 
 import pytest
+
+# Hard-kill the entire test process if the suite takes longer than 30 seconds.
+# This mirrors the nextest `global-timeout` for the Rust suite.
+_SUITE_TIMEOUT_S = 30
+_watchdog = threading.Timer(_SUITE_TIMEOUT_S, lambda: (
+    sys.stderr.write(f"\n[TIMEOUT] Test suite exceeded {_SUITE_TIMEOUT_S}s — aborting.\n"),
+    os._exit(1),
+))
+_watchdog.daemon = True
+_watchdog.start()
 
 
 class MockDaemon:

@@ -16,7 +16,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "node --import tsx/esm --test tests/*.test.ts",
+    "test": "node --import tsx/esm --test --test-timeout=30000 tests/*.test.ts",
     "prepublishOnly": "tsc",
     "clean": "rm -rf dist"
   },

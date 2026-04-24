@@ -4,6 +4,14 @@ require 'json'
 require 'tmpdir'
 require 'thread'
 
+# Hard-kill the suite after 30 seconds — mirrors nextest global-timeout.
+SUITE_TIMEOUT_S = 30
+Thread.new do
+  sleep SUITE_TIMEOUT_S
+  $stderr.puts "\n[TIMEOUT] Test suite exceeded #{SUITE_TIMEOUT_S}s — aborting."
+  exit!(1)
+end
+
 $LOAD_PATH.unshift File.expand_path('../lib', __dir__)
 require 'beachcomber'
 

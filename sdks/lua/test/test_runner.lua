@@ -16,6 +16,11 @@ local script_dir = (arg and arg[0]) and arg[0]:match("(.*/?)") or "./"
 local sdk_root = script_dir .. "../"
 package.path = sdk_root .. "?.lua;" .. sdk_root .. "?/init.lua;" .. package.path
 
+-- ── Suite-level timeout ───────────────────────────────────────────────────────
+
+local _suite_start = os.time()
+local _SUITE_TIMEOUT_S = 30
+
 -- ── Runner state ─────────────────────────────────────────────────────────────
 
 local passed  = 0
@@ -29,6 +34,10 @@ local function suite(name)
 end
 
 local function test(name, fn)
+  if os.time() - _suite_start >= _SUITE_TIMEOUT_S then
+    io.stderr:write("\n[TIMEOUT] Suite exceeded " .. _SUITE_TIMEOUT_S .. "s — aborting.\n")
+    os.exit(1)
+  end
   local ok, err = pcall(fn)
   if ok then
     passed = passed + 1
