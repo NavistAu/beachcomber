@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,11 @@ class CacheRow:
     value: Any
     age_ms: int
     stale: bool
+    kind: Optional[Dict[str, Any]] = None
+    poll_interval_secs: Optional[int] = None
+    keep_alive_polls: Optional[int] = None
+    fsevents_reinstate: Optional[bool] = None
+    failure: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)

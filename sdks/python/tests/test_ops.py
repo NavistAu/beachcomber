@@ -353,6 +353,98 @@ class TestClientStatusRows:
         assert len(rows) == 1
         assert rows[0].provider == "uptime"
 
+    def test_status_row_exposes_lifecycle_fields(self, mock_daemon: MockDaemon) -> None:
+        """Status rows for active providers carry RowKind=Lifecycle plus poll_interval/keep_alive/fsevents fields."""
+        mock_daemon.respond(
+            "status",
+            {
+                "ok": True,
+                "data": [
+                    {
+                        "provider": "git",
+                        "field": "branch",
+                        "path": "/repo",
+                        "value": "main",
+                        "age_ms": 100,
+                        "stale": False,
+                        "kind": {"kind": "lifecycle", "decay": 0, "watches_files": True},
+                        "poll_interval_secs": 30,
+                        "keep_alive_polls": 5,
+                        "fsevents_reinstate": False,
+                        "failure": None,
+                    }
+                ],
+            },
+        )
+        client = make_client(mock_daemon)
+        rows = client.status_rows()
+        git = next(r for r in rows if r.provider == "git")
+        assert git.kind is not None, "git row should have a kind"
+        assert git.kind["kind"] == "lifecycle", f"expected lifecycle kind, got {git.kind!r}"
+        assert isinstance(git.kind["decay"], int)
+        assert git.poll_interval_secs is not None and git.poll_interval_secs > 0
+        assert git.keep_alive_polls is not None and git.keep_alive_polls > 0
+        assert git.fsevents_reinstate is not None
+
+    def test_status_row_lifecycle_failure_field(self, mock_daemon: MockDaemon) -> None:
+        """Status rows surface the failure dict when present."""
+        mock_daemon.respond(
+            "status",
+            {
+                "ok": True,
+                "data": [
+                    {
+                        "provider": "git",
+                        "field": "branch",
+                        "path": "/repo",
+                        "value": None,
+                        "age_ms": 0,
+                        "stale": True,
+                        "kind": {"kind": "lifecycle", "decay": 2, "watches_files": False},
+                        "poll_interval_secs": 30,
+                        "keep_alive_polls": 5,
+                        "fsevents_reinstate": True,
+                        "failure": {"consecutive_failures": 3, "suppressed_until_unix_ms": 99999},
+                    }
+                ],
+            },
+        )
+        client = make_client(mock_daemon)
+        rows = client.status_rows()
+        git = next(r for r in rows if r.provider == "git")
+        assert git.failure is not None
+        assert git.failure["consecutive_failures"] == 3
+        assert git.failure["suppressed_until_unix_ms"] == 99999
+
+    def test_status_row_lifecycle_fields_absent_when_not_sent(
+        self, mock_daemon: MockDaemon
+    ) -> None:
+        """Rows without lifecycle fields default all new fields to None."""
+        mock_daemon.respond(
+            "status",
+            {
+                "ok": True,
+                "data": [
+                    {
+                        "provider": "hostname",
+                        "field": None,
+                        "path": None,
+                        "value": "myhost",
+                        "age_ms": 5,
+                        "stale": False,
+                    }
+                ],
+            },
+        )
+        client = make_client(mock_daemon)
+        rows = client.status_rows()
+        row = rows[0]
+        assert row.kind is None
+        assert row.poll_interval_secs is None
+        assert row.keep_alive_polls is None
+        assert row.fsevents_reinstate is None
+        assert row.failure is None
+
 
 # ---------------------------------------------------------------------------
 # Client.get_with_flags

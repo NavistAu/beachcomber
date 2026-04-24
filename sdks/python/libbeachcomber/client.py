@@ -142,6 +142,11 @@ def _parse_cache_rows(resp: dict[str, Any]) -> list[CacheRow]:
                 value=row.get("value"),
                 age_ms=int(row.get("age_ms", 0) or 0),
                 stale=bool(row.get("stale", False)),
+                kind=row.get("kind"),
+                poll_interval_secs=row.get("poll_interval_secs"),
+                keep_alive_polls=row.get("keep_alive_polls"),
+                fsevents_reinstate=row.get("fsevents_reinstate"),
+                failure=row.get("failure"),
             )
         )
     return out
