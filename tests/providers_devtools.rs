@@ -141,6 +141,49 @@ fn python_returns_none_without_venv() {
     assert!(p.execute(Some(tmp.path().to_str().unwrap())).is_empty());
 }
 
+#[test]
+fn python_canonical_path_returns_pyproject_dir_from_subdir() {
+    let project = TempDir::new().unwrap();
+    std::fs::write(project.path().join("pyproject.toml"), "[project]\n").unwrap();
+    let subdir = project.path().join("src").join("pkg");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let got = PythonProvider.canonical_path(Some(subdir.to_str().unwrap()));
+    let expected = project.path().to_string_lossy().to_string();
+    assert_eq!(got, Some(expected));
+}
+
+#[test]
+fn python_canonical_path_returns_venv_dir_from_subdir() {
+    let project = TempDir::new().unwrap();
+    std::fs::create_dir(project.path().join(".venv")).unwrap();
+    std::fs::write(
+        project.path().join(".venv").join("pyvenv.cfg"),
+        "version = 3.12\n",
+    )
+    .unwrap();
+    let subdir = project.path().join("nested");
+    std::fs::create_dir(&subdir).unwrap();
+
+    let got = PythonProvider.canonical_path(Some(subdir.to_str().unwrap()));
+    let expected = project.path().to_string_lossy().to_string();
+    assert_eq!(got, Some(expected));
+}
+
+#[test]
+fn python_canonical_path_none_outside_project() {
+    let tmp = TempDir::new().unwrap();
+    let got = PythonProvider.canonical_path(Some(tmp.path().to_str().unwrap()));
+    if let Some(got) = got {
+        assert_ne!(got, tmp.path().to_string_lossy().to_string());
+    }
+}
+
+#[test]
+fn python_canonical_path_passes_none_through() {
+    assert_eq!(PythonProvider.canonical_path(None), None);
+}
+
 // --- Conda ---
 
 #[test]

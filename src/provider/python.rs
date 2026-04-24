@@ -34,6 +34,20 @@ impl Provider for PythonProvider {
         }
     }
 
+    // Walk up from `path` to the nearest directory that looks like a python
+    // project root. Markers (any-of):
+    //   - a venv directory (`.venv` / `venv` / `.virtualenv` / `env`) that
+    //     contains `pyvenv.cfg`, or
+    //   - `pyproject.toml`
+    //
+    // pyproject.toml alone is enough: a user can be working in a project tree
+    // before their venv is created, and we want subdir lookups to dedupe to
+    // the project root regardless.
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let p = path?;
+        find_python_project_root(Path::new(p))
+    }
+
     fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let Some(path) = path else {
             return Vec::new();
@@ -89,4 +103,29 @@ impl Provider for PythonProvider {
         result.insert("version", Value::String(version));
         vec![(Some(path_owned), result)]
     }
+}
+
+const VENV_DIRS: &[&str] = &[".venv", "venv", ".virtualenv", "env"];
+
+fn looks_like_python_project(dir: &Path) -> bool {
+    if dir.join("pyproject.toml").exists() {
+        return true;
+    }
+    for name in VENV_DIRS {
+        if dir.join(name).join("pyvenv.cfg").exists() {
+            return true;
+        }
+    }
+    false
+}
+
+fn find_python_project_root(start: &Path) -> Option<String> {
+    let mut cur: Option<&Path> = Some(start);
+    while let Some(dir) = cur {
+        if looks_like_python_project(dir) {
+            return Some(dir.to_string_lossy().to_string());
+        }
+        cur = dir.parent();
+    }
+    None
 }
