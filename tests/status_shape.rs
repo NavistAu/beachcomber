@@ -650,6 +650,33 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
     let _ = task.await;
 }
 
+#[tokio::test]
+async fn failure_states_message_returns_provider_map() {
+    use beachcomber::cache::Cache;
+    use beachcomber::provider::registry::ProviderRegistry;
+    use beachcomber::watcher_registry::WatcherRegistry;
+    use std::sync::Arc;
+
+    let cache = Arc::new(Cache::new());
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let config = Config::default();
+
+    let (handle, scheduler) = Scheduler::new(
+        cache.clone(),
+        registry,
+        config,
+        Arc::new(WatcherRegistry::new()),
+    );
+    let task = tokio::spawn(async move { scheduler.run().await });
+
+    // No failures yet — map should be empty (not error).
+    let states = handle.get_failure_states().await;
+    assert!(states.is_empty(), "expected empty failure states map, got: {:?}", states);
+
+    handle.send(SchedulerMessage::Shutdown).await;
+    let _ = task.await;
+}
+
 /// Status on a fresh daemon with an empty cache returns an empty array, not an error.
 #[tokio::test]
 async fn status_empty_cache_returns_empty_array() {

@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 
 use crate::cache::Cache;
 use crate::config::Config;
+pub use crate::cache::FailureSnapshot;
 use crate::provider::FieldScope;
 use crate::provider::InvalidationStrategy;
 use crate::provider::registry::ProviderRegistry;
@@ -39,6 +40,11 @@ pub enum SchedulerMessage {
     QueryActivity {
         provider: String,
         path: Option<String>,
+    },
+    /// Request a snapshot of all (provider, path) entries with non-zero failure counts.
+    /// Returns an empty map when no failures are tracked.
+    GetFailureStates {
+        reply: tokio::sync::oneshot::Sender<HashMap<lifecycle::Key, FailureSnapshot>>,
     },
     /// Request a full per-entry snapshot of the lifecycle registry.
     /// Used by the status response handler to annotate CacheRows with lifecycle info.
@@ -130,6 +136,17 @@ impl SchedulerHandle {
         reply_rx.await.ok()
     }
 
+    /// Return a snapshot of all (provider, path) entries with non-zero consecutive failure counts.
+    /// Returns an empty map when no failures are tracked.
+    pub async fn get_failure_states(&self) -> HashMap<lifecycle::Key, FailureSnapshot> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self
+            .tx
+            .send(SchedulerMessage::GetFailureStates { reply: tx })
+            .await;
+        rx.await.unwrap_or_default()
+    }
+
     /// Return a full per-entry snapshot of every lifecycle-tracked key.
     /// Missing keys are not in the lifecycle registry (e.g. virtual/put entries).
     pub async fn get_lifecycle_snapshots(
@@ -182,6 +199,20 @@ impl FailureState {
             .map(|until| Instant::now() < until)
             .unwrap_or(false)
     }
+}
+
+/// Convert a future `Instant` deadline into a Unix-millisecond timestamp by
+/// anchoring against the current monotonic and wall clocks. Past deadlines
+/// resolve to "now" (saturating).
+fn instant_to_unix_ms(deadline: std::time::Instant) -> u64 {
+    let now_inst = std::time::Instant::now();
+    let now_sys = std::time::SystemTime::now();
+    let remaining = deadline.saturating_duration_since(now_inst);
+    let absolute = now_sys + remaining;
+    absolute
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Build a snapshot of the current scheduler state for status reporting.
@@ -618,6 +649,29 @@ impl Scheduler {
                             let status = build_status(&lifecycle, &watch_paths, &self.in_flight);
                             let _ = reply.send(status);
                         }
+                        Some(SchedulerMessage::GetFailureStates { reply }) => {
+                            let snap: HashMap<lifecycle::Key, FailureSnapshot> = self
+                                .failure_counts
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter_map(|(key, state)| {
+                                    if state.consecutive_failures == 0 {
+                                        return None;
+                                    }
+                                    Some((
+                                        key.clone(),
+                                        FailureSnapshot {
+                                            consecutive_failures: state.consecutive_failures,
+                                            suppressed_until_unix_ms: state
+                                                .suppressed_until
+                                                .map(instant_to_unix_ms),
+                                        },
+                                    ))
+                                })
+                                .collect();
+                            let _ = reply.send(snap);
+                        }
                         Some(SchedulerMessage::GetLifecycleSnapshots { reply }) => {
                             let map = lifecycle
                                 .iter()
@@ -788,6 +842,29 @@ impl Scheduler {
                             let empty_watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
                             let status = build_status(&lifecycle, &empty_watch_paths, &self.in_flight);
                             let _ = reply.send(status);
+                        }
+                        Some(SchedulerMessage::GetFailureStates { reply }) => {
+                            let snap: HashMap<lifecycle::Key, FailureSnapshot> = self
+                                .failure_counts
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter_map(|(key, state)| {
+                                    if state.consecutive_failures == 0 {
+                                        return None;
+                                    }
+                                    Some((
+                                        key.clone(),
+                                        FailureSnapshot {
+                                            consecutive_failures: state.consecutive_failures,
+                                            suppressed_until_unix_ms: state
+                                                .suppressed_until
+                                                .map(instant_to_unix_ms),
+                                        },
+                                    ))
+                                })
+                                .collect();
+                            let _ = reply.send(snap);
                         }
                         Some(SchedulerMessage::GetLifecycleSnapshots { reply }) => {
                             let map = lifecycle
