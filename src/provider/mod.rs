@@ -240,6 +240,27 @@ pub trait Provider: Send + Sync {
     fn fsevents_reinstate_default(&self) -> bool {
         false
     }
+
+    /// Map a candidate path to the provider's canonical project root.
+    ///
+    /// Path-scoped providers with a "project marker" concept (e.g. git → `.git`,
+    /// mise → `mise.toml`, direnv → `.envrc`) should override this to walk up
+    /// from the candidate path and return the directory that actually contains
+    /// the marker. The scheduler uses the result as the cache key, lifecycle
+    /// key, and fs-watch root, so two demands from different subdirectories of
+    /// the same project dedupe to a single entry.
+    ///
+    /// Returns `None` to signal "this provider does not apply to this path"
+    /// (e.g. git asked about a directory not inside any repo). The scheduler
+    /// treats `None` as decline-demand: no cache entry, no lifecycle entry, no
+    /// watch registration.
+    ///
+    /// Default: identity (returns the input path unchanged). Global providers
+    /// are never called here because `FieldScope::Global` short-circuits path
+    /// resolution to `None` earlier.
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        path.map(|p| p.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -383,6 +404,40 @@ mod tests {
             p.execute(path)
         }
         let _ = _accept::<dyn Provider>;
+    }
+
+    // Dummy provider used to exercise default trait method behaviours.
+    struct NoopProvider;
+    impl Provider for NoopProvider {
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "noop".into(),
+                fields: vec![FieldSchema {
+                    name: "x".into(),
+                    field_type: FieldType::String,
+                    scope: FieldScope::PathScoped,
+                }],
+                invalidation: InvalidationStrategy::Poll {
+                    interval_secs: 60,
+                    floor_secs: 1,
+                },
+            }
+        }
+        fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn canonical_path_default_is_identity_for_some() {
+        let p = NoopProvider;
+        assert_eq!(p.canonical_path(Some("/a/b/c")), Some("/a/b/c".to_string()));
+    }
+
+    #[test]
+    fn canonical_path_default_passes_none_through() {
+        let p = NoopProvider;
+        assert_eq!(p.canonical_path(None), None);
     }
 
     #[test]

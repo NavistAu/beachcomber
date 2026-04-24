@@ -372,8 +372,8 @@ fn resolve_path(
         explicit.map(|s| s.to_string())
     };
 
-    // Canonicalize relative paths to absolute
-    raw.map(|p| {
+    // OS-level canonicalization: resolve to absolute + follow symlinks.
+    let os_canonical: Option<String> = raw.map(|p| {
         let path = std::path::Path::new(&p);
         if path.is_relative() {
             std::env::current_dir()
@@ -387,7 +387,16 @@ fn resolve_path(
                 .map(|abs| abs.to_string_lossy().to_string())
                 .unwrap_or(p)
         }
-    })
+    });
+
+    // Provider-level canonicalization: walk up to the project root (git →
+    // `.git`, mise → `mise.toml`, etc.). Returns None if the provider declares
+    // this path doesn't apply to it — the scheduler then declines demand.
+    // Unknown providers fall through to the identity default.
+    match registry.get(provider_name) {
+        Some(provider) => provider.canonical_path(os_canonical.as_deref()),
+        None => os_canonical,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
