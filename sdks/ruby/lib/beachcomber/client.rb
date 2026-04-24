@@ -347,6 +347,29 @@ module Beachcomber
       sess&.close
     end
 
+    RETRY_BACKOFFS = [0.250, 0.500, 1.000].freeze
+
+    # Connect to a Unix socket with 3 retries (250ms/500ms/1s exponential).
+    # Retries on ECONNREFUSED and ENOENT only — other errors surface immediately.
+    # Intended to cover the brief restart window when the daemon is restarting.
+    #
+    # @param sock_path [String] absolute path to the Unix domain socket
+    # @return [UNIXSocket]
+    # @raise [Errno::ECONNREFUSED, Errno::ENOENT] after all retries are exhausted
+    def self._connect_with_retry(sock_path)
+      last_error = nil
+      RETRY_BACKOFFS.each do |backoff|
+        begin
+          return UNIXSocket.new(sock_path)
+        rescue Errno::ECONNREFUSED, Errno::ENOENT => e
+          last_error = e
+          sleep backoff
+        end
+      end
+      # Final attempt — raises if still failing.
+      UNIXSocket.new(sock_path)
+    end
+
     private
 
     def with_session(&block)
@@ -360,18 +383,15 @@ module Beachcomber
     end
 
     def open_socket
-      sock = Socket.new(:UNIX, :STREAM)
-      addr = Socket.pack_sockaddr_un(@socket_path)
-
-      sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_SNDTIMEO, timeval(@timeout))
-      sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVTIMEO, timeval(@timeout))
-
       begin
-        sock.connect(addr)
-      rescue Errno::ENOENT, Errno::ECONNREFUSED, Errno::EACCES
-        sock.close
+        sock = self.class._connect_with_retry(@socket_path)
+      rescue Errno::ENOENT, Errno::ECONNREFUSED, Errno::EACCES => e
         raise DaemonNotRunning.new(@socket_path)
       end
+
+      # Apply timeouts to the connected socket.
+      sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_SNDTIMEO, timeval(@timeout))
+      sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVTIMEO, timeval(@timeout))
 
       sock
     end
