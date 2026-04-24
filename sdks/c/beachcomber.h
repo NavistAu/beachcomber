@@ -184,11 +184,13 @@ int comb_refresh(comb_client_t *client, const char *key, const char *path);
 int comb_set_context(comb_client_t *client, const char *path);
 
 /*
- * Query daemon status (scheduler, cache statistics, etc.).
- *
- * On success, comb_result_raw_json() contains the full response.
+ * Return typed cache rows. Allocates an array of *n_out rows into *rows_out.
+ * Caller must free with comb_free_cache_rows(). Returns 0 on success, -1 on error.
  */
-comb_result_t *comb_status(comb_client_t *client);
+int comb_status(
+    comb_client_t     *client,
+    comb_cache_row_t **rows_out,
+    size_t            *n_out);
 
 /*
  * Query the Hello op — fills protocol_version and daemon_version.
@@ -229,22 +231,9 @@ comb_result_t *comb_introspect(
     comb_introspect_subject_t subject,
     uint64_t                  duration_secs);
 
-/*
- * Typed status: allocates an array of cache rows and writes the count.
- *
- * On success, *rows_out is set to a heap-allocated array of *n_out rows and
- * 0 is returned. The caller must free the array with comb_free_cache_rows().
- * Returns -1 on error (rows_out and n_out are unchanged).
- *
- * Note: ABI break from pre-Phase-2.5 cap-based API (pre-1.0).
- */
-int comb_status_rows(
-    comb_client_t     *client,
-    comb_cache_row_t **rows_out,
-    size_t            *n_out);
 
 /*
- * Free an array returned by comb_status_rows().
+ * Free an array returned by comb_status().
  * Safe to call with rows == NULL.
  */
 void comb_free_cache_rows(comb_cache_row_t *rows, size_t n);

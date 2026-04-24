@@ -354,11 +354,11 @@ class Client:
         finally:
             sock.close()
 
-    def status(self) -> dict[str, Any]:
-        """Return daemon scheduler and cache status.
+    def status(self) -> list[CacheRow]:
+        """Return cache rows from the daemon.
 
         Returns:
-            Status dict as returned by the daemon.
+            List of :class:`~beachcomber.types.CacheRow` dataclasses.
 
         Raises:
             DaemonNotRunning: If the socket cannot be reached.
@@ -370,7 +370,7 @@ class Client:
             resp = _send_recv(sock, build_status_request())
         finally:
             sock.close()
-        return resp.get("data", {})
+        return _parse_cache_rows(resp)
 
     def hello(self) -> HelloInfo:
         """Ask the daemon for protocol and build versions.
@@ -447,27 +447,6 @@ class Client:
         finally:
             sock.close()
         return _parse_introspect(subject, resp)
-
-    def status_rows(self) -> list[CacheRow]:
-        """Return typed cache-row list from the daemon.
-
-        Unlike :meth:`status` which returns a raw dict, this method
-        returns a list of :class:`~beachcomber.types.CacheRow` dataclasses.
-
-        Returns:
-            List of cache rows.
-
-        Raises:
-            DaemonNotRunning: If the socket cannot be reached.
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
-        """
-        sock = _connect(self._resolve_path(), self._timeout)
-        try:
-            resp = _send_recv(sock, build_status_request())
-        finally:
-            sock.close()
-        return _parse_cache_rows(resp)
 
     def watch(self, key: str, path: Optional[str] = None) -> WatchStream:
         """Subscribe to a key and receive live updates.
@@ -608,14 +587,14 @@ class Session:
         """
         _send_recv(self._sock, build_refresh_request(key, path))
 
-    def status(self) -> dict[str, Any]:
-        """Return daemon status via the persistent connection.
+    def status(self) -> list[CacheRow]:
+        """Return cache rows via the persistent connection.
 
         Returns:
-            Status dict as returned by the daemon.
+            List of :class:`~beachcomber.types.CacheRow` dataclasses.
         """
         resp = _send_recv(self._sock, build_status_request())
-        return resp.get("data", {})
+        return _parse_cache_rows(resp)
 
     def hello(self) -> HelloInfo:
         """Ask the daemon for protocol and build versions via the persistent connection.
@@ -673,19 +652,6 @@ class Session:
             self._sock, build_introspect_request(subject.value, duration_secs)
         )
         return _parse_introspect(subject, resp)
-
-    def status_rows(self) -> list[CacheRow]:
-        """Return typed cache-row list via the persistent connection.
-
-        Returns:
-            List of :class:`~beachcomber.types.CacheRow` dataclasses.
-
-        Raises:
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
-        """
-        resp = _send_recv(self._sock, build_status_request())
-        return _parse_cache_rows(resp)
 
     def get_with_flags(
         self,

@@ -124,8 +124,7 @@ cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber
 | `comb_get(c, key, path)` | Read a cached value (`path` may be NULL) |
 | `comb_refresh(c, key, path)` | Force recomputation |
 | `comb_set_context(c, path)` | Set default path for this connection |
-| `comb_status(c)` | Query cache status (raw result) |
-| `comb_status_rows(c, rows, cap, out_count)` | Return typed cache rows into a caller-supplied array |
+| `comb_status(c, rows_out, n_out)` | Return typed cache rows; caller frees with `comb_free_cache_rows()` |
 | `comb_hello(c, out)` | Handshake — fills a `comb_hello_info_t` with version info |
 | `comb_put(c, key, data, ttl, path)` | Write a value into the cache as a virtual provider |
 | `comb_put_null(c, key, path)` | Clear a virtual provider entry |

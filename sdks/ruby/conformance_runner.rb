@@ -133,7 +133,7 @@ class ConformanceRunner
       result = @client.hello
       [result, nil]
     when 'status'
-      rows = @client.status_rows
+      rows = @client.status
       [rows, nil]
     when 'introspect'
       result = @client.introspect(args['subject'], duration_secs: args['duration_secs'])
@@ -229,7 +229,7 @@ class ConformanceRunner
     when Beachcomber::WatchEvent
       result.data
     when Array
-      result # status_rows — keep as array for data_type check
+      result # status — keep as array for data_type check
     else
       result
     end

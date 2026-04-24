@@ -62,10 +62,6 @@ await client.refresh('git', '/some/repo');
 
 #### `client.status()`
 
-Return daemon status information (raw `CombResult`).
-
-#### `client.statusRows()`
-
 Return typed cache rows as `CacheRow[]` (one per warm cache entry).
 
 #### `client.hello()`

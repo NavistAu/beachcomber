@@ -575,14 +575,6 @@ int comb_set_context(comb_client_t *client, const char *path) {
     return ok ? 0 : -1;
 }
 
-comb_result_t *comb_status(comb_client_t *client) {
-    char *req = build_request("status", NULL, NULL);
-    if (!req) return result_error("out of memory");
-    comb_result_t *r = do_request(client, req);
-    free(req);
-    return r;
-}
-
 int comb_hello(comb_client_t *client, comb_hello_info_t *out) {
     if (!client || client->fd < 0) return -1;
     if (!out) return -1;
@@ -724,12 +716,15 @@ comb_result_t *comb_introspect(comb_client_t *client,
     return do_request(client, buf);
 }
 
-int comb_status_rows(comb_client_t *client, comb_cache_row_t **rows_out,
-                     size_t *n_out) {
+int comb_status(comb_client_t *client, comb_cache_row_t **rows_out,
+                size_t *n_out) {
     if (!client || client->fd < 0) return -1;
     if (!rows_out || !n_out) return -1;
 
-    comb_result_t *r = comb_status(client);
+    char *req = build_request("status", NULL, NULL);
+    if (!req) return -1;
+    comb_result_t *r = do_request(client, req);
+    free(req);
     if (!comb_result_ok(r)) {
         comb_result_free(r);
         return -1;

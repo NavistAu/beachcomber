@@ -90,11 +90,7 @@ Force the daemon to recompute a provider.
 
 List available providers.
 
-#### `c.Status() (*Result, error)`
-
-Return daemon scheduler and cache status (raw result).
-
-#### `c.StatusRows() ([]CacheRow, error)`
+#### `c.Status() ([]CacheRow, error)`
 
 Return cache rows as typed structs (one per warm cache entry).
 

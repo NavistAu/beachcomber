@@ -260,22 +260,24 @@ describe('Client.status', () => {
     await server.stop();
   });
 
-  it('returns status object', async () => {
+  it('returns cache rows', async () => {
     server.handle(() => ({
       ok: true,
-      data: { cache_entries: 5, uptime_ms: 12345 },
+      data: [
+        { provider: 'git', field: 'branch', path: '/repo', value: 'main', age_ms: 100, stale: false },
+      ],
     }));
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    const status = await client.status();
-    assert.equal(status['cache_entries'], 5);
-    assert.equal(status['uptime_ms'], 12345);
+    const rows = await client.status();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.provider, 'git');
   });
 
   it('sends op:status', async () => {
     let received: Record<string, unknown> = {};
     server.handle((req) => {
       received = req.parsed;
-      return { ok: true, data: {} };
+      return { ok: true, data: [] };
     });
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
     await client.status();

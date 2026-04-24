@@ -58,9 +58,11 @@ client:refresh('git', '/my/repo')
 client:set_context('/my/repo')
 local r2 = client:get('git.branch')  -- uses context path
 
--- daemon status
-local s = client:status()
-print(s.pid, s.uptime_secs)
+-- daemon cache status rows
+local rows = client:status()
+for _, row in ipairs(rows or {}) do
+  print(row.provider, row.field, row.age_ms, row.stale)
+end
 
 client:close()
 ```
@@ -96,17 +98,13 @@ Force the daemon to recompute `key`.
 
 Set the default working-directory path for this connection.
 
-### `Client:status()` → `table | nil, error`
-
-Return the daemon's internal status (scheduler queue depth, cache entries, etc.) as a raw table.
-
-### `Client:status_rows()` → `table[] | nil, error`
+### `Client:status()` → `table[] | nil, error`
 
 Return typed cache rows (one per warm cache entry) as an array of tables with `provider`, `field`, `value`, `age_ms`, and `stale` keys.
 
 ### `Client:hello()` → `table | nil, error`
 
-Handshake — returns a table with `daemon_version`, `protocol_version`, and `build_info` fields.
+Handshake — returns a table with `daemon_version` and `protocol_version` fields.
 
 ### `Client:put(key, data, ttl, path)` → `true | nil, error`
 

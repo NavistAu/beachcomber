@@ -1,5 +1,5 @@
 --- Tests for the new Phase 10 Client methods:
--- hello, get_with_flags, put, put_null, introspect, status_rows, watch.
+-- hello, get_with_flags, put, put_null, introspect, status, watch.
 --
 -- All tests use a mock handle to avoid requiring a live daemon or luasocket.
 
@@ -139,6 +139,16 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     c:get_with_flags("git.branch", "/mypath", nil, nil)
     local req = json.decode(handle._sent[1])
     assert_eq(req.path, "/mypath")
+  end)
+
+  test("get_with_flags returns nil, error on ok=false", function()
+    local handle = make_mock_handle({
+      json.encode({ ok = false, error = "provider error" }),
+    })
+    local c = Client.new(handle)
+    local r, err = c:get_with_flags("bad.key", nil, nil, nil)
+    assert_nil(r)
+    assert_eq(err, "provider error")
   end)
 
   -- ── put ───────────────────────────────────────────────────────────────────
@@ -291,11 +301,11 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_not_nil(err)
   end)
 
-  -- ── status_rows ───────────────────────────────────────────────────────────
+  -- ── status ───────────────────────────────────────────────────────────────
 
-  suite("Client:status_rows")
+  suite("Client:status")
 
-  test("status_rows returns array of rows", function()
+  test("status returns array of rows", function()
     local rows = {
       { key = "git.branch", age_ms = 100 },
       { key = "git.dirty",  age_ms = 200 },
@@ -304,7 +314,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
       json.encode({ ok = true, data = rows }),
     })
     local c = Client.new(handle)
-    local result, err = c:status_rows()
+    local result, err = c:status()
     assert_nil(err)
     assert_not_nil(result)
     assert_eq(#result, 2)
@@ -312,28 +322,28 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(result[2].age_ms, 200)
   end)
 
-  test("status_rows returns empty array when no data", function()
+  test("status returns empty array when no data", function()
     local handle = make_mock_handle({
       json.encode({ ok = true }),
     })
     local c = Client.new(handle)
-    local result, err = c:status_rows()
+    local result, err = c:status()
     assert_nil(err)
     assert_not_nil(result)
     assert_eq(#result, 0)
   end)
 
-  test("status_rows returns nil+error on server error", function()
+  test("status returns nil+error on server error", function()
     local handle = make_mock_handle({
       json.encode({ ok = false, error = "internal error" }),
     })
     local c = Client.new(handle)
-    local result, err = c:status_rows()
+    local result, err = c:status()
     assert_nil(result)
     assert_not_nil(err)
   end)
 
-  test("status_row exposes lifecycle fields as raw table fields", function()
+  test("status row exposes lifecycle fields as raw table fields", function()
     local rows = {
       {
         provider          = "git",
@@ -347,7 +357,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
       json.encode({ ok = true, data = rows }),
     })
     local c = Client.new(handle)
-    local result, err = c:status_rows()
+    local result, err = c:status()
     assert_nil(err)
     assert_not_nil(result)
     local git

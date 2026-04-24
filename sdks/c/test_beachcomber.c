@@ -996,10 +996,10 @@ static void test_introspect_daemon_null_args(void) {
 }
 
 /* -------------------------------------------------------------------------
- * New API tests: comb_status_rows
+ * New API tests: comb_status
  * ---------------------------------------------------------------------- */
 
-static void test_status_rows(void) {
+static void test_status(void) {
     const char *resp =
         "{\"ok\":true,\"data\":["
         "{\"provider\":\"git\",\"field\":\"branch\","
@@ -1021,7 +1021,7 @@ static void test_status_rows(void) {
 
     comb_cache_row_t *rows = NULL;
     size_t n = 0;
-    int rc = comb_status_rows(c, &rows, &n);
+    int rc = comb_status(c, &rows, &n);
     CHECK(rc == 0);
     CHECK(n == 2);
 
@@ -1045,7 +1045,7 @@ done:
     unlink(sock_path);
 }
 
-static void test_status_rows_two(void) {
+static void test_status_two(void) {
     /* Verify both rows returned when daemon sends 2 */
     const char *resp =
         "{\"ok\":true,\"data\":["
@@ -1066,7 +1066,7 @@ static void test_status_rows_two(void) {
 
     comb_cache_row_t *rows = NULL;
     size_t n = 0;
-    int rc = comb_status_rows(c, &rows, &n);
+    int rc = comb_status(c, &rows, &n);
     CHECK(rc == 0);
     CHECK(n == 2);
     if (rows && n >= 1) CHECK_STR_EQ(rows[0].provider, "a");
@@ -1080,8 +1080,8 @@ done:
     unlink(sock_path);
 }
 
-static void test_status_rows_null_args(void) {
-    CHECK(comb_status_rows(NULL, NULL, NULL) == -1);
+static void test_status_null_args(void) {
+    CHECK(comb_status(NULL, NULL, NULL) == -1);
 }
 
 static void test_status_row_exposes_lifecycle_fields(void) {
@@ -1107,7 +1107,7 @@ static void test_status_row_exposes_lifecycle_fields(void) {
 
     comb_cache_row_t *rows = NULL;
     size_t n = 0;
-    int rc = comb_status_rows(c, &rows, &n);
+    int rc = comb_status(c, &rows, &n);
     CHECK(rc == 0);
     CHECK(n == 1);
 
@@ -1152,7 +1152,7 @@ static void test_status_row_non_lifecycle_kind(void) {
 
     comb_cache_row_t *rows = NULL;
     size_t n = 0;
-    int rc = comb_status_rows(c, &rows, &n);
+    int rc = comb_status(c, &rows, &n);
     CHECK(rc == 0);
     CHECK(n == 1);
 
@@ -1195,7 +1195,7 @@ static void test_status_row_failure_fields(void) {
 
     comb_cache_row_t *rows = NULL;
     size_t n = 0;
-    int rc = comb_status_rows(c, &rows, &n);
+    int rc = comb_status(c, &rows, &n);
     CHECK(rc == 0);
     CHECK(n == 1);
 
@@ -1213,7 +1213,7 @@ done:
     unlink(sock_path);
 }
 
-static void test_status_rows_free_null(void) {
+static void test_status_free_null(void) {
     /* Must not crash */
     comb_free_cache_rows(NULL, 0);
 }
@@ -1326,6 +1326,7 @@ static void test_connect_retries_succeed_after_brief_outage(void) {
  * ---------------------------------------------------------------------- */
 
 int main(void) {
+    alarm(30); /* hard-kill after 30s — mirrors nextest global-timeout */
     srand((unsigned)getpid());
 
     SUITE("JSON parser — primitives");
@@ -1403,14 +1404,14 @@ int main(void) {
     test_introspect_daemon_typed();
     test_introspect_daemon_null_args();
 
-    SUITE("New API — comb_status_rows");
-    test_status_rows();
-    test_status_rows_two();
-    test_status_rows_null_args();
+    SUITE("New API — comb_status");
+    test_status();
+    test_status_two();
+    test_status_null_args();
     test_status_row_exposes_lifecycle_fields();
     test_status_row_non_lifecycle_kind();
     test_status_row_failure_fields();
-    test_status_rows_free_null();
+    test_status_free_null();
 
     SUITE("New API — comb_watch");
     test_watch_next();

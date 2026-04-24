@@ -269,18 +269,18 @@ func TestClient_Introspect_DurationSecs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Client.StatusRows
+// Client.Status (typed rows)
 // ---------------------------------------------------------------------------
 
-func TestClient_StatusRows(t *testing.T) {
+func TestClient_Status_Typed(t *testing.T) {
 	const payload = `{"ok":true,"data":[{"provider":"git","field":"branch","path":"/repo","value":"main","age_ms":100,"stale":false},{"provider":"hostname","field":"short","value":"myhost","age_ms":200,"stale":true}]}`
 	h, _ := fixedHandler(payload)
 	sock := startMockServer(t, h)
 
 	c := beachcomber.NewClientWithPath(sock)
-	rows, err := c.StatusRows()
+	rows, err := c.Status()
 	if err != nil {
-		t.Fatalf("StatusRows: %v", err)
+		t.Fatalf("Status: %v", err)
 	}
 
 	if len(rows) != 2 {
@@ -313,12 +313,12 @@ func TestClient_StatusRows(t *testing.T) {
 	}
 }
 
-func TestClient_StatusRows_NotArray(t *testing.T) {
+func TestClient_Status_NotArray(t *testing.T) {
 	h, _ := fixedHandler(`{"ok":true,"data":{"unexpected":"object"}}`)
 	sock := startMockServer(t, h)
 
 	c := beachcomber.NewClientWithPath(sock)
-	_, err := c.StatusRows()
+	_, err := c.Status()
 	if err == nil {
 		t.Fatal("expected error when data is not array, got nil")
 	}
@@ -330,9 +330,9 @@ func TestStatusRowExposesLifecycleFields(t *testing.T) {
 	sock := startMockServer(t, h)
 
 	c := beachcomber.NewClientWithPath(sock)
-	rows, err := c.StatusRows()
+	rows, err := c.Status()
 	if err != nil {
-		t.Fatalf("StatusRows: %v", err)
+		t.Fatalf("Status: %v", err)
 	}
 	if len(rows) != 1 {
 		t.Fatalf("len(rows) = %d, want 1", len(rows))
@@ -443,7 +443,7 @@ func TestClient_Watch_ServerError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Session mirrors: GetWithFlags, Hello, Put, Introspect, StatusRows
+// Session mirrors: GetWithFlags, Hello, Put, Introspect, Status
 // ---------------------------------------------------------------------------
 
 func TestSession_GetWithFlags(t *testing.T) {
@@ -537,7 +537,7 @@ func TestSession_Introspect(t *testing.T) {
 	}
 }
 
-func TestSession_StatusRows(t *testing.T) {
+func TestSession_Status(t *testing.T) {
 	h, _ := fixedHandler(`{"ok":true,"data":[{"provider":"battery","field":"pct","value":80,"age_ms":50}]}`)
 	sock := startMockServer(t, h)
 
@@ -548,9 +548,9 @@ func TestSession_StatusRows(t *testing.T) {
 	}
 	defer sess.Close()
 
-	rows, err := sess.StatusRows()
+	rows, err := sess.Status()
 	if err != nil {
-		t.Fatalf("StatusRows: %v", err)
+		t.Fatalf("Status: %v", err)
 	}
 	if len(rows) != 1 {
 		t.Fatalf("len(rows) = %d, want 1", len(rows))

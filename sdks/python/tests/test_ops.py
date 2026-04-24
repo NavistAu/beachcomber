@@ -1,4 +1,4 @@
-"""Tests for the new protocol operations: hello, put, introspect, watch, status_rows, get_with_flags."""
+"""Tests for the new protocol operations: hello, put, introspect, watch, status, get_with_flags."""
 
 from __future__ import annotations
 
@@ -263,12 +263,12 @@ class TestClientIntrospect:
 
 
 # ---------------------------------------------------------------------------
-# Client.status_rows
+# Client.status
 # ---------------------------------------------------------------------------
 
 
-class TestClientStatusRows:
-    def test_status_rows_returns_cache_rows(self, mock_daemon: MockDaemon) -> None:
+class TestClientStatus:
+    def test_status_returns_cache_rows(self, mock_daemon: MockDaemon) -> None:
         mock_daemon.respond(
             "status",
             {
@@ -286,7 +286,7 @@ class TestClientStatusRows:
             },
         )
         client = make_client(mock_daemon)
-        rows = client.status_rows()
+        rows = client.status()
         assert isinstance(rows, list)
         assert len(rows) == 1
         row = rows[0]
@@ -298,21 +298,21 @@ class TestClientStatusRows:
         assert row.age_ms == 100
         assert row.stale is False
 
-    def test_status_rows_empty_list(self, mock_daemon: MockDaemon) -> None:
+    def test_status_empty_list(self, mock_daemon: MockDaemon) -> None:
         mock_daemon.respond("status", {"ok": True, "data": []})
         client = make_client(mock_daemon)
-        rows = client.status_rows()
+        rows = client.status()
         assert rows == []
 
-    def test_status_rows_non_array_raises_protocol_error(
+    def test_status_non_array_raises_protocol_error(
         self, mock_daemon: MockDaemon
     ) -> None:
         mock_daemon.respond("status", {"ok": True, "data": {"not": "an array"}})
         client = make_client(mock_daemon)
         with pytest.raises(ProtocolError, match="not an array"):
-            client.status_rows()
+            client.status()
 
-    def test_status_rows_skips_non_dict_entries(
+    def test_status_skips_non_dict_entries(
         self, mock_daemon: MockDaemon
     ) -> None:
         mock_daemon.respond(
@@ -326,11 +326,11 @@ class TestClientStatusRows:
             },
         )
         client = make_client(mock_daemon)
-        rows = client.status_rows()
+        rows = client.status()
         assert len(rows) == 1
         assert rows[0].provider == "hostname"
 
-    def test_session_status_rows(self, mock_daemon: MockDaemon) -> None:
+    def test_session_status(self, mock_daemon: MockDaemon) -> None:
         mock_daemon.respond(
             "status",
             {
@@ -349,7 +349,7 @@ class TestClientStatusRows:
         )
         client = make_client(mock_daemon)
         with client.session() as session:
-            rows = session.status_rows()
+            rows = session.status()
         assert len(rows) == 1
         assert rows[0].provider == "uptime"
 
@@ -377,7 +377,7 @@ class TestClientStatusRows:
             },
         )
         client = make_client(mock_daemon)
-        rows = client.status_rows()
+        rows = client.status()
         git = next(r for r in rows if r.provider == "git")
         assert git.kind is not None, "git row should have a kind"
         assert git.kind["kind"] == "lifecycle", f"expected lifecycle kind, got {git.kind!r}"
@@ -410,7 +410,7 @@ class TestClientStatusRows:
             },
         )
         client = make_client(mock_daemon)
-        rows = client.status_rows()
+        rows = client.status()
         git = next(r for r in rows if r.provider == "git")
         assert git.failure is not None
         assert git.failure["consecutive_failures"] == 3
@@ -437,7 +437,7 @@ class TestClientStatusRows:
             },
         )
         client = make_client(mock_daemon)
-        rows = client.status_rows()
+        rows = client.status()
         row = rows[0]
         assert row.kind is None
         assert row.poll_interval_secs is None

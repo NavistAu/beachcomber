@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Client connect retry.** CLI and all 6 SDKs (Python, Go, Ruby, Node, C, Lua) and `beachcomber-client` retry transient connection failures (`ECONNREFUSED`, `ENOENT`) three times with exponential backoff (250ms, 500ms, 1s). Covers the brief restart window when the old daemon has shut down and the new one hasn't bound yet.
 
 ### Changed
+- **BREAKING (pre-1.0, all SDKs):** `status_rows()` / `statusRows()` / `StatusRows()` removed from all six SDKs (Python, Go, Ruby, Node, Lua, C). `status()` now returns typed cache rows directly (`list[CacheRow]`, `[]CacheRow`, `Array<CacheRow>`, `CacheRow[]`, `table[]`, `comb_cache_row_t[]`). The old raw-envelope `status()` is gone. Callers that need the raw JSON can drop to each SDK's low-level request method.
 - **BREAKING (pre-1.0):** `comb status` now defaults to the `human` preset regardless of TTY. Scripts piping `comb status` should switch to `comb status -f tsv` or `-f json` for the previous behaviour.
 - **BREAKING (pre-1.0):** `comb status` `--no-color` removed. Use `--color=never` (or `--color=auto|always`).
 - `comb status` `--max-width` default raised from 40 to 120; new `--max-width=auto` value uses the terminal width.
@@ -41,6 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Cache decay now works as designed. Previously, `BackoffStage::SlowPoll`, `Frozen`, and `Evict` were defined but unreachable; cache entries never evicted and accumulated until daemon restart. Now: Active → Decay1 → Decay2 → Decay3 → Decay4 → Evicted runs end-to-end with exponential decay polling (poll interval and step duration both double per step). See `docs/cache-lifecycle.md` for the full behaviour spec.
 - Global providers (hostname, user, battery, etc.) no longer create ghost cache entries when queried with an explicit path. Previously `comb get hostname.short /some/dir` cached hostname under `/some/dir` in addition to the real pathless entry.
 - `mise.global` is no longer duplicated per project directory. The `mise` provider now emits its global tool state as a pathless cache entry and its project tool state as a path-scoped cache entry.
+- **Lua SDK:** `Client:get_with_flags` now returns `nil, error` on server-side failures (`ok=false`) to match the documented contract and the `Client:get` behaviour. Previously it returned a `Result` wrapping the failure envelope, which callers could mistake for a miss.
 
 ### Added
 

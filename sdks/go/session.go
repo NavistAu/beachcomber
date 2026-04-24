@@ -98,8 +98,8 @@ func (s *Session) Introspect(subject IntrospectSubject, durationSecs uint64) (*I
 	return parseIntrospectFromResult(subject, result)
 }
 
-// StatusRows returns the typed cache-row array from Status.
-func (s *Session) StatusRows() ([]CacheRow, error) {
+// Status returns cache rows from the daemon.
+func (s *Session) Status() ([]CacheRow, error) {
 	result, err := s.roundtrip(map[string]interface{}{"op": "status"})
 	if err != nil {
 		return nil, err

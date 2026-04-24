@@ -211,9 +211,13 @@ func (c *Client) Refresh(key string, path string) error {
 	return err
 }
 
-// Status returns scheduler and cache status from the daemon.
-func (c *Client) Status() (*Result, error) {
-	return c.roundtrip(map[string]interface{}{"op": "status"})
+// Status returns cache rows from the daemon.
+func (c *Client) Status() ([]CacheRow, error) {
+	result, err := c.roundtrip(map[string]interface{}{"op": "status"})
+	if err != nil {
+		return nil, err
+	}
+	return parseCacheRowsFromResult(result)
 }
 
 // Session opens a persistent connection and returns a [Session].
@@ -278,15 +282,6 @@ func (c *Client) Introspect(subject IntrospectSubject, durationSecs uint64) (*In
 		return nil, err
 	}
 	return parseIntrospectFromResult(subject, result)
-}
-
-// StatusRows returns the typed cache-row array from Status.
-func (c *Client) StatusRows() ([]CacheRow, error) {
-	result, err := c.Status()
-	if err != nil {
-		return nil, err
-	}
-	return parseCacheRowsFromResult(result)
 }
 
 // Watch subscribes to changes on a key. The returned stream holds a dedicated

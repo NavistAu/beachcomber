@@ -70,17 +70,10 @@ module Beachcomber
       nil
     end
 
-    # Returns daemon status as a raw Result.
-    #
-    # @return [Result]
-    def status
-      roundtrip({ op: 'status' })
-    end
-
-    # Returns daemon status as an array of CacheRow structs.
+    # Returns cache rows from the daemon.
     #
     # @return [Array<CacheRow>]
-    def status_rows
+    def status
       resp_obj = roundtrip_raw({ op: 'status' })
       parse_cache_rows(resp_obj)
     end
@@ -279,18 +272,11 @@ module Beachcomber
       nil
     end
 
-    # Returns daemon status as a raw Result.
-    #
-    # @return [Result]
-    def status
-      with_session { |s| s.status }
-    end
-
-    # Returns daemon status as an array of CacheRow structs.
+    # Returns cache rows from the daemon.
     #
     # @return [Array<CacheRow>]
-    def status_rows
-      with_session { |s| s.status_rows }
+    def status
+      with_session { |s| s.status }
     end
 
     # Sends a hello handshake and returns server info.

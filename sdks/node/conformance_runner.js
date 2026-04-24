@@ -219,7 +219,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
         }
 
         case 'status': {
-          const rows = await client.statusRows();
+          const rows = await client.status();
           const arr = rows.map((r) => ({
             provider: r.provider,
             field: r.field,

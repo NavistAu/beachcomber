@@ -63,15 +63,11 @@ client:refresh('git', '/my/repo')
 client:set_context('/my/repo')
 local r2 = client:get('git.branch')  -- uses context path
 
--- list providers
-local providers = client:list()
-for _, p in ipairs(providers) do
-  print(p.name, p.global, table.concat(p.fields, ', '))
+-- daemon cache status rows
+local rows = client:status()
+for _, row in ipairs(rows or {}) do
+  print(row.provider, row.field, row.age_ms, row.stale)
 end
-
--- daemon status
-local s = client:status()
-print(s.cache_entries)
 
 client:close()
 ```
@@ -110,14 +106,9 @@ Force the daemon to recompute `key`.
 
 Set the default working-directory path for this connection.
 
-### `Client:list()` → `table[] | nil, error`
+### `Client:status()` → `table[] | nil, error`
 
-Return an array of provider descriptors:
-`{ name = "git", global = false, fields = {"branch", "dirty", ...} }`.
-
-### `Client:status()` → `table | nil, error`
-
-Return the daemon's internal status (scheduler queue depth, cache entries, etc.).
+Return typed cache rows (one per warm cache entry). Each row has `provider`, `field`, `value`, `age_ms`, and `stale` keys.
 
 ### `Client:close()`
 

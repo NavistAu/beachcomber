@@ -89,12 +89,15 @@ int main(void) {
     comb_result_free(ir);
 
     /* Typed status rows */
-    comb_cache_row_t rows[64];
-    int n = comb_status_rows(c, rows, 64);
-    for (int i = 0; i < n; i++) {
-        printf("  %s.%s age=%llums stale=%d\n",
-               rows[i].provider, rows[i].field,
-               (unsigned long long)rows[i].age_ms, rows[i].stale);
+    comb_cache_row_t *rows = NULL;
+    size_t n = 0;
+    if (comb_status(c, &rows, &n) == 0) {
+        for (size_t i = 0; i < n; i++) {
+            printf("  %s.%s age=%llums stale=%d\n",
+                   rows[i].provider, rows[i].field,
+                   (unsigned long long)rows[i].age_ms, rows[i].stale);
+        }
+        comb_free_cache_rows(rows, n);
     }
 
     /* Watch — blocking poll */
@@ -107,11 +110,6 @@ int main(void) {
         }
         comb_watch_free(wh);
     }
-
-    /* Raw status */
-    r = comb_status(c);
-    printf("raw status: %s\n", comb_result_raw_json(r));
-    comb_result_free(r);
 
     comb_disconnect(c);
     return 0;
@@ -159,8 +157,7 @@ Socket discovery order:
 | `comb_put_null(c, key, path)` | Clear a virtual provider entry |
 | `comb_introspect_daemon(c, &out)` | Typed daemon health; fills `comb_daemon_health_t` |
 | `comb_introspect(c, subject, duration_secs)` | Generic introspect; returns raw result |
-| `comb_status(c)` | Query daemon status (raw result) |
-| `comb_status_rows(c, rows, cap)` | Typed status; fills `comb_cache_row_t[]` |
+| `comb_status(c, &rows_out, &n_out)` | Typed cache status rows; caller frees with `comb_free_cache_rows()` |
 
 ### Watch (blocking poll)
 

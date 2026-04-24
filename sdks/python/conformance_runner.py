@@ -157,7 +157,7 @@ def _run_op(client: Client, op: str, args: dict[str, Any]) -> Any:
         client.put(**args)
         return None
     if op == "status":
-        return client.status_rows()
+        return client.status()
     if op == "hello":
         return client.hello()
     if op == "context":

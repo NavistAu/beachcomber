@@ -328,11 +328,15 @@ func runTestOp(c *beachcomber.Client, op opDescriptor) (*opResult, *beachcomber.
 		return &opResult{}, nil, nil
 
 	case "status":
-		r, err := c.Status()
+		rows, err := c.Status()
 		if err != nil {
 			return nil, nil, err
 		}
-		return resultFromSDK(r), nil, nil
+		data := make([]interface{}, len(rows))
+		for i, row := range rows {
+			data[i] = row
+		}
+		return &opResult{data: data}, nil, nil
 
 	case "context":
 		sess, err := c.Session()

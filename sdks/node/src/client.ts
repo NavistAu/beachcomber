@@ -499,9 +499,9 @@ export class Session {
   }
 
   /**
-   * Return a typed array of cache rows (the status response).
+   * Return cache rows from the daemon.
    */
-  async statusRows(): Promise<CacheRow[]> {
+  async status(): Promise<CacheRow[]> {
     const req = serialiseRequest({ op: 'status' });
     const line = await this.sendAndReceive(req);
     const parsed = parseAndCheck(line);
@@ -634,24 +634,12 @@ export class Client {
   }
 
   /**
-   * Return daemon status as a typed array of cache rows.
+   * Return cache rows from the daemon.
    */
-  async statusRows(): Promise<CacheRow[]> {
+  async status(): Promise<CacheRow[]> {
     const req = serialiseRequest({ op: 'status' });
     const parsed = await this.doRequest(req);
     return parseCacheRows(parsed);
-  }
-
-  /**
-   * Return raw daemon status information (legacy untyped form).
-   */
-  async status(): Promise<Record<string, unknown>> {
-    const req = serialiseRequest({ op: 'status' });
-    const parsed = await this.doRequest(req);
-    if (typeof parsed['data'] !== 'object' || parsed['data'] === null) {
-      throw new ParseError(JSON.stringify(parsed), 'expected data object in status response');
-    }
-    return parsed['data'] as Record<string, unknown>;
   }
 
   /**

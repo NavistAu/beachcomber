@@ -183,16 +183,19 @@ func TestClient_Refresh(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClient_Status(t *testing.T) {
-	h, reqs := fixedHandler(`{"ok":true,"data":{"providers":1}}`)
+	h, reqs := fixedHandler(`{"ok":true,"data":[{"provider":"git","field":"branch","path":"/repo","value":"main","age_ms":10,"stale":false}]}`)
 	sock := startMockServer(t, h)
 
 	c := beachcomber.NewClientWithPath(sock)
-	result, err := c.Status()
+	rows, err := c.Status()
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !result.IsHit() {
-		t.Error("expected IsHit() = true")
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1", len(rows))
+	}
+	if rows[0].Provider != "git" {
+		t.Errorf("rows[0].Provider = %q, want git", rows[0].Provider)
 	}
 	if reqs()[0]["op"] != "status" {
 		t.Errorf("op = %v, want status", reqs()[0]["op"])

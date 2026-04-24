@@ -1,6 +1,6 @@
 /**
  * Tests for the new protocol operations added in Phase 7:
- * getWithFlags, hello, put, introspect, statusRows, watch.
+ * getWithFlags, hello, put, introspect, status, watch.
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -315,9 +315,9 @@ describe('Client.introspect', () => {
   });
 });
 
-// ---- statusRows ----
+// ---- status ----
 
-describe('Client.statusRows', () => {
+describe('Client.status', () => {
   let server: MockServer;
 
   before(async () => {
@@ -335,14 +335,14 @@ describe('Client.statusRows', () => {
       return { ok: true, data: [] };
     });
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    await client.statusRows();
+    await client.status();
     assert.equal(received['op'], 'status');
   });
 
   it('returns an empty array when data is empty', async () => {
     server.handle(() => ({ ok: true, data: [] }));
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    const rows = await client.statusRows();
+    const rows = await client.status();
     assert.deepEqual(rows, []);
   });
 
@@ -369,7 +369,7 @@ describe('Client.statusRows', () => {
       ],
     }));
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    const rows = await client.statusRows();
+    const rows = await client.status();
     assert.equal(rows.length, 2);
 
     const first = rows[0]!;
@@ -390,9 +390,9 @@ describe('Client.statusRows', () => {
   });
 });
 
-// ---- statusRows lifecycle fields ----
+// ---- status lifecycle fields ----
 
-describe('Client.statusRows lifecycle fields', () => {
+describe('Client.status lifecycle fields', () => {
   let server: MockServer;
 
   before(async () => {
@@ -422,7 +422,7 @@ describe('Client.statusRows lifecycle fields', () => {
       ],
     }));
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    const rows = await client.statusRows();
+    const rows = await client.status();
     const git = rows.find(r => r.provider === 'git');
     assert.ok(git);
     assert.ok(git.kind);
@@ -447,7 +447,7 @@ describe('Client.statusRows lifecycle fields', () => {
       ],
     }));
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    const rows = await client.statusRows();
+    const rows = await client.status();
     const host = rows.find(r => r.provider === 'hostname');
     assert.ok(host);
     assert.equal(host.kind, undefined);
@@ -477,7 +477,7 @@ describe('Client.statusRows lifecycle fields', () => {
       ],
     }));
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
-    const rows = await client.statusRows();
+    const rows = await client.status();
     const git = rows.find(r => r.provider === 'git');
     assert.ok(git);
     assert.ok(git.failure);
@@ -636,7 +636,7 @@ describe('Session new ops', () => {
     assert.equal(resp.subject, 'cache');
   });
 
-  it('session.statusRows returns CacheRow array', async () => {
+  it('session.status returns CacheRow array', async () => {
     server.handle(() => ({
       ok: true,
       data: [
@@ -645,7 +645,7 @@ describe('Session new ops', () => {
     }));
     const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
     const session = await client.session();
-    const rows = await session.statusRows();
+    const rows = await session.status();
     session.close();
     assert.equal(rows.length, 1);
     assert.equal(rows[0]!.provider, 'p');

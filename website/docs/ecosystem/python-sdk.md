@@ -96,10 +96,6 @@ Force the daemon to recompute a provider.
 
 #### `client.status()`
 
-Return daemon status information (raw dict).
-
-#### `client.status_rows()`
-
 Return typed cache rows as a list of `CacheRow` dataclasses (one per warm cache entry).
 
 #### `client.hello()`

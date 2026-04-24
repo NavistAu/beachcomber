@@ -150,15 +150,15 @@ class TestOps < Minitest::Test
     refute req.key?('duration_secs')
   end
 
-  # --- status_rows ---
+  # --- status ---
 
-  def test_status_rows_sends_status_op
+  def test_status_sends_status_op
     @server.enqueue('{"ok":true,"data":[]}')
-    @client.status_rows
+    @client.status
     assert_equal 'status', @server.requests.last['op']
   end
 
-  def test_status_rows_returns_array_of_cache_rows
+  def test_status_returns_array_of_cache_rows
     payload = {
       ok: true,
       data: [
@@ -167,7 +167,7 @@ class TestOps < Minitest::Test
       ]
     }.to_json
     @server.enqueue(payload)
-    rows = @client.status_rows
+    rows = @client.status
     assert_equal 2, rows.size
     rows.each { |r| assert_instance_of Beachcomber::CacheRow, r }
     assert_equal 'git',   rows[0].provider
@@ -178,9 +178,9 @@ class TestOps < Minitest::Test
     assert rows[1].stale
   end
 
-  def test_status_rows_raises_protocol_error_when_data_not_array
+  def test_status_raises_protocol_error_when_data_not_array
     @server.enqueue('{"ok":true,"data":{"not":"an array"}}')
-    assert_raises(Beachcomber::ProtocolError) { @client.status_rows }
+    assert_raises(Beachcomber::ProtocolError) { @client.status }
   end
 
   # --- get_with_flags ---
@@ -303,11 +303,11 @@ class TestOps < Minitest::Test
     assert_equal 'cache', result.subject
   end
 
-  def test_session_status_rows
+  def test_session_status
     @server.enqueue('{"ok":true,"data":[{"provider":"git","field":"branch","path":null,"value":"main","age_ms":50,"stale":false}]}')
     rows = nil
     @client.session do |s|
-      rows = s.status_rows
+      rows = s.status
     end
     assert_equal 1, rows.size
     assert_instance_of Beachcomber::CacheRow, rows.first
@@ -346,7 +346,7 @@ class TestOps < Minitest::Test
       ]
     }.to_json
     @server.enqueue(payload)
-    rows = @client.status_rows
+    rows = @client.status
     git = rows.find { |r| r.provider == 'git' }
     refute_nil git.kind
     assert_equal 'lifecycle', git.kind['kind']

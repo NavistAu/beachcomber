@@ -1,7 +1,7 @@
 --- Client implementation for the beachcomber daemon.
 --
 -- Wraps a socket handle and exposes the protocol operations:
--- get, get_with_flags, refresh, context, status, status_rows,
+-- get, get_with_flags, refresh, context, status,
 -- hello, put, put_null, introspect, watch.
 
 local json = require("beachcomber.json")
@@ -149,15 +149,13 @@ function Client:set_context(path)
   return true
 end
 
---- Return daemon status information.
+--- Return the cache row array.
 --
--- @return table status data, or nil, error_message
+-- @return table[] array of cache rows, or nil, error_message
 function Client:status()
-  local resp, err = send_request(self._sock, { op = "status" })
-  if not resp then
-    return nil, err
-  end
-  return resp.data
+  local resp = self:_send({ op = "status" })
+  if not resp.ok then return nil, resp.error end
+  return resp.data or {}
 end
 
 --- Query the daemon version and protocol version.
@@ -185,6 +183,7 @@ function Client:get_with_flags(key, path, force, wait)
   if force then req.force = true  end
   if wait  then req.wait  = true  end
   local resp = self:_send(req)
+  if not resp.ok then return nil, resp.error end
   return Result.new(resp)
 end
 
@@ -228,15 +227,6 @@ function Client:introspect(subject, duration_secs)
     return { subject = "daemon", daemon = resp.data, other = nil }
   end
   return { subject = subject, daemon = nil, other = resp.data }
-end
-
---- Return the cache row array (typed status result).
---
--- @return table[] array of cache rows, or nil, error_message
-function Client:status_rows()
-  local resp = self:_send({ op = "status" })
-  if not resp.ok then return nil, resp.error end
-  return resp.data or {}
 end
 
 --- Subscribe to changes for a key, returning a WatchStream.

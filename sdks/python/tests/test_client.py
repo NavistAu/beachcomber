@@ -140,16 +140,19 @@ class TestClientRefresh:
 
 
 class TestClientStatus:
-    def test_status_returns_dict(self, git_daemon: MockDaemon) -> None:
-        client = make_client(git_daemon)
-        status = client.status()
-        assert isinstance(status, dict)
-        assert status["scheduler"] == "running"
+    def test_status_returns_list(self, mock_daemon: MockDaemon) -> None:
+        mock_daemon.respond("status", {"ok": True, "data": [
+            {"provider": "git", "field": "branch", "path": "/repo", "value": "main", "age_ms": 10, "stale": False},
+        ]})
+        client = make_client(mock_daemon)
+        rows = client.status()
+        assert isinstance(rows, list)
+        assert rows[0].provider == "git"
 
     def test_status_empty_on_no_data(self, mock_daemon: MockDaemon) -> None:
-        mock_daemon.respond("status", {"ok": True})
+        mock_daemon.respond("status", {"ok": True, "data": []})
         client = make_client(mock_daemon)
-        assert client.status() == {}
+        assert client.status() == []
 
 
 # ---------------------------------------------------------------------------
@@ -210,11 +213,15 @@ class TestClientSession:
         req = mock_daemon.received[0]
         assert req["op"] == "refresh"
 
-    def test_session_status(self, git_daemon: MockDaemon) -> None:
-        client = make_client(git_daemon)
+    def test_session_status(self, mock_daemon: MockDaemon) -> None:
+        mock_daemon.respond("status", {"ok": True, "data": [
+            {"provider": "hostname", "field": None, "path": None, "value": "host1", "age_ms": 5, "stale": False},
+        ]})
+        client = make_client(mock_daemon)
         with client.session() as session:
-            status = session.status()
-        assert "scheduler" in status
+            rows = session.status()
+        assert len(rows) == 1
+        assert rows[0].provider == "hostname"
 
 
 # ---------------------------------------------------------------------------
