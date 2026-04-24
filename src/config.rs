@@ -424,8 +424,7 @@ impl Config {
         }
 
         let uid = unsafe { libc::getuid() };
-        let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(tmpdir)
+        PathBuf::from("/tmp")
             .join(format!("beachcomber-{uid}"))
             .join("sock")
     }
