@@ -105,6 +105,26 @@ pub struct HelloInfo {
     pub daemon_version: String,
 }
 
+/// Discriminator used by the status formatter to choose rendering strategy.
+/// Mirrors `beachcomber::cache::RowKind` for the wire format.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RowKind {
+    Lifecycle { decay: u8, watches_files: bool },
+    Once,
+    Virtual,
+    Transient,
+}
+
+/// Failure state for a cache entry embedded in status rows.
+/// Mirrors `beachcomber::cache::FailureSnapshot` for the wire format.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FailureSnapshot {
+    pub consecutive_failures: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suppressed_until_unix_ms: Option<u64>,
+}
+
 /// One row of the daemon's cache as returned by the `status` op.
 #[derive(Debug, Clone)]
 pub struct CacheRow {
@@ -114,10 +134,22 @@ pub struct CacheRow {
     pub value: serde_json::Value,
     pub age_ms: u64,
     pub stale: bool,
+    /// Phase 2.7: lifecycle classification of this cache entry.
+    pub kind: Option<RowKind>,
+    /// Phase 2.7: how often the provider is polled, in seconds.
+    pub poll_interval_secs: Option<u64>,
+    /// Phase 2.7: number of polls before a demanded key decays.
+    pub keep_alive_polls: Option<u32>,
+    /// Phase 2.7: whether FSEvents will reinstate watching after a miss.
+    pub fsevents_reinstate: Option<bool>,
+    /// Phase 2.7: failure state if the provider has been failing.
+    pub failure: Option<FailureSnapshot>,
 }
 
 impl CacheRow {
-    fn from_json(v: &serde_json::Value) -> Result<Self, CombError> {
+    /// Parse a `CacheRow` from the daemon's wire-format JSON object.
+    /// Unknown fields are silently ignored.
+    pub fn from_wire(v: &serde_json::Value) -> Result<Self, CombError> {
         let provider = v
             .get("provider")
             .and_then(|x| x.as_str())
@@ -134,6 +166,17 @@ impl CacheRow {
         let value = v.get("value").cloned().unwrap_or(serde_json::Value::Null);
         let age_ms = v.get("age_ms").and_then(|x| x.as_u64()).unwrap_or(0);
         let stale = v.get("stale").and_then(|x| x.as_bool()).unwrap_or(false);
+        let kind = v
+            .get("kind")
+            .and_then(|x| serde_json::from_value(x.clone()).ok());
+        let poll_interval_secs = v.get("poll_interval_secs").and_then(|x| x.as_u64());
+        let keep_alive_polls = v
+            .get("keep_alive_polls")
+            .and_then(|x| x.as_u64().map(|n| n as u32));
+        let fsevents_reinstate = v.get("fsevents_reinstate").and_then(|x| x.as_bool());
+        let failure = v
+            .get("failure")
+            .and_then(|x| serde_json::from_value(x.clone()).ok());
         Ok(CacheRow {
             provider,
             field,
@@ -141,7 +184,16 @@ impl CacheRow {
             value,
             age_ms,
             stale,
+            kind,
+            poll_interval_secs,
+            keep_alive_polls,
+            fsevents_reinstate,
+            failure,
         })
+    }
+
+    fn from_json(v: &serde_json::Value) -> Result<Self, CombError> {
+        Self::from_wire(v)
     }
 }
 

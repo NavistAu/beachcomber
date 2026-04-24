@@ -2,7 +2,7 @@
 
 use beachcomber::config::Config;
 use beachcomber::daemon;
-use libbeachcomber::{Client, ClientConfig};
+use libbeachcomber::{Client, ClientConfig, RowKind};
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -123,4 +123,40 @@ fn watch_receives_initial_event() {
     );
     let v = event.data.unwrap();
     assert_eq!(v.get_i64("phase3_watch.x"), Some(1));
+}
+
+#[test]
+fn status_row_exposes_lifecycle_fields() {
+    // Build a CacheRow directly from the wire-format JSON to test the new fields
+    // without needing a live daemon with a lifecycle provider registered.
+    use libbeachcomber::CacheRow;
+
+    let wire = serde_json::json!({
+        "provider": "git",
+        "field": "branch",
+        "path": "/tmp",
+        "value": "main",
+        "age_ms": 100u64,
+        "stale": false,
+        "kind": {"kind": "lifecycle", "decay": 0, "watches_files": true},
+        "poll_interval_secs": 5u64,
+        "keep_alive_polls": 3u32,
+        "fsevents_reinstate": false,
+        "failure": {"consecutive_failures": 0}
+    });
+
+    let row = CacheRow::from_wire(&wire).expect("from_wire");
+    assert!(row.kind.is_some(), "kind must be populated");
+    match row.kind.unwrap() {
+        RowKind::Lifecycle { decay, watches_files } => {
+            assert_eq!(decay, 0);
+            assert!(watches_files);
+        }
+        other => panic!("expected Lifecycle, got {:?}", other),
+    }
+    assert_eq!(row.poll_interval_secs, Some(5));
+    assert_eq!(row.keep_alive_polls, Some(3));
+    assert_eq!(row.fsevents_reinstate, Some(false));
+    assert!(row.failure.is_some());
+    assert_eq!(row.failure.unwrap().consecutive_failures, 0);
 }
