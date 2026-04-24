@@ -843,10 +843,11 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
     );
     let task = tokio::spawn(async move { scheduler.run().await });
 
-    // Demand an entry to populate lifecycle registry.
+    // Demand a Poll-strategy provider to populate the lifecycle registry.
+    // Once providers (like hostname) deliberately bypass the lifecycle.
     handle
         .send(SchedulerMessage::QueryActivity {
-            provider: "hostname".to_string(),
+            provider: "load".to_string(),
             path: None,
         })
         .await;

@@ -700,6 +700,25 @@ impl Scheduler {
                             let _ = reply.send(map);
                         }
                         Some(SchedulerMessage::QueryActivity { provider, path }) => {
+                            // Once providers don't participate in the lifecycle.
+                            // They're populated once by compute_once_providers() at
+                            // startup and never re-executed. Short-circuit before
+                            // any lifecycle registration or watch setup.
+                            let is_once = self
+                                .registry
+                                .get(&provider)
+                                .map(|p| {
+                                    matches!(
+                                        p.metadata().invalidation,
+                                        InvalidationStrategy::Once
+                                    )
+                                })
+                                .unwrap_or(false);
+                            if is_once {
+                                last_activity = Instant::now();
+                                continue;
+                            }
+
                             let cfg = ProviderLifecycleConfig {
                                 poll_interval: self.resolve_poll_interval_for(&provider),
                                 keep_alive_polls: self.config.resolve_poll_live_count(&provider),
@@ -894,6 +913,22 @@ impl Scheduler {
                             let _ = reply.send(map);
                         }
                         Some(SchedulerMessage::QueryActivity { provider, path }) => {
+                            // Once providers don't participate in the lifecycle.
+                            let is_once = self
+                                .registry
+                                .get(&provider)
+                                .map(|p| {
+                                    matches!(
+                                        p.metadata().invalidation,
+                                        InvalidationStrategy::Once
+                                    )
+                                })
+                                .unwrap_or(false);
+                            if is_once {
+                                last_activity = Instant::now();
+                                continue;
+                            }
+
                             let cfg = ProviderLifecycleConfig {
                                 poll_interval: self.resolve_poll_interval_for(&provider),
                                 keep_alive_polls: self.config.resolve_poll_live_count(&provider),
@@ -972,7 +1007,10 @@ impl Scheduler {
                 InvalidationStrategy::Watch {
                     fallback_poll_secs, ..
                 } => fallback_poll_secs.unwrap_or(60),
-                InvalidationStrategy::Once => 0,
+                // Once providers have no poll cadence; don't fall through to
+                // the lifecycle default — that would cause a 60s re-poll and
+                // violate the Once contract.
+                InvalidationStrategy::Once => return Duration::ZERO,
             };
             if secs > 0 {
                 return Duration::from_secs(secs);

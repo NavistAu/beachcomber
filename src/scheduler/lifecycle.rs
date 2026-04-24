@@ -129,6 +129,19 @@ impl LifecycleRegistry {
         config: ProviderLifecycleConfig,
         now: Instant,
     ) -> DemandOutcome {
+        // Defensive: a zero poll interval would make the poll timer fire on
+        // every tick. Callers must skip Once providers before reaching here.
+        // If one slips through, refuse to register a lifecycle entry rather
+        // than poll at max rate. The returned outcome intentionally uses
+        // ResetKeepAlive (not NewlyActive) so the scheduler does NOT execute
+        // the provider in response.
+        if config.poll_interval.is_zero() {
+            return DemandOutcome {
+                transition: StateTransition::ResetKeepAlive,
+                watch_registration: WatchAction::Preserve,
+            };
+        }
+
         let keep_alive_duration = config.poll_interval * config.keep_alive_polls;
 
         match self.entries.get_mut(&key) {

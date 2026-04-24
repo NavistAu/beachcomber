@@ -9,9 +9,12 @@ use beachcomber::scheduler::lifecycle::{
 use std::time::{Duration, Instant};
 
 fn test_config() -> ProviderLifecycleConfig {
+    // 1ms poll + 1 keep-alive = 1ms per step for fast test progression.
+    // Non-zero interval is required: on_demand refuses zero intervals as a
+    // defence against Once providers slipping through.
     ProviderLifecycleConfig {
-        poll_interval: Duration::from_secs(0), // instant poll for tests
-        keep_alive_polls: 0,                   // instant decay for tests
+        poll_interval: Duration::from_millis(1),
+        keep_alive_polls: 1,
         fsevents_reinstate: false,
     }
 }
@@ -27,6 +30,11 @@ fn lifecycle_starts_in_active() {
     assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
 }
 
+// With `poll_interval=1ms, keep_alive_polls=1`, step durations double per
+// decay step (2^n × P × K): {1, 2, 4, 8, 16} ms for Active→Decay1…Decay4.
+// Advancing 100 ms per tick is comfortably past every deadline.
+const STEP: Duration = Duration::from_millis(100);
+
 #[test]
 fn lifecycle_advances_through_decay_stages() {
     let mut reg = LifecycleRegistry::new();
@@ -34,33 +42,28 @@ fn lifecycle_advances_through_decay_stages() {
     let t0 = Instant::now();
     reg.on_demand(key.clone(), test_config(), t0);
 
-    // With poll_interval=0 and keep_alive_polls=0, tick immediately advances state.
-    // Active → Decay1
-    let t1 = t0 + Duration::from_millis(1);
+    let t1 = t0 + STEP;
     reg.tick(t1);
     assert_eq!(
         reg.state(&key),
         Some(&LifecycleState::Decay(DecayStep::Step1))
     );
 
-    // Decay1 → Decay2
-    let t2 = t1 + Duration::from_millis(1);
+    let t2 = t1 + STEP;
     reg.tick(t2);
     assert_eq!(
         reg.state(&key),
         Some(&LifecycleState::Decay(DecayStep::Step2))
     );
 
-    // Decay2 → Decay3
-    let t3 = t2 + Duration::from_millis(1);
+    let t3 = t2 + STEP;
     reg.tick(t3);
     assert_eq!(
         reg.state(&key),
         Some(&LifecycleState::Decay(DecayStep::Step3))
     );
 
-    // Decay3 → Decay4
-    let t4 = t3 + Duration::from_millis(1);
+    let t4 = t3 + STEP;
     reg.tick(t4);
     assert_eq!(
         reg.state(&key),
@@ -76,14 +79,14 @@ fn lifecycle_resets_to_active_on_demand() {
     reg.on_demand(key.clone(), test_config(), t0);
 
     // Advance into decay.
-    reg.tick(t0 + Duration::from_millis(1));
+    reg.tick(t0 + STEP);
     assert_eq!(
         reg.state(&key),
         Some(&LifecycleState::Decay(DecayStep::Step1))
     );
 
     // New demand reinstates to Active.
-    let t2 = t0 + Duration::from_millis(2);
+    let t2 = t0 + STEP * 2;
     let outcome = reg.on_demand(key.clone(), test_config(), t2);
     assert!(matches!(
         outcome.transition,
@@ -101,11 +104,11 @@ fn lifecycle_evicts_after_decay4() {
     let t0 = Instant::now();
     reg.on_demand(key.clone(), test_config(), t0);
 
-    // Tick through Active + 4 decay steps = 5 ticks minimum.
-    let mut t = t0 + Duration::from_millis(1);
+    // Tick through Active + 4 decay steps = 5 ticks past all deadlines.
+    let mut t = t0 + STEP;
     for _ in 0..5 {
         reg.tick(t);
-        t += Duration::from_millis(1);
+        t += STEP;
     }
 
     // After Decay4 expiry, entry should be evicted (None = not in registry).

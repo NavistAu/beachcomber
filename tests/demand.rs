@@ -40,6 +40,50 @@ async fn query_activity_triggers_provider_execution() {
 }
 
 #[tokio::test]
+async fn once_providers_do_not_enter_lifecycle() {
+    let cache = Arc::new(Cache::new());
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let config = Config::default();
+
+    let (handle, scheduler) = Scheduler::new(
+        cache.clone(),
+        registry,
+        config,
+        Arc::new(WatcherRegistry::new()),
+    );
+    let sched_task = tokio::spawn(async move { scheduler.run().await });
+
+    // Demand a Once provider. It should be cached (from startup) but must not
+    // create a lifecycle entry — otherwise it would be re-polled on the
+    // lifecycle-default cadence, violating the Once contract.
+    handle
+        .send(SchedulerMessage::QueryActivity {
+            provider: "hostname".to_string(),
+            path: None,
+        })
+        .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    assert!(
+        cache.get("hostname", None).is_some(),
+        "hostname should be cached by compute_once_providers at startup"
+    );
+
+    let snapshots = handle.get_lifecycle_snapshots().await;
+    let has_hostname_entry = snapshots.keys().any(|(p, _)| p == "hostname");
+    assert!(
+        !has_hostname_entry,
+        "Once providers must not appear in the lifecycle registry; \
+         snapshots: {:?}",
+        snapshots.keys().collect::<Vec<_>>()
+    );
+
+    handle.send(SchedulerMessage::Shutdown).await;
+    let _ = sched_task.await;
+}
+
+#[tokio::test]
 async fn query_activity_sets_up_polling() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
