@@ -238,6 +238,32 @@ fn custom_template_supports_truncate_filter() {
 }
 
 #[test]
+fn cache_row_kind_serde_round_trip() {
+    use beachcomber::cache::RowKind;
+    use serde_json::json;
+
+    let cases = vec![
+        (
+            RowKind::Lifecycle { decay: 0, watches_files: true },
+            json!({"kind": "lifecycle", "decay": 0, "watches_files": true}),
+        ),
+        (
+            RowKind::Lifecycle { decay: 4, watches_files: false },
+            json!({"kind": "lifecycle", "decay": 4, "watches_files": false}),
+        ),
+        (RowKind::Once, json!({"kind": "once"})),
+        (RowKind::Virtual, json!({"kind": "virtual"})),
+        (RowKind::Transient, json!({"kind": "transient"})),
+    ];
+    for (variant, expected_json) in cases {
+        let serialized = serde_json::to_value(&variant).unwrap();
+        assert_eq!(serialized, expected_json, "serialize {:?}", variant);
+        let round: RowKind = serde_json::from_value(serialized).unwrap();
+        assert_eq!(round, variant);
+    }
+}
+
+#[test]
 fn custom_template_supports_age_human() {
     let rows = vec![CacheRow {
         provider: "git".into(),

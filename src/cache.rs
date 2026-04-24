@@ -189,6 +189,17 @@ pub struct CacheRow {
     pub decay: Option<u8>,
 }
 
+/// Discriminator used by the status formatter to choose rendering strategy.
+/// `Lifecycle` entries get TTL countdown rendering; others render `---`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RowKind {
+    Lifecycle { decay: u8, watches_files: bool },
+    Once,
+    Virtual,
+    Transient,
+}
+
 impl Default for Cache {
     fn default() -> Self {
         Self::new()
