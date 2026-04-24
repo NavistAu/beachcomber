@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -322,8 +323,52 @@ func (c *Client) roundtrip(req map[string]interface{}) (*Result, error) {
 	return readResponse(scanner)
 }
 
+var retryBackoffs = []time.Duration{
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	1000 * time.Millisecond,
+}
+
+// connectWithRetry dials a Unix socket with 3 retries (250ms/500ms/1s
+// exponential backoff).  Retries only on connection-refused and
+// no-such-file errors — other errors surface immediately.
+func connectWithRetry(path string, timeout time.Duration) (net.Conn, error) {
+	var lastErr error
+	for _, backoff := range retryBackoffs {
+		conn, err := net.DialTimeout("unix", path, timeout)
+		if err == nil {
+			return conn, nil
+		}
+		if !isRetriable(err) {
+			return nil, err
+		}
+		lastErr = err
+		time.Sleep(backoff)
+	}
+	// Final attempt.
+	conn, err := net.DialTimeout("unix", path, timeout)
+	if err != nil {
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, err
+	}
+	return conn, nil
+}
+
+// isRetriable returns true for transient connect errors that may resolve
+// when the daemon finishes restarting (connection refused / socket absent).
+func isRetriable(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "no such file or directory")
+}
+
 func (c *Client) dial() (net.Conn, error) {
-	conn, err := net.DialTimeout("unix", c.socketPath, c.timeout)
+	conn, err := connectWithRetry(c.socketPath, c.timeout)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrDaemonNotRunning, c.socketPath)
 	}
