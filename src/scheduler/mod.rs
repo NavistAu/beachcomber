@@ -719,10 +719,18 @@ impl Scheduler {
                                 continue;
                             }
 
+                            let provider_reinstate_default = self
+                                .registry
+                                .get(&provider)
+                                .map(|p| p.fsevents_reinstate_default())
+                                .unwrap_or(false);
                             let cfg = ProviderLifecycleConfig {
                                 poll_interval: self.resolve_poll_interval_for(&provider),
                                 keep_alive_polls: self.config.resolve_poll_live_count(&provider),
-                                fsevents_reinstate: self.config.resolve_fsevents_reinstate(&provider),
+                                fsevents_reinstate: self.config.resolve_fsevents_reinstate(
+                                    &provider,
+                                    provider_reinstate_default,
+                                ),
                             };
                             let key = (provider.clone(), path.clone());
                             let outcome = lifecycle.on_demand(key.clone(), cfg, Instant::now());
@@ -929,10 +937,18 @@ impl Scheduler {
                                 continue;
                             }
 
+                            let provider_reinstate_default = self
+                                .registry
+                                .get(&provider)
+                                .map(|p| p.fsevents_reinstate_default())
+                                .unwrap_or(false);
                             let cfg = ProviderLifecycleConfig {
                                 poll_interval: self.resolve_poll_interval_for(&provider),
                                 keep_alive_polls: self.config.resolve_poll_live_count(&provider),
-                                fsevents_reinstate: self.config.resolve_fsevents_reinstate(&provider),
+                                fsevents_reinstate: self.config.resolve_fsevents_reinstate(
+                                    &provider,
+                                    provider_reinstate_default,
+                                ),
                             };
                             let key = (provider.clone(), path.clone());
                             let outcome = lifecycle.on_demand(key.clone(), cfg, Instant::now());

@@ -113,8 +113,11 @@ pub struct LifecycleConfig {
     pub poll_interval: String,
     #[serde(default = "default_poll_live_count")]
     pub poll_live_count: u32,
+    /// Global default for `fsevents_reinstate`. `None` means "unset" —
+    /// providers fall through to their own `fsevents_reinstate_default()`.
+    /// `Some(v)` is an explicit user override that beats any provider default.
     #[serde(default)]
-    pub fsevents_reinstate: bool,
+    pub fsevents_reinstate: Option<bool>,
 }
 
 impl Default for LifecycleConfig {
@@ -125,7 +128,7 @@ impl Default for LifecycleConfig {
             failure_backoff_interval: "1s".to_string(),
             poll_interval: default_poll_interval(),
             poll_live_count: default_poll_live_count(),
-            fsevents_reinstate: false,
+            fsevents_reinstate: None,
         }
     }
 }
@@ -282,11 +285,25 @@ impl Config {
             .unwrap_or(self.lifecycle.poll_live_count)
     }
 
-    pub fn resolve_fsevents_reinstate(&self, provider_name: &str) -> bool {
+    /// Resolve the effective `fsevents_reinstate` flag for a provider.
+    ///
+    /// Priority (first match wins):
+    /// 1. Per-provider config: `[providers.<name>] fsevents_reinstate = <bool>`.
+    /// 2. Global lifecycle override: `[lifecycle] fsevents_reinstate = <bool>`.
+    /// 3. Provider-declared default via `Provider::fsevents_reinstate_default`.
+    ///
+    /// `provider_default` should be sourced from the provider's trait method;
+    /// pass `false` if the caller doesn't have access to the provider.
+    pub fn resolve_fsevents_reinstate(
+        &self,
+        provider_name: &str,
+        provider_default: bool,
+    ) -> bool {
         self.providers
             .get(provider_name)
             .and_then(|p| p.fsevents_reinstate)
-            .unwrap_or(self.lifecycle.fsevents_reinstate)
+            .or(self.lifecycle.fsevents_reinstate)
+            .unwrap_or(provider_default)
     }
 
     pub fn script_providers(&self) -> Vec<(String, ScriptProviderConfig)> {

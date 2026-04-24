@@ -79,6 +79,14 @@ impl Provider for MiseProvider {
         }
     }
 
+    // Mise config changes are rare; keep project entries warm across shell idle
+    // so a subsequent mise.toml edit takes effect immediately rather than
+    // racing the decay→eviction window. Users can override with
+    // `[providers.mise] fsevents_reinstate = false`.
+    fn fsevents_reinstate_default(&self) -> bool {
+        true
+    }
+
     fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let mut out = Vec::new();
 

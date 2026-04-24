@@ -258,7 +258,9 @@ failure_backoff_interval = "1s"
     let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
     assert_eq!(config.lifecycle.poll_interval, "60s");
     assert_eq!(config.lifecycle.poll_live_count, 12);
-    assert!(!config.lifecycle.fsevents_reinstate);
+    // Global `fsevents_reinstate` parses as Option<bool>: explicit `false`
+    // in TOML → Some(false), an explicit override that beats provider defaults.
+    assert_eq!(config.lifecycle.fsevents_reinstate, Some(false));
 }
 
 #[test]
@@ -317,8 +319,41 @@ failure_backoff_interval = "1s"
 fsevents_reinstate = true
 "#;
     let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
-    assert!(config.resolve_fsevents_reinstate("mise"));
-    assert!(!config.resolve_fsevents_reinstate("unknown"));
+    // Per-provider override wins over the global lifecycle setting.
+    assert!(config.resolve_fsevents_reinstate("mise", false));
+    // No per-provider override; global lifecycle (false) beats the
+    // provided provider default (true).
+    assert!(!config.resolve_fsevents_reinstate("unknown", true));
+}
+
+#[test]
+fn resolve_fsevents_reinstate_falls_through_to_provider_default() {
+    // Neither per-provider nor global is set → provider-declared default wins.
+    let toml = r#"
+[lifecycle]
+poll_interval = "60s"
+poll_live_count = 12
+failure_reattempts = 3
+failure_backoff_interval = "1s"
+"#;
+    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
+    assert!(config.resolve_fsevents_reinstate("mise", true));
+    assert!(!config.resolve_fsevents_reinstate("git", false));
+}
+
+#[test]
+fn resolve_fsevents_reinstate_global_override_beats_provider_default() {
+    // Explicit global false overrides a provider default of true.
+    let toml = r#"
+[lifecycle]
+poll_interval = "60s"
+poll_live_count = 12
+fsevents_reinstate = false
+failure_reattempts = 3
+failure_backoff_interval = "1s"
+"#;
+    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
+    assert!(!config.resolve_fsevents_reinstate("mise", true));
 }
 
 #[test]

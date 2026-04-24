@@ -223,6 +223,23 @@ pub enum ProviderSource {
 pub trait Provider: Send + Sync {
     fn metadata(&self) -> ProviderMetadata;
     fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)>;
+
+    /// Whether the provider wants `fsevents_reinstate = true` by default
+    /// when the user hasn't configured the flag either per-provider or in
+    /// the global lifecycle section. Meaningful only for providers with a
+    /// `Watch` / `WatchAndPoll` invalidation strategy.
+    ///
+    /// Rationale: providers whose underlying data rarely changes (e.g. mise
+    /// project config, `.envrc`, tool-versions) benefit from staying warm
+    /// across shell idle, because a subsequent file event would otherwise
+    /// race against the decay→eviction window. Providers with high event
+    /// churn (e.g. git over an active repo) may prefer the default `false`
+    /// so they drop cleanly once demand stops.
+    ///
+    /// Default: `false`. Override to opt in.
+    fn fsevents_reinstate_default(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
