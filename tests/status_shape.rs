@@ -1046,3 +1046,139 @@ fn minijinja_row_context_exposes_new_fields() {
     assert_eq!(v.get("keep_alive_polls").and_then(|v| v.as_u64()), Some(12));
     assert_eq!(v.get("fsevents_reinstate").and_then(|v| v.as_bool()), Some(true));
 }
+
+// ---------------------------------------------------------------------------
+// Tasks 1.22: new filter keys — lifecycle, fsevents_reinstate
+// ---------------------------------------------------------------------------
+
+fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
+    use beachcomber::cache::{CacheRow, RowKind};
+    use serde_json::json;
+    CacheRow {
+        provider: provider.into(),
+        path: None,
+        field: "x".into(),
+        value: json!(0),
+        age_ms: 0,
+        stale: false,
+        kind: Some(RowKind::Lifecycle { decay, watches_files: false }),
+        poll_interval_secs: Some(60),
+        keep_alive_polls: Some(12),
+        fsevents_reinstate: Some(false),
+        failure: None,
+    }
+}
+
+fn once_row(provider: &str) -> beachcomber::cache::CacheRow {
+    use beachcomber::cache::{CacheRow, RowKind};
+    use serde_json::json;
+    CacheRow {
+        provider: provider.into(),
+        path: None,
+        field: "x".into(),
+        value: json!(0),
+        age_ms: 0,
+        stale: false,
+        kind: Some(RowKind::Once),
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        failure: None,
+    }
+}
+
+#[test]
+fn filter_lifecycle_active_matches_only_decay_zero() {
+    let rows = vec![lc_row("git", 0), lc_row("battery", 2), once_row("hostname")];
+    let out = apply_filters(rows, &["lifecycle=active".to_string()]).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].provider, "git");
+}
+
+#[test]
+fn filter_lifecycle_decay4_matches_only_about_to_evict() {
+    let rows = vec![lc_row("a", 4), lc_row("b", 3), lc_row("c", 0)];
+    let out = apply_filters(rows, &["lifecycle=decay4".to_string()]).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].provider, "a");
+}
+
+#[test]
+fn filter_lifecycle_once_matches_once_kind() {
+    let rows = vec![lc_row("git", 0), once_row("hostname")];
+    let out = apply_filters(rows, &["lifecycle=once".to_string()]).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].provider, "hostname");
+}
+
+#[test]
+fn filter_fsevents_reinstate_true() {
+    let mut rows = vec![lc_row("a", 0), lc_row("b", 0)];
+    rows[0].fsevents_reinstate = Some(true);
+    rows[1].fsevents_reinstate = Some(false);
+    let out = apply_filters(rows, &["fsevents_reinstate=true".to_string()]).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].provider, "a");
+}
+
+// ---------------------------------------------------------------------------
+// Task 1.23: new sort keys — lifecycle, poll_interval
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sort_lifecycle_orders_most_decayed_first() {
+    let rows = vec![lc_row("a", 0), lc_row("b", 4), once_row("c"), lc_row("d", 2)];
+    let sorted = apply_sort(rows, "lifecycle").unwrap();
+    let providers: Vec<_> = sorted.iter().map(|r| r.provider.clone()).collect();
+    assert_eq!(providers, vec!["b", "d", "a", "c"]);
+}
+
+#[test]
+fn sort_poll_interval_orders_slowest_first() {
+    let mut rows = vec![lc_row("a", 0), lc_row("b", 0), lc_row("c", 0)];
+    rows[0].poll_interval_secs = Some(30);
+    rows[1].poll_interval_secs = Some(300);
+    rows[2].poll_interval_secs = Some(60);
+    let rows = apply_sort(rows, "poll_interval").unwrap();
+    let p: Vec<_> = rows.iter().map(|r| r.poll_interval_secs.unwrap()).collect();
+    assert_eq!(p, vec![300, 60, 30]);
+}
+
+// ---------------------------------------------------------------------------
+// Task 1.24: defensive tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wire_format_round_trip_full_cache_row() {
+    let original = sample_lifecycle_row();
+    let json = serde_json::to_string(&original).unwrap();
+    let round: beachcomber::cache::CacheRow = serde_json::from_str(&json).unwrap();
+    assert_eq!(round.provider, original.provider);
+    assert_eq!(round.kind, original.kind);
+    assert_eq!(round.poll_interval_secs, original.poll_interval_secs);
+    assert_eq!(round.keep_alive_polls, original.keep_alive_polls);
+    assert_eq!(round.fsevents_reinstate, original.fsevents_reinstate);
+    assert_eq!(round.failure, original.failure);
+}
+
+#[test]
+fn human_renders_p_zero_k_zero_without_panic() {
+    use beachcomber::cache::{CacheRow, RowKind};
+    use serde_json::json;
+    let row = CacheRow {
+        provider: "edge".into(),
+        path: None,
+        field: "x".into(),
+        value: json!(null),
+        age_ms: 0,
+        stale: false,
+        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: false }),
+        poll_interval_secs: Some(0),
+        keep_alive_polls: Some(0),
+        fsevents_reinstate: Some(false),
+        failure: None,
+    };
+    let opts = beachcomber::cli::status_format::FormatOptions::default();
+    let out = beachcomber::cli::status_format::render_human(&[row], &opts);
+    assert!(out.contains("0s\u{00d7}00"), "P=0 K=0 expected: {}", out);
+}

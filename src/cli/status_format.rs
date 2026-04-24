@@ -783,6 +783,14 @@ enum Predicate {
     PathDash,
     FieldEq(String),
     Stale(bool),
+    /// Match Lifecycle rows with the given decay level (0=active, 1-4=decayN).
+    LifecycleDecay(u8),
+    /// Match Once rows.
+    LifecycleOnce,
+    /// Match Virtual rows.
+    LifecycleVirtual,
+    /// Match on fsevents_reinstate flag value.
+    FseventsReinstate(bool),
 }
 
 fn parse_filter(s: &str) -> Result<Predicate, String> {
@@ -810,12 +818,32 @@ fn parse_filter(s: &str) -> Result<Predicate, String> {
             "false" => Ok(Predicate::Stale(false)),
             other => Err(format!("stale= must be true or false, got {other}")),
         },
+        "lifecycle" => match v {
+            "active" => Ok(Predicate::LifecycleDecay(0)),
+            "decay1" => Ok(Predicate::LifecycleDecay(1)),
+            "decay2" => Ok(Predicate::LifecycleDecay(2)),
+            "decay3" => Ok(Predicate::LifecycleDecay(3)),
+            "decay4" => Ok(Predicate::LifecycleDecay(4)),
+            "once" => Ok(Predicate::LifecycleOnce),
+            "virtual" => Ok(Predicate::LifecycleVirtual),
+            other => Err(format!(
+                "lifecycle= must be active|decay1|decay2|decay3|decay4|once|virtual, got {other}"
+            )),
+        },
+        "fsevents_reinstate" => match v {
+            "true" => Ok(Predicate::FseventsReinstate(true)),
+            "false" => Ok(Predicate::FseventsReinstate(false)),
+            other => Err(format!(
+                "fsevents_reinstate= must be true or false, got {other}"
+            )),
+        },
         other => Err(format!("unknown filter key: {other}")),
     }
 }
 
 impl Predicate {
     fn matches(&self, r: &CacheRow) -> bool {
+        use crate::cache::RowKind;
         match self {
             Predicate::ProviderEq(v) => &r.provider == v,
             Predicate::ProviderGlob(pat) => simple_glob_match(pat, &r.provider),
@@ -825,6 +853,13 @@ impl Predicate {
             Predicate::PathDash => r.path.is_none(),
             Predicate::FieldEq(v) => &r.field == v,
             Predicate::Stale(b) => r.stale == *b,
+            Predicate::LifecycleDecay(target) => matches!(
+                &r.kind,
+                Some(RowKind::Lifecycle { decay, .. }) if decay == target
+            ),
+            Predicate::LifecycleOnce => matches!(&r.kind, Some(RowKind::Once)),
+            Predicate::LifecycleVirtual => matches!(&r.kind, Some(RowKind::Virtual)),
+            Predicate::FseventsReinstate(b) => r.fsevents_reinstate.unwrap_or(false) == *b,
         }
     }
 }
@@ -856,9 +891,11 @@ fn simple_glob_match(pattern: &str, text: &str) -> bool {
 
 /// Sort `rows` by the given column name (ascending, stable).
 ///
-/// Valid columns: `provider`, `path`, `field`, `value`, `age`, `stale`.
+/// Valid columns: `provider`, `path`, `field`, `value`, `age`, `stale`, `lifecycle`,
+/// `poll_interval`.
 /// Returns `Err` for any other column name.
 pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, String> {
+    use crate::cache::RowKind;
     match col {
         "default" => rows.sort_by(|a, b| {
             a.provider
@@ -872,6 +909,17 @@ pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, S
         "value" => rows.sort_by(|a, b| a.value.to_string().cmp(&b.value.to_string())),
         "age" => rows.sort_by_key(|r| r.age_ms),
         "stale" => rows.sort_by_key(|r| r.stale),
+        // Most-decayed first: Lifecycle{4} < Lifecycle{3} < ... < Lifecycle{0},
+        // then Once, Virtual, Transient, None.
+        "lifecycle" => rows.sort_by_key(|r| match &r.kind {
+            Some(RowKind::Lifecycle { decay, .. }) => (0u8, 4u8 - *decay),
+            Some(RowKind::Once) => (1, 0),
+            Some(RowKind::Virtual) => (2, 0),
+            Some(RowKind::Transient) => (3, 0),
+            None => (4, 0),
+        }),
+        // Slowest-pollers first (descending poll_interval); None last.
+        "poll_interval" => rows.sort_by_key(|r| std::cmp::Reverse(r.poll_interval_secs.unwrap_or(0))),
         other => return Err(format!("invalid sort column: {other}")),
     }
     Ok(rows)
