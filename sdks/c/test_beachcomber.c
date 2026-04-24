@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/time.h>
 #include <errno.h>
 
 /* -------------------------------------------------------------------------
@@ -1272,6 +1273,55 @@ static void test_watch_null_args(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * Connect retry tests
+ * ---------------------------------------------------------------------- */
+
+static void *delayed_bind(void *arg) {
+    char *path = (char *)arg;
+    usleep(400 * 1000); /* 400ms */
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { free(path); return NULL; }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+    bind(fd, (struct sockaddr *)&addr, sizeof(addr));
+    listen(fd, 1);
+    int client_fd = accept(fd, NULL, NULL);
+    if (client_fd >= 0) close(client_fd);
+    close(fd);
+    unlink(path);
+    free(path);
+    return NULL;
+}
+
+static void test_connect_retries_succeed_after_brief_outage(void) {
+    char sock_path[256];
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !*tmpdir) tmpdir = "/tmp";
+    snprintf(sock_path, sizeof(sock_path), "%s/comb_retry_%d.sock", tmpdir, (int)getpid());
+    unlink(sock_path);
+
+    pthread_t binder;
+    char *path_arg = strdup(sock_path);
+    pthread_create(&binder, NULL, delayed_bind, path_arg);
+
+    struct timeval start, end;
+    gettimeofday(&start, NULL);
+    comb_client_t *c = comb_connect_path(sock_path);
+    gettimeofday(&end, NULL);
+
+    CHECK(c != NULL);
+    long elapsed_ms = (end.tv_sec - start.tv_sec) * 1000L
+                    + (end.tv_usec - start.tv_usec) / 1000L;
+    CHECK(elapsed_ms >= 250);
+
+    comb_disconnect(c);
+    pthread_join(binder, NULL);
+    unlink(sock_path);
+}
+
+/* -------------------------------------------------------------------------
  * Main
  * ---------------------------------------------------------------------- */
 
@@ -1366,6 +1416,9 @@ int main(void) {
     test_watch_next();
     test_watch_free_null();
     test_watch_null_args();
+
+    SUITE("Connect retry");
+    test_connect_retries_succeed_after_brief_outage();
 
     printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

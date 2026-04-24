@@ -13,6 +13,7 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/time.h>
 
 /* -------------------------------------------------------------------------
  * Internal types
@@ -122,31 +123,47 @@ char *comb_socket_path(char *dst, size_t dst_len) {
  * Connection
  * ---------------------------------------------------------------------- */
 
+/* Retry backoffs in microseconds: 250ms, 500ms, 1000ms */
+static const long COMB_RETRY_BACKOFFS_US[] = { 250000L, 500000L, 1000000L };
+#define COMB_RETRY_COUNT 3
+
 comb_client_t *comb_connect_path(const char *socket_path) {
     if (!socket_path || *socket_path == '\0') return NULL;
-
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) return NULL;
 
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    if (strlen(socket_path) >= sizeof(addr.sun_path)) {
-        close(fd);
-        return NULL;
-    }
+    if (strlen(socket_path) >= sizeof(addr.sun_path)) return NULL;
     strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    for (int attempt = 0; attempt < COMB_RETRY_COUNT + 1; attempt++) {
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) return NULL;
+
+        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            comb_client_t *c = (comb_client_t *)malloc(sizeof(comb_client_t));
+            if (!c) { close(fd); return NULL; }
+            c->fd          = fd;
+            c->socket_path = xstrdup(socket_path);
+            return c;
+        }
+
+        int err = errno;
         close(fd);
-        return NULL;
+
+        /* Only retry on ECONNREFUSED and ENOENT */
+        if (err != ECONNREFUSED && err != ENOENT) return NULL;
+
+        /* Sleep before the next attempt (not after the last) */
+        if (attempt < COMB_RETRY_COUNT) {
+            struct timeval tv;
+            tv.tv_sec  = COMB_RETRY_BACKOFFS_US[attempt] / 1000000L;
+            tv.tv_usec = COMB_RETRY_BACKOFFS_US[attempt] % 1000000L;
+            select(0, NULL, NULL, NULL, &tv);
+        }
     }
 
-    comb_client_t *c = (comb_client_t *)malloc(sizeof(comb_client_t));
-    if (!c) { close(fd); return NULL; }
-    c->fd          = fd;
-    c->socket_path = xstrdup(socket_path);
-    return c;
+    return NULL;
 }
 
 comb_client_t *comb_connect(void) {
