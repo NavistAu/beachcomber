@@ -157,6 +157,91 @@ pub fn acquire_or_supersede(
     }
 }
 
+/// Spawn a thread that watches `current_exe()`. When the binary is modified
+/// (after a 200ms debounce window), calls `on_change` once. The watcher thread
+/// exits after firing (one-shot).
+///
+/// Returns Err if the watcher cannot be set up (e.g., current_exe failed). The
+/// thread itself logs and exits silently on internal failures (like the
+/// notify channel disconnecting).
+pub fn spawn_binary_self_watch<F: FnOnce() + Send + 'static>(
+    on_change: F,
+) -> std::io::Result<()> {
+    use notify::{EventKind, RecursiveMode, Watcher};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let exe = std::env::current_exe()?;
+    // Canonicalize so we match what the fs-watcher reports (resolves /tmp → /private/tmp on macOS).
+    let exe = exe.canonicalize().unwrap_or(exe);
+
+    std::thread::spawn(move || {
+        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+        let mut watcher = match notify::recommended_watcher(tx) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::error!("failed to create fs watcher for self-watch: {e}");
+                return;
+            }
+        };
+        let parent = match exe.parent() {
+            Some(p) => p.to_path_buf(),
+            None => {
+                tracing::error!("current_exe has no parent: {exe:?}");
+                return;
+            }
+        };
+        tracing::debug!("self-watch: watching {parent:?} for changes to {exe:?}");
+        if let Err(e) = watcher.watch(&parent, RecursiveMode::NonRecursive) {
+            tracing::error!("failed to watch {parent:?}: {e}");
+            return;
+        }
+
+        let mut last_event: Option<Instant> = None;
+        let debounce = Duration::from_millis(200);
+
+        loop {
+            let timeout = last_event
+                .map(|t| (t + debounce).saturating_duration_since(Instant::now()))
+                .unwrap_or(Duration::from_secs(60));
+
+            match rx.recv_timeout(timeout) {
+                Ok(Ok(event)) => {
+                    tracing::debug!("self-watch event: kind={:?} paths={:?}", event.kind, event.paths);
+                    let path_match = event.paths.iter().any(|p| {
+                        let canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
+                        canonical == exe || p == &exe
+                    });
+                    if path_match {
+                        let is_change = matches!(
+                            event.kind,
+                            EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                        );
+                        if is_change {
+                            last_event = Some(Instant::now());
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("fs-watch error: {e}");
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Some(t) = last_event
+                        && Instant::now() >= t + debounce
+                    {
+                        tracing::info!("daemon binary changed; initiating graceful shutdown");
+                        on_change();
+                        return; // one-shot
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    });
+
+    Ok(())
+}
+
 /// Send SIGTERM to `pid`, wait up to `grace` for graceful exit, then SIGKILL if still alive.
 /// Returns Ok once the target is gone; Err on unexpected failure (e.g., permission denied
 /// or refusing to kill PID 0/1/self).

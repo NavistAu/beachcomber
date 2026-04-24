@@ -601,6 +601,15 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
             cancel_clone.cancel();
         });
 
+        let cancel_for_self_watch = cancel.clone();
+        if let Err(e) = beachcomber::singleton::spawn_binary_self_watch(move || {
+            cancel_for_self_watch.cancel();
+        }) {
+            tracing::warn!(
+                "failed to start binary self-watch: {e} (binary updates won't trigger restart)"
+            );
+        }
+
         let handle = beachcomber::daemon::start_in_process_with_cancel(socket_path, config, cancel);
         handle.await.ok();
     });
