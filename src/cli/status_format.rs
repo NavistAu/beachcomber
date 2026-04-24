@@ -47,6 +47,27 @@ pub struct TtlCell {
     pub color: Option<ansi::Color>,
 }
 
+/// Minimum width for the P-seconds sub-field inside the TTL cell.
+pub const TTL_P_WIDTH_MIN: usize = 4;
+/// Maximum width for the P-seconds sub-field. 6 digits covers ~11 days of
+/// seconds; beyond that we clamp rather than grow the cell.
+pub const TTL_P_WIDTH_MAX: usize = 6;
+
+/// Compute the P-seconds field width for a snapshot: the widest `poll_interval_secs`
+/// value across all Lifecycle rows, clamped to `[TTL_P_WIDTH_MIN, TTL_P_WIDTH_MAX]`.
+/// Rows without a poll interval (Once/Virtual/Transient) are ignored.
+pub fn compute_ttl_p_width(rows: &[CacheRow]) -> usize {
+    use crate::cache::RowKind;
+    let max_digits = rows
+        .iter()
+        .filter(|r| matches!(r.kind, Some(RowKind::Lifecycle { .. })))
+        .filter_map(|r| r.poll_interval_secs)
+        .map(|p| p.min(999_999).to_string().len())
+        .max()
+        .unwrap_or(0);
+    max_digits.clamp(TTL_P_WIDTH_MIN, TTL_P_WIDTH_MAX)
+}
+
 #[allow(dead_code)]
 pub fn format_ttl_cell(
     kind: Option<&crate::cache::RowKind>,
@@ -55,6 +76,7 @@ pub fn format_ttl_cell(
     fsevents_reinstate: Option<bool>,
     failure: Option<&crate::cache::FailureSnapshot>,
     ascii: bool,
+    p_width: usize,
 ) -> TtlCell {
     use crate::cache::RowKind;
 
@@ -101,8 +123,17 @@ pub fn format_ttl_cell(
                 (true, false) => dot,
                 (true, true) => dot_ring,
             };
-            // " <P:6>s<×><K:02> <indicator>" — fixed width: 1 + 1 + 6 + 1 + 1 + 2 + 1 + 1 = 14.
-            let text = format!("{} {:>6}s{}{:02} {}", lead, p, times, k, indicator);
+            // " <P:p_width>s<×><K:02> <indicator>". p_width is set per snapshot
+            // in render_table so TTL cells align across all rendered rows.
+            let text = format!(
+                "{} {:>width$}s{}{:02} {}",
+                lead,
+                p,
+                times,
+                k,
+                indicator,
+                width = p_width
+            );
             TtlCell {
                 text,
                 color: Some(color),
@@ -665,6 +696,10 @@ fn render_table(
     let mut nat_age = HEADERS[4].len();
     let mut nat_ttl = HEADERS[5].len();
 
+    // Auto-size the P field inside each TTL cell to the widest P in this
+    // snapshot, clamped to [TTL_P_WIDTH_MIN, TTL_P_WIDTH_MAX].
+    let p_width = compute_ttl_p_width(rows);
+
     for row in rows {
         let path = row.path.as_deref().unwrap_or("-");
         nat_provider = nat_provider.max(row.provider.chars().count());
@@ -679,6 +714,7 @@ fn render_table(
                 row.fsevents_reinstate,
                 row.failure.as_ref(),
                 ascii,
+                p_width,
             )
             .text
             .chars()
@@ -751,6 +787,7 @@ fn render_table(
             row.fsevents_reinstate,
             row.failure.as_ref(),
             ascii,
+            p_width,
         );
         let ttl_vis = ttl.text.chars().count();
         let ttl_cell = match (color_enabled, ttl.color) {
@@ -1101,6 +1138,7 @@ mod ttl_cell_tests {
             Some(true),
             None,
             false,
+            6,
         );
         assert_eq!(
             cell.text,
@@ -1121,6 +1159,7 @@ mod ttl_cell_tests {
             Some(false),
             None,
             false,
+            6,
         );
         assert_eq!(cell.text, "0    480s\u{00d7}12  ");
         assert!(matches!(cell.color, Some(ansi::Color::Red)));
@@ -1138,6 +1177,7 @@ mod ttl_cell_tests {
             Some(true),
             None,
             true,
+            6,
         );
         assert_eq!(cell.text, "*     60sx12 +");
     }
@@ -1155,6 +1195,7 @@ mod ttl_cell_tests {
             Some(true),
             None,
             false,
+            6,
         );
         assert!(cell.text.ends_with("12  "), "no indicator: {:?}", cell.text);
     }
@@ -1172,6 +1213,7 @@ mod ttl_cell_tests {
             Some(false),
             None,
             false,
+            6,
         );
         assert!(
             cell.text.ends_with("12 \u{25cf}"),
@@ -1192,6 +1234,7 @@ mod ttl_cell_tests {
             Some(false),
             None,
             true,
+            6,
         );
         assert!(
             cell.text.ends_with("12 -"),
@@ -1202,20 +1245,21 @@ mod ttl_cell_tests {
 
     #[test]
     fn once_renders_dashes() {
-        let cell = format_ttl_cell(Some(&RowKind::Once), None, None, None, None, false);
+        let cell = format_ttl_cell(Some(&RowKind::Once), None, None, None, None, false, 6);
         assert_eq!(cell.text, "---");
         assert!(cell.color.is_none());
     }
 
     #[test]
     fn virtual_renders_dashes() {
-        let cell = format_ttl_cell(Some(&RowKind::Virtual), None, None, None, None, false);
+        let cell = format_ttl_cell(Some(&RowKind::Virtual), None, None, None, None, false, 6);
         assert_eq!(cell.text, "---");
     }
 
     #[test]
     fn transient_renders_dashes() {
-        let cell = format_ttl_cell(Some(&RowKind::Transient), None, None, None, None, false);
+        let cell =
+            format_ttl_cell(Some(&RowKind::Transient), None, None, None, None, false, 6);
         assert_eq!(cell.text, "---");
     }
 
@@ -1235,6 +1279,7 @@ mod ttl_cell_tests {
             Some(true),
             Some(&snap),
             false,
+            6,
         );
         assert!(cell.text.starts_with("\u{26a0}"));
         assert!(matches!(cell.color, Some(ansi::Color::Red)));
@@ -1256,6 +1301,7 @@ mod ttl_cell_tests {
             Some(true),
             Some(&snap),
             true,
+            6,
         );
         assert!(cell.text.starts_with("!"));
     }
@@ -1272,6 +1318,7 @@ mod ttl_cell_tests {
             Some(false),
             None,
             false,
+            6,
         );
         // P clamped to 999999.
         assert!(cell.text.contains("999999s"));
@@ -1289,8 +1336,89 @@ mod ttl_cell_tests {
             Some(false),
             None,
             false,
+            6,
         );
         assert!(cell.text.contains("0s"));
         assert!(cell.text.contains("\u{00d7}00"));
+    }
+
+    #[test]
+    fn p_width_min_narrows_cell() {
+        // With p_width=4 (min floor) and a 2-digit P, expect 2 padding spaces
+        // before "60s" rather than 4.
+        let cell = format_ttl_cell(
+            Some(&RowKind::Lifecycle {
+                decay: 0,
+                watches_files: true,
+            }),
+            Some(60),
+            Some(12),
+            Some(true),
+            None,
+            false,
+            4,
+        );
+        assert_eq!(cell.text, "\u{2605}   60s\u{00d7}12 \u{25c9}");
+    }
+
+    #[test]
+    fn p_width_auto_sizes_to_widest_lifecycle_row() {
+        use crate::cache::CacheRow;
+        let row_small = CacheRow {
+            provider: "load".into(),
+            path: None,
+            field: "one".into(),
+            value: serde_json::json!(0.5),
+            age_ms: 0,
+            stale: false,
+            kind: Some(RowKind::Lifecycle {
+                decay: 0,
+                watches_files: false,
+            }),
+            poll_interval_secs: Some(30),
+            keep_alive_polls: Some(4),
+            fsevents_reinstate: Some(false),
+            failure: None,
+        };
+        let mut row_large = row_small.clone();
+        row_large.poll_interval_secs = Some(12_345);
+
+        // Single-row snapshot with 2-digit P → width clamped to floor (4).
+        assert_eq!(compute_ttl_p_width(&[row_small.clone()]), 4);
+        // Widest P is 5 digits → width grows to 5.
+        assert_eq!(
+            compute_ttl_p_width(&[row_small.clone(), row_large.clone()]),
+            5
+        );
+    }
+
+    #[test]
+    fn p_width_caps_at_six() {
+        use crate::cache::CacheRow;
+        let row = CacheRow {
+            provider: "x".into(),
+            path: None,
+            field: "y".into(),
+            value: serde_json::Value::Null,
+            age_ms: 0,
+            stale: false,
+            kind: Some(RowKind::Lifecycle {
+                decay: 0,
+                watches_files: false,
+            }),
+            // Over 999_999 — clamped to 999_999 (6 digits) inside format_ttl_cell;
+            // compute_ttl_p_width applies the same clamp before counting digits.
+            poll_interval_secs: Some(9_999_999),
+            keep_alive_polls: Some(1),
+            fsevents_reinstate: Some(false),
+            failure: None,
+        };
+        assert_eq!(compute_ttl_p_width(&[row]), 6);
+    }
+
+    #[test]
+    fn p_width_floor_when_no_lifecycle_rows() {
+        // Empty / Once-only snapshot falls back to the minimum floor.
+        assert_eq!(compute_ttl_p_width(&[]), TTL_P_WIDTH_MIN);
     }
 }
