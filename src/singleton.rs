@@ -242,6 +242,22 @@ pub fn spawn_binary_self_watch<F: FnOnce() + Send + 'static>(
     Ok(())
 }
 
+/// Returns true iff `binary`'s mtime is strictly newer than `process_start_unix_ms`.
+/// Used at daemon startup to catch the rare race where the binary is replaced
+/// between process exec and fs-watch registration.
+pub fn binary_newer_than(
+    binary: &Path,
+    process_start_unix_ms: u64,
+) -> std::io::Result<bool> {
+    let meta = std::fs::metadata(binary)?;
+    let mtime = meta.modified()?;
+    let mtime_ms = mtime
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    Ok(mtime_ms > process_start_unix_ms)
+}
+
 /// Send SIGTERM to `pid`, wait up to `grace` for graceful exit, then SIGKILL if still alive.
 /// Returns Ok once the target is gone; Err on unexpected failure (e.g., permission denied
 /// or refusing to kill PID 0/1/self).

@@ -169,6 +169,31 @@ fn supersede_existing_refuses_self() {
 }
 
 #[test]
+fn binary_newer_than_returns_true_when_file_modified_after_start() {
+    let tmpdir = tempfile::tempdir().unwrap();
+    let fake_binary = tmpdir.path().join("fake");
+    std::fs::write(&fake_binary, b"hello").unwrap();
+
+    let process_start_ms = 0u64;  // 1970-01-01 — far before fake_binary's mtime
+    let result = beachcomber::singleton::binary_newer_than(&fake_binary, process_start_ms)
+        .expect("metadata read");
+    assert!(result, "freshly written file should be newer than 1970");
+}
+
+#[test]
+fn binary_newer_than_returns_false_when_file_older_than_start() {
+    let tmpdir = tempfile::tempdir().unwrap();
+    let fake_binary = tmpdir.path().join("fake");
+    std::fs::write(&fake_binary, b"hello").unwrap();
+
+    // Use a far-future timestamp so the file's mtime is older.
+    let process_start_ms = u64::MAX / 2;
+    let result = beachcomber::singleton::binary_newer_than(&fake_binary, process_start_ms)
+        .expect("metadata read");
+    assert!(!result, "file should be older than far-future timestamp");
+}
+
+#[test]
 fn acquire_or_supersede_same_version_returns_none() {
     let tmpdir = tempfile::tempdir().unwrap();
     let pid_path = tmpdir.path().join("pid");

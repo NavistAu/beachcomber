@@ -610,6 +610,25 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
             );
         }
 
+        let our_start_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        if let Ok(exe) = std::env::current_exe() {
+            match beachcomber::singleton::binary_newer_than(&exe, our_start_ms) {
+                Ok(true) => {
+                    tracing::warn!(
+                        "binary was modified between exec and watch registration; shutting down for restart"
+                    );
+                    cancel.cancel();
+                }
+                Ok(false) => {}  // common case — proceed
+                Err(e) => {
+                    tracing::warn!("could not stat binary for race-check: {e}");
+                }
+            }
+        }
+
         let handle = beachcomber::daemon::start_in_process_with_cancel(socket_path, config, cancel);
         handle.await.ok();
     });
