@@ -15,11 +15,12 @@ import type {
   DaemonHealth,
   IntrospectSubject,
   IntrospectResponse,
+  RowKind,
   Verdict,
   WatchEvent,
 } from './types.js';
 
-export type { HelloInfo, CacheRow, DaemonHealth, IntrospectSubject, IntrospectResponse, Verdict, WatchEvent };
+export type { HelloInfo, CacheRow, DaemonHealth, IntrospectSubject, IntrospectResponse, RowKind, Verdict, WatchEvent };
 
 // ---- CombResult ----
 
@@ -210,6 +211,11 @@ function parseCacheRows(resp: Record<string, unknown>): CacheRow[] {
       value: r['value'],
       ageMs: Number(r['age_ms'] ?? 0),
       stale: Boolean(r['stale']),
+      kind: r['kind'] != null ? (r['kind'] as RowKind) : undefined,
+      pollIntervalSecs: r['poll_interval_secs'] != null ? Number(r['poll_interval_secs']) : undefined,
+      keepAlivePolls: r['keep_alive_polls'] != null ? Number(r['keep_alive_polls']) : undefined,
+      fseventsReinstate: r['fsevents_reinstate'] != null ? Boolean(r['fsevents_reinstate']) : undefined,
+      failure: r['failure'] != null ? (r['failure'] as CacheRow['failure']) : undefined,
     };
   });
 }

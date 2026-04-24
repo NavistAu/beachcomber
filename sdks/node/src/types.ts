@@ -7,6 +7,12 @@ export interface HelloInfo {
   daemonVersion: string;
 }
 
+export type RowKind =
+  | { kind: 'lifecycle'; decay: number; watches_files: boolean }
+  | { kind: 'once' }
+  | { kind: 'virtual' }
+  | { kind: 'transient' };
+
 export interface CacheRow {
   provider: string;
   field: string | null;
@@ -14,6 +20,11 @@ export interface CacheRow {
   value: unknown;
   ageMs: number;
   stale: boolean;
+  kind?: RowKind;
+  pollIntervalSecs?: number;
+  keepAlivePolls?: number;
+  fseventsReinstate?: boolean;
+  failure?: { consecutive_failures: number; suppressed_until_unix_ms?: number };
 }
 
 export interface Verdict {

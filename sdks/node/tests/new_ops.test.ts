@@ -390,6 +390,102 @@ describe('Client.statusRows', () => {
   });
 });
 
+// ---- statusRows lifecycle fields ----
+
+describe('Client.statusRows lifecycle fields', () => {
+  let server: MockServer;
+
+  before(async () => {
+    server = await MockServer.start();
+  });
+
+  after(async () => {
+    await server.stop();
+  });
+
+  it('status row exposes lifecycle fields', async () => {
+    server.handle(() => ({
+      ok: true,
+      data: [
+        {
+          provider: 'git',
+          field: 'branch',
+          path: '/tmp',
+          value: 'main',
+          age_ms: 100,
+          stale: false,
+          kind: { kind: 'lifecycle', decay: 0, watches_files: true },
+          poll_interval_secs: 5,
+          keep_alive_polls: 3,
+          fsevents_reinstate: false,
+        },
+      ],
+    }));
+    const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
+    const rows = await client.statusRows();
+    const git = rows.find(r => r.provider === 'git');
+    assert.ok(git);
+    assert.ok(git.kind);
+    assert.equal(git.kind.kind, 'lifecycle');
+    assert.ok(git.pollIntervalSecs && git.pollIntervalSecs > 0);
+    assert.ok(git.keepAlivePolls && git.keepAlivePolls > 0);
+    assert.ok(typeof git.fseventsReinstate === 'boolean');
+  });
+
+  it('status row handles missing lifecycle fields', async () => {
+    server.handle(() => ({
+      ok: true,
+      data: [
+        {
+          provider: 'hostname',
+          field: null,
+          path: null,
+          value: 'myhost',
+          age_ms: 200,
+          stale: false,
+        },
+      ],
+    }));
+    const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
+    const rows = await client.statusRows();
+    const host = rows.find(r => r.provider === 'hostname');
+    assert.ok(host);
+    assert.equal(host.kind, undefined);
+    assert.equal(host.pollIntervalSecs, undefined);
+    assert.equal(host.keepAlivePolls, undefined);
+    assert.equal(host.fseventsReinstate, undefined);
+    assert.equal(host.failure, undefined);
+  });
+
+  it('status row parses failure field', async () => {
+    server.handle(() => ({
+      ok: true,
+      data: [
+        {
+          provider: 'git',
+          field: 'branch',
+          path: '/tmp',
+          value: null,
+          age_ms: 0,
+          stale: true,
+          kind: { kind: 'lifecycle', decay: 2, watches_files: false },
+          poll_interval_secs: 10,
+          keep_alive_polls: 5,
+          fsevents_reinstate: true,
+          failure: { consecutive_failures: 3, suppressed_until_unix_ms: 9999999 },
+        },
+      ],
+    }));
+    const client = new Client({ socketPath: server.socketPath, timeoutMs: 1000 });
+    const rows = await client.statusRows();
+    const git = rows.find(r => r.provider === 'git');
+    assert.ok(git);
+    assert.ok(git.failure);
+    assert.equal(git.failure.consecutive_failures, 3);
+    assert.equal(git.failure.suppressed_until_unix_ms, 9999999);
+  });
+});
+
 // ---- WatchStream ----
 
 describe('WatchStream', () => {
