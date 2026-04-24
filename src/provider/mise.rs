@@ -87,6 +87,20 @@ impl Provider for MiseProvider {
         true
     }
 
+    // Walk up from `path` to find the nearest directory containing
+    // `mise.toml` or `.mise.toml`. Returns that directory so shells in
+    // subdirectories of a mise project share a single cache entry.
+    //
+    // Returns None if no mise config is found upward. With the default impl
+    // (returning Some(path) regardless) mise project lookups from subdirs
+    // silently returned empty results because `execute` checks for marker
+    // files directly in `path`. Now the scheduler declines demand instead,
+    // which is cleaner and matches git's behaviour.
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let p = path?;
+        find_mise_project_root(Path::new(p))
+    }
+
     fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
         let mut out = Vec::new();
 
@@ -121,4 +135,18 @@ impl Provider for MiseProvider {
 
         out
     }
+}
+
+/// Walk upwards from `start` looking for a directory that contains either
+/// `mise.toml` or `.mise.toml`. Returns the containing directory's path,
+/// or `None` if no mise config is found before reaching the filesystem root.
+fn find_mise_project_root(start: &Path) -> Option<String> {
+    let mut cur: Option<&Path> = Some(start);
+    while let Some(dir) = cur {
+        if dir.join("mise.toml").exists() || dir.join(".mise.toml").exists() {
+            return Some(dir.to_string_lossy().to_string());
+        }
+        cur = dir.parent();
+    }
+    None
 }
