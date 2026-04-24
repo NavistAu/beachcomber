@@ -183,7 +183,7 @@ impl Default for RenderOpts {
         Self {
             is_tty: false,
             no_color: true,
-            max_width: Some(40),
+            max_width: Some(120),
             no_trunc: false,
             ascii: false,
         }

@@ -122,7 +122,7 @@ fn sh_preset_emits_sourceable_assignments() {
 }
 
 #[test]
-fn human_preset_truncates_long_values_to_default_40() {
+fn human_preset_truncates_value_to_meet_total_cap() {
     // max_width is now a *total table cap*. The default RenderOpts has max_width=Some(40)
     // which is intentionally narrow to exercise truncation — VALUE shrinks to meet the budget.
     // Use a wider total cap so the VALUE column still gets some chars before truncation.
