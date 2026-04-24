@@ -168,7 +168,7 @@ async fn setup_lifecycle_scheduler() -> (Arc<Cache>, SchedulerHandle, tokio::tas
     (cache, handle, task)
 }
 
-/// Verifies that the status response reports decay=0 for an Active cache entry.
+/// Verifies that the scheduler reports decay=0 for an Active cache entry.
 #[tokio::test]
 async fn integration_status_response_reports_decay_level() {
     let (cache, handle, sched_task) = setup_lifecycle_scheduler().await;
@@ -203,24 +203,6 @@ async fn integration_status_response_reports_decay_level() {
         Some(0),
         "lc_counter should have decay=0 (Active) shortly after first query; got {:?}",
         decay_level
-    );
-
-    // Now simulate what the server does: build rows and annotate them.
-    let mut rows = cache.list_rows();
-    for row in rows.iter_mut() {
-        let k = (row.provider.clone(), row.path.clone());
-        row.decay = decay_map.get(&k).copied();
-    }
-
-    let lc_row = rows
-        .iter()
-        .find(|r| r.provider == "lc_counter")
-        .expect("lc_counter row should be present");
-
-    assert_eq!(
-        lc_row.decay,
-        Some(0),
-        "row.decay should be Some(0) for Active entry"
     );
 
     handle.send(SchedulerMessage::Shutdown).await;

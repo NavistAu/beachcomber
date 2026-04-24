@@ -238,13 +238,9 @@ fn render_tsv(rows: &[CacheRow]) -> String {
         let path = row.path.as_deref().unwrap_or("-");
         let value = value_to_string(&row.value);
         let stale = if row.stale { "true" } else { "false" };
-        let decay = match row.decay {
-            Some(n) => format!("{n}"),
-            None => "-".to_string(),
-        };
         out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            row.provider, path, row.field, value, row.age_ms, stale, decay
+            "{}\t{}\t{}\t{}\t{}\t{}\n",
+            row.provider, path, row.field, value, row.age_ms, stale
         ));
     }
     out
@@ -258,25 +254,20 @@ fn render_csv(rows: &[CacheRow]) -> String {
     let mut out = String::new();
 
     // Header row
-    out.push_str("PROVIDER,PATH,FIELD,VALUE,AGE,STALE,DECAY\n");
+    out.push_str("PROVIDER,PATH,FIELD,VALUE,AGE,STALE\n");
 
     for row in rows {
         let path = row.path.as_deref().unwrap_or("-");
         let value = value_to_string(&row.value);
         let stale = if row.stale { "true" } else { "false" };
-        let decay = match row.decay {
-            Some(n) => format!("{n}"),
-            None => "-".to_string(),
-        };
         out.push_str(&format!(
-            "{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{}\n",
             csv_quote(&row.provider),
             csv_quote(path),
             csv_quote(&row.field),
             csv_quote(&value),
             row.age_ms,
-            stale,
-            decay
+            stale
         ));
     }
     out
@@ -352,10 +343,10 @@ const ANSI_RESET: &str = "\x1b[0m";
 ///
 /// - `color`: apply ANSI dim to stale rows.
 /// - `trunc`: maximum width for the VALUE column (in characters). `None` = no truncation.
-/// - `header`: prepend a PROVIDER / PATH / FIELD / VALUE / AGE / STALE / DECAY header row.
+/// - `header`: prepend a PROVIDER / PATH / FIELD / VALUE / AGE / STALE header row.
 fn render_table(rows: &[CacheRow], color: bool, trunc: Option<usize>, header: bool) -> String {
-    // Column indices: PROVIDER, PATH, FIELD, VALUE, AGE, STALE, DECAY
-    const COLS: usize = 7;
+    // Column indices: PROVIDER, PATH, FIELD, VALUE, AGE, STALE
+    const COLS: usize = 6;
 
     // Build string cells.
     let mut cells: Vec<[String; COLS]> = Vec::new();
@@ -368,7 +359,6 @@ fn render_table(rows: &[CacheRow], color: bool, trunc: Option<usize>, header: bo
             "VALUE".to_string(),
             "AGE".to_string(),
             "STALE".to_string(),
-            "DECAY".to_string(),
         ]);
     }
 
@@ -380,10 +370,6 @@ fn render_table(rows: &[CacheRow], color: bool, trunc: Option<usize>, header: bo
         }
         let age = format_age(row.age_ms);
         let stale = if row.stale { "true" } else { "false" }.to_string();
-        let decay = match row.decay {
-            Some(n) => format!("{n}"),
-            None => "-".to_string(),
-        };
         cells.push([
             row.provider.clone(),
             path,
@@ -391,7 +377,6 @@ fn render_table(rows: &[CacheRow], color: bool, trunc: Option<usize>, header: bo
             value,
             age,
             stale,
-            decay,
         ]);
     }
 

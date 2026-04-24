@@ -16,7 +16,11 @@ fn sample_rows() -> Vec<CacheRow> {
             value: serde_json::json!("main"),
             age_ms: 14_000,
             stale: false,
-            decay: None,
+            kind: None,
+            poll_interval_secs: None,
+            keep_alive_polls: None,
+            fsevents_reinstate: None,
+            failure: None,
         },
         CacheRow {
             provider: "git".into(),
@@ -25,7 +29,11 @@ fn sample_rows() -> Vec<CacheRow> {
             value: serde_json::json!(false),
             age_ms: 14_000,
             stale: false,
-            decay: None,
+            kind: None,
+            poll_interval_secs: None,
+            keep_alive_polls: None,
+            fsevents_reinstate: None,
+            failure: None,
         },
         CacheRow {
             provider: "hostname".into(),
@@ -34,7 +42,11 @@ fn sample_rows() -> Vec<CacheRow> {
             value: serde_json::json!("me-laptop"),
             age_ms: 52_000,
             stale: false,
-            decay: None,
+            kind: None,
+            poll_interval_secs: None,
+            keep_alive_polls: None,
+            fsevents_reinstate: None,
+            failure: None,
         },
     ]
 }
@@ -58,11 +70,11 @@ fn tsv_preset_is_tab_separated_no_header() {
         "tsv should have exactly one line per row, no header"
     );
     for line in lines {
-        // PROVIDER<TAB>PATH<TAB>FIELD<TAB>VALUE<TAB>AGE<TAB>STALE<TAB>DECAY — 7 cols, 6 tabs
+        // PROVIDER<TAB>PATH<TAB>FIELD<TAB>VALUE<TAB>AGE<TAB>STALE — 6 cols, 5 tabs
         assert_eq!(
             line.matches('\t').count(),
-            6,
-            "expected 6 tabs per tsv row, got: {line:?}"
+            5,
+            "expected 5 tabs per tsv row, got: {line:?}"
         );
     }
 }
@@ -128,7 +140,11 @@ fn human_preset_truncates_long_values_to_default_40() {
         value: serde_json::json!("a".repeat(100)),
         age_ms: 14_000,
         stale: false,
-        decay: None,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        failure: None,
     });
     let opts = RenderOpts {
         is_tty: true,
@@ -157,7 +173,11 @@ fn human_preset_color_on_stale_rows() {
         value: serde_json::json!("main"),
         age_ms: 9999,
         stale: true,
-        decay: None,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        failure: None,
     }];
     let opts = RenderOpts {
         is_tty: true,
@@ -181,7 +201,11 @@ fn json_preset_path_none_serializes_as_null() {
         value: serde_json::json!("myhost"),
         age_ms: 1000,
         stale: false,
-        decay: None,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        failure: None,
     }];
     let out = render_preset("json", &rows, &RenderOpts::default());
     let parsed: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON line");
@@ -201,7 +225,11 @@ fn csv_preset_quotes_values_with_commas() {
         value: serde_json::json!("a,b,c"),
         age_ms: 0,
         stale: false,
-        decay: None,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        failure: None,
     }];
     let out = render_preset("csv", &rows, &RenderOpts::default());
     // Value containing comma must be quoted in RFC 4180 style.
@@ -231,7 +259,11 @@ fn custom_template_supports_truncate_filter() {
         value: serde_json::json!("abcdef1234567890"),
         age_ms: 14_000,
         stale: false,
-        decay: None,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        failure: None,
     }];
     let out = render_preset("{{ value | truncate(7) }}", &rows, &RenderOpts::default());
     assert_eq!(out.trim(), "abcdef1...");
@@ -272,7 +304,11 @@ fn custom_template_supports_age_human() {
         value: serde_json::json!("main"),
         age_ms: 3_600_000, // 1 hour
         stale: false,
-        decay: None,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        failure: None,
     }];
     let out = render_preset("{{ age_human }}", &rows, &RenderOpts::default());
     // Should render as "1h" or similar
@@ -524,60 +560,6 @@ async fn status_returns_rows_per_field() {
     handle.abort();
 }
 
-#[test]
-fn status_table_includes_decay_column() {
-    use beachcomber::cache::CacheRow;
-    use beachcomber::cli::status_format::{RenderOpts, render_preset};
-
-    let rows = vec![CacheRow {
-        provider: "git".into(),
-        path: Some("/repo".into()),
-        field: "branch".into(),
-        value: serde_json::json!("main"),
-        age_ms: 100,
-        stale: false,
-        decay: Some(2),
-    }];
-    let opts = RenderOpts {
-        is_tty: false,
-        no_color: true,
-        max_width: None,
-        no_trunc: true,
-    };
-    let out = render_preset("human", &rows, &opts);
-
-    assert!(
-        out.contains("DECAY"),
-        "header should include DECAY, got: {out}"
-    );
-    assert!(out.contains(" 2"), "cell should render the decay value 2");
-}
-
-#[test]
-fn status_table_shows_zero_for_active() {
-    use beachcomber::cache::CacheRow;
-    use beachcomber::cli::status_format::{RenderOpts, render_preset};
-
-    let rows = vec![CacheRow {
-        provider: "hostname".into(),
-        path: None,
-        field: "short".into(),
-        value: serde_json::json!("myhost"),
-        age_ms: 10,
-        stale: false,
-        decay: Some(0),
-    }];
-    let opts = RenderOpts {
-        is_tty: false,
-        no_color: true,
-        max_width: None,
-        no_trunc: true,
-    };
-    let out = render_preset("human", &rows, &opts);
-
-    assert!(out.contains("DECAY"));
-    assert!(out.contains(" 0"));
-}
 
 #[test]
 fn failure_snapshot_serde_round_trip() {
@@ -594,6 +576,33 @@ fn failure_snapshot_serde_round_trip() {
     let snap2 = FailureSnapshot { consecutive_failures: 1, suppressed_until_unix_ms: None };
     let v2 = serde_json::to_value(&snap2).unwrap();
     assert_eq!(v2, json!({"consecutive_failures": 1}));
+}
+
+#[test]
+fn cache_row_new_fields_serde_round_trip() {
+    use beachcomber::cache::{CacheRow, RowKind};
+    use serde_json::json;
+
+    let row = CacheRow {
+        provider: "git".into(),
+        path: Some("/repo".into()),
+        field: "branch".into(),
+        value: json!("main"),
+        age_ms: 14_000,
+        stale: false,
+        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
+        poll_interval_secs: Some(60),
+        keep_alive_polls: Some(12),
+        fsevents_reinstate: Some(true),
+        failure: None,
+    };
+    let v = serde_json::to_value(&row).unwrap();
+    assert_eq!(v["poll_interval_secs"], 60);
+    assert_eq!(v["keep_alive_polls"], 12);
+    assert_eq!(v["fsevents_reinstate"], true);
+    assert_eq!(v["kind"]["kind"], "lifecycle");
+    assert!(v.get("failure").is_none(), "failure omitted when None");
+    assert!(v.get("decay").is_none(), "old decay field is gone");
 }
 
 /// Status on a fresh daemon with an empty cache returns an empty array, not an error.

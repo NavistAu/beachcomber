@@ -766,18 +766,7 @@ async fn handle_request(
             }
         }
         Request::Status => {
-            let mut rows = cache.list_rows();
-
-            // Annotate each row with the lifecycle decay level from the scheduler.
-            let decay_map = if let Some(sched) = scheduler {
-                sched.get_lifecycle_decay_levels().await.unwrap_or_default()
-            } else {
-                std::collections::HashMap::new()
-            };
-            for row in rows.iter_mut() {
-                let key = (row.provider.clone(), row.path.clone());
-                row.decay = decay_map.get(&key).copied();
-            }
+            let rows = cache.list_rows();
 
             match serde_json::to_value(&rows) {
                 Ok(v) => Response::ok(v, 0, false),

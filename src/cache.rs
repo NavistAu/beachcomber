@@ -133,7 +133,11 @@ impl Cache {
                     value,
                     age_ms: age,
                     stale,
-                    decay: None,
+                    kind: None,
+                    poll_interval_secs: None,
+                    keep_alive_polls: None,
+                    fsevents_reinstate: None,
+                    failure: None,
                 });
             }
         }
@@ -182,11 +186,16 @@ pub struct CacheRow {
     pub value: serde_json::Value,
     pub age_ms: u128,
     pub stale: bool,
-    /// Current lifecycle decay level: 0 = Active, 1–4 = Decay steps.
-    /// None means the scheduler has not reported a lifecycle state for this entry
-    /// (e.g. a virtual/put entry).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decay: Option<u8>,
+    pub kind: Option<RowKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_interval_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_alive_polls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fsevents_reinstate: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<FailureSnapshot>,
 }
 
 /// Discriminator used by the status formatter to choose rendering strategy.
