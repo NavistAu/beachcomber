@@ -62,3 +62,34 @@ fn resolve_socket_path_uses_xdg_runtime_dir_when_set() {
     }
     assert_eq!(path, PathBuf::from("/run/user/501/beachcomber/sock"));
 }
+
+use beachcomber::singleton::{SingletonLock, SingletonLockError};
+
+#[test]
+fn singleton_lock_creates_pid_file_and_holds_flock() {
+    let tmpdir = tempfile::tempdir().unwrap();
+    let pid_path = tmpdir.path().join("pid");
+
+    let lock = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc").expect("first acquire succeeds");
+    assert!(pid_path.exists(), "pid file should be created");
+
+    let contents = std::fs::read_to_string(&pid_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+    assert_eq!(parsed["pid"].as_u64().unwrap(), std::process::id() as u64);
+    assert_eq!(parsed["version"].as_str().unwrap(), "0.5.1+sha.abc");
+    assert!(parsed["binary"].is_string());
+    assert!(parsed["started_unix_ms"].is_number());
+
+    drop(lock);
+    assert!(!pid_path.exists(), "pid file should be deleted on drop");
+}
+
+#[test]
+fn singleton_lock_contested_by_same_process_fails() {
+    let tmpdir = tempfile::tempdir().unwrap();
+    let pid_path = tmpdir.path().join("pid");
+
+    let _first = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc").unwrap();
+    let second = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc");
+    assert!(matches!(second, Err(SingletonLockError::AlreadyHeld { .. })));
+}
