@@ -117,6 +117,46 @@ pub fn decide_supersession(existing: &PidFileRecord, our_version: &str) -> Super
     }
 }
 
+/// High-level: acquire the singleton lock, superseding an existing daemon if its
+/// version differs from ours.
+///
+/// Returns:
+/// - `Ok(Some(lock))`: we hold the singleton; run the daemon.
+/// - `Ok(None)`: existing daemon has the same version; caller should exit silently.
+/// - `Err(...)`: unexpected failure (IO, permission, etc.).
+pub fn acquire_or_supersede(
+    pid_path: &Path,
+    our_version: &str,
+) -> Result<Option<SingletonLock>, SingletonLockError> {
+    match SingletonLock::acquire(pid_path, our_version) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(SingletonLockError::AlreadyHeld { existing: Some(rec) }) => {
+            match decide_supersession(&rec, our_version) {
+                SupersessionDecision::ExitSilent => Ok(None),
+                SupersessionDecision::Supersede { existing_pid } => {
+                    supersede_existing(existing_pid, Duration::from_secs(1))?;
+                    // Retry acquire briefly; old daemon may take a moment to release.
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    loop {
+                        match SingletonLock::acquire(pid_path, our_version) {
+                            Ok(lock) => return Ok(Some(lock)),
+                            Err(SingletonLockError::AlreadyHeld { .. }) if Instant::now() < deadline => {
+                                std::thread::sleep(Duration::from_millis(50));
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+            }
+        }
+        Err(SingletonLockError::AlreadyHeld { existing: None }) => {
+            // PID file present but malformed and flock held — race or corruption.
+            Err(SingletonLockError::AlreadyHeld { existing: None })
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Send SIGTERM to `pid`, wait up to `grace` for graceful exit, then SIGKILL if still alive.
 /// Returns Ok once the target is gone; Err on unexpected failure (e.g., permission denied
 /// or refusing to kill PID 0/1/self).

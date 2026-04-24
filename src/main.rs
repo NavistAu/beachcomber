@@ -560,6 +560,19 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
     tracing::info!("Socket: {:?}", socket_path);
     tracing::info!("Log file: {:?}", log_path);
 
+    let pid_path = socket_path.with_file_name("pid");
+    let _singleton_lock = match beachcomber::singleton::acquire_or_supersede(&pid_path, env!("BEACHCOMBER_VERSION")) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            tracing::info!("another daemon with the same version is already running; exiting silently");
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            tracing::error!("failed to acquire singleton lock: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
         let cancel = tokio_util::sync::CancellationToken::new();

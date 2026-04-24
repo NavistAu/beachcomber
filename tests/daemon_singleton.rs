@@ -167,3 +167,15 @@ fn supersede_existing_refuses_self() {
     let result = beachcomber::singleton::supersede_existing(me, std::time::Duration::from_millis(100));
     assert!(result.is_err(), "expected error refusing self pid");
 }
+
+#[test]
+fn acquire_or_supersede_same_version_returns_none() {
+    let tmpdir = tempfile::tempdir().unwrap();
+    let pid_path = tmpdir.path().join("pid");
+
+    let _first = beachcomber::singleton::SingletonLock::acquire(&pid_path, "0.5.1").unwrap();
+
+    let second = beachcomber::singleton::acquire_or_supersede(&pid_path, "0.5.1")
+        .expect("should succeed with Ok(None)");
+    assert!(second.is_none(), "same version should return None");
+}
