@@ -108,6 +108,37 @@ function makeCombResult(raw: Record<string, unknown>): CombResult {
 
 // ---- Low-level socket helpers ----
 
+const RETRY_BACKOFFS_MS = [250, 500, 1000];
+
+/**
+ * Connect to a Unix socket with 3 retries (250ms/500ms/1s exponential backoff).
+ * Retries on ECONNREFUSED and ENOENT only — other errors surface immediately.
+ * Covers the brief restart window when the daemon is restarting.
+ */
+export function connectWithRetry(path: string): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    let attempt = 0;
+    const tryConnect = () => {
+      const sock = net.createConnection(path);
+      sock.once('connect', () => resolve(sock));
+      sock.once('error', (err: NodeJS.ErrnoException) => {
+        if (err.code !== 'ECONNREFUSED' && err.code !== 'ENOENT') {
+          reject(err);
+          return;
+        }
+        if (attempt >= RETRY_BACKOFFS_MS.length) {
+          reject(err);
+          return;
+        }
+        const backoff = RETRY_BACKOFFS_MS[attempt];
+        attempt++;
+        setTimeout(tryConnect, backoff);
+      });
+    };
+    tryConnect();
+  });
+}
+
 interface ClientOptions {
   /** Override the auto-discovered socket path. */
   socketPath?: string;
@@ -118,11 +149,18 @@ interface ClientOptions {
 /**
  * Open a TCP/Unix connection, send one newline-delimited JSON request, and
  * resolve with the trimmed response line.  The socket is destroyed after
- * the response is received.
+ * the response is received.  Uses connectWithRetry to tolerate the brief
+ * restart window when the daemon is restarting.
  */
-function sendOneShot(socketPath: string, request: string, timeoutMs: number): Promise<string> {
+async function sendOneShot(socketPath: string, request: string, timeoutMs: number): Promise<string> {
+  let socket: net.Socket;
+  try {
+    socket = await connectWithRetry(socketPath);
+  } catch (err: unknown) {
+    throw new DaemonNotRunning(socketPath);
+  }
+
   return new Promise((resolve, reject) => {
-    const socket = net.createConnection(socketPath);
     let responded = false;
     let buffer = '';
 
@@ -134,9 +172,7 @@ function sendOneShot(socketPath: string, request: string, timeoutMs: number): Pr
       }
     }, timeoutMs);
 
-    socket.on('connect', () => {
-      socket.write(request);
-    });
+    socket.write(request);
 
     socket.on('data', (chunk: Buffer) => {
       buffer += chunk.toString('utf8');
@@ -626,56 +662,28 @@ export class Client {
    * @param path  Optional repository path.
    */
   async watch(key: string, path?: string): Promise<WatchStream> {
-    return new Promise((resolve, reject) => {
-      const socket = net.createConnection(this.socketPath);
-      const timer = setTimeout(() => {
-        socket.destroy();
-        reject(new DaemonNotRunning(this.socketPath));
-      }, this.timeoutMs);
-
-      socket.on('connect', () => {
-        clearTimeout(timer);
-        const baseReq: Record<string, unknown> = { op: 'watch', key };
-        if (path !== undefined) baseReq['path'] = path;
-        socket.write(serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]));
-        resolve(new WatchStream(socket));
-      });
-
-      socket.on('error', (err: NodeJS.ErrnoException) => {
-        clearTimeout(timer);
-        if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
-          reject(new DaemonNotRunning(this.socketPath));
-        } else {
-          reject(err);
-        }
-      });
-    });
+    let socket: net.Socket;
+    try {
+      socket = await connectWithRetry(this.socketPath);
+    } catch {
+      throw new DaemonNotRunning(this.socketPath);
+    }
+    const baseReq: Record<string, unknown> = { op: 'watch', key };
+    if (path !== undefined) baseReq['path'] = path;
+    socket.write(serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]));
+    return new WatchStream(socket);
   }
 
   /**
    * Open a persistent session.  Remember to call `session.close()` when done.
    */
   async session(): Promise<Session> {
-    return new Promise((resolve, reject) => {
-      const socket = net.createConnection(this.socketPath);
-      const timer = setTimeout(() => {
-        socket.destroy();
-        reject(new DaemonNotRunning(this.socketPath));
-      }, this.timeoutMs);
-
-      socket.on('connect', () => {
-        clearTimeout(timer);
-        resolve(new Session(socket));
-      });
-
-      socket.on('error', (err: NodeJS.ErrnoException) => {
-        clearTimeout(timer);
-        if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
-          reject(new DaemonNotRunning(this.socketPath));
-        } else {
-          reject(err);
-        }
-      });
-    });
+    let socket: net.Socket;
+    try {
+      socket = await connectWithRetry(this.socketPath);
+    } catch {
+      throw new DaemonNotRunning(this.socketPath);
+    }
+    return new Session(socket);
   }
 }
