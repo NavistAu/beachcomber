@@ -378,3 +378,111 @@ impl Default for Cache {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_fields(pairs: &[(&str, &str)]) -> HashMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
+            .collect()
+    }
+
+    /// B2: Writing source "A" must not touch any fields owned by source "B"
+    /// at the same (provider, path) key.
+    #[test]
+    fn put_source_overwrites_only_named_source() {
+        let cache = Cache::new();
+
+        // Populate two disjoint sources.
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "base",
+            make_fields(&[("branch", "main"), ("sha", "abc123")]),
+            None,
+        );
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "extras",
+            make_fields(&[("dirty", "false")]),
+            None,
+        );
+
+        // Overwrite only "base" with new data.
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "base",
+            make_fields(&[("branch", "feat/x"), ("sha", "def456")]),
+            None,
+        );
+
+        // "extras" source must be untouched.
+        let extra_src = cache
+            .get_source("git", Some("/repo"), "extras")
+            .expect("extras source must still exist");
+        assert_eq!(
+            extra_src.fields.get("dirty").unwrap().as_text(),
+            "false",
+            "extras.dirty must be unchanged after overwriting base"
+        );
+
+        // "base" source must reflect the new values.
+        let base_src = cache
+            .get_source("git", Some("/repo"), "base")
+            .expect("base source must exist");
+        assert_eq!(
+            base_src.fields.get("branch").unwrap().as_text(),
+            "feat/x",
+            "base.branch must be updated"
+        );
+        assert_eq!(
+            base_src.fields.get("sha").unwrap().as_text(),
+            "def456",
+            "base.sha must be updated"
+        );
+    }
+
+    /// B2: `get_field` must find a field regardless of which source owns it.
+    #[test]
+    fn get_field_routes_through_source() {
+        let cache = Cache::new();
+
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "base",
+            make_fields(&[("branch", "main")]),
+            None,
+        );
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "extras",
+            make_fields(&[("dirty", "true")]),
+            None,
+        );
+
+        // "branch" lives in "base" — get_field should find it.
+        let branch = cache
+            .get_field("git", Some("/repo"), "branch")
+            .expect("get_field must find branch");
+        assert_eq!(branch.as_text(), "main");
+
+        // "dirty" lives in "extras" — get_field should find it too.
+        let dirty = cache
+            .get_field("git", Some("/repo"), "dirty")
+            .expect("get_field must find dirty");
+        assert_eq!(dirty.as_text(), "true");
+
+        // A field that doesn't exist in any source returns None.
+        assert!(
+            cache.get_field("git", Some("/repo"), "nonexistent").is_none(),
+            "get_field must return None for unknown field"
+        );
+    }
+}
+
