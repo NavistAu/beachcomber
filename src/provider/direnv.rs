@@ -1,6 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::path::Path;
 use std::process::Command;
@@ -10,42 +10,59 @@ pub struct DirenvProvider;
 impl Provider for DirenvProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            name: "direnv".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "status".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "allowed".to_string(),
-                    field_type: FieldType::Bool,
-                    scope: FieldScope::PathScoped,
-                },
-            ],
-            invalidation: InvalidationStrategy::Watch {
-                patterns: vec![".envrc".to_string()],
-                fallback_poll_secs: Some(30),
-            },
+            name: "direnv".into(),
+            sources: vec![state_source_metadata()],
         }
     }
 
-    // Walk up from `path` to the nearest directory containing `.envrc`.
-    // direnv itself walks up, so matching that behaviour lets subdirs share
-    // a single cache entry with the project root.
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        let p = path?;
-        find_envrc_root(Path::new(p))
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(DirenvState)]
+    }
+}
+
+fn state_source_metadata() -> SourceMetadata {
+    SourceMetadata {
+        name: "state".into(),
+        fields: vec![
+            FieldSchema {
+                name: "status".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "allowed".into(),
+                field_type: FieldType::Bool,
+            },
+        ],
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![".envrc".into()],
+            abs_paths: vec![],
+        },
+        keep_alive: KeepAlive::Duration(120),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
+        fsevents_reinstate: true,
+    }
+}
+
+struct DirenvState;
+
+impl Source for DirenvState {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(state_source_metadata)
     }
 
-    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+    fn execute(&self, path: Option<&str>) -> SourceResult {
         let Some(path) = path else {
-            return Vec::new();
+            return SourceResult::new();
         };
-        let path_owned = path.to_string();
         let dir = Path::new(path);
         if !dir.join(".envrc").exists() {
-            return Vec::new();
+            return SourceResult::new();
         }
 
         let allowed = Command::new("direnv")
@@ -61,10 +78,15 @@ impl Provider for DirenvProvider {
 
         let status = if allowed { "loaded" } else { "blocked" };
 
-        let mut result = ProviderResult::new();
+        let mut result = SourceResult::new();
         result.insert("status", Value::String(status.to_string()));
         result.insert("allowed", Value::Bool(allowed));
-        vec![(Some(path_owned), result)]
+        result
+    }
+
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let p = path?;
+        find_envrc_root(Path::new(p))
     }
 }
 
