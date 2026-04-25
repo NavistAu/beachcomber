@@ -1,6 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -10,41 +10,59 @@ pub struct AsdfProvider;
 impl Provider for AsdfProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            name: "asdf".to_string(),
-            fields: vec![FieldSchema {
-                name: "tools".to_string(),
-                field_type: FieldType::Object,
-                scope: FieldScope::PathScoped,
-            }],
-            invalidation: InvalidationStrategy::Watch {
-                patterns: vec![".tool-versions".to_string()],
-                fallback_poll_secs: Some(30),
-            },
+            name: "asdf".into(),
+            sources: vec![tools_source_metadata()],
         }
     }
 
-    // Walk up from `path` to the nearest directory containing `.tool-versions`.
-    // asdf itself consults the file by walking up, so matching that means
-    // subdirs share a single cache entry with the project root.
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        let p = path?;
-        find_tool_versions_root(Path::new(p))
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(AsdfTools)]
+    }
+}
+
+fn tools_source_metadata() -> SourceMetadata {
+    SourceMetadata {
+        name: "tools".into(),
+        fields: vec![FieldSchema {
+            name: "<tool>".into(),
+            field_type: FieldType::String,
+        }],
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![".tool-versions".into()],
+            abs_paths: vec![],
+        },
+        keep_alive: KeepAlive::Duration(120),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
+        fsevents_reinstate: true,
+    }
+}
+
+struct AsdfTools;
+
+impl Source for AsdfTools {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(tools_source_metadata)
     }
 
-    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+    fn execute(&self, path: Option<&str>) -> SourceResult {
         let Some(path) = path else {
-            return Vec::new();
+            return SourceResult::new();
         };
-        let path_owned = path.to_string();
         let dir = Path::new(path);
         let tool_versions = dir.join(".tool-versions");
 
         if !tool_versions.exists() {
-            return Vec::new();
+            return SourceResult::new();
         }
 
         let Some(content) = std::fs::read_to_string(&tool_versions).ok() else {
-            return Vec::new();
+            return SourceResult::new();
         };
         let tools: HashMap<String, Value> = content
             .lines()
@@ -59,9 +77,14 @@ impl Provider for AsdfProvider {
             })
             .collect();
 
-        let mut result = ProviderResult::new();
+        let mut result = SourceResult::new();
         result.insert("tools", Value::Object(tools));
-        vec![(Some(path_owned), result)]
+        result
+    }
+
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let p = path?;
+        find_tool_versions_root(Path::new(p))
     }
 }
 
