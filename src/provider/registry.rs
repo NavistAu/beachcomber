@@ -217,6 +217,8 @@ impl ProviderRegistry {
         add_builtin!("uptime", crate::provider::uptime::UptimeProvider);
         add_builtin!("user", crate::provider::user::UserProvider);
 
+        // ── Legacy single-source external backends ────────────────────────────
+        // Old `type = "script" / "library" / "http"` TOML shape (no `backend` key).
         for (name, script_config) in config.script_providers() {
             if !config.is_provider_disabled(&name) {
                 registry
@@ -245,6 +247,87 @@ impl ProviderRegistry {
                         tracing::warn!("Failed to register http provider '{}': {}", name, e);
                     });
             }
+        }
+
+        // ── Phase 4 multi-source external backends ────────────────────────────
+        // `backend = "script" / "library" / "http"` TOML shape.
+
+        // Script
+        match config.multi_script_providers() {
+            Ok(providers) => {
+                for (name, sources) in providers {
+                    if !config.is_provider_disabled(&name) {
+                        if sources.is_empty() {
+                            tracing::warn!(
+                                "Script provider '{}' (backend = script) has no source blocks; skipping",
+                                name
+                            );
+                            continue;
+                        }
+                        registry
+                            .register(Box::new(ScriptProvider::with_sources(&name, sources)))
+                            .unwrap_or_else(|e| {
+                                tracing::warn!(
+                                    "Failed to register multi-source script provider '{}': {}",
+                                    name,
+                                    e
+                                );
+                            });
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("Error reading multi-source script providers: {}", e),
+        }
+
+        // Library
+        match config.multi_library_providers() {
+            Ok(providers) => {
+                for (name, lib_path, source_overrides) in providers {
+                    if !config.is_provider_disabled(&name) {
+                        if let Some(provider) =
+                            LibraryProvider::with_sources(&name, &lib_path, source_overrides)
+                        {
+                            registry
+                                .register(Box::new(provider))
+                                .unwrap_or_else(|e| {
+                                    tracing::warn!(
+                                        "Failed to register multi-source library provider '{}': {}",
+                                        name,
+                                        e
+                                    );
+                                });
+                        }
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("Error reading multi-source library providers: {}", e),
+        }
+
+        // HTTP
+        match config.multi_http_providers() {
+            Ok(providers) => {
+                for (name, _default_timeout, sources) in providers {
+                    if !config.is_provider_disabled(&name) {
+                        if sources.is_empty() {
+                            tracing::warn!(
+                                "HTTP provider '{}' (backend = http) has no source blocks; skipping",
+                                name
+                            );
+                            continue;
+                        }
+                        registry
+                            .register(Box::new(HttpProvider::with_sources(&name, sources)))
+                            .unwrap_or_else(|e| {
+                                tracing::warn!(
+                                    "Failed to register multi-source HTTP provider '{}': {}",
+                                    name,
+                                    e
+                                );
+                            });
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("Error reading multi-source HTTP providers: {}", e),
         }
 
         registry

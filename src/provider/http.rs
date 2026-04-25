@@ -1,22 +1,69 @@
-use crate::config::HttpProviderConfig;
+use crate::config::{ExternalSourceConfig, HttpProviderConfig};
+use crate::provider::script::build_source_meta_from_external;
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
+use std::collections::HashMap;
 use std::sync::OnceLock;
 use tracing::debug;
 
+// ── HttpProvider ───────────────────────────────────────────────────────────────
+//
+// Two construction paths:
+//
+// 1. `HttpProvider::new(name, HttpProviderConfig)` — single-source, backward
+//    compatible. Used by old `type = "http"` TOML and existing tests.
+//
+// 2. `HttpProvider::with_sources(name, Vec<ExternalSourceConfig>)` — multi-source.
+//    Used by Phase 4 `backend = "http"` TOML.
+
+struct HttpSourceEntry {
+    meta: SourceMetadata,
+    url: String,
+    method: Option<String>,
+    headers: Option<HashMap<String, String>>,
+    body: Option<String>,
+    extract: Option<String>,
+}
+
 pub struct HttpProvider {
     name: String,
-    config: HttpProviderConfig,
+    entries: Vec<HttpSourceEntry>,
 }
 
 impl HttpProvider {
+    /// Single-source backward-compatible constructor.
     pub fn new(name: &str, config: HttpProviderConfig) -> Self {
-        Self {
-            name: name.to_string(),
-            config,
-        }
+        let meta = build_source_meta_legacy(name, &config);
+        let entry = HttpSourceEntry {
+            url: config.url.clone(),
+            method: config.method.clone(),
+            headers: config.headers.clone(),
+            body: config.body.clone(),
+            extract: config.extract.clone(),
+            meta,
+        };
+        Self { name: name.to_string(), entries: vec![entry] }
+    }
+
+    /// Multi-source constructor from Phase 4 per-source ExternalSourceConfig list.
+    pub fn with_sources(name: &str, source_configs: Vec<ExternalSourceConfig>) -> Self {
+        let entries = source_configs
+            .into_iter()
+            .map(|cfg| {
+                let meta = build_source_meta_from_external(&cfg);
+                HttpSourceEntry {
+                    url: cfg.url.clone().unwrap_or_default(),
+                    method: cfg.method.clone(),
+                    headers: cfg.headers.clone(),
+                    body: cfg.body.clone(),
+                    extract: cfg.extract.clone(),
+                    meta,
+                }
+            })
+            .collect();
+        Self { name: name.to_string(), entries }
     }
 }
 
@@ -24,46 +71,65 @@ impl Provider for HttpProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: self.name.clone(),
-            sources: vec![self.single_source_meta()],
+            sources: self.entries.iter().map(|e| e.meta.clone()).collect(),
         }
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(HttpSingleSource {
-            name: self.name.clone(),
-            config: self.config.clone(),
-            meta: OnceLock::new(),
-        })]
+        self.entries
+            .iter()
+            .map(|e| {
+                Box::new(HttpSingleSource {
+                    provider_name: self.name.clone(),
+                    url: e.url.clone(),
+                    method: e.method.clone(),
+                    headers: e.headers.clone(),
+                    body: e.body.clone(),
+                    extract: e.extract.clone(),
+                    meta: OnceLock::new(),
+                    meta_value: e.meta.clone(),
+                }) as Box<dyn Source>
+            })
+            .collect()
     }
 }
 
-impl HttpProvider {
-    fn single_source_meta(&self) -> SourceMetadata {
-        build_source_meta(&self.name, &self.config)
-    }
-}
+// ── HttpSingleSource ───────────────────────────────────────────────────────────
 
 struct HttpSingleSource {
-    name: String,
-    config: HttpProviderConfig,
-    /// Cached metadata for the lifetime of this Source instance.
+    provider_name: String,
+    url: String,
+    method: Option<String>,
+    headers: Option<HashMap<String, String>>,
+    body: Option<String>,
+    extract: Option<String>,
     meta: OnceLock<SourceMetadata>,
+    meta_value: SourceMetadata,
 }
 
 impl Source for HttpSingleSource {
     fn metadata(&self) -> &SourceMetadata {
-        self.meta.get_or_init(|| build_source_meta(&self.name, &self.config))
+        self.meta.get_or_init(|| self.meta_value.clone())
     }
 
     fn execute(&self, _path: Option<&str>) -> SourceResult {
-        match execute_inner(&self.name, &self.config) {
+        match execute_inner(
+            &self.provider_name,
+            &self.url,
+            self.method.as_deref(),
+            self.headers.as_ref(),
+            self.body.as_deref(),
+            self.extract.as_deref(),
+        ) {
             Some(result) => result,
             None => SourceResult::new(),
         }
     }
 }
 
-fn build_source_meta(_name: &str, config: &HttpProviderConfig) -> SourceMetadata {
+// ── Metadata builders ─────────────────────────────────────────────────────────
+
+fn build_source_meta_legacy(_name: &str, config: &HttpProviderConfig) -> SourceMetadata {
     let poll_secs = config
         .invalidation
         .as_ref()
@@ -73,7 +139,6 @@ fn build_source_meta(_name: &str, config: &HttpProviderConfig) -> SourceMetadata
 
     SourceMetadata {
         name: "endpoint".into(),
-        // Dynamic — fields come from the HTTP response.
         fields: vec![FieldSchema {
             name: "<field>".into(),
             field_type: FieldType::String,
@@ -86,24 +151,24 @@ fn build_source_meta(_name: &str, config: &HttpProviderConfig) -> SourceMetadata
     }
 }
 
-fn execute_inner(provider_name: &str, config: &HttpProviderConfig) -> Option<SourceResult> {
-    let url = expand_env_vars(&config.url);
-    let method = config.method.as_deref().unwrap_or("GET");
+// ── Execution ─────────────────────────────────────────────────────────────────
 
-    // Build a list of (key, expanded_value) header pairs
-    let header_pairs: Vec<(String, String)> = config
-        .headers
-        .as_ref()
-        .map(|h| {
-            h.iter()
-                .map(|(k, v)| (k.clone(), expand_env_vars(v)))
-                .collect()
-        })
+fn execute_inner(
+    provider_name: &str,
+    url_template: &str,
+    method: Option<&str>,
+    headers: Option<&HashMap<String, String>>,
+    body: Option<&str>,
+    extract: Option<&str>,
+) -> Option<SourceResult> {
+    let url = expand_env_vars(url_template);
+    let method = method.unwrap_or("GET");
+
+    let header_pairs: Vec<(String, String)> = headers
+        .map(|h| h.iter().map(|(k, v)| (k.clone(), expand_env_vars(v))).collect())
         .unwrap_or_default();
 
-    // ureq 3.x uses type-state for body: GET/HEAD/DELETE return RequestBuilder<WithoutBody>,
-    // POST/PUT/PATCH return RequestBuilder<WithBody>. We handle them separately.
-    let body_str = config.body.as_deref().unwrap_or("");
+    let body_str = body.unwrap_or("");
     let response = match method {
         "POST" | "PUT" | "PATCH" => {
             let mut req = match method {
@@ -133,7 +198,7 @@ fn execute_inner(provider_name: &str, config: &HttpProviderConfig) -> Option<Sou
         }
     };
 
-    let body = match response.body_mut().read_to_string() {
+    let body_resp = match response.body_mut().read_to_string() {
         Ok(s) => s,
         Err(e) => {
             debug!(
@@ -144,29 +209,24 @@ fn execute_inner(provider_name: &str, config: &HttpProviderConfig) -> Option<Sou
         }
     };
 
-    // Parse JSON response
-    let json: serde_json::Value = match serde_json::from_str(&body) {
+    let json: serde_json::Value = match serde_json::from_str(&body_resp) {
         Ok(v) => v,
         Err(_) => {
-            // If not JSON, return as a single "body" field
             let mut result = SourceResult::new();
-            result.insert("body", Value::String(body));
+            result.insert("body", Value::String(body_resp));
             return Some(result);
         }
     };
 
-    // If extract path is specified, navigate into the JSON
-    let extracted = if let Some(extract) = &config.extract {
-        extract_json_path(&json, extract)
+    let extracted = if let Some(extract_path) = extract {
+        extract_json_path(&json, extract_path)
     } else {
         json
     };
 
-    // Convert to SourceResult
     json_to_source_result(&extracted)
 }
 
-/// Expand ${ENV_VAR} references in a string
 fn expand_env_vars(s: &str) -> String {
     let mut result = s.to_string();
     while let Some(start) = result.find("${") {
@@ -186,7 +246,6 @@ fn expand_env_vars(s: &str) -> String {
     result
 }
 
-/// Navigate a dot-separated path into a JSON value.
 fn extract_json_path(json: &serde_json::Value, path: &str) -> serde_json::Value {
     let mut current = json;
     for segment in path.split('.') {
@@ -213,7 +272,6 @@ fn extract_json_path(json: &serde_json::Value, path: &str) -> serde_json::Value 
     current.clone()
 }
 
-/// Convert a serde_json::Value to SourceResult
 fn json_to_source_result(value: &serde_json::Value) -> Option<SourceResult> {
     let mut result = SourceResult::new();
 
@@ -232,7 +290,6 @@ fn json_to_source_result(value: &serde_json::Value) -> Option<SourceResult> {
                         }
                     }
                     serde_json::Value::Bool(b) => Value::Bool(*b),
-                    // Nested objects/arrays: serialize back to string
                     other => Value::String(other.to_string()),
                 };
                 result.insert(key.clone(), v);
@@ -262,4 +319,3 @@ fn json_to_source_result(value: &serde_json::Value) -> Option<SourceResult> {
     }
     Some(result)
 }
-

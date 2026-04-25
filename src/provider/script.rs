@@ -1,4 +1,4 @@
-use crate::config::ScriptProviderConfig;
+use crate::config::{ExternalFieldDecl, ExternalSourceConfig, ScriptProviderConfig};
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
@@ -7,17 +7,58 @@ use std::process::Command;
 use std::sync::OnceLock;
 use tracing::debug;
 
+// ── ScriptProvider ─────────────────────────────────────────────────────────────
+//
+// Two construction paths:
+//
+// 1. `ScriptProvider::new(name, ScriptProviderConfig)` — single-source, backward
+//    compatible. Used by old `type = "script"` TOML and by existing tests.
+//
+// 2. `ScriptProvider::with_sources(name, Vec<ExternalSourceConfig>)` — multi-source.
+//    Used by Phase 4 `backend = "script"` TOML.
+//
+// Both paths produce the same Provider/Source structure; the difference is in
+// how the SourceMetadata is built and how many sources exist.
+
+/// Stores everything ScriptProvider::sources() needs to reconstruct per-source
+/// objects without downcasting the trait objects.
+struct SourceEntry {
+    meta: SourceMetadata,
+    command: String,
+    output_format: Option<String>,
+}
+
 pub struct ScriptProvider {
     name: String,
-    config: ScriptProviderConfig,
+    entries: Vec<SourceEntry>,
 }
 
 impl ScriptProvider {
+    /// Create a single-source provider from a ScriptProviderConfig (legacy path).
     pub fn new(name: &str, config: ScriptProviderConfig) -> Self {
-        Self {
-            name: name.to_string(),
-            config,
-        }
+        let meta = build_source_meta_from_legacy(name, &config);
+        let entry = SourceEntry {
+            command: config.command.clone(),
+            output_format: config.output.clone(),
+            meta,
+        };
+        Self { name: name.to_string(), entries: vec![entry] }
+    }
+
+    /// Create a multi-source provider from Phase 4 per-source ExternalSourceConfig list.
+    pub fn with_sources(name: &str, source_configs: Vec<ExternalSourceConfig>) -> Self {
+        let entries = source_configs
+            .into_iter()
+            .map(|cfg| {
+                let meta = build_source_meta_from_external(&cfg);
+                SourceEntry {
+                    command: cfg.command.clone().unwrap_or_default(),
+                    output_format: cfg.output.clone(),
+                    meta,
+                }
+            })
+            .collect();
+        Self { name: name.to_string(), entries }
     }
 }
 
@@ -25,45 +66,50 @@ impl Provider for ScriptProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: self.name.clone(),
-            sources: vec![self.single_source_meta()],
+            sources: self.entries.iter().map(|e| e.meta.clone()).collect(),
         }
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(ScriptSingleSource {
-            name: self.name.clone(),
-            config: self.config.clone(),
-            meta: OnceLock::new(),
-        })]
+        self.entries
+            .iter()
+            .map(|e| {
+                Box::new(ScriptCommandSource {
+                    source_name: e.meta.name.clone(),
+                    command: e.command.clone(),
+                    output_format: e.output_format.clone(),
+                    meta: OnceLock::new(),
+                    meta_value: e.meta.clone(),
+                }) as Box<dyn Source>
+            })
+            .collect()
     }
 }
 
-impl ScriptProvider {
-    fn single_source_meta(&self) -> SourceMetadata {
-        build_source_meta(&self.name, &self.config)
-    }
-}
+// ── ScriptCommandSource ────────────────────────────────────────────────────────
 
-struct ScriptSingleSource {
-    name: String,
-    config: ScriptProviderConfig,
+struct ScriptCommandSource {
+    source_name: String,
+    command: String,
+    output_format: Option<String>,
     meta: OnceLock<SourceMetadata>,
+    meta_value: SourceMetadata,
 }
 
-impl Source for ScriptSingleSource {
+impl Source for ScriptCommandSource {
     fn metadata(&self) -> &SourceMetadata {
-        self.meta.get_or_init(|| build_source_meta(&self.name, &self.config))
+        self.meta.get_or_init(|| self.meta_value.clone())
     }
 
     fn execute(&self, path: Option<&str>) -> SourceResult {
         let output = if cfg!(target_os = "windows") {
             Command::new("cmd")
-                .args(["/C", &self.config.command])
+                .args(["/C", &self.command])
                 .current_dir(path.unwrap_or("."))
                 .output()
         } else {
             Command::new("sh")
-                .args(["-c", &self.config.command])
+                .args(["-c", &self.command])
                 .current_dir(path.unwrap_or("."))
                 .output()
         };
@@ -74,8 +120,8 @@ impl Source for ScriptSingleSource {
         };
         if !output.status.success() {
             debug!(
-                "Script provider '{}' failed with exit code {:?}",
-                self.name,
+                "Script source '{}' failed with exit code {:?}",
+                self.source_name,
                 output.status.code()
             );
             return SourceResult::new();
@@ -86,9 +132,8 @@ impl Source for ScriptSingleSource {
             return SourceResult::new();
         }
 
-        let output_format = self.config.output.as_deref().unwrap_or("json");
-
-        let maybe_result = match output_format {
+        let fmt = self.output_format.as_deref().unwrap_or("json");
+        let maybe_result = match fmt {
             "kv" => parse_kv_output(&stdout),
             "text" => parse_text_output(&stdout),
             _ => parse_json_output(&stdout),
@@ -98,7 +143,9 @@ impl Source for ScriptSingleSource {
     }
 }
 
-fn build_source_meta(_name: &str, config: &ScriptProviderConfig) -> SourceMetadata {
+// ── Metadata builders ─────────────────────────────────────────────────────────
+
+fn build_source_meta_from_legacy(_name: &str, config: &ScriptProviderConfig) -> SourceMetadata {
     let poll_secs = config
         .invalidation
         .as_ref()
@@ -118,8 +165,6 @@ fn build_source_meta(_name: &str, config: &ScriptProviderConfig) -> SourceMetada
     let (invalidation, keep_alive) = match watch_patterns {
         Some(patterns) => {
             if scope == SourceScope::Global {
-                // Global watch: use abs_paths only; patterns meaningless for global.
-                // Fall back to poll since we have no abs_paths to watch.
                 let _ = patterns;
                 (
                     InvalidationStrategy::Poll { interval_secs: poll_secs },
@@ -160,7 +205,6 @@ fn build_source_meta(_name: &str, config: &ScriptProviderConfig) -> SourceMetada
         })
         .unwrap_or_default();
 
-    // Use a sentinel if no fields declared (dynamic output).
     let fields = if fields.is_empty() {
         vec![FieldSchema { name: "<field>".into(), field_type: FieldType::String }]
     } else {
@@ -177,6 +221,107 @@ fn build_source_meta(_name: &str, config: &ScriptProviderConfig) -> SourceMetada
         fsevents_reinstate: false,
     }
 }
+
+pub(crate) fn build_source_meta_from_external(cfg: &ExternalSourceConfig) -> SourceMetadata {
+    let strategy_type = cfg.strategy_type.as_deref().unwrap_or("poll");
+
+    let scope = match cfg.scope.as_deref() {
+        Some("path") => SourceScope::PathScoped,
+        _ => SourceScope::Global,
+    };
+
+    let poll_secs = cfg
+        .poll_interval
+        .as_ref()
+        .and_then(|s| crate::scheduler::parse_duration_secs_pub(s))
+        .unwrap_or(30);
+
+    let poll_count = cfg.poll_count.unwrap_or(2);
+
+    let patterns = cfg.fsevent_patterns.clone().unwrap_or_default();
+    let abs_paths = cfg.fsevent_abs_paths.clone().unwrap_or_default();
+
+    let (invalidation, keep_alive) = match strategy_type {
+        "fsevent" => {
+            if scope == SourceScope::Global {
+                (
+                    InvalidationStrategy::Watch {
+                        patterns: vec![],
+                        abs_paths: abs_paths.clone(),
+                    },
+                    KeepAlive::Never,
+                )
+            } else {
+                let lifespan_secs = cfg
+                    .fsevent_lifespan
+                    .as_ref()
+                    .and_then(|s| crate::scheduler::parse_duration_secs_pub(s))
+                    .unwrap_or(300);
+                (
+                    InvalidationStrategy::Watch {
+                        patterns: patterns.clone(),
+                        abs_paths: abs_paths.clone(),
+                    },
+                    KeepAlive::Duration(lifespan_secs),
+                )
+            }
+        }
+        "fsevent_poll" => (
+            InvalidationStrategy::WatchAndPoll {
+                patterns: patterns.clone(),
+                abs_paths: abs_paths.clone(),
+                interval_secs: poll_secs,
+            },
+            KeepAlive::Polls(poll_count),
+        ),
+        _ => (
+            InvalidationStrategy::Poll { interval_secs: poll_secs },
+            KeepAlive::Polls(poll_count),
+        ),
+    };
+
+    let fields = build_fields_from_decls(cfg.fields.as_deref());
+
+    let failback_reattempts = cfg.failback_count.unwrap_or(3);
+    let failback_secs = cfg
+        .failback_interval
+        .as_ref()
+        .and_then(|s| crate::scheduler::parse_duration_secs_pub(s))
+        .unwrap_or(60);
+
+    SourceMetadata {
+        name: cfg.name.clone(),
+        fields,
+        scope,
+        invalidation,
+        keep_alive,
+        failback: FailbackConfig {
+            reattempts: failback_reattempts,
+            interval_secs: failback_secs,
+        },
+        fsevents_reinstate: cfg.fsevent_reinstates.unwrap_or(true),
+    }
+}
+
+fn build_fields_from_decls(decls: Option<&[ExternalFieldDecl]>) -> Vec<FieldSchema> {
+    match decls {
+        Some(d) if !d.is_empty() => d
+            .iter()
+            .map(|f| FieldSchema {
+                name: f.name.clone(),
+                field_type: match f.field_type.as_str() {
+                    "int" => FieldType::Int,
+                    "bool" => FieldType::Bool,
+                    "float" => FieldType::Float,
+                    _ => FieldType::String,
+                },
+            })
+            .collect(),
+        _ => vec![FieldSchema { name: "<field>".into(), field_type: FieldType::String }],
+    }
+}
+
+// ── Output parsers ────────────────────────────────────────────────────────────
 
 fn parse_json_output(stdout: &str) -> Option<SourceResult> {
     let parsed: serde_json::Value = serde_json::from_str(stdout).ok()?;

@@ -409,6 +409,291 @@ impl SourceOverrideConfig {
     }
 }
 
+/// Per-source config for external backends (script / http / library).
+///
+/// Used when a provider is declared with `backend = "script"` (or `"http"`, `"library"`)
+/// and each source lives in its own `[providers.<name>.<source>]` sub-table.
+///
+/// Accepts both declaration keys (`command`, `url`, `fields`, …) and all knob keys
+/// (`poll_interval`, `fsevent_patterns`, `failback_count`, …).
+#[derive(Debug, Clone, Default)]
+pub struct ExternalSourceConfig {
+    /// Source name (filled by the caller, not parsed from the table itself).
+    pub name: String,
+    /// Strategy type: "poll", "fsevent", or "fsevent_poll".
+    pub strategy_type: Option<String>,
+    /// Scope: "global" or "path".
+    pub scope: Option<String>,
+    /// Whether the source is enabled. Default true.
+    pub enabled: Option<bool>,
+
+    // ── Script-backend declaration keys ──────────────────────────────────────
+    pub command: Option<String>,
+    pub output: Option<String>,
+
+    // ── HTTP-backend declaration keys ─────────────────────────────────────────
+    pub url: Option<String>,
+    pub method: Option<String>,
+    /// HTTP headers as key→value map.
+    pub headers: Option<HashMap<String, String>>,
+    pub body: Option<String>,
+    pub extract: Option<String>,
+    pub default_timeout: Option<String>,
+
+    // ── Field declarations ────────────────────────────────────────────────────
+    pub fields: Option<Vec<ExternalFieldDecl>>,
+
+    // ── Knob overrides (same vocabulary as SourceOverrideConfig) ─────────────
+    pub poll_interval: Option<String>,
+    pub poll_count: Option<u32>,
+    pub fsevent_patterns: Option<Vec<String>>,
+    pub fsevent_abs_paths: Option<Vec<String>>,
+    pub fsevent_lifespan: Option<String>,
+    pub fsevent_reinstates: Option<bool>,
+    pub failback_count: Option<u32>,
+    pub failback_interval: Option<String>,
+}
+
+/// A field declaration inside an external source config block.
+///
+/// ```toml
+/// fields = [{ name = "temp", type = "float" }]
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct ExternalFieldDecl {
+    pub name: String,
+    pub field_type: String,
+}
+
+impl ExternalSourceConfig {
+    /// Parse from a TOML table. `block_name` is used in error messages.
+    pub fn from_toml_table(
+        block_name: &str,
+        table: &toml::value::Table,
+    ) -> Result<Self, String> {
+        let mut out = ExternalSourceConfig::default();
+
+        // ── headers sub-table ─────────────────────────────────────────────────
+        // headers may appear as a sub-table; we collect it first before the
+        // scalar-key loop which skips tables.
+        if let Some(headers_val) = table.get("headers") {
+            if let Some(headers_table) = headers_val.as_table() {
+                let mut map = HashMap::new();
+                for (k, v) in headers_table {
+                    let s = v.as_str().ok_or_else(|| {
+                        format!("{block_name}: headers.{k} must be a string")
+                    })?;
+                    map.insert(k.clone(), s.to_string());
+                }
+                out.headers = Some(map);
+            }
+        }
+
+        for (key, val) in table {
+            match key.as_str() {
+                "type" => {
+                    out.strategy_type = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'type' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "scope" => {
+                    out.scope = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'scope' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "enabled" => {
+                    out.enabled = Some(
+                        val.as_bool()
+                            .ok_or_else(|| format!("{block_name}: 'enabled' must be a boolean"))?,
+                    );
+                }
+                // Script
+                "command" => {
+                    out.command = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'command' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "output" => {
+                    out.output = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'output' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                // HTTP
+                "url" => {
+                    out.url = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'url' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "method" => {
+                    out.method = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'method' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "headers" => {
+                    // Already handled above; skip here.
+                }
+                "body" => {
+                    out.body = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'body' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "extract" => {
+                    out.extract = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'extract' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "default_timeout" => {
+                    out.default_timeout = Some(
+                        val.as_str()
+                            .ok_or_else(|| {
+                                format!("{block_name}: 'default_timeout' must be a duration string")
+                            })?
+                            .to_string(),
+                    );
+                }
+                // Fields array
+                "fields" => {
+                    let arr = val
+                        .as_array()
+                        .ok_or_else(|| format!("{block_name}: 'fields' must be an array"))?;
+                    let mut field_decls = Vec::new();
+                    for (i, item) in arr.iter().enumerate() {
+                        let tbl = item.as_table().ok_or_else(|| {
+                            format!("{block_name}: fields[{i}] must be a table")
+                        })?;
+                        let name = tbl
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| {
+                                format!("{block_name}: fields[{i}].name is required and must be a string")
+                            })?
+                            .to_string();
+                        let field_type = tbl
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("string")
+                            .to_string();
+                        field_decls.push(ExternalFieldDecl { name, field_type });
+                    }
+                    out.fields = Some(field_decls);
+                }
+                // Knob keys
+                "poll_interval" => {
+                    out.poll_interval = Some(
+                        val.as_str()
+                            .ok_or_else(|| {
+                                format!("{block_name}: 'poll_interval' must be a duration string")
+                            })?
+                            .to_string(),
+                    );
+                }
+                "poll_count" => {
+                    out.poll_count = Some(
+                        val.as_integer()
+                            .ok_or_else(|| {
+                                format!("{block_name}: 'poll_count' must be an integer")
+                            })?
+                            as u32,
+                    );
+                }
+                "fsevent_patterns" => {
+                    let arr = val.as_array().ok_or_else(|| {
+                        format!("{block_name}: 'fsevent_patterns' must be an array")
+                    })?;
+                    let v: Result<Vec<String>, _> = arr
+                        .iter()
+                        .map(|v| {
+                            v.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                                format!("{block_name}: fsevent_patterns elements must be strings")
+                            })
+                        })
+                        .collect();
+                    out.fsevent_patterns = Some(v?);
+                }
+                "fsevent_abs_paths" => {
+                    let arr = val.as_array().ok_or_else(|| {
+                        format!("{block_name}: 'fsevent_abs_paths' must be an array")
+                    })?;
+                    let v: Result<Vec<String>, _> = arr
+                        .iter()
+                        .map(|v| {
+                            v.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                                format!("{block_name}: fsevent_abs_paths elements must be strings")
+                            })
+                        })
+                        .collect();
+                    out.fsevent_abs_paths = Some(v?);
+                }
+                "fsevent_lifespan" => {
+                    out.fsevent_lifespan = Some(
+                        val.as_str()
+                            .ok_or_else(|| {
+                                format!(
+                                    "{block_name}: 'fsevent_lifespan' must be a duration string"
+                                )
+                            })?
+                            .to_string(),
+                    );
+                }
+                "fsevent_reinstates" => {
+                    out.fsevent_reinstates = Some(
+                        val.as_bool().ok_or_else(|| {
+                            format!("{block_name}: 'fsevent_reinstates' must be a boolean")
+                        })?,
+                    );
+                }
+                "failback_count" => {
+                    out.failback_count = Some(
+                        val.as_integer()
+                            .ok_or_else(|| {
+                                format!("{block_name}: 'failback_count' must be an integer")
+                            })?
+                            as u32,
+                    );
+                }
+                "failback_interval" => {
+                    out.failback_interval = Some(
+                        val.as_str()
+                            .ok_or_else(|| {
+                                format!(
+                                    "{block_name}: 'failback_interval' must be a duration string"
+                                )
+                            })?
+                            .to_string(),
+                    );
+                }
+                other => {
+                    return Err(format!(
+                        "{block_name}: unknown key '{other}'. \
+                         Valid external-source keys are: type, scope, enabled, command, output, \
+                         url, method, headers, body, extract, default_timeout, fields, \
+                         poll_interval, poll_count, fsevent_patterns, fsevent_abs_paths, \
+                         fsevent_lifespan, fsevent_reinstates, failback_count, failback_interval"
+                    ));
+                }
+            }
+        }
+
+        Ok(out)
+    }
+}
+
 /// A script/library field declaration. Either a bare type string (legacy:
 /// inherits provider-level scope) or a table with explicit type + optional
 /// per-field scope override.
@@ -717,8 +1002,16 @@ impl Config {
 
     // ── External backend provider extraction ─────────────────────────────────
     //
-    // These methods extract script/library/http provider configs from the raw
-    // providers map for use until Phase 4 restructures external backends.
+    // Two families of extraction:
+    //
+    // 1. Legacy single-source (backward compat): provider-level block carries all
+    //    config. Used when there is NO `backend` key (old `type = "script"` shape).
+    //    `script_providers()`, `library_providers()`, `http_providers()`.
+    //
+    // 2. Phase 4 multi-source: provider-level block has `backend = "..."` key;
+    //    each source lives in a per-source sub-table. The provider-level block may
+    //    also carry `library_path` (library) or `default_timeout` (http).
+    //    `multi_script_providers()`, `multi_library_providers()`, `multi_http_providers()`.
 
     fn as_script_provider_config(val: &toml::Value) -> Option<ScriptProviderConfig> {
         // For external backends (script/library/http), deserialize the full provider-level
@@ -728,10 +1021,19 @@ impl Config {
         table.try_into().ok()
     }
 
+    /// Return the `backend` value for a provider's top-level block, if present.
+    fn backend_for(val: &toml::Value) -> Option<&str> {
+        val.get("backend").and_then(|v| v.as_str())
+    }
+
     pub fn script_providers(&self) -> Vec<(String, ScriptProviderConfig)> {
         self.providers
             .iter()
             .filter_map(|(name, val)| {
+                // Skip Phase 4 multi-source style (has `backend` key).
+                if Self::backend_for(val).is_some() {
+                    return None;
+                }
                 let cfg = Self::as_script_provider_config(val)?;
                 let is_script = cfg.provider_type.as_deref() == Some("script")
                     || (!cfg.command.is_empty() && cfg.provider_type.is_none());
@@ -744,6 +1046,10 @@ impl Config {
         self.providers
             .iter()
             .filter_map(|(name, val)| {
+                // Skip Phase 4 multi-source style (has `backend` key).
+                if Self::backend_for(val).is_some() {
+                    return None;
+                }
                 let cfg = Self::as_script_provider_config(val)?;
                 if cfg.provider_type.as_deref() == Some("library") {
                     Some((name.clone(), cfg))
@@ -758,6 +1064,10 @@ impl Config {
         self.providers
             .iter()
             .filter_map(|(name, val)| {
+                // Skip Phase 4 multi-source style (has `backend` key).
+                if Self::backend_for(val).is_some() {
+                    return None;
+                }
                 let cfg = Self::as_script_provider_config(val)?;
                 if cfg.provider_type.as_deref() != Some("http") {
                     return None;
@@ -776,6 +1086,122 @@ impl Config {
                 ))
             })
             .collect()
+    }
+
+    // ── Phase 4 multi-source external backend extraction ─────────────────────
+
+    /// Parse the per-source sub-tables for a provider declared with `backend = "..."`.
+    /// Returns `Err` if any sub-table is malformed, `Ok(vec)` otherwise (may be empty).
+    fn parse_external_sources(
+        prov_name: &str,
+        prov_val: &toml::Value,
+    ) -> Result<Vec<ExternalSourceConfig>, String> {
+        let table = match prov_val.as_table() {
+            Some(t) => t,
+            None => return Ok(vec![]),
+        };
+        let mut sources = Vec::new();
+        for (sub_key, sub_val) in table {
+            // Skip scalar provider-level keys; only process sub-tables.
+            let sub_table = match sub_val.as_table() {
+                Some(t) => t,
+                None => continue,
+            };
+            // Skip known provider-level-only sub-table names.
+            if matches!(sub_key.as_str(), "invalidation" | "fields") {
+                // These appear in legacy flat shape; in multi-source they live inside
+                // per-source blocks instead. Skip at provider level.
+                continue;
+            }
+            let block_name = format!("[providers.{prov_name}.{sub_key}]");
+            let mut src = ExternalSourceConfig::from_toml_table(&block_name, sub_table)?;
+            src.name = sub_key.clone();
+            sources.push(src);
+        }
+        Ok(sources)
+    }
+
+    /// Multi-source script providers: `backend = "script"` + per-source sub-tables.
+    /// Each source sub-table must contain `command`.
+    pub fn multi_script_providers(
+        &self,
+    ) -> Result<Vec<(String, Vec<ExternalSourceConfig>)>, String> {
+        let mut result = Vec::new();
+        for (name, val) in &self.providers {
+            if Self::backend_for(val) != Some("script") {
+                continue;
+            }
+            let sources = Self::parse_external_sources(name, val)?;
+            // Validate: each source must have a command.
+            for src in &sources {
+                if src.command.is_none() {
+                    return Err(format!(
+                        "provider '{}' source '{}' (backend = script): \
+                         missing required key 'command'",
+                        name, src.name
+                    ));
+                }
+            }
+            result.push((name.clone(), sources));
+        }
+        Ok(result)
+    }
+
+    /// Multi-source library providers: `backend = "library"` + `library_path`.
+    /// Source list comes from the library's C ABI; user TOML sub-tables only
+    /// override knobs, not declare sources. Returns `(name, library_path, source_overrides)`.
+    pub fn multi_library_providers(
+        &self,
+    ) -> Result<Vec<(String, String, Vec<ExternalSourceConfig>)>, String> {
+        let mut result = Vec::new();
+        for (name, val) in &self.providers {
+            if Self::backend_for(val) != Some("library") {
+                continue;
+            }
+            let library_path = val
+                .get("library_path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "provider '{}' (backend = library): missing required key 'library_path'",
+                        name
+                    )
+                })?
+                .to_string();
+            let sources = Self::parse_external_sources(name, val)?;
+            result.push((name.clone(), library_path, sources));
+        }
+        Ok(result)
+    }
+
+    /// Multi-source HTTP providers: `backend = "http"` + per-source sub-tables.
+    /// Each source sub-table must contain `url`. Returns `(name, default_timeout, sources)`.
+    pub fn multi_http_providers(
+        &self,
+    ) -> Result<Vec<(String, Option<String>, Vec<ExternalSourceConfig>)>, String> {
+        let mut result = Vec::new();
+        for (name, val) in &self.providers {
+            if Self::backend_for(val) != Some("http") {
+                continue;
+            }
+            let default_timeout = val
+                .get("default_timeout")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let sources = Self::parse_external_sources(name, val)?;
+            // Validate: each source must have a url.
+            for src in &sources {
+                if src.url.is_none() {
+                    return Err(format!(
+                        "provider '{}' source '{}' (backend = http): \
+                         missing required key 'url'",
+                        name, src.name
+                    ));
+                }
+            }
+            result.push((name.clone(), default_timeout, sources));
+        }
+        Ok(result)
     }
 
     // ── Startup validation ────────────────────────────────────────────────────
@@ -813,6 +1239,11 @@ impl Config {
                 .and_then(|v| v.as_str())
                 .map(|t| matches!(t, "script" | "library" | "http"))
                 .unwrap_or(false)
+                || table
+                    .get("backend")
+                    .and_then(|v| v.as_str())
+                    .map(|b| matches!(b, "script" | "library" | "http"))
+                    .unwrap_or(false)
                 || table.get("command").is_some()
                 || table.get("url").is_some()
                 || table.get("library_path").is_some();
@@ -844,7 +1275,18 @@ impl Config {
                 let sub_table = sub_val.as_table().unwrap();
                 let block_name = format!("[providers.{prov_name}.{sub_key}]");
 
-                // Parse and validate the source override block.
+                if is_external_backend {
+                    // Phase 4 multi-source: validate using ExternalSourceConfig parser
+                    // (which accepts backend-specific declaration keys).
+                    if let Err(e) = ExternalSourceConfig::from_toml_table(&block_name, sub_table) {
+                        errors.push(e);
+                    }
+                    // External backend sources are declared in TOML, not in built-ins;
+                    // no warn-and-skip for unknown sources needed.
+                    continue;
+                }
+
+                // Parse and validate the source override block (built-in provider path).
                 match SourceOverrideConfig::from_toml_table(&block_name, sub_table) {
                     Err(e) => {
                         errors.push(e);

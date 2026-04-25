@@ -749,3 +749,108 @@ fsevent_lifespan = "300s"
     assert!(warnings.is_empty(), "no warnings expected: {:?}", warnings);
     assert!(errors.is_empty(), "no errors expected: {:?}", errors);
 }
+
+// ── Phase 4 external backend TOML validation tests ──────────────────────────
+
+#[test]
+fn backend_script_source_blocks_accepted_in_validate() {
+    // `backend = "script"` providers with per-source sub-tables should pass validate_providers.
+    let toml_str = r#"
+[providers.localdash]
+backend = "script"
+
+[providers.localdash.weather]
+command = "/usr/bin/weather"
+type = "poll"
+scope = "global"
+poll_interval = "10m"
+poll_count = 3
+
+[providers.localdash.disk]
+command = "/usr/bin/disk"
+type = "poll"
+scope = "global"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let known_providers: Vec<String> = vec![];
+    let known_sources = std::collections::HashMap::new();
+    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
+    assert!(
+        errors.is_empty(),
+        "backend = script provider must not produce validation errors: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn backend_http_source_blocks_accepted_in_validate() {
+    let toml_str = r#"
+[providers.myapi]
+backend = "http"
+default_timeout = "5s"
+
+[providers.myapi.stats]
+url = "https://api.example.com/stats"
+type = "poll"
+scope = "global"
+poll_interval = "60s"
+poll_count = 5
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let known_providers: Vec<String> = vec![];
+    let known_sources = std::collections::HashMap::new();
+    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
+    assert!(
+        errors.is_empty(),
+        "backend = http provider must not produce validation errors: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn backend_library_source_override_blocks_accepted_in_validate() {
+    let toml_str = r#"
+[providers.mygpu]
+backend = "library"
+library_path = "/usr/local/lib/libgpu.dylib"
+
+[providers.mygpu.usage]
+poll_interval = "5s"
+poll_count = 6
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let known_providers: Vec<String> = vec![];
+    let known_sources = std::collections::HashMap::new();
+    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
+    assert!(
+        errors.is_empty(),
+        "backend = library provider must not produce validation errors: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn backend_script_invalid_source_key_produces_error() {
+    // An unknown key in a source sub-table of an external backend must error.
+    let toml_str = r#"
+[providers.myprov]
+backend = "script"
+
+[providers.myprov.src]
+command = "/usr/bin/cmd"
+not_a_valid_key = "oops"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let known_providers: Vec<String> = vec![];
+    let known_sources = std::collections::HashMap::new();
+    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
+    assert!(
+        !errors.is_empty(),
+        "unknown key in external source block must produce an error"
+    );
+    assert!(
+        errors[0].contains("not_a_valid_key"),
+        "error names the unknown key: {:?}",
+        errors
+    );
+}
