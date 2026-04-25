@@ -1,9 +1,10 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Builds a `git` command with defensive env vars for daemon-safe invocation:
@@ -23,175 +24,121 @@ fn git_cmd(dir: &Path) -> Command {
     cmd
 }
 
-pub struct GitProvider;
+/// Walk upwards from `start` looking for a directory that contains `.git`.
+/// Returns the containing directory's absolute path, or `None` if no repo
+/// root is found before reaching the filesystem root.
+///
+/// Uses file-system traversal rather than shelling out to `git rev-parse` so
+/// canonicalization stays cheap for the common case (every demand path).
+fn walk_to_git(path: Option<&str>) -> Option<String> {
+    let p = path?;
+    find_repo_root(Path::new(p))
+}
 
-impl Provider for GitProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "git".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "branch".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "dirty".to_string(),
-                    field_type: FieldType::Bool,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "staged".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "unstaged".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "untracked".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "conflicted".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "ahead".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "behind".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "stash".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "state".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "lines_added".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "lines_removed".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "lines_staged_added".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "lines_staged_removed".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "upstream".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "detached".to_string(),
-                    field_type: FieldType::Bool,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "commit".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "tag".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "state_step".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "state_total".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "last_commit_age_secs".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "commit_summary".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "push_ahead".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "push_behind".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::PathScoped,
-                },
-            ],
-            invalidation: InvalidationStrategy::WatchAndPoll {
-                patterns: vec![".git".to_string()],
-                interval_secs: 60,
-                floor_secs: 1,
-            },
+fn find_repo_root(start: &Path) -> Option<String> {
+    let mut cur: Option<&Path> = Some(start);
+    while let Some(dir) = cur {
+        if dir.join(".git").exists() {
+            return Some(dir.to_string_lossy().to_string());
         }
+        cur = dir.parent();
+    }
+    None
+}
+
+// ── SourceMetadata constructors ───────────────────────────────────────────────
+
+fn refs_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "refs".into(),
+        fields: vec![
+            FieldSchema { name: "branch".into(), field_type: FieldType::String },
+            FieldSchema { name: "commit".into(), field_type: FieldType::String },
+            FieldSchema { name: "tag".into(), field_type: FieldType::String },
+            FieldSchema { name: "ahead".into(), field_type: FieldType::Int },
+            FieldSchema { name: "behind".into(), field_type: FieldType::Int },
+            FieldSchema { name: "upstream".into(), field_type: FieldType::String },
+            FieldSchema { name: "detached".into(), field_type: FieldType::Bool },
+            FieldSchema { name: "state".into(), field_type: FieldType::String },
+            FieldSchema { name: "stash".into(), field_type: FieldType::Int },
+            FieldSchema { name: "state_step".into(), field_type: FieldType::Int },
+            FieldSchema { name: "state_total".into(), field_type: FieldType::Int },
+            FieldSchema { name: "last_commit_age_secs".into(), field_type: FieldType::Int },
+            FieldSchema { name: "commit_summary".into(), field_type: FieldType::String },
+            FieldSchema { name: "push_ahead".into(), field_type: FieldType::Int },
+            FieldSchema { name: "push_behind".into(), field_type: FieldType::Int },
+        ],
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![".git".into()],
+            abs_paths: vec![],
+        },
+        keep_alive: KeepAlive::Duration(120),
+        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        fsevents_reinstate: true,
+    }
+}
+
+fn diff_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "diff".into(),
+        fields: vec![
+            FieldSchema { name: "lines_added".into(), field_type: FieldType::Int },
+            FieldSchema { name: "lines_removed".into(), field_type: FieldType::Int },
+            FieldSchema { name: "lines_staged_added".into(), field_type: FieldType::Int },
+            FieldSchema { name: "lines_staged_removed".into(), field_type: FieldType::Int },
+        ],
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
+        keep_alive: KeepAlive::Polls(4),
+        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        fsevents_reinstate: false,
+    }
+}
+
+fn status_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "status".into(),
+        fields: vec![
+            FieldSchema { name: "staged".into(), field_type: FieldType::Int },
+            FieldSchema { name: "unstaged".into(), field_type: FieldType::Int },
+            FieldSchema { name: "untracked".into(), field_type: FieldType::Int },
+            FieldSchema { name: "conflicted".into(), field_type: FieldType::Int },
+            FieldSchema { name: "dirty".into(), field_type: FieldType::Bool },
+        ],
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::WatchAndPoll {
+            patterns: vec![".git/index".into()],
+            abs_paths: vec![],
+            interval_secs: 60,
+        },
+        keep_alive: KeepAlive::Polls(2),
+        failback: FailbackConfig { reattempts: 3, interval_secs: 30 },
+        fsevents_reinstate: true,
+    }
+}
+
+// ── Source impls ──────────────────────────────────────────────────────────────
+
+struct GitRefs;
+
+impl Source for GitRefs {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(refs_meta)
     }
 
-    // Walk up from `path` to find a directory containing `.git`. Returns the
-    // repo root so shells in different subdirectories of the same repo dedupe
-    // to a single cache/lifecycle/watch key. Returns `None` for paths not
-    // inside any git repo — the scheduler declines demand for those.
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        let p = path?;
-        find_repo_root(Path::new(p))
-    }
-
-    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+    fn execute(&self, path: Option<&str>) -> SourceResult {
         let Some(path) = path else {
-            return Vec::new();
+            return SourceResult::new();
         };
-        let path_owned = path.to_string();
         let dir = Path::new(path);
 
-        if !dir.join(".git").exists() && !is_inside_git_repo(dir) {
-            return Vec::new();
-        }
-
         let Some(status) = parse_git_status(dir) else {
-            return Vec::new();
+            return SourceResult::new();
         };
         let stash_count = count_stashes(dir);
         let (state, state_step, state_total) = detect_repo_state(dir);
-
-        let dirty = status.staged > 0
-            || status.unstaged > 0
-            || status.untracked > 0
-            || status.conflicted > 0;
-
-        let (lines_added, lines_removed) = diff_numstat(dir);
-        let (lines_staged_added, lines_staged_removed) = diff_numstat_staged(dir);
         let (commit, last_commit_ts, commit_summary) = get_head_info(dir);
         let tag = get_nearest_tag(dir);
         let (push_ahead, push_behind) = get_push_divergence(dir, &status.branch);
@@ -206,36 +153,117 @@ impl Provider for GitProvider {
             0
         };
 
-        let mut result = ProviderResult::new();
-        result.insert("branch", Value::String(status.branch));
-        result.insert("dirty", Value::Bool(dirty));
-        result.insert("staged", Value::Int(status.staged));
-        result.insert("unstaged", Value::Int(status.unstaged));
-        result.insert("untracked", Value::Int(status.untracked));
-        result.insert("conflicted", Value::Int(status.conflicted));
+        let mut result = SourceResult::new();
+        result.insert("branch", Value::String(status.branch.clone()));
         result.insert("ahead", Value::Int(status.ahead));
         result.insert("behind", Value::Int(status.behind));
-        result.insert("stash", Value::Int(stash_count));
-        result.insert("state", Value::String(state));
-        result.insert("lines_added", Value::Int(lines_added));
-        result.insert("lines_removed", Value::Int(lines_removed));
-        result.insert("lines_staged_added", Value::Int(lines_staged_added));
-        result.insert("lines_staged_removed", Value::Int(lines_staged_removed));
         result.insert("upstream", Value::String(status.upstream));
         result.insert("detached", Value::Bool(status.detached));
-        result.insert("commit", Value::String(commit));
-        result.insert("tag", Value::String(tag));
+        result.insert("stash", Value::Int(stash_count));
+        result.insert("state", Value::String(state));
         result.insert("state_step", Value::Int(state_step));
         result.insert("state_total", Value::Int(state_total));
+        result.insert("commit", Value::String(commit));
+        result.insert("tag", Value::String(tag));
         result.insert("last_commit_age_secs", Value::Int(last_commit_age_secs));
         result.insert("commit_summary", Value::String(commit_summary));
         result.insert("push_ahead", Value::Int(push_ahead));
         result.insert("push_behind", Value::Int(push_behind));
-        vec![(Some(path_owned), result)]
+        result
+    }
+
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        walk_to_git(path)
     }
 }
 
-struct GitStatus {
+struct GitDiff;
+
+impl Source for GitDiff {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(diff_meta)
+    }
+
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        let Some(path) = path else {
+            return SourceResult::new();
+        };
+        let dir = Path::new(path);
+
+        let (lines_added, lines_removed) = diff_numstat(dir);
+        let (lines_staged_added, lines_staged_removed) = diff_numstat_staged(dir);
+
+        let mut result = SourceResult::new();
+        result.insert("lines_added", Value::Int(lines_added));
+        result.insert("lines_removed", Value::Int(lines_removed));
+        result.insert("lines_staged_added", Value::Int(lines_staged_added));
+        result.insert("lines_staged_removed", Value::Int(lines_staged_removed));
+        result
+    }
+
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        walk_to_git(path)
+    }
+}
+
+struct GitStatus;
+
+impl Source for GitStatus {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(status_meta)
+    }
+
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        let Some(path) = path else {
+            return SourceResult::new();
+        };
+        let dir = Path::new(path);
+
+        let Some(status) = parse_git_status(dir) else {
+            return SourceResult::new();
+        };
+
+        let dirty = status.staged > 0
+            || status.unstaged > 0
+            || status.untracked > 0
+            || status.conflicted > 0;
+
+        let mut result = SourceResult::new();
+        result.insert("staged", Value::Int(status.staged));
+        result.insert("unstaged", Value::Int(status.unstaged));
+        result.insert("untracked", Value::Int(status.untracked));
+        result.insert("conflicted", Value::Int(status.conflicted));
+        result.insert("dirty", Value::Bool(dirty));
+        result
+    }
+
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        walk_to_git(path)
+    }
+}
+
+// ── Provider ──────────────────────────────────────────────────────────────────
+
+pub struct GitProvider;
+
+impl Provider for GitProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "git".into(),
+            sources: vec![refs_meta(), diff_meta(), status_meta()],
+        }
+    }
+
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(GitRefs), Box::new(GitDiff), Box::new(GitStatus)]
+    }
+}
+
+// ── Git internals ─────────────────────────────────────────────────────────────
+
+struct ParsedGitStatus {
     branch: String,
     upstream: String,
     detached: bool,
@@ -247,7 +275,7 @@ struct GitStatus {
     conflicted: i64,
 }
 
-fn parse_git_status(dir: &Path) -> Option<GitStatus> {
+fn parse_git_status(dir: &Path) -> Option<ParsedGitStatus> {
     let output = git_cmd(dir)
         .args(["status", "--porcelain=v2", "--branch"])
         .output()
@@ -307,7 +335,7 @@ fn parse_git_status(dir: &Path) -> Option<GitStatus> {
         }
     }
 
-    Some(GitStatus {
+    Some(ParsedGitStatus {
         branch,
         upstream,
         detached,
@@ -372,7 +400,6 @@ fn read_int_file(path: &Path) -> i64 {
 /// Runs `git diff --numstat` and returns (lines_added, lines_removed) summed across all files.
 fn diff_numstat(dir: &Path) -> (i64, i64) {
     let output = git_cmd(dir).args(["diff", "--numstat"]).output();
-
     parse_numstat_output(output)
 }
 
@@ -381,7 +408,6 @@ fn diff_numstat_staged(dir: &Path) -> (i64, i64) {
     let output = git_cmd(dir)
         .args(["diff", "--cached", "--numstat"])
         .output();
-
     parse_numstat_output(output)
 }
 
@@ -504,29 +530,4 @@ fn get_git_config(dir: &Path, key: &str) -> Option<String> {
     } else {
         None
     }
-}
-
-fn is_inside_git_repo(dir: &Path) -> bool {
-    git_cmd(dir)
-        .args(["rev-parse", "--git-dir"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Walk upwards from `start` looking for a directory that contains `.git`.
-/// Returns the containing directory's absolute path, or `None` if no repo
-/// root is found before reaching the filesystem root.
-///
-/// Uses file-system traversal rather than shelling out to `git rev-parse` so
-/// canonicalization stays cheap for the common case (every demand path).
-fn find_repo_root(start: &Path) -> Option<String> {
-    let mut cur: Option<&Path> = Some(start);
-    while let Some(dir) = cur {
-        if dir.join(".git").exists() {
-            return Some(dir.to_string_lossy().to_string());
-        }
-        cur = dir.parent();
-    }
-    None
 }
