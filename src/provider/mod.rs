@@ -142,7 +142,6 @@ pub enum FieldScope {
 pub struct FieldSchema {
     pub name: String,
     pub field_type: FieldType,
-    pub scope: FieldScope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,29 +264,6 @@ pub struct ProviderMetadata {
 }
 
 impl ProviderMetadata {
-    /// Returns the scope for a named field, or None if the field is not declared.
-    pub fn field_scope(&self, field: &str) -> Option<FieldScope> {
-        self.fields
-            .iter()
-            .find(|f| f.name == field)
-            .map(|f| f.scope)
-    }
-
-    /// Returns the provider's effective scope: PathScoped if any field is path-scoped,
-    /// else Global. Used by resolve_path for whole-provider queries and unknown-field
-    /// fallback.
-    pub fn inferred_scope(&self) -> FieldScope {
-        if self
-            .fields
-            .iter()
-            .any(|f| f.scope == FieldScope::PathScoped)
-        {
-            FieldScope::PathScoped
-        } else {
-            FieldScope::Global
-        }
-    }
-
     /// Validates provider metadata at registration time. Called from
     /// `ProviderRegistry::register_with_source()` to fail loudly at daemon startup
     /// rather than silently at first query.
@@ -397,141 +373,13 @@ mod tests {
     }
 
     #[test]
-    fn field_scope_round_trips_through_serde() {
-        let fs = FieldSchema {
-            name: "branch".to_string(),
-            field_type: FieldType::String,
-            scope: FieldScope::PathScoped,
-        };
-        let json = serde_json::to_string(&fs).unwrap();
-        let back: FieldSchema = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.name, "branch");
-        assert_eq!(back.scope, FieldScope::PathScoped);
-    }
-
-    #[test]
-    fn field_scope_serializes_as_lowercase_string() {
-        let fs = FieldSchema {
-            name: "branch".to_string(),
-            field_type: FieldType::String,
-            scope: FieldScope::Global,
-        };
-        let json = serde_json::to_string(&fs).unwrap();
-        assert!(json.contains(r#""scope":"global""#), "got: {json}");
-    }
-
-    #[test]
-    fn inferred_scope_is_pathscoped_when_any_field_is_pathscoped() {
-        let meta = ProviderMetadata {
-            name: "mixed".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "a".into(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "b".into(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                },
-            ],
-            invalidation: InvalidationStrategy::Once,
-        };
-        assert_eq!(meta.inferred_scope(), FieldScope::PathScoped);
-    }
-
-    #[test]
-    fn inferred_scope_is_global_when_all_fields_are_global() {
-        let meta = ProviderMetadata {
-            name: "globals".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "a".into(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "b".into(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-            ],
-            invalidation: InvalidationStrategy::Once,
-        };
-        assert_eq!(meta.inferred_scope(), FieldScope::Global);
-    }
-
-    #[test]
-    fn field_scope_looks_up_by_name() {
-        let meta = ProviderMetadata {
-            name: "x".to_string(),
-            fields: vec![FieldSchema {
-                name: "a".into(),
-                field_type: FieldType::String,
-                scope: FieldScope::PathScoped,
-            }],
-            invalidation: InvalidationStrategy::Once,
-        };
-        assert_eq!(meta.field_scope("a"), Some(FieldScope::PathScoped));
-        assert_eq!(meta.field_scope("missing"), None);
-    }
-
-    #[test]
     fn validate_fails_on_empty_fields() {
         let meta = ProviderMetadata {
             name: "empty".to_string(),
             fields: vec![],
-            invalidation: InvalidationStrategy::Once,
+            invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
         };
         assert!(meta.validate().is_err());
-    }
-
-    #[test]
-    fn execute_returns_vec_of_scoped_results() {
-        // Pins the Provider trait signature. If this compiles, the signature
-        // is correct.
-        fn _accept<P: Provider + ?Sized>(
-            p: &P,
-            path: Option<&str>,
-        ) -> Vec<(Option<String>, ProviderResult)> {
-            p.execute(path)
-        }
-        let _ = _accept::<dyn Provider>;
-    }
-
-    // Dummy provider used to exercise default trait method behaviours.
-    struct NoopProvider;
-    impl Provider for NoopProvider {
-        fn metadata(&self) -> ProviderMetadata {
-            ProviderMetadata {
-                name: "noop".into(),
-                fields: vec![FieldSchema {
-                    name: "x".into(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                }],
-                invalidation: InvalidationStrategy::Poll {
-                    interval_secs: 60,
-                    floor_secs: 1,
-                },
-            }
-        }
-        fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-            Vec::new()
-        }
-    }
-
-    #[test]
-    fn canonical_path_default_is_identity_for_some() {
-        let p = NoopProvider;
-        assert_eq!(p.canonical_path(Some("/a/b/c")), Some("/a/b/c".to_string()));
-    }
-
-    #[test]
-    fn canonical_path_default_passes_none_through() {
-        let p = NoopProvider;
-        assert_eq!(p.canonical_path(None), None);
     }
 
     #[test]
@@ -608,9 +456,8 @@ mod tests {
             fields: vec![FieldSchema {
                 name: "a".into(),
                 field_type: FieldType::String,
-                scope: FieldScope::Global,
             }],
-            invalidation: InvalidationStrategy::Once,
+            invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
         };
         assert!(meta.validate().is_ok());
     }
