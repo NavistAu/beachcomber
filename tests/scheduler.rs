@@ -36,7 +36,7 @@ async fn scheduler_refresh_populates_cache() {
         name_value.is_some(),
         "hostname 'name' field should be populated"
     );
-    assert!(!name_value.unwrap().as_text().is_empty());
+    assert!(!name_value.unwrap().0.as_text().is_empty());
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;

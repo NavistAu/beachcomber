@@ -985,24 +985,41 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     let rows: Vec<CacheRow> = serde_json::from_value(resp.data.expect("data present"))
         .expect("rows deserialize");
 
-    let git_row = rows.iter().find(|r| r.provider == "git").expect("git row present after get in a real repo");
+    // Pick a git row from the `refs` source (fsevent strategy → watches_files=true).
+    // After Phase 1 each row carries its source's strategy individually, so the diff
+    // source (poll) has watches_files=false while refs has watches_files=true.
+    let refs_row = rows
+        .iter()
+        .find(|r| r.provider == "git" && r.source == "refs")
+        .expect("git.refs row present after get in a real repo");
 
     use beachcomber::cache::RowKind;
-    match git_row.kind.as_ref().expect("kind present") {
+    match refs_row.kind.as_ref().expect("kind present") {
         RowKind::Lifecycle { decay, watches_files } => {
             assert_eq!(*decay, 0, "freshly queried row should be Active (decay=0)");
-            // git uses Watch/WatchAndPoll sources — watches_files is true for at least refs source
-            assert!(*watches_files, "git sources should watch files");
+            assert!(*watches_files, "git.refs uses Watch strategy → watches_files=true");
         }
         other => panic!("expected Lifecycle, got {:?}", other),
     }
-    // poll_interval_secs may be 0 for Watch-only sources (e.g. refs uses Watch strategy);
-    // we just verify the field is present (Some) since the server always populates it for
-    // lifecycle rows.
-    assert!(git_row.poll_interval_secs.is_some(), "poll_interval_secs should be present");
-    // keep_alive_polls is not populated in the current status shape (Phase 2 field).
-    assert!(git_row.keep_alive_polls.is_none());
-    assert_eq!(git_row.failure, None);
+    // refs is a pure Watch source — no poll path → poll_interval_secs is None.
+    assert!(refs_row.poll_interval_secs.is_none(), "Watch-only source should have None poll_interval_secs");
+    assert!(refs_row.keep_alive_polls.is_none());
+    assert_eq!(refs_row.failure, None);
+
+    // Cross-check the diff source: poll strategy → poll_interval_secs is Some, watches_files=false.
+    let diff_row = rows
+        .iter()
+        .find(|r| r.provider == "git" && r.source == "diff")
+        .expect("git.diff row present");
+    match diff_row.kind.as_ref().expect("kind present") {
+        RowKind::Lifecycle { watches_files, .. } => {
+            assert!(!*watches_files, "git.diff uses Poll strategy → watches_files=false");
+        }
+        other => panic!("expected Lifecycle for diff row, got {:?}", other),
+    }
+    assert!(diff_row.poll_interval_secs.is_some(), "Poll source should have Some poll_interval_secs");
+    assert!(diff_row.keep_alive_polls.is_some(), "Poll source should have Some keep_alive_polls");
+    assert!(diff_row.polls_elapsed.is_some(), "Poll source should have Some polls_elapsed");
 
     handle.abort();
 }
@@ -1044,9 +1061,9 @@ async fn status_response_once_row_has_kind_once() {
         }
         other => panic!("expected RowKind::Lifecycle for hostname, got {:?}", other),
     }
-    // hostname uses Watch-only strategy — no poll interval.
-    assert!(row.poll_interval_secs.is_some(), "poll_interval_secs present in lifecycle row");
-    // keep_alive_polls is not populated in the current status shape (Phase 2 field).
+    // hostname uses Watch + KeepAlive::Never (pure-watch global) — no poll path
+    // → poll_interval_secs is None and keep_alive_polls is None.
+    assert!(row.poll_interval_secs.is_none(), "pure Watch source should have None poll_interval_secs");
     assert!(row.keep_alive_polls.is_none());
 
     handle.abort();

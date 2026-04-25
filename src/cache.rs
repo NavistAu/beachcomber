@@ -140,7 +140,16 @@ impl Cache {
     ///
     /// `field` may be a dotted sub-path (e.g. `"project.rust"`): the first segment is the
     /// top-level field name and subsequent segments traverse nested `Value::Object` maps.
-    pub fn get_field(&self, provider: &str, path: Option<&str>, field: &str) -> Option<Value> {
+    ///
+    /// Returns the value plus the owning source's `last_refreshed` timestamp so callers
+    /// can report per-field freshness (canon §"Field freshness": each field's age is the
+    /// freshness of its owning Source's last successful refresh).
+    pub fn get_field(
+        &self,
+        provider: &str,
+        path: Option<&str>,
+        field: &str,
+    ) -> Option<(Value, Instant)> {
         let key = make_cache_key(provider, path);
         let entry = self.entries.get(&key)?;
         // Split into head (top-level field) and optional rest (nested sub-path).
@@ -168,10 +177,10 @@ impl Cache {
                         }
                     }
                     if found {
-                        return Some(current);
+                        return Some((current, src.last_refreshed));
                     }
                 } else {
-                    return Some(top.clone());
+                    return Some((top.clone(), src.last_refreshed));
                 }
             }
         }
@@ -432,13 +441,13 @@ mod tests {
         );
 
         // "branch" lives in "base" — get_field should find it.
-        let branch = cache
+        let (branch, _) = cache
             .get_field("git", Some("/repo"), "branch")
             .expect("get_field must find branch");
         assert_eq!(branch.as_text(), "main");
 
         // "dirty" lives in "extras" — get_field should find it too.
-        let dirty = cache
+        let (dirty, _) = cache
             .get_field("git", Some("/repo"), "dirty")
             .expect("get_field must find dirty");
         assert_eq!(dirty.as_text(), "true");

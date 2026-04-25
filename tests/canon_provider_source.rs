@@ -170,10 +170,10 @@ fn watch_source_refreshes_on_filesystem_event() {
     cache.put_source("git", Some("/repo"), "refs", make_fields(&[("branch", "feat"), ("commit", "def")]), None);
 
     // diff fields must be untouched.
-    let lines = cache.get_field("git", Some("/repo"), "lines_added").expect("lines_added must exist");
+    let (lines, _) = cache.get_field("git", Some("/repo"), "lines_added").expect("lines_added must exist");
     assert_eq!(lines.as_text(), "5", "sibling source field must be untouched after refs refresh");
     // refs fields must be updated.
-    let branch = cache.get_field("git", Some("/repo"), "branch").expect("branch must exist");
+    let (branch, _) = cache.get_field("git", Some("/repo"), "branch").expect("branch must exist");
     assert_eq!(branch.as_text(), "feat", "branch must reflect new value after refs refresh");
 }
 
@@ -354,14 +354,14 @@ fn source_level_failure_backoff_suppresses_refresh() {
         None,
     );
 
-    let last_val = cache
+    let (last_val, _) = cache
         .get_field("test", None, "status")
         .expect("field must exist after initial write");
     assert_eq!(last_val.as_text(), "ok");
 
     // During suppression: no put_source calls occur.
     // The field continues to serve its last cached value unchanged.
-    let still_val = cache
+    let (still_val, _) = cache
         .get_field("test", None, "status")
         .expect("field must still be accessible during suppression");
     assert_eq!(
@@ -606,6 +606,20 @@ fn field_freshness_reflects_owning_source_last_refresh() {
         age_a,
         age_b
     );
+
+    // get_field surfaces per-field freshness: the timestamp returned matches
+    // the owning Source's last_refreshed, not the entry's oldest. branch comes
+    // from refs (older); lines_added comes from diff (newer).
+    let (_, ts_branch) = cache
+        .get_field("git", Some("/repo"), "branch")
+        .expect("branch must be readable via get_field");
+    let (_, ts_lines) = cache
+        .get_field("git", Some("/repo"), "lines_added")
+        .expect("lines_added must be readable via get_field");
+    assert!(
+        ts_branch < ts_lines,
+        "branch (from refs, refreshed earlier) must have an earlier timestamp than lines_added (from diff)"
+    );
     // B's age should be very small (just refreshed).
     assert!(
         age_b < 1000,
@@ -661,7 +675,7 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
         None,
     );
 
-    let val = cache
+    let (val, _) = cache
         .get_field("mise", None, "rust")
         .expect("Global source must write to pathless cache slot");
     assert_eq!(val.as_text(), "1.80.0");
@@ -706,13 +720,13 @@ fn cross_source_field_write_isolation() {
     );
 
     // a1 and a2 must reflect the new values.
-    let a1 = cache.get_field("myprovider", Some("/path"), "a1").expect("a1 must exist");
-    let a2 = cache.get_field("myprovider", Some("/path"), "a2").expect("a2 must exist");
+    let (a1, _) = cache.get_field("myprovider", Some("/path"), "a1").expect("a1 must exist");
+    let (a2, _) = cache.get_field("myprovider", Some("/path"), "a2").expect("a2 must exist");
     assert_eq!(a1.as_text(), "new_a1", "a1 must be updated after source_a refresh");
     assert_eq!(a2.as_text(), "new_a2", "a2 must be updated after source_a refresh");
 
     // b1 must remain unchanged.
-    let b1 = cache.get_field("myprovider", Some("/path"), "b1").expect("b1 must exist");
+    let (b1, _) = cache.get_field("myprovider", Some("/path"), "b1").expect("b1 must exist");
     assert_eq!(
         b1.as_text(),
         "original_b1",
@@ -780,7 +794,6 @@ fn demand_for_field_is_demand_for_owning_source_only() {
 /// successful registration leaves no poll_timer (no poll path), and the cache field is
 /// absent if never populated.
 #[test]
-#[ignore = "TODO(canon-15): full simulation requires scheduler-level watch-registration error injection; only metadata and cache-absence are verifiable here"]
 fn watch_registration_failure_leaves_cache_stale() {
     // If watch registration fails for a Watch-only source:
     // 1. No poll fallback exists (Watch has no poll_interval).

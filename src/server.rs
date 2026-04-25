@@ -1,7 +1,7 @@
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
-use crate::provider::SourceScope;
+use crate::provider::{InvalidationStrategy, SourceScope};
 use crate::provider::registry::ProviderRegistry;
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
@@ -331,34 +331,88 @@ async fn handle_watch(
     }
 }
 
+/// Cold-miss inline-execute: synchronously run a Source to populate the cache,
+/// then let the caller re-read. Mirrors the scheduler's execute_source path
+/// (spawn_blocking + cache.put_source) but runs in the request task so the
+/// response carries fresh data (canon §"Cold cache miss triggers inline fetch").
+///
+/// Path argument is the consumer-supplied path; for Global sources it is
+/// ignored and the cache write keys to (provider, None). Returns true if a
+/// non-empty result was written.
+async fn inline_execute_source(
+    registry: &ProviderRegistry,
+    cache: &Cache,
+    provider: &str,
+    source_name: &str,
+    path: Option<&str>,
+) -> bool {
+    let Some(source) = registry.source(provider, source_name) else {
+        return false;
+    };
+    let scope = source.metadata().scope;
+    let effective_path = match scope {
+        SourceScope::Global => None,
+        SourceScope::PathScoped => path.map(|s| s.to_string()),
+    };
+    let expected_interval_secs = match source.metadata().invalidation {
+        InvalidationStrategy::Poll { interval_secs } => Some(interval_secs),
+        InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(interval_secs),
+        InvalidationStrategy::Watch { .. } => None,
+    };
+    let path_owned = effective_path.clone();
+    let src_clone = std::sync::Arc::clone(&source);
+    let result = match tokio::task::spawn_blocking(move || src_clone.execute(path_owned.as_deref()))
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    if result.fields.is_empty() {
+        return false;
+    }
+    cache.put_source(
+        provider,
+        effective_path.as_deref(),
+        source_name,
+        result.fields,
+        expected_interval_secs,
+    );
+    true
+}
+
 fn read_watch_value(
     cache: &Cache,
     provider_name: &str,
     field: Option<&str>,
     path: Option<&str>,
 ) -> Response {
-    match cache.get_entry(provider_name, path) {
-        Some(entry) => {
-            let age_ms = entry.age_ms();
-            let stale = entry.is_stale();
-            let data = if let Some(field_name) = field {
-                // Look up field across all sources.
-                match cache.get_field(provider_name, path, field_name) {
-                    Some(value) => serde_json::to_value(&value).unwrap_or(serde_json::Value::Null),
-                    None => {
-                        return Response::error(format!(
-                            "unknown field: {provider_name}.{field_name}"
-                        ));
-                    }
-                }
-            } else {
-                // Return all fields flattened.
-                let flat = entry.flatten_fields();
-                serde_json::to_value(&flat).unwrap_or(serde_json::Value::Null)
-            };
-            Response::ok(data, age_ms, stale)
+    if let Some(field_name) = field {
+        // Field-targeted: surface the owning source's last_refreshed as age,
+        // not the entry-level oldest. Canon §"Field freshness".
+        match cache.get_field(provider_name, path, field_name) {
+            Some((value, last_refreshed)) => {
+                let age_ms = last_refreshed.elapsed().as_millis();
+                let data = serde_json::to_value(&value).unwrap_or(serde_json::Value::Null);
+                Response::ok(data, age_ms, false)
+            }
+            None => match cache.get_entry(provider_name, path) {
+                Some(_) => Response::error(format!(
+                    "unknown field: {provider_name}.{field_name}"
+                )),
+                None => Response::miss(),
+            },
         }
-        None => Response::miss(),
+    } else {
+        match cache.get_entry(provider_name, path) {
+            Some(entry) => {
+                let age_ms = entry.age_ms();
+                let stale = entry.is_stale();
+                let flat = entry.flatten_fields();
+                let data = serde_json::to_value(&flat).unwrap_or(serde_json::Value::Null);
+                Response::ok(data, age_ms, stale)
+            }
+            None => Response::miss(),
+        }
     }
 }
 
@@ -549,41 +603,68 @@ async fn handle_request(
                 return Response::ok(serde_json::Value::String(src.to_string()), 0, false);
             }
 
-            // Cache lookup, routed by key parse form.
+            // Cache lookup with cold-miss inline-execute, routed by key parse form.
+            // Canon §"Cold cache miss triggers inline fetch": on cache miss, synchronously
+            // execute the relevant source(s), write to cache, then re-read.
             let (cache_hit, normal_response) = match &parsed {
                 KeyParse::Field(provider, field) => {
-                    // Route to the source that owns this field.
-                    // `field` may be a dotted nested path (e.g. "project.rust") when the
-                    // parsed key had 3+ segments and the middle segment was not a source name.
-                    match cache.get_field(provider, effective_path.as_deref(), field) {
-                        Some(value) => {
-                            let entry = cache.get_entry(provider, effective_path.as_deref());
-                            let age_ms = entry.as_ref().map(|e| e.age_ms()).unwrap_or(0);
-                            let stale = entry.as_ref().map(|e| e.is_stale()).unwrap_or(false);
-                            let data = serde_json::to_value(&value).unwrap_or(serde_json::Value::Null);
-                            (true, Response::ok(data, age_ms, stale))
+                    // First check cache.
+                    let mut hit = cache.get_field(provider, effective_path.as_deref(), field);
+                    if hit.is_none()
+                        && let Some(source_name) = registry.source_for_field(provider, field)
+                    {
+                        let source_name = source_name.to_string();
+                        if inline_execute_source(
+                            registry,
+                            cache,
+                            provider,
+                            &source_name,
+                            effective_path.as_deref(),
+                        )
+                        .await
+                        {
+                            hit = cache.get_field(provider, effective_path.as_deref(), field);
+                        }
+                    }
+                    match hit {
+                        Some((value, last_refreshed)) => {
+                            let age_ms = last_refreshed.elapsed().as_millis();
+                            let data =
+                                serde_json::to_value(&value).unwrap_or(serde_json::Value::Null);
+                            (true, Response::ok(data, age_ms, false))
                         }
                         None => {
-                            // Distinguish between a provider cache miss and a nested-path not-found.
-                            // If the field is dotted (nested path), check whether the top-level
-                            // field exists: if it does, the subkey is unknown — return an error.
+                            // Distinguish nested-path not-found from full miss.
                             if field.contains('.') {
                                 let head = field.split('.').next().unwrap_or(field.as_str());
-                                if cache.get_field(provider, effective_path.as_deref(), head).is_some() {
+                                if cache
+                                    .get_field(provider, effective_path.as_deref(), head)
+                                    .is_some()
+                                {
                                     return Response::error(format!(
                                         "unknown field: {provider}.{field}"
                                     ));
                                 }
                             }
-                            // Cold miss — provider impls are not yet available (Section H).
-                            // The scheduler will handle warming; return miss for now.
                             (false, Response::miss())
                         }
                     }
                 }
                 KeyParse::Source(provider, source) => {
-                    // Return the whole source sub-entry.
-                    match cache.get_source(provider, effective_path.as_deref(), source) {
+                    let mut hit = cache.get_source(provider, effective_path.as_deref(), source);
+                    if hit.is_none()
+                        && inline_execute_source(
+                            registry,
+                            cache,
+                            provider,
+                            source,
+                            effective_path.as_deref(),
+                        )
+                        .await
+                    {
+                        hit = cache.get_source(provider, effective_path.as_deref(), source);
+                    }
+                    match hit {
                         Some(src_entry) => {
                             let age_ms = src_entry.age_ms();
                             let stale = src_entry.is_stale();
@@ -595,30 +676,64 @@ async fn handle_request(
                     }
                 }
                 KeyParse::SourceField(provider, source, field) => {
-                    // Direct source+field lookup.
-                    match cache.get_source(provider, effective_path.as_deref(), source) {
-                        Some(src_entry) => {
-                            match src_entry.fields.get(field.as_str()) {
-                                Some(value) => {
-                                    let age_ms = src_entry.age_ms();
-                                    let stale = src_entry.is_stale();
-                                    let data = serde_json::to_value(value)
-                                        .unwrap_or(serde_json::Value::Null);
-                                    (true, Response::ok(data, age_ms, stale))
-                                }
-                                None => {
-                                    return Response::error(format!(
-                                        "unknown field: {provider}.{source}.{field}"
-                                    ));
-                                }
+                    let mut hit = cache.get_source(provider, effective_path.as_deref(), source);
+                    if hit.is_none()
+                        && inline_execute_source(
+                            registry,
+                            cache,
+                            provider,
+                            source,
+                            effective_path.as_deref(),
+                        )
+                        .await
+                    {
+                        hit = cache.get_source(provider, effective_path.as_deref(), source);
+                    }
+                    match hit {
+                        Some(src_entry) => match src_entry.fields.get(field.as_str()) {
+                            Some(value) => {
+                                let age_ms = src_entry.age_ms();
+                                let stale = src_entry.is_stale();
+                                let data = serde_json::to_value(value)
+                                    .unwrap_or(serde_json::Value::Null);
+                                (true, Response::ok(data, age_ms, stale))
                             }
-                        }
+                            None => {
+                                return Response::error(format!(
+                                    "unknown field: {provider}.{source}.{field}"
+                                ));
+                            }
+                        },
                         None => (false, Response::miss()),
                     }
                 }
                 KeyParse::Provider(provider) => {
-                    // Return all sources flattened.
-                    match cache.get_entry(provider, effective_path.as_deref()) {
+                    // Whole-provider read: warm every applicable source on cold miss.
+                    let mut hit = cache.get_entry(provider, effective_path.as_deref());
+                    if hit.is_none()
+                        && let Some(sources) = registry.provider_sources(provider)
+                    {
+                        let source_names: Vec<String> = sources
+                            .iter()
+                            .filter(|sm| match sm.scope {
+                                SourceScope::Global => true,
+                                SourceScope::PathScoped => effective_path.is_some(),
+                            })
+                            .map(|sm| sm.name.clone())
+                            .collect();
+                        for sn in &source_names {
+                            inline_execute_source(
+                                registry,
+                                cache,
+                                provider,
+                                sn,
+                                effective_path.as_deref(),
+                            )
+                            .await;
+                        }
+                        hit = cache.get_entry(provider, effective_path.as_deref());
+                    }
+                    match hit {
                         Some(entry) => {
                             let age_ms = entry.age_ms();
                             let stale = entry.is_stale();
