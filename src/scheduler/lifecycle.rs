@@ -112,9 +112,6 @@ impl SourceLifecycleConfig {
     }
 }
 
-/// Backward-compatibility alias. New code should use `SourceLifecycleConfig` directly.
-#[deprecated(note = "use SourceLifecycleConfig")]
-pub type ProviderLifecycleConfig = SourceLifecycleConfig;
 
 #[derive(Debug, Clone)]
 pub struct LifecycleEntry {
