@@ -177,6 +177,22 @@ pub enum InvalidationStrategy {
     },
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum KeepAlive {
+    /// Valid for `Poll` and `WatchAndPoll`. Entry stays Active for K polls.
+    Polls(u32),
+    /// Valid for `Watch` (path-scoped). Entry stays Active for K_secs.
+    Duration(u64),
+    /// Valid only for `Watch` + `Global`. Entry never decays.
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct FailbackConfig {
+    pub reattempts: u32,
+    pub interval_secs: u64,
+}
+
 /// Returns the expected refresh interval for a provider's strategy, in whole seconds.
 /// Used to populate `CacheEntry::expected_interval_secs` on write paths so staleness
 /// reporting works correctly for sync-miss and rerun writes.
