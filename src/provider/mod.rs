@@ -259,20 +259,82 @@ impl SourceResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderMetadata {
     pub name: String,
-    pub fields: Vec<FieldSchema>,
-    pub invalidation: InvalidationStrategy,
+    pub sources: Vec<SourceMetadata>,
 }
 
 impl ProviderMetadata {
-    /// Validates provider metadata at registration time. Called from
-    /// `ProviderRegistry::register_with_source()` to fail loudly at daemon startup
-    /// rather than silently at first query.
+    /// Validates provider metadata at registration time.
     pub fn validate(&self) -> Result<(), String> {
-        if self.fields.is_empty() {
-            return Err(format!("provider '{}' declares no fields", self.name));
+        if self.sources.is_empty() {
+            return Err(format!("provider '{}' declares no sources", self.name));
+        }
+        // Source name uniqueness
+        let mut names = std::collections::HashSet::new();
+        for s in &self.sources {
+            if !names.insert(&s.name) {
+                return Err(format!(
+                    "provider '{}' has duplicate source name '{}'",
+                    self.name, s.name
+                ));
+            }
+        }
+        // Field name uniqueness across all sources within this provider
+        let mut field_owners: HashMap<String, String> = HashMap::new();
+        for s in &self.sources {
+            for f in &s.fields {
+                if let Some(prev) = field_owners.insert(f.name.clone(), s.name.clone()) {
+                    return Err(format!(
+                        "provider '{}' field '{}' declared by both source '{}' and source '{}'",
+                        self.name, f.name, prev, s.name
+                    ));
+                }
+            }
+        }
+        // Per-source validation
+        for s in &self.sources {
+            validate_source(&self.name, s)?;
         }
         Ok(())
     }
+}
+
+fn validate_source(provider: &str, s: &SourceMetadata) -> Result<(), String> {
+    if s.fields.is_empty() {
+        return Err(format!(
+            "provider '{}' source '{}' declares no fields",
+            provider, s.name
+        ));
+    }
+    // KeepAlive variant matches strategy
+    match (&s.invalidation, &s.keep_alive, &s.scope) {
+        (InvalidationStrategy::Poll { .. }, KeepAlive::Polls(_), _) => Ok(()),
+        (InvalidationStrategy::WatchAndPoll { .. }, KeepAlive::Polls(_), _) => Ok(()),
+        (InvalidationStrategy::Watch { .. }, KeepAlive::Duration(_), SourceScope::PathScoped) => Ok(()),
+        (InvalidationStrategy::Watch { .. }, KeepAlive::Never, SourceScope::Global) => Ok(()),
+        _ => Err(format!(
+            "provider '{}' source '{}': KeepAlive variant does not match strategy/scope. \
+             Polls(K) requires Poll/WatchAndPoll; Duration(secs) requires Watch + PathScoped; \
+             Never requires Watch + Global.",
+            provider, s.name
+        )),
+    }?;
+    // Global Watch sources should use abs_paths only
+    if let (InvalidationStrategy::Watch { patterns, .. }, SourceScope::Global) = (&s.invalidation, &s.scope)
+        && !patterns.is_empty()
+    {
+        return Err(format!(
+            "provider '{}' source '{}': Global Watch source declares patterns; use abs_paths instead",
+            provider, s.name
+        ));
+    }
+    // fsevents_reinstate is meaningless for Poll
+    if matches!(s.invalidation, InvalidationStrategy::Poll { .. }) && s.fsevents_reinstate {
+        return Err(format!(
+            "provider '{}' source '{}': fsevents_reinstate=true on Poll strategy is meaningless",
+            provider, s.name
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -283,46 +345,23 @@ pub enum ProviderSource {
     Virtual,
 }
 
+/// A Provider is a namespace declaring one or more Sources.
 pub trait Provider: Send + Sync {
     fn metadata(&self) -> ProviderMetadata;
-    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)>;
+    fn sources(&self) -> Vec<Box<dyn Source>>;
+}
 
-    /// Whether the provider wants `fsevents_reinstate = true` by default
-    /// when the user hasn't configured the flag either per-provider or in
-    /// the global lifecycle section. Meaningful only for providers with a
-    /// `Watch` / `WatchAndPoll` invalidation strategy.
-    ///
-    /// Rationale: providers whose underlying data rarely changes (e.g. mise
-    /// project config, `.envrc`, tool-versions) benefit from staying warm
-    /// across shell idle, because a subsequent file event would otherwise
-    /// race against the decay→eviction window. Providers with high event
-    /// churn (e.g. git over an active repo) may prefer the default `false`
-    /// so they drop cleanly once demand stops.
-    ///
-    /// Default: `false`. Override to opt in.
-    fn fsevents_reinstate_default(&self) -> bool {
-        false
-    }
+/// A Source is the unit of refresh. Owns its own invalidation, scope, fields,
+/// lifecycle, and failure backoff. Identified by (provider_name, source_name).
+pub trait Source: Send + Sync {
+    fn metadata(&self) -> &SourceMetadata;
+    fn execute(&self, path: Option<&str>) -> SourceResult;
 
-    /// Map a candidate path to the provider's canonical project root.
-    ///
-    /// Path-scoped providers with a "project marker" concept (e.g. git → `.git`,
-    /// mise → `mise.toml`, direnv → `.envrc`) should override this to walk up
-    /// from the candidate path and return the directory that actually contains
-    /// the marker. The scheduler uses the result as the cache key, lifecycle
-    /// key, and fs-watch root, so two demands from different subdirectories of
-    /// the same project dedupe to a single entry.
-    ///
-    /// Returns `None` to signal "this provider does not apply to this path"
-    /// (e.g. git asked about a directory not inside any repo). The scheduler
-    /// treats `None` as decline-demand: no cache entry, no lifecycle entry, no
-    /// watch registration.
-    ///
-    /// Default: identity (returns the input path unchanged). Global providers
-    /// are never called here because `FieldScope::Global` short-circuits path
-    /// resolution to `None` earlier.
+    /// Map a candidate path to this Source's canonical scope path.
+    /// `PathScoped` sources walking to a project marker should override.
+    /// Default: identity. Returns `None` to decline demand.
     fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        path.map(|p| p.to_string())
+        path.map(|s| s.to_string())
     }
 }
 
@@ -372,14 +411,93 @@ mod tests {
         );
     }
 
-    #[test]
-    fn validate_fails_on_empty_fields() {
-        let meta = ProviderMetadata {
-            name: "empty".to_string(),
-            fields: vec![],
+    fn make_source(name: &str, fields: Vec<&str>) -> SourceMetadata {
+        SourceMetadata {
+            name: name.into(),
+            fields: fields.into_iter().map(|n| FieldSchema {
+                name: n.into(),
+                field_type: FieldType::String,
+            }).collect(),
+            scope: SourceScope::Global,
             invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
+            keep_alive: KeepAlive::Polls(2),
+            failback: FailbackConfig { reattempts: 3, interval_secs: 30 },
+            fsevents_reinstate: false,
+        }
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_source_names() {
+        let meta = ProviderMetadata {
+            name: "x".into(),
+            sources: vec![make_source("a", vec!["f1"]), make_source("a", vec!["f2"])],
         };
         assert!(meta.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_field_names_across_sources() {
+        let meta = ProviderMetadata {
+            name: "x".into(),
+            sources: vec![make_source("a", vec!["f1"]), make_source("b", vec!["f1"])],
+        };
+        let err = meta.validate().unwrap_err();
+        assert!(err.contains("declared by both source"));
+    }
+
+    #[test]
+    fn validate_rejects_polls_keep_alive_on_watch_strategy() {
+        let mut s = make_source("a", vec!["f1"]);
+        s.invalidation = InvalidationStrategy::Watch {
+            patterns: vec![],
+            abs_paths: vec!["/foo".into()],
+        };
+        s.keep_alive = KeepAlive::Polls(2);
+        let meta = ProviderMetadata { name: "x".into(), sources: vec![s] };
+        assert!(meta.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_never_keep_alive_on_path_scoped() {
+        let mut s = make_source("a", vec!["f1"]);
+        s.invalidation = InvalidationStrategy::Watch {
+            patterns: vec!["foo".into()],
+            abs_paths: vec![],
+        };
+        s.scope = SourceScope::PathScoped;
+        s.keep_alive = KeepAlive::Never;
+        let meta = ProviderMetadata { name: "x".into(), sources: vec![s] };
+        assert!(meta.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_global_watch_with_patterns() {
+        let mut s = make_source("a", vec!["f1"]);
+        s.invalidation = InvalidationStrategy::Watch {
+            patterns: vec!["foo".into()],
+            abs_paths: vec![],
+        };
+        s.scope = SourceScope::Global;
+        s.keep_alive = KeepAlive::Never;
+        let meta = ProviderMetadata { name: "x".into(), sources: vec![s] };
+        assert!(meta.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_fsevents_reinstate_on_poll() {
+        let mut s = make_source("a", vec!["f1"]);
+        s.fsevents_reinstate = true;
+        let meta = ProviderMetadata { name: "x".into(), sources: vec![s] };
+        assert!(meta.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_well_formed_provider() {
+        let meta = ProviderMetadata {
+            name: "x".into(),
+            sources: vec![make_source("a", vec!["f1"]), make_source("b", vec!["f2"])],
+        };
+        assert!(meta.validate().is_ok());
     }
 
     #[test]
@@ -453,11 +571,7 @@ mod tests {
     fn validate_passes_on_normal_metadata() {
         let meta = ProviderMetadata {
             name: "normal".to_string(),
-            fields: vec![FieldSchema {
-                name: "a".into(),
-                field_type: FieldType::String,
-            }],
-            invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
+            sources: vec![make_source("a", vec!["f1"])],
         };
         assert!(meta.validate().is_ok());
     }
