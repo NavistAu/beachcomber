@@ -39,6 +39,17 @@ Query a cached value. Returns cached data immediately. On a cold cache (first qu
 
 **Flags:** `--force` (trigger immediate recomputation before returning), `--wait` (block until a fresh value arrives). Multiple keys can be passed in a single connection (variadic).
 
+**Key addressing forms:**
+
+| Form | What it selects |
+|---|---|
+| `provider.field` | Single field — most common form |
+| `provider.source` | All fields from a named source |
+| `provider.source.field` | Single field via explicit source |
+| `provider` | All fields from all sources (flattened) |
+
+The `provider.field` form automatically routes to the source that owns the field. The explicit source forms are useful when you want to demand a specific source's data or check its age independently.
+
 ```sh
 # Query a specific field — text is the default
 comb g git.branch .              # → main
@@ -48,7 +59,13 @@ comb get git.branch .            # equivalent long form
 comb g battery.percent           # → 87
 comb g hostname.short            # → myhost
 
-# Query the entire provider (all fields) — alternate formats
+# Source-level addressing (new in Phase 5)
+comb g git.refs .                # → all fields from the refs source
+comb g git.refs.branch .         # → branch via explicit source routing
+comb g mise.global               # → global tool versions only
+comb g mise.project .            # → project tool versions only
+
+# Query the entire provider (all fields from all sources) — alternate formats
 comb g git .                     # → values only, one per line (text default)
 comb g.j git .                   # → full JSON envelope with age_ms, stale
 comb g.s git .                   # → key=value pairs, sourceable
@@ -131,7 +148,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <template>`, `--filter <provider>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <field|age|stale|lifecycle|poll_interval>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+**Flags:** `--format <template>`, `--filter <provider>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <field|age|stale|lifecycle|poll_interval>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--show-sources` (add source column between PROVIDER and FIELD).
 
 **TTL column key:**
 

@@ -7,6 +7,41 @@ title: Built-in Providers
 
 beachcomber ships 19 built-in providers organized by category.
 
+Each provider declares one or more **sources** — independent units of execution with their own invalidation strategy and lifecycle. The tables below show each provider's source breakdown. Consumers use `comb get provider.field` as before; the source is selected automatically by the registry's `field → source` map.
+
+## Source breakdown by provider
+
+| Provider | Source | Strategy | Scope | Fields |
+|---|---|---|---|---|
+| `asdf` | `tools` | fsevent | path | tool versions (one field per tool) |
+| `aws` | `profile` | poll 60s | global | `profile`, `region`, `account` |
+| `battery` | `state` | poll 30s | global | `percent`, `charging`, `status`, `time_remaining_secs` (macOS) |
+| `battery` | `level` | poll 30s | global | `percent`, `charging`, `status_raw` (Linux) |
+| `battery` | `upower` | poll 60s | global | `time_remaining_secs`, `status` (Linux, requires UPower) |
+| `conda` | `env` | poll 30s | global | `env`, `python_version` |
+| `direnv` | `state` | fsevent | path | `loaded`, `allowed` |
+| `gcloud` | `config` | poll 60s | global | `account`, `project`, `region` |
+| `git` | `refs` | fsevent | path | `branch`, `commit`, `tag`, `ahead`, `behind`, `upstream`, `detached`, `state`, `stash` |
+| `git` | `diff` | poll 30s | path | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
+| `git` | `status` | fsevent_poll | path | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
+| `hostname` | `host` | fsevent (pure-watch global) | global | `host`, `short`, `fqdn` |
+| `kubecontext` | `context` | poll 30s | global | `context`, `namespace` |
+| `load` | `loadavg` | poll 10s | global | `one`, `five`, `fifteen` |
+| `mise` | `global` | fsevent (pure-watch global) | global | global tool versions (one field per tool) |
+| `mise` | `project` | fsevent | path | project tool versions (one field per tool) |
+| `network` | `interfaces` | poll 10s | global | `interface`, `ip`, `vpn_active`, `vpn_name`, `ssid`, `online` |
+| `op` | `vault` | poll 60s | global | `signed_in`, `account` |
+| `python` | `venv` | fsevent | path | `venv`, `venv_name`, `version` |
+| `sudo` | `state` | poll 30s | global | `active` |
+| `terraform` | `state` | fsevent | path | `workspace`, `backend` |
+| `uname` | `system` | fsevent (pure-watch global) | global | `os`, `arch`, `kernel` |
+| `uptime` | `time` | poll 60s | global | `seconds`, `days`, `hours`, `minutes` |
+| `user` | `name` | fsevent (pure-watch global) | global | `name`, `uid` |
+
+**Pure-watch global** sources execute once on first demand and re-execute only when a registered filesystem path changes. They never decay.
+
+**fsevent_poll** sources watch files for quick invalidation and also poll on a timer as a backstop.
+
 ## System
 
 | Provider | Scope | Fields | Invalidation | Typical Latency |

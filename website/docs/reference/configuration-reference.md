@@ -87,29 +87,46 @@ idle_shutdown_secs = 300
 
 
 # ─── Built-in Provider Overrides ───────────────────────────────────────────────
-# Use [providers.<name>] to override defaults for any built-in provider.
-# Only specify the fields you want to change.
+# Provider config uses per-source nesting: [providers.<name>.<source>]
+# The source name matches the source column in `comb status --show-sources`.
+# Use [providers.<name>] only for whole-provider switches (e.g. enabled).
+
+# Key reference for per-source blocks:
+#
+# type              string    Strategy: "poll", "fsevent", "fsevent_poll"
+# scope             string    "path" or "global" (informational for built-ins)
+# poll_interval     duration  Poll interval (poll, fsevent_poll)
+# poll_count        integer   Keep-alive polls before decay (poll, fsevent_poll)
+# fsevent_patterns  [string]  Relative path components to watch (fsevent, fsevent_poll)
+# fsevent_abs_paths [string]  Absolute roots to watch (fsevent, fsevent_poll)
+# fsevent_lifespan  duration  Keep-alive duration before decay (fsevent, path-scoped)
+# fsevent_reinstates bool     Whether watches survive decay. Default true.
+# failback_count    integer   Consecutive failures before suppression
+# failback_interval duration  Suppression duration after failback_count hit
+# enabled           bool      When false, source never executes. Default true.
 
 # Disable a provider entirely (it will never execute or appear in results)
 [providers.conda]
 enabled = false
 
-# Override polling interval and floor for battery
-[providers.battery]
-poll_interval = "60s"         # default: "30s"
-poll_floor_secs = 10          # default: 5
+# Override the git.diff source to poll more frequently
+[providers.git.diff]
+poll_interval = "15s"         # default: "30s"
+poll_count = 24               # keep-alive = 24 × 15s = 6 min
 
-# Make git refresh more frequently (useful on fast machines or large repos)
-[providers.git]
-poll_interval = "30s"         # default: "60s"
-poll_floor_secs = 2           # default: not set
-poll_live_count = 24          # keep-alive = 24 × 30s = 12 min of warmth after last query
-fsevents_reinstate = true     # .git fsevent during decay reinstates to Active
+# Make git.refs reinstate faster from decay
+[providers.git.refs]
+fsevent_reinstates = true     # .git fsevent during decay reinstates to Active
+fsevent_lifespan = "600s"     # stay warm for 10 min after last query
+
+# Slow down battery polling (less important on desktop)
+[providers.battery.state]
+poll_interval = "60s"         # default: "30s"
+poll_count = 4
 
 # Override network polling interval
-[providers.network]
+[providers.network.interfaces]
 poll_interval = "30s"         # default: "10s"
-poll_floor_secs = 10          # default: 5
 
 
 # ─── Custom Script Providers ───────────────────────────────────────────────────

@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Provider-source model (Phases 1-5).** Internal refactor of the provider/scheduler/cache layer.
+
+  - `Provider` is now a namespace declaring 1+ `Source` objects. Each `Source` has its own `InvalidationStrategy`, `KeepAlive`, `FailbackConfig`, `SourceScope`, and set of fields.
+  - Lifecycle keying moves from `(provider, path)` to `(provider, path, source)`. Each source instance has its own independent Active/Decay/Evicted lifecycle.
+  - Cache entries at `(provider, path)` hold per-source `SourceResult` sub-entries. Field ownership is disjoint across sources; flatten reads are unambiguous.
+  - `InvalidationStrategy::Watch` gains `abs_paths: Vec<PathBuf>` for absolute-path filesystem watches. Global sources can now watch `$XDG_CONFIG_HOME` and other absolute roots directly.
+  - `expand_abs_path()` helper expands `~`, `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME`, `$XDG_STATE_HOME`, `$XDG_CACHE_HOME` to absolute paths in `Source::metadata()`.
+  - Pure-watch global sources (`Watch + Global + KeepAlive::Never`): execute once on first demand, re-execute only on fs event, no decay. Replaces `InvalidationStrategy::Once` for hostname, user, uname.
+  - `Watch::fallback_poll_secs` removed. Sources that want poll-backstop use `WatchAndPoll`.
+  - `Poll::floor_secs` removed. Global poll floor lives in `[lifecycle]` config.
+  - `ProviderRegistry` builds a `field → source` reverse map at registration. `comb get git.branch` routes to `git.refs` transparently without a linear field scan.
+  - New addressing forms: `provider.source` and `provider.source.field` accepted by `get`, `refresh`, and `watch` ops.
+  - TOML config schema rewritten to per-source nesting `[providers.<name>.<source>]` with consistent `poll_*` / `fsevent_*` / `failback_*` key prefixes. Old flat `[providers.<name>]` key shape is rejected with a clear error pointing to the new schema.
+  - `comb status` wire response gains `source: String` per row. All 7 SDKs updated.
+  - `--show-sources` flag on `comb status` adds an optional source column (hidden by default).
+
+### Breaking (pre-1.0)
+
+- **TOML config:** `[providers.<name>]` flat keys for source-knobs (`poll_interval`, `poll_live_count`, `fsevents_reinstate`) are no longer accepted. Move them to `[providers.<name>.<source>]` blocks. Provider-level `enabled` remains in `[providers.<name>]`.
+- **`InvalidationStrategy::Once` removed.** Providers that used `Once` (hostname, user, uname) now use pure-watch global (`Watch` + `KeepAlive::Never`).
+- **`Watch::fallback_poll_secs` removed.** Users that relied on the fallback should switch to `fsevent_poll` type in TOML.
+
 ### Changed
 - **BREAKING (pre-1.0):** daemon socket path no longer depends on `$TMPDIR`. Resolution is now: config override → `$XDG_RUNTIME_DIR/beachcomber/sock` (if set) → `/tmp/beachcomber-<uid>/sock`. On macOS this means every shell talks to the same daemon (previously each shell spawned its own via per-session TMPDIR).
 

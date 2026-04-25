@@ -174,6 +174,10 @@ Tests:
 - Integration test in `tests/` that runs `comb status` via the client and asserts the new columns appear.
 - Snapshot tests (via `insta` or similar, or hand-maintained expected strings) for the human preset.
 
+## Per-source plumbing (Phase 5 note)
+
+The provider-source model (Phases 1-5) added per-source lifecycle keying. Each `CacheRow` in the wire protocol now carries a `source: String` field identifying which source within the provider produced the row. The visible output is unchanged — the status formatter still renders one row per field. Lifecycle data (TTL column: P, K, decay level, reinstate indicator) is keyed per `(provider, path, source)` rather than per `(provider, path)`, but the rendered column values are identical in shape. The `--show-sources` flag (when implemented) adds an optional source column between `PROVIDER` and `FIELD`.
+
 ## Prior design artefacts
 
 - Verbatim directive (2026-04-23T05:03:47Z, session `cef25c94`): "we should output a Col (or cols if required) in status cli command that gives `[Decay Level 0-4]/[K]/[P]/[indicator if we are watching fsevents / do they reinit]`. decay level 0 is alive. we might need to revisit age/stale to make it clearer whats going on there. ie a col thats AGE with a prefix of F/S and coloured green/orange. all these values kind of interact so its going to take some thought on how to represent them."
