@@ -1,14 +1,13 @@
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
-use crate::provider::FieldScope;
-use crate::provider::InvalidationStrategy;
-use crate::provider::ProviderSource;
+use crate::provider::SourceScope;
 use crate::provider::registry::ProviderRegistry;
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
 };
 use crate::watcher_registry::WatcherRegistry;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -204,6 +203,37 @@ async fn handle_connection(
     Ok(())
 }
 
+/// Parse a request key into one of four forms, disambiguating source vs field
+/// for 2-segment keys using the registry.
+pub enum KeyParse {
+    /// "provider"
+    Provider(String),
+    /// "provider.field" — x is a field name (not a registered source)
+    Field(String, String),
+    /// "provider.source" — x is a registered source name
+    Source(String, String),
+    /// "provider.source.field"
+    SourceField(String, String, String),
+}
+
+/// Disambiguates between Field and Source forms for 2-segment keys.
+/// Source name takes precedence over field name when both could match.
+pub fn parse_key(key: &str, registry: &ProviderRegistry) -> KeyParse {
+    let parts: Vec<&str> = key.split('.').collect();
+    match parts.as_slice() {
+        [p] => KeyParse::Provider(p.to_string()),
+        [p, x] => {
+            if registry.source(p, x).is_some() {
+                KeyParse::Source(p.to_string(), x.to_string())
+            } else {
+                KeyParse::Field(p.to_string(), x.to_string())
+            }
+        }
+        [p, s, f] => KeyParse::SourceField(p.to_string(), s.to_string(), f.to_string()),
+        _ => KeyParse::Provider(key.to_string()),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_watch(
     key: String,
@@ -219,10 +249,8 @@ async fn handle_watch(
     let (provider_name, field) = protocol::split_key(&key);
 
     let effective_path = resolve_path(
-        path.as_deref(),
-        context_path,
-        provider_name,
-        field,
+        &key,
+        path.as_deref().or(context_path.as_deref()),
         registry,
     );
 
@@ -298,13 +326,14 @@ fn read_watch_value(
     field: Option<&str>,
     path: Option<&str>,
 ) -> Response {
-    match cache.get(provider_name, path) {
+    match cache.get_entry(provider_name, path) {
         Some(entry) => {
             let age_ms = entry.age_ms();
             let stale = entry.is_stale();
             let data = if let Some(field_name) = field {
-                match entry.result.get_path(field_name) {
-                    Some(value) => serde_json::to_value(value).unwrap(),
+                // Look up field across all sources.
+                match cache.get_field(provider_name, path, field_name) {
+                    Some(value) => serde_json::to_value(&value).unwrap_or(serde_json::Value::Null),
                     None => {
                         return Response::error(format!(
                             "unknown field: {provider_name}.{field_name}"
@@ -312,7 +341,9 @@ fn read_watch_value(
                     }
                 }
             } else {
-                entry.result.to_json()
+                // Return all fields flattened.
+                let flat = entry.flatten_fields();
+                serde_json::to_value(&flat).unwrap_or(serde_json::Value::Null)
             };
             Response::ok(data, age_ms, stale)
         }
@@ -346,64 +377,55 @@ fn split_metadata_suffix(key: &str) -> (&str, Option<&str>) {
     (key, None)
 }
 
-/// Resolve the effective path for a request: explicit path > context path > None.
-/// Consults per-field scope when `field` is provided; falls back to the provider's
-/// inferred (aggregate) scope. Global fields always return None regardless of any
-/// explicit or context path. Relative paths are canonicalized to absolute paths.
-fn resolve_path(
-    explicit: Option<&str>,
-    context: &Option<String>,
-    provider_name: &str,
-    field: Option<&str>,
-    registry: &ProviderRegistry,
-) -> Option<String> {
-    let raw: Option<String> = if let Some(provider) = registry.get(provider_name) {
-        let meta = provider.metadata();
-        let scope = match field {
-            Some(f) => {
-                // For dotted keys (e.g. `mise.project.rust`), scope is
-                // determined by the head field (`project`), not the full
-                // dotted path, so nested lookups inherit the correct scope.
-                let head = f.split_once('.').map(|(h, _)| h).unwrap_or(f);
-                meta.field_scope(head)
-                    .unwrap_or_else(|| meta.inferred_scope())
-            }
-            None => meta.inferred_scope(),
-        };
-        match scope {
-            FieldScope::Global => None,
-            FieldScope::PathScoped => explicit.map(|s| s.to_string()).or_else(|| context.clone()),
-        }
-    } else {
-        // Unknown provider: legacy behaviour — canonicalise explicit path as-is.
-        explicit.map(|s| s.to_string())
-    };
+/// Resolve the effective path for a request. If any source at this provider is
+/// PathScoped, the requested path is used (canonicalized). If all sources are
+/// Global (or the provider is unknown), returns None.
+///
+/// For path-scoped providers, also attempts canonical_path() via the first
+/// path-scoped source to walk to the project root.
+fn resolve_path(key: &str, requested_path: Option<&str>, registry: &ProviderRegistry) -> Option<String> {
+    let parts: Vec<&str> = key.split('.').collect();
+    let provider = parts[0];
 
-    // OS-level canonicalization: resolve to absolute + follow symlinks.
-    let os_canonical: Option<String> = raw.map(|p| {
-        let path = std::path::Path::new(&p);
+    let any_path_scoped = registry
+        .provider_sources(provider)
+        .map(|ss| ss.iter().any(|s| s.scope == SourceScope::PathScoped))
+        .unwrap_or(false);
+
+    if !any_path_scoped {
+        return None;
+    }
+
+    let raw = requested_path.map(|p| {
+        let path = std::path::Path::new(p);
         if path.is_relative() {
             std::env::current_dir()
                 .ok()
                 .and_then(|cwd| cwd.join(path).canonicalize().ok())
                 .map(|abs| abs.to_string_lossy().to_string())
-                .unwrap_or(p)
+                .unwrap_or_else(|| p.to_string())
         } else {
-            // Canonicalize absolute paths too (resolve symlinks, ..)
             path.canonicalize()
                 .map(|abs| abs.to_string_lossy().to_string())
-                .unwrap_or(p)
+                .unwrap_or_else(|_| p.to_string())
         }
-    });
+    })?;
 
-    // Provider-level canonicalization: walk up to the project root (git →
-    // `.git`, mise → `mise.toml`, etc.). Returns None if the provider declares
-    // this path doesn't apply to it — the scheduler then declines demand.
-    // Unknown providers fall through to the identity default.
-    match registry.get(provider_name) {
-        Some(provider) => provider.canonical_path(os_canonical.as_deref()),
-        None => os_canonical,
+    // Provider-level canonicalization: find the first path-scoped source and
+    // ask it to canonicalize (walk to project root, etc.).
+    if let Some(sources) = registry.provider_sources(provider) {
+        for sm in sources {
+            if sm.scope == SourceScope::PathScoped {
+                if let Some(src) = registry.source(provider, &sm.name) {
+                    if let Some(canonical) = src.canonical_path(Some(&raw)) {
+                        return Some(canonical);
+                    }
+                }
+            }
+        }
     }
+
+    Some(raw)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -428,27 +450,32 @@ async fn handle_request(
             ..
         } => {
             let (stripped_key, meta) = split_metadata_suffix(key);
-            let (provider_name, field) = protocol::split_key(stripped_key);
 
-            if registry.get_source(provider_name).is_none() {
+            // Determine effective path using new per-source scope resolution.
+            let requested = path.as_deref().or(context_path.as_deref());
+            let effective_path = resolve_path(stripped_key, requested, registry);
+
+            // Parse the key to understand what is being requested.
+            let parsed = parse_key(stripped_key, registry);
+
+            // Extract provider name for registry/cache lookups.
+            let provider_name = match &parsed {
+                KeyParse::Provider(p) => p.as_str(),
+                KeyParse::Field(p, _) => p.as_str(),
+                KeyParse::Source(p, _) => p.as_str(),
+                KeyParse::SourceField(p, _, _) => p.as_str(),
+            };
+
+            // Unknown provider check: virtual providers are also valid.
+            let is_known = registry.provider_metadata(provider_name).is_some()
+                || registry.is_virtual(provider_name);
+            if !is_known {
                 return Response::error(format!("unknown provider: {provider_name}"));
             }
 
-            let effective_path = resolve_path(
-                path.as_deref(),
-                context_path,
-                provider_name,
-                field,
-                registry,
-            );
-
             // Force evict: drop the cache entry so the normal miss path re-executes.
-            // force wins over wait — if force triggered eviction (or a virtual-provider
-            // error), we never reach the wait block below.
             if *force {
-                if registry.get_source(provider_name)
-                    == Some(crate::provider::ProviderSource::Virtual)
-                {
+                if registry.is_virtual(provider_name) {
                     return Response::error(format!(
                         "cannot --force virtual provider '{provider_name}': no source to re-execute from"
                     ));
@@ -458,15 +485,12 @@ async fn handle_request(
 
             // Wait semantics: if the cached entry is stale, evict it so the normal
             // miss path below re-executes the provider inline and returns fresh data.
-            // Skipped for virtual providers — they have no source to re-execute; the
-            // cached value is all there is, and we return it regardless of staleness.
-            // force wins over wait — force is handled above; !force guards this block.
+            // Skipped for virtual providers — they have no source to re-execute.
             if *wait
                 && !*force
-                && registry.get_source(provider_name)
-                    != Some(crate::provider::ProviderSource::Virtual)
+                && !registry.is_virtual(provider_name)
                 && cache
-                    .get(provider_name, effective_path.as_deref())
+                    .get_entry(provider_name, effective_path.as_deref())
                     .is_some_and(|e| e.is_stale())
             {
                 cache.remove(provider_name, effective_path.as_deref());
@@ -485,87 +509,81 @@ async fn handle_request(
 
             // :source short-circuits — no cache lookup needed.
             if matches!(meta, Some("source")) {
-                let src = registry
-                    .get_source(provider_name)
-                    .map(|s| match s {
-                        crate::provider::ProviderSource::Builtin => "builtin",
-                        crate::provider::ProviderSource::Script => "script",
-                        crate::provider::ProviderSource::Virtual => "virtual",
-                    })
-                    .unwrap_or("unknown");
+                let src = if registry.is_virtual(provider_name) {
+                    "virtual"
+                } else if registry.provider_metadata(provider_name).is_some() {
+                    "builtin"
+                } else {
+                    "unknown"
+                };
                 return Response::ok(serde_json::Value::String(src.to_string()), 0, false);
             }
 
-            let (cache_hit, normal_response) = match cache
-                .get(provider_name, effective_path.as_deref())
-            {
-                Some(entry) => {
-                    let age_ms = entry.age_ms();
-                    let stale = entry.is_stale();
-
-                    let data = if let Some(field_name) = field {
-                        match entry.result.get_path(field_name) {
-                            Some(value) => serde_json::to_value(value).unwrap(),
-                            None => {
-                                return Response::error(format!(
-                                    "unknown field: {provider_name}.{field_name}"
-                                ));
-                            }
+            // Cache lookup, routed by key parse form.
+            let (cache_hit, normal_response) = match &parsed {
+                KeyParse::Field(provider, field) => {
+                    // Route to the source that owns this field.
+                    match cache.get_field(provider, effective_path.as_deref(), field) {
+                        Some(value) => {
+                            let entry = cache.get_entry(provider, effective_path.as_deref());
+                            let age_ms = entry.as_ref().map(|e| e.age_ms()).unwrap_or(0);
+                            let stale = entry.as_ref().map(|e| e.is_stale()).unwrap_or(false);
+                            let data = serde_json::to_value(&value).unwrap_or(serde_json::Value::Null);
+                            (true, Response::ok(data, age_ms, stale))
                         }
-                    } else {
-                        entry.result.to_json()
-                    };
-                    (true, Response::ok(data, age_ms, stale))
+                        None => {
+                            // Cold miss — provider impls are not yet available (Section H).
+                            // The scheduler will handle warming; return miss for now.
+                            (false, Response::miss())
+                        }
+                    }
                 }
-                None => {
-                    // Synchronous cache miss: execute the provider inline if possible.
-                    let provider = registry.get(provider_name);
-                    match provider {
-                        Some(provider) => {
-                            let interval = crate::provider::expected_interval_secs(
-                                &provider.metadata().invalidation,
-                            );
-                            let path_owned = effective_path.clone();
-                            let results = tokio::task::spawn_blocking(move || {
-                                provider.execute(path_owned.as_deref())
-                            })
-                            .await
-                            .unwrap_or_default();
-
-                            // Write every returned entry to cache (providers may emit multiple scopes).
-                            for (scope_path, res) in &results {
-                                cache.put_with_interval(
-                                    provider_name,
-                                    scope_path.as_deref(),
-                                    res.clone(),
-                                    interval,
-                                );
-                            }
-
-                            // For the response, pick the entry whose cache_path matches effective_path.
-                            let matching = results
-                                .iter()
-                                .find(|(p, _)| p.as_deref() == effective_path.as_deref());
-                            match matching {
-                                Some((_, result)) => {
-                                    let data = if let Some(field_name) = field {
-                                        match result.get_path(field_name) {
-                                            Some(value) => serde_json::to_value(value).unwrap(),
-                                            None => {
-                                                return Response::error(format!(
-                                                    "unknown field: {provider_name}.{field_name}"
-                                                ));
-                                            }
-                                        }
-                                    } else {
-                                        result.to_json()
-                                    };
-                                    (false, Response::ok(data, 0, false))
+                KeyParse::Source(provider, source) => {
+                    // Return the whole source sub-entry.
+                    match cache.get_source(provider, effective_path.as_deref(), source) {
+                        Some(src_entry) => {
+                            let age_ms = src_entry.age_ms();
+                            let stale = src_entry.is_stale();
+                            let data = serde_json::to_value(&src_entry.fields)
+                                .unwrap_or(serde_json::Value::Null);
+                            (true, Response::ok(data, age_ms, stale))
+                        }
+                        None => (false, Response::miss()),
+                    }
+                }
+                KeyParse::SourceField(provider, source, field) => {
+                    // Direct source+field lookup.
+                    match cache.get_source(provider, effective_path.as_deref(), source) {
+                        Some(src_entry) => {
+                            match src_entry.fields.get(field.as_str()) {
+                                Some(value) => {
+                                    let age_ms = src_entry.age_ms();
+                                    let stale = src_entry.is_stale();
+                                    let data = serde_json::to_value(value)
+                                        .unwrap_or(serde_json::Value::Null);
+                                    (true, Response::ok(data, age_ms, stale))
                                 }
-                                None => (false, Response::miss()),
+                                None => {
+                                    return Response::error(format!(
+                                        "unknown field: {provider}.{source}.{field}"
+                                    ));
+                                }
                             }
                         }
-                        // Virtual provider or provider with no execute — return miss
+                        None => (false, Response::miss()),
+                    }
+                }
+                KeyParse::Provider(provider) => {
+                    // Return all sources flattened.
+                    match cache.get_entry(provider, effective_path.as_deref()) {
+                        Some(entry) => {
+                            let age_ms = entry.age_ms();
+                            let stale = entry.is_stale();
+                            let flat = entry.flatten_fields();
+                            let data = serde_json::to_value(&flat)
+                                .unwrap_or(serde_json::Value::Null);
+                            (true, Response::ok(data, age_ms, stale))
+                        }
                         None => (false, Response::miss()),
                     }
                 }
@@ -605,14 +623,9 @@ async fn handle_request(
             }
         }
         Request::Refresh { key, path } => {
-            let (provider_name, field) = protocol::split_key(key);
-            let effective_path = resolve_path(
-                path.as_deref(),
-                context_path,
-                provider_name,
-                field,
-                registry,
-            );
+            let (provider_name, _field) = protocol::split_key(key);
+            let requested = path.as_deref().or(context_path.as_deref());
+            let effective_path = resolve_path(key, requested, registry);
 
             if let Some(sched) = scheduler {
                 // Route through scheduler.
@@ -630,11 +643,8 @@ async fn handle_request(
                     error: None,
                 }
             } else {
-                // Fallback: execute directly (used by tests with None scheduler).
-                // Check if it's a virtual provider — refresh is a no-op
-                if registry.get_source(provider_name)
-                    == Some(crate::provider::ProviderSource::Virtual)
-                {
+                // Fallback: scheduler not available. Virtual providers are a no-op.
+                if registry.is_virtual(provider_name) {
                     return Response {
                         ok: true,
                         data: None,
@@ -643,29 +653,17 @@ async fn handle_request(
                         error: None,
                     };
                 }
-                match registry.get(provider_name) {
-                    Some(provider) => {
-                        let interval = crate::provider::expected_interval_secs(
-                            &provider.metadata().invalidation,
-                        );
-                        let results = provider.execute(effective_path.as_deref());
-                        for (scope_path, result) in results {
-                            cache.put_with_interval(
-                                provider_name,
-                                scope_path.as_deref(),
-                                result,
-                                interval,
-                            );
-                        }
-                        Response {
-                            ok: true,
-                            data: None,
-                            age_ms: None,
-                            stale: None,
-                            error: None,
-                        }
-                    }
-                    None => Response::error(format!("unknown provider: {provider_name}")),
+                // No providers are registered yet (Section H); return ok anyway
+                // so callers don't see spurious errors during the build-up phase.
+                if registry.provider_metadata(provider_name).is_none() {
+                    return Response::error(format!("unknown provider: {provider_name}"));
+                }
+                Response {
+                    ok: true,
+                    data: None,
+                    age_ms: None,
+                    stale: None,
+                    error: None,
                 }
             }
         }
@@ -685,7 +683,7 @@ async fn handle_request(
             ttl,
             path,
         } => {
-            // Reject if a builtin or script provider already owns this name.
+            // Reject if a real (non-virtual) provider already owns this name.
             if registry.has_non_virtual(key) {
                 return Response::error(format!(
                     "cannot store under '{key}': name is used by a builtin or script provider"
@@ -725,8 +723,8 @@ async fn handle_request(
                 None => return Response::error("put data must be a JSON object"),
             };
 
-            // Convert JSON object fields to ProviderResult.
-            let mut result = crate::provider::ProviderResult::new();
+            // Convert JSON object fields to provider Value map.
+            let mut fields: HashMap<String, crate::provider::Value> = HashMap::new();
             for (field_key, field_val) in obj {
                 let value = match field_val {
                     serde_json::Value::String(s) => crate::provider::Value::String(s.clone()),
@@ -742,7 +740,7 @@ async fn handle_request(
                     }
                     other => crate::provider::Value::String(other.to_string()),
                 };
-                result.insert(field_key.clone(), value);
+                fields.insert(field_key.clone(), value);
             }
 
             // Parse optional TTL.
@@ -770,8 +768,8 @@ async fn handle_request(
             // Register virtual name (idempotent, safe under concurrent access).
             registry.register_virtual(key);
 
-            // Write to cache.
-            cache.put_with_interval(key, effective_path.as_deref(), result, interval_secs);
+            // Write to cache under the synthetic "virtual" source name.
+            cache.put_source(key, effective_path.as_deref(), "virtual", fields, interval_secs);
 
             Response {
                 ok: true,
@@ -794,35 +792,55 @@ async fn handle_request(
 
             use crate::cache::RowKind;
             for row in rows.iter_mut() {
-                let key = (row.provider.clone(), row.path.clone());
-                // Determine RowKind. Virtual entries and Once providers are identified
-                // by registry metadata first; lifecycle snapshots only apply to Poll /
-                // Watch / WatchAndPoll providers that the scheduler actively tracks.
-                let is_virtual = registry.get_source(&row.provider)
-                    == Some(ProviderSource::Virtual);
-                let invalidation = registry
-                    .get(&row.provider)
-                    .map(|p| p.metadata().invalidation);
-                let is_once = matches!(invalidation, Some(InvalidationStrategy::Once));
+                let is_virtual = registry.is_virtual(&row.provider);
 
                 if is_virtual {
                     row.kind = Some(RowKind::Virtual);
-                } else if is_once {
-                    row.kind = Some(RowKind::Once);
-                } else if let Some(snap) = lifecycle.get(&key) {
-                    row.kind = Some(RowKind::Lifecycle {
-                        decay: snap.decay,
-                        watches_files: snap.watches_files,
-                    });
-                    row.poll_interval_secs = Some(snap.poll_interval_secs);
-                    row.keep_alive_polls = Some(snap.keep_alive_polls);
-                    row.fsevents_reinstate = Some(snap.fsevents_reinstate);
-                    row.polls_elapsed = Some(snap.polls_elapsed);
                 } else {
-                    row.kind = Some(RowKind::Transient);
-                }
-                if let Some(snap) = failures.get(&key) {
-                    row.failure = Some(snap.clone());
+                    // Look for a lifecycle snapshot for any source at this (provider, path).
+                    // Phase 1: status display shows first matching source's lifecycle info.
+                    // Phase 2 will add per-source rows.
+                    let matching_snap = registry
+                        .provider_sources(&row.provider)
+                        .and_then(|sources| {
+                            sources.iter().find_map(|sm| {
+                                let triple = (
+                                    row.provider.clone(),
+                                    row.path.clone(),
+                                    sm.name.clone(),
+                                );
+                                lifecycle.get(&triple)
+                            })
+                        });
+
+                    if let Some(snap) = matching_snap {
+                        row.kind = Some(RowKind::Lifecycle {
+                            decay: snap.decay,
+                            watches_files: snap.watches_files,
+                        });
+                        row.poll_interval_secs = Some(snap.poll_interval_secs);
+                        row.fsevents_reinstate = Some(snap.fsevents_reinstate);
+                        // keep_alive_polls and polls_elapsed removed (Phase 2 display)
+                    } else {
+                        row.kind = Some(RowKind::Transient);
+                    }
+
+                    // Check failures using triple key.
+                    let failure_snap = registry
+                        .provider_sources(&row.provider)
+                        .and_then(|sources| {
+                            sources.iter().find_map(|sm| {
+                                let triple = (
+                                    row.provider.clone(),
+                                    row.path.clone(),
+                                    sm.name.clone(),
+                                );
+                                failures.get(&triple)
+                            })
+                        });
+                    if let Some(snap) = failure_snap {
+                        row.failure = Some(snap.clone());
+                    }
                 }
             }
 
@@ -925,18 +943,15 @@ fn handle_introspect_daemon(
     Response::ok(data, 0, false)
 }
 
-fn summarize_invalidation(strategy: &InvalidationStrategy) -> String {
+fn summarize_invalidation(strategy: &crate::provider::InvalidationStrategy) -> String {
+    use crate::provider::InvalidationStrategy;
     match strategy {
-        InvalidationStrategy::Once => "once".to_string(),
-        InvalidationStrategy::Poll { interval_secs, .. } => format!("poll {interval_secs}s"),
-        InvalidationStrategy::Watch {
-            patterns,
-            fallback_poll_secs,
-        } => {
-            let pats = patterns.join(",");
-            match fallback_poll_secs {
-                Some(s) => format!("watch {pats} + poll {s}s"),
-                None => format!("watch {pats}"),
+        InvalidationStrategy::Poll { interval_secs } => format!("poll {interval_secs}s"),
+        InvalidationStrategy::Watch { patterns, .. } => {
+            if patterns.is_empty() {
+                "watch (abs_paths)".to_string()
+            } else {
+                format!("watch {}", patterns.join(","))
             }
         }
         InvalidationStrategy::WatchAndPoll {
@@ -944,7 +959,11 @@ fn summarize_invalidation(strategy: &InvalidationStrategy) -> String {
             interval_secs,
             ..
         } => {
-            let pats = patterns.join(",");
+            let pats = if patterns.is_empty() {
+                "(abs_paths)".to_string()
+            } else {
+                patterns.join(",")
+            };
             format!("watch {pats} + poll {interval_secs}s")
         }
     }
@@ -970,41 +989,63 @@ async fn handle_introspect_providers(
     names.sort();
 
     for name in &names {
-        let source = registry
-            .get_source(name)
-            .map(|s| match s {
-                ProviderSource::Builtin => "builtin",
-                ProviderSource::Script => "script",
-                ProviderSource::Virtual => "virtual",
-            })
-            .unwrap_or("unknown");
+        let (is_virtual, is_real) = (
+            registry.is_virtual(name),
+            registry.provider_metadata(name).is_some(),
+        );
 
-        let (scope, fields, invalidation) = if let Some(p) = registry.get(name) {
-            let meta = p.metadata();
-            let scope = if meta.inferred_scope() == FieldScope::Global {
-                "global"
-            } else {
-                "path"
-            };
-            let fields: Vec<serde_json::Value> = meta
-                .fields
+        let source_type = if is_virtual {
+            "virtual"
+        } else if is_real {
+            "builtin"
+        } else {
+            "unknown"
+        };
+
+        let (scope, sources_out, invalidation) = if let Some(meta) = registry.provider_metadata(name) {
+            // Infer scope from per-source metadata.
+            let any_path = meta.sources.iter().any(|s| s.scope == SourceScope::PathScoped);
+            let scope = if any_path { "path" } else { "global" };
+
+            // Collect per-source info.
+            let sources_out: Vec<serde_json::Value> = meta
+                .sources
                 .iter()
-                .map(|f| {
-                    let type_str = match f.field_type {
-                        crate::provider::FieldType::String => "string",
-                        crate::provider::FieldType::Int => "int",
-                        crate::provider::FieldType::Bool => "bool",
-                        crate::provider::FieldType::Float => "float",
-                        crate::provider::FieldType::Object => "object",
-                    };
+                .map(|sm| {
+                    let fields: Vec<serde_json::Value> = sm
+                        .fields
+                        .iter()
+                        .map(|f| {
+                            let type_str = match f.field_type {
+                                crate::provider::FieldType::String => "string",
+                                crate::provider::FieldType::Int => "int",
+                                crate::provider::FieldType::Bool => "bool",
+                                crate::provider::FieldType::Float => "float",
+                                crate::provider::FieldType::Object => "object",
+                            };
+                            serde_json::json!({
+                                "name": f.name,
+                                "type": type_str,
+                            })
+                        })
+                        .collect();
                     serde_json::json!({
-                        "name": f.name,
-                        "type": type_str,
+                        "name": sm.name,
+                        "scope": if sm.scope == SourceScope::PathScoped { "path" } else { "global" },
+                        "fields": fields,
+                        "invalidation": summarize_invalidation(&sm.invalidation),
                     })
                 })
                 .collect();
-            let invalidation = summarize_invalidation(&meta.invalidation);
-            (scope, fields, invalidation)
+
+            // Use the first source's invalidation for the top-level summary.
+            let invalidation = meta
+                .sources
+                .first()
+                .map(|sm| summarize_invalidation(&sm.invalidation))
+                .unwrap_or_else(|| "data-only".to_string());
+
+            (scope, sources_out, invalidation)
         } else {
             ("global", Vec::new(), "data-only".to_string())
         };
@@ -1033,9 +1074,9 @@ async fn handle_introspect_providers(
 
         providers_out.push(serde_json::json!({
             "name": name,
-            "source": source,
+            "source": source_type,
             "scope": scope,
-            "fields": fields,
+            "sources": sources_out,
             "invalidation": invalidation,
             "in_backoff": in_backoff,
         }));
@@ -1422,138 +1463,212 @@ fn format_data(format: &Format, response: &Response) -> String {
 }
 
 #[cfg(test)]
+mod parse_key_tests {
+    use super::*;
+    use crate::provider::registry::ProviderRegistry;
+    use crate::provider::{
+        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+        ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope,
+    };
+
+    struct FakeSource(SourceMetadata);
+    impl Source for FakeSource {
+        fn metadata(&self) -> &SourceMetadata {
+            &self.0
+        }
+        fn execute(&self, _path: Option<&str>) -> SourceResult {
+            SourceResult::new()
+        }
+    }
+
+    struct FakeProvider {
+        name: String,
+        source_name: String,
+        fields: Vec<&'static str>,
+    }
+
+    impl Provider for FakeProvider {
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: self.name.clone(),
+                sources: vec![SourceMetadata {
+                    name: self.source_name.clone(),
+                    fields: self
+                        .fields
+                        .iter()
+                        .map(|&n| FieldSchema {
+                            name: n.into(),
+                            field_type: FieldType::String,
+                        })
+                        .collect(),
+                    scope: SourceScope::Global,
+                    invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
+                    keep_alive: KeepAlive::Polls(2),
+                    failback: FailbackConfig {
+                        reattempts: 3,
+                        interval_secs: 30,
+                    },
+                    fsevents_reinstate: false,
+                }],
+            }
+        }
+
+        fn sources(&self) -> Vec<Box<dyn Source>> {
+            vec![Box::new(FakeSource(self.metadata().sources[0].clone()))]
+        }
+    }
+
+    fn registry_with_git() -> ProviderRegistry {
+        let mut reg = ProviderRegistry::new();
+        reg.register(Box::new(FakeProvider {
+            name: "git".into(),
+            source_name: "refs".into(),
+            fields: vec!["branch", "sha"],
+        }))
+        .unwrap();
+        reg
+    }
+
+    #[test]
+    fn parse_key_recognises_provider() {
+        let reg = registry_with_git();
+        let k = parse_key("git", &reg);
+        assert!(matches!(k, KeyParse::Provider(ref p) if p == "git"));
+    }
+
+    #[test]
+    fn parse_key_recognises_source_when_registered() {
+        let reg = registry_with_git();
+        let k = parse_key("git.refs", &reg);
+        assert!(matches!(k, KeyParse::Source(_, ref s) if s == "refs"));
+    }
+
+    #[test]
+    fn parse_key_falls_back_to_field_when_no_such_source() {
+        let reg = registry_with_git();
+        let k = parse_key("git.branch", &reg);
+        assert!(matches!(k, KeyParse::Field(_, ref f) if f == "branch"));
+    }
+
+    #[test]
+    fn parse_key_recognises_source_field() {
+        let reg = registry_with_git();
+        let k = parse_key("git.refs.branch", &reg);
+        assert!(
+            matches!(k, KeyParse::SourceField(ref p, ref s, ref f) if p == "git" && s == "refs" && f == "branch")
+        );
+    }
+
+    #[test]
+    fn parse_key_unknown_provider_yields_field() {
+        let reg = ProviderRegistry::new();
+        // No providers registered: any 2-segment key falls to Field form.
+        let k = parse_key("git.branch", &reg);
+        assert!(matches!(k, KeyParse::Field(_, ref f) if f == "branch"));
+    }
+}
+
+#[cfg(test)]
 mod resolve_path_tests {
     use super::*;
     use crate::provider::registry::ProviderRegistry;
     use crate::provider::{
-        FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-        ProviderResult,
+        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+        ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope,
     };
 
-    struct FakeGlobalProvider;
-    impl Provider for FakeGlobalProvider {
-        fn metadata(&self) -> ProviderMetadata {
-            ProviderMetadata {
-                name: "fakeglob".into(),
-                fields: vec![FieldSchema {
-                    name: "v".into(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                }],
-                invalidation: InvalidationStrategy::Once,
-            }
+    struct FakeSource(SourceMetadata);
+    impl Source for FakeSource {
+        fn metadata(&self) -> &SourceMetadata {
+            &self.0
         }
-        fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-            Vec::new()
+        fn execute(&self, _path: Option<&str>) -> SourceResult {
+            SourceResult::new()
         }
     }
 
-    struct FakePathProvider;
-    impl Provider for FakePathProvider {
-        fn metadata(&self) -> ProviderMetadata {
-            ProviderMetadata {
-                name: "fakepath".into(),
-                fields: vec![FieldSchema {
-                    name: "v".into(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                }],
-                invalidation: InvalidationStrategy::Once,
-            }
-        }
-        fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-            Vec::new()
-        }
+    struct FakeProvider {
+        name: String,
+        scope: SourceScope,
     }
 
-    struct FakeMixedProvider;
-    impl Provider for FakeMixedProvider {
+    impl Provider for FakeProvider {
         fn metadata(&self) -> ProviderMetadata {
+            let (invalidation, keep_alive) = match self.scope {
+                SourceScope::Global => (
+                    InvalidationStrategy::Watch {
+                        patterns: vec![],
+                        abs_paths: vec![],
+                    },
+                    KeepAlive::Never,
+                ),
+                SourceScope::PathScoped => (
+                    InvalidationStrategy::Poll { interval_secs: 30 },
+                    KeepAlive::Polls(2),
+                ),
+            };
             ProviderMetadata {
-                name: "fakemix".into(),
-                fields: vec![
-                    FieldSchema {
-                        name: "g".into(),
+                name: self.name.clone(),
+                sources: vec![SourceMetadata {
+                    name: "main".into(),
+                    fields: vec![FieldSchema {
+                        name: "v".into(),
                         field_type: FieldType::String,
-                        scope: FieldScope::Global,
+                    }],
+                    scope: self.scope,
+                    invalidation,
+                    keep_alive,
+                    failback: FailbackConfig {
+                        reattempts: 3,
+                        interval_secs: 30,
                     },
-                    FieldSchema {
-                        name: "p".into(),
-                        field_type: FieldType::String,
-                        scope: FieldScope::PathScoped,
-                    },
-                ],
-                invalidation: InvalidationStrategy::Once,
+                    fsevents_reinstate: false,
+                }],
             }
         }
-        fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-            Vec::new()
+
+        fn sources(&self) -> Vec<Box<dyn Source>> {
+            vec![Box::new(FakeSource(self.metadata().sources[0].clone()))]
         }
     }
 
     fn registry_with(providers: Vec<Box<dyn Provider>>) -> ProviderRegistry {
         let mut reg = ProviderRegistry::new();
         for p in providers {
-            reg.register(p);
+            reg.register(p).unwrap();
         }
         reg
     }
 
     #[test]
-    fn global_field_ignores_explicit_path() {
-        let reg = registry_with(vec![Box::new(FakeGlobalProvider)]);
-        let ctx = None;
-        let result = resolve_path(Some("/tmp"), &ctx, "fakeglob", Some("v"), &reg);
-        assert_eq!(result, None, "global field must ignore explicit path");
+    fn global_provider_ignores_explicit_path() {
+        let reg = registry_with(vec![Box::new(FakeProvider {
+            name: "hostname".into(),
+            scope: SourceScope::Global,
+        })]);
+        let result = resolve_path("hostname", Some("/tmp"), &reg);
+        assert_eq!(result, None, "global provider must ignore explicit path");
     }
 
     #[test]
-    fn global_field_ignores_context_path() {
-        let reg = registry_with(vec![Box::new(FakeGlobalProvider)]);
-        let ctx = Some("/tmp".to_string());
-        let result = resolve_path(None, &ctx, "fakeglob", Some("v"), &reg);
-        assert_eq!(result, None, "global field must ignore context path");
-    }
-
-    #[test]
-    fn path_field_honors_explicit_path() {
-        let reg = registry_with(vec![Box::new(FakePathProvider)]);
-        let ctx = None;
-        let result = resolve_path(Some("/tmp"), &ctx, "fakepath", Some("v"), &reg);
+    fn path_scoped_provider_honors_explicit_path() {
+        let reg = registry_with(vec![Box::new(FakeProvider {
+            name: "git".into(),
+            scope: SourceScope::PathScoped,
+        })]);
+        let result = resolve_path("git", Some("/tmp"), &reg);
+        // /tmp should canonicalize to something (may differ by OS)
         assert!(
             result.is_some(),
-            "path-scoped field should honor explicit path"
+            "path-scoped provider should honor explicit path"
         );
     }
 
     #[test]
-    fn mixed_provider_resolves_per_field() {
-        let reg = registry_with(vec![Box::new(FakeMixedProvider)]);
-        let ctx = None;
-        let explicit = Some("/tmp");
-
-        let global_field = resolve_path(explicit, &ctx, "fakemix", Some("g"), &reg);
-        assert_eq!(global_field, None, "g is global — path dropped");
-
-        let path_field = resolve_path(explicit, &ctx, "fakemix", Some("p"), &reg);
-        assert!(path_field.is_some(), "p is path-scoped — path kept");
-    }
-
-    #[test]
-    fn unknown_field_falls_back_to_inferred_scope_global() {
-        let reg = registry_with(vec![Box::new(FakeGlobalProvider)]);
-        let ctx = None;
-        let result = resolve_path(Some("/tmp"), &ctx, "fakeglob", Some("unknown"), &reg);
-        assert_eq!(result, None, "fallback to inferred_scope=Global → pathless");
-    }
-
-    #[test]
-    fn unknown_provider_returns_explicit_path_canonicalized() {
+    fn unknown_provider_returns_none() {
         let reg = ProviderRegistry::new();
-        let ctx = None;
-        let result = resolve_path(Some("/tmp"), &ctx, "nonexistent", Some("field"), &reg);
-        // Either None or a canonicalised string — behaviour preserved from before.
-        // Main point: no panic.
-        let _ = result;
+        let result = resolve_path("nonexistent", Some("/tmp"), &reg);
+        // Unknown providers have no sources to declare PathScoped, so returns None.
+        assert_eq!(result, None);
     }
 }
