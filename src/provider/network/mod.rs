@@ -1,6 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::net::Ipv4Addr;
 
@@ -14,58 +14,77 @@ pub struct NetworkProvider;
 impl Provider for NetworkProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            name: "network".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "interface".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "ip".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "vpn_active".to_string(),
-                    field_type: FieldType::Bool,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "vpn_name".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "ssid".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "online".to_string(),
-                    field_type: FieldType::Bool,
-                    scope: FieldScope::Global,
-                },
-            ],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 10,
-                floor_secs: 5,
-            },
+            name: "network".into(),
+            sources: vec![interfaces_source_metadata()],
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(NetworkInterfaces)]
+    }
+}
+
+fn interfaces_source_metadata() -> SourceMetadata {
+    SourceMetadata {
+        name: "interfaces".into(),
+        fields: vec![
+            FieldSchema {
+                name: "interface".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "ip".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "vpn_active".into(),
+                field_type: FieldType::Bool,
+            },
+            FieldSchema {
+                name: "vpn_name".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "ssid".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "online".into(),
+                field_type: FieldType::Bool,
+            },
+        ],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Poll { interval_secs: 10 },
+        keep_alive: KeepAlive::Polls(6),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 30,
+        },
+        fsevents_reinstate: false,
+    }
+}
+
+struct NetworkInterfaces;
+
+impl Source for NetworkInterfaces {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(interfaces_source_metadata)
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
         let (iface, ip, vpn_active, vpn_name) = scan_interfaces();
         let ssid = get_wifi_ssid();
 
-        let mut result = ProviderResult::new();
+        let mut result = SourceResult::new();
         result.insert("interface", Value::String(iface));
         result.insert("ip", Value::String(ip.clone()));
         result.insert("online", Value::Bool(!ip.is_empty()));
         result.insert("vpn_active", Value::Bool(vpn_active));
         result.insert("vpn_name", Value::String(vpn_name));
         result.insert("ssid", Value::String(ssid));
-        vec![(None, result)]
+        result
     }
 }
 

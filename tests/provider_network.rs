@@ -1,25 +1,24 @@
 use beachcomber::provider::network::NetworkProvider;
-use beachcomber::provider::{FieldScope, InvalidationStrategy, Provider};
+use beachcomber::provider::{InvalidationStrategy, Provider, SourceScope};
 
 #[test]
 fn network_provider_metadata() {
     let p = NetworkProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "network");
-    assert_eq!(meta.inferred_scope(), FieldScope::Global);
-    let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(meta.sources.len(), 1);
+    let src = &meta.sources[0];
+    assert_eq!(src.name, "interfaces");
+    assert_eq!(src.scope, SourceScope::Global);
+    let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"interface"));
     assert!(fields.contains(&"ip"));
     assert!(fields.contains(&"vpn_active"));
     assert!(fields.contains(&"ssid"));
     assert!(fields.contains(&"online"));
-    match meta.invalidation {
-        InvalidationStrategy::Poll {
-            interval_secs,
-            floor_secs,
-        } => {
+    match src.invalidation {
+        InvalidationStrategy::Poll { interval_secs } => {
             assert_eq!(interval_secs, 10);
-            assert_eq!(floor_secs, 5);
         }
         _ => panic!("Expected Poll invalidation"),
     }
@@ -28,13 +27,10 @@ fn network_provider_metadata() {
 #[test]
 fn network_provider_executes() {
     let p = NetworkProvider;
-    let (_, result) = p
-        .execute(None)
-        .into_iter()
-        .next()
-        .expect("Network should always return data");
-    // online should be a bool
-    let online = result.get("online").unwrap().as_text();
+    let sources = p.sources();
+    let result = sources[0].execute(None);
+    // Network should always return data (online may be false but fields present)
+    let online = result.fields.get("online").unwrap().as_text();
     assert!(online == "true" || online == "false");
 }
 
