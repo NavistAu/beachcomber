@@ -2,10 +2,11 @@ use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use beachcomber::server::Server;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -13,53 +14,91 @@ use tokio::net::UnixStream;
 
 /// A path-scoped provider that stores the path it was called with
 /// as the "active_path" field value.
+struct PathScopedSourceImpl;
+
+impl Source for PathScopedSourceImpl {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(|| SourceMetadata {
+            name: "main".into(),
+            fields: vec![FieldSchema {
+                name: "active_path".into(),
+                field_type: FieldType::String,
+            }],
+            scope: SourceScope::PathScoped,
+            invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
+            keep_alive: KeepAlive::Polls(2),
+            failback: FailbackConfig { reattempts: 3, interval_secs: 30 },
+            fsevents_reinstate: false,
+        })
+    }
+
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        let mut result = SourceResult::new();
+        result.insert("active_path", Value::String(path.unwrap_or("<none>").to_string()));
+        result
+    }
+}
+
 struct PathScopedProvider;
 
 impl Provider for PathScopedProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "pathprov".to_string(),
-            fields: vec![FieldSchema {
-                name: "active_path".to_string(),
-                field_type: FieldType::String,
-                scope: FieldScope::PathScoped,
-            }],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 60,
-                floor_secs: 1,
-            },
+            sources: vec![PathScopedSourceImpl.metadata().clone()],
         }
     }
 
-    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-        let mut result = ProviderResult::new();
-        let val = path.unwrap_or("<none>").to_string();
-        result.insert("active_path", Value::String(val));
-        let path_owned = path.map(|p| p.to_string());
-        vec![(path_owned, result)]
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(PathScopedSourceImpl)]
     }
 }
 
 /// A global provider — context should NOT affect it.
+struct GlobalSourceImpl;
+
+impl Source for GlobalSourceImpl {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(|| SourceMetadata {
+            name: "main".into(),
+            fields: vec![FieldSchema {
+                name: "info".into(),
+                field_type: FieldType::String,
+            }],
+            scope: SourceScope::Global,
+            invalidation: InvalidationStrategy::Watch {
+                patterns: vec![],
+                abs_paths: vec![],
+            },
+            keep_alive: KeepAlive::Never,
+            failback: FailbackConfig { reattempts: 3, interval_secs: 30 },
+            fsevents_reinstate: false,
+        })
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
+        let mut result = SourceResult::new();
+        result.insert("info", Value::String("global-value".to_string()));
+        result
+    }
+}
+
 struct GlobalProvider;
 
 impl Provider for GlobalProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "globalprov".to_string(),
-            fields: vec![FieldSchema {
-                name: "info".to_string(),
-                field_type: FieldType::String,
-                scope: FieldScope::Global,
-            }],
-            invalidation: InvalidationStrategy::Once,
+            sources: vec![GlobalSourceImpl.metadata().clone()],
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-        let mut result = ProviderResult::new();
-        result.insert("info", Value::String("global-value".to_string()));
-        vec![(None, result)]
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(GlobalSourceImpl)]
     }
 }
 
@@ -75,8 +114,8 @@ fn setup_with_custom_registry() -> (
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(PathScopedProvider));
-    registry.register(Box::new(GlobalProvider));
+    registry.register(Box::new(PathScopedProvider)).expect("pathprov");
+    registry.register(Box::new(GlobalProvider)).expect("globalprov");
     let registry = Arc::new(registry);
     (tmp, sock, cache, registry, watchers)
 }
@@ -101,13 +140,13 @@ async fn context_sets_default_path_for_scoped_providers() {
     let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
 
     // Pre-populate cache for two different paths
-    let mut result_a = ProviderResult::new();
-    result_a.insert("active_path", Value::String("/project/a".to_string()));
-    cache.put("pathprov", Some("/project/a"), result_a);
+    let mut fields_a = HashMap::new();
+    fields_a.insert("active_path".to_string(), Value::String("/project/a".to_string()));
+    cache.put_source("pathprov", Some("/project/a"), "main", fields_a, Some(60));
 
-    let mut result_b = ProviderResult::new();
-    result_b.insert("active_path", Value::String("/project/b".to_string()));
-    cache.put("pathprov", Some("/project/b"), result_b);
+    let mut fields_b = HashMap::new();
+    fields_b.insert("active_path".to_string(), Value::String("/project/b".to_string()));
+    cache.put_source("pathprov", Some("/project/b"), "main", fields_b, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -144,13 +183,13 @@ async fn context_sets_default_path_for_scoped_providers() {
 async fn explicit_path_overrides_context() {
     let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
 
-    let mut result_a = ProviderResult::new();
-    result_a.insert("active_path", Value::String("/project/a".to_string()));
-    cache.put("pathprov", Some("/project/a"), result_a);
+    let mut fields_a = HashMap::new();
+    fields_a.insert("active_path".to_string(), Value::String("/project/a".to_string()));
+    cache.put_source("pathprov", Some("/project/a"), "main", fields_a, Some(60));
 
-    let mut result_b = ProviderResult::new();
-    result_b.insert("active_path", Value::String("/project/b".to_string()));
-    cache.put("pathprov", Some("/project/b"), result_b);
+    let mut fields_b = HashMap::new();
+    fields_b.insert("active_path".to_string(), Value::String("/project/b".to_string()));
+    cache.put_source("pathprov", Some("/project/b"), "main", fields_b, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -192,9 +231,9 @@ async fn global_provider_ignores_context() {
     let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
 
     // Pre-populate global provider in cache (no path)
-    let mut result = ProviderResult::new();
-    result.insert("info", Value::String("global-value".to_string()));
-    cache.put("globalprov", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("info".to_string(), Value::String("global-value".to_string()));
+    cache.put_source("globalprov", None, "main", fields, None);
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });

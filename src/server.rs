@@ -218,6 +218,9 @@ pub enum KeyParse {
 
 /// Disambiguates between Field and Source forms for 2-segment keys.
 /// Source name takes precedence over field name when both could match.
+/// For 3-part keys `p.s.f`: if `s` is a registered source name for `p`, this
+/// is a SourceField lookup; otherwise `p.s` is a field whose value is an Object
+/// and `f` is a key within that object (nested field path).
 pub fn parse_key(key: &str, registry: &ProviderRegistry) -> KeyParse {
     let parts: Vec<&str> = key.split('.').collect();
     match parts.as_slice() {
@@ -229,7 +232,15 @@ pub fn parse_key(key: &str, registry: &ProviderRegistry) -> KeyParse {
                 KeyParse::Field(p.to_string(), x.to_string())
             }
         }
-        [p, s, f] => KeyParse::SourceField(p.to_string(), s.to_string(), f.to_string()),
+        [p, s, f] => {
+            if registry.source(p, s).is_some() {
+                KeyParse::SourceField(p.to_string(), s.to_string(), f.to_string())
+            } else {
+                // s is a field name whose value is an Object; f is a sub-key.
+                // Encode the nested path as "s.f" in the Field variant.
+                KeyParse::Field(p.to_string(), format!("{s}.{f}"))
+            }
+        }
         _ => KeyParse::Provider(key.to_string()),
     }
 }
@@ -387,6 +398,25 @@ fn resolve_path(key: &str, requested_path: Option<&str>, registry: &ProviderRegi
     let parts: Vec<&str> = key.split('.').collect();
     let provider = parts[0];
 
+    // Virtual providers don't declare sources, but they can be stored with a path.
+    // Pass the raw path through (canonicalized) so path-keyed virtual data is accessible.
+    if registry.is_virtual(provider) {
+        return requested_path.map(|p| {
+            let path = std::path::Path::new(p);
+            if path.is_relative() {
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|cwd| cwd.join(path).canonicalize().ok())
+                    .map(|abs| abs.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.to_string())
+            } else {
+                path.canonicalize()
+                    .map(|abs| abs.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| p.to_string())
+            }
+        });
+    }
+
     let any_path_scoped = registry
         .provider_sources(provider)
         .map(|ss| ss.iter().any(|s| s.scope == SourceScope::PathScoped))
@@ -523,6 +553,8 @@ async fn handle_request(
             let (cache_hit, normal_response) = match &parsed {
                 KeyParse::Field(provider, field) => {
                     // Route to the source that owns this field.
+                    // `field` may be a dotted nested path (e.g. "project.rust") when the
+                    // parsed key had 3+ segments and the middle segment was not a source name.
                     match cache.get_field(provider, effective_path.as_deref(), field) {
                         Some(value) => {
                             let entry = cache.get_entry(provider, effective_path.as_deref());
@@ -532,6 +564,17 @@ async fn handle_request(
                             (true, Response::ok(data, age_ms, stale))
                         }
                         None => {
+                            // Distinguish between a provider cache miss and a nested-path not-found.
+                            // If the field is dotted (nested path), check whether the top-level
+                            // field exists: if it does, the subkey is unknown — return an error.
+                            if field.contains('.') {
+                                let head = field.split('.').next().unwrap_or(field.as_str());
+                                if cache.get_field(provider, effective_path.as_deref(), head).is_some() {
+                                    return Response::error(format!(
+                                        "unknown field: {provider}.{field}"
+                                    ));
+                                }
+                            }
                             // Cold miss — provider impls are not yet available (Section H).
                             // The scheduler will handle warming; return miss for now.
                             (false, Response::miss())

@@ -3,18 +3,19 @@
 // LifecycleRegistry with Active and Decay1..4 states. These tests exercise the
 // same behavioral contracts via the new API.
 
+use beachcomber::provider::KeepAlive;
 use beachcomber::scheduler::lifecycle::{
-    DecayStep, LifecycleRegistry, LifecycleState, ProviderLifecycleConfig, StateTransition,
+    DecayStep, LifecycleRegistry, LifecycleState, SourceLifecycleConfig, StateTransition,
+    StrategyKind,
 };
 use std::time::{Duration, Instant};
 
-fn test_config() -> ProviderLifecycleConfig {
-    // 1ms poll + 1 keep-alive = 1ms per step for fast test progression.
-    // Non-zero interval is required: on_demand refuses zero intervals as a
-    // defence against Once providers slipping through.
-    ProviderLifecycleConfig {
-        poll_interval: Duration::from_millis(1),
-        keep_alive_polls: 1,
+fn test_config() -> SourceLifecycleConfig {
+    // 1ms poll + Polls(1) keep-alive = 1ms per step for fast test progression.
+    SourceLifecycleConfig {
+        strategy_kind: StrategyKind::Poll,
+        poll_interval: Some(Duration::from_millis(1)),
+        keep_alive: KeepAlive::Polls(1),
         fsevents_reinstate: false,
     }
 }
@@ -22,7 +23,7 @@ fn test_config() -> ProviderLifecycleConfig {
 #[test]
 fn lifecycle_starts_in_active() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), None);
+    let key = ("git".to_string(), None, "refs".to_string());
     let t0 = Instant::now();
 
     reg.on_demand(key.clone(), test_config(), t0);
@@ -30,7 +31,7 @@ fn lifecycle_starts_in_active() {
     assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
 }
 
-// With `poll_interval=1ms, keep_alive_polls=1`, step durations double per
+// With `poll_interval=1ms, keep_alive=Polls(1)`, step durations double per
 // decay step (2^n × P × K): {1, 2, 4, 8, 16} ms for Active→Decay1…Decay4.
 // Advancing 100 ms per tick is comfortably past every deadline.
 const STEP: Duration = Duration::from_millis(100);
@@ -38,7 +39,7 @@ const STEP: Duration = Duration::from_millis(100);
 #[test]
 fn lifecycle_advances_through_decay_stages() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), None);
+    let key = ("git".to_string(), None, "refs".to_string());
     let t0 = Instant::now();
     reg.on_demand(key.clone(), test_config(), t0);
 
@@ -74,7 +75,7 @@ fn lifecycle_advances_through_decay_stages() {
 #[test]
 fn lifecycle_resets_to_active_on_demand() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), None);
+    let key = ("git".to_string(), None, "refs".to_string());
     let t0 = Instant::now();
     reg.on_demand(key.clone(), test_config(), t0);
 
@@ -100,7 +101,7 @@ fn lifecycle_resets_to_active_on_demand() {
 #[test]
 fn lifecycle_evicts_after_decay4() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), None);
+    let key = ("git".to_string(), None, "refs".to_string());
     let t0 = Instant::now();
     reg.on_demand(key.clone(), test_config(), t0);
 

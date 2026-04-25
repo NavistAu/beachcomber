@@ -155,15 +155,16 @@ impl ProviderRegistry {
         //
         registry.register(Box::new(crate::provider::asdf::AsdfProvider)).expect("asdf");
         registry.register(Box::new(crate::provider::aws::AwsProvider)).expect("aws");
-        // registry.register(Box::new(crate::provider::battery::BatteryProvider)).expect("battery");
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        registry.register(Box::new(crate::provider::battery::BatteryProvider)).expect("battery");
         registry.register(Box::new(crate::provider::conda::CondaProvider)).expect("conda");
         registry.register(Box::new(crate::provider::direnv::DirenvProvider)).expect("direnv");
         registry.register(Box::new(crate::provider::gcloud::GcloudProvider)).expect("gcloud");
-        // registry.register(Box::new(crate::provider::git::GitProvider)).expect("git");
+        registry.register(Box::new(crate::provider::git::GitProvider)).expect("git");
         registry.register(Box::new(crate::provider::hostname::HostnameProvider)).expect("hostname");
         registry.register(Box::new(crate::provider::kubecontext::KubecontextProvider)).expect("kubecontext");
         registry.register(Box::new(crate::provider::load::LoadProvider)).expect("load");
-        // registry.register(Box::new(crate::provider::mise::MiseProvider)).expect("mise");
+        registry.register(Box::new(crate::provider::mise::MiseProvider)).expect("mise");
         registry.register(Box::new(crate::provider::network::NetworkProvider)).expect("network");
         registry.register(Box::new(crate::provider::op::OpProvider)).expect("op");
         registry.register(Box::new(crate::provider::python::PythonProvider)).expect("python");
@@ -173,7 +174,6 @@ impl ProviderRegistry {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         registry.register(Box::new(crate::provider::uptime::UptimeProvider)).expect("uptime");
         registry.register(Box::new(crate::provider::user::UserProvider)).expect("user");
-        let _ = &mut registry; // suppress unused-mut until section H re-enables the lines above
         registry
     }
 
@@ -182,36 +182,74 @@ impl ProviderRegistry {
     ///
     /// Panics on registration failure (programmer error, not runtime).
     pub fn with_config(config: &Config) -> Self {
+        use crate::provider::http::HttpProvider;
+        use crate::provider::library::LibraryProvider;
+        use crate::provider::script::ScriptProvider;
+
+        // Start from the full built-in set, then layer on config-defined providers.
+        // Built-ins that are explicitly disabled in config are not added.
         let mut registry = Self::new();
-        // TODO(phase1-section-H): re-enable each builtin line once migrated to new Provider/Source trait.
-        // Use config.is_provider_disabled(name) to gate each one, e.g.:
-        //   if !config.is_provider_disabled("git") {
-        //       registry.register(Box::new(crate::provider::git::GitProvider)).expect("git");
-        //   }
-        //
-        // TODO(phase1-section-I): re-enable script/library/HTTP registration once
-        // ScriptProvider, LibraryProvider, HttpProvider implement the new Source trait.
-        // The block below was the old registration logic — kept as reference:
-        //
-        // for (name, script_config) in config.script_providers() {
-        //     if !config.is_provider_disabled(&name) {
-        //         registry.register(Box::new(ScriptProvider::new(&name, script_config))).expect("script");
-        //     }
-        // }
-        // for (name, lib_config) in config.library_providers() {
-        //     if !config.is_provider_disabled(&name)
-        //         && let Some(provider) = LibraryProvider::new(&name, lib_config)
-        //     {
-        //         registry.register(Box::new(provider)).expect("library");
-        //     }
-        // }
-        // for (name, http_config) in config.http_providers() {
-        //     if !config.is_provider_disabled(&name) {
-        //         registry.register(Box::new(HttpProvider::new(&name, http_config))).expect("http");
-        //     }
-        // }
-        let _ = config; // suppress unused until section H/I re-enables the blocks above
-        let _ = &mut registry; // suppress unused-mut
+
+        macro_rules! add_builtin {
+            ($name:expr, $provider:expr) => {
+                if !config.is_provider_disabled($name) {
+                    registry.register(Box::new($provider)).expect($name);
+                }
+            };
+        }
+
+        add_builtin!("asdf", crate::provider::asdf::AsdfProvider);
+        add_builtin!("aws", crate::provider::aws::AwsProvider);
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        add_builtin!("battery", crate::provider::battery::BatteryProvider);
+        add_builtin!("conda", crate::provider::conda::CondaProvider);
+        add_builtin!("direnv", crate::provider::direnv::DirenvProvider);
+        add_builtin!("gcloud", crate::provider::gcloud::GcloudProvider);
+        add_builtin!("git", crate::provider::git::GitProvider);
+        add_builtin!("hostname", crate::provider::hostname::HostnameProvider);
+        add_builtin!("kubecontext", crate::provider::kubecontext::KubecontextProvider);
+        add_builtin!("load", crate::provider::load::LoadProvider);
+        add_builtin!("mise", crate::provider::mise::MiseProvider);
+        add_builtin!("network", crate::provider::network::NetworkProvider);
+        add_builtin!("op", crate::provider::op::OpProvider);
+        add_builtin!("python", crate::provider::python::PythonProvider);
+        add_builtin!("sudo", crate::provider::sudo::SudoProvider);
+        add_builtin!("terraform", crate::provider::terraform::TerraformProvider);
+        add_builtin!("uname", crate::provider::uname::UnameProvider);
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        add_builtin!("uptime", crate::provider::uptime::UptimeProvider);
+        add_builtin!("user", crate::provider::user::UserProvider);
+
+        for (name, script_config) in config.script_providers() {
+            if !config.is_provider_disabled(&name) {
+                registry
+                    .register(Box::new(ScriptProvider::new(&name, script_config)))
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("Failed to register script provider '{}': {}", name, e);
+                    });
+            }
+        }
+        for (name, lib_config) in config.library_providers() {
+            if !config.is_provider_disabled(&name) {
+                if let Some(provider) = LibraryProvider::new(&name, lib_config) {
+                    registry
+                        .register(Box::new(provider))
+                        .unwrap_or_else(|e| {
+                            tracing::warn!("Failed to register library provider '{}': {}", name, e);
+                        });
+                }
+            }
+        }
+        for (name, http_config) in config.http_providers() {
+            if !config.is_provider_disabled(&name) {
+                registry
+                    .register(Box::new(HttpProvider::new(&name, http_config)))
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("Failed to register http provider '{}': {}", name, e);
+                    });
+            }
+        }
+
         registry
     }
 }

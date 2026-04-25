@@ -10,21 +10,21 @@ enabled = false
     let config: Config = toml::from_str(toml_str).unwrap();
     let registry = ProviderRegistry::with_config(&config);
     assert!(
-        registry.get("battery").is_none(),
+        registry.provider_sources("battery").is_none(),
         "Disabled provider should not be registered"
     );
     // Other providers should still exist
-    assert!(registry.get("hostname").is_some());
+    assert!(registry.provider_sources("hostname").is_some());
 }
 
 #[test]
 fn all_providers_registered_by_default() {
     let config = Config::default();
     let registry = ProviderRegistry::with_config(&config);
-    assert!(registry.get("hostname").is_some());
-    assert!(registry.get("user").is_some());
-    assert!(registry.get("git").is_some());
-    assert!(registry.get("battery").is_some());
+    assert!(registry.provider_sources("hostname").is_some());
+    assert!(registry.provider_sources("user").is_some());
+    assert!(registry.provider_sources("git").is_some());
+    assert!(registry.provider_sources("battery").is_some());
 }
 
 #[test]

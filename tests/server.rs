@@ -1,8 +1,9 @@
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::provider::{ProviderResult, Value};
+use beachcomber::provider::Value;
 use beachcomber::server::Server;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -42,10 +43,10 @@ async fn server_accepts_connection() {
 async fn server_handles_get_global_provider() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("testhost.local".to_string()));
-    result.insert("short", Value::String("testhost".to_string()));
-    cache.put("hostname", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("testhost.local".to_string()));
+    fields.insert("short".to_string(), Value::String("testhost".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -75,10 +76,10 @@ async fn server_handles_get_global_provider() {
 async fn server_handles_get_single_field() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("testhost.local".to_string()));
-    result.insert("short", Value::String("testhost".to_string()));
-    cache.put("hostname", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("testhost.local".to_string()));
+    fields.insert("short".to_string(), Value::String("testhost".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -106,9 +107,9 @@ async fn server_handles_get_single_field() {
 async fn server_handles_get_text_format() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("testhost.local".to_string()));
-    cache.put("hostname", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("testhost.local".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -289,10 +290,10 @@ async fn server_handles_refresh() {
 async fn server_handles_get_sh_format() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("testhost.local".to_string()));
-    result.insert("short", Value::String("testhost".to_string()));
-    cache.put("hostname", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("testhost.local".to_string()));
+    fields.insert("short".to_string(), Value::String("testhost".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -327,10 +328,10 @@ async fn server_handles_get_sh_format() {
 async fn server_text_format_object_emits_key_value_lines() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("testhost.local".to_string()));
-    result.insert("short", Value::String("testhost".to_string()));
-    cache.put("hostname", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("testhost.local".to_string()));
+    fields.insert("short".to_string(), Value::String("testhost".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -450,9 +451,9 @@ async fn nested_key_walks_into_object_field() {
         "cargo-nextest".to_string(),
         Value::String("0.9.133".to_string()),
     );
-    let mut result = ProviderResult::new();
-    result.insert("project", Value::Object(tools_map));
-    cache.put("myproj", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("project".to_string(), Value::Object(tools_map));
+    cache.put_source("myproj", None, "virtual", fields, None);
     registry.register_virtual("myproj");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -489,9 +490,9 @@ async fn nested_key_missing_subkey_errors() {
 
     let mut tools_map = std::collections::HashMap::new();
     tools_map.insert("rust".to_string(), Value::String("1.94.0".to_string()));
-    let mut result = ProviderResult::new();
-    result.insert("project", Value::Object(tools_map));
-    cache.put("myproj", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("project".to_string(), Value::Object(tools_map));
+    cache.put_source("myproj", None, "virtual", fields, None);
     registry.register_virtual("myproj");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -534,9 +535,9 @@ async fn text_format_object_field_emits_subkey_equals_value_lines() {
     let mut tools_map = std::collections::HashMap::new();
     tools_map.insert("node".to_string(), Value::String("20.11.0".to_string()));
     tools_map.insert("python".to_string(), Value::String("3.12.1".to_string()));
-    let mut result = ProviderResult::new();
-    result.insert("tools", Value::Object(tools_map));
-    cache.put("devenv", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("tools".to_string(), Value::Object(tools_map));
+    cache.put_source("devenv", None, "virtual", fields, None);
     // Register as virtual so the server's provider-existence guard accepts the name.
     registry.register_virtual("devenv");
 

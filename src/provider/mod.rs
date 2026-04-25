@@ -324,10 +324,18 @@ impl ProviderMetadata {
                 ));
             }
         }
-        // Field name uniqueness across all sources within this provider
+        // Field name uniqueness across all sources within this provider.
+        // Dynamic sentinel names (starting with '<') are placeholders for runtime-resolved
+        // field names and may appear in multiple sources within the same provider (e.g. mise
+        // has a <tool> sentinel in both its global and project sources). Skip uniqueness
+        // checking for those names.
         let mut field_owners: HashMap<String, String> = HashMap::new();
         for s in &self.sources {
             for f in &s.fields {
+                if f.name.starts_with('<') {
+                    // Dynamic sentinel — allowed to appear in multiple sources.
+                    continue;
+                }
                 if let Some(prev) = field_owners.insert(f.name.clone(), s.name.clone()) {
                     return Err(format!(
                         "provider '{}' field '{}' declared by both source '{}' and source '{}'",

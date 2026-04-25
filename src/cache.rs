@@ -137,12 +137,42 @@ impl Cache {
 
     /// Look up a specific field across all sources for (provider, path).
     /// Returns the field value from whichever source owns it, or `None` if not found.
+    ///
+    /// `field` may be a dotted sub-path (e.g. `"project.rust"`): the first segment is the
+    /// top-level field name and subsequent segments traverse nested `Value::Object` maps.
     pub fn get_field(&self, provider: &str, path: Option<&str>, field: &str) -> Option<Value> {
         let key = make_cache_key(provider, path);
         let entry = self.entries.get(&key)?;
+        // Split into head (top-level field) and optional rest (nested sub-path).
+        let (head, rest) = field
+            .split_once('.')
+            .map(|(h, r)| (h, Some(r)))
+            .unwrap_or((field, None));
         for src in entry.sources.values() {
-            if let Some(v) = src.fields.get(field) {
-                return Some(v.clone());
+            if let Some(top) = src.fields.get(head) {
+                if let Some(subpath) = rest {
+                    // Walk into nested Value::Object maps.
+                    let mut current = top.clone();
+                    let mut found = true;
+                    for seg in subpath.split('.') {
+                        let next = match &current {
+                            Value::Object(map) => map.get(seg).cloned(),
+                            _ => None,
+                        };
+                        match next {
+                            Some(v) => current = v,
+                            None => {
+                                found = false;
+                                break;
+                            }
+                        }
+                    }
+                    if found {
+                        return Some(current);
+                    }
+                } else {
+                    return Some(top.clone());
+                }
             }
         }
         None

@@ -1,8 +1,9 @@
 use beachcomber::cache::Cache;
 use beachcomber::client::{Client, ClientSession};
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::provider::{ProviderResult, Value};
+use beachcomber::provider::Value;
 use beachcomber::server::Server;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -13,13 +14,13 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
-    let mut hostname = ProviderResult::new();
-    hostname.insert("value", Value::String("myhost".to_string()));
-    cache.put("hostname", None, hostname);
+    let mut hostname_fields = HashMap::new();
+    hostname_fields.insert("value".to_string(), Value::String("myhost".to_string()));
+    cache.put_source("hostname", None, "main", hostname_fields, Some(60));
 
-    let mut user = ProviderResult::new();
-    user.insert("value", Value::String("alice".to_string()));
-    cache.put("user", None, user);
+    let mut user_fields = HashMap::new();
+    user_fields.insert("value".to_string(), Value::String("alice".to_string()));
+    cache.put_source("user", None, "main", user_fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     tokio::spawn(async move { server.run().await });

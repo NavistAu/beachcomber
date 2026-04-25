@@ -27,17 +27,16 @@ async fn scheduler_refresh_populates_cache() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let entry = cache.get("hostname", None);
+    let entry = cache.get_entry("hostname", None);
     assert!(entry.is_some(), "Refresh should populate cache");
+    let _entry = entry.unwrap();
+    // hostname.host source should have a 'name' field
+    let name_value = cache.get_field("hostname", None, "name");
     assert!(
-        !entry
-            .unwrap()
-            .result
-            .get("name")
-            .unwrap()
-            .as_text()
-            .is_empty()
+        name_value.is_some(),
+        "hostname 'name' field should be populated"
     );
+    assert!(!name_value.unwrap().as_text().is_empty());
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;
