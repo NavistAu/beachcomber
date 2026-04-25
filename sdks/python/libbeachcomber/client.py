@@ -179,6 +179,7 @@ def _parse_cache_rows(resp: dict[str, Any]) -> list[CacheRow]:
                 keep_alive_polls=row.get("keep_alive_polls"),
                 fsevents_reinstate=row.get("fsevents_reinstate"),
                 failure=row.get("failure"),
+                source=row.get("source"),
             )
         )
     return out

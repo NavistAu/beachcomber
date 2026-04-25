@@ -867,6 +867,10 @@ int comb_status(comb_client_t *client, comb_cache_row_t **rows_out,
             }
         }
 
+        /* source */
+        const char *srcs = json_as_str(json_get(item, "source"));
+        if (srcs) row->source = strdup(srcs);
+
         count++;
         item = item->next;
     }
@@ -885,6 +889,7 @@ void comb_free_cache_rows(comb_cache_row_t *rows, size_t n) {
         free(rows[i].field);
         free(rows[i].value_json);
         free(rows[i].kind);
+        free(rows[i].source);
     }
     free(rows);
 }

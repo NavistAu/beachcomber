@@ -25,6 +25,8 @@ export interface CacheRow {
   keepAlivePolls?: number;
   fseventsReinstate?: boolean;
   failure?: { consecutive_failures: number; suppressed_until_unix_ms?: number };
+  /** Owning source name within the provider; undefined when not present on the wire. */
+  source?: string;
 }
 
 export interface Verdict {

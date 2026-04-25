@@ -26,6 +26,7 @@ class CacheRow:
     keep_alive_polls: Optional[int] = None
     fsevents_reinstate: Optional[bool] = None
     failure: Optional[Dict[str, Any]] = None
+    source: Optional[str] = None
 
 
 @dataclass(frozen=True)

@@ -182,6 +182,9 @@ func parseCacheRowsFromResult(r *Result) ([]CacheRow, error) {
 		if f, ok := m["failure"].(map[string]interface{}); ok {
 			row.Failure = f
 		}
+		if s, ok := m["source"].(string); ok {
+			row.Source = s
+		}
 		rows = append(rows, row)
 	}
 	return rows, nil
