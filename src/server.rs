@@ -840,48 +840,36 @@ async fn handle_request(
                 if is_virtual {
                     row.kind = Some(RowKind::Virtual);
                 } else {
-                    // Look for a lifecycle snapshot for any source at this (provider, path).
-                    // Phase 1: status display shows first matching source's lifecycle info.
-                    // Phase 2 will add per-source rows.
-                    let matching_snap = registry
-                        .provider_sources(&row.provider)
-                        .and_then(|sources| {
-                            sources.iter().find_map(|sm| {
-                                let triple = (
-                                    row.provider.clone(),
-                                    row.path.clone(),
-                                    sm.name.clone(),
-                                );
-                                lifecycle.get(&triple)
-                            })
-                        });
+                    // Look up the lifecycle snapshot for THIS row's owning source
+                    // so glyphs and TTL columns reflect the source's strategy
+                    // (refs vs diff vs status all differ within a single provider).
+                    let triple = (
+                        row.provider.clone(),
+                        row.path.clone(),
+                        row.source.clone(),
+                    );
+                    let matching_snap = lifecycle.get(&triple);
 
                     if let Some(snap) = matching_snap {
                         row.kind = Some(RowKind::Lifecycle {
                             decay: snap.decay,
                             watches_files: snap.watches_files,
                         });
-                        row.poll_interval_secs = Some(snap.poll_interval_secs);
+                        // Only expose poll-related metadata when this source has
+                        // a poll path. Pure Watch sources leave these None so the
+                        // renderer doesn't fabricate `0s×00`.
+                        if snap.poll_interval_secs > 0 {
+                            row.poll_interval_secs = Some(snap.poll_interval_secs);
+                            row.keep_alive_polls = Some(snap.keep_alive_polls);
+                            row.polls_elapsed = Some(snap.polls_elapsed);
+                        }
                         row.fsevents_reinstate = Some(snap.fsevents_reinstate);
-                        // keep_alive_polls and polls_elapsed removed (Phase 2 display)
                     } else {
                         row.kind = Some(RowKind::Transient);
                     }
 
-                    // Check failures using triple key.
-                    let failure_snap = registry
-                        .provider_sources(&row.provider)
-                        .and_then(|sources| {
-                            sources.iter().find_map(|sm| {
-                                let triple = (
-                                    row.provider.clone(),
-                                    row.path.clone(),
-                                    sm.name.clone(),
-                                );
-                                failures.get(&triple)
-                            })
-                        });
-                    if let Some(snap) = failure_snap {
+                    // Failure backoff: per-source.
+                    if let Some(snap) = failures.get(&triple) {
                         row.failure = Some(snap.clone());
                     }
                 }

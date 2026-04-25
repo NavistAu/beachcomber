@@ -61,6 +61,15 @@ pub struct LifecycleSnapshot {
     pub decay: u8,
     /// Effective poll interval in seconds (may be doubled during decay). 0 for pure Watch.
     pub poll_interval_secs: u64,
+    /// K — keep-alive count. For `KeepAlive::Polls(K)` this is K. For
+    /// `KeepAlive::Duration(secs)` it's `secs / poll_interval_secs` if there is
+    /// a poll path (WatchAndPoll), otherwise 0 (pure Watch). For
+    /// `KeepAlive::Never` it's 0 (no decay).
+    pub keep_alive_polls: u32,
+    /// Number of poll-equivalents that have fired in the current lifecycle
+    /// step. Used by the status formatter to render the `{age}×{N}` suffix on
+    /// the age column.
+    pub polls_elapsed: u32,
     /// Whether fsevents are reinstated on demand for this entry.
     pub fsevents_reinstate: bool,
     /// True if the provider uses Watch or WatchAndPoll invalidation strategy.
@@ -204,6 +213,81 @@ impl FailureState {
         self.suppressed_until
             .map(|until| Instant::now() < until)
             .unwrap_or(false)
+    }
+}
+
+/// Build a `LifecycleSnapshot` for a given lifecycle entry at `now`. Centralised
+/// so the two snapshot-reply sites (sync and async branches in the scheduler
+/// loop) compute polls_elapsed and keep_alive_polls identically.
+fn snapshot_entry(
+    key: &lifecycle::Key,
+    entry: &lifecycle::LifecycleEntry,
+    now: Instant,
+) -> LifecycleSnapshot {
+    use crate::provider::KeepAlive;
+
+    let watches_files = matches!(
+        entry.config.strategy_kind,
+        lifecycle::StrategyKind::Watch | lifecycle::StrategyKind::WatchAndPoll
+    );
+    let poll_interval_secs = entry
+        .poll_timer
+        .as_ref()
+        .map(|pt| pt.interval.as_secs())
+        .unwrap_or(0);
+
+    let decay = lifecycle::to_decay_level(&entry.state);
+    let rate_mult: u64 = if decay == 0 { 1 } else { 1u64 << decay };
+
+    let base_poll_secs = entry
+        .config
+        .poll_interval
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // K and step duration both depend on the keep-alive variant.
+    let (keep_alive_polls, step_duration_secs) = match entry.config.keep_alive {
+        KeepAlive::Polls(k) => {
+            let dur = (k as u64) * base_poll_secs * rate_mult;
+            (k, dur)
+        }
+        KeepAlive::Duration(secs) => {
+            // For pure Watch (no poll path) polls don't apply; report 0.
+            // For WatchAndPoll, derive K = secs / base_poll_secs so the renderer
+            // can produce the {p}s×{k:02} format.
+            let k = if base_poll_secs > 0 {
+                (secs / base_poll_secs) as u32
+            } else {
+                0
+            };
+            (k, secs * rate_mult)
+        }
+        KeepAlive::Never => (0, 0),
+    };
+
+    // polls_elapsed: how many polls have fired in the current lifecycle step.
+    // Only meaningful when there is a poll path AND a decay timer.
+    let polls_elapsed = match (entry.decay_timer.as_ref(), poll_interval_secs) {
+        (Some(dt), p) if p > 0 && step_duration_secs > 0 => {
+            let step_start = dt
+                .step_deadline
+                .checked_sub(Duration::from_secs(step_duration_secs))
+                .unwrap_or(now);
+            let secs_in_step = now.saturating_duration_since(step_start).as_secs();
+            let n = secs_in_step / p;
+            (n as u32).min(keep_alive_polls.max(1))
+        }
+        _ => 0,
+    };
+
+    LifecycleSnapshot {
+        decay,
+        poll_interval_secs,
+        keep_alive_polls,
+        polls_elapsed,
+        fsevents_reinstate: entry.config.fsevents_reinstate,
+        watches_files,
+        source: key.2.clone(),
     }
 }
 
@@ -640,28 +724,10 @@ impl Scheduler {
                             let _ = reply.send(snap);
                         }
                         Some(SchedulerMessage::GetLifecycleSnapshots { reply }) => {
-                            let map = lifecycle
+                            let now = Instant::now();
+                            let map: HashMap<lifecycle::Key, LifecycleSnapshot> = lifecycle
                                 .iter()
-                                .map(|(k, entry)| {
-                                    let watches_files = matches!(
-                                        entry.config.strategy_kind,
-                                        lifecycle::StrategyKind::Watch
-                                            | lifecycle::StrategyKind::WatchAndPoll
-                                    );
-                                    let poll_interval_secs = entry
-                                        .poll_timer
-                                        .as_ref()
-                                        .map(|pt| pt.interval.as_secs())
-                                        .unwrap_or(0);
-                                    let snap = LifecycleSnapshot {
-                                        decay: lifecycle::to_decay_level(&entry.state),
-                                        poll_interval_secs,
-                                        fsevents_reinstate: entry.config.fsevents_reinstate,
-                                        watches_files,
-                                        source: k.2.clone(),
-                                    };
-                                    (k.clone(), snap)
-                                })
+                                .map(|(k, entry)| (k.clone(), snapshot_entry(k, entry, now)))
                                 .collect();
                             let _ = reply.send(map);
                         }
@@ -673,18 +739,29 @@ impl Scheduler {
                             };
                             let sources_vec = sources.to_vec();
                             for sm in &sources_vec {
-                                // Scope filter: skip Global sources when a path is provided
-                                // and skip PathScoped sources when no path is given.
-                                if matches!(sm.scope, SourceScope::Global) && path.is_some() {
-                                    continue;
-                                }
+                                // Scope filter:
+                                //  - PathScoped sources: skip when no path was provided
+                                //    (they have nothing to attach to).
+                                //  - Global sources: always demand at (provider, None),
+                                //    regardless of whether the consumer query carried a
+                                //    path. A whole-provider query like `comb get mise`
+                                //    from inside a project should warm BOTH the project
+                                //    PathScoped source at the resolved path AND the
+                                //    Global source at the pathless slot.
                                 if matches!(sm.scope, SourceScope::PathScoped) && path.is_none() {
                                     continue;
                                 }
 
+                                // Global sources always live at (provider, None) regardless
+                                // of the path carried by the QueryActivity message.
+                                let effective_key_path = match sm.scope {
+                                    SourceScope::Global => None,
+                                    SourceScope::PathScoped => path.clone(),
+                                };
+
                                 let key: lifecycle::Key = (
                                     provider.clone(),
-                                    path.clone(),
+                                    effective_key_path.clone(),
                                     sm.name.clone(),
                                 );
                                 let cfg = SourceLifecycleConfig::from_strategy(
@@ -732,6 +809,8 @@ impl Scheduler {
                                             }
                                         }
                                         // Register absolute-path watches for Global Watch/WatchAndPoll sources.
+                                        // Subscriptions key on the source's effective path (None for Global)
+                                        // so fs-event dispatch resolves to the right lifecycle entry.
                                         if matches!(sm.scope, SourceScope::Global) {
                                             let abs_paths =
                                                 crate::provider::watch_abs_paths(&sm.invalidation);
@@ -748,7 +827,7 @@ impl Scheduler {
                                                         .or_default()
                                                         .push(Subscription {
                                                             provider: provider.clone(),
-                                                            path: path.clone(),
+                                                            path: None,
                                                             source: sm.name.clone(),
                                                             patterns: Vec::new(),
                                                             abs_paths: vec![abs_path],
@@ -763,9 +842,11 @@ impl Scheduler {
                                 }
 
                                 if matches!(outcome.transition, StateTransition::NewlyActive) {
-                                    // Cold → Active: execute inline to populate cache.
-                                    if self.cache.get_source(&provider, path.as_deref(), &sm.name).is_none() {
-                                        self.execute_source(&provider, &sm.name, path.as_deref());
+                                    // Cold → Active: execute inline to populate cache. Use the
+                                    // source's effective key path (None for Global, requested path
+                                    // for PathScoped) so the cache slot matches the lifecycle key.
+                                    if self.cache.get_source(&provider, effective_key_path.as_deref(), &sm.name).is_none() {
+                                        self.execute_source(&provider, &sm.name, effective_key_path.as_deref());
                                     }
                                 }
                             }
@@ -899,28 +980,10 @@ impl Scheduler {
                             let _ = reply.send(snap);
                         }
                         Some(SchedulerMessage::GetLifecycleSnapshots { reply }) => {
-                            let map = lifecycle
+                            let now = Instant::now();
+                            let map: HashMap<lifecycle::Key, LifecycleSnapshot> = lifecycle
                                 .iter()
-                                .map(|(k, entry)| {
-                                    let watches_files = matches!(
-                                        entry.config.strategy_kind,
-                                        lifecycle::StrategyKind::Watch
-                                            | lifecycle::StrategyKind::WatchAndPoll
-                                    );
-                                    let poll_interval_secs = entry
-                                        .poll_timer
-                                        .as_ref()
-                                        .map(|pt| pt.interval.as_secs())
-                                        .unwrap_or(0);
-                                    let snap = LifecycleSnapshot {
-                                        decay: lifecycle::to_decay_level(&entry.state),
-                                        poll_interval_secs,
-                                        fsevents_reinstate: entry.config.fsevents_reinstate,
-                                        watches_files,
-                                        source: k.2.clone(),
-                                    };
-                                    (k.clone(), snap)
-                                })
+                                .map(|(k, entry)| (k.clone(), snapshot_entry(k, entry, now)))
                                 .collect();
                             let _ = reply.send(map);
                         }
@@ -932,16 +995,17 @@ impl Scheduler {
                             };
                             let sources_vec = sources.to_vec();
                             for sm in &sources_vec {
-                                if matches!(sm.scope, SourceScope::Global) && path.is_some() {
-                                    continue;
-                                }
                                 if matches!(sm.scope, SourceScope::PathScoped) && path.is_none() {
                                     continue;
                                 }
+                                let effective_key_path = match sm.scope {
+                                    SourceScope::Global => None,
+                                    SourceScope::PathScoped => path.clone(),
+                                };
 
                                 let key: lifecycle::Key = (
                                     provider.clone(),
-                                    path.clone(),
+                                    effective_key_path.clone(),
                                     sm.name.clone(),
                                 );
                                 let cfg = SourceLifecycleConfig::from_strategy(
@@ -955,9 +1019,8 @@ impl Scheduler {
                                 let _ = outcome.watch_registration;
 
                                 if matches!(outcome.transition, StateTransition::NewlyActive) {
-                                    // Cold → Active: execute inline to populate cache.
-                                    if self.cache.get_source(&provider, path.as_deref(), &sm.name).is_none() {
-                                        self.execute_source(&provider, &sm.name, path.as_deref());
+                                    if self.cache.get_source(&provider, effective_key_path.as_deref(), &sm.name).is_none() {
+                                        self.execute_source(&provider, &sm.name, effective_key_path.as_deref());
                                     }
                                 }
                             }

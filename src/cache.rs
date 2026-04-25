@@ -224,7 +224,7 @@ impl Cache {
                 (key.clone(), None)
             };
             let ce = entry.value();
-            for (_source_name, src) in &ce.sources {
+            for (source_name, src) in &ce.sources {
                 let age = src.age_ms();
                 let stale = src.is_stale();
                 for (field, v) in &src.fields {
@@ -233,6 +233,7 @@ impl Cache {
                     out.push(CacheRow {
                         provider: provider.clone(),
                         path: path.clone(),
+                        source: source_name.clone(),
                         field: field.clone(),
                         value,
                         age_ms: age,
@@ -288,11 +289,15 @@ pub struct CacheEntryInfo {
     pub field_count: usize,
 }
 
-/// One row in the `Request::Status` tabular response — one per (provider, path, field).
+/// One row in the `Request::Status` tabular response — one per (provider, path, source, field).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CacheRow {
     pub provider: String,
     pub path: Option<String>,
+    /// Name of the Source that produced this field. Drives per-row lifecycle
+    /// snapshot lookup so the renderer can format glyphs and TTL columns
+    /// according to the owning Source's strategy, not the provider's.
+    pub source: String,
     pub field: String,
     pub value: serde_json::Value,
     pub age_ms: u128,
