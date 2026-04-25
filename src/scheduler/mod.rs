@@ -66,6 +66,8 @@ pub struct LifecycleSnapshot {
     pub fsevents_reinstate: bool,
     /// True if the provider uses Watch or WatchAndPoll invalidation strategy.
     pub watches_files: bool,
+    /// How many polls have fired in the current lifecycle step (0..=K).
+    pub polls_elapsed: u32,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -673,6 +675,7 @@ impl Scheduler {
                             let _ = reply.send(snap);
                         }
                         Some(SchedulerMessage::GetLifecycleSnapshots { reply }) => {
+                            let now = Instant::now();
                             let map = lifecycle
                                 .iter()
                                 .map(|(k, entry)| {
@@ -687,12 +690,29 @@ impl Scheduler {
                                             )
                                         })
                                         .unwrap_or(false);
+                                    let poll_secs = entry.poll_timer.interval.as_secs();
+                                    let step_duration = Duration::from_secs(
+                                        entry.config.keep_alive_polls as u64 * poll_secs,
+                                    );
+                                    let step_start = entry
+                                        .decay_timer
+                                        .step_deadline
+                                        .checked_sub(step_duration)
+                                        .unwrap_or(now);
+                                    let polls_elapsed = now
+                                        .saturating_duration_since(step_start)
+                                        .as_secs()
+                                        .checked_div(poll_secs)
+                                        .unwrap_or(0)
+                                        .min(entry.config.keep_alive_polls as u64)
+                                        as u32;
                                     let snap = LifecycleSnapshot {
                                         decay: lifecycle::to_decay_level(&entry.state),
-                                        poll_interval_secs: entry.poll_timer.interval.as_secs(),
+                                        poll_interval_secs: poll_secs,
                                         keep_alive_polls: entry.config.keep_alive_polls,
                                         fsevents_reinstate: entry.config.fsevents_reinstate,
                                         watches_files,
+                                        polls_elapsed,
                                     };
                                     (k.clone(), snap)
                                 })
@@ -894,6 +914,7 @@ impl Scheduler {
                             let _ = reply.send(snap);
                         }
                         Some(SchedulerMessage::GetLifecycleSnapshots { reply }) => {
+                            let now = Instant::now();
                             let map = lifecycle
                                 .iter()
                                 .map(|(k, entry)| {
@@ -908,12 +929,29 @@ impl Scheduler {
                                             )
                                         })
                                         .unwrap_or(false);
+                                    let poll_secs = entry.poll_timer.interval.as_secs();
+                                    let step_duration = Duration::from_secs(
+                                        entry.config.keep_alive_polls as u64 * poll_secs,
+                                    );
+                                    let step_start = entry
+                                        .decay_timer
+                                        .step_deadline
+                                        .checked_sub(step_duration)
+                                        .unwrap_or(now);
+                                    let polls_elapsed = now
+                                        .saturating_duration_since(step_start)
+                                        .as_secs()
+                                        .checked_div(poll_secs)
+                                        .unwrap_or(0)
+                                        .min(entry.config.keep_alive_polls as u64)
+                                        as u32;
                                     let snap = LifecycleSnapshot {
                                         decay: lifecycle::to_decay_level(&entry.state),
-                                        poll_interval_secs: entry.poll_timer.interval.as_secs(),
+                                        poll_interval_secs: poll_secs,
                                         keep_alive_polls: entry.config.keep_alive_polls,
                                         fsevents_reinstate: entry.config.fsevents_reinstate,
                                         watches_files,
+                                        polls_elapsed,
                                     };
                                     (k.clone(), snap)
                                 })

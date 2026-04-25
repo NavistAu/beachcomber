@@ -16,7 +16,7 @@
 - [x] git items, fs event driven, are not showing the fs event icon in ttl — fixed: TTL indicator now keyed on `watches_files` (`bb76d868`), lighter/aligned glyph pair (`dca3dae0`), and mise opts into `fsevents_reinstate=true` by default (`838c3793`) so the ringed variant (`⊙`) is visible out of the box.
 - [x] ttl is always 6 chars wide for P, when thats the max pad, otherwise it should right size — fixed: width auto-sizes per snapshot, capped at 6, no lower floor (`b4e922b0` + `dbee4f80`).
 - [x] when we have a shell thats in a subdir of a git repo, we get a double up of the same git data. — fixed: `Provider::canonical_path` trait method (`09fa5893`) with overrides for git (`0cb1798d`), mise (`7de4654f`), direnv (`54cf4a85`), asdf (`3c03ce3e`), terraform (`6b09e7a8`), python (`78e0e499`). Each walks up to its project marker; `resolve_path` in `src/server.rs` pipes the result, so the cache key, lifecycle entry, and fs-watch path are all keyed on the canonical project root. Side benefit: the five "opposite-problem" providers (mise/direnv/asdf/terraform/python) now serve data from any subdir rather than only at project root.
-- [ ] should age col in comb status show 00sxN where N is the current iteration of K?
+- [x] should age col in comb status show 00sxN where N is the current iteration of K? — shipped: age column now renders `{age}×{N}` (e.g. `14s×3`) where N is polls fired in the current lifecycle step (0..=K). Computed from `step_deadline − (K × poll_interval)` at snapshot time; `polls_elapsed` flows through `LifecycleSnapshot` → `CacheRow` → status formatter. ASCII mode uses `x` separator to match TTL column convention.
 - [x] `comb status` default sort should be `(path, provider, field)` — shipped `7fde7681`. Groups globals (path `-`) together at the top; path-scoped rows grouped by directory.
 - [x] Provide a worked example of the `⊙` (fsevents-reinstate) indicator rendering — shipped `838c3793`. `Provider::fsevents_reinstate_default()` trait method (default false); mise opts into `true`. Global/per-provider config still overrides.
 
@@ -69,6 +69,9 @@ redundant wrapper naming convention.
 
 - [ ] We added a jinja style formatter, thats used in a number of places. we need to ensure our docs are comprehensive about
   its usage.
+- [ ] We should do a llm/agent md page in the website that gives a compact token efficient summary of the tool for llm
+purposes. this is different to llm.txt which is more for training datasets and marketing.
+  - [ ] Is there any possible utility in making a beachcomber skill/plugin?
 - [ ] Fun examples — copy-paste script provider recipes for the website. Show beachcomber as a general-purpose cached data layer, not just a devtools daemon. Practical: local weather, quote of the day, today's Wordle number, countdown to next One Piece episode, ISS overhead pass, Hacker News top story, Spotify current track, Home Assistant entity state (front door lock, thermostat, lights via HA REST API). Weird/fun (not all committed, pick the best):
   - Mercury Retrograde deploy guard — HTTP provider polling an astrology API, git pre-push hook refuses to push to production during retrograde. `mercury_yolo_mode = true` to override.
   - Don't Deploy On Friday — same pattern, simpler astrology. Block or warn on pushes to production branches after Thursday EOD.

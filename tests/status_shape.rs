@@ -20,6 +20,7 @@ fn sample_rows() -> Vec<CacheRow> {
             poll_interval_secs: None,
             keep_alive_polls: None,
             fsevents_reinstate: None,
+            polls_elapsed: None,
             failure: None,
         },
         CacheRow {
@@ -33,6 +34,7 @@ fn sample_rows() -> Vec<CacheRow> {
             poll_interval_secs: None,
             keep_alive_polls: None,
             fsevents_reinstate: None,
+            polls_elapsed: None,
             failure: None,
         },
         CacheRow {
@@ -46,6 +48,7 @@ fn sample_rows() -> Vec<CacheRow> {
             poll_interval_secs: None,
             keep_alive_polls: None,
             fsevents_reinstate: None,
+            polls_elapsed: None,
             failure: None,
         },
     ]
@@ -138,7 +141,8 @@ fn human_preset_truncates_value_to_meet_total_cap() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     });
     // With a 120-col total cap, the non-VALUE columns for these rows fit comfortably,
     // leaving VALUE some room — but not enough for all 100 'a's.
@@ -175,7 +179,8 @@ fn human_preset_color_on_stale_rows() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     }];
     let opts = RenderOpts {
         is_tty: true,
@@ -204,7 +209,8 @@ fn json_preset_path_none_serializes_as_null() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     }];
     let out = render_preset("json", &rows, &RenderOpts::default());
     let parsed: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON line");
@@ -228,7 +234,8 @@ fn csv_preset_quotes_values_with_commas() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     }];
     let out = render_preset("csv", &rows, &RenderOpts::default());
     // Value containing comma must be quoted in RFC 4180 style.
@@ -262,7 +269,8 @@ fn custom_template_supports_truncate_filter() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     }];
     let out = render_preset("{{ value | truncate(7) }}", &rows, &RenderOpts::default());
     assert_eq!(out.trim(), "abcdef1...");
@@ -307,7 +315,8 @@ fn custom_template_supports_age_human() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     }];
     let out = render_preset("{{ age_human }}", &rows, &RenderOpts::default());
     // Should render as "1h" or similar
@@ -645,7 +654,8 @@ fn max_width_value_column_shrinks_not_others() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     };
     // Use a narrow max_width that cannot fit the full value.
     let opts = RenderOpts {
@@ -689,7 +699,8 @@ fn max_width_total_row_width_does_not_exceed_cap() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     };
     let total_cap = 80usize;
     let opts = RenderOpts {
@@ -759,6 +770,7 @@ fn default_sort_is_path_provider_field() {
             poll_interval_secs: None,
             keep_alive_polls: None,
             fsevents_reinstate: None,
+            polls_elapsed: None,
             failure: None,
         }
     }
@@ -831,7 +843,8 @@ fn cache_row_new_fields_serde_round_trip() {
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     };
     let v = serde_json::to_value(&row).unwrap();
     assert_eq!(v["poll_interval_secs"], 60);
@@ -1076,7 +1089,8 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     };
     let opts = FormatOptions {
         ascii: false,
@@ -1106,7 +1120,8 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     }
 }
 
@@ -1190,7 +1205,8 @@ fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(false),
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     }
 }
 
@@ -1208,7 +1224,8 @@ fn once_row(provider: &str) -> beachcomber::cache::CacheRow {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     }
 }
 
@@ -1301,7 +1318,8 @@ fn human_renders_p_zero_k_zero_without_panic() {
         poll_interval_secs: Some(0),
         keep_alive_polls: Some(0),
         fsevents_reinstate: Some(false),
-        failure: None,
+            polls_elapsed: None,
+            failure: None,
     };
     let opts = beachcomber::cli::status_format::FormatOptions::default();
     let out = beachcomber::cli::status_format::render_human(&[row], &opts);
@@ -1328,7 +1346,8 @@ fn failure_state_renders_warn_and_red_row() {
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(false),
-        failure: Some(FailureSnapshot { consecutive_failures: 3, suppressed_until_unix_ms: None }),
+            polls_elapsed: None,
+            failure: Some(FailureSnapshot { consecutive_failures: 3, suppressed_until_unix_ms: None }),
     };
     // Use render_preset("human", ...) with is_tty=true so color is enabled.
     let opts = RenderOpts {
@@ -1354,7 +1373,7 @@ fn render_preset_ascii_flag_swaps_glyphs() {
         value: json!("main"), age_ms: 1000, stale: false,
         kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
         poll_interval_secs: Some(60), keep_alive_polls: Some(12),
-        fsevents_reinstate: Some(true), failure: None,
+        fsevents_reinstate: Some(true), polls_elapsed: None, failure: None,
     };
     let opts_unicode = RenderOpts { is_tty: true, no_color: true, max_width: Some(120), no_trunc: false, ascii: false };
     let opts_ascii = RenderOpts { is_tty: true, no_color: true, max_width: Some(120), no_trunc: false, ascii: true };
@@ -1376,7 +1395,7 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
         value: json!("main"), age_ms: 1000, stale: false,
         kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
         poll_interval_secs: Some(60), keep_alive_polls: Some(12),
-        fsevents_reinstate: Some(true), failure: None,
+        fsevents_reinstate: Some(true), polls_elapsed: None, failure: None,
     };
     // Simulate the WATCH_INTERVAL case: caller resolved color=true even though
     // stdout is a pipe (is_tty=false). The renderer must honour that decision.

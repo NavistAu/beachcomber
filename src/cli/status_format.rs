@@ -405,6 +405,9 @@ pub fn row_context(r: &CacheRow) -> minijinja::Value {
     if let Some(rv) = r.fsevents_reinstate {
         ctx.insert("fsevents_reinstate".into(), serde_json::Value::Bool(rv));
     }
+    if let Some(n) = r.polls_elapsed {
+        ctx.insert("polls_elapsed".into(), serde_json::json!(n));
+    }
     // failure object
     if let Some(f) = &r.failure {
         let mut fobj = serde_json::Map::new();
@@ -709,7 +712,7 @@ fn render_table(
         nat_provider = nat_provider.max(row.provider.chars().count());
         nat_path = nat_path.max(path.chars().count());
         nat_field = nat_field.max(row.field.chars().count());
-        nat_age = nat_age.max(format_age(row.age_ms).chars().count());
+        nat_age = nat_age.max(format_age_with_polls(row.age_ms, row.polls_elapsed, ascii).chars().count());
         nat_ttl = nat_ttl.max(
             format_ttl_cell(
                 row.kind.as_ref(),
@@ -775,7 +778,7 @@ fn render_table(
         }
 
         // AGE cell — coloured by stale state.
-        let age_text = format_age(row.age_ms);
+        let age_text = format_age_with_polls(row.age_ms, row.polls_elapsed, ascii);
         let age_vis = age_text.chars().count();
         let age_cell = if color_enabled {
             if row.stale {
@@ -1090,6 +1093,22 @@ pub fn format_age(age_ms: u128) -> String {
     format!("{hours}h{m}m")
 }
 
+/// Format an age with an optional poll-iteration suffix (`×N` / `xN` in ascii mode).
+///
+/// Used for the AGE column in `comb status` table rendering. The suffix shows how
+/// many polls have fired in the current lifecycle step, giving the user a sense of
+/// where they are in the K-poll window without computing it from the TTL column.
+fn format_age_with_polls(age_ms: u128, polls_elapsed: Option<u32>, ascii: bool) -> String {
+    let base = format_age(age_ms);
+    match polls_elapsed {
+        Some(n) => {
+            let sep = if ascii { "x" } else { "\u{00d7}" };
+            format!("{base}{sep}{n}")
+        }
+        None => base,
+    }
+}
+
 /// Truncate a string to at most `max` characters, appending `…` if trimmed.
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -1393,6 +1412,7 @@ mod ttl_cell_tests {
             poll_interval_secs: Some(30),
             keep_alive_polls: Some(4),
             fsevents_reinstate: Some(false),
+            polls_elapsed: None,
             failure: None,
         };
         let mut row_large = row_small.clone();
@@ -1426,6 +1446,7 @@ mod ttl_cell_tests {
             poll_interval_secs: Some(9_999_999),
             keep_alive_polls: Some(1),
             fsevents_reinstate: Some(false),
+            polls_elapsed: None,
             failure: None,
         };
         assert_eq!(compute_ttl_p_width(&[row]), 6);
@@ -1436,5 +1457,40 @@ mod ttl_cell_tests {
         // Empty / Once-only snapshot: value unused (all cells render as `---`),
         // but compute_ttl_p_width returns a non-zero default so format! works.
         assert_eq!(compute_ttl_p_width(&[]), 1);
+    }
+}
+
+#[cfg(test)]
+mod format_age_with_polls_tests {
+    use super::*;
+
+    #[test]
+    fn no_polls_no_suffix() {
+        assert_eq!(format_age_with_polls(14_000, None, false), "14s");
+    }
+
+    #[test]
+    fn polls_unicode_suffix() {
+        assert_eq!(format_age_with_polls(14_000, Some(3), false), "14s\u{00d7}3");
+    }
+
+    #[test]
+    fn polls_ascii_suffix() {
+        assert_eq!(format_age_with_polls(14_000, Some(3), true), "14sx3");
+    }
+
+    #[test]
+    fn polls_zero() {
+        assert_eq!(format_age_with_polls(14_000, Some(0), false), "14s\u{00d7}0");
+    }
+
+    #[test]
+    fn polls_two_digit_n() {
+        assert_eq!(format_age_with_polls(14_000, Some(12), false), "14s\u{00d7}12");
+    }
+
+    #[test]
+    fn minutes_age_with_polls() {
+        assert_eq!(format_age_with_polls(185_000, Some(5), false), "3m5s\u{00d7}5");
     }
 }

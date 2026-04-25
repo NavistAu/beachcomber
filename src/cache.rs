@@ -137,6 +137,7 @@ impl Cache {
                     poll_interval_secs: None,
                     keep_alive_polls: None,
                     fsevents_reinstate: None,
+                    polls_elapsed: None,
                     failure: None,
                 });
             }
@@ -194,6 +195,8 @@ pub struct CacheRow {
     pub keep_alive_polls: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fsevents_reinstate: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polls_elapsed: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<FailureSnapshot>,
 }
