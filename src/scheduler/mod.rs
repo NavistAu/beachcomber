@@ -106,7 +106,9 @@ pub struct PollTimerInfo {
 pub(crate) struct Subscription {
     pub(crate) provider: String,
     pub(crate) path: Option<String>,
+    pub(crate) source: String,
     pub(crate) patterns: Vec<String>,
+    pub(crate) abs_paths: Vec<PathBuf>,
 }
 
 /// Public wrapper for parse_duration, used by script provider.
@@ -776,7 +778,10 @@ impl Scheduler {
                                                     .push(Subscription {
                                                         provider: provider.clone(),
                                                         path: path.clone(),
+                                                        // TODO(phase1-section-F): proper source name + abs_paths from source metadata
+                                                        source: String::new(),
                                                         patterns,
+                                                        abs_paths: vec![],
                                                     });
                                                 debug!(
                                                     "Demand: watching path {:?} for provider={}",
