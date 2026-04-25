@@ -167,20 +167,24 @@ feature/fast-cache
 |---|---|---|---|---|
 | `python` | path | `venv` (bool), `venv_name` (string), `version` (string) | watch `.venv/`, `pyproject.toml` | < 1 µs |
 | `conda` | global | `env` (string) | poll 30s | < 1 µs |
-| `mise` | path | `project` (object), `global` (object) | watch `.mise.toml`, `mise.toml` | varies |
+| `mise` | path | one string field per tool name (e.g. `node`, `rust`) | watch `.mise.toml`, `mise.toml` | varies |
 | `asdf` | path | `tools` (object) | watch `.tool-versions` | < 1 µs |
 | `direnv` | path | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 
 **Example output:**
 
 ```json
-// comb g mise .
+// comb g mise .              (project tools for the current directory)
 {
   "ok": true,
-  "data": {
-    "project": { "node": "20.11.0", "python": "3.12.1" },
-    "global": { "rust": "1.75.0" }
-  },
+  "data": { "node": "20.11.0", "python": "3.12.1" },
+  "age_ms": 890
+}
+
+// comb g mise               (global tools — no path context)
+{
+  "ok": true,
+  "data": { "rust": "1.75.0" },
   "age_ms": 890
 }
 

@@ -66,17 +66,18 @@ fn mise_canonical_path_passes_none_through() {
 }
 
 #[test]
-fn mise_tools_field_type_is_object() {
-    use beachcomber::provider::FieldType;
+fn mise_metadata_has_pathscoped_sentinel() {
+    use beachcomber::provider::{FieldScope, FieldType};
     let meta = MiseProvider.metadata();
-    let project = meta.fields.iter().find(|f| f.name == "project").unwrap();
-    let global = meta.fields.iter().find(|f| f.name == "global").unwrap();
-    assert!(matches!(project.field_type, FieldType::Object));
-    assert!(matches!(global.field_type, FieldType::Object));
+    let sentinel = meta.fields.iter().find(|f| f.name == "<tool>").unwrap();
+    assert!(matches!(sentinel.field_type, FieldType::String));
+    assert!(matches!(sentinel.scope, FieldScope::PathScoped));
+    // inferred_scope must be PathScoped so CWD-scoped queries route to the project entry.
+    assert_eq!(meta.inferred_scope(), FieldScope::PathScoped);
 }
 
 #[test]
-fn mise_execute_returns_object_map() {
+fn mise_execute_returns_flat_tool_fields() {
     let d = mise_toml_dir(&[("node", "20.11.0"), ("python", "3.12.1")]);
 
     // Trust the temp dir for mise so it parses our config (macOS-specific).
@@ -90,23 +91,45 @@ fn mise_execute_returns_object_map() {
     let Some((_, result)) = results.into_iter().find(|(p, _)| p.is_some()) else {
         return;
     };
-    match result.get("project") {
-        Some(Value::Object(map)) => {
-            assert!(
-                map.contains_key("node") || map.contains_key("python"),
-                "expected node or python in project map; got: {map:?}"
-            );
-        }
-        _ => panic!("project must be a Value::Object"),
-    }
+    // Fields must be flat strings keyed by tool name, not wrapped in an object.
+    let has_tool = result.get("node").is_some() || result.get("python").is_some();
+    assert!(
+        has_tool,
+        "expected 'node' or 'python' as top-level string fields; got fields: {:?}",
+        result.fields.keys().collect::<Vec<_>>()
+    );
+    let has_string = result
+        .fields
+        .values()
+        .all(|v| matches!(v, Value::String(_)));
+    assert!(has_string, "all tool values must be Value::String");
 }
 
 #[test]
-fn mise_emits_global_pathless_and_project_path_scoped() {
-    use beachcomber::provider::Provider;
-    use beachcomber::provider::mise::MiseProvider;
+fn mise_execute_none_emits_only_pathless_global_entry() {
+    if std::process::Command::new("mise")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: mise binary not available");
+        return;
+    }
 
-    // Skip if mise binary is unavailable.
+    let results = MiseProvider.execute(None);
+
+    // execute(None) → exactly one pathless entry containing flat tool fields.
+    assert_eq!(results.len(), 1, "expected 1 entry; got: {results:?}");
+    assert!(results[0].0.is_none(), "entry must be pathless");
+    assert!(
+        results[0].1.fields.values().all(|v| matches!(v, Value::String(_))),
+        "global entry must have flat Value::String tool fields; got: {:?}",
+        results[0].1.fields
+    );
+}
+
+#[test]
+fn mise_execute_project_path_emits_only_path_scoped_entry() {
     if std::process::Command::new("mise")
         .arg("--version")
         .output()
@@ -125,64 +148,32 @@ fn mise_emits_global_pathless_and_project_path_scoped() {
         .arg(tmp.path())
         .output();
 
-    let prov = MiseProvider;
-    let results = prov.execute(Some(tmp.path().to_str().unwrap()));
+    let results = MiseProvider.execute(Some(tmp.path().to_str().unwrap()));
 
-    let pathless = results.iter().find(|(p, _)| p.is_none());
+    // execute(Some(p)) → no pathless entry; one path-scoped entry with flat tool fields.
     assert!(
-        pathless.is_some(),
-        "mise should emit a pathless global entry; got: {results:?}"
+        results.iter().all(|(p, _)| p.is_some()),
+        "project execution must not emit a pathless global entry; got: {results:?}"
     );
-    let (_, global_result) = pathless.unwrap();
-    assert!(
-        global_result.get("global").is_some(),
-        "global entry should contain 'global' field"
-    );
-
     let path_scoped = results.iter().find(|(p, _)| p.is_some());
-    // Project entry may be empty if the temp dir isn't trusted — but the entry should exist.
     assert!(
         path_scoped.is_some(),
-        "mise should emit a path-scoped project entry when mise.toml exists; got: {results:?}"
+        "expected a path-scoped project entry; got: {results:?}"
     );
     let (_, project_result) = path_scoped.unwrap();
     assert!(
-        project_result.get("project").is_some(),
-        "project entry should contain 'project' field"
+        project_result.fields.values().all(|v| matches!(v, Value::String(_))),
+        "project entry fields must all be Value::String; got: {:?}",
+        project_result.fields
     );
 }
 
 #[test]
-fn mise_emits_only_global_when_no_project_config() {
-    use beachcomber::provider::Provider;
-    use beachcomber::provider::mise::MiseProvider;
-
-    if std::process::Command::new("mise")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipping: mise binary not available");
-        return;
-    }
-
+fn mise_execute_project_path_no_config_emits_nothing() {
     let tmp = tempfile::tempdir().unwrap(); // no mise.toml
-
-    let prov = MiseProvider;
-    let results = prov.execute(Some(tmp.path().to_str().unwrap()));
-
-    // Only the global entry — no project entry because no mise.toml in path.
-    assert_eq!(
-        results.len(),
-        1,
-        "expected 1 entry (global only); got: {results:?}"
-    );
+    let results = MiseProvider.execute(Some(tmp.path().to_str().unwrap()));
     assert!(
-        results[0].0.is_none(),
-        "expected the one entry to be pathless"
-    );
-    assert!(
-        results[0].1.get("global").is_some(),
-        "global field must be present"
+        results.is_empty(),
+        "no mise.toml → execute should return empty; got: {results:?}"
     );
 }

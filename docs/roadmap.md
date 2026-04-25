@@ -28,9 +28,10 @@
 
 - ~~Lua backend via `mlua` crate~~ — won't do; dependency/attack surface cost not justified given script and library backends cover the use cases
 
-- [ ] mise backend currently puts a structured dataset into project (path specific) and global top level keys. We should
+- [x] mise backend currently puts a structured dataset into project (path specific) and global top level keys. We should
 evaluate if this is correct or if the object should be unpacked upwards so mise produces more top level keys without the
-redundant wrapper naming convention.
+redundant wrapper naming convention. — unpacked: `execute(None)` emits one field per global tool (pathless entry); `execute(Some(p))` emits one field per project-scoped tool (path-scoped entry). `comb get mise "$cwd"` returns project tools; `comb get mise.node "$cwd"` returns a single version string. Fields are no longer wrapped in `global`/`project` objects.
+- [x] mise global is showing up in status as a Once --- but its age timer appears to be behaving like the project key? — fixed by separating execution: project execution no longer cross-emits the global entry. Global entry is only populated (with its own lifecycle) when `mise` is queried without a path context.
 - [ ] Per-cache-entry absolute-path watches — the current scheduler registers fs watches relative to the cache entry's path. Global (pathless) cache entries receive no watches and rely on fallback polling for invalidation.
 
   **Specific case:** `mise.global` cannot directly observe `~/.config/mise/config.toml` changes; it gets them within the 30s fallback poll window. Acceptable today, but other plausible providers want the same shape — an HTTP provider watching a local credentials file for rotation, a library provider watching an absolute-path state file, etc.

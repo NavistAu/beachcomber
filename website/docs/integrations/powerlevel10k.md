@@ -87,14 +87,14 @@ typeset -g POWERLEVEL9K_COMB_MISE_VISUAL_IDENTIFIER_EXPANSION=$'\uF07C'  # folde
 function prompt_comb_mise() {
   local cwd=${(%):-%/}
   local project
-  project=$(comb g mise.project "$cwd" 2>/dev/null) || return
+  project=$(comb g mise "$cwd" 2>/dev/null) || return
   [[ -z "$project" ]] && return
 
   local display=()
   local entry tool ver
-  # `comb g mise.project …` returns one `subkey=value` line per tool, so
-  # split on newline. Strip the mise backend prefix (e.g.
-  # `cargo:cargo-nextest` → `cargo-nextest`) for a tighter segment.
+  # `comb g mise "$cwd"` returns one `tool=version` line per project-scoped
+  # tool. Strip the mise backend prefix (e.g. `cargo:cargo-nextest` →
+  # `cargo-nextest`) for a tighter segment.
   for entry in "${(@f)project}"; do
     [[ -z "$entry" ]] && continue
     tool=${entry%%=*}
@@ -106,12 +106,11 @@ function prompt_comb_mise() {
 }
 ```
 
-The beachcomber mise provider exposes two fields:
+The beachcomber mise provider exposes one string field per tool name. Fields are scoped by query context:
 
-- `mise.project` — tools sourced from a local `mise.toml` (project-scoped overrides)
-- `mise.global` — tools sourced from `~/.config/mise/` (the global baseline)
-
-Both are `Object`-valued maps keyed by tool name. `comb g mise.project "$cwd"` returns newline-separated `subkey=value` lines. For a single tool version, use nested-key lookup: `comb g mise.project.node "$cwd"` returns just `20.11.0`.
+- `comb g mise "$cwd"` — project-scoped tools (from a local `mise.toml`); returns newline-separated `tool=version` lines
+- `comb g mise` (no path) — global tools (from `~/.config/mise/`); same format
+- `comb g mise.node "$cwd"` — single tool version string, e.g. `20.11.0`
 
 ### Adding complementary segments to the prompt
 

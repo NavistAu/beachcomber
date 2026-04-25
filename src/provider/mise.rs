@@ -60,18 +60,15 @@ impl Provider for MiseProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "mise".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "project".to_string(),
-                    field_type: FieldType::Object,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "global".to_string(),
-                    field_type: FieldType::Object,
-                    scope: FieldScope::Global,
-                },
-            ],
+            // Fields are dynamic: one String field per tool name (e.g. "node", "rust").
+            // The sentinel "<tool>" drives inferred_scope=PathScoped so queries with a
+            // CWD route to the path-scoped project entry; queries without any path
+            // context fall through to the pathless global entry.
+            fields: vec![FieldSchema {
+                name: "<tool>".to_string(),
+                field_type: FieldType::String,
+                scope: FieldScope::PathScoped,
+            }],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![".mise.toml".to_string(), "mise.toml".to_string()],
                 fallback_poll_secs: Some(30),
@@ -109,27 +106,38 @@ impl Provider for MiseProvider {
             .map(|c| Path::new(&c).join("mise").to_string_lossy().to_string())
             .unwrap_or_default();
 
-        // Global entry — always emit, compute from $HOME so no project config influences it.
-        if let Ok(home) = std::env::var("HOME")
-            && let Some(global_tools) =
-                run_mise_and_filter(&home, &global_config_dir, MiseFilter::Global)
-        {
-            let mut result = ProviderResult::new();
-            result.insert("global", Value::Object(global_tools));
-            out.push((None, result));
-        }
-
-        // Project entry — only if path has a local mise config.
-        if let Some(p) = path {
-            let dir = Path::new(p);
-            let has_config = dir.join("mise.toml").exists() || dir.join(".mise.toml").exists();
-            if has_config
-                && let Some(project_tools) =
-                    run_mise_and_filter(p, &global_config_dir, MiseFilter::Project)
-            {
-                let mut result = ProviderResult::new();
-                result.insert("project", Value::Object(project_tools));
-                out.push((Some(p.to_string()), result));
+        match path {
+            None => {
+                // Global entry: called with no path, emit only global tools (pathless slot).
+                // Each tool becomes its own field: e.g. result["node"] = "20.1.0".
+                if let Ok(home) = std::env::var("HOME")
+                    && let Some(global_tools) =
+                        run_mise_and_filter(&home, &global_config_dir, MiseFilter::Global)
+                {
+                    let mut result = ProviderResult::new();
+                    for (tool, version) in global_tools {
+                        result.insert(tool, version);
+                    }
+                    out.push((None, result));
+                }
+            }
+            Some(p) => {
+                // Project entry: emit only project-scoped tools for the given path.
+                // Does not cross-emit global data — global has its own lifecycle entry
+                // when demanded via comb get mise (no path context).
+                let dir = Path::new(p);
+                let has_config =
+                    dir.join("mise.toml").exists() || dir.join(".mise.toml").exists();
+                if has_config
+                    && let Some(project_tools) =
+                        run_mise_and_filter(p, &global_config_dir, MiseFilter::Project)
+                {
+                    let mut result = ProviderResult::new();
+                    for (tool, version) in project_tools {
+                        result.insert(tool, version);
+                    }
+                    out.push((Some(p.to_string()), result));
+                }
             }
         }
 

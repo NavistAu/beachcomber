@@ -204,9 +204,9 @@ fn mise_metadata() {
     let meta = p.metadata();
     assert_eq!(meta.name, "mise");
     assert_eq!(meta.inferred_scope(), FieldScope::PathScoped);
-    let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"project"));
-    assert!(fields.contains(&"global"));
+    // Fields are dynamic tool names; a single PathScoped sentinel drives scope routing.
+    assert_eq!(meta.fields.len(), 1);
+    assert_eq!(meta.fields[0].name, "<tool>");
 }
 
 #[test]
