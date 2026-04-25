@@ -1,12 +1,13 @@
 use crate::config::ScriptProviderConfig;
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use libloading::{Library, Symbol};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::Path;
+use std::sync::OnceLock;
 use tracing::{debug, warn};
 
 /// C ABI function signatures for shared library providers.
@@ -108,24 +109,49 @@ impl LibraryProvider {
             library,
         })
     }
+}
 
-    /// Call the library's free function on a pointer returned by metadata or execute.
-    fn free_str(&self, ptr: *mut c_char) {
-        // SAFETY: ptr was returned by the library's metadata/execute functions
-        // and must be freed by the library's free function.
-        unsafe {
-            let free_fn: Symbol<FreeFn> = self
-                .library
-                .get(b"beachcomber_provider_free\0")
-                .expect("symbol validated at load");
-            free_fn(ptr);
+impl Provider for LibraryProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: self.name.clone(),
+            sources: vec![self.single_source_meta()],
         }
     }
 
-    /// Call beachcomber_provider_metadata and return the raw JSON string.
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(LibrarySingleSource {
+            name: self.name.clone(),
+            config: self.config.clone(),
+            // SAFETY: Library lives as long as the LibraryProvider which owns this Source.
+            // We wrap it in Arc so the Source can be kept alive independently.
+            library: std::sync::Arc::new(LibraryHandle {
+                inner: unsafe { std::mem::ManuallyDrop::new(Library::new(
+                    shellexpand(self.config.library_path.as_deref().unwrap_or(""))
+                ).expect("library already validated at LibraryProvider::new")) },
+            }),
+            meta: OnceLock::new(),
+        })]
+    }
+}
+
+impl LibraryProvider {
+    fn single_source_meta(&self) -> SourceMetadata {
+        // Try to read from the library's own metadata export.
+        if let Some(json_str) = self.call_metadata_raw() {
+            if let Some(meta) = parse_library_source_meta(&self.name, &json_str) {
+                return meta;
+            }
+            debug!(
+                "Library provider '{}': failed to parse metadata JSON, using config fallback",
+                self.name
+            );
+        }
+        build_source_meta_from_config(&self.name, &self.config)
+    }
+
     fn call_metadata_raw(&self) -> Option<String> {
-        // SAFETY: Symbol was validated at load time. The function returns a
-        // pointer to a C string that we must free via beachcomber_provider_free.
+        // SAFETY: Symbol was validated at load time.
         unsafe {
             let metadata_fn: Symbol<MetadataFn> = self
                 .library
@@ -137,18 +163,92 @@ impl LibraryProvider {
             }
             let cstr = CStr::from_ptr(ptr);
             let result = cstr.to_string_lossy().into_owned();
-            self.free_str(ptr as *mut c_char);
+            let free_fn: Symbol<FreeFn> = self
+                .library
+                .get(b"beachcomber_provider_free\0")
+                .expect("symbol validated at load");
+            free_fn(ptr as *mut c_char);
+            Some(result)
+        }
+    }
+}
+
+// ── Library handle wrapper for Arc sharing ────────────────────────────────────
+
+/// Wraps a `Library` handle in a form safe to share via `Arc`.
+/// The `ManuallyDrop` prevents the library from being unloaded when the
+/// `Arc` clone is dropped — only the original `LibraryProvider` unloads it.
+struct LibraryHandle {
+    inner: std::mem::ManuallyDrop<Library>,
+}
+
+// SAFETY: see LibraryProvider's Send/Sync impl note.
+unsafe impl Send for LibraryHandle {}
+unsafe impl Sync for LibraryHandle {}
+
+// ── LibrarySingleSource ───────────────────────────────────────────────────────
+
+struct LibrarySingleSource {
+    name: String,
+    config: ScriptProviderConfig,
+    library: std::sync::Arc<LibraryHandle>,
+    meta: OnceLock<SourceMetadata>,
+}
+
+// SAFETY: LibraryHandle is Send+Sync.
+unsafe impl Send for LibrarySingleSource {}
+unsafe impl Sync for LibrarySingleSource {}
+
+impl Source for LibrarySingleSource {
+    fn metadata(&self) -> &SourceMetadata {
+        self.meta.get_or_init(|| {
+            // Try library's own metadata, fall back to config.
+            let raw = self.call_metadata_raw();
+            raw.as_deref()
+                .and_then(|s| parse_library_source_meta(&self.name, s))
+                .unwrap_or_else(|| build_source_meta_from_config(&self.name, &self.config))
+        })
+    }
+
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        let Some(json_str) = self.call_execute_raw(path) else {
+            return SourceResult::new();
+        };
+        parse_json_result(&json_str).unwrap_or_else(SourceResult::new)
+    }
+}
+
+impl LibrarySingleSource {
+    fn call_metadata_raw(&self) -> Option<String> {
+        // SAFETY: Library handle is valid for the lifetime of the Arc.
+        unsafe {
+            let metadata_fn: Symbol<MetadataFn> = self
+                .library
+                .inner
+                .get(b"beachcomber_provider_metadata\0")
+                .expect("symbol validated at load");
+            let ptr = metadata_fn();
+            if ptr.is_null() {
+                return None;
+            }
+            let cstr = CStr::from_ptr(ptr);
+            let result = cstr.to_string_lossy().into_owned();
+            let free_fn: Symbol<FreeFn> = self
+                .library
+                .inner
+                .get(b"beachcomber_provider_free\0")
+                .expect("symbol validated at load");
+            free_fn(ptr as *mut c_char);
             Some(result)
         }
     }
 
-    /// Call beachcomber_provider_execute and return the raw JSON string.
     fn call_execute_raw(&self, path: Option<&str>) -> Option<String> {
-        // SAFETY: Symbol was validated at load time. We pass a valid C string
-        // (or null) and the function returns a pointer we must free.
+        // SAFETY: Symbol was validated at load time.
         unsafe {
             let execute_fn: Symbol<ExecuteFn> = self
                 .library
+                .inner
                 .get(b"beachcomber_provider_execute\0")
                 .expect("symbol validated at load");
 
@@ -161,110 +261,34 @@ impl LibraryProvider {
             }
             let cstr = CStr::from_ptr(ptr);
             let result = cstr.to_string_lossy().into_owned();
-            self.free_str(ptr as *mut c_char);
+            let free_fn: Symbol<FreeFn> = self
+                .library
+                .inner
+                .get(b"beachcomber_provider_free\0")
+                .expect("symbol validated at load");
+            free_fn(ptr as *mut c_char);
             Some(result)
         }
     }
 }
 
-impl Provider for LibraryProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        // Try to get metadata from the library itself.
-        if let Some(json_str) = self.call_metadata_raw() {
-            if let Some(meta) = parse_library_metadata(&self.name, &json_str) {
-                return meta;
-            }
-            debug!(
-                "Library provider '{}': failed to parse metadata JSON, using config fallback",
-                self.name
-            );
-        }
+// ── Metadata parsing ──────────────────────────────────────────────────────────
 
-        // Fall back to config-based metadata (same as script provider).
-        let invalidation = build_invalidation(&self.config);
-
-        let fields = self
-            .config
-            .fields
-            .as_ref()
-            .map(|f| {
-                f.iter()
-                    .map(|(name, spec)| FieldSchema {
-                        name: name.clone(),
-                        field_type: match spec.field_type() {
-                            "int" => FieldType::Int,
-                            "bool" => FieldType::Bool,
-                            "float" => FieldType::Float,
-                            _ => FieldType::String,
-                        },
-                        scope: crate::config::resolve_field_scope(&self.config, name),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        ProviderMetadata {
-            name: self.name.clone(),
-            fields,
-            invalidation,
-        }
-    }
-
-    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-        let Some(json_str) = self.call_execute_raw(path) else {
-            return Vec::new();
-        };
-        let Some(result) = parse_json_result(&json_str) else {
-            return Vec::new();
-        };
-        let is_global = self.config.scope.as_deref() != Some("path");
-        let scope_path = if is_global {
-            None
-        } else {
-            path.map(|p| p.to_string())
-        };
-        vec![(scope_path, result)]
-    }
-}
-
-/// Parse the JSON metadata returned by a library's beachcomber_provider_metadata().
+/// Parse library metadata JSON into a SourceMetadata.
 ///
-/// Expected format (legacy):
-/// ```json
-/// {
-///   "name": "myprovider",
-///   "fields": {"field1": "string", "field2": "int"},
-///   "invalidation": {"poll": "30s"},
-///   "global": true
-/// }
-/// ```
-///
-/// Per-field scope format:
-/// ```json
-/// {
-///   "name": "myprovider",
-///   "fields": {
-///     "field1": {"type": "string", "scope": "path"},
-///     "field2": {"type": "int", "scope": "global"}
-///   },
-///   "invalidation": {"poll": "30s"}
-/// }
-/// ```
-///
-/// The top-level `global` bool acts as a fallback default scope for fields that
-/// do not declare their own scope. Missing `global` defaults to `true` (Global).
-fn parse_library_metadata(name: &str, json_str: &str) -> Option<ProviderMetadata> {
+/// If the library declares `"invalidation": {"once": true}` (legacy), substitute
+/// with a pure-watch global source that runs once and never polls again
+/// (strategy = Watch + abs_paths=[] + Global + KeepAlive::Never). This is the
+/// semantic equivalent: run once on first demand, stay Active forever.
+fn parse_library_source_meta(name: &str, json_str: &str) -> Option<SourceMetadata> {
     let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
     let obj = parsed.as_object()?;
 
-    // Legacy default: top-level "global" bool acts as the provider-level
-    // fallback scope for fields that don't declare their own.
-    // Missing → default to Global (preserves legacy behaviour).
     let legacy_global = obj.get("global").and_then(|v| v.as_bool()).unwrap_or(true);
     let default_scope = if legacy_global {
-        FieldScope::Global
+        SourceScope::Global
     } else {
-        FieldScope::PathScoped
+        SourceScope::PathScoped
     };
 
     let fields: Vec<FieldSchema> = obj
@@ -273,23 +297,12 @@ fn parse_library_metadata(name: &str, json_str: &str) -> Option<ProviderMetadata
         .map(|f| {
             f.iter()
                 .map(|(fname, ftype)| {
-                    let (type_str, field_scope) = match ftype {
-                        serde_json::Value::String(s) => (s.as_str(), default_scope),
+                    let type_str = match ftype {
+                        serde_json::Value::String(s) => s.as_str(),
                         serde_json::Value::Object(o) => {
-                            let type_str =
-                                o.get("type").and_then(|v| v.as_str()).unwrap_or("string");
-                            let scope = o
-                                .get("scope")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| match s {
-                                    "global" => Some(FieldScope::Global),
-                                    "path" | "pathscoped" => Some(FieldScope::PathScoped),
-                                    _ => None,
-                                })
-                                .unwrap_or(default_scope);
-                            (type_str, scope)
+                            o.get("type").and_then(|v| v.as_str()).unwrap_or("string")
                         }
-                        _ => ("string", default_scope),
+                        _ => "string",
                     };
                     FieldSchema {
                         name: fname.clone(),
@@ -299,41 +312,61 @@ fn parse_library_metadata(name: &str, json_str: &str) -> Option<ProviderMetadata
                             "float" => FieldType::Float,
                             _ => FieldType::String,
                         },
-                        scope: field_scope,
                     }
                 })
                 .collect()
         })
         .unwrap_or_default();
 
-    let invalidation = parse_invalidation_from_json(obj);
+    let (invalidation, keep_alive, scope) = parse_invalidation_and_keep_alive(obj, default_scope);
 
-    Some(ProviderMetadata {
-        name: name.to_string(),
+    // Fall back to a <field> sentinel if no fields declared (dynamic library).
+    let fields = if fields.is_empty() {
+        vec![FieldSchema { name: "<field>".into(), field_type: FieldType::String }]
+    } else {
+        fields
+    };
+
+    Some(SourceMetadata {
+        name: "main".into(),
         fields,
+        scope,
         invalidation,
+        keep_alive,
+        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        fsevents_reinstate: false,
     })
 }
 
-/// Expose the library metadata JSON parser for integration tests.
-/// Hidden from docs; not part of the public API.
-#[doc(hidden)]
-pub fn parse_library_metadata_for_test(name: &str, json_str: &str) -> Option<ProviderMetadata> {
-    parse_library_metadata(name, json_str)
-}
-
-fn parse_invalidation_from_json(
+fn parse_invalidation_and_keep_alive(
     obj: &serde_json::Map<String, serde_json::Value>,
-) -> InvalidationStrategy {
+    scope: SourceScope,
+) -> (InvalidationStrategy, KeepAlive, SourceScope) {
     let inv = match obj.get("invalidation").and_then(|v| v.as_object()) {
         Some(inv) => inv,
         None => {
-            return InvalidationStrategy::Poll {
-                interval_secs: 30,
-                floor_secs: 1,
-            };
+            return (
+                InvalidationStrategy::Poll { interval_secs: 30 },
+                KeepAlive::Polls(2),
+                scope,
+            );
         }
     };
+
+    let once = inv.get("once").and_then(|v| v.as_bool()).unwrap_or(false);
+    if once {
+        // Legacy `once` → pure-watch global. Run once on demand, never again (KeepAlive::Never).
+        // The strategy is Watch + Global + no patterns/abs_paths = never refreshes again after
+        // the first successful execute.
+        return (
+            InvalidationStrategy::Watch {
+                patterns: vec![],
+                abs_paths: vec![],
+            },
+            KeepAlive::Never,
+            SourceScope::Global,
+        );
+    }
 
     let poll_secs = inv
         .get("poll")
@@ -348,39 +381,128 @@ fn parse_invalidation_from_json(
         })
     });
 
-    let once = inv.get("once").and_then(|v| v.as_bool()).unwrap_or(false);
-
-    if once {
-        return InvalidationStrategy::Once;
-    }
-
     match (watch_patterns, poll_secs) {
-        (Some(patterns), Some(secs)) => InvalidationStrategy::WatchAndPoll {
-            patterns,
-            interval_secs: secs,
-            floor_secs: 1,
-        },
-        (Some(patterns), None) => InvalidationStrategy::Watch {
-            patterns,
-            fallback_poll_secs: Some(60),
-        },
-        (None, Some(secs)) => InvalidationStrategy::Poll {
-            interval_secs: secs,
-            floor_secs: 1,
-        },
-        (None, None) => InvalidationStrategy::Poll {
-            interval_secs: 30,
-            floor_secs: 1,
-        },
+        (Some(patterns), Some(secs)) => (
+            InvalidationStrategy::WatchAndPoll {
+                patterns,
+                abs_paths: vec![],
+                interval_secs: secs,
+            },
+            KeepAlive::Polls(2),
+            scope,
+        ),
+        (Some(patterns), None) => {
+            let (inv_strat, ka) = if scope == SourceScope::Global {
+                (InvalidationStrategy::Watch { patterns: vec![], abs_paths: vec![] }, KeepAlive::Never)
+            } else {
+                (InvalidationStrategy::Watch { patterns, abs_paths: vec![] }, KeepAlive::Duration(120))
+            };
+            (inv_strat, ka, scope)
+        }
+        (None, Some(secs)) => (
+            InvalidationStrategy::Poll { interval_secs: secs },
+            KeepAlive::Polls(2),
+            scope,
+        ),
+        (None, None) => (
+            InvalidationStrategy::Poll { interval_secs: 30 },
+            KeepAlive::Polls(2),
+            scope,
+        ),
     }
 }
 
-/// Parse JSON output from beachcomber_provider_execute into a ProviderResult.
-fn parse_json_result(json_str: &str) -> Option<ProviderResult> {
+fn build_source_meta_from_config(name: &str, config: &ScriptProviderConfig) -> SourceMetadata {
+    let poll_secs = config
+        .invalidation
+        .as_ref()
+        .and_then(|i| i.poll.as_ref())
+        .and_then(|s| crate::scheduler::parse_duration_secs_pub(s))
+        .unwrap_or(30);
+
+    let watch_patterns = config.invalidation.as_ref().and_then(|i| i.watch.clone());
+
+    let is_global = config.scope.as_deref() != Some("path");
+    let scope = if is_global {
+        SourceScope::Global
+    } else {
+        SourceScope::PathScoped
+    };
+
+    let (invalidation, keep_alive) = match watch_patterns {
+        Some(patterns) => {
+            if scope == SourceScope::Global {
+                (
+                    InvalidationStrategy::Watch { patterns: vec![], abs_paths: vec![] },
+                    KeepAlive::Never,
+                )
+            } else {
+                (
+                    InvalidationStrategy::WatchAndPoll {
+                        patterns,
+                        abs_paths: vec![],
+                        interval_secs: poll_secs,
+                    },
+                    KeepAlive::Polls(2),
+                )
+            }
+        }
+        None => (
+            InvalidationStrategy::Poll { interval_secs: poll_secs },
+            KeepAlive::Polls(2),
+        ),
+    };
+
+    let fields = config
+        .fields
+        .as_ref()
+        .map(|f| {
+            f.iter()
+                .map(|(fname, spec)| FieldSchema {
+                    name: fname.clone(),
+                    field_type: match spec.field_type() {
+                        "int" => FieldType::Int,
+                        "bool" => FieldType::Bool,
+                        "float" => FieldType::Float,
+                        _ => FieldType::String,
+                    },
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let fields = if fields.is_empty() {
+        vec![FieldSchema { name: "<field>".into(), field_type: FieldType::String }]
+    } else {
+        fields
+    };
+
+    SourceMetadata {
+        name: "main".into(),
+        fields,
+        scope,
+        invalidation,
+        keep_alive,
+        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        fsevents_reinstate: false,
+    }
+}
+
+/// Expose the library metadata JSON parser for integration tests.
+#[doc(hidden)]
+pub fn parse_library_metadata_for_test(name: &str, json_str: &str) -> Option<ProviderMetadata> {
+    let meta = parse_library_source_meta(name, json_str)?;
+    Some(ProviderMetadata {
+        name: name.to_string(),
+        sources: vec![meta],
+    })
+}
+
+fn parse_json_result(json_str: &str) -> Option<SourceResult> {
     let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
     let obj = parsed.as_object()?;
 
-    let mut result = ProviderResult::new();
+    let mut result = SourceResult::new();
     for (key, val) in obj {
         let value = match val {
             serde_json::Value::String(s) => Value::String(s.clone()),
@@ -401,37 +523,6 @@ fn parse_json_result(json_str: &str) -> Option<ProviderResult> {
     Some(result)
 }
 
-fn build_invalidation(config: &ScriptProviderConfig) -> InvalidationStrategy {
-    let poll_secs = config
-        .invalidation
-        .as_ref()
-        .and_then(|i| i.poll.as_ref())
-        .and_then(|s| crate::scheduler::parse_duration_secs_pub(s));
-
-    let watch_patterns = config.invalidation.as_ref().and_then(|i| i.watch.clone());
-
-    match (watch_patterns, poll_secs) {
-        (Some(patterns), Some(secs)) => InvalidationStrategy::WatchAndPoll {
-            patterns,
-            interval_secs: secs,
-            floor_secs: 1,
-        },
-        (Some(patterns), None) => InvalidationStrategy::Watch {
-            patterns,
-            fallback_poll_secs: Some(60),
-        },
-        (None, Some(secs)) => InvalidationStrategy::Poll {
-            interval_secs: secs,
-            floor_secs: 1,
-        },
-        (None, None) => InvalidationStrategy::Poll {
-            interval_secs: 30,
-            floor_secs: 1,
-        },
-    }
-}
-
-/// Expand ~ to $HOME in a path string.
 fn shellexpand(path: &str) -> String {
     if path.starts_with("~/")
         && let Ok(home) = std::env::var("HOME")
