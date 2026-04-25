@@ -1,6 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::process::Command;
 
@@ -9,34 +9,57 @@ pub struct OpProvider;
 impl Provider for OpProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            name: "op".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "signed_in".to_string(),
-                    field_type: FieldType::Bool,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "account".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-            ],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 60,
-                floor_secs: 30,
-            },
+            name: "op".into(),
+            sources: vec![vault_source_metadata()],
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-        let mut result = ProviderResult::new();
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(OpVault)]
+    }
+}
+
+fn vault_source_metadata() -> SourceMetadata {
+    SourceMetadata {
+        name: "vault".into(),
+        fields: vec![
+            FieldSchema {
+                name: "signed_in".into(),
+                field_type: FieldType::Bool,
+            },
+            FieldSchema {
+                name: "account".into(),
+                field_type: FieldType::String,
+            },
+        ],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
+        keep_alive: KeepAlive::Polls(2),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 30,
+        },
+        fsevents_reinstate: false,
+    }
+}
+
+struct OpVault;
+
+impl Source for OpVault {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(vault_source_metadata)
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
+        let mut result = SourceResult::new();
 
         // Check for service account token first (non-interactive).
         if std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_ok() {
             result.insert("signed_in", Value::Bool(true));
             result.insert("account", Value::String("service-account".to_string()));
-            return vec![(None, result)];
+            return result;
         }
 
         // Check if op CLI is available and authenticated.
@@ -56,7 +79,7 @@ impl Provider for OpProvider {
             }
         }
 
-        vec![(None, result)]
+        result
     }
 }
 
