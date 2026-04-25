@@ -538,8 +538,16 @@ impl Scheduler {
             InvalidationStrategy::Watch { .. } => None,
         };
 
-        let failure_threshold = self.config.resolve_failure_reattempts(provider_name);
-        let failure_backoff = self.config.resolve_failure_backoff_interval(provider_name);
+        let failure_threshold = self.config.resolve_failure_reattempts_for_source(
+            provider_name,
+            Some(source_name),
+            Some(source.metadata().failback.reattempts),
+        );
+        let failure_backoff = self.config.resolve_failure_backoff_for_source(
+            provider_name,
+            Some(source_name),
+            Some(std::time::Duration::from_secs(source.metadata().failback.interval_secs)),
+        );
 
         tokio::spawn(async move {
             let result = tokio::time::timeout(

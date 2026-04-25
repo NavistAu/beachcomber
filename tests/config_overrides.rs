@@ -28,20 +28,19 @@ fn all_providers_registered_by_default() {
 }
 
 #[test]
-fn config_override_preserved() {
+fn per_source_poll_interval_override_parsed() {
+    // Verifies the new per-source schema is parsed correctly.
     let toml_str = r#"
-[providers.battery]
-poll_secs = 10
+[providers.battery.state]
+type = "poll"
+poll_interval = "10s"
+poll_count = 6
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    let battery = config.providers.get("battery").unwrap();
-    assert_eq!(
-        battery
-            .invalidation
-            .as_ref()
-            .and_then(|i| i.poll.as_deref()),
-        None
-    );
-    // poll_secs is a separate field for overrides
-    assert_eq!(battery.poll_secs, Some(10));
+    let ov = config
+        .source_override("battery", "state")
+        .expect("no error")
+        .expect("block present");
+    assert_eq!(ov.poll_interval.as_deref(), Some("10s"));
+    assert_eq!(ov.poll_count, Some(6));
 }

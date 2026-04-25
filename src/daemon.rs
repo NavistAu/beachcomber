@@ -44,6 +44,37 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(ProviderRegistry::with_config(&config));
 
+    // Validate provider config blocks against registered sources.
+    // Errors → refuse to start. Warnings → log and continue.
+    {
+        let known_providers = registry.provider_names();
+        let known_sources: std::collections::HashMap<String, Vec<String>> = known_providers
+            .iter()
+            .filter_map(|p| {
+                registry.provider_sources(p).map(|sources| {
+                    (
+                        p.clone(),
+                        sources.iter().map(|s| s.name.clone()).collect(),
+                    )
+                })
+            })
+            .collect();
+        let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
+        for w in &warnings {
+            tracing::warn!("{}", w);
+        }
+        if !errors.is_empty() {
+            for e in &errors {
+                tracing::error!("{}", e);
+            }
+            tracing::error!(
+                "Config validation failed with {} error(s). Daemon refusing to start.",
+                errors.len()
+            );
+            return;
+        }
+    }
+
     let (handle, scheduler) = Scheduler::new(
         cache.clone(),
         registry.clone(),
