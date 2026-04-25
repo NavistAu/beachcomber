@@ -118,26 +118,30 @@ pub fn format_ttl_cell(
                 }
             };
 
-            let p = poll_interval_secs.unwrap_or(0).min(999_999);
-            let k = keep_alive_polls.unwrap_or(0).min(99);
             // Indicator keyed on fs-watching capability first; reinstate-armed is
-            // the decorator. Poll-only providers render a blank cell trailer.
+            // the decorator. Poll-only sources render a blank cell trailer.
             let indicator = match (*watches_files, fsevents_reinstate.unwrap_or(false)) {
                 (false, _) => " ",
                 (true, false) => dot,
                 (true, true) => dot_ring,
             };
-            // " <P:p_width>s<×><K:02> <indicator>". p_width is set per snapshot
-            // in render_table so TTL cells align across all rendered rows.
-            let text = format!(
-                "{} {:>width$}s{}{:02} {}",
-                lead,
-                p,
-                times,
-                k,
-                indicator,
-                width = p_width
-            );
+            // The poll segment (`{p}s×{k:02}`) only renders for sources with a
+            // poll path: Poll and WatchAndPoll. Pure Watch sources have no poll;
+            // their cells pad with spaces of the same width so the indicator
+            // glyph stays in a consistent column across all rows.
+            //
+            // Width of the poll segment: p_width digits + "s" + "×" + "kk" = p_width + 4.
+            let poll_seg = match (poll_interval_secs, keep_alive_polls) {
+                (Some(p), Some(k)) => format!(
+                    "{:>width$}s{}{:02}",
+                    p.min(999_999),
+                    times,
+                    k.min(99),
+                    width = p_width
+                ),
+                _ => " ".repeat(p_width + 4),
+            };
+            let text = format!("{} {} {}", lead, poll_seg, indicator);
             TtlCell {
                 text,
                 color: Some(color),
