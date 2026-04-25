@@ -154,6 +154,13 @@ pub enum FieldType {
     Object,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceScope {
+    Global,
+    PathScoped,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InvalidationStrategy {
     Watch {
@@ -295,6 +302,15 @@ pub trait Provider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_scope_round_trips_through_serde() {
+        let s = SourceScope::PathScoped;
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("pathscoped"), "got: {json}");
+        let back: SourceScope = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, SourceScope::PathScoped);
+    }
 
     #[test]
     fn watch_patterns_strips_trailing_slash() {
