@@ -229,6 +229,35 @@ pub fn watch_abs_paths(strategy: &InvalidationStrategy) -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceMetadata {
+    pub name: String,
+    pub fields: Vec<FieldSchema>,
+    pub scope: SourceScope,
+    pub invalidation: InvalidationStrategy,
+    pub keep_alive: KeepAlive,
+    pub failback: FailbackConfig,
+    /// Whether watches survive decay. Default `true` for Watch/WatchAndPoll
+    /// per canon §"fsevents_reinstate default". Meaningless for Poll.
+    pub fsevents_reinstate: bool,
+}
+
+/// What a Source produces on a successful execute. Disjoint with sibling
+/// Sources at the same (provider, path) by registration-time validation.
+#[derive(Debug, Clone, Default)]
+pub struct SourceResult {
+    pub fields: HashMap<String, Value>,
+}
+
+impl SourceResult {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn insert(&mut self, key: impl Into<String>, value: Value) {
+        self.fields.insert(key.into(), value);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderMetadata {
     pub name: String,
     pub fields: Vec<FieldSchema>,
