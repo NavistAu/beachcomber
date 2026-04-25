@@ -1,6 +1,6 @@
 use beachcomber::config::HttpProviderConfig;
-use beachcomber::provider::FieldScope;
 use beachcomber::provider::Provider;
+use beachcomber::provider::SourceScope;
 use beachcomber::provider::http::HttpProvider;
 
 #[test]
@@ -12,7 +12,8 @@ fn http_provider_metadata() {
     let p = HttpProvider::new("test_http", config);
     let meta = p.metadata();
     assert_eq!(meta.name, "test_http");
-    assert_eq!(meta.inferred_scope(), FieldScope::Global);
+    assert_eq!(meta.sources.len(), 1);
+    assert_eq!(meta.sources[0].scope, SourceScope::Global);
 }
 
 #[test]
