@@ -163,20 +163,18 @@ pub enum SourceScope {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InvalidationStrategy {
-    Watch {
-        patterns: Vec<String>,
-        fallback_poll_secs: Option<u64>,
-    },
     Poll {
         interval_secs: u64,
-        floor_secs: u64,
+    },
+    Watch {
+        patterns: Vec<String>,
+        abs_paths: Vec<String>,
     },
     WatchAndPoll {
         patterns: Vec<String>,
+        abs_paths: Vec<String>,
         interval_secs: u64,
-        floor_secs: u64,
     },
-    Once,
 }
 
 /// Returns the expected refresh interval for a provider's strategy, in whole seconds.
@@ -184,12 +182,9 @@ pub enum InvalidationStrategy {
 /// reporting works correctly for sync-miss and rerun writes.
 pub fn expected_interval_secs(strategy: &InvalidationStrategy) -> Option<u64> {
     match strategy {
-        InvalidationStrategy::Poll { interval_secs, .. } => Some(*interval_secs),
+        InvalidationStrategy::Poll { interval_secs } => Some(*interval_secs),
         InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(*interval_secs),
-        InvalidationStrategy::Watch {
-            fallback_poll_secs, ..
-        } => *fallback_poll_secs,
-        InvalidationStrategy::Once => None,
+        InvalidationStrategy::Watch { .. } => None,
     }
 }
 
@@ -199,11 +194,22 @@ pub fn watch_patterns(strategy: &InvalidationStrategy) -> Vec<String> {
     let raw: &[String] = match strategy {
         InvalidationStrategy::Watch { patterns, .. } => patterns,
         InvalidationStrategy::WatchAndPoll { patterns, .. } => patterns,
-        _ => return Vec::new(),
+        InvalidationStrategy::Poll { .. } => return Vec::new(),
     };
     raw.iter()
         .map(|p| p.trim_end_matches('/').to_string())
         .collect()
+}
+
+/// Returns the absolute filesystem paths to watch for a Source's strategy.
+/// Sources are responsible for expanding `~` / `$XDG_*` in metadata() before
+/// the value reaches this helper.
+pub fn watch_abs_paths(strategy: &InvalidationStrategy) -> Vec<String> {
+    match strategy {
+        InvalidationStrategy::Watch { abs_paths, .. } => abs_paths.clone(),
+        InvalidationStrategy::WatchAndPoll { abs_paths, .. } => abs_paths.clone(),
+        InvalidationStrategy::Poll { .. } => Vec::new(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -316,7 +322,7 @@ mod tests {
     fn watch_patterns_strips_trailing_slash() {
         let strategy = InvalidationStrategy::Watch {
             patterns: vec![".venv/".into(), "pyproject.toml".into()],
-            fallback_poll_secs: None,
+            abs_paths: vec![],
         };
         let patterns = watch_patterns(&strategy);
         assert_eq!(
@@ -329,22 +335,20 @@ mod tests {
     fn watch_patterns_handles_watch_and_poll() {
         let strategy = InvalidationStrategy::WatchAndPoll {
             patterns: vec![".git".into()],
+            abs_paths: vec![],
             interval_secs: 60,
-            floor_secs: 1,
         };
         assert_eq!(watch_patterns(&strategy), vec![".git".to_string()]);
     }
 
     #[test]
-    fn watch_patterns_empty_for_poll_and_once() {
+    fn watch_patterns_empty_for_poll() {
         assert!(
             watch_patterns(&InvalidationStrategy::Poll {
                 interval_secs: 10,
-                floor_secs: 1
             })
             .is_empty()
         );
-        assert!(watch_patterns(&InvalidationStrategy::Once).is_empty());
     }
 
     #[test]
