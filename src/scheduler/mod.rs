@@ -13,7 +13,6 @@ use crate::cache::Cache;
 use crate::config::Config;
 pub use crate::cache::FailureSnapshot;
 use crate::provider::InvalidationStrategy;
-use crate::provider::KeepAlive;
 use crate::provider::SourceScope;
 use crate::provider::registry::ProviderRegistry;
 use crate::scheduler::lifecycle::{

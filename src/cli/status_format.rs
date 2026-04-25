@@ -1405,6 +1405,7 @@ mod ttl_cell_tests {
         let row_small = CacheRow {
             provider: "load".into(),
             path: None,
+            source: "loadavg".into(),
             field: "one".into(),
             value: serde_json::json!(0.5),
             age_ms: 0,
@@ -1437,6 +1438,7 @@ mod ttl_cell_tests {
         let row = CacheRow {
             provider: "x".into(),
             path: None,
+            source: "default".into(),
             field: "y".into(),
             value: serde_json::Value::Null,
             age_ms: 0,

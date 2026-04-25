@@ -114,7 +114,7 @@ pub struct LifecycleConfig {
     #[serde(default = "default_poll_live_count")]
     pub poll_live_count: u32,
     /// Global default for `fsevents_reinstate`. `None` means "unset" —
-    /// providers fall through to their own `fsevents_reinstate_default()`.
+    /// providers fall through to the per-source default declared in `SourceMetadata`.
     /// `Some(v)` is an explicit user override that beats any provider default.
     #[serde(default)]
     pub fsevents_reinstate: Option<bool>,
@@ -203,7 +203,6 @@ pub struct ScriptProviderConfig {
     pub scope: Option<String>,
     pub enabled: Option<bool>,
     pub poll_secs: Option<u64>,
-    pub poll_floor_secs: Option<u64>,
     // HTTP provider fields (used when type = "http")
     pub url: Option<String>,
     pub method: Option<String>,
@@ -290,7 +289,7 @@ impl Config {
     /// Priority (first match wins):
     /// 1. Per-provider config: `[providers.<name>] fsevents_reinstate = <bool>`.
     /// 2. Global lifecycle override: `[lifecycle] fsevents_reinstate = <bool>`.
-    /// 3. Provider-declared default via `Provider::fsevents_reinstate_default`.
+    /// 3. Source-declared default via `SourceMetadata::fsevents_reinstate`.
     ///
     /// `provider_default` should be sourced from the provider's trait method;
     /// pass `false` if the caller doesn't have access to the provider.

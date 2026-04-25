@@ -1,6 +1,6 @@
 use beachcomber::provider::battery::BatteryProvider;
 use beachcomber::provider::load::LoadProvider;
-use beachcomber::provider::{InvalidationStrategy, Provider, SourceScope};
+use beachcomber::provider::{Provider, SourceScope};
 
 // --- Battery ---
 

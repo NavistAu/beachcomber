@@ -98,7 +98,7 @@ impl Source for ScriptSingleSource {
     }
 }
 
-fn build_source_meta(name: &str, config: &ScriptProviderConfig) -> SourceMetadata {
+fn build_source_meta(_name: &str, config: &ScriptProviderConfig) -> SourceMetadata {
     let poll_secs = config
         .invalidation
         .as_ref()

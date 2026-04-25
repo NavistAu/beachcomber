@@ -1,8 +1,5 @@
 use crate::config::Config;
-use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope,
-};
+use crate::provider::{Provider, ProviderMetadata, Source, SourceMetadata};
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -257,6 +254,10 @@ impl ProviderRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{
+        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, SourceResult,
+        SourceScope,
+    };
 
     struct FakeSource(SourceMetadata);
     impl Source for FakeSource {

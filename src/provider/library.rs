@@ -280,7 +280,7 @@ impl LibrarySingleSource {
 /// with a pure-watch global source that runs once and never polls again
 /// (strategy = Watch + abs_paths=[] + Global + KeepAlive::Never). This is the
 /// semantic equivalent: run once on first demand, stay Active forever.
-fn parse_library_source_meta(name: &str, json_str: &str) -> Option<SourceMetadata> {
+fn parse_library_source_meta(_name: &str, json_str: &str) -> Option<SourceMetadata> {
     let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
     let obj = parsed.as_object()?;
 
@@ -412,7 +412,7 @@ fn parse_invalidation_and_keep_alive(
     }
 }
 
-fn build_source_meta_from_config(name: &str, config: &ScriptProviderConfig) -> SourceMetadata {
+fn build_source_meta_from_config(_name: &str, config: &ScriptProviderConfig) -> SourceMetadata {
     let poll_secs = config
         .invalidation
         .as_ref()

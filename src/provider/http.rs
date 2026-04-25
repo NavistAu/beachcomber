@@ -63,7 +63,7 @@ impl Source for HttpSingleSource {
     }
 }
 
-fn build_source_meta(name: &str, config: &HttpProviderConfig) -> SourceMetadata {
+fn build_source_meta(_name: &str, config: &HttpProviderConfig) -> SourceMetadata {
     let poll_secs = config
         .invalidation
         .as_ref()
@@ -263,7 +263,3 @@ fn json_to_source_result(value: &serde_json::Value) -> Option<SourceResult> {
     Some(result)
 }
 
-// Suppress unused import warning — FieldSchema/FieldType are part of the public
-// provider interface pattern.
-#[allow(dead_code)]
-fn _unused_imports(_: FieldSchema, _: FieldType) {}
