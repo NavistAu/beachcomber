@@ -227,6 +227,52 @@ pub fn watch_abs_paths(strategy: &InvalidationStrategy) -> Vec<String> {
     }
 }
 
+/// Expand `~`, `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME`, `$XDG_STATE_HOME`,
+/// `$XDG_CACHE_HOME`. Falls back to platform XDG defaults (e.g. `$HOME/.config`
+/// when `XDG_CONFIG_HOME` is unset). Returns `None` if `$HOME` is unset and no
+/// platform fallback applies. Sources call this in `metadata()` so the
+/// scheduler receives canonical absolute paths.
+pub fn expand_abs_path(s: &str) -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '~' && (out.is_empty() || out.ends_with('/')) {
+            out.push_str(&home);
+            continue;
+        }
+        if c == '$' {
+            // Read variable name (alphanumeric + underscore)
+            let mut name = String::new();
+            while let Some(&nc) = chars.peek() {
+                if nc.is_alphanumeric() || nc == '_' {
+                    name.push(nc);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            let val = match name.as_str() {
+                "HOME" => home.clone(),
+                "XDG_CONFIG_HOME" => std::env::var("XDG_CONFIG_HOME")
+                    .unwrap_or_else(|_| format!("{home}/.config")),
+                "XDG_DATA_HOME" => std::env::var("XDG_DATA_HOME")
+                    .unwrap_or_else(|_| format!("{home}/.local/share")),
+                "XDG_STATE_HOME" => std::env::var("XDG_STATE_HOME")
+                    .unwrap_or_else(|_| format!("{home}/.local/state")),
+                "XDG_CACHE_HOME" => std::env::var("XDG_CACHE_HOME")
+                    .unwrap_or_else(|_| format!("{home}/.cache")),
+                _ => std::env::var(&name).ok()?,
+            };
+            out.push_str(&val);
+            continue;
+        }
+        out.push(c);
+    }
+    let p = std::path::PathBuf::from(out);
+    if p.is_absolute() { Some(p) } else { None }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceMetadata {
     pub name: String,
@@ -574,5 +620,31 @@ mod tests {
             sources: vec![make_source("a", vec!["f1"])],
         };
         assert!(meta.validate().is_ok());
+    }
+
+    #[test]
+    fn expand_abs_path_resolves_tilde() {
+        let home = std::env::var("HOME").expect("HOME set");
+        let p = expand_abs_path("~/foo").unwrap();
+        assert_eq!(p.to_string_lossy(), format!("{home}/foo"));
+    }
+
+    #[test]
+    fn expand_abs_path_resolves_xdg_config_home_fallback() {
+        let home = std::env::var("HOME").expect("HOME set");
+        // Use a value we can predict regardless of caller's env.
+        let saved = std::env::var("XDG_CONFIG_HOME").ok();
+        // SAFETY: test single-threaded for env mutation
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME"); }
+        let p = expand_abs_path("$XDG_CONFIG_HOME/mise").unwrap();
+        assert_eq!(p.to_string_lossy(), format!("{home}/.config/mise"));
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("XDG_CONFIG_HOME", v); }
+        }
+    }
+
+    #[test]
+    fn expand_abs_path_returns_none_for_relative() {
+        assert!(expand_abs_path("relative/path").is_none());
     }
 }
