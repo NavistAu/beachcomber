@@ -1,4 +1,4 @@
-use crate::provider::{ProviderResult, Value};
+use crate::provider::Value;
 use crate::watcher_registry::WatcherRegistry;
 use dashmap::DashMap;
 use std::collections::HashMap;
@@ -246,78 +246,8 @@ impl Cache {
             .collect()
     }
 
-    /// Legacy write path: write a `ProviderResult` as a single source named `"default"`.
-    /// Exists to ease migration — new code should call `put_source` directly.
-    #[allow(dead_code)]
-    pub fn put(&self, provider: &str, path: Option<&str>, result: ProviderResult) {
-        self.put_with_interval(provider, path, result, None);
-    }
-
-    /// Legacy write path with interval: write a `ProviderResult` as source `"default"`.
-    /// Exists to ease migration — new code should call `put_source` directly.
-    #[allow(dead_code)]
-    pub fn put_with_interval(
-        &self,
-        provider: &str,
-        path: Option<&str>,
-        result: ProviderResult,
-        interval_secs: Option<u64>,
-    ) {
-        self.put_source(provider, path, "default", result.fields, interval_secs);
-    }
-
-    /// Legacy read path: return a `CacheEntry` shaped like the old struct.
-    /// Used only by callers not yet migrated to `get_entry`. Maps sources["default"].
-    #[allow(dead_code)]
-    pub fn get(&self, provider: &str, path: Option<&str>) -> Option<LegacyCacheEntry> {
-        let key = make_cache_key(provider, path);
-        let entry = self.entries.get(&key)?;
-        // Flatten across all sources for backwards compatibility.
-        let mut fields = HashMap::new();
-        let mut last_refreshed = None::<Instant>;
-        let mut expected_interval_secs = None;
-        for src in entry.sources.values() {
-            for (k, v) in &src.fields {
-                fields.insert(k.clone(), v.clone());
-            }
-            last_refreshed = Some(match last_refreshed {
-                None => src.last_refreshed,
-                Some(prev) => prev.min(src.last_refreshed),
-            });
-            if expected_interval_secs.is_none() {
-                expected_interval_secs = src.expected_interval_secs;
-            }
-        }
-        Some(LegacyCacheEntry {
-            result: ProviderResult { fields },
-            created_at: last_refreshed.unwrap_or(entry.created_at),
-            expected_interval_secs,
-        })
-    }
 }
 
-/// Backwards-compatible view returned by `Cache::get()` for callers not yet migrated.
-/// Presents a flattened single-source view across all sources. New callers should use
-/// `get_entry()`, `get_source()`, or `get_field()` instead.
-#[derive(Debug, Clone)]
-pub struct LegacyCacheEntry {
-    pub result: ProviderResult,
-    pub created_at: Instant,
-    pub expected_interval_secs: Option<u64>,
-}
-
-impl LegacyCacheEntry {
-    pub fn age_ms(&self) -> u128 {
-        self.created_at.elapsed().as_millis()
-    }
-
-    pub fn is_stale(&self) -> bool {
-        match self.expected_interval_secs {
-            Some(interval) => self.created_at.elapsed().as_secs() > interval,
-            None => false,
-        }
-    }
-}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CacheEntryInfo {
