@@ -7,10 +7,12 @@ Project-specific instructions for contributors using Claude Code.
 Before proposing changes or reasoning about behavior, read these. They are the authoritative project state — code alone will mislead you.
 
 - **`docs/roadmap.md`** — what's built, what's deferred, what's broken. Contains the "Known Core Issues" section; check it before claiming anything is working. If behavior seems odd, look here first.
-- **`docs/cache-lifecycle.md`** — canonical spec of the cache demand/decay state machine. The core of what this tool does. Tests must match this document; code that disagrees is wrong.
-- **`docs/architecture.md`** — module map, request lifecycle, provider execution lifecycle, concurrency model, key design decisions.
-- **`docs/provider-development.md`** — Provider trait, InvalidationStrategy guide, performance tiers, testing patterns.
+- **`docs/canon/*`** — canonical spec major architechtural designs. Tests must match this document; code that disagrees is wrong.
 - **`CHANGELOG.md`** — what shipped when, at what version.
+
+@docs/canon/ are 'canonical specs' in that they are long lived and only ever edited with explicit permission. Canon
+specs define test suite tdd, which defines the code, which is then communicated by the documentation/website. This is
+how we resolve 'are the docs or code correct?', its a strict line of truth.
 
 If a section of the code looks like a half-wired state machine or a config key that does nothing, check `docs/roadmap.md` → "Known Core Issues" before writing a fix. Some scaffolding is known-aspirational and has a planned rebuild.
 
@@ -26,14 +28,14 @@ If a section of the code looks like a half-wired state machine or a config key t
 
 ```sh
 cargo build              # debug build
-cargo nextest run        # run tests (preferred — has a 2-minute global kill)
+cargo nextest run        # run tests (mandatory, cargo test is designed to instantly fail)
 cargo t                  # shorthand alias for `cargo nextest run`
 cargo bench              # criterion benchmarks (cache, protocol, providers, socket, throughput)
 cargo clippy -- -D warnings
 cargo fmt -- --check
 ```
 
-**Test runner:** `cargo-nextest` is the blessed runner. Run `mise install` to get it alongside Rust — it is declared in `mise.toml`. Use `cargo nextest run` (full runner, 2m kill-on-hang + 30s per-test) or the shorter `cargo t` alias we ship. Plain `cargo test` triggers an advisory that fires immediately on binary startup (via `ctor`) before any test runs — it prints an instructive message and exits with code 2. Set `NEXTEST=1` in the environment to bypass it intentionally.
+**Test runner:** `cargo-nextest` is the blessed runner. Run `mise install` to get it alongside Rust — it is declared in `mise.toml`. Use `cargo nextest run` or the shorter `cargo t` alias we ship. Plain `cargo test` triggers an advisory that fires immediately on binary startup (via `ctor`) before any test runs — it prints an instructive message and exits with code 2. Set `NEXTEST=1` in the environment to bypass it intentionally.
 
 Tests that are environment-sensitive:
 - `uptime_provider_executes` — needs unsandboxed environment
@@ -41,6 +43,9 @@ Tests that are environment-sensitive:
 CI skips with: `cargo nextest run -E 'not test(uptime_provider_executes)'`.
 
 **Watcher tests** use `FsWatcher::new_polling` (Phase 13 stabilization), so they run reliably under sandboxed hosts that can't use FSEvents / inotify. Production code still uses `FsWatcher::new` which picks the kernel-native backend.
+
+Full test suites, formatting, builds, etc, should _always_ execute fully in under 30s. If they take longer the command
+should fail and it should trigger investigation.
 
 ## Architecture
 
