@@ -1,6 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 
 pub struct KubecontextProvider;
@@ -8,32 +8,55 @@ pub struct KubecontextProvider;
 impl Provider for KubecontextProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            name: "kubecontext".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "context".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "namespace".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-            ],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 30,
-                floor_secs: 5,
-            },
+            name: "kubecontext".into(),
+            sources: vec![context_source_metadata()],
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(KubeContext)]
+    }
+}
+
+fn context_source_metadata() -> SourceMetadata {
+    SourceMetadata {
+        name: "context".into(),
+        fields: vec![
+            FieldSchema {
+                name: "context".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "namespace".into(),
+                field_type: FieldType::String,
+            },
+        ],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
+        keep_alive: KeepAlive::Polls(2),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 30,
+        },
+        fsevents_reinstate: false,
+    }
+}
+
+struct KubeContext;
+
+impl Source for KubeContext {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(context_source_metadata)
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
         let Some(config_path) = kubeconfig_path() else {
-            return Vec::new();
+            return SourceResult::new();
         };
         let Some(content) = std::fs::read_to_string(&config_path).ok() else {
-            return Vec::new();
+            return SourceResult::new();
         };
 
         // Find current-context
@@ -48,17 +71,17 @@ impl Provider for KubecontextProvider {
             })
             .filter(|s| !s.is_empty())
         else {
-            return Vec::new();
+            return SourceResult::new();
         };
 
         // Find namespace for this context
         let namespace =
             find_context_namespace(&content, &context).unwrap_or_else(|| "default".to_string());
 
-        let mut result = ProviderResult::new();
+        let mut result = SourceResult::new();
         result.insert("context", Value::String(context));
         result.insert("namespace", Value::String(namespace));
-        vec![(None, result)]
+        result
     }
 }
 
