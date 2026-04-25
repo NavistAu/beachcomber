@@ -1,6 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 
 pub struct UnameProvider;
@@ -8,43 +8,70 @@ pub struct UnameProvider;
 impl Provider for UnameProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            name: "uname".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "sysname".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "release".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "version".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "machine".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-            ],
-            invalidation: InvalidationStrategy::Once,
+            name: "uname".into(),
+            sources: vec![system_source_metadata()],
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(UnameSystem)]
+    }
+}
+
+fn system_source_metadata() -> SourceMetadata {
+    SourceMetadata {
+        name: "system".into(),
+        fields: vec![
+            FieldSchema {
+                name: "sysname".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "release".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "version".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "machine".into(),
+                field_type: FieldType::String,
+            },
+        ],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![],
+            abs_paths: vec![],
+        },
+        keep_alive: KeepAlive::Never,
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
+        fsevents_reinstate: false,
+    }
+}
+
+struct UnameSystem;
+
+impl Source for UnameSystem {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(system_source_metadata)
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
         let Some(info) = uname_info() else {
-            return Vec::new();
+            return SourceResult::new();
         };
-        let mut result = ProviderResult::new();
+        let mut result = SourceResult::new();
         result.insert("sysname", Value::String(info.sysname));
         result.insert("release", Value::String(info.release));
         result.insert("version", Value::String(info.version));
         result.insert("machine", Value::String(info.machine));
-        vec![(None, result)]
+        result
     }
 }
 

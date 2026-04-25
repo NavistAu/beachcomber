@@ -1,14 +1,20 @@
 use beachcomber::provider::uname::UnameProvider;
-use beachcomber::provider::{FieldScope, InvalidationStrategy, Provider};
+use beachcomber::provider::{InvalidationStrategy, Provider, SourceScope};
 
 #[test]
 fn uname_provider_metadata() {
     let p = UnameProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "uname");
-    assert_eq!(meta.inferred_scope(), FieldScope::Global);
-    assert!(matches!(meta.invalidation, InvalidationStrategy::Once));
-    let field_names: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(meta.sources.len(), 1);
+    let src = &meta.sources[0];
+    assert_eq!(src.name, "system");
+    assert_eq!(src.scope, SourceScope::Global);
+    assert!(
+        matches!(src.invalidation, InvalidationStrategy::Watch { .. }),
+        "uname system source should use Watch invalidation"
+    );
+    let field_names: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(field_names.contains(&"sysname"));
     assert!(field_names.contains(&"release"));
     assert!(field_names.contains(&"version"));
@@ -18,12 +24,10 @@ fn uname_provider_metadata() {
 #[test]
 fn uname_provider_executes() {
     let p = UnameProvider;
-    let (_, result) = p
-        .execute(None)
-        .into_iter()
-        .next()
-        .expect("uname provider should return a result");
-    let sysname = result.get("sysname").expect("should have sysname field");
+    let sources = p.sources();
+    assert_eq!(sources.len(), 1);
+    let result = sources[0].execute(None);
+    let sysname = result.fields.get("sysname").expect("should have sysname field");
     let sysname_text = sysname.as_text();
     assert!(
         sysname_text == "Darwin" || sysname_text == "Linux",
@@ -31,13 +35,13 @@ fn uname_provider_executes() {
         sysname_text
     );
 
-    let machine = result.get("machine").expect("should have machine field");
+    let machine = result.fields.get("machine").expect("should have machine field");
     let machine_text = machine.as_text();
     assert!(!machine_text.is_empty(), "machine should not be empty");
 
-    let release = result.get("release").expect("should have release field");
+    let release = result.fields.get("release").expect("should have release field");
     assert!(!release.as_text().is_empty(), "release should not be empty");
 
-    let version = result.get("version").expect("should have version field");
+    let version = result.fields.get("version").expect("should have version field");
     assert!(!version.as_text().is_empty(), "version should not be empty");
 }
