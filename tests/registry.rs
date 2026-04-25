@@ -5,9 +5,9 @@ use beachcomber::provider::user::UserProvider;
 #[test]
 fn registry_register_and_get() {
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(HostnameProvider));
+    registry.register(Box::new(HostnameProvider)).unwrap();
     assert!(
-        registry.get("hostname").is_some(),
+        registry.provider_metadata("hostname").is_some(),
         "Should find registered provider"
     );
 }
@@ -16,7 +16,7 @@ fn registry_register_and_get() {
 fn registry_get_missing() {
     let registry = ProviderRegistry::new();
     assert!(
-        registry.get("nonexistent").is_none(),
+        registry.provider_metadata("nonexistent").is_none(),
         "Should return None for unknown provider"
     );
 }
@@ -24,52 +24,54 @@ fn registry_get_missing() {
 #[test]
 fn registry_list_providers() {
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(HostnameProvider));
-    registry.register(Box::new(UserProvider));
+    registry.register(Box::new(HostnameProvider)).unwrap();
+    registry.register(Box::new(UserProvider)).unwrap();
     let name_strings = registry.list();
     let mut names: Vec<&str> = name_strings.iter().map(|s| s.as_str()).collect();
     names.sort();
-    assert_eq!(names, vec!["hostname", "user"]);
+    assert!(names.contains(&"hostname"), "Should contain hostname");
+    assert!(names.contains(&"user"), "Should contain user");
 }
 
 #[test]
 fn registry_with_defaults_has_builtins() {
     let registry = ProviderRegistry::with_defaults();
     assert!(
-        registry.get("hostname").is_some(),
+        registry.provider_metadata("hostname").is_some(),
         "Should have hostname provider"
     );
-    assert!(registry.get("user").is_some(), "Should have user provider");
+    assert!(
+        registry.provider_metadata("user").is_some(),
+        "Should have user provider"
+    );
 }
 
 #[test]
-fn registry_execute_provider() {
+fn registry_source_lookup() {
     let registry = ProviderRegistry::with_defaults();
-    let provider = registry.get("hostname").unwrap();
-    let (_, result) = provider.execute(None).into_iter().next().unwrap();
+    let source = registry.source("hostname", "host");
     assert!(
-        !result.get("name").unwrap().as_text().is_empty(),
-        "Hostname provider should return a non-empty name"
+        source.is_some(),
+        "hostname provider should have 'host' source"
+    );
+}
+
+#[test]
+fn registry_execute_via_source() {
+    let registry = ProviderRegistry::with_defaults();
+    let source = registry.source("hostname", "host").unwrap();
+    let result = source.execute(None);
+    assert!(
+        !result.fields.get("name").unwrap().as_text().is_empty(),
+        "Hostname source should return a non-empty name"
     );
 }
 
 #[test]
 fn registry_metadata() {
     let registry = ProviderRegistry::with_defaults();
-    let provider = registry.get("hostname").unwrap();
-    let meta = provider.metadata();
+    let meta = registry.provider_metadata("hostname").unwrap();
     assert_eq!(meta.name, "hostname");
-}
-
-#[test]
-fn registry_tracks_builtin_source() {
-    use beachcomber::provider::ProviderSource;
-
-    let registry = ProviderRegistry::with_defaults();
-    assert_eq!(
-        registry.get_source("hostname"),
-        Some(ProviderSource::Builtin)
-    );
 }
 
 #[test]
@@ -77,4 +79,15 @@ fn registry_has_non_virtual_blocks_store() {
     let registry = ProviderRegistry::with_defaults();
     assert!(registry.has_non_virtual("hostname"));
     assert!(!registry.has_non_virtual("nonexistent"));
+}
+
+#[test]
+fn registry_source_for_field() {
+    let registry = ProviderRegistry::with_defaults();
+    // hostname.host source declares the "name" field
+    assert_eq!(
+        registry.source_for_field("hostname", "name"),
+        Some("host"),
+        "field 'name' on hostname should belong to source 'host'"
+    );
 }

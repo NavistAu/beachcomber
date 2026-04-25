@@ -153,26 +153,26 @@ impl ProviderRegistry {
         // TODO(phase1-section-H): re-enable each line once the provider is migrated
         // to the new Provider/Source trait shape. Uncomment one at a time during Section H.
         //
-        // registry.register(Box::new(crate::provider::asdf::AsdfProvider)).expect("asdf");
-        // registry.register(Box::new(crate::provider::aws::AwsProvider)).expect("aws");
+        registry.register(Box::new(crate::provider::asdf::AsdfProvider)).expect("asdf");
+        registry.register(Box::new(crate::provider::aws::AwsProvider)).expect("aws");
         // registry.register(Box::new(crate::provider::battery::BatteryProvider)).expect("battery");
-        // registry.register(Box::new(crate::provider::conda::CondaProvider)).expect("conda");
-        // registry.register(Box::new(crate::provider::direnv::DirenvProvider)).expect("direnv");
-        // registry.register(Box::new(crate::provider::gcloud::GcloudProvider)).expect("gcloud");
+        registry.register(Box::new(crate::provider::conda::CondaProvider)).expect("conda");
+        registry.register(Box::new(crate::provider::direnv::DirenvProvider)).expect("direnv");
+        registry.register(Box::new(crate::provider::gcloud::GcloudProvider)).expect("gcloud");
         // registry.register(Box::new(crate::provider::git::GitProvider)).expect("git");
-        // registry.register(Box::new(crate::provider::hostname::HostnameProvider)).expect("hostname");
-        // registry.register(Box::new(crate::provider::kubecontext::KubecontextProvider)).expect("kubecontext");
-        // registry.register(Box::new(crate::provider::load::LoadProvider)).expect("load");
+        registry.register(Box::new(crate::provider::hostname::HostnameProvider)).expect("hostname");
+        registry.register(Box::new(crate::provider::kubecontext::KubecontextProvider)).expect("kubecontext");
+        registry.register(Box::new(crate::provider::load::LoadProvider)).expect("load");
         // registry.register(Box::new(crate::provider::mise::MiseProvider)).expect("mise");
-        // registry.register(Box::new(crate::provider::network::NetworkProvider)).expect("network");
-        // registry.register(Box::new(crate::provider::op::OpProvider)).expect("op");
-        // registry.register(Box::new(crate::provider::python::PythonProvider)).expect("python");
-        // registry.register(Box::new(crate::provider::sudo::SudoProvider)).expect("sudo");
-        // registry.register(Box::new(crate::provider::terraform::TerraformProvider)).expect("terraform");
-        // registry.register(Box::new(crate::provider::uname::UnameProvider)).expect("uname");
-        // #[cfg(any(target_os = "macos", target_os = "linux"))]
-        // registry.register(Box::new(crate::provider::uptime::UptimeProvider)).expect("uptime");
-        // registry.register(Box::new(crate::provider::user::UserProvider)).expect("user");
+        registry.register(Box::new(crate::provider::network::NetworkProvider)).expect("network");
+        registry.register(Box::new(crate::provider::op::OpProvider)).expect("op");
+        registry.register(Box::new(crate::provider::python::PythonProvider)).expect("python");
+        registry.register(Box::new(crate::provider::sudo::SudoProvider)).expect("sudo");
+        registry.register(Box::new(crate::provider::terraform::TerraformProvider)).expect("terraform");
+        registry.register(Box::new(crate::provider::uname::UnameProvider)).expect("uname");
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        registry.register(Box::new(crate::provider::uptime::UptimeProvider)).expect("uptime");
+        registry.register(Box::new(crate::provider::user::UserProvider)).expect("user");
         let _ = &mut registry; // suppress unused-mut until section H re-enables the lines above
         registry
     }
