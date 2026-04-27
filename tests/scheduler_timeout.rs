@@ -19,7 +19,10 @@ fn slow_source_meta() -> SourceMetadata {
         scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
         keep_alive: KeepAlive::Polls(2),
-        failback: FailbackConfig { reattempts: 3, interval_secs: 30 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 30,
+        },
         fsevents_reinstate: false,
     }
 }

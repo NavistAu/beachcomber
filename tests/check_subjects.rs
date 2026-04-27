@@ -542,7 +542,10 @@ async fn providers_introspect_has_entries_with_required_fields() {
         // with a fields entry. Virtual providers may have no sources (data-only).
         if let Some(srcs) = p.get("sources").and_then(|v| v.as_array()) {
             if !srcs.is_empty() {
-                assert!(srcs[0].get("fields").is_some(), "source missing fields: {p:?}");
+                assert!(
+                    srcs[0].get("fields").is_some(),
+                    "source missing fields: {p:?}"
+                );
             }
         }
         assert!(

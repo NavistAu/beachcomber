@@ -1,6 +1,6 @@
 use beachcomber::provider::Provider;
-use beachcomber::provider::op::OpProvider;
 use beachcomber::provider::SourceScope;
+use beachcomber::provider::op::OpProvider;
 
 #[test]
 fn op_provider_metadata() {

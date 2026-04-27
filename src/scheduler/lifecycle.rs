@@ -90,13 +90,15 @@ impl SourceLifecycleConfig {
         fsevents_reinstate: bool,
     ) -> Self {
         let (kind, poll_interval) = match strategy {
-            InvalidationStrategy::Poll { interval_secs } => {
-                (StrategyKind::Poll, Some(Duration::from_secs(*interval_secs)))
-            }
+            InvalidationStrategy::Poll { interval_secs } => (
+                StrategyKind::Poll,
+                Some(Duration::from_secs(*interval_secs)),
+            ),
             InvalidationStrategy::Watch { .. } => (StrategyKind::Watch, None),
-            InvalidationStrategy::WatchAndPoll { interval_secs, .. } => {
-                (StrategyKind::WatchAndPoll, Some(Duration::from_secs(*interval_secs)))
-            }
+            InvalidationStrategy::WatchAndPoll { interval_secs, .. } => (
+                StrategyKind::WatchAndPoll,
+                Some(Duration::from_secs(*interval_secs)),
+            ),
         };
         Self {
             strategy_kind: kind,
@@ -111,7 +113,6 @@ impl SourceLifecycleConfig {
         matches!(self.keep_alive, KeepAlive::Never)
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct LifecycleEntry {
@@ -218,9 +219,10 @@ impl LifecycleRegistry {
         match self.entries.get_mut(&key) {
             None => {
                 // Cold → Active
-                let poll_timer = config
-                    .poll_interval
-                    .map(|p| PollTimer { last_fired: now, interval: p });
+                let poll_timer = config.poll_interval.map(|p| PollTimer {
+                    last_fired: now,
+                    interval: p,
+                });
                 self.entries.insert(
                     key,
                     LifecycleEntry {
@@ -342,11 +344,14 @@ impl LifecycleRegistry {
                         let rate_mult = step.rate_multiplier();
 
                         // Step duration depends on keep-alive variant.
-                        let step_duration = match (&entry.config.keep_alive, &entry.config.poll_interval) {
-                            (KeepAlive::Polls(k), Some(p)) => *p * rate_mult * *k,
-                            (KeepAlive::Duration(secs), _) => Duration::from_secs(*secs) * rate_mult,
-                            _ => continue,
-                        };
+                        let step_duration =
+                            match (&entry.config.keep_alive, &entry.config.poll_interval) {
+                                (KeepAlive::Polls(k), Some(p)) => *p * rate_mult * *k,
+                                (KeepAlive::Duration(secs), _) => {
+                                    Duration::from_secs(*secs) * rate_mult
+                                }
+                                _ => continue,
+                            };
                         dt.step_deadline = now + step_duration;
 
                         // Adjust poll interval if there is a poll path.
@@ -379,7 +384,9 @@ impl LifecycleRegistry {
     }
 
     pub fn poll_interval(&self, key: &Key) -> Option<Duration> {
-        self.entries.get(key).and_then(|e| e.poll_timer.as_ref().map(|pt| pt.interval))
+        self.entries
+            .get(key)
+            .and_then(|e| e.poll_timer.as_ref().map(|pt| pt.interval))
     }
 
     pub fn state(&self, key: &Key) -> Option<&LifecycleState> {
@@ -419,7 +426,11 @@ mod tests {
     use super::*;
 
     fn test_key(provider: &str, path: &str) -> Key {
-        (provider.to_string(), Some(path.to_string()), "main".to_string())
+        (
+            provider.to_string(),
+            Some(path.to_string()),
+            "main".to_string(),
+        )
     }
 
     fn test_key_global(provider: &str) -> Key {

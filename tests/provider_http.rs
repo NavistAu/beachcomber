@@ -113,8 +113,14 @@ poll_count = 2
     assert_eq!(default_timeout.as_deref(), Some("5s"));
     assert_eq!(sources.len(), 2);
 
-    let current = sources.iter().find(|s| s.name == "current").expect("current source");
-    let forecast = sources.iter().find(|s| s.name == "forecast").expect("forecast source");
+    let current = sources
+        .iter()
+        .find(|s| s.name == "current")
+        .expect("current source");
+    let forecast = sources
+        .iter()
+        .find(|s| s.name == "forecast")
+        .expect("forecast source");
 
     assert_eq!(
         current.url.as_deref(),

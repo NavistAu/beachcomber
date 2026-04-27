@@ -1,6 +1,6 @@
 use beachcomber::provider::Provider;
-use beachcomber::provider::conda::CondaProvider;
 use beachcomber::provider::SourceScope;
+use beachcomber::provider::conda::CondaProvider;
 
 #[test]
 fn conda_provider_is_global_scoped() {

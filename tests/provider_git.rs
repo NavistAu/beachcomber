@@ -136,16 +136,25 @@ fn git_provider_source_names() {
 fn git_refs_returns_empty_for_non_repo() {
     let tmp = TempDir::new().unwrap();
     let sources = GitProvider.sources();
-    let refs_src = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
     let result = refs_src.execute(Some(tmp.path().to_str().unwrap()));
-    assert!(result.fields.is_empty(), "Non-git directory should return empty SourceResult");
+    assert!(
+        result.fields.is_empty(),
+        "Non-git directory should return empty SourceResult"
+    );
 }
 
 #[test]
 fn git_refs_returns_branch() {
     let tmp = create_test_repo();
     let sources = GitProvider.sources();
-    let refs_src = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
     let result = refs_src.execute(Some(tmp.path().to_str().unwrap()));
     let branch = result.fields.get("branch").unwrap().as_text();
     assert!(!branch.is_empty(), "Branch should not be empty");
@@ -155,7 +164,10 @@ fn git_refs_returns_branch() {
 fn git_status_clean_repo() {
     let tmp = create_test_repo();
     let sources = GitProvider.sources();
-    let status_src = sources.iter().find(|s| s.metadata().name == "status").unwrap();
+    let status_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "status")
+        .unwrap();
     let result = status_src.execute(Some(tmp.path().to_str().unwrap()));
     assert_eq!(result.fields.get("dirty").unwrap().as_text(), "false");
     assert_eq!(result.fields.get("staged").unwrap().as_text(), "0");
@@ -168,7 +180,10 @@ fn git_status_dirty_repo() {
     let tmp = create_test_repo();
     std::fs::write(tmp.path().join("new_file.txt"), "content").unwrap();
     let sources = GitProvider.sources();
-    let status_src = sources.iter().find(|s| s.metadata().name == "status").unwrap();
+    let status_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "status")
+        .unwrap();
     let result = status_src.execute(Some(tmp.path().to_str().unwrap()));
     assert_eq!(result.fields.get("dirty").unwrap().as_text(), "true");
     assert_eq!(result.fields.get("untracked").unwrap().as_text(), "1");
@@ -184,7 +199,10 @@ fn git_status_staged_changes() {
         .output()
         .unwrap();
     let sources = GitProvider.sources();
-    let status_src = sources.iter().find(|s| s.metadata().name == "status").unwrap();
+    let status_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "status")
+        .unwrap();
     let result = status_src.execute(Some(tmp.path().to_str().unwrap()));
     assert_eq!(result.fields.get("staged").unwrap().as_text(), "1");
 }
@@ -194,7 +212,10 @@ fn git_status_unstaged_changes() {
     let tmp = create_test_repo();
     std::fs::write(tmp.path().join("README.md"), "modified").unwrap();
     let sources = GitProvider.sources();
-    let status_src = sources.iter().find(|s| s.metadata().name == "status").unwrap();
+    let status_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "status")
+        .unwrap();
     let result = status_src.execute(Some(tmp.path().to_str().unwrap()));
     assert_eq!(result.fields.get("unstaged").unwrap().as_text(), "1");
 }
@@ -209,7 +230,10 @@ fn git_refs_stash_count() {
         .output()
         .unwrap();
     let sources = GitProvider.sources();
-    let refs_src = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
     let result = refs_src.execute(Some(tmp.path().to_str().unwrap()));
     assert_eq!(result.fields.get("stash").unwrap().as_text(), "1");
 }
@@ -217,16 +241,25 @@ fn git_refs_stash_count() {
 #[test]
 fn git_refs_requires_path() {
     let sources = GitProvider.sources();
-    let refs_src = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
     let result = refs_src.execute(None);
-    assert!(result.fields.is_empty(), "Git refs source should return empty SourceResult without a path");
+    assert!(
+        result.fields.is_empty(),
+        "Git refs source should return empty SourceResult without a path"
+    );
 }
 
 #[test]
 fn git_refs_clean_repo_new_fields() {
     let tmp = create_test_repo();
     let sources = GitProvider.sources();
-    let refs_src = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
     let result = refs_src.execute(Some(tmp.path().to_str().unwrap()));
 
     // No upstream in a local-only repo
@@ -244,7 +277,10 @@ fn git_refs_clean_repo_new_fields() {
 fn git_refs_commit_hash_format() {
     let tmp = create_test_repo();
     let sources = GitProvider.sources();
-    let refs_src = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
     let result = refs_src.execute(Some(tmp.path().to_str().unwrap()));
     let commit = result.fields.get("commit").unwrap().as_text();
     // Short SHA: non-empty, all hex, typically 7 chars
@@ -264,7 +300,10 @@ fn git_refs_commit_hash_format() {
 fn git_refs_last_commit_age_secs() {
     let tmp = create_test_repo();
     let sources = GitProvider.sources();
-    let refs_src = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
     let result = refs_src.execute(Some(tmp.path().to_str().unwrap()));
     let age: i64 = result
         .fields
@@ -283,7 +322,10 @@ fn git_diff_lines_added_removed_unstaged() {
     // README.md has "# test" (1 line). Replace with 3 lines.
     std::fs::write(tmp.path().join("README.md"), "line1\nline2\nline3").unwrap();
     let sources = GitProvider.sources();
-    let diff_src = sources.iter().find(|s| s.metadata().name == "diff").unwrap();
+    let diff_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "diff")
+        .unwrap();
     let result = diff_src.execute(Some(tmp.path().to_str().unwrap()));
     let added: i64 = result
         .fields
@@ -314,7 +356,10 @@ fn git_diff_lines_staged_added_removed() {
         .output()
         .unwrap();
     let sources = GitProvider.sources();
-    let diff_src = sources.iter().find(|s| s.metadata().name == "diff").unwrap();
+    let diff_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "diff")
+        .unwrap();
     let result = diff_src.execute(Some(tmp.path().to_str().unwrap()));
     let staged_added: i64 = result
         .fields
@@ -330,25 +375,40 @@ fn git_diff_lines_staged_added_removed() {
         .as_text()
         .parse()
         .unwrap();
-    assert_eq!(staged_added, 2, "staged_added should be 2, got {staged_added}");
-    assert_eq!(staged_removed, 0, "staged_removed should be 0 for a new file, got {staged_removed}");
+    assert_eq!(
+        staged_added, 2,
+        "staged_added should be 2, got {staged_added}"
+    );
+    assert_eq!(
+        staged_removed, 0,
+        "staged_removed should be 0 for a new file, got {staged_removed}"
+    );
 }
 
 #[test]
 fn git_refs_commit_summary() {
     let tmp = create_test_repo();
     let sources = GitProvider.sources();
-    let refs_src = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
     let result = refs_src.execute(Some(tmp.path().to_str().unwrap()));
     let summary = result.fields.get("commit_summary").unwrap().as_text();
-    assert_eq!(summary, "init", "commit_summary should be the first commit message");
+    assert_eq!(
+        summary, "init",
+        "commit_summary should be the first commit message"
+    );
 }
 
 #[test]
 fn git_refs_push_ahead_behind_no_push_remote() {
     let tmp = create_test_repo();
     let sources = GitProvider.sources();
-    let refs_src = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
     let result = refs_src.execute(Some(tmp.path().to_str().unwrap()));
     // No push remote configured — both should be 0
     assert_eq!(result.fields.get("push_ahead").unwrap().as_text(), "0");
@@ -371,7 +431,10 @@ fn git_refs_detached_head() {
         .unwrap();
 
     let sources = GitProvider.sources();
-    let refs_src = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
     let result = refs_src.execute(Some(tmp.path().to_str().unwrap()));
     assert_eq!(result.fields.get("detached").unwrap().as_text(), "true");
 }
@@ -380,12 +443,21 @@ fn git_refs_detached_head() {
 fn git_diff_clean_repo_has_zero_lines() {
     let tmp = create_test_repo();
     let sources = GitProvider.sources();
-    let diff_src = sources.iter().find(|s| s.metadata().name == "diff").unwrap();
+    let diff_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "diff")
+        .unwrap();
     let result = diff_src.execute(Some(tmp.path().to_str().unwrap()));
     assert_eq!(result.fields.get("lines_added").unwrap().as_text(), "0");
     assert_eq!(result.fields.get("lines_removed").unwrap().as_text(), "0");
-    assert_eq!(result.fields.get("lines_staged_added").unwrap().as_text(), "0");
-    assert_eq!(result.fields.get("lines_staged_removed").unwrap().as_text(), "0");
+    assert_eq!(
+        result.fields.get("lines_staged_added").unwrap().as_text(),
+        "0"
+    );
+    assert_eq!(
+        result.fields.get("lines_staged_removed").unwrap().as_text(),
+        "0"
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use beachcomber::provider::Provider;
-use beachcomber::provider::sudo::SudoProvider;
 use beachcomber::provider::SourceScope;
+use beachcomber::provider::sudo::SudoProvider;
 
 #[test]
 fn sudo_provider_metadata() {

@@ -26,7 +26,10 @@ fn lc_counter_source_meta() -> SourceMetadata {
         scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll { interval_secs: 5 },
         keep_alive: KeepAlive::Polls(2),
-        failback: FailbackConfig { reattempts: 3, interval_secs: 30 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 30,
+        },
         fsevents_reinstate: false,
     }
 }
@@ -72,7 +75,9 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
 
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(CountingGlobalProvider)).expect("lc_counter");
+    registry
+        .register(Box::new(CountingGlobalProvider))
+        .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
 
@@ -119,7 +124,9 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
 async fn integration_active_entry_appears_in_status() {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(CountingGlobalProvider)).expect("lc_counter");
+    registry
+        .register(Box::new(CountingGlobalProvider))
+        .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
 
@@ -175,7 +182,9 @@ async fn integration_active_entry_appears_in_status() {
 async fn setup_lifecycle_scheduler() -> (Arc<Cache>, SchedulerHandle, tokio::task::JoinHandle<()>) {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(CountingGlobalProvider)).expect("lc_counter");
+    registry
+        .register(Box::new(CountingGlobalProvider))
+        .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
 
@@ -236,7 +245,9 @@ async fn integration_repeated_queries_keep_data_warm() {
 
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(CountingGlobalProvider)).expect("lc_counter");
+    registry
+        .register(Box::new(CountingGlobalProvider))
+        .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
 

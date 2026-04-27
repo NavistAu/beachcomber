@@ -249,30 +249,27 @@ impl StrategyKind {
 impl SourceOverrideConfig {
     /// Parse from a `toml::Value::Table`. Returns error if keys are invalid.
     /// `block_name` is used in error messages (e.g. "[providers.git.refs]").
-    pub fn from_toml_table(
-        block_name: &str,
-        table: &toml::value::Table,
-    ) -> Result<Self, String> {
+    pub fn from_toml_table(block_name: &str, table: &toml::value::Table) -> Result<Self, String> {
         let mut out = SourceOverrideConfig::default();
 
         for (key, val) in table {
             match key.as_str() {
                 "type" => {
-                    let s = val.as_str().ok_or_else(|| {
-                        format!("{block_name}: key 'type' must be a string")
-                    })?;
+                    let s = val
+                        .as_str()
+                        .ok_or_else(|| format!("{block_name}: key 'type' must be a string"))?;
                     out.strategy_type = Some(s.to_string());
                 }
                 "scope" => {
-                    let s = val.as_str().ok_or_else(|| {
-                        format!("{block_name}: key 'scope' must be a string")
-                    })?;
+                    let s = val
+                        .as_str()
+                        .ok_or_else(|| format!("{block_name}: key 'scope' must be a string"))?;
                     out.scope = Some(s.to_string());
                 }
                 "enabled" => {
-                    let b = val.as_bool().ok_or_else(|| {
-                        format!("{block_name}: key 'enabled' must be a boolean")
-                    })?;
+                    let b = val
+                        .as_bool()
+                        .ok_or_else(|| format!("{block_name}: key 'enabled' must be a boolean"))?;
                     out.enabled = Some(b);
                 }
                 "poll_interval" => {
@@ -294,9 +291,9 @@ impl SourceOverrideConfig {
                     let patterns: Result<Vec<String>, _> = arr
                         .iter()
                         .map(|v| {
-                            v.as_str()
-                                .map(|s| s.to_string())
-                                .ok_or_else(|| format!("{block_name}: fsevent_patterns elements must be strings"))
+                            v.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                                format!("{block_name}: fsevent_patterns elements must be strings")
+                            })
                         })
                         .collect();
                     out.fsevent_patterns = Some(patterns?);
@@ -308,9 +305,9 @@ impl SourceOverrideConfig {
                     let paths: Result<Vec<String>, _> = arr
                         .iter()
                         .map(|v| {
-                            v.as_str()
-                                .map(|s| s.to_string())
-                                .ok_or_else(|| format!("{block_name}: fsevent_abs_paths elements must be strings"))
+                            v.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                                format!("{block_name}: fsevent_abs_paths elements must be strings")
+                            })
                         })
                         .collect();
                     out.fsevent_abs_paths = Some(paths?);
@@ -467,10 +464,7 @@ pub struct ExternalFieldDecl {
 
 impl ExternalSourceConfig {
     /// Parse from a TOML table. `block_name` is used in error messages.
-    pub fn from_toml_table(
-        block_name: &str,
-        table: &toml::value::Table,
-    ) -> Result<Self, String> {
+    pub fn from_toml_table(block_name: &str, table: &toml::value::Table) -> Result<Self, String> {
         let mut out = ExternalSourceConfig::default();
 
         // ── headers sub-table ─────────────────────────────────────────────────
@@ -480,9 +474,9 @@ impl ExternalSourceConfig {
             if let Some(headers_table) = headers_val.as_table() {
                 let mut map = HashMap::new();
                 for (k, v) in headers_table {
-                    let s = v.as_str().ok_or_else(|| {
-                        format!("{block_name}: headers.{k} must be a string")
-                    })?;
+                    let s = v
+                        .as_str()
+                        .ok_or_else(|| format!("{block_name}: headers.{k} must be a string"))?;
                     map.insert(k.clone(), s.to_string());
                 }
                 out.headers = Some(map);
@@ -574,9 +568,9 @@ impl ExternalSourceConfig {
                         .ok_or_else(|| format!("{block_name}: 'fields' must be an array"))?;
                     let mut field_decls = Vec::new();
                     for (i, item) in arr.iter().enumerate() {
-                        let tbl = item.as_table().ok_or_else(|| {
-                            format!("{block_name}: fields[{i}] must be a table")
-                        })?;
+                        let tbl = item
+                            .as_table()
+                            .ok_or_else(|| format!("{block_name}: fields[{i}] must be a table"))?;
                         let name = tbl
                             .get("name")
                             .and_then(|v| v.as_str())
@@ -604,13 +598,10 @@ impl ExternalSourceConfig {
                     );
                 }
                 "poll_count" => {
-                    out.poll_count = Some(
-                        val.as_integer()
-                            .ok_or_else(|| {
-                                format!("{block_name}: 'poll_count' must be an integer")
-                            })?
-                            as u32,
-                    );
+                    out.poll_count =
+                        Some(val.as_integer().ok_or_else(|| {
+                            format!("{block_name}: 'poll_count' must be an integer")
+                        })? as u32);
                 }
                 "fsevent_patterns" => {
                     let arr = val.as_array().ok_or_else(|| {
@@ -652,20 +643,14 @@ impl ExternalSourceConfig {
                     );
                 }
                 "fsevent_reinstates" => {
-                    out.fsevent_reinstates = Some(
-                        val.as_bool().ok_or_else(|| {
-                            format!("{block_name}: 'fsevent_reinstates' must be a boolean")
-                        })?,
-                    );
+                    out.fsevent_reinstates = Some(val.as_bool().ok_or_else(|| {
+                        format!("{block_name}: 'fsevent_reinstates' must be a boolean")
+                    })?);
                 }
                 "failback_count" => {
-                    out.failback_count = Some(
-                        val.as_integer()
-                            .ok_or_else(|| {
-                                format!("{block_name}: 'failback_count' must be an integer")
-                            })?
-                            as u32,
-                    );
+                    out.failback_count = Some(val.as_integer().ok_or_else(|| {
+                        format!("{block_name}: 'failback_count' must be an integer")
+                    })? as u32);
                 }
                 "failback_interval" => {
                     out.failback_interval = Some(
@@ -969,11 +954,7 @@ impl Config {
     /// 1. Per-source config: `[providers.<name>.<source>] fsevent_reinstates = <bool>`.
     /// 2. Global lifecycle override: `[lifecycle] fsevents_reinstate = <bool>`.
     /// 3. Source-declared default via `SourceMetadata::fsevents_reinstate`.
-    pub fn resolve_fsevents_reinstate(
-        &self,
-        provider_name: &str,
-        provider_default: bool,
-    ) -> bool {
+    pub fn resolve_fsevents_reinstate(&self, provider_name: &str, provider_default: bool) -> bool {
         self.resolve_fsevents_reinstate_for_source(provider_name, None, provider_default)
     }
 
@@ -1037,7 +1018,11 @@ impl Config {
                 let cfg = Self::as_script_provider_config(val)?;
                 let is_script = cfg.provider_type.as_deref() == Some("script")
                     || (!cfg.command.is_empty() && cfg.provider_type.is_none());
-                if is_script { Some((name.clone(), cfg)) } else { None }
+                if is_script {
+                    Some((name.clone(), cfg))
+                } else {
+                    None
+                }
             })
             .collect()
     }

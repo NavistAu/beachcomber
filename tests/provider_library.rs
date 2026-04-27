@@ -21,7 +21,11 @@ fn library_metadata_parses_per_field_scope() {
     // With global=false, scope is PathScoped.
     assert_eq!(meta.sources[0].scope, SourceScope::PathScoped);
     // Fields should be present.
-    let field_names: Vec<&str> = meta.sources[0].fields.iter().map(|f| f.name.as_str()).collect();
+    let field_names: Vec<&str> = meta.sources[0]
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
     assert!(field_names.contains(&"branch"));
     assert!(field_names.contains(&"status"));
 }
@@ -36,7 +40,11 @@ fn library_metadata_legacy_global_bool_applies_default_scope() {
     }"#;
     let meta = parse_library_metadata_for_test("liblegacy", json).expect("parses");
     assert_eq!(meta.sources[0].scope, SourceScope::Global);
-    let field_names: Vec<&str> = meta.sources[0].fields.iter().map(|f| f.name.as_str()).collect();
+    let field_names: Vec<&str> = meta.sources[0]
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
     assert!(field_names.contains(&"value"));
 }
 
@@ -50,7 +58,11 @@ fn library_metadata_legacy_global_false_is_pathscoped() {
     }"#;
     let meta = parse_library_metadata_for_test("libpath", json).expect("parses");
     assert_eq!(meta.sources[0].scope, SourceScope::PathScoped);
-    let field_names: Vec<&str> = meta.sources[0].fields.iter().map(|f| f.name.as_str()).collect();
+    let field_names: Vec<&str> = meta.sources[0]
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
     assert!(field_names.contains(&"branch"));
 }
 
@@ -68,7 +80,11 @@ fn library_metadata_mixed_explicit_and_legacy_default() {
     let meta = parse_library_metadata_for_test("libmix", json).expect("parses");
     // global=true → scope is Global
     assert_eq!(meta.sources[0].scope, SourceScope::Global);
-    let field_names: Vec<&str> = meta.sources[0].fields.iter().map(|f| f.name.as_str()).collect();
+    let field_names: Vec<&str> = meta.sources[0]
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
     assert!(field_names.contains(&"a"));
     assert!(field_names.contains(&"b"));
 }
@@ -84,7 +100,10 @@ fn library_metadata_once_becomes_pure_watch_global_never() {
     let meta = parse_library_metadata_for_test("libonce", json).expect("parses");
     let src = &meta.sources[0];
     assert_eq!(src.scope, SourceScope::Global);
-    assert!(matches!(src.invalidation, InvalidationStrategy::Watch { .. }));
+    assert!(matches!(
+        src.invalidation,
+        InvalidationStrategy::Watch { .. }
+    ));
     assert!(matches!(src.keep_alive, KeepAlive::Never));
 }
 
@@ -111,7 +130,9 @@ poll_count = 6
         "multi-source library provider must not appear in legacy library_providers()"
     );
 
-    let multi = config.multi_library_providers().expect("parses without error");
+    let multi = config
+        .multi_library_providers()
+        .expect("parses without error");
     assert_eq!(multi.len(), 1);
     let (name, lib_path, overrides) = &multi[0];
     assert_eq!(name, "mygpu");
@@ -132,7 +153,10 @@ backend = "library"
 "#;
     let config: beachcomber::config::Config = toml::from_str(toml_str).unwrap();
     let result = config.multi_library_providers();
-    assert!(result.is_err(), "missing library_path must produce an error");
+    assert!(
+        result.is_err(),
+        "missing library_path must produce an error"
+    );
     assert!(
         result.unwrap_err().contains("library_path"),
         "error mentions 'library_path'"
@@ -153,7 +177,10 @@ fn library_abi_detection_multi_source_metadata_json_name() {
     let meta = parse_library_metadata_for_test("mygpu", json_with_name).expect("parses");
     assert_eq!(meta.sources[0].name, "usage");
     assert_eq!(meta.sources[0].scope, SourceScope::Global);
-    let field_names: Vec<&str> =
-        meta.sources[0].fields.iter().map(|f| f.name.as_str()).collect();
+    let field_names: Vec<&str> = meta.sources[0]
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
     assert!(field_names.contains(&"gpu_pct"));
 }

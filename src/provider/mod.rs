@@ -254,14 +254,16 @@ pub fn expand_abs_path(s: &str) -> Option<std::path::PathBuf> {
             }
             let val = match name.as_str() {
                 "HOME" => home.clone(),
-                "XDG_CONFIG_HOME" => std::env::var("XDG_CONFIG_HOME")
-                    .unwrap_or_else(|_| format!("{home}/.config")),
+                "XDG_CONFIG_HOME" => {
+                    std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{home}/.config"))
+                }
                 "XDG_DATA_HOME" => std::env::var("XDG_DATA_HOME")
                     .unwrap_or_else(|_| format!("{home}/.local/share")),
                 "XDG_STATE_HOME" => std::env::var("XDG_STATE_HOME")
                     .unwrap_or_else(|_| format!("{home}/.local/state")),
-                "XDG_CACHE_HOME" => std::env::var("XDG_CACHE_HOME")
-                    .unwrap_or_else(|_| format!("{home}/.cache")),
+                "XDG_CACHE_HOME" => {
+                    std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| format!("{home}/.cache"))
+                }
                 _ => std::env::var(&name).ok()?,
             };
             out.push_str(&val);
@@ -363,7 +365,9 @@ fn validate_source(provider: &str, s: &SourceMetadata) -> Result<(), String> {
     match (&s.invalidation, &s.keep_alive, &s.scope) {
         (InvalidationStrategy::Poll { .. }, KeepAlive::Polls(_), _) => Ok(()),
         (InvalidationStrategy::WatchAndPoll { .. }, KeepAlive::Polls(_), _) => Ok(()),
-        (InvalidationStrategy::Watch { .. }, KeepAlive::Duration(_), SourceScope::PathScoped) => Ok(()),
+        (InvalidationStrategy::Watch { .. }, KeepAlive::Duration(_), SourceScope::PathScoped) => {
+            Ok(())
+        }
         (InvalidationStrategy::Watch { .. }, KeepAlive::Never, SourceScope::Global) => Ok(()),
         _ => Err(format!(
             "provider '{}' source '{}': KeepAlive variant does not match strategy/scope. \
@@ -373,7 +377,8 @@ fn validate_source(provider: &str, s: &SourceMetadata) -> Result<(), String> {
         )),
     }?;
     // Global Watch sources should use abs_paths only
-    if let (InvalidationStrategy::Watch { patterns, .. }, SourceScope::Global) = (&s.invalidation, &s.scope)
+    if let (InvalidationStrategy::Watch { patterns, .. }, SourceScope::Global) =
+        (&s.invalidation, &s.scope)
         && !patterns.is_empty()
     {
         return Err(format!(
@@ -457,25 +462,26 @@ mod tests {
 
     #[test]
     fn watch_patterns_empty_for_poll() {
-        assert!(
-            watch_patterns(&InvalidationStrategy::Poll {
-                interval_secs: 10,
-            })
-            .is_empty()
-        );
+        assert!(watch_patterns(&InvalidationStrategy::Poll { interval_secs: 10 }).is_empty());
     }
 
     fn make_source(name: &str, fields: Vec<&str>) -> SourceMetadata {
         SourceMetadata {
             name: name.into(),
-            fields: fields.into_iter().map(|n| FieldSchema {
-                name: n.into(),
-                field_type: FieldType::String,
-            }).collect(),
+            fields: fields
+                .into_iter()
+                .map(|n| FieldSchema {
+                    name: n.into(),
+                    field_type: FieldType::String,
+                })
+                .collect(),
             scope: SourceScope::Global,
             invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
             keep_alive: KeepAlive::Polls(2),
-            failback: FailbackConfig { reattempts: 3, interval_secs: 30 },
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
             fsevents_reinstate: false,
         }
     }
@@ -507,7 +513,10 @@ mod tests {
             abs_paths: vec!["/foo".into()],
         };
         s.keep_alive = KeepAlive::Polls(2);
-        let meta = ProviderMetadata { name: "x".into(), sources: vec![s] };
+        let meta = ProviderMetadata {
+            name: "x".into(),
+            sources: vec![s],
+        };
         assert!(meta.validate().is_err());
     }
 
@@ -520,7 +529,10 @@ mod tests {
         };
         s.scope = SourceScope::PathScoped;
         s.keep_alive = KeepAlive::Never;
-        let meta = ProviderMetadata { name: "x".into(), sources: vec![s] };
+        let meta = ProviderMetadata {
+            name: "x".into(),
+            sources: vec![s],
+        };
         assert!(meta.validate().is_err());
     }
 
@@ -533,7 +545,10 @@ mod tests {
         };
         s.scope = SourceScope::Global;
         s.keep_alive = KeepAlive::Never;
-        let meta = ProviderMetadata { name: "x".into(), sources: vec![s] };
+        let meta = ProviderMetadata {
+            name: "x".into(),
+            sources: vec![s],
+        };
         assert!(meta.validate().is_err());
     }
 
@@ -541,7 +556,10 @@ mod tests {
     fn validate_rejects_fsevents_reinstate_on_poll() {
         let mut s = make_source("a", vec!["f1"]);
         s.fsevents_reinstate = true;
-        let meta = ProviderMetadata { name: "x".into(), sources: vec![s] };
+        let meta = ProviderMetadata {
+            name: "x".into(),
+            sources: vec![s],
+        };
         assert!(meta.validate().is_err());
     }
 
@@ -643,11 +661,15 @@ mod tests {
         // Use a value we can predict regardless of caller's env.
         let saved = std::env::var("XDG_CONFIG_HOME").ok();
         // SAFETY: test single-threaded for env mutation
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME"); }
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
         let p = expand_abs_path("$XDG_CONFIG_HOME/mise").unwrap();
         assert_eq!(p.to_string_lossy(), format!("{home}/.config/mise"));
         if let Some(v) = saved {
-            unsafe { std::env::set_var("XDG_CONFIG_HOME", v); }
+            unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", v);
+            }
         }
     }
 

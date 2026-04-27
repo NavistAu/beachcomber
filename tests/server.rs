@@ -1,7 +1,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::Value;
+use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,7 +44,10 @@ async fn server_handles_get_global_provider() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let mut fields = HashMap::new();
-    fields.insert("name".to_string(), Value::String("testhost.local".to_string()));
+    fields.insert(
+        "name".to_string(),
+        Value::String("testhost.local".to_string()),
+    );
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
     cache.put_source("hostname", None, "main", fields, Some(60));
 
@@ -77,7 +80,10 @@ async fn server_handles_get_single_field() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let mut fields = HashMap::new();
-    fields.insert("name".to_string(), Value::String("testhost.local".to_string()));
+    fields.insert(
+        "name".to_string(),
+        Value::String("testhost.local".to_string()),
+    );
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
     cache.put_source("hostname", None, "main", fields, Some(60));
 
@@ -108,7 +114,10 @@ async fn server_handles_get_text_format() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let mut fields = HashMap::new();
-    fields.insert("name".to_string(), Value::String("testhost.local".to_string()));
+    fields.insert(
+        "name".to_string(),
+        Value::String("testhost.local".to_string()),
+    );
     cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -291,7 +300,10 @@ async fn server_handles_get_sh_format() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let mut fields = HashMap::new();
-    fields.insert("name".to_string(), Value::String("testhost.local".to_string()));
+    fields.insert(
+        "name".to_string(),
+        Value::String("testhost.local".to_string()),
+    );
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
     cache.put_source("hostname", None, "main", fields, Some(60));
 
@@ -329,7 +341,10 @@ async fn server_text_format_object_emits_key_value_lines() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let mut fields = HashMap::new();
-    fields.insert("name".to_string(), Value::String("testhost.local".to_string()));
+    fields.insert(
+        "name".to_string(),
+        Value::String("testhost.local".to_string()),
+    );
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
     cache.put_source("hostname", None, "main", fields, Some(60));
 

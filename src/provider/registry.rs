@@ -150,27 +150,65 @@ impl ProviderRegistry {
         // TODO(phase1-section-H): re-enable each line once the provider is migrated
         // to the new Provider/Source trait shape. Uncomment one at a time during Section H.
         //
-        registry.register(Box::new(crate::provider::asdf::AsdfProvider)).expect("asdf");
-        registry.register(Box::new(crate::provider::aws::AwsProvider)).expect("aws");
+        registry
+            .register(Box::new(crate::provider::asdf::AsdfProvider))
+            .expect("asdf");
+        registry
+            .register(Box::new(crate::provider::aws::AwsProvider))
+            .expect("aws");
         #[cfg(any(target_os = "macos", target_os = "linux"))]
-        registry.register(Box::new(crate::provider::battery::BatteryProvider)).expect("battery");
-        registry.register(Box::new(crate::provider::conda::CondaProvider)).expect("conda");
-        registry.register(Box::new(crate::provider::direnv::DirenvProvider)).expect("direnv");
-        registry.register(Box::new(crate::provider::gcloud::GcloudProvider)).expect("gcloud");
-        registry.register(Box::new(crate::provider::git::GitProvider)).expect("git");
-        registry.register(Box::new(crate::provider::hostname::HostnameProvider)).expect("hostname");
-        registry.register(Box::new(crate::provider::kubecontext::KubecontextProvider)).expect("kubecontext");
-        registry.register(Box::new(crate::provider::load::LoadProvider)).expect("load");
-        registry.register(Box::new(crate::provider::mise::MiseProvider)).expect("mise");
-        registry.register(Box::new(crate::provider::network::NetworkProvider)).expect("network");
-        registry.register(Box::new(crate::provider::op::OpProvider)).expect("op");
-        registry.register(Box::new(crate::provider::python::PythonProvider)).expect("python");
-        registry.register(Box::new(crate::provider::sudo::SudoProvider)).expect("sudo");
-        registry.register(Box::new(crate::provider::terraform::TerraformProvider)).expect("terraform");
-        registry.register(Box::new(crate::provider::uname::UnameProvider)).expect("uname");
+        registry
+            .register(Box::new(crate::provider::battery::BatteryProvider))
+            .expect("battery");
+        registry
+            .register(Box::new(crate::provider::conda::CondaProvider))
+            .expect("conda");
+        registry
+            .register(Box::new(crate::provider::direnv::DirenvProvider))
+            .expect("direnv");
+        registry
+            .register(Box::new(crate::provider::gcloud::GcloudProvider))
+            .expect("gcloud");
+        registry
+            .register(Box::new(crate::provider::git::GitProvider))
+            .expect("git");
+        registry
+            .register(Box::new(crate::provider::hostname::HostnameProvider))
+            .expect("hostname");
+        registry
+            .register(Box::new(crate::provider::kubecontext::KubecontextProvider))
+            .expect("kubecontext");
+        registry
+            .register(Box::new(crate::provider::load::LoadProvider))
+            .expect("load");
+        registry
+            .register(Box::new(crate::provider::mise::MiseProvider))
+            .expect("mise");
+        registry
+            .register(Box::new(crate::provider::network::NetworkProvider))
+            .expect("network");
+        registry
+            .register(Box::new(crate::provider::op::OpProvider))
+            .expect("op");
+        registry
+            .register(Box::new(crate::provider::python::PythonProvider))
+            .expect("python");
+        registry
+            .register(Box::new(crate::provider::sudo::SudoProvider))
+            .expect("sudo");
+        registry
+            .register(Box::new(crate::provider::terraform::TerraformProvider))
+            .expect("terraform");
+        registry
+            .register(Box::new(crate::provider::uname::UnameProvider))
+            .expect("uname");
         #[cfg(any(target_os = "macos", target_os = "linux"))]
-        registry.register(Box::new(crate::provider::uptime::UptimeProvider)).expect("uptime");
-        registry.register(Box::new(crate::provider::user::UserProvider)).expect("user");
+        registry
+            .register(Box::new(crate::provider::uptime::UptimeProvider))
+            .expect("uptime");
+        registry
+            .register(Box::new(crate::provider::user::UserProvider))
+            .expect("user");
         registry
     }
 
@@ -204,7 +242,10 @@ impl ProviderRegistry {
         add_builtin!("gcloud", crate::provider::gcloud::GcloudProvider);
         add_builtin!("git", crate::provider::git::GitProvider);
         add_builtin!("hostname", crate::provider::hostname::HostnameProvider);
-        add_builtin!("kubecontext", crate::provider::kubecontext::KubecontextProvider);
+        add_builtin!(
+            "kubecontext",
+            crate::provider::kubecontext::KubecontextProvider
+        );
         add_builtin!("load", crate::provider::load::LoadProvider);
         add_builtin!("mise", crate::provider::mise::MiseProvider);
         add_builtin!("network", crate::provider::network::NetworkProvider);
@@ -231,11 +272,9 @@ impl ProviderRegistry {
         for (name, lib_config) in config.library_providers() {
             if !config.is_provider_disabled(&name) {
                 if let Some(provider) = LibraryProvider::new(&name, lib_config) {
-                    registry
-                        .register(Box::new(provider))
-                        .unwrap_or_else(|e| {
-                            tracing::warn!("Failed to register library provider '{}': {}", name, e);
-                        });
+                    registry.register(Box::new(provider)).unwrap_or_else(|e| {
+                        tracing::warn!("Failed to register library provider '{}': {}", name, e);
+                    });
                 }
             }
         }
@@ -287,15 +326,13 @@ impl ProviderRegistry {
                         if let Some(provider) =
                             LibraryProvider::with_sources(&name, &lib_path, source_overrides)
                         {
-                            registry
-                                .register(Box::new(provider))
-                                .unwrap_or_else(|e| {
-                                    tracing::warn!(
-                                        "Failed to register multi-source library provider '{}': {}",
-                                        name,
-                                        e
-                                    );
-                                });
+                            registry.register(Box::new(provider)).unwrap_or_else(|e| {
+                                tracing::warn!(
+                                    "Failed to register multi-source library provider '{}': {}",
+                                    name,
+                                    e
+                                );
+                            });
                         }
                     }
                 }

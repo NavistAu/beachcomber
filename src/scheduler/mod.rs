@@ -10,8 +10,8 @@ use tokio::time::{Duration, interval};
 use tracing::{debug, info, warn};
 
 use crate::cache::Cache;
-use crate::config::Config;
 pub use crate::cache::FailureSnapshot;
+use crate::config::Config;
 use crate::provider::InvalidationStrategy;
 use crate::provider::SourceScope;
 use crate::provider::registry::ProviderRegistry;
@@ -163,9 +163,7 @@ impl SchedulerHandle {
 
     /// Return a full per-entry snapshot of every lifecycle-tracked key.
     /// Missing keys are not in the lifecycle registry (e.g. virtual/put entries).
-    pub async fn get_lifecycle_snapshots(
-        &self,
-    ) -> HashMap<lifecycle::Key, LifecycleSnapshot> {
+    pub async fn get_lifecycle_snapshots(&self) -> HashMap<lifecycle::Key, LifecycleSnapshot> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .tx
@@ -238,11 +236,7 @@ fn snapshot_entry(
     let decay = lifecycle::to_decay_level(&entry.state);
     let rate_mult: u64 = if decay == 0 { 1 } else { 1u64 << decay };
 
-    let base_poll_secs = entry
-        .config
-        .poll_interval
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let base_poll_secs = entry.config.poll_interval.map(|d| d.as_secs()).unwrap_or(0);
 
     // K and step duration both depend on the keep-alive variant.
     let (keep_alive_polls, step_duration_secs) = match entry.config.keep_alive {
@@ -483,7 +477,10 @@ impl Scheduler {
     /// Suppresses execution when failure backoff is active.
     fn execute_source(&self, provider_name: &str, source_name: &str, path: Option<&str>) {
         let Some(source) = self.registry.source(provider_name, source_name) else {
-            warn!("Refresh for unknown source '{}.{}'", provider_name, source_name);
+            warn!(
+                "Refresh for unknown source '{}.{}'",
+                provider_name, source_name
+            );
             return;
         };
 
@@ -546,7 +543,9 @@ impl Scheduler {
         let failure_backoff = self.config.resolve_failure_backoff_for_source(
             provider_name,
             Some(source_name),
-            Some(std::time::Duration::from_secs(source.metadata().failback.interval_secs)),
+            Some(std::time::Duration::from_secs(
+                source.metadata().failback.interval_secs,
+            )),
         );
 
         tokio::spawn(async move {
@@ -1120,9 +1119,8 @@ fn drop_watches_for_key(
 ) {
     let mut paths_to_unwatch = Vec::new();
     for (watch_path, subscriptions) in watch_paths.iter_mut() {
-        subscriptions.retain(|sub| {
-            !(sub.provider == key.0 && sub.path == key.1 && sub.source == key.2)
-        });
+        subscriptions
+            .retain(|sub| !(sub.provider == key.0 && sub.path == key.1 && sub.source == key.2));
         if subscriptions.is_empty() {
             paths_to_unwatch.push(watch_path.clone());
         }

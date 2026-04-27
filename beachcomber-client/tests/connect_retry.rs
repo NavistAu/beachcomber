@@ -22,7 +22,10 @@ fn connect_retries_succeed_after_brief_outage() {
     let result = libbeachcomber::connect_with_retry(&sock);
     let elapsed = start.elapsed();
 
-    assert!(result.is_ok(), "connect_with_retry should succeed after retry");
+    assert!(
+        result.is_ok(),
+        "connect_with_retry should succeed after retry"
+    );
     assert!(
         elapsed >= Duration::from_millis(250),
         "should have retried at least once; elapsed={:?}",

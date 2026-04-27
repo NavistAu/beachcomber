@@ -1,7 +1,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::Value;
+use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,7 +37,9 @@ async fn wait_fresh_entry_is_served_from_cache() {
     cache.put_source("hostname", None, "main", fields, Some(60));
 
     // Sanity-check the entry is not stale.
-    let entry = cache.get_entry("hostname", None).expect("entry must be present");
+    let entry = cache
+        .get_entry("hostname", None)
+        .expect("entry must be present");
     assert!(
         !entry.is_stale(),
         "entry with 60s interval must not be stale immediately"
@@ -95,7 +97,9 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
     // Confirm it is stale before we send the request.
-    let entry = cache.get_entry("hostname", None).expect("entry must be present");
+    let entry = cache
+        .get_entry("hostname", None)
+        .expect("entry must be present");
     assert!(
         entry.is_stale(),
         "entry with interval=0 must be stale after 1s"
@@ -157,14 +161,19 @@ async fn wait_virtual_provider_returns_cached_ignoring_stale() {
     registry.register_virtual("mystore");
 
     let mut fields = HashMap::new();
-    fields.insert("val".to_string(), Value::String("virtual-value".to_string()));
+    fields.insert(
+        "val".to_string(),
+        Value::String("virtual-value".to_string()),
+    );
     // interval=0 will make it stale after 1 second.
     cache.put_source("mystore", None, "virtual", fields, Some(0));
 
     // Wait so the entry becomes stale.
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
-    let entry = cache.get_entry("mystore", None).expect("entry must be present");
+    let entry = cache
+        .get_entry("mystore", None)
+        .expect("entry must be present");
     assert!(
         entry.is_stale(),
         "virtual entry with interval=0 must be stale after 1s"

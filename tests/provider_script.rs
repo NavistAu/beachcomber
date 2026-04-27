@@ -72,7 +72,10 @@ fn script_provider_path_scoped_executes_with_path() {
     let p = ScriptProvider::new("path_test", config);
     let sources = p.sources();
     let result = sources[0].execute(Some(&path));
-    assert!(!result.fields.is_empty(), "path-scoped execute should return fields");
+    assert!(
+        !result.fields.is_empty(),
+        "path-scoped execute should return fields"
+    );
 }
 
 #[test]
@@ -84,7 +87,10 @@ fn script_provider_returns_empty_on_failure() {
     let p = ScriptProvider::new("fail_test", config);
     let sources = p.sources();
     let result = sources[0].execute(None);
-    assert!(result.fields.is_empty(), "Failed command should return empty SourceResult");
+    assert!(
+        result.fields.is_empty(),
+        "Failed command should return empty SourceResult"
+    );
 }
 
 #[test]
@@ -183,17 +189,28 @@ fields = [{ name = "used_pct", type = "int" }]
         "multi-source provider must not appear in legacy script_providers()"
     );
 
-    let multi = config.multi_script_providers().expect("parses without error");
+    let multi = config
+        .multi_script_providers()
+        .expect("parses without error");
     assert_eq!(multi.len(), 1, "exactly one multi-source script provider");
     let (name, sources) = &multi[0];
     assert_eq!(name, "localdash");
     assert_eq!(sources.len(), 2, "two sources declared");
 
     // Sources may come back in any order (HashMap).
-    let weather = sources.iter().find(|s| s.name == "weather").expect("weather source");
-    let disk = sources.iter().find(|s| s.name == "disk").expect("disk source");
+    let weather = sources
+        .iter()
+        .find(|s| s.name == "weather")
+        .expect("weather source");
+    let disk = sources
+        .iter()
+        .find(|s| s.name == "disk")
+        .expect("disk source");
 
-    assert_eq!(weather.command.as_deref(), Some("/usr/local/bin/weather-cache"));
+    assert_eq!(
+        weather.command.as_deref(),
+        Some("/usr/local/bin/weather-cache")
+    );
     assert_eq!(weather.poll_interval.as_deref(), Some("10m"));
     assert_eq!(weather.poll_count, Some(3));
     assert_eq!(weather.failback_count, Some(3));

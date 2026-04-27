@@ -1,8 +1,8 @@
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
-use crate::provider::{InvalidationStrategy, SourceScope};
 use crate::provider::registry::ProviderRegistry;
+use crate::provider::{InvalidationStrategy, SourceScope};
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
 };
@@ -259,11 +259,7 @@ async fn handle_watch(
 ) {
     let (provider_name, field) = protocol::split_key(&key);
 
-    let effective_path = resolve_path(
-        &key,
-        path.as_deref().or(context_path.as_deref()),
-        registry,
-    );
+    let effective_path = resolve_path(&key, path.as_deref().or(context_path.as_deref()), registry);
 
     // Signal demand
     if let Some(sched) = scheduler {
@@ -361,12 +357,11 @@ async fn inline_execute_source(
     };
     let path_owned = effective_path.clone();
     let src_clone = std::sync::Arc::clone(&source);
-    let result = match tokio::task::spawn_blocking(move || src_clone.execute(path_owned.as_deref()))
-        .await
-    {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+    let result =
+        match tokio::task::spawn_blocking(move || src_clone.execute(path_owned.as_deref())).await {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
     if result.fields.is_empty() {
         return false;
     }
@@ -396,9 +391,7 @@ fn read_watch_value(
                 Response::ok(data, age_ms, false)
             }
             None => match cache.get_entry(provider_name, path) {
-                Some(_) => Response::error(format!(
-                    "unknown field: {provider_name}.{field_name}"
-                )),
+                Some(_) => Response::error(format!("unknown field: {provider_name}.{field_name}")),
                 None => Response::miss(),
             },
         }
@@ -448,7 +441,11 @@ fn split_metadata_suffix(key: &str) -> (&str, Option<&str>) {
 ///
 /// For path-scoped providers, also attempts canonical_path() via the first
 /// path-scoped source to walk to the project root.
-fn resolve_path(key: &str, requested_path: Option<&str>, registry: &ProviderRegistry) -> Option<String> {
+fn resolve_path(
+    key: &str,
+    requested_path: Option<&str>,
+    registry: &ProviderRegistry,
+) -> Option<String> {
     let parts: Vec<&str> = key.split('.').collect();
     let provider = parts[0];
 
@@ -694,8 +691,8 @@ async fn handle_request(
                             Some(value) => {
                                 let age_ms = src_entry.age_ms();
                                 let stale = src_entry.is_stale();
-                                let data = serde_json::to_value(value)
-                                    .unwrap_or(serde_json::Value::Null);
+                                let data =
+                                    serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
                                 (true, Response::ok(data, age_ms, stale))
                             }
                             None => {
@@ -738,8 +735,8 @@ async fn handle_request(
                             let age_ms = entry.age_ms();
                             let stale = entry.is_stale();
                             let flat = entry.flatten_fields();
-                            let data = serde_json::to_value(&flat)
-                                .unwrap_or(serde_json::Value::Null);
+                            let data =
+                                serde_json::to_value(&flat).unwrap_or(serde_json::Value::Null);
                             (true, Response::ok(data, age_ms, stale))
                         }
                         None => (false, Response::miss()),
@@ -927,7 +924,13 @@ async fn handle_request(
             registry.register_virtual(key);
 
             // Write to cache under the synthetic "virtual" source name.
-            cache.put_source(key, effective_path.as_deref(), "virtual", fields, interval_secs);
+            cache.put_source(
+                key,
+                effective_path.as_deref(),
+                "virtual",
+                fields,
+                interval_secs,
+            );
 
             Response {
                 ok: true,
@@ -958,11 +961,7 @@ async fn handle_request(
                     // Look up the lifecycle snapshot for THIS row's owning source
                     // so glyphs and TTL columns reflect the source's strategy
                     // (refs vs diff vs status all differ within a single provider).
-                    let triple = (
-                        row.provider.clone(),
-                        row.path.clone(),
-                        row.source.clone(),
-                    );
+                    let triple = (row.provider.clone(), row.path.clone(), row.source.clone());
                     let matching_snap = lifecycle.get(&triple);
 
                     if let Some(snap) = matching_snap {
@@ -1148,9 +1147,14 @@ async fn handle_introspect_providers(
             "unknown"
         };
 
-        let (scope, sources_out, invalidation) = if let Some(meta) = registry.provider_metadata(name) {
+        let (scope, sources_out, invalidation) = if let Some(meta) =
+            registry.provider_metadata(name)
+        {
             // Infer scope from per-source metadata.
-            let any_path = meta.sources.iter().any(|s| s.scope == SourceScope::PathScoped);
+            let any_path = meta
+                .sources
+                .iter()
+                .any(|s| s.scope == SourceScope::PathScoped);
             let scope = if any_path { "path" } else { "global" };
 
             // Collect per-source info.

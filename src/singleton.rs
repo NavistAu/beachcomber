@@ -181,7 +181,9 @@ pub fn acquire_or_supersede(
 ) -> Result<Option<SingletonLock>, SingletonLockError> {
     match SingletonLock::acquire(pid_path, our_version, our_binary_hash) {
         Ok(lock) => Ok(Some(lock)),
-        Err(SingletonLockError::AlreadyHeld { existing: Some(rec) }) => {
+        Err(SingletonLockError::AlreadyHeld {
+            existing: Some(rec),
+        }) => {
             match decide_supersession(&rec, our_binary_hash) {
                 SupersessionDecision::ExitSilent => Ok(None),
                 SupersessionDecision::Supersede { existing_pid } => {
@@ -217,9 +219,7 @@ pub fn acquire_or_supersede(
 /// Returns Err if the watcher cannot be set up (e.g., current_exe failed). The
 /// thread itself logs and exits silently on internal failures (like the
 /// notify channel disconnecting).
-pub fn spawn_binary_self_watch<F: FnOnce() + Send + 'static>(
-    on_change: F,
-) -> std::io::Result<()> {
+pub fn spawn_binary_self_watch<F: FnOnce() + Send + 'static>(on_change: F) -> std::io::Result<()> {
     use notify::{EventKind, RecursiveMode, Watcher};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -260,7 +260,11 @@ pub fn spawn_binary_self_watch<F: FnOnce() + Send + 'static>(
 
             match rx.recv_timeout(timeout) {
                 Ok(Ok(event)) => {
-                    tracing::debug!("self-watch event: kind={:?} paths={:?}", event.kind, event.paths);
+                    tracing::debug!(
+                        "self-watch event: kind={:?} paths={:?}",
+                        event.kind,
+                        event.paths
+                    );
                     let path_match = event.paths.iter().any(|p| {
                         let canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
                         canonical == exe || p == &exe
@@ -298,10 +302,7 @@ pub fn spawn_binary_self_watch<F: FnOnce() + Send + 'static>(
 /// Returns true iff `binary`'s mtime is strictly newer than `process_start_unix_ms`.
 /// Used at daemon startup to catch the rare race where the binary is replaced
 /// between process exec and fs-watch registration.
-pub fn binary_newer_than(
-    binary: &Path,
-    process_start_unix_ms: u64,
-) -> std::io::Result<bool> {
+pub fn binary_newer_than(binary: &Path, process_start_unix_ms: u64) -> std::io::Result<bool> {
     let meta = std::fs::metadata(binary)?;
     let mtime = meta.modified()?;
     let mtime_ms = mtime
@@ -332,8 +333,7 @@ pub fn find_orphan_daemons(our_exe: &Path) -> Vec<u32> {
                 return None;
             }
             let exe = proc.exe()?;
-            let exe_canonical =
-                std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+            let exe_canonical = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
             if exe_canonical == our_canonical {
                 Some(pid_u)
             } else {

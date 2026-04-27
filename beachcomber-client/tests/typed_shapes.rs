@@ -148,7 +148,10 @@ fn status_row_exposes_lifecycle_fields() {
     let row = CacheRow::from_wire(&wire).expect("from_wire");
     assert!(row.kind.is_some(), "kind must be populated");
     match row.kind.unwrap() {
-        RowKind::Lifecycle { decay, watches_files } => {
+        RowKind::Lifecycle {
+            decay,
+            watches_files,
+        } => {
             assert_eq!(decay, 0);
             assert!(watches_files);
         }

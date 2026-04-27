@@ -51,12 +51,9 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
         let known_sources: std::collections::HashMap<String, Vec<String>> = known_providers
             .iter()
             .filter_map(|p| {
-                registry.provider_sources(p).map(|sources| {
-                    (
-                        p.clone(),
-                        sources.iter().map(|s| s.name.clone()).collect(),
-                    )
-                })
+                registry
+                    .provider_sources(p)
+                    .map(|sources| (p.clone(), sources.iter().map(|s| s.name.clone()).collect()))
             })
             .collect();
         let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);

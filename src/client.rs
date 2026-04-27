@@ -33,7 +33,9 @@ async fn connect_with_retry(path: &std::path::Path) -> std::io::Result<UnixStrea
         }
     }
     // Final attempt after all backoffs.
-    UnixStream::connect(path).await.map_err(|e| last_err.unwrap_or(e))
+    UnixStream::connect(path)
+        .await
+        .map_err(|e| last_err.unwrap_or(e))
 }
 
 pub struct Client {

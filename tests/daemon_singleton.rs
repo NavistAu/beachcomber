@@ -18,7 +18,7 @@ fn resolve_socket_path_falls_back_to_tmp_not_tmpdir() {
     let old_tmp = std::env::var_os("TMPDIR");
     unsafe {
         std::env::remove_var("XDG_RUNTIME_DIR");
-        std::env::set_var("TMPDIR", "/per/shell/tmpdir");  // MUST be ignored now
+        std::env::set_var("TMPDIR", "/per/shell/tmpdir"); // MUST be ignored now
     }
     let path = cfg.resolve_socket_path();
     unsafe {
@@ -37,7 +37,10 @@ fn resolve_socket_path_falls_back_to_tmp_not_tmpdir() {
         path_str.starts_with("/tmp/beachcomber-"),
         "expected /tmp/beachcomber-* prefix, got {path_str}"
     );
-    assert!(path_str.ends_with("/sock"), "expected /sock suffix, got {path_str}");
+    assert!(
+        path_str.ends_with("/sock"),
+        "expected /sock suffix, got {path_str}"
+    );
 }
 
 #[test]
@@ -63,7 +66,9 @@ fn resolve_socket_path_uses_xdg_runtime_dir_when_set() {
     assert_eq!(path, PathBuf::from("/run/user/501/beachcomber/sock"));
 }
 
-use beachcomber::singleton::{SingletonLock, SingletonLockError, SupersessionDecision, decide_supersession, PidFileRecord};
+use beachcomber::singleton::{
+    PidFileRecord, SingletonLock, SingletonLockError, SupersessionDecision, decide_supersession,
+};
 
 const TEST_HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TEST_HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -96,7 +101,10 @@ fn singleton_lock_contested_by_same_process_fails() {
 
     let _first = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc", TEST_HASH_A).unwrap();
     let second = SingletonLock::acquire(&pid_path, "0.5.1+sha.abc", TEST_HASH_A);
-    assert!(matches!(second, Err(SingletonLockError::AlreadyHeld { .. })));
+    assert!(matches!(
+        second,
+        Err(SingletonLockError::AlreadyHeld { .. })
+    ));
 }
 
 #[test]
@@ -162,19 +170,24 @@ fn supersede_existing_kills_target_process() {
     // After reaping, the kernel frees the PID slot.
     std::thread::sleep(std::time::Duration::from_millis(50));
     let still_alive = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    assert!(still_alive != 0, "process should be gone; kill(0) returned {still_alive}");
+    assert!(
+        still_alive != 0,
+        "process should be gone; kill(0) returned {still_alive}"
+    );
 }
 
 #[test]
 fn supersede_existing_refuses_pid_one() {
-    let result = beachcomber::singleton::supersede_existing(1, std::time::Duration::from_millis(100));
+    let result =
+        beachcomber::singleton::supersede_existing(1, std::time::Duration::from_millis(100));
     assert!(result.is_err(), "expected error refusing pid 1");
 }
 
 #[test]
 fn supersede_existing_refuses_self() {
     let me = std::process::id();
-    let result = beachcomber::singleton::supersede_existing(me, std::time::Duration::from_millis(100));
+    let result =
+        beachcomber::singleton::supersede_existing(me, std::time::Duration::from_millis(100));
     assert!(result.is_err(), "expected error refusing self pid");
 }
 
@@ -184,7 +197,7 @@ fn binary_newer_than_returns_true_when_file_modified_after_start() {
     let fake_binary = tmpdir.path().join("fake");
     std::fs::write(&fake_binary, b"hello").unwrap();
 
-    let process_start_ms = 0u64;  // 1970-01-01 — far before fake_binary's mtime
+    let process_start_ms = 0u64; // 1970-01-01 — far before fake_binary's mtime
     let result = beachcomber::singleton::binary_newer_than(&fake_binary, process_start_ms)
         .expect("metadata read");
     assert!(result, "freshly written file should be newer than 1970");
@@ -227,7 +240,7 @@ fn find_orphan_daemons_excludes_self_and_non_matching_binary() {
 }
 
 #[test]
-#[ignore]  // spawns another process; slow
+#[ignore] // spawns another process; slow
 fn reap_orphans_kills_matching_binary_processes() {
     // Spawn a sleep process that impersonates our binary by path-matching.
     // The easiest approach: create a hard-link to the current test binary,

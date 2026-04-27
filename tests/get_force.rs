@@ -1,7 +1,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::Value;
+use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
 use std::collections::HashMap;
 use std::sync::Arc;

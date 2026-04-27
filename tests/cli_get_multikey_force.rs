@@ -3,8 +3,8 @@
 
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::Value;
+use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,7 +19,10 @@ async fn setup_seeded() -> (TempDir, std::path::PathBuf) {
 
     // Fresh seed with 60s interval — force must evict this.
     let mut fields = HashMap::new();
-    fields.insert("name".to_string(), Value::String("seeded-value".to_string()));
+    fields.insert(
+        "name".to_string(),
+        Value::String("seeded-value".to_string()),
+    );
     fields.insert("short".to_string(), Value::String("seeded".to_string()));
     cache.put_source("hostname", None, "main", fields, Some(60));
 

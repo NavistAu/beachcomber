@@ -83,7 +83,10 @@ mod uptime_tests {
         let src = &meta.sources[0];
         assert_eq!(src.name, "time");
         assert_eq!(src.scope, SourceScope::Global);
-        assert!(matches!(src.invalidation, InvalidationStrategy::Poll { interval_secs: 60 }));
+        assert!(matches!(
+            src.invalidation,
+            InvalidationStrategy::Poll { interval_secs: 60 }
+        ));
         let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
         assert!(fields.contains(&"seconds"));
         assert!(fields.contains(&"days"));

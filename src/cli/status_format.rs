@@ -95,12 +95,10 @@ pub fn format_ttl_cell(
     let dot_ring = if ascii { "+" } else { "\u{2299}" }; // ⊙
 
     match kind {
-        None | Some(RowKind::Once) | Some(RowKind::Virtual) | Some(RowKind::Transient) => {
-            TtlCell {
-                text: "---".into(),
-                color: None,
-            }
-        }
+        None | Some(RowKind::Once) | Some(RowKind::Virtual) | Some(RowKind::Transient) => TtlCell {
+            text: "---".into(),
+            color: None,
+        },
         Some(RowKind::Lifecycle {
             decay,
             watches_files,
@@ -415,7 +413,10 @@ pub fn row_context(r: &CacheRow) -> minijinja::Value {
     // failure object
     if let Some(f) = &r.failure {
         let mut fobj = serde_json::Map::new();
-        fobj.insert("consecutive_failures".into(), serde_json::json!(f.consecutive_failures));
+        fobj.insert(
+            "consecutive_failures".into(),
+            serde_json::json!(f.consecutive_failures),
+        );
         if let Some(su) = f.suppressed_until_unix_ms {
             fobj.insert("suppressed_until_unix_ms".into(), serde_json::json!(su));
         }
@@ -497,17 +498,43 @@ pub fn render_tsv(rows: &[CacheRow]) -> String {
         };
         let path = row.path.as_deref().unwrap_or("");
         let value = serde_json::to_string(&row.value).unwrap_or_default();
-        let p = row.poll_interval_secs.map(|n| n.to_string()).unwrap_or_default();
-        let k = row.keep_alive_polls.map(|n| n.to_string()).unwrap_or_default();
-        let r = row.fsevents_reinstate.map(|b| b.to_string()).unwrap_or_default();
-        let fc = row.failure.as_ref().map(|f| f.consecutive_failures.to_string()).unwrap_or_default();
-        let fs = row.failure.as_ref()
+        let p = row
+            .poll_interval_secs
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        let k = row
+            .keep_alive_polls
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        let r = row
+            .fsevents_reinstate
+            .map(|b| b.to_string())
+            .unwrap_or_default();
+        let fc = row
+            .failure
+            .as_ref()
+            .map(|f| f.consecutive_failures.to_string())
+            .unwrap_or_default();
+        let fs = row
+            .failure
+            .as_ref()
             .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))
             .unwrap_or_default();
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            row.provider, path, row.field, value, row.age_ms, row.stale,
-            kind, decay, p, k, r, fc, fs,
+            row.provider,
+            path,
+            row.field,
+            value,
+            row.age_ms,
+            row.stale,
+            kind,
+            decay,
+            p,
+            k,
+            r,
+            fc,
+            fs,
         ));
     }
     out
@@ -539,11 +566,26 @@ pub fn render_csv(rows: &[CacheRow]) -> String {
             Some(RowKind::Lifecycle { decay, .. }) => decay.to_string(),
             _ => String::new(),
         };
-        let p = row.poll_interval_secs.map(|n| n.to_string()).unwrap_or_default();
-        let k = row.keep_alive_polls.map(|n| n.to_string()).unwrap_or_default();
-        let r = row.fsevents_reinstate.map(|b| b.to_string()).unwrap_or_default();
-        let fc = row.failure.as_ref().map(|f| f.consecutive_failures.to_string()).unwrap_or_default();
-        let fs = row.failure.as_ref()
+        let p = row
+            .poll_interval_secs
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        let k = row
+            .keep_alive_polls
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        let r = row
+            .fsevents_reinstate
+            .map(|b| b.to_string())
+            .unwrap_or_default();
+        let fc = row
+            .failure
+            .as_ref()
+            .map(|f| f.consecutive_failures.to_string())
+            .unwrap_or_default();
+        let fs = row
+            .failure
+            .as_ref()
             .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))
             .unwrap_or_default();
         out.push_str(&format!(
@@ -602,25 +644,43 @@ pub fn render_sh_env(rows: &[CacheRow]) -> String {
         }
         // decay (only for lifecycle)
         if let Some(RowKind::Lifecycle { decay, .. }) = &row.kind {
-            out.push_str(&format!("{key}_DECAY={}\n", shell_quote(&decay.to_string())));
+            out.push_str(&format!(
+                "{key}_DECAY={}\n",
+                shell_quote(&decay.to_string())
+            ));
         }
         // poll_interval_secs
         if let Some(p) = row.poll_interval_secs {
-            out.push_str(&format!("{key}_POLL_INTERVAL_SECS={}\n", shell_quote(&p.to_string())));
+            out.push_str(&format!(
+                "{key}_POLL_INTERVAL_SECS={}\n",
+                shell_quote(&p.to_string())
+            ));
         }
         // keep_alive_polls
         if let Some(k) = row.keep_alive_polls {
-            out.push_str(&format!("{key}_KEEP_ALIVE_POLLS={}\n", shell_quote(&k.to_string())));
+            out.push_str(&format!(
+                "{key}_KEEP_ALIVE_POLLS={}\n",
+                shell_quote(&k.to_string())
+            ));
         }
         // fsevents_reinstate
         if let Some(r) = row.fsevents_reinstate {
-            out.push_str(&format!("{key}_FSEVENTS_REINSTATE={}\n", shell_quote(&r.to_string())));
+            out.push_str(&format!(
+                "{key}_FSEVENTS_REINSTATE={}\n",
+                shell_quote(&r.to_string())
+            ));
         }
         // failure fields
         if let Some(f) = &row.failure {
-            out.push_str(&format!("{key}_FAILURE_CONSECUTIVE_FAILURES={}\n", shell_quote(&f.consecutive_failures.to_string())));
+            out.push_str(&format!(
+                "{key}_FAILURE_CONSECUTIVE_FAILURES={}\n",
+                shell_quote(&f.consecutive_failures.to_string())
+            ));
             if let Some(su) = f.suppressed_until_unix_ms {
-                out.push_str(&format!("{key}_FAILURE_SUPPRESSED_UNTIL_UNIX_MS={}\n", shell_quote(&su.to_string())));
+                out.push_str(&format!(
+                    "{key}_FAILURE_SUPPRESSED_UNTIL_UNIX_MS={}\n",
+                    shell_quote(&su.to_string())
+                ));
             }
         }
     }
@@ -716,7 +776,11 @@ fn render_table(
         nat_provider = nat_provider.max(row.provider.chars().count());
         nat_path = nat_path.max(path.chars().count());
         nat_field = nat_field.max(row.field.chars().count());
-        nat_age = nat_age.max(format_age_with_polls(row.age_ms, row.polls_elapsed, ascii).chars().count());
+        nat_age = nat_age.max(
+            format_age_with_polls(row.age_ms, row.polls_elapsed, ascii)
+                .chars()
+                .count(),
+        );
         nat_ttl = nat_ttl.max(
             format_ttl_cell(
                 row.kind.as_ref(),
@@ -1053,7 +1117,9 @@ pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, S
             None => (4, 0),
         }),
         // Slowest-pollers first (descending poll_interval); None last.
-        "poll_interval" => rows.sort_by_key(|r| std::cmp::Reverse(r.poll_interval_secs.unwrap_or(0))),
+        "poll_interval" => {
+            rows.sort_by_key(|r| std::cmp::Reverse(r.poll_interval_secs.unwrap_or(0)))
+        }
         other => return Err(format!("invalid sort column: {other}")),
     }
     Ok(rows)
@@ -1147,10 +1213,7 @@ mod ansi_tests {
             ansi::wrap("hi", ansi::Color::Red, true),
             "\x1b[31mhi\x1b[0m"
         );
-        assert_eq!(
-            ansi::wrap("hi", ansi::Color::Dim, true),
-            "\x1b[2mhi\x1b[0m"
-        );
+        assert_eq!(ansi::wrap("hi", ansi::Color::Dim, true), "\x1b[2mhi\x1b[0m");
     }
 
     #[test]
@@ -1178,10 +1241,7 @@ mod ttl_cell_tests {
             false,
             6,
         );
-        assert_eq!(
-            cell.text,
-            "\u{2605}     60s\u{00d7}12 \u{2299}"
-        );
+        assert_eq!(cell.text, "\u{2605}     60s\u{00d7}12 \u{2299}");
         assert!(matches!(cell.color, Some(ansi::Color::BrightGreen)));
     }
 
@@ -1296,8 +1356,7 @@ mod ttl_cell_tests {
 
     #[test]
     fn transient_renders_dashes() {
-        let cell =
-            format_ttl_cell(Some(&RowKind::Transient), None, None, None, None, false, 6);
+        let cell = format_ttl_cell(Some(&RowKind::Transient), None, None, None, None, false, 6);
         assert_eq!(cell.text, "---");
     }
 
@@ -1477,7 +1536,10 @@ mod format_age_with_polls_tests {
 
     #[test]
     fn polls_unicode_suffix() {
-        assert_eq!(format_age_with_polls(14_000, Some(3), false), "14s\u{00d7}3");
+        assert_eq!(
+            format_age_with_polls(14_000, Some(3), false),
+            "14s\u{00d7}3"
+        );
     }
 
     #[test]
@@ -1487,16 +1549,25 @@ mod format_age_with_polls_tests {
 
     #[test]
     fn polls_zero() {
-        assert_eq!(format_age_with_polls(14_000, Some(0), false), "14s\u{00d7}0");
+        assert_eq!(
+            format_age_with_polls(14_000, Some(0), false),
+            "14s\u{00d7}0"
+        );
     }
 
     #[test]
     fn polls_two_digit_n() {
-        assert_eq!(format_age_with_polls(14_000, Some(12), false), "14s\u{00d7}12");
+        assert_eq!(
+            format_age_with_polls(14_000, Some(12), false),
+            "14s\u{00d7}12"
+        );
     }
 
     #[test]
     fn minutes_age_with_polls() {
-        assert_eq!(format_age_with_polls(185_000, Some(5), false), "3m5s\u{00d7}5");
+        assert_eq!(
+            format_age_with_polls(185_000, Some(5), false),
+            "3m5s\u{00d7}5"
+        );
     }
 }

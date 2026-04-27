@@ -1,7 +1,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::Value;
+use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,7 +16,10 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
 
     // Pre-populate cache
     let mut hostname = HashMap::new();
-    hostname.insert("name".to_string(), Value::String("testhost.local".to_string()));
+    hostname.insert(
+        "name".to_string(),
+        Value::String("testhost.local".to_string()),
+    );
     hostname.insert("short".to_string(), Value::String("testhost".to_string()));
     cache.put_source("hostname", None, "main", hostname, Some(60));
 

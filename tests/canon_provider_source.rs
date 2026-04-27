@@ -47,10 +47,7 @@ fn make_source_meta(
     }
 }
 
-fn watch_source_config(
-    keep_alive: KeepAlive,
-    fsevents_reinstate: bool,
-) -> SourceLifecycleConfig {
+fn watch_source_config(keep_alive: KeepAlive, fsevents_reinstate: bool) -> SourceLifecycleConfig {
     SourceLifecycleConfig {
         strategy_kind: StrategyKind::Watch,
         poll_interval: None,
@@ -68,7 +65,11 @@ fn poll_source_config(interval: Duration, k: u32) -> SourceLifecycleConfig {
     }
 }
 
-fn watch_and_poll_config(interval: Duration, k: u32, fsevents_reinstate: bool) -> SourceLifecycleConfig {
+fn watch_and_poll_config(
+    interval: Duration,
+    k: u32,
+    fsevents_reinstate: bool,
+) -> SourceLifecycleConfig {
     SourceLifecycleConfig {
         strategy_kind: StrategyKind::WatchAndPoll,
         poll_interval: Some(interval),
@@ -145,7 +146,11 @@ fn pure_watch_source_never_polls() {
 #[test]
 fn watch_source_refreshes_on_filesystem_event() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), Some("/repo".to_string()), "refs".to_string());
+    let key = (
+        "git".to_string(),
+        Some("/repo".to_string()),
+        "refs".to_string(),
+    );
     let t0 = Instant::now();
 
     let cfg = watch_source_config(KeepAlive::Duration(120), true);
@@ -163,18 +168,48 @@ fn watch_source_refreshes_on_filesystem_event() {
 
     // Field isolation: write only source A's fields; source B's are untouched.
     let cache = Cache::new();
-    cache.put_source("git", Some("/repo"), "refs", make_fields(&[("branch", "main"), ("commit", "abc")]), None);
-    cache.put_source("git", Some("/repo"), "diff", make_fields(&[("lines_added", "5")]), None);
+    cache.put_source(
+        "git",
+        Some("/repo"),
+        "refs",
+        make_fields(&[("branch", "main"), ("commit", "abc")]),
+        None,
+    );
+    cache.put_source(
+        "git",
+        Some("/repo"),
+        "diff",
+        make_fields(&[("lines_added", "5")]),
+        None,
+    );
 
     // Refresh refs only.
-    cache.put_source("git", Some("/repo"), "refs", make_fields(&[("branch", "feat"), ("commit", "def")]), None);
+    cache.put_source(
+        "git",
+        Some("/repo"),
+        "refs",
+        make_fields(&[("branch", "feat"), ("commit", "def")]),
+        None,
+    );
 
     // diff fields must be untouched.
-    let (lines, _) = cache.get_field("git", Some("/repo"), "lines_added").expect("lines_added must exist");
-    assert_eq!(lines.as_text(), "5", "sibling source field must be untouched after refs refresh");
+    let (lines, _) = cache
+        .get_field("git", Some("/repo"), "lines_added")
+        .expect("lines_added must exist");
+    assert_eq!(
+        lines.as_text(),
+        "5",
+        "sibling source field must be untouched after refs refresh"
+    );
     // refs fields must be updated.
-    let (branch, _) = cache.get_field("git", Some("/repo"), "branch").expect("branch must exist");
-    assert_eq!(branch.as_text(), "feat", "branch must reflect new value after refs refresh");
+    let (branch, _) = cache
+        .get_field("git", Some("/repo"), "branch")
+        .expect("branch must exist");
+    assert_eq!(
+        branch.as_text(),
+        "feat",
+        "branch must reflect new value after refs refresh"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +223,11 @@ fn watch_source_refreshes_on_filesystem_event() {
 #[test]
 fn watch_and_poll_source_refreshes_on_both_paths() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), Some("/repo".to_string()), "status".to_string());
+    let key = (
+        "git".to_string(),
+        Some("/repo".to_string()),
+        "status".to_string(),
+    );
     let t0 = Instant::now();
 
     // interval_secs=60, k=2
@@ -273,7 +312,11 @@ fn pure_watch_global_source_never_decays() {
 #[test]
 fn path_scoped_watch_source_decays_per_k_duration() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), Some("/repo".to_string()), "refs".to_string());
+    let key = (
+        "git".to_string(),
+        Some("/repo".to_string()),
+        "refs".to_string(),
+    );
     let t0 = Instant::now();
 
     let cfg = SourceLifecycleConfig {
@@ -289,9 +332,10 @@ fn path_scoped_watch_source_decays_per_k_duration() {
     // The lifecycle checks `now >= step_deadline`, so tick at t0+60 triggers.
     let actions = reg.tick(t0 + Duration::from_secs(60));
     assert!(
-        actions.transitions.iter().any(|(k, s)| {
-            k == &key && matches!(s, LifecycleState::Decay(DecayStep::Step1))
-        }),
+        actions
+            .transitions
+            .iter()
+            .any(|(k, s)| { k == &key && matches!(s, LifecycleState::Decay(DecayStep::Step1)) }),
         "path-scoped Watch source must enter Decay1 after keep_alive; transitions={:?}",
         actions.transitions
     );
@@ -342,17 +386,14 @@ fn source_level_failure_backoff_suppresses_refresh() {
         interval_secs: 60,
     };
     assert_eq!(config.reattempts, 3, "reattempts must match canon spec");
-    assert_eq!(config.interval_secs, 60, "interval_secs must match canon spec");
+    assert_eq!(
+        config.interval_secs, 60,
+        "interval_secs must match canon spec"
+    );
 
     // Simulate: populate cache once (the "last good value").
     let cache = Cache::new();
-    cache.put_source(
-        "test",
-        None,
-        "main",
-        make_fields(&[("status", "ok")]),
-        None,
-    );
+    cache.put_source("test", None, "main", make_fields(&[("status", "ok")]), None);
 
     let (last_val, _) = cache
         .get_field("test", None, "status")
@@ -405,7 +446,10 @@ fn successful_refresh_resets_failure_counter() {
         }
     }
     assert_eq!(consecutive_failures, 2, "two failures recorded");
-    assert!(!suppressed, "no suppression yet (below reattempts threshold)");
+    assert!(
+        !suppressed,
+        "no suppression yet (below reattempts threshold)"
+    );
 
     // Success: reset counter.
     consecutive_failures = 0;
@@ -431,9 +475,17 @@ fn sibling_sources_have_independent_lifecycles() {
     let t0 = Instant::now();
 
     // Source A: queried repeatedly (keep-alive reset continuously).
-    let key_a = ("git".to_string(), Some("/repo".to_string()), "refs".to_string());
+    let key_a = (
+        "git".to_string(),
+        Some("/repo".to_string()),
+        "refs".to_string(),
+    );
     // Source B: never queried after initial activation.
-    let key_b = ("git".to_string(), Some("/repo".to_string()), "diff".to_string());
+    let key_b = (
+        "git".to_string(),
+        Some("/repo".to_string()),
+        "diff".to_string(),
+    );
 
     // Both start Active. Polls(1) with 1s interval → keep-alive = 1s.
     let cfg_short = poll_source_config(Duration::from_secs(1), 1);
@@ -498,7 +550,11 @@ fn fsevents_reinstate_default_is_true_for_watch_sources() {
 
     // Verify in lifecycle: watches are NOT dropped on Active→Decay1 when fsevents_reinstate=true.
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), Some("/repo".to_string()), "refs".to_string());
+    let key = (
+        "git".to_string(),
+        Some("/repo".to_string()),
+        "refs".to_string(),
+    );
     let t0 = Instant::now();
     let cfg = watch_source_config(KeepAlive::Duration(1), true);
     reg.on_demand(key.clone(), cfg, t0);
@@ -513,7 +569,10 @@ fn fsevents_reinstate_default_is_true_for_watch_sources() {
 
     // fsevent during Decay1 reinstates to Active.
     let outcome = reg.on_fsevent(key.clone(), t0 + Duration::from_millis(2000));
-    assert!(outcome.refresh, "fsevent during Decay1 must trigger refresh (fsevents_reinstate=true)");
+    assert!(
+        outcome.refresh,
+        "fsevent during Decay1 must trigger refresh (fsevents_reinstate=true)"
+    );
     assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
 }
 
@@ -547,7 +606,11 @@ fn fsevents_reinstate_default_is_true_for_watch_and_poll_sources() {
 
     // Verify in lifecycle: watches survive Decay1 entry.
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), Some("/repo".to_string()), "status".to_string());
+    let key = (
+        "git".to_string(),
+        Some("/repo".to_string()),
+        "status".to_string(),
+    );
     let t0 = Instant::now();
     let cfg = watch_and_poll_config(Duration::from_millis(1), 1, true);
     reg.on_demand(key.clone(), cfg, t0);
@@ -594,8 +657,12 @@ fn field_freshness_reflects_owning_source_last_refresh() {
     );
 
     // Source B's age should be younger than source A's age.
-    let src_a = cache.get_source("git", Some("/repo"), "refs").expect("refs must exist");
-    let src_b = cache.get_source("git", Some("/repo"), "diff").expect("diff must exist");
+    let src_a = cache
+        .get_source("git", Some("/repo"), "refs")
+        .expect("refs must exist");
+    let src_b = cache
+        .get_source("git", Some("/repo"), "diff")
+        .expect("diff must exist");
 
     let age_a = src_a.age_ms();
     let age_b = src_b.age_ms();
@@ -655,8 +722,14 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
 
     // Verify the source metadata carries the absolute path correctly.
     match &source.metadata().invalidation {
-        InvalidationStrategy::Watch { patterns, abs_paths } => {
-            assert!(patterns.is_empty(), "Global Watch must use abs_paths, not patterns");
+        InvalidationStrategy::Watch {
+            patterns,
+            abs_paths,
+        } => {
+            assert!(
+                patterns.is_empty(),
+                "Global Watch must use abs_paths, not patterns"
+            );
             assert_eq!(abs_paths, &[abs_path.clone()], "abs_paths must match");
         }
         other => panic!("expected Watch strategy, got {:?}", other),
@@ -720,13 +793,27 @@ fn cross_source_field_write_isolation() {
     );
 
     // a1 and a2 must reflect the new values.
-    let (a1, _) = cache.get_field("myprovider", Some("/path"), "a1").expect("a1 must exist");
-    let (a2, _) = cache.get_field("myprovider", Some("/path"), "a2").expect("a2 must exist");
-    assert_eq!(a1.as_text(), "new_a1", "a1 must be updated after source_a refresh");
-    assert_eq!(a2.as_text(), "new_a2", "a2 must be updated after source_a refresh");
+    let (a1, _) = cache
+        .get_field("myprovider", Some("/path"), "a1")
+        .expect("a1 must exist");
+    let (a2, _) = cache
+        .get_field("myprovider", Some("/path"), "a2")
+        .expect("a2 must exist");
+    assert_eq!(
+        a1.as_text(),
+        "new_a1",
+        "a1 must be updated after source_a refresh"
+    );
+    assert_eq!(
+        a2.as_text(),
+        "new_a2",
+        "a2 must be updated after source_a refresh"
+    );
 
     // b1 must remain unchanged.
-    let (b1, _) = cache.get_field("myprovider", Some("/path"), "b1").expect("b1 must exist");
+    let (b1, _) = cache
+        .get_field("myprovider", Some("/path"), "b1")
+        .expect("b1 must exist");
     assert_eq!(
         b1.as_text(),
         "original_b1",
@@ -749,8 +836,16 @@ fn demand_for_field_is_demand_for_owning_source_only() {
     let t0 = Instant::now();
 
     // Both sources with 1s keep-alive (Polls(1), 1s interval).
-    let key_a = ("myprovider".to_string(), Some("/path".to_string()), "source_a".to_string());
-    let key_b = ("myprovider".to_string(), Some("/path".to_string()), "source_b".to_string());
+    let key_a = (
+        "myprovider".to_string(),
+        Some("/path".to_string()),
+        "source_a".to_string(),
+    );
+    let key_b = (
+        "myprovider".to_string(),
+        Some("/path".to_string()),
+        "source_b".to_string(),
+    );
 
     let cfg = poll_source_config(Duration::from_secs(1), 1);
     reg.on_demand(key_a.clone(), cfg.clone(), t0);

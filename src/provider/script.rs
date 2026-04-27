@@ -42,7 +42,10 @@ impl ScriptProvider {
             output_format: config.output.clone(),
             meta,
         };
-        Self { name: name.to_string(), entries: vec![entry] }
+        Self {
+            name: name.to_string(),
+            entries: vec![entry],
+        }
     }
 
     /// Create a multi-source provider from Phase 4 per-source ExternalSourceConfig list.
@@ -58,7 +61,10 @@ impl ScriptProvider {
                 }
             })
             .collect();
-        Self { name: name.to_string(), entries }
+        Self {
+            name: name.to_string(),
+            entries,
+        }
     }
 }
 
@@ -167,7 +173,9 @@ fn build_source_meta_from_legacy(_name: &str, config: &ScriptProviderConfig) -> 
             if scope == SourceScope::Global {
                 let _ = patterns;
                 (
-                    InvalidationStrategy::Poll { interval_secs: poll_secs },
+                    InvalidationStrategy::Poll {
+                        interval_secs: poll_secs,
+                    },
                     KeepAlive::Polls(2),
                 )
             } else {
@@ -182,7 +190,9 @@ fn build_source_meta_from_legacy(_name: &str, config: &ScriptProviderConfig) -> 
             }
         }
         None => (
-            InvalidationStrategy::Poll { interval_secs: poll_secs },
+            InvalidationStrategy::Poll {
+                interval_secs: poll_secs,
+            },
             KeepAlive::Polls(2),
         ),
     };
@@ -206,7 +216,10 @@ fn build_source_meta_from_legacy(_name: &str, config: &ScriptProviderConfig) -> 
         .unwrap_or_default();
 
     let fields = if fields.is_empty() {
-        vec![FieldSchema { name: "<field>".into(), field_type: FieldType::String }]
+        vec![FieldSchema {
+            name: "<field>".into(),
+            field_type: FieldType::String,
+        }]
     } else {
         fields
     };
@@ -217,7 +230,10 @@ fn build_source_meta_from_legacy(_name: &str, config: &ScriptProviderConfig) -> 
         scope,
         invalidation,
         keep_alive,
-        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
         fsevents_reinstate: false,
     }
 }
@@ -275,7 +291,9 @@ pub(crate) fn build_source_meta_from_external(cfg: &ExternalSourceConfig) -> Sou
             KeepAlive::Polls(poll_count),
         ),
         _ => (
-            InvalidationStrategy::Poll { interval_secs: poll_secs },
+            InvalidationStrategy::Poll {
+                interval_secs: poll_secs,
+            },
             KeepAlive::Polls(poll_count),
         ),
     };
@@ -317,7 +335,10 @@ fn build_fields_from_decls(decls: Option<&[ExternalFieldDecl]>) -> Vec<FieldSche
                 },
             })
             .collect(),
-        _ => vec![FieldSchema { name: "<field>".into(), field_type: FieldType::String }],
+        _ => vec![FieldSchema {
+            name: "<field>".into(),
+            field_type: FieldType::String,
+        }],
     }
 }
 

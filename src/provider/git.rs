@@ -52,21 +52,66 @@ fn refs_meta() -> SourceMetadata {
     SourceMetadata {
         name: "refs".into(),
         fields: vec![
-            FieldSchema { name: "branch".into(), field_type: FieldType::String },
-            FieldSchema { name: "commit".into(), field_type: FieldType::String },
-            FieldSchema { name: "tag".into(), field_type: FieldType::String },
-            FieldSchema { name: "ahead".into(), field_type: FieldType::Int },
-            FieldSchema { name: "behind".into(), field_type: FieldType::Int },
-            FieldSchema { name: "upstream".into(), field_type: FieldType::String },
-            FieldSchema { name: "detached".into(), field_type: FieldType::Bool },
-            FieldSchema { name: "state".into(), field_type: FieldType::String },
-            FieldSchema { name: "stash".into(), field_type: FieldType::Int },
-            FieldSchema { name: "state_step".into(), field_type: FieldType::Int },
-            FieldSchema { name: "state_total".into(), field_type: FieldType::Int },
-            FieldSchema { name: "last_commit_age_secs".into(), field_type: FieldType::Int },
-            FieldSchema { name: "commit_summary".into(), field_type: FieldType::String },
-            FieldSchema { name: "push_ahead".into(), field_type: FieldType::Int },
-            FieldSchema { name: "push_behind".into(), field_type: FieldType::Int },
+            FieldSchema {
+                name: "branch".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "commit".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "tag".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "ahead".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "behind".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "upstream".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "detached".into(),
+                field_type: FieldType::Bool,
+            },
+            FieldSchema {
+                name: "state".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "stash".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "state_step".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "state_total".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "last_commit_age_secs".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "commit_summary".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "push_ahead".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "push_behind".into(),
+                field_type: FieldType::Int,
+            },
         ],
         scope: SourceScope::PathScoped,
         invalidation: InvalidationStrategy::Watch {
@@ -74,7 +119,10 @@ fn refs_meta() -> SourceMetadata {
             abs_paths: vec![],
         },
         keep_alive: KeepAlive::Duration(120),
-        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
         fsevents_reinstate: true,
     }
 }
@@ -83,15 +131,30 @@ fn diff_meta() -> SourceMetadata {
     SourceMetadata {
         name: "diff".into(),
         fields: vec![
-            FieldSchema { name: "lines_added".into(), field_type: FieldType::Int },
-            FieldSchema { name: "lines_removed".into(), field_type: FieldType::Int },
-            FieldSchema { name: "lines_staged_added".into(), field_type: FieldType::Int },
-            FieldSchema { name: "lines_staged_removed".into(), field_type: FieldType::Int },
+            FieldSchema {
+                name: "lines_added".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "lines_removed".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "lines_staged_added".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "lines_staged_removed".into(),
+                field_type: FieldType::Int,
+            },
         ],
         scope: SourceScope::PathScoped,
         invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
         keep_alive: KeepAlive::Polls(4),
-        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
         fsevents_reinstate: false,
     }
 }
@@ -100,11 +163,26 @@ fn status_meta() -> SourceMetadata {
     SourceMetadata {
         name: "status".into(),
         fields: vec![
-            FieldSchema { name: "staged".into(), field_type: FieldType::Int },
-            FieldSchema { name: "unstaged".into(), field_type: FieldType::Int },
-            FieldSchema { name: "untracked".into(), field_type: FieldType::Int },
-            FieldSchema { name: "conflicted".into(), field_type: FieldType::Int },
-            FieldSchema { name: "dirty".into(), field_type: FieldType::Bool },
+            FieldSchema {
+                name: "staged".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "unstaged".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "untracked".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "conflicted".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "dirty".into(),
+                field_type: FieldType::Bool,
+            },
         ],
         scope: SourceScope::PathScoped,
         invalidation: InvalidationStrategy::WatchAndPoll {
@@ -113,7 +191,10 @@ fn status_meta() -> SourceMetadata {
             interval_secs: 60,
         },
         keep_alive: KeepAlive::Polls(2),
-        failback: FailbackConfig { reattempts: 3, interval_secs: 30 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 30,
+        },
         fsevents_reinstate: true,
     }
 }

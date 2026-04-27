@@ -1,8 +1,8 @@
 use beachcomber::provider::Provider;
+use beachcomber::provider::SourceScope;
 use beachcomber::provider::aws::AwsProvider;
 use beachcomber::provider::gcloud::GcloudProvider;
 use beachcomber::provider::kubecontext::KubecontextProvider;
-use beachcomber::provider::SourceScope;
 
 #[test]
 fn kubecontext_provider_metadata() {

@@ -14,15 +14,30 @@ fn state_meta() -> SourceMetadata {
     SourceMetadata {
         name: "state".into(),
         fields: vec![
-            FieldSchema { name: "percent".into(), field_type: FieldType::Int },
-            FieldSchema { name: "charging".into(), field_type: FieldType::Bool },
-            FieldSchema { name: "status".into(), field_type: FieldType::String },
-            FieldSchema { name: "time_remaining_secs".into(), field_type: FieldType::Int },
+            FieldSchema {
+                name: "percent".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "charging".into(),
+                field_type: FieldType::Bool,
+            },
+            FieldSchema {
+                name: "status".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "time_remaining_secs".into(),
+                field_type: FieldType::Int,
+            },
         ],
         scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
         keep_alive: KeepAlive::Polls(4),
-        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
         fsevents_reinstate: false,
     }
 }
@@ -142,14 +157,26 @@ fn level_meta() -> SourceMetadata {
     SourceMetadata {
         name: "level".into(),
         fields: vec![
-            FieldSchema { name: "percent".into(), field_type: FieldType::Int },
-            FieldSchema { name: "charging".into(), field_type: FieldType::Bool },
-            FieldSchema { name: "status_raw".into(), field_type: FieldType::String },
+            FieldSchema {
+                name: "percent".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "charging".into(),
+                field_type: FieldType::Bool,
+            },
+            FieldSchema {
+                name: "status_raw".into(),
+                field_type: FieldType::String,
+            },
         ],
         scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
         keep_alive: KeepAlive::Polls(4),
-        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
         fsevents_reinstate: false,
     }
 }
@@ -159,13 +186,22 @@ fn upower_meta() -> SourceMetadata {
     SourceMetadata {
         name: "upower".into(),
         fields: vec![
-            FieldSchema { name: "time_remaining_secs".into(), field_type: FieldType::Int },
-            FieldSchema { name: "status".into(), field_type: FieldType::String },
+            FieldSchema {
+                name: "time_remaining_secs".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "status".into(),
+                field_type: FieldType::String,
+            },
         ],
         scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
         keep_alive: KeepAlive::Polls(2),
-        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
         fsevents_reinstate: false,
     }
 }

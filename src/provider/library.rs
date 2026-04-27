@@ -170,7 +170,10 @@ impl LibraryProvider {
             // config may not have all fields set, so we merge.
             let merged = build_source_meta_from_external(ov);
             // Keep the original name from the library's declaration.
-            SourceMetadata { name: meta.name.clone(), ..merged }
+            SourceMetadata {
+                name: meta.name.clone(),
+                ..merged
+            }
         } else {
             meta
         }
@@ -180,10 +183,8 @@ impl LibraryProvider {
 
     fn call_legacy_metadata_raw(&self) -> Option<String> {
         unsafe {
-            let f: Symbol<MetadataFn> = self
-                .library
-                .get(b"beachcomber_provider_metadata\0")
-                .ok()?;
+            let f: Symbol<MetadataFn> =
+                self.library.get(b"beachcomber_provider_metadata\0").ok()?;
             let ptr = f();
             if ptr.is_null() {
                 return None;
@@ -309,8 +310,10 @@ impl LibrarySource {
             }
             let cstr = CStr::from_ptr(ptr);
             let result = cstr.to_string_lossy().into_owned();
-            if let Ok(free_fn) =
-                self.library.inner.get::<FreeFn>(b"beachcomber_provider_free\0")
+            if let Ok(free_fn) = self
+                .library
+                .inner
+                .get::<FreeFn>(b"beachcomber_provider_free\0")
             {
                 free_fn(ptr as *mut c_char);
             }
@@ -320,11 +323,8 @@ impl LibrarySource {
 
     fn call_bc_execute(&self, path: Option<&str>) -> Option<String> {
         unsafe {
-            let f: Symbol<BcSourceExecuteFn> = self
-                .library
-                .inner
-                .get(b"bc_source_execute\0")
-                .ok()?;
+            let f: Symbol<BcSourceExecuteFn> =
+                self.library.inner.get(b"bc_source_execute\0").ok()?;
             let c_path = path.and_then(|p| CString::new(p).ok());
             let path_ptr = c_path.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
             let ptr = f(self.source_idx, path_ptr);
@@ -333,8 +333,10 @@ impl LibrarySource {
             }
             let cstr = CStr::from_ptr(ptr);
             let result = cstr.to_string_lossy().into_owned();
-            if let Ok(free_fn) =
-                self.library.inner.get::<BcSourceFreeFn>(b"bc_source_free\0")
+            if let Ok(free_fn) = self
+                .library
+                .inner
+                .get::<BcSourceFreeFn>(b"bc_source_free\0")
             {
                 free_fn(ptr as *mut c_char);
             }
@@ -387,7 +389,10 @@ fn parse_library_source_meta(_name: &str, json_str: &str) -> Option<SourceMetada
     let (invalidation, keep_alive, scope) = parse_invalidation_and_keep_alive(obj, default_scope);
 
     let fields = if fields.is_empty() {
-        vec![FieldSchema { name: "<field>".into(), field_type: FieldType::String }]
+        vec![FieldSchema {
+            name: "<field>".into(),
+            field_type: FieldType::String,
+        }]
     } else {
         fields
     };
@@ -405,7 +410,10 @@ fn parse_library_source_meta(_name: &str, json_str: &str) -> Option<SourceMetada
         scope,
         invalidation,
         keep_alive,
-        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
         fsevents_reinstate: false,
     })
 }
@@ -463,19 +471,27 @@ fn parse_invalidation_and_keep_alive(
         (Some(patterns), None) => {
             let (inv_strat, ka) = if scope == SourceScope::Global {
                 (
-                    InvalidationStrategy::Watch { patterns: vec![], abs_paths: vec![] },
+                    InvalidationStrategy::Watch {
+                        patterns: vec![],
+                        abs_paths: vec![],
+                    },
                     KeepAlive::Never,
                 )
             } else {
                 (
-                    InvalidationStrategy::Watch { patterns, abs_paths: vec![] },
+                    InvalidationStrategy::Watch {
+                        patterns,
+                        abs_paths: vec![],
+                    },
                     KeepAlive::Duration(120),
                 )
             };
             (inv_strat, ka, scope)
         }
         (None, Some(secs)) => (
-            InvalidationStrategy::Poll { interval_secs: secs },
+            InvalidationStrategy::Poll {
+                interval_secs: secs,
+            },
             KeepAlive::Polls(2),
             scope,
         ),
@@ -508,7 +524,10 @@ fn build_source_meta_from_config(_name: &str, config: &ScriptProviderConfig) -> 
         Some(patterns) => {
             if scope == SourceScope::Global {
                 (
-                    InvalidationStrategy::Watch { patterns: vec![], abs_paths: vec![] },
+                    InvalidationStrategy::Watch {
+                        patterns: vec![],
+                        abs_paths: vec![],
+                    },
                     KeepAlive::Never,
                 )
             } else {
@@ -523,7 +542,9 @@ fn build_source_meta_from_config(_name: &str, config: &ScriptProviderConfig) -> 
             }
         }
         None => (
-            InvalidationStrategy::Poll { interval_secs: poll_secs },
+            InvalidationStrategy::Poll {
+                interval_secs: poll_secs,
+            },
             KeepAlive::Polls(2),
         ),
     };
@@ -547,7 +568,10 @@ fn build_source_meta_from_config(_name: &str, config: &ScriptProviderConfig) -> 
         .unwrap_or_default();
 
     let fields = if fields.is_empty() {
-        vec![FieldSchema { name: "<field>".into(), field_type: FieldType::String }]
+        vec![FieldSchema {
+            name: "<field>".into(),
+            field_type: FieldType::String,
+        }]
     } else {
         fields
     };
@@ -558,7 +582,10 @@ fn build_source_meta_from_config(_name: &str, config: &ScriptProviderConfig) -> 
         scope,
         invalidation,
         keep_alive,
-        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
         fsevents_reinstate: false,
     }
 }
@@ -575,11 +602,17 @@ fn fallback_source_meta(provider_name: &str, idx: c_size_t) -> SourceMetadata {
     );
     SourceMetadata {
         name,
-        fields: vec![FieldSchema { name: "<field>".into(), field_type: FieldType::String }],
+        fields: vec![FieldSchema {
+            name: "<field>".into(),
+            field_type: FieldType::String,
+        }],
         scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
         keep_alive: KeepAlive::Polls(2),
-        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
         fsevents_reinstate: false,
     }
 }
@@ -603,7 +636,10 @@ fn load_library(name: &str, lib_path: &str) -> Option<Library> {
     let path = Path::new(&expanded);
 
     if !path.exists() {
-        warn!("Library provider '{}': path does not exist: {}", name, expanded);
+        warn!(
+            "Library provider '{}': path does not exist: {}",
+            name, expanded
+        );
         return None;
     }
 
@@ -611,7 +647,10 @@ fn load_library(name: &str, lib_path: &str) -> Option<Library> {
     match unsafe { Library::new(path) } {
         Ok(lib) => Some(lib),
         Err(e) => {
-            warn!("Library provider '{}': failed to load {}: {}", name, expanded, e);
+            warn!(
+                "Library provider '{}': failed to load {}: {}",
+                name, expanded, e
+            );
             None
         }
     }

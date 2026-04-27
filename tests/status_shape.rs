@@ -5,7 +5,9 @@
 // Also contains unit tests for the status_format preset renderers (T28).
 
 use beachcomber::cache::CacheRow;
-use beachcomber::cli::status_format::{RenderOpts, render_preset, render_tsv, render_csv, render_sh_env, row_context};
+use beachcomber::cli::status_format::{
+    RenderOpts, render_csv, render_preset, render_sh_env, render_tsv, row_context,
+};
 
 fn sample_rows() -> Vec<CacheRow> {
     vec![
@@ -291,11 +293,17 @@ fn cache_row_kind_serde_round_trip() {
 
     let cases = vec![
         (
-            RowKind::Lifecycle { decay: 0, watches_files: true },
+            RowKind::Lifecycle {
+                decay: 0,
+                watches_files: true,
+            },
             json!({"kind": "lifecycle", "decay": 0, "watches_files": true}),
         ),
         (
-            RowKind::Lifecycle { decay: 4, watches_files: false },
+            RowKind::Lifecycle {
+                decay: 4,
+                watches_files: false,
+            },
             json!({"kind": "lifecycle", "decay": 4, "watches_files": false}),
         ),
         (RowKind::Once, json!({"kind": "once"})),
@@ -590,7 +598,10 @@ fn ascii_flag_propagates_to_format_options() {
     use beachcomber::cli::status_format::FormatOptions;
     let opts = FormatOptions::default();
     assert!(!opts.ascii);
-    let opts2 = FormatOptions { ascii: true, ..opts };
+    let opts2 = FormatOptions {
+        ascii: true,
+        ..opts
+    };
     assert!(opts2.ascii);
 }
 
@@ -731,7 +742,10 @@ fn max_width_total_row_width_does_not_exceed_cap() {
         assert!(
             cols <= total_cap,
             "row {} is {} chars wide, exceeds cap {}: {:?}",
-            i, cols, total_cap, line
+            i,
+            cols,
+            total_cap,
+            line
         );
     }
 }
@@ -821,20 +835,28 @@ fn default_sort_is_path_provider_field() {
     assert_eq!(rows[5].provider, "mise");
 }
 
-
 #[test]
 fn failure_snapshot_serde_round_trip() {
     use beachcomber::cache::FailureSnapshot;
     use serde_json::json;
 
-    let snap = FailureSnapshot { consecutive_failures: 5, suppressed_until_unix_ms: Some(1_700_000_000_000) };
+    let snap = FailureSnapshot {
+        consecutive_failures: 5,
+        suppressed_until_unix_ms: Some(1_700_000_000_000),
+    };
     let v = serde_json::to_value(&snap).unwrap();
-    assert_eq!(v, json!({"consecutive_failures": 5, "suppressed_until_unix_ms": 1_700_000_000_000u64}));
+    assert_eq!(
+        v,
+        json!({"consecutive_failures": 5, "suppressed_until_unix_ms": 1_700_000_000_000u64})
+    );
     let round: FailureSnapshot = serde_json::from_value(v).unwrap();
     assert_eq!(round, snap);
 
     // optional field absent when None
-    let snap2 = FailureSnapshot { consecutive_failures: 1, suppressed_until_unix_ms: None };
+    let snap2 = FailureSnapshot {
+        consecutive_failures: 1,
+        suppressed_until_unix_ms: None,
+    };
     let v2 = serde_json::to_value(&snap2).unwrap();
     assert_eq!(v2, json!({"consecutive_failures": 1}));
 }
@@ -852,7 +874,10 @@ fn cache_row_new_fields_serde_round_trip() {
         value: json!("main"),
         age_ms: 14_000,
         stale: false,
-        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
+        kind: Some(RowKind::Lifecycle {
+            decay: 0,
+            watches_files: true,
+        }),
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
@@ -899,10 +924,7 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let snapshots = handle.get_lifecycle_snapshots().await;
-    let entry = snapshots
-        .values()
-        .next()
-        .expect("at least one snapshot");
+    let entry = snapshots.values().next().expect("at least one snapshot");
     assert!(entry.poll_interval_secs > 0);
     let _ = entry.fsevents_reinstate;
     let _ = entry.decay;
@@ -933,7 +955,11 @@ async fn failure_states_message_returns_provider_map() {
 
     // No failures yet — map should be empty (not error).
     let states = handle.get_failure_states().await;
-    assert!(states.is_empty(), "expected empty failure states map, got: {:?}", states);
+    assert!(
+        states.is_empty(),
+        "expected empty failure states map, got: {:?}",
+        states
+    );
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = task.await;
@@ -982,8 +1008,8 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
         .await
         .expect("status");
     assert!(resp.ok, "status failed: {:?}", resp.error);
-    let rows: Vec<CacheRow> = serde_json::from_value(resp.data.expect("data present"))
-        .expect("rows deserialize");
+    let rows: Vec<CacheRow> =
+        serde_json::from_value(resp.data.expect("data present")).expect("rows deserialize");
 
     // Pick a git row from the `refs` source (fsevent strategy → watches_files=true).
     // After Phase 1 each row carries its source's strategy individually, so the diff
@@ -995,14 +1021,23 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
 
     use beachcomber::cache::RowKind;
     match refs_row.kind.as_ref().expect("kind present") {
-        RowKind::Lifecycle { decay, watches_files } => {
+        RowKind::Lifecycle {
+            decay,
+            watches_files,
+        } => {
             assert_eq!(*decay, 0, "freshly queried row should be Active (decay=0)");
-            assert!(*watches_files, "git.refs uses Watch strategy → watches_files=true");
+            assert!(
+                *watches_files,
+                "git.refs uses Watch strategy → watches_files=true"
+            );
         }
         other => panic!("expected Lifecycle, got {:?}", other),
     }
     // refs is a pure Watch source — no poll path → poll_interval_secs is None.
-    assert!(refs_row.poll_interval_secs.is_none(), "Watch-only source should have None poll_interval_secs");
+    assert!(
+        refs_row.poll_interval_secs.is_none(),
+        "Watch-only source should have None poll_interval_secs"
+    );
     assert!(refs_row.keep_alive_polls.is_none());
     assert_eq!(refs_row.failure, None);
 
@@ -1013,13 +1048,25 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
         .expect("git.diff row present");
     match diff_row.kind.as_ref().expect("kind present") {
         RowKind::Lifecycle { watches_files, .. } => {
-            assert!(!*watches_files, "git.diff uses Poll strategy → watches_files=false");
+            assert!(
+                !*watches_files,
+                "git.diff uses Poll strategy → watches_files=false"
+            );
         }
         other => panic!("expected Lifecycle for diff row, got {:?}", other),
     }
-    assert!(diff_row.poll_interval_secs.is_some(), "Poll source should have Some poll_interval_secs");
-    assert!(diff_row.keep_alive_polls.is_some(), "Poll source should have Some keep_alive_polls");
-    assert!(diff_row.polls_elapsed.is_some(), "Poll source should have Some polls_elapsed");
+    assert!(
+        diff_row.poll_interval_secs.is_some(),
+        "Poll source should have Some poll_interval_secs"
+    );
+    assert!(
+        diff_row.keep_alive_polls.is_some(),
+        "Poll source should have Some keep_alive_polls"
+    );
+    assert!(
+        diff_row.polls_elapsed.is_some(),
+        "Poll source should have Some polls_elapsed"
+    );
 
     handle.abort();
 }
@@ -1042,8 +1089,8 @@ async fn status_response_once_row_has_kind_once() {
         .await
         .expect("status");
     assert!(resp.ok, "status failed: {:?}", resp.error);
-    let rows: Vec<CacheRow> = serde_json::from_value(resp.data.expect("data present"))
-        .expect("rows deserialize");
+    let rows: Vec<CacheRow> =
+        serde_json::from_value(resp.data.expect("data present")).expect("rows deserialize");
 
     let row = rows
         .iter()
@@ -1053,7 +1100,10 @@ async fn status_response_once_row_has_kind_once() {
     use beachcomber::cache::RowKind;
     // hostname uses Watch + KeepAlive::Never — shown as Lifecycle (decay=0, watches_files=true)
     match row.kind.as_ref().expect("kind present") {
-        RowKind::Lifecycle { decay, watches_files } => {
+        RowKind::Lifecycle {
+            decay,
+            watches_files,
+        } => {
             assert_eq!(*decay, 0, "freshly queried row should be Active (decay=0)");
             // Watch strategy with empty patterns — watches_files may be true or false;
             // what matters is the Lifecycle variant is used (not Once/Transient/Virtual).
@@ -1063,7 +1113,10 @@ async fn status_response_once_row_has_kind_once() {
     }
     // hostname uses Watch + KeepAlive::Never (pure-watch global) — no poll path
     // → poll_interval_secs is None and keep_alive_polls is None.
-    assert!(row.poll_interval_secs.is_none(), "pure Watch source should have None poll_interval_secs");
+    assert!(
+        row.poll_interval_secs.is_none(),
+        "pure Watch source should have None poll_interval_secs"
+    );
     assert!(row.keep_alive_polls.is_none());
 
     handle.abort();
@@ -1086,8 +1139,8 @@ async fn status_response_virtual_row_has_kind_virtual() {
         .await
         .expect("status");
     assert!(resp.ok, "status failed: {:?}", resp.error);
-    let rows: Vec<CacheRow> = serde_json::from_value(resp.data.expect("data present"))
-        .expect("rows deserialize");
+    let rows: Vec<CacheRow> =
+        serde_json::from_value(resp.data.expect("data present")).expect("rows deserialize");
 
     let row = rows
         .iter()
@@ -1121,16 +1174,17 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
         value: serde_json::json!("main"),
         age_ms: 14_000,
         stale: false,
-        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
+        kind: Some(RowKind::Lifecycle {
+            decay: 0,
+            watches_files: true,
+        }),
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
         failure: None,
     };
-    let opts = FormatOptions {
-        ascii: false,
-    };
+    let opts = FormatOptions { ascii: false };
     let out = render_human(&[row], &opts);
     assert!(out.contains("PROVIDER"), "header missing: {}", out);
     assert!(out.contains("TTL"), "TTL column missing: {}", out);
@@ -1153,7 +1207,10 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
         value: json!("main"),
         age_ms: 14_000,
         stale: false,
-        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
+        kind: Some(RowKind::Lifecycle {
+            decay: 0,
+            watches_files: true,
+        }),
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
@@ -1178,7 +1235,10 @@ fn tsv_preset_13_columns_lifecycle_row() {
     assert_eq!(cols[8], "60", "poll_interval_secs col");
     assert_eq!(cols[9], "12", "keep_alive_polls col");
     assert_eq!(cols[10], "true", "fsevents_reinstate col");
-    assert_eq!(cols[11], "", "failure_consecutive_failures empty when no failure");
+    assert_eq!(
+        cols[11], "",
+        "failure_consecutive_failures empty when no failure"
+    );
     assert_eq!(cols[12], "", "failure_suppressed empty when no failure");
 }
 
@@ -1203,10 +1263,26 @@ fn sh_preset_exposes_new_fields() {
     let rows = vec![sample_lifecycle_row()];
     let out = render_sh_env(&rows);
     // The key pattern is sanitize_sh_key("git", Some("/repo"), "branch") = "git_repo_branch"
-    assert!(out.contains("git_repo_branch_POLL_INTERVAL_SECS='60'"), "got: {}", out);
-    assert!(out.contains("git_repo_branch_KEEP_ALIVE_POLLS='12'"), "got: {}", out);
-    assert!(out.contains("git_repo_branch_FSEVENTS_REINSTATE='true'"), "got: {}", out);
-    assert!(out.contains("git_repo_branch_KIND='lifecycle'"), "got: {}", out);
+    assert!(
+        out.contains("git_repo_branch_POLL_INTERVAL_SECS='60'"),
+        "got: {}",
+        out
+    );
+    assert!(
+        out.contains("git_repo_branch_KEEP_ALIVE_POLLS='12'"),
+        "got: {}",
+        out
+    );
+    assert!(
+        out.contains("git_repo_branch_FSEVENTS_REINSTATE='true'"),
+        "got: {}",
+        out
+    );
+    assert!(
+        out.contains("git_repo_branch_KIND='lifecycle'"),
+        "got: {}",
+        out
+    );
     assert!(out.contains("git_repo_branch_DECAY='0'"), "got: {}", out);
 }
 
@@ -1219,9 +1295,15 @@ fn minijinja_row_context_exposes_new_fields() {
     let v: serde_json::Value = serde_json::to_value(&ctx).expect("serialize minijinja context");
     assert_eq!(v.get("kind").and_then(|v| v.as_str()), Some("lifecycle"));
     assert_eq!(v.get("decay").and_then(|v| v.as_u64()), Some(0));
-    assert_eq!(v.get("poll_interval_secs").and_then(|v| v.as_u64()), Some(60));
+    assert_eq!(
+        v.get("poll_interval_secs").and_then(|v| v.as_u64()),
+        Some(60)
+    );
     assert_eq!(v.get("keep_alive_polls").and_then(|v| v.as_u64()), Some(12));
-    assert_eq!(v.get("fsevents_reinstate").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        v.get("fsevents_reinstate").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1239,7 +1321,10 @@ fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
         value: json!(0),
         age_ms: 0,
         stale: false,
-        kind: Some(RowKind::Lifecycle { decay, watches_files: false }),
+        kind: Some(RowKind::Lifecycle {
+            decay,
+            watches_files: false,
+        }),
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(false),
@@ -1308,7 +1393,12 @@ fn filter_fsevents_reinstate_true() {
 
 #[test]
 fn sort_lifecycle_orders_most_decayed_first() {
-    let rows = vec![lc_row("a", 0), lc_row("b", 4), once_row("c"), lc_row("d", 2)];
+    let rows = vec![
+        lc_row("a", 0),
+        lc_row("b", 4),
+        once_row("c"),
+        lc_row("d", 2),
+    ];
     let sorted = apply_sort(rows, "lifecycle").unwrap();
     let providers: Vec<_> = sorted.iter().map(|r| r.provider.clone()).collect();
     assert_eq!(providers, vec!["b", "d", "a", "c"]);
@@ -1354,7 +1444,10 @@ fn human_renders_p_zero_k_zero_without_panic() {
         value: json!(null),
         age_ms: 0,
         stale: false,
-        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: false }),
+        kind: Some(RowKind::Lifecycle {
+            decay: 0,
+            watches_files: false,
+        }),
         poll_interval_secs: Some(0),
         keep_alive_polls: Some(0),
         fsevents_reinstate: Some(false),
@@ -1383,12 +1476,18 @@ fn failure_state_renders_warn_and_red_row() {
         value: json!("x"),
         age_ms: 1000,
         stale: false,
-        kind: Some(RowKind::Lifecycle { decay: 1, watches_files: false }),
+        kind: Some(RowKind::Lifecycle {
+            decay: 1,
+            watches_files: false,
+        }),
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(false),
         polls_elapsed: None,
-        failure: Some(FailureSnapshot { consecutive_failures: 3, suppressed_until_unix_ms: None }),
+        failure: Some(FailureSnapshot {
+            consecutive_failures: 3,
+            suppressed_until_unix_ms: None,
+        }),
     };
     // Use render_preset("human", ...) with is_tty=true so color is enabled.
     let opts = RenderOpts {
@@ -1410,19 +1509,54 @@ fn render_preset_ascii_flag_swaps_glyphs() {
     use serde_json::json;
 
     let row = CacheRow {
-        provider: "git".into(), path: None, source: "refs".into(), field: "branch".into(),
-        value: json!("main"), age_ms: 1000, stale: false,
-        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
-        poll_interval_secs: Some(60), keep_alive_polls: Some(12),
-        fsevents_reinstate: Some(true), polls_elapsed: None, failure: None,
+        provider: "git".into(),
+        path: None,
+        source: "refs".into(),
+        field: "branch".into(),
+        value: json!("main"),
+        age_ms: 1000,
+        stale: false,
+        kind: Some(RowKind::Lifecycle {
+            decay: 0,
+            watches_files: true,
+        }),
+        poll_interval_secs: Some(60),
+        keep_alive_polls: Some(12),
+        fsevents_reinstate: Some(true),
+        polls_elapsed: None,
+        failure: None,
     };
-    let opts_unicode = RenderOpts { is_tty: true, no_color: true, max_width: Some(120), no_trunc: false, ascii: false };
-    let opts_ascii = RenderOpts { is_tty: true, no_color: true, max_width: Some(120), no_trunc: false, ascii: true };
+    let opts_unicode = RenderOpts {
+        is_tty: true,
+        no_color: true,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: false,
+    };
+    let opts_ascii = RenderOpts {
+        is_tty: true,
+        no_color: true,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: true,
+    };
     let out_unicode = render_preset("human", &[row.clone()], &opts_unicode);
     let out_ascii = render_preset("human", &[row], &opts_ascii);
-    assert!(out_unicode.contains("\u{2605}"), "unicode star expected: {}", out_unicode);
-    assert!(!out_ascii.contains("\u{2605}"), "unicode star should be absent in ascii mode: {}", out_ascii);
-    assert!(out_ascii.contains("*"), "ascii star expected: {}", out_ascii);
+    assert!(
+        out_unicode.contains("\u{2605}"),
+        "unicode star expected: {}",
+        out_unicode
+    );
+    assert!(
+        !out_ascii.contains("\u{2605}"),
+        "unicode star should be absent in ascii mode: {}",
+        out_ascii
+    );
+    assert!(
+        out_ascii.contains("*"),
+        "ascii star expected: {}",
+        out_ascii
+    );
 }
 
 #[test]
@@ -1432,15 +1566,36 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
     use serde_json::json;
 
     let row = CacheRow {
-        provider: "git".into(), path: None, source: "refs".into(), field: "branch".into(),
-        value: json!("main"), age_ms: 1000, stale: false,
-        kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
-        poll_interval_secs: Some(60), keep_alive_polls: Some(12),
-        fsevents_reinstate: Some(true), polls_elapsed: None, failure: None,
+        provider: "git".into(),
+        path: None,
+        source: "refs".into(),
+        field: "branch".into(),
+        value: json!("main"),
+        age_ms: 1000,
+        stale: false,
+        kind: Some(RowKind::Lifecycle {
+            decay: 0,
+            watches_files: true,
+        }),
+        poll_interval_secs: Some(60),
+        keep_alive_polls: Some(12),
+        fsevents_reinstate: Some(true),
+        polls_elapsed: None,
+        failure: None,
     };
     // Simulate the WATCH_INTERVAL case: caller resolved color=true even though
     // stdout is a pipe (is_tty=false). The renderer must honour that decision.
-    let opts = RenderOpts { is_tty: false, no_color: false, max_width: Some(120), no_trunc: false, ascii: false };
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: false,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: false,
+    };
     let out = render_preset("human", &[row], &opts);
-    assert!(out.contains("\x1b[92m"), "bright green ANSI expected when no_color=false even with is_tty=false: {}", out);
+    assert!(
+        out.contains("\x1b[92m"),
+        "bright green ANSI expected when no_color=false even with is_tty=false: {}",
+        out
+    );
 }

@@ -27,7 +27,10 @@ fn uname_provider_executes() {
     let sources = p.sources();
     assert_eq!(sources.len(), 1);
     let result = sources[0].execute(None);
-    let sysname = result.fields.get("sysname").expect("should have sysname field");
+    let sysname = result
+        .fields
+        .get("sysname")
+        .expect("should have sysname field");
     let sysname_text = sysname.as_text();
     assert!(
         sysname_text == "Darwin" || sysname_text == "Linux",
@@ -35,13 +38,22 @@ fn uname_provider_executes() {
         sysname_text
     );
 
-    let machine = result.fields.get("machine").expect("should have machine field");
+    let machine = result
+        .fields
+        .get("machine")
+        .expect("should have machine field");
     let machine_text = machine.as_text();
     assert!(!machine_text.is_empty(), "machine should not be empty");
 
-    let release = result.fields.get("release").expect("should have release field");
+    let release = result
+        .fields
+        .get("release")
+        .expect("should have release field");
     assert!(!release.as_text().is_empty(), "release should not be empty");
 
-    let version = result.fields.get("version").expect("should have version field");
+    let version = result
+        .fields
+        .get("version")
+        .expect("should have version field");
     assert!(!version.as_text().is_empty(), "version should not be empty");
 }

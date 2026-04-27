@@ -8,8 +8,8 @@
 /// under `#[cfg(test)] mod path_disambiguation_tests`.
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::Value;
+use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
 use std::collections::HashMap;
 use std::sync::Arc;

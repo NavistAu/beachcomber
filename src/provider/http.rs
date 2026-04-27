@@ -44,7 +44,10 @@ impl HttpProvider {
             extract: config.extract.clone(),
             meta,
         };
-        Self { name: name.to_string(), entries: vec![entry] }
+        Self {
+            name: name.to_string(),
+            entries: vec![entry],
+        }
     }
 
     /// Multi-source constructor from Phase 4 per-source ExternalSourceConfig list.
@@ -63,7 +66,10 @@ impl HttpProvider {
                 }
             })
             .collect();
-        Self { name: name.to_string(), entries }
+        Self {
+            name: name.to_string(),
+            entries,
+        }
     }
 }
 
@@ -144,9 +150,14 @@ fn build_source_meta_legacy(_name: &str, config: &HttpProviderConfig) -> SourceM
             field_type: FieldType::String,
         }],
         scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: poll_secs },
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: poll_secs,
+        },
         keep_alive: KeepAlive::Polls(2),
-        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
         fsevents_reinstate: false,
     }
 }
@@ -165,7 +176,11 @@ fn execute_inner(
     let method = method.unwrap_or("GET");
 
     let header_pairs: Vec<(String, String)> = headers
-        .map(|h| h.iter().map(|(k, v)| (k.clone(), expand_env_vars(v))).collect())
+        .map(|h| {
+            h.iter()
+                .map(|(k, v)| (k.clone(), expand_env_vars(v)))
+                .collect()
+        })
         .unwrap_or_default();
 
     let body_str = body.unwrap_or("");

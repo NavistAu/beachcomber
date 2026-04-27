@@ -575,7 +575,9 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
     ) {
         Ok(Some(lock)) => lock,
         Ok(None) => {
-            tracing::info!("another daemon with the same binary is already running; exiting silently");
+            tracing::info!(
+                "another daemon with the same binary is already running; exiting silently"
+            );
             return ExitCode::SUCCESS;
         }
         Err(e) => {

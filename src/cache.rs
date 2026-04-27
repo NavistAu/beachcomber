@@ -285,9 +285,7 @@ impl Cache {
             })
             .collect()
     }
-
 }
-
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CacheEntryInfo {
@@ -454,9 +452,10 @@ mod tests {
 
         // A field that doesn't exist in any source returns None.
         assert!(
-            cache.get_field("git", Some("/repo"), "nonexistent").is_none(),
+            cache
+                .get_field("git", Some("/repo"), "nonexistent")
+                .is_none(),
             "get_field must return None for unknown field"
         );
     }
 }
-

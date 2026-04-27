@@ -100,7 +100,10 @@ failback_interval = "60s"
     let ov = config.source_override("git", "refs").unwrap().unwrap();
     assert_eq!(ov.strategy_type.as_deref(), Some("fsevent"));
     assert_eq!(ov.scope.as_deref(), Some("path"));
-    assert_eq!(ov.fsevent_patterns.as_deref(), Some(&[".git".to_string()][..]));
+    assert_eq!(
+        ov.fsevent_patterns.as_deref(),
+        Some(&[".git".to_string()][..])
+    );
     assert_eq!(ov.fsevent_lifespan.as_deref(), Some("300s"));
     assert_eq!(ov.failback_count, Some(3));
     assert_eq!(ov.failback_interval.as_deref(), Some("60s"));
@@ -140,7 +143,10 @@ fsevent_reinstates = true
     assert_eq!(ov.strategy_type.as_deref(), Some("fsevent_poll"));
     assert_eq!(ov.poll_interval.as_deref(), Some("60s"));
     assert_eq!(ov.poll_count, Some(2));
-    assert_eq!(ov.fsevent_patterns.as_deref(), Some(&[".git/index".to_string()][..]));
+    assert_eq!(
+        ov.fsevent_patterns.as_deref(),
+        Some(&[".git/index".to_string()][..])
+    );
     assert_eq!(ov.fsevent_reinstates, Some(true));
 }
 
@@ -329,7 +335,8 @@ poll_interval = "10s"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     let known_providers = vec!["git".to_string()];
-    let known_sources: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let known_sources: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     let (_, errors) = config.validate_providers(&known_providers, &known_sources);
     assert!(
         !errors.is_empty(),
@@ -357,7 +364,10 @@ failure_reattempts = 5
     let known_providers = vec!["hostname".to_string()];
     let known_sources = std::collections::HashMap::new();
     let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(!errors.is_empty(), "failure_reattempts on builtin provider must error");
+    assert!(
+        !errors.is_empty(),
+        "failure_reattempts on builtin provider must error"
+    );
     assert!(errors[0].contains("failure_reattempts"));
 }
 
@@ -405,8 +415,16 @@ poll_interval = "60s"
         !warnings.is_empty(),
         "unknown source on known provider must produce a warning"
     );
-    assert!(warnings[0].contains("upower"), "warning names the unknown source: {:?}", warnings);
-    assert!(warnings[0].contains("state"), "warning lists registered sources: {:?}", warnings);
+    assert!(
+        warnings[0].contains("upower"),
+        "warning names the unknown source: {:?}",
+        warnings
+    );
+    assert!(
+        warnings[0].contains("state"),
+        "warning lists registered sources: {:?}",
+        warnings
+    );
     assert!(
         warnings[0].contains("platform-conditional"),
         "warning mentions platform-conditional context: {:?}",
@@ -431,7 +449,11 @@ poll_interval = "60s"
         !errors.is_empty(),
         "poll_interval on fsevent type must produce an error"
     );
-    assert!(errors[0].contains("fsevent"), "error mentions strategy: {:?}", errors);
+    assert!(
+        errors[0].contains("fsevent"),
+        "error mentions strategy: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -461,10 +483,7 @@ fsevent_patterns = [".aws"]
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     let result = config.source_override("aws", "profile");
-    assert!(
-        result.is_err(),
-        "fsevent_patterns on poll type must error"
-    );
+    assert!(result.is_err(), "fsevent_patterns on poll type must error");
 }
 
 #[test]
@@ -533,19 +552,29 @@ poll_live_interval = "10s"
     // cache_lifespan, failure_reattempts, failure_backoff_interval, poll_idle_interval, poll_live_interval
     assert!(warnings.len() >= 4);
     assert!(
-        warnings.iter().any(|w: &String| w.contains("cache_lifespan"))
+        warnings
+            .iter()
+            .any(|w: &String| w.contains("cache_lifespan"))
     );
     assert!(
-        warnings.iter().any(|w: &String| w.contains("failure_reattempts"))
+        warnings
+            .iter()
+            .any(|w: &String| w.contains("failure_reattempts"))
     );
     assert!(
-        warnings.iter().any(|w: &String| w.contains("failure_backoff_interval"))
+        warnings
+            .iter()
+            .any(|w: &String| w.contains("failure_backoff_interval"))
     );
     assert!(
-        warnings.iter().any(|w: &String| w.contains("poll_idle_interval"))
+        warnings
+            .iter()
+            .any(|w: &String| w.contains("poll_idle_interval"))
     );
     assert!(
-        warnings.iter().any(|w: &String| w.contains("poll_live_interval"))
+        warnings
+            .iter()
+            .any(|w: &String| w.contains("poll_live_interval"))
     );
 }
 
@@ -661,7 +690,10 @@ scope = "global"
 "#;
     let config: Config = toml::from_str(toml).unwrap();
     let providers = config.script_providers();
-    let (_, p) = providers.iter().find(|(n, _)| n == "example").expect("example present");
+    let (_, p) = providers
+        .iter()
+        .find(|(n, _)| n == "example")
+        .expect("example present");
 
     let branch_scope = beachcomber::config::resolve_field_scope(p, "branch");
     let status_scope = beachcomber::config::resolve_field_scope(p, "status");
@@ -681,7 +713,10 @@ fields = { branch = "string", dirty = "bool" }
 "#;
     let config: Config = toml::from_str(toml).unwrap();
     let providers = config.script_providers();
-    let (_, p) = providers.iter().find(|(n, _)| n == "legacy").expect("legacy present");
+    let (_, p) = providers
+        .iter()
+        .find(|(n, _)| n == "legacy")
+        .expect("legacy present");
     assert_eq!(
         beachcomber::config::resolve_field_scope(p, "branch"),
         beachcomber::provider::FieldScope::PathScoped
@@ -702,7 +737,10 @@ fields = { branch = "string" }
 "#;
     let config: Config = toml::from_str(toml).unwrap();
     let providers = config.script_providers();
-    let (_, p) = providers.iter().find(|(n, _)| n == "noscope").expect("noscope present");
+    let (_, p) = providers
+        .iter()
+        .find(|(n, _)| n == "noscope")
+        .expect("noscope present");
     assert_eq!(
         beachcomber::config::resolve_field_scope(p, "branch"),
         beachcomber::provider::FieldScope::Global
@@ -744,7 +782,10 @@ fsevent_lifespan = "300s"
     let config: Config = toml::from_str(toml_str).unwrap();
     let known_providers = vec!["git".to_string()];
     let mut known_sources = std::collections::HashMap::new();
-    known_sources.insert("git".to_string(), vec!["diff".to_string(), "refs".to_string(), "status".to_string()]);
+    known_sources.insert(
+        "git".to_string(),
+        vec!["diff".to_string(), "refs".to_string(), "status".to_string()],
+    );
     let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
     assert!(warnings.is_empty(), "no warnings expected: {:?}", warnings);
     assert!(errors.is_empty(), "no errors expected: {:?}", errors);

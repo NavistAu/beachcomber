@@ -1,7 +1,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::Value;
+use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::collections::HashMap;
@@ -105,7 +105,13 @@ async fn watch_receives_updates() {
     assert_eq!(response.data.unwrap(), serde_json::json!("main"));
 
     // Update cache with new branch
-    cache_writer.put_source("git", None, "refs", git_fields("feature/new-branch", false), Some(60));
+    cache_writer.put_source(
+        "git",
+        None,
+        "refs",
+        git_fields("feature/new-branch", false),
+        Some(60),
+    );
 
     // Read the update
     line.clear();

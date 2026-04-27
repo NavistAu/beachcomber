@@ -1,11 +1,11 @@
 use beachcomber::provider::Provider;
+use beachcomber::provider::SourceScope;
 use beachcomber::provider::asdf::AsdfProvider;
 use beachcomber::provider::conda::CondaProvider;
 use beachcomber::provider::direnv::DirenvProvider;
 use beachcomber::provider::mise::MiseProvider;
 use beachcomber::provider::python::PythonProvider;
 use beachcomber::provider::terraform::TerraformProvider;
-use beachcomber::provider::SourceScope;
 use tempfile::TempDir;
 
 // --- Terraform ---

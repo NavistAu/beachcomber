@@ -38,7 +38,10 @@ fn mise_canonical_path_returns_project_root_from_subdir() {
     std::fs::create_dir_all(&subdir).unwrap();
 
     let sources = MiseProvider.sources();
-    let project_src = sources.iter().find(|s| s.metadata().name == "project").unwrap();
+    let project_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "project")
+        .unwrap();
     let got = project_src.canonical_path(Some(subdir.to_str().unwrap()));
     let expected = project.path().to_string_lossy().to_string();
     assert_eq!(got, Some(expected));
@@ -48,7 +51,10 @@ fn mise_canonical_path_returns_project_root_from_subdir() {
 fn mise_canonical_path_returns_project_root_at_root() {
     let project = mise_toml_dir(&[("python", "3.12")]);
     let sources = MiseProvider.sources();
-    let project_src = sources.iter().find(|s| s.metadata().name == "project").unwrap();
+    let project_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "project")
+        .unwrap();
     let got = project_src.canonical_path(Some(project.path().to_str().unwrap()));
     let expected = project.path().to_string_lossy().to_string();
     assert_eq!(got, Some(expected));
@@ -63,7 +69,10 @@ fn mise_canonical_path_finds_dot_mise_toml() {
     std::fs::create_dir_all(&subdir).unwrap();
 
     let sources = MiseProvider.sources();
-    let project_src = sources.iter().find(|s| s.metadata().name == "project").unwrap();
+    let project_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "project")
+        .unwrap();
     let got = project_src.canonical_path(Some(subdir.to_str().unwrap()));
     let expected = d.path().to_string_lossy().to_string();
     assert_eq!(got, Some(expected));
@@ -73,7 +82,10 @@ fn mise_canonical_path_finds_dot_mise_toml() {
 fn mise_canonical_path_none_outside_project() {
     let d = tempfile::tempdir().unwrap();
     let sources = MiseProvider.sources();
-    let project_src = sources.iter().find(|s| s.metadata().name == "project").unwrap();
+    let project_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "project")
+        .unwrap();
     let got = project_src.canonical_path(Some(d.path().to_str().unwrap()));
     // Either None (no upward project) or Some(ancestor with mise.toml).
     if let Some(got) = got {
@@ -88,7 +100,10 @@ fn mise_canonical_path_none_outside_project() {
 #[test]
 fn mise_canonical_path_passes_none_through() {
     let sources = MiseProvider.sources();
-    let project_src = sources.iter().find(|s| s.metadata().name == "project").unwrap();
+    let project_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "project")
+        .unwrap();
     assert_eq!(project_src.canonical_path(None), None);
 }
 
@@ -103,7 +118,10 @@ fn mise_project_execute_returns_flat_tool_fields() {
         .output();
 
     let sources = MiseProvider.sources();
-    let project_src = sources.iter().find(|s| s.metadata().name == "project").unwrap();
+    let project_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "project")
+        .unwrap();
     let result = project_src.execute(Some(d.path().to_str().unwrap()));
 
     // Skip if mise isn't installed or no project tools were returned.
@@ -137,7 +155,10 @@ fn mise_global_execute_returns_flat_tool_fields() {
     }
 
     let sources = MiseProvider.sources();
-    let global_src = sources.iter().find(|s| s.metadata().name == "global").unwrap();
+    let global_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "global")
+        .unwrap();
     let result = global_src.execute(None);
 
     // May be empty if no global tools are installed.
@@ -145,14 +166,21 @@ fn mise_global_execute_returns_flat_tool_fields() {
         .fields
         .values()
         .all(|v| matches!(v, Value::String(_)));
-    assert!(all_strings, "global entry must have flat Value::String tool fields; got: {:?}", result.fields);
+    assert!(
+        all_strings,
+        "global entry must have flat Value::String tool fields; got: {:?}",
+        result.fields
+    );
 }
 
 #[test]
 fn mise_project_execute_no_config_emits_nothing() {
     let tmp = tempfile::tempdir().unwrap(); // no mise.toml
     let sources = MiseProvider.sources();
-    let project_src = sources.iter().find(|s| s.metadata().name == "project").unwrap();
+    let project_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "project")
+        .unwrap();
     let result = project_src.execute(Some(tmp.path().to_str().unwrap()));
     assert!(
         result.fields.is_empty(),
