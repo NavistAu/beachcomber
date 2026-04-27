@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASELINE=${COVERAGE_BASELINE:-69}
+BASELINE=${COVERAGE_BASELINE:-70}
 echo "Running coverage gate (baseline: ${BASELINE}%)"
 cargo llvm-cov nextest \
     -E 'not test(uptime_provider_executes)' \
