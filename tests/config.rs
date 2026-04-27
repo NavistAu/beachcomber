@@ -585,7 +585,6 @@ fsevent_patterns = [".aws"]
     assert!(result.is_err(), "fsevent_patterns on poll type must error");
 }
 
-
 #[test]
 fn deprecated_keys_detected_in_raw_toml() {
     use beachcomber::config::detect_deprecated_keys;

@@ -7,10 +7,7 @@ use std::path::Path;
 
 #[test]
 fn no_test_uses_default_socket_discovery() {
-    let denied_patterns = [
-        "ClientConfig::default()",
-        "libbeachcomber::socket_path()",
-    ];
+    let denied_patterns = ["ClientConfig::default()", "libbeachcomber::socket_path()"];
     let allow_list = [
         "tests/test_isolation.rs",
         "tests/conformance/socket_default_discovery.rs",
