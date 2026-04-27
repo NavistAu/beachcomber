@@ -1,6 +1,165 @@
 use beachcomber::config::{Config, parse_duration};
 use std::time::Duration;
 
+// ── Table-driven TOML-parse cases ────────────────────────────────────────────
+//
+// These cases all follow the same shape: parse TOML text → assert specific
+// Config struct fields. Each case is a (name, toml_input, check_fn) triple.
+// Cases that exercise env interaction, file I/O, method resolution, error
+// paths, or multi-step logic remain as individual #[test] items below.
+
+struct ConfigParseCase {
+    name: &'static str,
+    input: &'static str,
+    check: fn(&Config),
+}
+
+#[test]
+fn config_parse_cases() {
+    let cases: &[ConfigParseCase] = &[
+        ConfigParseCase {
+            name: "parse_minimal_toml",
+            input: "",
+            check: |c| {
+                assert_eq!(c.daemon.log_level, "info");
+            },
+        },
+        ConfigParseCase {
+            name: "parse_daemon_section",
+            input: r#"
+[daemon]
+log_level = "debug"
+socket_path = "/tmp/test.sock"
+"#,
+            check: |c| {
+                assert_eq!(c.daemon.log_level, "debug");
+                assert_eq!(c.daemon.socket_path.as_deref(), Some("/tmp/test.sock"));
+            },
+        },
+        ConfigParseCase {
+            name: "parse_lifecycle_section",
+            input: r#"
+[lifecycle]
+poll_interval = "30s"
+poll_live_count = 5
+"#,
+            check: |c| {
+                assert_eq!(c.lifecycle.poll_interval, "30s");
+                assert_eq!(c.lifecycle.poll_live_count, 5);
+            },
+        },
+        ConfigParseCase {
+            name: "parse_failback_section",
+            input: r#"
+[failback]
+count = 5
+interval = "2s"
+"#,
+            check: |c| {
+                assert_eq!(c.failback.count, 5);
+                assert_eq!(c.failback.interval, "2s");
+            },
+        },
+        ConfigParseCase {
+            name: "parse_lifecycle_legacy_keys_ignored",
+            // failure_reattempts and failure_backoff_interval have moved to [failback].
+            // The old [lifecycle] keys are silently ignored by serde; defaults still apply.
+            input: r#"
+[lifecycle]
+cache_lifespan = "1m"
+grace_period_secs = 60
+failure_reattempts = 3
+failure_backoff_interval = "1s"
+"#,
+            check: |c| {
+                assert_eq!(c.lifecycle.poll_interval, "60s");
+            },
+        },
+        ConfigParseCase {
+            name: "lifecycle_config_accepts_new_fields",
+            input: r#"
+[lifecycle]
+poll_interval = "60s"
+poll_live_count = 12
+fsevents_reinstate = false
+"#,
+            check: |c| {
+                assert_eq!(c.lifecycle.poll_interval, "60s");
+                assert_eq!(c.lifecycle.poll_live_count, 12);
+                assert_eq!(c.lifecycle.fsevents_reinstate, Some(false));
+            },
+        },
+        ConfigParseCase {
+            name: "failback_defaults_apply_without_config",
+            input: "",
+            check: |c| {
+                assert_eq!(c.failback.count, 3);
+                assert_eq!(c.failback.interval_duration(), Duration::from_secs(1));
+            },
+        },
+        ConfigParseCase {
+            name: "legacy_cache_lifespan_parses_without_error",
+            // Legacy configs with cache_lifespan should parse cleanly; key is ignored.
+            input: r#"
+[lifecycle]
+cache_lifespan = "30s"
+poll_interval = "60s"
+poll_live_count = 12
+"#,
+            check: |c| {
+                assert_eq!(c.lifecycle.poll_interval, "60s");
+            },
+        },
+        ConfigParseCase {
+            name: "legacy_poll_idle_interval_parses_without_error",
+            input: r#"
+[lifecycle]
+poll_interval = "60s"
+poll_live_count = 12
+
+[providers.git]
+poll_idle_interval = "5m"
+"#,
+            check: |c| {
+                assert_eq!(
+                    c.resolve_poll_interval("git"),
+                    std::time::Duration::from_secs(60)
+                );
+            },
+        },
+        ConfigParseCase {
+            name: "legacy_poll_live_interval_parses_without_error",
+            // poll_live_interval is ignored; falls back to global lifecycle interval.
+            input: r#"
+[lifecycle]
+poll_interval = "60s"
+poll_live_count = 12
+
+[providers.git]
+poll_live_interval = "10s"
+"#,
+            check: |c| {
+                assert_eq!(
+                    c.resolve_poll_interval("git"),
+                    std::time::Duration::from_secs(60)
+                );
+            },
+        },
+    ];
+
+    for case in cases {
+        let config: Config = toml::from_str(case.input)
+            .unwrap_or_else(|e| panic!("case {}: parse failed: {}", case.name, e));
+        (case.check)(&config);
+    }
+}
+
+// ── Standalone tests ──────────────────────────────────────────────────────────
+//
+// These tests exercise Config::default(), method resolution chains, error/Err
+// paths, validate_providers(), and other logic that doesn't fit a pure
+// "TOML text → check parsed fields" sweep.
+
 #[test]
 fn default_config() {
     let config = Config::default();
@@ -12,66 +171,6 @@ fn default_config() {
         config.daemon.socket_path.is_none(),
         "Default socket path should be None"
     );
-}
-
-#[test]
-fn parse_minimal_toml() {
-    let toml_str = "";
-    let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.daemon.log_level, "info");
-}
-
-#[test]
-fn parse_daemon_section() {
-    let toml_str = r#"
-[daemon]
-log_level = "debug"
-socket_path = "/tmp/test.sock"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.daemon.log_level, "debug");
-    assert_eq!(config.daemon.socket_path.as_deref(), Some("/tmp/test.sock"));
-}
-
-#[test]
-fn parse_lifecycle_section() {
-    let toml_str = r#"
-[lifecycle]
-poll_interval = "30s"
-poll_live_count = 5
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.lifecycle.poll_interval, "30s");
-    assert_eq!(config.lifecycle.poll_live_count, 5);
-}
-
-#[test]
-fn parse_failback_section() {
-    let toml_str = r#"
-[failback]
-count = 5
-interval = "2s"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.failback.count, 5);
-    assert_eq!(config.failback.interval, "2s");
-}
-
-#[test]
-fn parse_lifecycle_legacy_keys_ignored() {
-    // failure_reattempts and failure_backoff_interval are no longer lifecycle fields;
-    // they have moved to [failback]. The old keys are silently ignored by serde.
-    let toml_str = r#"
-[lifecycle]
-cache_lifespan = "1m"
-grace_period_secs = 60
-failure_reattempts = 3
-failure_backoff_interval = "1s"
-"#;
-    // Should parse without error (unknown keys silently ignored).
-    let config: Config = toml::from_str(toml_str).unwrap();
-    // Defaults still apply.
-    assert_eq!(config.lifecycle.poll_interval, "60s");
 }
 
 #[test]
@@ -486,53 +585,6 @@ fsevent_patterns = [".aws"]
     assert!(result.is_err(), "fsevent_patterns on poll type must error");
 }
 
-#[test]
-fn legacy_cache_lifespan_parses_without_error() {
-    // Legacy configs with cache_lifespan should parse cleanly, key ignored.
-    let toml = r#"
-[lifecycle]
-cache_lifespan = "30s"
-poll_interval = "60s"
-poll_live_count = 12
-"#;
-    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
-    assert_eq!(config.lifecycle.poll_interval, "60s");
-}
-
-#[test]
-fn legacy_poll_idle_interval_parses_without_error() {
-    let toml = r#"
-[lifecycle]
-poll_interval = "60s"
-poll_live_count = 12
-
-[providers.git]
-poll_idle_interval = "5m"
-"#;
-    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
-    assert_eq!(
-        config.resolve_poll_interval("git"),
-        std::time::Duration::from_secs(60)
-    );
-}
-
-#[test]
-fn legacy_poll_live_interval_parses_without_error() {
-    let toml = r#"
-[lifecycle]
-poll_interval = "60s"
-poll_live_count = 12
-
-[providers.git]
-poll_live_interval = "10s"
-"#;
-    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
-    // poll_live_interval is ignored; falls back to global.
-    assert_eq!(
-        config.resolve_poll_interval("git"),
-        std::time::Duration::from_secs(60)
-    );
-}
 
 #[test]
 fn deprecated_keys_detected_in_raw_toml() {
@@ -576,27 +628,6 @@ poll_live_interval = "10s"
             .iter()
             .any(|w: &String| w.contains("poll_live_interval"))
     );
-}
-
-#[test]
-fn lifecycle_config_accepts_new_fields() {
-    let toml = r#"
-[lifecycle]
-poll_interval = "60s"
-poll_live_count = 12
-fsevents_reinstate = false
-"#;
-    let config: beachcomber::config::Config = toml::from_str(toml).unwrap();
-    assert_eq!(config.lifecycle.poll_interval, "60s");
-    assert_eq!(config.lifecycle.poll_live_count, 12);
-    assert_eq!(config.lifecycle.fsevents_reinstate, Some(false));
-}
-
-#[test]
-fn failback_defaults_apply_without_config() {
-    let config: Config = toml::from_str("").unwrap();
-    assert_eq!(config.failback.count, 3);
-    assert_eq!(config.failback.interval_duration(), Duration::from_secs(1));
 }
 
 #[test]
