@@ -1,3 +1,6 @@
+pub mod lifecycle;
+
+use crate::boundaries::spawn::{DaemonSpawner, RealDaemonSpawner};
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::provider::registry::ProviderRegistry;
@@ -10,13 +13,28 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+// ---------------------------------------------------------------------------
+// Pure-logic re-exports for callers that import directly from `crate::daemon`.
+// ---------------------------------------------------------------------------
+
+/// Derive the PID-file path for a given socket path.
+///
+/// Delegates to the pure implementation in `lifecycle`.
 pub fn pid_path_for_socket(socket_path: &Path) -> PathBuf {
-    socket_path.with_file_name("daemon.pid")
+    lifecycle::pid_path_for_socket(socket_path)
 }
+
+// ---------------------------------------------------------------------------
+// OS-bound: socket connectivity check
+// ---------------------------------------------------------------------------
 
 pub fn is_daemon_running(socket_path: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket_path).is_ok()
 }
+
+// ---------------------------------------------------------------------------
+// OS-bound: in-process daemon startup (used by tests and embedded mode)
+// ---------------------------------------------------------------------------
 
 pub fn start_in_process(socket_path: PathBuf, config: Config) -> tokio::task::JoinHandle<()> {
     let cancel = CancellationToken::new();
@@ -163,6 +181,11 @@ fn spawn_watchdog(
     }))
 }
 
+// ---------------------------------------------------------------------------
+// OS-bound: fork + wait
+// ---------------------------------------------------------------------------
+
+/// Fork a daemon process. Called by `RealDaemonSpawner::fork_daemon`.
 pub fn fork_daemon(binary_path: &str, socket_path: &Path) -> std::io::Result<()> {
     use std::process::Command;
 
@@ -201,28 +224,54 @@ pub fn fork_daemon(binary_path: &str, socket_path: &Path) -> std::io::Result<()>
     Ok(())
 }
 
+/// Poll the socket until the daemon accepts connections or the attempt budget is exhausted.
+/// Called by `RealDaemonSpawner::wait_for_socket`.
 pub fn wait_for_daemon(socket_path: &Path, max_attempts: u32) -> bool {
+    use lifecycle::{WaitDecision, next_wait_decision};
+
     let mut delay_ms = 10u64;
-    for _ in 0..max_attempts {
+    for attempt in 0..=max_attempts {
         if is_daemon_running(socket_path) {
             return true;
         }
-        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        delay_ms = (delay_ms * 2).min(500);
+        match next_wait_decision(attempt, max_attempts, delay_ms) {
+            WaitDecision::Ready => return true,
+            WaitDecision::Timeout => return false,
+            WaitDecision::Sleep(ms) => {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                delay_ms = ms;
+            }
+        }
     }
     false
 }
 
+// ---------------------------------------------------------------------------
+// ensure_daemon — public API with injection-point variant
+// ---------------------------------------------------------------------------
+
+/// Ensure the daemon is running at `socket_path`.
+///
+/// If not running, forks it and waits up to 8 attempts for the socket to appear.
+/// This is the backwards-compatible entry point; it uses `RealDaemonSpawner`.
 pub fn ensure_daemon(socket_path: &Path) -> std::io::Result<()> {
-    if is_daemon_running(socket_path) {
+    ensure_daemon_with(&RealDaemonSpawner, socket_path)
+}
+
+/// Injection-point variant of `ensure_daemon` — accepts any `DaemonSpawner`.
+///
+/// Useful for tests: pass a `MockDaemonSpawner` to assert fork/wait behaviour
+/// without touching the filesystem.
+pub fn ensure_daemon_with(spawner: &dyn DaemonSpawner, socket_path: &Path) -> std::io::Result<()> {
+    if !lifecycle::needs_fork(is_daemon_running(socket_path)) {
         return Ok(());
     }
 
     let binary = std::env::current_exe()?.to_string_lossy().to_string();
 
-    fork_daemon(&binary, socket_path)?;
+    spawner.fork_daemon(&binary, socket_path)?;
 
-    if !wait_for_daemon(socket_path, 8) {
+    if !spawner.wait_for_socket(socket_path, 8) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             "Daemon failed to start within timeout",
