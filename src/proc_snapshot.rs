@@ -1,18 +1,21 @@
 /// Exec-snapshot: captures process spawn events for a given duration and
 /// returns structured data suitable for both terminal formatting (via
 /// `comb check procs`) and the Introspect protocol op.
+#[derive(Debug)]
 pub struct ProcSample {
     pub command: String,
     pub count: u64,
     pub category: Option<String>,
 }
 
+#[derive(Debug)]
 pub struct ReplacementSuggestion {
     pub command_pattern: String,
     pub provider: String,
     pub field: String,
 }
 
+#[derive(Debug)]
 pub struct ProcSnapshotResult {
     pub duration_secs: u64,
     pub total: u64,
@@ -47,6 +50,20 @@ const REPLACEMENT_HINTS: &[(&str, &str, &str)] = &[
     ("mise", "mise", "version"),
     ("direnv", "direnv", "loaded"),
 ];
+
+/// Convert a populated counts map into a `ProcSnapshotResult`, or return an
+/// error if the map is empty.  This is the pure decision core shared by all
+/// platform `capture` implementations.
+pub fn decide_snapshot(
+    duration_secs: u64,
+    counts: std::collections::HashMap<String, u64>,
+    empty_msg: &str,
+) -> Result<ProcSnapshotResult, String> {
+    if counts.is_empty() {
+        return Err(empty_msg.to_string());
+    }
+    Ok(build_result(duration_secs, counts))
+}
 
 fn build_result(
     duration_secs: u64,
@@ -116,6 +133,29 @@ fn build_result(
     }
 }
 
+/// Parse the NDJSON output produced by `eslogger exec` into a process-name
+/// count map.  Each line is a JSON object; the executable path is found at
+/// either `/process/executable/path` or
+/// `/event/exec/target/executable/path`.  Lines that don't parse as JSON, or
+/// don't contain either pointer, are silently skipped.
+#[cfg(target_os = "macos")]
+pub fn parse_eslogger_output(input: &str) -> std::collections::HashMap<String, u64> {
+    let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for line in input.lines() {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+            let path = json
+                .pointer("/process/executable/path")
+                .or_else(|| json.pointer("/event/exec/target/executable/path"))
+                .and_then(|v| v.as_str());
+            if let Some(path) = path {
+                let basename = path.rsplit('/').next().unwrap_or(path);
+                *counts.entry(basename.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+    counts
+}
+
 #[cfg(target_os = "macos")]
 pub fn capture(duration_secs: u64) -> Result<ProcSnapshotResult, String> {
     use std::process::{Command, Stdio};
@@ -135,28 +175,12 @@ pub fn capture(duration_secs: u64) -> Result<ProcSnapshotResult, String> {
         .map_err(|e| format!("eslogger error: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-
-    for line in stdout.lines() {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-            let path = json
-                .pointer("/process/executable/path")
-                .or_else(|| json.pointer("/event/exec/target/executable/path"))
-                .and_then(|v| v.as_str());
-            if let Some(path) = path {
-                let basename = path.rsplit('/').next().unwrap_or(path);
-                *counts.entry(basename.to_string()).or_insert(0) += 1;
-            }
-        }
-    }
-
-    if counts.is_empty() {
-        return Err(
-            "no process events captured (eslogger may need elevated privileges)".to_string(),
-        );
-    }
-
-    Ok(build_result(duration_secs, counts))
+    let counts = parse_eslogger_output(&stdout);
+    decide_snapshot(
+        duration_secs,
+        counts,
+        "no process events captured (eslogger may need elevated privileges)",
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -196,11 +220,11 @@ pub fn capture(duration_secs: u64) -> Result<ProcSnapshotResult, String> {
         }
     }
 
-    if counts.is_empty() {
-        return Err("no new processes detected during sampling".to_string());
-    }
-
-    Ok(build_result(duration_secs, counts))
+    decide_snapshot(
+        duration_secs,
+        counts,
+        "no new processes detected during sampling",
+    )
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
