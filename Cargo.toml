@@ -51,6 +51,7 @@ tempfile = "3"
 tokio-test = "0.4"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 ctor = "0.4"
+walkdir = "2"
 
 [[bench]]
 name = "cache"
