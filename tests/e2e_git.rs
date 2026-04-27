@@ -1,44 +1,13 @@
+mod common;
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
-use std::process::Command;
+use common::git::GitRepoFixture;
 use std::sync::Arc;
 use tempfile::TempDir;
-
-fn create_test_repo() -> TempDir {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    Command::new("git")
-        .args(["init"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["config", "user.email", "test@test.com"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    std::fs::write(dir.join("README.md"), "# test").unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "init"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    tmp
-}
 
 async fn setup_daemon() -> (
     TempDir,
@@ -72,20 +41,17 @@ async fn setup_daemon() -> (
 
 #[tokio::test]
 async fn refresh_git_provider() {
-    let repo = create_test_repo();
+    let repo = GitRepoFixture::new();
     let (_tmp, sock, _handle) = setup_daemon().await;
     let client = Client::new(sock);
 
-    let resp = client
-        .refresh("git", Some(repo.path().to_str().unwrap()))
-        .await
-        .unwrap();
+    let resp = client.refresh("git", Some(repo.path_str())).await.unwrap();
     assert!(resp.ok);
 
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let resp = client
-        .get("git.branch", Some(repo.path().to_str().unwrap()))
+        .get("git.branch", Some(repo.path_str()))
         .await
         .unwrap();
     assert!(resp.ok, "Should get git branch");
@@ -95,10 +61,10 @@ async fn refresh_git_provider() {
 
 #[tokio::test]
 async fn git_detects_dirty_state_via_refresh() {
-    let repo = create_test_repo();
+    let repo = GitRepoFixture::new();
     let (_tmp, sock, _handle) = setup_daemon().await;
     let client = Client::new(sock);
-    let repo_path = repo.path().to_str().unwrap();
+    let repo_path = repo.path_str();
 
     // First refresh: clean state
     client.refresh("git", Some(repo_path)).await.unwrap();
