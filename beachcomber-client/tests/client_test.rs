@@ -26,15 +26,18 @@ fn socket_path_returns_something() {
 
 #[test]
 fn client_no_autostart_returns_error() {
-    let config = ClientConfig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("nonexistent.sock");
+    let client = Client::with_config(ClientConfig {
         timeout: Duration::from_millis(50),
         auto_start: false,
-    };
-    let client = Client::with_config(config);
-    // With auto_start disabled and no daemon running on a random socket,
-    // this should return DaemonNotRunning or ConnectionFailed
+    })
+    .with_socket_path(socket);
     let result = client.get("hostname", None);
-    assert!(result.is_err());
+    assert!(
+        result.is_err(),
+        "expected error against absent socket, got {result:?}"
+    );
 }
 
 #[test]
