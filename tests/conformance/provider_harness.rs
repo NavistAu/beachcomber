@@ -1,12 +1,8 @@
 //! Parameterised conformance harness — every registered (provider, source)
 //! pair must pass these contract assertions.
 //!
-//! This module only defines assertion functions and the enumeration helper.
-//! P4.3 wires them into `tests/provider_conformance.rs`.
-
-// P4.3 will call every function in this module. Until then, suppress the
-// "never used" lint so `clippy -- -D warnings` stays clean.
-#![allow(dead_code)]
+//! This module defines assertion functions and the enumeration helper.
+//! `tests/provider_conformance.rs` wires them into a single nextest test.
 
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{Source, SourceResult, SourceScope};
