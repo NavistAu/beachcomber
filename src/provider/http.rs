@@ -1,3 +1,4 @@
+use crate::boundaries::http::{HttpFetcher, HttpResponse, UreqHttpFetcher};
 use crate::config::{ExternalSourceConfig, HttpProviderConfig};
 use crate::provider::script::build_source_meta_from_external;
 use crate::provider::{
@@ -5,7 +6,8 @@ use crate::provider::{
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tracing::debug;
 
 // ── HttpProvider ───────────────────────────────────────────────────────────────
@@ -17,6 +19,9 @@ use tracing::debug;
 //
 // 2. `HttpProvider::with_sources(name, Vec<ExternalSourceConfig>)` — multi-source.
 //    Used by Phase 4 `backend = "http"` TOML.
+//
+// Both paths wire the real `UreqHttpFetcher` by default.
+// Use `with_fetcher` / `with_sources_and_fetcher` to inject a test double.
 
 struct HttpSourceEntry {
     meta: SourceMetadata,
@@ -30,11 +35,21 @@ struct HttpSourceEntry {
 pub struct HttpProvider {
     name: String,
     entries: Vec<HttpSourceEntry>,
+    fetcher: Arc<dyn HttpFetcher>,
 }
 
 impl HttpProvider {
-    /// Single-source backward-compatible constructor.
+    /// Single-source backward-compatible constructor. Wires `UreqHttpFetcher`.
     pub fn new(name: &str, config: HttpProviderConfig) -> Self {
+        Self::with_fetcher(name, config, Arc::new(UreqHttpFetcher))
+    }
+
+    /// Single-source constructor with injected fetcher (for tests).
+    pub fn with_fetcher(
+        name: &str,
+        config: HttpProviderConfig,
+        fetcher: Arc<dyn HttpFetcher>,
+    ) -> Self {
         let meta = build_source_meta_legacy(name, &config);
         let entry = HttpSourceEntry {
             url: config.url.clone(),
@@ -47,11 +62,21 @@ impl HttpProvider {
         Self {
             name: name.to_string(),
             entries: vec![entry],
+            fetcher,
         }
     }
 
     /// Multi-source constructor from Phase 4 per-source ExternalSourceConfig list.
     pub fn with_sources(name: &str, source_configs: Vec<ExternalSourceConfig>) -> Self {
+        Self::with_sources_and_fetcher(name, source_configs, Arc::new(UreqHttpFetcher))
+    }
+
+    /// Multi-source constructor with injected fetcher (for tests).
+    pub fn with_sources_and_fetcher(
+        name: &str,
+        source_configs: Vec<ExternalSourceConfig>,
+        fetcher: Arc<dyn HttpFetcher>,
+    ) -> Self {
         let entries = source_configs
             .into_iter()
             .map(|cfg| {
@@ -69,6 +94,7 @@ impl HttpProvider {
         Self {
             name: name.to_string(),
             entries,
+            fetcher,
         }
     }
 }
@@ -94,6 +120,7 @@ impl Provider for HttpProvider {
                     extract: e.extract.clone(),
                     meta: OnceLock::new(),
                     meta_value: e.meta.clone(),
+                    fetcher: Arc::clone(&self.fetcher),
                 }) as Box<dyn Source>
             })
             .collect()
@@ -111,6 +138,7 @@ struct HttpSingleSource {
     extract: Option<String>,
     meta: OnceLock<SourceMetadata>,
     meta_value: SourceMetadata,
+    fetcher: Arc<dyn HttpFetcher>,
 }
 
 impl Source for HttpSingleSource {
@@ -126,6 +154,7 @@ impl Source for HttpSingleSource {
             self.headers.as_ref(),
             self.body.as_deref(),
             self.extract.as_deref(),
+            self.fetcher.as_ref(),
         ) {
             Some(result) => result,
             None => SourceResult::new(),
@@ -164,6 +193,9 @@ fn build_source_meta_legacy(_name: &str, config: &HttpProviderConfig) -> SourceM
 
 // ── Execution ─────────────────────────────────────────────────────────────────
 
+/// Default HTTP request timeout (30 seconds).
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn execute_inner(
     provider_name: &str,
     url_template: &str,
@@ -171,9 +203,10 @@ fn execute_inner(
     headers: Option<&HashMap<String, String>>,
     body: Option<&str>,
     extract: Option<&str>,
+    fetcher: &dyn HttpFetcher,
 ) -> Option<SourceResult> {
     let url = expand_env_vars(url_template);
-    let method = method.unwrap_or("GET");
+    let method = method.unwrap_or("GET").to_string();
 
     let header_pairs: Vec<(String, String)> = headers
         .map(|h| {
@@ -183,52 +216,42 @@ fn execute_inner(
         })
         .unwrap_or_default();
 
-    let body_str = body.unwrap_or("");
-    let response = match method {
-        "POST" | "PUT" | "PATCH" => {
-            let mut req = match method {
-                "PUT" => ureq::put(&url),
-                "PATCH" => ureq::patch(&url),
-                _ => ureq::post(&url),
-            };
-            for (key, val) in &header_pairs {
-                req = req.header(key.as_str(), val.as_str());
-            }
-            req.send(body_str.as_bytes())
-        }
-        _ => {
-            let mut req = ureq::get(&url);
-            for (key, val) in &header_pairs {
-                req = req.header(key.as_str(), val.as_str());
-            }
-            req.call()
-        }
-    };
+    let body_bytes = body.map(|b| b.as_bytes().to_vec());
 
-    let mut response = match response {
-        Ok(resp) => resp,
-        Err(e) => {
-            debug!("HTTP provider '{}' request failed: {}", provider_name, e);
-            return None;
-        }
-    };
+    let response: HttpResponse =
+        match fetcher.fetch(method, url, header_pairs, body_bytes, DEFAULT_TIMEOUT) {
+            Ok(resp) => resp,
+            Err(e) => {
+                debug!("HTTP provider '{}' request failed: {}", provider_name, e);
+                return None;
+            }
+        };
 
-    let body_resp = match response.body_mut().read_to_string() {
-        Ok(s) => s,
+    // Treat non-2xx as failure.
+    if response.status < 200 || response.status >= 300 {
+        debug!(
+            "HTTP provider '{}' returned status {}",
+            provider_name, response.status
+        );
+        return None;
+    }
+
+    let body_str = match std::str::from_utf8(&response.body) {
+        Ok(s) => s.to_string(),
         Err(e) => {
             debug!(
-                "HTTP provider '{}' failed to read response body: {}",
+                "HTTP provider '{}' failed to decode response body as UTF-8: {}",
                 provider_name, e
             );
             return None;
         }
     };
 
-    let json: serde_json::Value = match serde_json::from_str(&body_resp) {
+    let json: serde_json::Value = match serde_json::from_str(&body_str) {
         Ok(v) => v,
         Err(_) => {
             let mut result = SourceResult::new();
-            result.insert("body", Value::String(body_resp));
+            result.insert("body", Value::String(body_str));
             return Some(result);
         }
     };
