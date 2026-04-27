@@ -55,6 +55,7 @@ walkdir = "2"
 pretty_assertions = "1"
 assert_cmd = "2"
 predicates = "3"
+mockall = "0.13"
 
 [[bench]]
 name = "cache"
