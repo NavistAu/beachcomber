@@ -78,6 +78,24 @@ jobs:
           name: junit-macos
           path: target/nextest/junit.xml
 
+  coverage:
+    name: Coverage gate
+    needs: rust-version
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
+          components: llvm-tools
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,nextest
+      - name: Coverage gate
+        run: ci/coverage-gate.sh
+
   test-linux:
     name: Test (Linux)
     needs: rust-version
