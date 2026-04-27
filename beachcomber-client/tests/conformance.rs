@@ -4,6 +4,9 @@
 // Each fixture spawns its own daemon for isolation. A fixture that
 // breaks any `expect` rule fails a Rust test bearing the fixture's `name`.
 
+mod common;
+use common::socket::IsolatedSocket;
+
 use beachcomber::config::Config;
 use beachcomber::daemon;
 use libbeachcomber::{Client, ClientConfig, CombResult, IntrospectResponse, IntrospectSubject};
@@ -12,7 +15,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
-use tempfile::TempDir;
 
 #[derive(Debug)]
 struct Fixture {
@@ -30,9 +32,9 @@ struct OpDescriptor {
     args: Value,
 }
 
-fn spawn_daemon() -> (TempDir, PathBuf) {
-    let tmp = TempDir::new().unwrap();
-    let sock = tmp.path().join("conf.sock");
+fn spawn_daemon() -> (IsolatedSocket, PathBuf) {
+    let iso = IsolatedSocket::new();
+    let sock = iso.path.clone();
     let sock_clone = sock.clone();
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -43,7 +45,7 @@ fn spawn_daemon() -> (TempDir, PathBuf) {
         });
     });
     thread::sleep(Duration::from_millis(200));
-    (tmp, sock)
+    (iso, sock)
 }
 
 fn client_for(sock: &Path) -> Client {
@@ -480,7 +482,7 @@ fn conformance_suite() {
     );
     let mut failures = Vec::new();
     for fixture in &fixtures {
-        let (_tmp, sock) = spawn_daemon();
+        let (_iso, sock) = spawn_daemon();
         let client = client_for(&sock);
 
         // Run setup ops, ignoring their responses.
