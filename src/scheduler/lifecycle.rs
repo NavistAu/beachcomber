@@ -355,10 +355,10 @@ impl LifecycleRegistry {
                         dt.step_deadline = now + step_duration;
 
                         // Adjust poll interval if there is a poll path.
-                        if let Some(pt) = entry.poll_timer.as_mut() {
-                            if let Some(p) = entry.config.poll_interval {
-                                pt.interval = p * rate_mult;
-                            }
+                        if let Some(pt) = entry.poll_timer.as_mut()
+                            && let Some(p) = entry.config.poll_interval
+                        {
+                            pt.interval = p * rate_mult;
                         }
 
                         // Drop watches on Active→Decay1 if !fsevents_reinstate.

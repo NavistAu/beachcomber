@@ -37,11 +37,13 @@ async fn daemon_shuts_down_when_binary_touched() {
     let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < wait_deadline {
         if let Ok(Some(_status)) = child.try_wait() {
+            let _ = child.wait();
             return; // success
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     let _ = child.kill();
+    let _ = child.wait();
     panic!("daemon did not exit after binary was touched");
 }

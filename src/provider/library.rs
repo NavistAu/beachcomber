@@ -12,6 +12,7 @@ use std::sync::{Arc, OnceLock};
 use tracing::{debug, warn};
 
 // `size_t` in C corresponds to `usize` in Rust.
+#[allow(non_camel_case_types)]
 type c_size_t = usize;
 
 // ── Legacy single-entry-point C ABI ──────────────────────────────────────────
@@ -95,8 +96,10 @@ impl LibraryProvider {
         library_path: &str,
         source_overrides: Vec<ExternalSourceConfig>,
     ) -> Option<Self> {
-        let mut cfg = ScriptProviderConfig::default();
-        cfg.library_path = Some(library_path.to_string());
+        let cfg = ScriptProviderConfig {
+            library_path: Some(library_path.to_string()),
+            ..Default::default()
+        };
         let lib = load_library(name, library_path)?;
         Some(Self {
             name: name.to_string(),
@@ -250,7 +253,6 @@ impl Provider for LibraryProvider {
             .enumerate()
             .map(|(idx, meta)| {
                 Box::new(LibrarySource {
-                    provider_name: self.name.clone(),
                     source_idx: idx,
                     abi,
                     library: lib_arc.clone(),
@@ -265,7 +267,6 @@ impl Provider for LibraryProvider {
 // ── LibrarySource ─────────────────────────────────────────────────────────────
 
 struct LibrarySource {
-    provider_name: String,
     source_idx: usize,
     abi: LibraryAbi,
     library: Arc<LibraryHandle>,
@@ -290,7 +291,7 @@ impl Source for LibrarySource {
         let Some(s) = json_str else {
             return SourceResult::new();
         };
-        parse_json_result(&s).unwrap_or_else(SourceResult::new)
+        parse_json_result(&s).unwrap_or_default()
     }
 }
 

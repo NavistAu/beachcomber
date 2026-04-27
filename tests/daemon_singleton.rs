@@ -234,7 +234,7 @@ fn find_orphan_daemons_excludes_self_and_non_matching_binary() {
     let our_exe = std::env::current_exe().unwrap();
     let found = beachcomber::singleton::find_orphan_daemons(&our_exe);
     let our_pid = std::process::id();
-    assert!(!found.iter().any(|p| *p == our_pid), "should exclude self");
+    assert!(!found.contains(&our_pid), "should exclude self");
     // We can't make positive assertions about what IS returned without spawning a test
     // daemon; that's covered in the end-to-end smoke tests.
 }

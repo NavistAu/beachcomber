@@ -1483,7 +1483,7 @@ mod ttl_cell_tests {
         row_large.poll_interval_secs = Some(12_345);
 
         // 2-digit P → width 2 (tight, no floor).
-        assert_eq!(compute_ttl_p_width(&[row_small.clone()]), 2);
+        assert_eq!(compute_ttl_p_width(std::slice::from_ref(&row_small)), 2);
         // Widest P is 5 digits → width grows to 5.
         assert_eq!(
             compute_ttl_p_width(&[row_small.clone(), row_large.clone()]),

@@ -730,7 +730,11 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
                 patterns.is_empty(),
                 "Global Watch must use abs_paths, not patterns"
             );
-            assert_eq!(abs_paths, &[abs_path.clone()], "abs_paths must match");
+            assert_eq!(
+                abs_paths,
+                std::slice::from_ref(&abs_path),
+                "abs_paths must match"
+            );
         }
         other => panic!("expected Watch strategy, got {:?}", other),
     }

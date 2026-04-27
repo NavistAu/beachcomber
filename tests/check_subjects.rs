@@ -540,13 +540,13 @@ async fn providers_introspect_has_entries_with_required_fields() {
         assert!(p.get("scope").is_some(), "provider missing scope: {p:?}");
         // Fields are now per-source — check the "sources" array contains at least one source
         // with a fields entry. Virtual providers may have no sources (data-only).
-        if let Some(srcs) = p.get("sources").and_then(|v| v.as_array()) {
-            if !srcs.is_empty() {
-                assert!(
-                    srcs[0].get("fields").is_some(),
-                    "source missing fields: {p:?}"
-                );
-            }
+        if let Some(srcs) = p.get("sources").and_then(|v| v.as_array())
+            && !srcs.is_empty()
+        {
+            assert!(
+                srcs[0].get("fields").is_some(),
+                "source missing fields: {p:?}"
+            );
         }
         assert!(
             p.get("invalidation").is_some(),

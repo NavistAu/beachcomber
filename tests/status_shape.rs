@@ -598,10 +598,7 @@ fn ascii_flag_propagates_to_format_options() {
     use beachcomber::cli::status_format::FormatOptions;
     let opts = FormatOptions::default();
     assert!(!opts.ascii);
-    let opts2 = FormatOptions {
-        ascii: true,
-        ..opts
-    };
+    let opts2 = FormatOptions { ascii: true };
     assert!(opts2.ascii);
 }
 
@@ -1540,7 +1537,7 @@ fn render_preset_ascii_flag_swaps_glyphs() {
         no_trunc: false,
         ascii: true,
     };
-    let out_unicode = render_preset("human", &[row.clone()], &opts_unicode);
+    let out_unicode = render_preset("human", std::slice::from_ref(&row), &opts_unicode);
     let out_ascii = render_preset("human", &[row], &opts_ascii);
     assert!(
         out_unicode.contains("\u{2605}"),

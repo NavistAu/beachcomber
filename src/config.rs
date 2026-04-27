@@ -55,25 +55,6 @@ const SOURCE_KNOB_KEYS: &[&str] = &[
     "poll_secs",
 ];
 
-// Keys that are valid at the [providers.<name>] (provider-level) block.
-const PROVIDER_LEVEL_KEYS: &[&str] = &[
-    "enabled",
-    "backend",
-    // Script/library/http backend keys (still accepted at provider level until Phase 4).
-    "type",
-    "command",
-    "invalidation",
-    "fields",
-    "output",
-    "scope",
-    "url",
-    "method",
-    "headers",
-    "body",
-    "extract",
-    "library_path",
-];
-
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
@@ -235,13 +216,14 @@ pub enum StrategyKind {
     FseventPoll,
 }
 
-impl StrategyKind {
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for StrategyKind {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "poll" => Some(Self::Poll),
-            "fsevent" => Some(Self::Fsevent),
-            "fsevent_poll" => Some(Self::FseventPoll),
-            _ => None,
+            "poll" => Ok(Self::Poll),
+            "fsevent" => Ok(Self::Fsevent),
+            "fsevent_poll" => Ok(Self::FseventPoll),
+            _ => Err(()),
         }
     }
 }
@@ -354,9 +336,9 @@ impl SourceOverrideConfig {
     /// Called only when `type` is set and parseable.
     pub fn validate_strategy_keys(&self, block_name: &str) -> Result<(), String> {
         let kind = match self.strategy_type.as_deref() {
-            Some(t) => match StrategyKind::from_str(t) {
-                Some(k) => k,
-                None => {
+            Some(t) => match t.parse::<StrategyKind>() {
+                Ok(k) => k,
+                Err(()) => {
                     return Err(format!(
                         "{block_name}: unknown strategy type '{}'. \
                          Valid values: \"poll\", \"fsevent\", \"fsevent_poll\"",
@@ -368,38 +350,38 @@ impl SourceOverrideConfig {
         };
 
         // poll_* keys only valid for poll and fsevent_poll
-        if self.poll_interval.is_some() || self.poll_count.is_some() {
-            if kind == StrategyKind::Fsevent {
-                return Err(format!(
-                    "{block_name}: keys poll_interval/poll_count are not valid for \
+        if (self.poll_interval.is_some() || self.poll_count.is_some())
+            && kind == StrategyKind::Fsevent
+        {
+            return Err(format!(
+                "{block_name}: keys poll_interval/poll_count are not valid for \
                      type = \"fsevent\". Use type = \"poll\" or \"fsevent_poll\"."
-                ));
-            }
+            ));
         }
 
         // fsevent_* keys only valid for fsevent and fsevent_poll
-        if self.fsevent_patterns.is_some()
+        if (self.fsevent_patterns.is_some()
             || self.fsevent_abs_paths.is_some()
             || self.fsevent_lifespan.is_some()
-            || self.fsevent_reinstates.is_some()
+            || self.fsevent_reinstates.is_some())
+            && kind == StrategyKind::Poll
         {
-            if kind == StrategyKind::Poll {
-                return Err(format!(
-                    "{block_name}: keys fsevent_patterns/fsevent_abs_paths/fsevent_lifespan/\
+            return Err(format!(
+                "{block_name}: keys fsevent_patterns/fsevent_abs_paths/fsevent_lifespan/\
                      fsevent_reinstates are not valid for type = \"poll\". \
                      Use type = \"fsevent\" or \"fsevent_poll\"."
-                ));
-            }
+            ));
         }
 
         // fsevent_lifespan is forbidden for global fsevent (pure-watch global never decays)
-        if let (Some(_), Some(scope)) = (&self.fsevent_lifespan, &self.scope) {
-            if scope == "global" && kind == StrategyKind::Fsevent {
-                return Err(format!(
-                    "{block_name}: fsevent_lifespan is forbidden for \
+        if let (Some(_), Some(scope)) = (&self.fsevent_lifespan, &self.scope)
+            && scope == "global"
+            && kind == StrategyKind::Fsevent
+        {
+            return Err(format!(
+                "{block_name}: fsevent_lifespan is forbidden for \
                      scope = \"global\" + type = \"fsevent\" (pure-watch global never decays)."
-                ));
-            }
+            ));
         }
 
         Ok(())
@@ -462,6 +444,17 @@ pub struct ExternalFieldDecl {
     pub field_type: String,
 }
 
+/// One `[providers.<name>]` block with `backend = "script"`, paired with its parsed sources.
+pub type ScriptProviderBlocks = Vec<(String, Vec<ExternalSourceConfig>)>;
+
+/// One `[providers.<name>]` block with `backend = "library"`, paired with `library_path`
+/// and any per-source override tables.
+pub type LibraryProviderBlocks = Vec<(String, String, Vec<ExternalSourceConfig>)>;
+
+/// One `[providers.<name>]` block with `backend = "http"`, paired with the optional
+/// `default_timeout` and parsed sources.
+pub type HttpProviderBlocks = Vec<(String, Option<String>, Vec<ExternalSourceConfig>)>;
+
 impl ExternalSourceConfig {
     /// Parse from a TOML table. `block_name` is used in error messages.
     pub fn from_toml_table(block_name: &str, table: &toml::value::Table) -> Result<Self, String> {
@@ -470,17 +463,17 @@ impl ExternalSourceConfig {
         // ── headers sub-table ─────────────────────────────────────────────────
         // headers may appear as a sub-table; we collect it first before the
         // scalar-key loop which skips tables.
-        if let Some(headers_val) = table.get("headers") {
-            if let Some(headers_table) = headers_val.as_table() {
-                let mut map = HashMap::new();
-                for (k, v) in headers_table {
-                    let s = v
-                        .as_str()
-                        .ok_or_else(|| format!("{block_name}: headers.{k} must be a string"))?;
-                    map.insert(k.clone(), s.to_string());
-                }
-                out.headers = Some(map);
+        if let Some(headers_val) = table.get("headers")
+            && let Some(headers_table) = headers_val.as_table()
+        {
+            let mut map = HashMap::new();
+            for (k, v) in headers_table {
+                let s = v
+                    .as_str()
+                    .ok_or_else(|| format!("{block_name}: headers.{k} must be a string"))?;
+                map.insert(k.clone(), s.to_string());
             }
+            out.headers = Some(map);
         }
 
         for (key, val) in table {
@@ -844,12 +837,11 @@ impl Config {
         source_default: Option<u32>,
     ) -> u32 {
         // 1. Per-source override
-        if let Some(src) = source_name {
-            if let Ok(Some(cfg)) = self.source_override(provider_name, src) {
-                if let Some(v) = cfg.failback_count {
-                    return v;
-                }
-            }
+        if let Some(src) = source_name
+            && let Ok(Some(cfg)) = self.source_override(provider_name, src)
+            && let Some(v) = cfg.failback_count
+        {
+            return v;
         }
         // 2. Source-declared default
         if let Some(d) = source_default {
@@ -873,14 +865,12 @@ impl Config {
         source_default: Option<Duration>,
     ) -> Duration {
         // 1. Per-source override
-        if let Some(src) = source_name {
-            if let Ok(Some(cfg)) = self.source_override(provider_name, src) {
-                if let Some(ref s) = cfg.failback_interval {
-                    if let Some(d) = parse_duration(s) {
-                        return d;
-                    }
-                }
-            }
+        if let Some(src) = source_name
+            && let Ok(Some(cfg)) = self.source_override(provider_name, src)
+            && let Some(ref s) = cfg.failback_interval
+            && let Some(d) = parse_duration(s)
+        {
+            return d;
         }
         // 2. Source-declared default
         if let Some(d) = source_default {
@@ -903,14 +893,12 @@ impl Config {
         source_default: Option<Duration>,
     ) -> Duration {
         // 1. Per-source override
-        if let Some(src) = source_name {
-            if let Ok(Some(cfg)) = self.source_override(provider_name, src) {
-                if let Some(ref s) = cfg.poll_interval {
-                    if let Some(d) = parse_duration(s) {
-                        return d;
-                    }
-                }
-            }
+        if let Some(src) = source_name
+            && let Ok(Some(cfg)) = self.source_override(provider_name, src)
+            && let Some(ref s) = cfg.poll_interval
+            && let Some(d) = parse_duration(s)
+        {
+            return d;
         }
         // 2. Source-declared default
         if let Some(d) = source_default {
@@ -933,12 +921,11 @@ impl Config {
         source_default: Option<u32>,
     ) -> u32 {
         // 1. Per-source override
-        if let Some(src) = source_name {
-            if let Ok(Some(cfg)) = self.source_override(provider_name, src) {
-                if let Some(v) = cfg.poll_count {
-                    return v;
-                }
-            }
+        if let Some(src) = source_name
+            && let Ok(Some(cfg)) = self.source_override(provider_name, src)
+            && let Some(v) = cfg.poll_count
+        {
+            return v;
         }
         // 2. Source-declared default
         if let Some(d) = source_default {
@@ -966,12 +953,11 @@ impl Config {
         source_default: bool,
     ) -> bool {
         // 1. Per-source override
-        if let Some(src) = source_name {
-            if let Ok(Some(cfg)) = self.source_override(provider_name, src) {
-                if let Some(v) = cfg.fsevent_reinstates {
-                    return v;
-                }
-            }
+        if let Some(src) = source_name
+            && let Ok(Some(cfg)) = self.source_override(provider_name, src)
+            && let Some(v) = cfg.fsevent_reinstates
+        {
+            return v;
         }
         // 2. Global lifecycle override
         if let Some(v) = self.lifecycle.fsevents_reinstate {
@@ -1108,9 +1094,7 @@ impl Config {
 
     /// Multi-source script providers: `backend = "script"` + per-source sub-tables.
     /// Each source sub-table must contain `command`.
-    pub fn multi_script_providers(
-        &self,
-    ) -> Result<Vec<(String, Vec<ExternalSourceConfig>)>, String> {
+    pub fn multi_script_providers(&self) -> Result<ScriptProviderBlocks, String> {
         let mut result = Vec::new();
         for (name, val) in &self.providers {
             if Self::backend_for(val) != Some("script") {
@@ -1135,9 +1119,7 @@ impl Config {
     /// Multi-source library providers: `backend = "library"` + `library_path`.
     /// Source list comes from the library's C ABI; user TOML sub-tables only
     /// override knobs, not declare sources. Returns `(name, library_path, source_overrides)`.
-    pub fn multi_library_providers(
-        &self,
-    ) -> Result<Vec<(String, String, Vec<ExternalSourceConfig>)>, String> {
+    pub fn multi_library_providers(&self) -> Result<LibraryProviderBlocks, String> {
         let mut result = Vec::new();
         for (name, val) in &self.providers {
             if Self::backend_for(val) != Some("library") {
@@ -1161,9 +1143,7 @@ impl Config {
 
     /// Multi-source HTTP providers: `backend = "http"` + per-source sub-tables.
     /// Each source sub-table must contain `url`. Returns `(name, default_timeout, sources)`.
-    pub fn multi_http_providers(
-        &self,
-    ) -> Result<Vec<(String, Option<String>, Vec<ExternalSourceConfig>)>, String> {
+    pub fn multi_http_providers(&self) -> Result<HttpProviderBlocks, String> {
         let mut result = Vec::new();
         for (name, val) in &self.providers {
             if Self::backend_for(val) != Some("http") {
@@ -1287,19 +1267,18 @@ impl Config {
 
                 // Check if the provider is a known (built-in) provider.
                 let is_known_builtin = known_providers.contains(prov_name);
-                if is_known_builtin {
-                    if let Some(sources) = known_sources.get(prov_name) {
-                        if !sources.contains(sub_key) {
-                            warnings.push(format!(
-                                "config block {block_name} does not match any registered \
+                if is_known_builtin
+                    && let Some(sources) = known_sources.get(prov_name)
+                    && !sources.contains(sub_key)
+                {
+                    warnings.push(format!(
+                        "config block {block_name} does not match any registered \
                                  source for provider '{prov_name}' \
                                  (registered: {}) — skipping. \
                                  If this is a typo, fix it; if it's a platform-conditional \
                                  source, this block is inert on this platform.",
-                                sources.join(", ")
-                            ));
-                        }
-                    }
+                        sources.join(", ")
+                    ));
                 }
             }
         }

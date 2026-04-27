@@ -496,12 +496,11 @@ fn resolve_path(
     // ask it to canonicalize (walk to project root, etc.).
     if let Some(sources) = registry.provider_sources(provider) {
         for sm in sources {
-            if sm.scope == SourceScope::PathScoped {
-                if let Some(src) = registry.source(provider, &sm.name) {
-                    if let Some(canonical) = src.canonical_path(Some(&raw)) {
-                        return Some(canonical);
-                    }
-                }
+            if sm.scope == SourceScope::PathScoped
+                && let Some(src) = registry.source(provider, &sm.name)
+                && let Some(canonical) = src.canonical_path(Some(&raw))
+            {
+                return Some(canonical);
             }
         }
     }

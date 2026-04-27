@@ -270,12 +270,12 @@ impl ProviderRegistry {
             }
         }
         for (name, lib_config) in config.library_providers() {
-            if !config.is_provider_disabled(&name) {
-                if let Some(provider) = LibraryProvider::new(&name, lib_config) {
-                    registry.register(Box::new(provider)).unwrap_or_else(|e| {
-                        tracing::warn!("Failed to register library provider '{}': {}", name, e);
-                    });
-                }
+            if !config.is_provider_disabled(&name)
+                && let Some(provider) = LibraryProvider::new(&name, lib_config)
+            {
+                registry.register(Box::new(provider)).unwrap_or_else(|e| {
+                    tracing::warn!("Failed to register library provider '{}': {}", name, e);
+                });
             }
         }
         for (name, http_config) in config.http_providers() {
@@ -322,18 +322,17 @@ impl ProviderRegistry {
         match config.multi_library_providers() {
             Ok(providers) => {
                 for (name, lib_path, source_overrides) in providers {
-                    if !config.is_provider_disabled(&name) {
-                        if let Some(provider) =
+                    if !config.is_provider_disabled(&name)
+                        && let Some(provider) =
                             LibraryProvider::with_sources(&name, &lib_path, source_overrides)
-                        {
-                            registry.register(Box::new(provider)).unwrap_or_else(|e| {
-                                tracing::warn!(
-                                    "Failed to register multi-source library provider '{}': {}",
-                                    name,
-                                    e
-                                );
-                            });
-                        }
+                    {
+                        registry.register(Box::new(provider)).unwrap_or_else(|e| {
+                            tracing::warn!(
+                                "Failed to register multi-source library provider '{}': {}",
+                                name,
+                                e
+                            );
+                        });
                     }
                 }
             }

@@ -118,7 +118,6 @@ pub(crate) struct Subscription {
     pub(crate) path: Option<String>,
     pub(crate) source: String,
     pub(crate) patterns: Vec<String>,
-    pub(crate) abs_paths: Vec<PathBuf>,
 }
 
 /// Public wrapper for parse_duration, used by script provider.
@@ -690,11 +689,15 @@ impl Scheduler {
                         }
                         Some(SchedulerMessage::Refresh { provider, path }) => {
                             debug!("Refresh: provider={} path={:?}", provider, path);
-                            // Fan out to all sources for this provider.
-                            if let Some(sources) = self.registry.provider_sources(&provider) {
-                                for sm in sources.to_vec() {
-                                    self.execute_source(&provider, &sm.name, path.as_deref());
-                                }
+                            // Fan out to all sources for this provider. Snapshot the
+                            // names so the registry borrow drops before the calls.
+                            let names: Vec<String> = self
+                                .registry
+                                .provider_sources(&provider)
+                                .map(|src| src.iter().map(|sm| sm.name.clone()).collect())
+                                .unwrap_or_default();
+                            for name in &names {
+                                self.execute_source(&provider, name, path.as_deref());
                             }
                             last_activity = Instant::now();
                         }
@@ -787,11 +790,6 @@ impl Scheduler {
                                             let patterns = crate::provider::watch_patterns(
                                                 &sm.invalidation,
                                             );
-                                            let abs_paths: Vec<PathBuf> =
-                                                crate::provider::watch_abs_paths(&sm.invalidation)
-                                                    .into_iter()
-                                                    .map(PathBuf::from)
-                                                    .collect();
                                             if let Err(e) = fs_watcher.watch(&watch_path) {
                                                 warn!(
                                                     "Failed to watch {:?}: {}",
@@ -806,7 +804,6 @@ impl Scheduler {
                                                         path: path.clone(),
                                                         source: sm.name.clone(),
                                                         patterns,
-                                                        abs_paths,
                                                     });
                                                 debug!(
                                                     "Demand: watching path {:?} for provider={} source={}",
@@ -829,14 +826,13 @@ impl Scheduler {
                                                     );
                                                 } else {
                                                     watch_paths
-                                                        .entry(abs_path.clone())
+                                                        .entry(abs_path)
                                                         .or_default()
                                                         .push(Subscription {
                                                             provider: provider.clone(),
                                                             path: None,
                                                             source: sm.name.clone(),
                                                             patterns: Vec::new(),
-                                                            abs_paths: vec![abs_path],
                                                         });
                                                 }
                                             }
@@ -947,10 +943,13 @@ impl Scheduler {
                     match msg {
                         None | Some(SchedulerMessage::Shutdown) => break,
                         Some(SchedulerMessage::Refresh { provider, path }) => {
-                            if let Some(sources) = self.registry.provider_sources(&provider) {
-                                for sm in sources.to_vec() {
-                                    self.execute_source(&provider, &sm.name, path.as_deref());
-                                }
+                            let names: Vec<String> = self
+                                .registry
+                                .provider_sources(&provider)
+                                .map(|src| src.iter().map(|sm| sm.name.clone()).collect())
+                                .unwrap_or_default();
+                            for name in &names {
+                                self.execute_source(&provider, name, path.as_deref());
                             }
                             last_activity = Instant::now();
                         }
@@ -1024,11 +1023,10 @@ impl Scheduler {
                                 // No filesystem watching in this path.
                                 let _ = outcome.watch_registration;
 
-                                if matches!(outcome.transition, StateTransition::NewlyActive) {
-                                    if self.cache.get_source(&provider, effective_key_path.as_deref(), &sm.name).is_none() {
+                                if matches!(outcome.transition, StateTransition::NewlyActive)
+                                    && self.cache.get_source(&provider, effective_key_path.as_deref(), &sm.name).is_none() {
                                         self.execute_source(&provider, &sm.name, effective_key_path.as_deref());
                                     }
-                                }
                             }
                             last_activity = now;
                         }

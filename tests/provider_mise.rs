@@ -130,7 +130,7 @@ fn mise_project_execute_returns_flat_tool_fields() {
     }
 
     // Fields must be flat strings keyed by tool name.
-    let has_tool = result.fields.get("node").is_some() || result.fields.get("python").is_some();
+    let has_tool = result.fields.contains_key("node") || result.fields.contains_key("python");
     assert!(
         has_tool,
         "expected 'node' or 'python' as top-level string fields; got fields: {:?}",
