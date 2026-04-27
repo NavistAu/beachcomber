@@ -1,6 +1,8 @@
 //! Singleton daemon enforcement: PID file with flock, version comparison,
 //! graceful handover on version mismatch, orphan reaping.
 
+pub mod policy;
+
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
@@ -9,6 +11,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::boundaries::killer::{ProcessKiller, RealProcessKiller};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PidFileRecord {
@@ -309,29 +313,25 @@ pub fn binary_newer_than(binary: &Path, process_start_unix_ms: u64) -> std::io::
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    Ok(mtime_ms > process_start_unix_ms)
+    Ok(policy::is_binary_newer(mtime_ms, process_start_unix_ms))
 }
 
-/// Find PIDs of other processes whose binary matches `our_exe`. Used to identify
-/// orphan `comb daemon` processes that need reaping.
-///
-/// Matches the canonicalised (realpath) binary path. Excludes the current process.
-pub fn find_orphan_daemons(our_exe: &Path) -> Vec<u32> {
+/// Low-level helper: enumerate process PIDs whose binary matches `our_exe`, excluding
+/// `our_pid`.  Calls directly into sysinfo; has no injection seam.  Public only so
+/// `RealProcessKiller` can delegate here.
+pub fn find_orphan_daemons_raw(our_exe: &Path, our_pid: u32) -> Vec<u32> {
     use sysinfo::System;
 
     let our_canonical = std::fs::canonicalize(our_exe).unwrap_or_else(|_| our_exe.to_path_buf());
-    let our_pid = std::process::id();
 
     let mut sys = System::new();
     sys.refresh_processes();
 
-    sys.processes()
+    let candidates: Vec<u32> = sys
+        .processes()
         .iter()
         .filter_map(|(pid, proc)| {
             let pid_u = pid.as_u32();
-            if pid_u == our_pid {
-                return None;
-            }
             let exe = proc.exe()?;
             let exe_canonical = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
             if exe_canonical == our_canonical {
@@ -340,16 +340,36 @@ pub fn find_orphan_daemons(our_exe: &Path) -> Vec<u32> {
                 None
             }
         })
-        .collect()
+        .collect();
+
+    policy::filter_orphan_pids(&candidates, our_pid)
+}
+
+/// Find PIDs of other processes whose binary matches `our_exe`. Used to identify
+/// orphan `comb daemon` processes that need reaping.
+///
+/// Matches the canonicalised (realpath) binary path. Excludes the current process.
+pub fn find_orphan_daemons(our_exe: &Path) -> Vec<u32> {
+    find_orphan_daemons_raw(our_exe, std::process::id())
 }
 
 /// Find and reap all orphan daemon processes (matching binary, excluding self).
-/// Logs each reap. Returns the count of orphans killed.
+/// Uses the default `RealProcessKiller` which calls libc::kill directly.
+/// Returns the count of orphans killed.
 pub fn reap_orphans(our_exe: &Path) -> usize {
-    let orphans = find_orphan_daemons(our_exe);
+    reap_orphans_with(&RealProcessKiller, our_exe)
+}
+
+/// Injection-point variant of `reap_orphans` — accepts any `ProcessKiller`.
+///
+/// Useful for tests: pass a hand-written double to verify list/kill behaviour
+/// without touching the OS.
+pub fn reap_orphans_with(killer: &dyn ProcessKiller, our_exe: &Path) -> usize {
+    let our_pid = std::process::id();
+    let orphans = killer.list_by_exe(our_exe, our_pid);
     let mut count = 0;
     for pid in orphans {
-        match supersede_existing(pid, Duration::from_secs(1)) {
+        match killer.kill_gracefully(pid, 1000) {
             Ok(()) => {
                 tracing::info!("reaped orphan daemon: pid={pid}");
                 count += 1;

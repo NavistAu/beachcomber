@@ -1,0 +1,206 @@
+//! Pure decision logic for the singleton enforcement layer — no OS calls, fully unit-testable.
+//!
+//! Functions here operate only on their arguments and return plain values.
+//! OS-bound work (filesystem access, process signaling, sysinfo enumeration) lives in
+//! `crate::singleton` (`src/singleton/mod.rs`).
+
+use crate::singleton::PidFileRecord;
+
+/// Outcome of a supersession check.
+///
+/// See `decide_supersession` for the full decision rule.
+pub use crate::singleton::SupersessionDecision;
+
+/// Given the existing singleton's record and our own binary hash, decide whether
+/// to supersede (kill and take over) or exit silently (existing daemon is fine).
+///
+/// Compares on `binary_hash` — the SHA256 of the binary file content at daemon
+/// startup. Same hash = identical binary = existing daemon is fine. Different
+/// hash = rebuilt binary = supersede.
+///
+/// This is the same function re-exported from `crate::singleton` for callers that
+/// want to import from the pure-policy module explicitly.
+pub fn decide_supersession(
+    existing: &PidFileRecord,
+    our_binary_hash: &str,
+) -> SupersessionDecision {
+    crate::singleton::decide_supersession(existing, our_binary_hash)
+}
+
+/// Given a file's last-modified timestamp (in milliseconds since the Unix epoch) and
+/// the process-start timestamp (also in milliseconds since the Unix epoch), decide
+/// whether the binary is strictly newer than the process start time.
+///
+/// Returns `true` when the file was modified *after* the process started, meaning the
+/// on-disk binary has changed and the daemon should restart.
+///
+/// This function is the pure comparison half of `binary_newer_than`; the OS-bound half
+/// (reading the file's mtime via `std::fs::metadata`) stays in `crate::singleton`.
+pub fn is_binary_newer(mtime_unix_ms: u64, process_start_unix_ms: u64) -> bool {
+    mtime_unix_ms > process_start_unix_ms
+}
+
+/// Decide whether a pid-file record describes a stale entry that can be reclaimed.
+///
+/// A record is considered stale (and safe to reclaim) when the process is **not**
+/// running (`process_alive` = false).  When the process is alive the record is fresh
+/// regardless of any other field.
+///
+/// The OS-bound caller is responsible for checking liveness (e.g., `kill(pid, 0)`)
+/// and supplying the boolean.
+pub fn is_pidfile_stale(process_alive: bool) -> bool {
+    !process_alive
+}
+
+/// Given the set of process PIDs that share our binary path and our own PID, return
+/// only the PIDs that are genuine orphans (not us).
+///
+/// This is the pure filtering half of `find_orphan_daemons`.  The OS-bound half
+/// (enumerating processes via sysinfo) stays in `crate::singleton`.
+pub fn filter_orphan_pids(candidates: &[u32], our_pid: u32) -> Vec<u32> {
+    candidates
+        .iter()
+        .copied()
+        .filter(|&p| p != our_pid)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::singleton::{PidFileRecord, SupersessionDecision};
+
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn make_record(pid: u32, hash: &str) -> PidFileRecord {
+        PidFileRecord {
+            pid,
+            version: "0.5.1".into(),
+            binary: "/path/to/comb".into(),
+            binary_hash: hash.into(),
+            started_unix_ms: 0,
+        }
+    }
+
+    // --- decide_supersession ---
+
+    #[test]
+    fn same_hash_means_exit_silent() {
+        let rec = make_record(1234, HASH_A);
+        let decision = decide_supersession(&rec, HASH_A);
+        assert!(
+            matches!(decision, SupersessionDecision::ExitSilent),
+            "same hash should yield ExitSilent, got {decision:?}"
+        );
+    }
+
+    #[test]
+    fn different_hash_means_supersede() {
+        let rec = make_record(1234, HASH_A);
+        let decision = decide_supersession(&rec, HASH_B);
+        match decision {
+            SupersessionDecision::Supersede { existing_pid } => {
+                assert_eq!(existing_pid, 1234, "should carry the existing PID");
+            }
+            other => panic!("expected Supersede, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn same_version_different_hash_still_supersedes() {
+        // Two dev builds at the same cargo version but different binaries —
+        // human version matches, but binary_hash differs, so we supersede.
+        let mut rec = make_record(9999, HASH_A);
+        rec.version = "0.5.1".into(); // same version string
+        let decision = decide_supersession(&rec, HASH_B);
+        assert!(
+            matches!(decision, SupersessionDecision::Supersede { .. }),
+            "version string is advisory only; hash difference must supersede"
+        );
+    }
+
+    #[test]
+    fn supersede_carries_existing_pid_correctly() {
+        let rec = make_record(42, HASH_A);
+        let decision = decide_supersession(&rec, HASH_B);
+        if let SupersessionDecision::Supersede { existing_pid } = decision {
+            assert_eq!(existing_pid, 42);
+        } else {
+            panic!("expected Supersede");
+        }
+    }
+
+    // --- is_binary_newer ---
+
+    #[test]
+    fn binary_newer_when_mtime_after_start() {
+        assert!(is_binary_newer(1000, 999));
+    }
+
+    #[test]
+    fn binary_not_newer_when_mtime_equals_start() {
+        assert!(!is_binary_newer(1000, 1000));
+    }
+
+    #[test]
+    fn binary_not_newer_when_mtime_before_start() {
+        assert!(!is_binary_newer(999, 1000));
+    }
+
+    #[test]
+    fn binary_newer_handles_zero_start() {
+        // Any reasonable mtime is newer than epoch=0.
+        assert!(is_binary_newer(1, 0));
+    }
+
+    #[test]
+    fn binary_not_newer_at_exact_epoch() {
+        assert!(!is_binary_newer(0, 0));
+    }
+
+    // --- is_pidfile_stale ---
+
+    #[test]
+    fn stale_when_process_gone() {
+        assert!(is_pidfile_stale(false));
+    }
+
+    #[test]
+    fn fresh_when_process_alive() {
+        assert!(!is_pidfile_stale(true));
+    }
+
+    // --- filter_orphan_pids ---
+
+    #[test]
+    fn filter_removes_our_pid() {
+        let candidates = vec![100u32, 200, std::process::id(), 300];
+        let our = std::process::id();
+        let orphans = filter_orphan_pids(&candidates, our);
+        assert!(!orphans.contains(&our), "self pid must be excluded");
+        assert_eq!(orphans.len(), 3);
+    }
+
+    #[test]
+    fn filter_keeps_all_when_self_absent() {
+        let candidates = vec![100u32, 200, 300];
+        let our = 999; // not in the list
+        let orphans = filter_orphan_pids(&candidates, our);
+        assert_eq!(orphans, vec![100, 200, 300]);
+    }
+
+    #[test]
+    fn filter_empty_input_gives_empty_output() {
+        let orphans = filter_orphan_pids(&[], 1);
+        assert!(orphans.is_empty());
+    }
+
+    #[test]
+    fn filter_all_self_gives_empty_output() {
+        let our = 42u32;
+        let candidates = vec![our, our, our];
+        let orphans = filter_orphan_pids(&candidates, our);
+        assert!(orphans.is_empty());
+    }
+}
