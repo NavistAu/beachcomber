@@ -80,7 +80,7 @@ jobs:
 
   coverage:
     name: Coverage gate
-    needs: rust-version
+    needs: [rust-version, test]
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
