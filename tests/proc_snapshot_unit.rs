@@ -143,7 +143,7 @@ mod eslogger {
         let line = r#"{"process":{"executable":{"path":"/usr/bin/git"}},"event":{"exec":{"target":{"executable":{"path":"/usr/bin/kubectl"}}}}}"#;
         let counts = parse_eslogger_output(line);
         assert_eq!(counts.get("git").copied(), Some(1));
-        assert!(counts.get("kubectl").is_none());
+        assert!(!counts.contains_key("kubectl"));
     }
 
     #[test]

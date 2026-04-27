@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+#[allow(dead_code)]
 pub struct IsolatedSocket {
     pub dir: TempDir,
     pub path: PathBuf,
@@ -16,6 +17,8 @@ impl IsolatedSocket {
     /// `Config::resolve_socket_path`: `$XDG_RUNTIME_DIR/beachcomber/sock`.
     /// Setting `XDG_RUNTIME_DIR = dir.path()` in a test process points that
     /// process at exactly this socket.
+    // Used by multiple integration test binaries via the shared common module.
+    #[allow(dead_code)]
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         // The daemon's server creates parent dirs via `create_dir_all`, so we
