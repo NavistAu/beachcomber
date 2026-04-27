@@ -18,18 +18,16 @@ fn http_provider_metadata() {
 
 #[test]
 fn http_provider_env_expansion() {
-    // Test that ${VAR} expansion works by verifying metadata parses correctly
-    // SAFETY: test-only mutation of env var with no concurrent threads touching it
-    unsafe { std::env::set_var("TEST_BEACHCOMBER_VAR", "expanded_value") };
-    let config = HttpProviderConfig {
-        url: "https://example.com/${TEST_BEACHCOMBER_VAR}".to_string(),
-        ..Default::default()
-    };
-    let p = HttpProvider::new("env_test", config);
-    let meta = p.metadata();
-    assert_eq!(meta.name, "env_test");
-    // SAFETY: test-only mutation of env var with no concurrent threads touching it
-    unsafe { std::env::remove_var("TEST_BEACHCOMBER_VAR") };
+    // Scope TEST_BEACHCOMBER_VAR to this test body; temp_env restores via Drop.
+    temp_env::with_var("TEST_BEACHCOMBER_VAR", Some("expanded_value"), || {
+        let config = HttpProviderConfig {
+            url: "https://example.com/${TEST_BEACHCOMBER_VAR}".to_string(),
+            ..Default::default()
+        };
+        let p = HttpProvider::new("env_test", config);
+        let meta = p.metadata();
+        assert_eq!(meta.name, "env_test");
+    });
 }
 
 #[test]

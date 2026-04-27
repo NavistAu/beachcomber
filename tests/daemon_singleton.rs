@@ -13,24 +13,15 @@ fn resolve_socket_path_prefers_explicit_override() {
 #[test]
 fn resolve_socket_path_falls_back_to_tmp_not_tmpdir() {
     let cfg = Config::default();
-    // Preserve and mutate env.
-    let old_xdg = std::env::var_os("XDG_RUNTIME_DIR");
-    let old_tmp = std::env::var_os("TMPDIR");
-    unsafe {
-        std::env::remove_var("XDG_RUNTIME_DIR");
-        std::env::set_var("TMPDIR", "/per/shell/tmpdir"); // MUST be ignored now
-    }
-    let path = cfg.resolve_socket_path();
-    unsafe {
-        match old_xdg {
-            Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-            None => std::env::remove_var("XDG_RUNTIME_DIR"),
-        };
-        match old_tmp {
-            Some(v) => std::env::set_var("TMPDIR", v),
-            None => std::env::remove_var("TMPDIR"),
-        };
-    }
+    // Remove XDG_RUNTIME_DIR and set TMPDIR to a custom value that MUST be ignored.
+    // temp_env restores both vars to their original values via Drop.
+    let path = temp_env::with_vars(
+        [
+            ("XDG_RUNTIME_DIR", None::<&str>),
+            ("TMPDIR", Some("/per/shell/tmpdir")),
+        ],
+        || cfg.resolve_socket_path(),
+    );
 
     let path_str = path.to_string_lossy();
     assert!(
@@ -46,23 +37,15 @@ fn resolve_socket_path_falls_back_to_tmp_not_tmpdir() {
 #[test]
 fn resolve_socket_path_uses_xdg_runtime_dir_when_set() {
     let cfg = Config::default();
-    let old_xdg = std::env::var_os("XDG_RUNTIME_DIR");
-    let old_tmp = std::env::var_os("TMPDIR");
-    unsafe {
-        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/501");
-        std::env::set_var("TMPDIR", "/nowhere");
-    }
-    let path = cfg.resolve_socket_path();
-    unsafe {
-        match old_xdg {
-            Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-            None => std::env::remove_var("XDG_RUNTIME_DIR"),
-        };
-        match old_tmp {
-            Some(v) => std::env::set_var("TMPDIR", v),
-            None => std::env::remove_var("TMPDIR"),
-        };
-    }
+    // temp_env serializes concurrent env mutations via a process-wide mutex and
+    // restores both vars to their original values via Drop.
+    let path = temp_env::with_vars(
+        [
+            ("XDG_RUNTIME_DIR", Some("/run/user/501")),
+            ("TMPDIR", Some("/nowhere")),
+        ],
+        || cfg.resolve_socket_path(),
+    );
     assert_eq!(path, PathBuf::from("/run/user/501/beachcomber/sock"));
 }
 

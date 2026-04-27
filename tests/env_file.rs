@@ -22,30 +22,33 @@ BEACHCOMBER_TEST_NUM=42
     let mut config = Config::default();
     config.daemon.env_file = Some(env_path.to_string_lossy().to_string());
 
-    let count = config.load_env_file();
-    assert_eq!(count, 4, "Should load 4 variables");
-    assert_eq!(
-        std::env::var("BEACHCOMBER_TEST_KEY").unwrap(),
-        "hello_world"
+    // Scope the test so load_env_file's set_var calls are rolled back via Drop,
+    // regardless of assertion panics. All four vars start and end as unset.
+    temp_env::with_vars(
+        [
+            ("BEACHCOMBER_TEST_KEY", None::<&str>),
+            ("BEACHCOMBER_TEST_QUOTED", None::<&str>),
+            ("BEACHCOMBER_TEST_SINGLE", None::<&str>),
+            ("BEACHCOMBER_TEST_NUM", None::<&str>),
+        ],
+        || {
+            let count = config.load_env_file();
+            assert_eq!(count, 4, "Should load 4 variables");
+            assert_eq!(
+                std::env::var("BEACHCOMBER_TEST_KEY").unwrap(),
+                "hello_world"
+            );
+            assert_eq!(
+                std::env::var("BEACHCOMBER_TEST_QUOTED").unwrap(),
+                "quoted value"
+            );
+            assert_eq!(
+                std::env::var("BEACHCOMBER_TEST_SINGLE").unwrap(),
+                "single quoted"
+            );
+            assert_eq!(std::env::var("BEACHCOMBER_TEST_NUM").unwrap(), "42");
+        },
     );
-    assert_eq!(
-        std::env::var("BEACHCOMBER_TEST_QUOTED").unwrap(),
-        "quoted value"
-    );
-    assert_eq!(
-        std::env::var("BEACHCOMBER_TEST_SINGLE").unwrap(),
-        "single quoted"
-    );
-    assert_eq!(std::env::var("BEACHCOMBER_TEST_NUM").unwrap(), "42");
-
-    // Clean up
-    // SAFETY: test runs single-threaded in its own binary
-    unsafe {
-        std::env::remove_var("BEACHCOMBER_TEST_KEY");
-        std::env::remove_var("BEACHCOMBER_TEST_QUOTED");
-        std::env::remove_var("BEACHCOMBER_TEST_SINGLE");
-        std::env::remove_var("BEACHCOMBER_TEST_NUM");
-    }
 }
 
 #[test]

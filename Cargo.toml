@@ -56,6 +56,7 @@ pretty_assertions = "1"
 assert_cmd = "2"
 predicates = "3"
 mockall = "0.13"
+temp-env = "0.3"
 
 [[bench]]
 name = "cache"
