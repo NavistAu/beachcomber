@@ -1,127 +1,119 @@
+use crate::boundaries::library::{LibloadingLoader, LibraryLoader, LoadedLibrary};
 use crate::config::{ExternalSourceConfig, ScriptProviderConfig};
 use crate::provider::script::build_source_meta_from_external;
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
-use libloading::{Library, Symbol};
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
-use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use tracing::{debug, warn};
 
-// `size_t` in C corresponds to `usize` in Rust.
-#[allow(non_camel_case_types)]
-type c_size_t = usize;
-
-// ── Legacy single-entry-point C ABI ──────────────────────────────────────────
-//
-// Libraries must export these symbols (original ABI):
-//
-//   const char* beachcomber_provider_metadata(void);
-//   const char* beachcomber_provider_execute(const char* path);
-//   void        beachcomber_provider_free(char* ptr);
-//
-// Libraries that export the Phase 4 multi-source ABI instead export:
-//
-//   size_t              bc_source_count(void);
-//   const char*         bc_source_metadata(size_t idx);   // JSON per source
-//   const char*         bc_source_execute(size_t idx, const char* path);
-//   void                bc_source_free(char* ptr);        // free any bc_* string
-//
-// If `bc_source_count` is found, the Phase 4 ABI is used. Otherwise the
-// library falls back to the legacy ABI, and the library's single source is
-// mapped to source index 0.
-
-type MetadataFn = unsafe extern "C" fn() -> *const c_char;
-type ExecuteFn = unsafe extern "C" fn(*const c_char) -> *const c_char;
-type FreeFn = unsafe extern "C" fn(*mut c_char);
-
-// Phase 4 multi-source ABI
-type BcSourceCountFn = unsafe extern "C" fn() -> c_size_t;
-type BcSourceMetadataFn = unsafe extern "C" fn(c_size_t) -> *const c_char;
-type BcSourceExecuteFn = unsafe extern "C" fn(c_size_t, *const c_char) -> *const c_char;
-type BcSourceFreeFn = unsafe extern "C" fn(*mut c_char);
-
 /// Whether a library uses the Phase 4 multi-source ABI or the legacy ABI.
+///
+/// Determined at runtime by whether `bc_source_count` is present.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LibraryAbi {
-    /// Phase 4: `bc_source_count / bc_source_metadata / bc_source_execute / bc_source_free`.
+    /// Phase 4: `bc_source_count / bc_source_metadata / bc_source_execute`.
     MultiSource,
     /// Legacy: `beachcomber_provider_metadata / execute / free`.
     Legacy,
 }
 
-// ── LibraryHandle: Arc-shareable library wrapper ──────────────────────────────
-
-struct LibraryHandle {
-    inner: std::mem::ManuallyDrop<Library>,
-}
-
-// SAFETY: Shared-library functions are required to be thread-safe per the provider contract.
-unsafe impl Send for LibraryHandle {}
-unsafe impl Sync for LibraryHandle {}
-
 // ── LibraryProvider ───────────────────────────────────────────────────────────
 
 pub struct LibraryProvider {
     name: String,
-    library: Library,
     config: ScriptProviderConfig,
     /// User-supplied knob overrides from TOML sub-tables (Phase 4).
     source_overrides: Vec<ExternalSourceConfig>,
+    /// The loader used to open the shared library.  Stored so `sources()` can
+    /// re-load the library when creating `LibrarySource` objects.
+    loader: Arc<dyn LibraryLoader>,
+    /// A loaded handle used *only* at metadata-query time (inside `metadata()`
+    /// and `sources()`).  The per-source `LibrarySource` objects hold their own
+    /// clone of a freshly loaded handle so each source is independent.
+    loaded: Arc<dyn LoadedLibrary>,
 }
-
-// SAFETY: see LibraryHandle.
-unsafe impl Send for LibraryProvider {}
-unsafe impl Sync for LibraryProvider {}
 
 impl LibraryProvider {
     /// Single-source constructor (legacy `type = "library"` TOML path).
+    /// Wires the real `LibloadingLoader`.
     pub fn new(name: &str, config: ScriptProviderConfig) -> Option<Self> {
-        let lib = load_library(name, config.library_path.as_deref()?)?;
+        Self::with_loader(name, config, Arc::new(LibloadingLoader))
+    }
+
+    /// Single-source constructor with injected loader (for tests).
+    pub fn with_loader(
+        name: &str,
+        config: ScriptProviderConfig,
+        loader: Arc<dyn LibraryLoader>,
+    ) -> Option<Self> {
+        let lib_path = config.library_path.as_deref()?.to_string();
+        let loaded = loader
+            .load(lib_path)
+            .map_err(|e| {
+                warn!("Library provider '{}': failed to load: {}", name, e);
+            })
+            .ok()?;
         Some(Self {
             name: name.to_string(),
-            library: lib,
             config,
             source_overrides: vec![],
+            loader,
+            loaded: Arc::from(loaded),
         })
     }
 
     /// Phase 4 constructor: `backend = "library"` with a `library_path` and optional
-    /// per-source override sub-tables.
+    /// per-source override sub-tables.  Wires the real `LibloadingLoader`.
     pub fn with_sources(
         name: &str,
         library_path: &str,
         source_overrides: Vec<ExternalSourceConfig>,
     ) -> Option<Self> {
+        Self::with_sources_and_loader(
+            name,
+            library_path,
+            source_overrides,
+            Arc::new(LibloadingLoader),
+        )
+    }
+
+    /// Phase 4 constructor with injected loader (for tests).
+    pub fn with_sources_and_loader(
+        name: &str,
+        library_path: &str,
+        source_overrides: Vec<ExternalSourceConfig>,
+        loader: Arc<dyn LibraryLoader>,
+    ) -> Option<Self> {
         let cfg = ScriptProviderConfig {
             library_path: Some(library_path.to_string()),
             ..Default::default()
         };
-        let lib = load_library(name, library_path)?;
+        let loaded = loader
+            .load(library_path.to_string())
+            .map_err(|e| {
+                warn!("Library provider '{}': failed to load: {}", name, e);
+            })
+            .ok()?;
         Some(Self {
             name: name.to_string(),
-            library: lib,
             config: cfg,
             source_overrides,
+            loader,
+            loaded: Arc::from(loaded),
         })
     }
 
     fn detect_abi(&self) -> LibraryAbi {
-        // Probe for `bc_source_count` to decide which ABI to use.
-        let found: Result<Symbol<BcSourceCountFn>, _> =
-            unsafe { self.library.get(b"bc_source_count\0") };
-        if found.is_ok() {
+        if self.loaded.source_count() > 0 {
             LibraryAbi::MultiSource
         } else {
             LibraryAbi::Legacy
         }
     }
 
-    /// Build SourceMetadata list. For Phase 4 ABI, calls `bc_source_count` and
-    /// `bc_source_metadata(idx)`. For legacy ABI, calls `beachcomber_provider_metadata`.
+    /// Build SourceMetadata list.
     fn build_source_metas(&self) -> Vec<SourceMetadata> {
         match self.detect_abi() {
             LibraryAbi::MultiSource => self.build_multi_source_metas(),
@@ -130,23 +122,14 @@ impl LibraryProvider {
     }
 
     fn build_multi_source_metas(&self) -> Vec<SourceMetadata> {
-        let count = unsafe {
-            let f: Symbol<BcSourceCountFn> = self
-                .library
-                .get(b"bc_source_count\0")
-                .expect("symbol validated by detect_abi");
-            f()
-        };
-
+        let count = self.loaded.source_count();
         let mut metas = Vec::new();
         for idx in 0..count {
-            let raw = self.call_bc_source_metadata(idx);
+            let raw = self.loaded.call_source_metadata(idx);
             let meta = raw
                 .as_deref()
                 .and_then(|s| parse_library_source_meta(&self.name, s))
                 .unwrap_or_else(|| fallback_source_meta(&self.name, idx));
-
-            // Apply user overrides if a matching block exists.
             let meta = self.apply_override(meta);
             metas.push(meta);
         }
@@ -154,7 +137,10 @@ impl LibraryProvider {
     }
 
     fn build_legacy_source_meta(&self) -> SourceMetadata {
-        if let Some(json_str) = self.call_legacy_metadata_raw() {
+        if let Some(json_str) = self
+            .loaded
+            .call_metadata("beachcomber_provider_metadata".to_string())
+        {
             if let Some(meta) = parse_library_source_meta(&self.name, &json_str) {
                 return self.apply_override(meta);
             }
@@ -169,54 +155,13 @@ impl LibraryProvider {
     /// Apply per-source override if `source_overrides` has a matching source name.
     fn apply_override(&self, meta: SourceMetadata) -> SourceMetadata {
         if let Some(ov) = self.source_overrides.iter().find(|o| o.name == meta.name) {
-            // Build a new SourceMetadata from the override config; the override
-            // config may not have all fields set, so we merge.
             let merged = build_source_meta_from_external(ov);
-            // Keep the original name from the library's declaration.
             SourceMetadata {
                 name: meta.name.clone(),
                 ..merged
             }
         } else {
             meta
-        }
-    }
-
-    // ── Raw call helpers ──────────────────────────────────────────────────────
-
-    fn call_legacy_metadata_raw(&self) -> Option<String> {
-        unsafe {
-            let f: Symbol<MetadataFn> =
-                self.library.get(b"beachcomber_provider_metadata\0").ok()?;
-            let ptr = f();
-            if ptr.is_null() {
-                return None;
-            }
-            let cstr = CStr::from_ptr(ptr);
-            let result = cstr.to_string_lossy().into_owned();
-            if let Ok(free_fn) = self.library.get::<FreeFn>(b"beachcomber_provider_free\0") {
-                free_fn(ptr as *mut c_char);
-            }
-            Some(result)
-        }
-    }
-
-    fn call_bc_source_metadata(&self, idx: c_size_t) -> Option<String> {
-        unsafe {
-            let f: Symbol<BcSourceMetadataFn> = self
-                .library
-                .get(b"bc_source_metadata\0")
-                .expect("symbol validated by detect_abi");
-            let ptr = f(idx);
-            if ptr.is_null() {
-                return None;
-            }
-            let cstr = CStr::from_ptr(ptr);
-            let result = cstr.to_string_lossy().into_owned();
-            if let Ok(free_fn) = self.library.get::<BcSourceFreeFn>(b"bc_source_free\0") {
-                free_fn(ptr as *mut c_char);
-            }
-            Some(result)
         }
     }
 }
@@ -233,12 +178,10 @@ impl Provider for LibraryProvider {
         let metas = self.build_source_metas();
         let abi = self.detect_abi();
 
-        // Re-load the library into an Arc-wrapped handle so each source can use it.
+        // Re-load the library into a fresh handle so each source has independent ownership.
         let lib_path = self.config.library_path.clone().unwrap_or_default();
-        let lib_arc = match unsafe { Library::new(shellexpand(&lib_path)) } {
-            Ok(lib) => Arc::new(LibraryHandle {
-                inner: std::mem::ManuallyDrop::new(lib),
-            }),
+        let loaded_arc: Arc<dyn LoadedLibrary> = match self.loader.load(lib_path) {
+            Ok(lib) => Arc::from(lib),
             Err(e) => {
                 warn!(
                     "Library provider '{}': failed to reload library for sources: {}",
@@ -255,7 +198,7 @@ impl Provider for LibraryProvider {
                 Box::new(LibrarySource {
                     source_idx: idx,
                     abi,
-                    library: lib_arc.clone(),
+                    loaded: Arc::clone(&loaded_arc),
                     meta: OnceLock::new(),
                     meta_value: meta,
                 }) as Box<dyn Source>
@@ -269,14 +212,10 @@ impl Provider for LibraryProvider {
 struct LibrarySource {
     source_idx: usize,
     abi: LibraryAbi,
-    library: Arc<LibraryHandle>,
+    loaded: Arc<dyn LoadedLibrary>,
     meta: OnceLock<SourceMetadata>,
     meta_value: SourceMetadata,
 }
-
-// SAFETY: LibraryHandle is Send+Sync.
-unsafe impl Send for LibrarySource {}
-unsafe impl Sync for LibrarySource {}
 
 impl Source for LibrarySource {
     fn metadata(&self) -> &SourceMetadata {
@@ -284,65 +223,17 @@ impl Source for LibrarySource {
     }
 
     fn execute(&self, path: Option<&str>) -> SourceResult {
+        let path_str = path.map(|p| p.to_string());
         let json_str = match self.abi {
-            LibraryAbi::MultiSource => self.call_bc_execute(path),
-            LibraryAbi::Legacy => self.call_legacy_execute(path),
+            LibraryAbi::MultiSource => self.loaded.call_source_execute(self.source_idx, path_str),
+            LibraryAbi::Legacy => self
+                .loaded
+                .call_execute("beachcomber_provider_execute".to_string(), path_str),
         };
         let Some(s) = json_str else {
             return SourceResult::new();
         };
         parse_json_result(&s).unwrap_or_default()
-    }
-}
-
-impl LibrarySource {
-    fn call_legacy_execute(&self, path: Option<&str>) -> Option<String> {
-        unsafe {
-            let f: Symbol<ExecuteFn> = self
-                .library
-                .inner
-                .get(b"beachcomber_provider_execute\0")
-                .ok()?;
-            let c_path = path.and_then(|p| CString::new(p).ok());
-            let path_ptr = c_path.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-            let ptr = f(path_ptr);
-            if ptr.is_null() {
-                return None;
-            }
-            let cstr = CStr::from_ptr(ptr);
-            let result = cstr.to_string_lossy().into_owned();
-            if let Ok(free_fn) = self
-                .library
-                .inner
-                .get::<FreeFn>(b"beachcomber_provider_free\0")
-            {
-                free_fn(ptr as *mut c_char);
-            }
-            Some(result)
-        }
-    }
-
-    fn call_bc_execute(&self, path: Option<&str>) -> Option<String> {
-        unsafe {
-            let f: Symbol<BcSourceExecuteFn> =
-                self.library.inner.get(b"bc_source_execute\0").ok()?;
-            let c_path = path.and_then(|p| CString::new(p).ok());
-            let path_ptr = c_path.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-            let ptr = f(self.source_idx, path_ptr);
-            if ptr.is_null() {
-                return None;
-            }
-            let cstr = CStr::from_ptr(ptr);
-            let result = cstr.to_string_lossy().into_owned();
-            if let Ok(free_fn) = self
-                .library
-                .inner
-                .get::<BcSourceFreeFn>(b"bc_source_free\0")
-            {
-                free_fn(ptr as *mut c_char);
-            }
-            Some(result)
-        }
     }
 }
 
@@ -591,7 +482,7 @@ fn build_source_meta_from_config(_name: &str, config: &ScriptProviderConfig) -> 
     }
 }
 
-fn fallback_source_meta(provider_name: &str, idx: c_size_t) -> SourceMetadata {
+fn fallback_source_meta(provider_name: &str, idx: usize) -> SourceMetadata {
     let name = if idx == 0 {
         "main".to_string()
     } else {
@@ -632,31 +523,6 @@ pub fn parse_library_metadata_for_test(name: &str, json_str: &str) -> Option<Pro
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn load_library(name: &str, lib_path: &str) -> Option<Library> {
-    let expanded = shellexpand(lib_path);
-    let path = Path::new(&expanded);
-
-    if !path.exists() {
-        warn!(
-            "Library provider '{}': path does not exist: {}",
-            name, expanded
-        );
-        return None;
-    }
-
-    // SAFETY: We trust the user-configured library path.
-    match unsafe { Library::new(path) } {
-        Ok(lib) => Some(lib),
-        Err(e) => {
-            warn!(
-                "Library provider '{}': failed to load {}: {}",
-                name, expanded, e
-            );
-            None
-        }
-    }
-}
-
 fn parse_json_result(json_str: &str) -> Option<SourceResult> {
     let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
     let obj = parsed.as_object()?;
@@ -680,13 +546,4 @@ fn parse_json_result(json_str: &str) -> Option<SourceResult> {
         result.insert(key.clone(), value);
     }
     Some(result)
-}
-
-fn shellexpand(path: &str) -> String {
-    if path.starts_with("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return format!("{}{}", home, &path[1..]);
-    }
-    path.to_string()
 }
