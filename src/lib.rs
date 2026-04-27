@@ -1,3 +1,4 @@
+pub mod boundaries;
 pub mod cache;
 pub mod cli;
 pub mod client;
