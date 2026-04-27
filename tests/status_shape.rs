@@ -623,30 +623,58 @@ fn color_resolution_matrix() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn max_width_resolves_explicit_int() {
+fn resolve_max_width_cases() {
     use beachcomber::cli::status_format::resolve_max_width;
-    assert_eq!(resolve_max_width(Some("80"), Some(200)), 80);
-}
+    use pretty_assertions::assert_eq;
 
-#[test]
-fn max_width_resolves_default_when_unset() {
-    use beachcomber::cli::status_format::resolve_max_width;
-    // When no --max-width arg is given and terminal width is available, use it.
-    assert_eq!(resolve_max_width(None, Some(200)), 200);
-    // When no --max-width arg and no terminal width, fall back to 120.
-    assert_eq!(resolve_max_width(None, None), 120);
-}
+    struct Case {
+        name: &'static str,
+        arg: Option<&'static str>,
+        terminal: Option<usize>,
+        expected: usize,
+    }
 
-#[test]
-fn max_width_resolves_auto_uses_terminal() {
-    use beachcomber::cli::status_format::resolve_max_width;
-    assert_eq!(resolve_max_width(Some("auto"), Some(200)), 200);
-}
+    let cases: &[Case] = &[
+        Case {
+            name: "explicit int overrides terminal width",
+            arg: Some("80"),
+            terminal: Some(200),
+            expected: 80,
+        },
+        Case {
+            name: "unset arg with terminal width uses terminal",
+            arg: None,
+            terminal: Some(200),
+            expected: 200,
+        },
+        Case {
+            name: "unset arg with no terminal falls back to 120",
+            arg: None,
+            terminal: None,
+            expected: 120,
+        },
+        Case {
+            name: "auto with terminal width uses terminal",
+            arg: Some("auto"),
+            terminal: Some(200),
+            expected: 200,
+        },
+        Case {
+            name: "auto with no terminal falls back to 120",
+            arg: Some("auto"),
+            terminal: None,
+            expected: 120,
+        },
+    ];
 
-#[test]
-fn max_width_resolves_auto_falls_back_to_default() {
-    use beachcomber::cli::status_format::resolve_max_width;
-    assert_eq!(resolve_max_width(Some("auto"), None), 120);
+    for case in cases {
+        assert_eq!(
+            resolve_max_width(case.arg, case.terminal),
+            case.expected,
+            "case: {}",
+            case.name
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
