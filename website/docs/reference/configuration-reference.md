@@ -88,8 +88,8 @@ idle_shutdown_secs = 300
 
 # ─── Built-in Provider Overrides ───────────────────────────────────────────────
 # Provider config uses per-source nesting: [providers.<name>.<source>]
-# The source name matches the source column in `comb status --show-sources`.
-# Use [providers.<name>] only for whole-provider switches (e.g. enabled).
+# The source name matches the source field carried per row in `comb status`'s
+# wire response. Use [providers.<name>] only for whole-provider switches (e.g. enabled).
 
 # Key reference for per-source blocks:
 #

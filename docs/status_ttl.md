@@ -176,7 +176,7 @@ Tests:
 
 ## Per-source plumbing (Phase 5 note)
 
-The provider-source model (Phases 1-5) added per-source lifecycle keying. Each `CacheRow` in the wire protocol now carries a `source: String` field identifying which source within the provider produced the row. The visible output is unchanged — the status formatter still renders one row per field. Lifecycle data (TTL column: P, K, decay level, reinstate indicator) is keyed per `(provider, path, source)` rather than per `(provider, path)`, but the rendered column values are identical in shape. The `--show-sources` flag (when implemented) adds an optional source column between `PROVIDER` and `FIELD`.
+The provider-source model (Phases 1-5) added per-source lifecycle keying. Each `CacheRow` in the wire protocol now carries a `source: String` field identifying which source within the provider produced the row. The visible output is unchanged — the status formatter still renders one row per field. Lifecycle data (TTL column: P, K, decay level, reinstate indicator) is keyed per `(provider, path, source)` rather than per `(provider, path)`, but the rendered column values are identical in shape.
 
 ## Prior design artefacts
 

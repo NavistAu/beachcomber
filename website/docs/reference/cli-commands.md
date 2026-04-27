@@ -148,7 +148,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <template>`, `--filter <provider>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <field|age|stale|lifecycle|poll_interval>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--show-sources` (add source column between PROVIDER and FIELD).
+**Flags:** `--format <template>`, `--filter <provider>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <field|age|stale|lifecycle|poll_interval>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
 
 **TTL column key:**
 

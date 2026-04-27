@@ -267,7 +267,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor) -> CanonicalResponse {
                 "providers" => IntrospectSubject::Providers,
                 "config" => IntrospectSubject::Config,
                 "cache" => IntrospectSubject::Cache,
-                "backoff" => IntrospectSubject::Backoff,
+                "lifecycle" => IntrospectSubject::Lifecycle,
                 "watches" => IntrospectSubject::Watches,
                 "timers" => IntrospectSubject::Timers,
                 "demand" => IntrospectSubject::Demand,

@@ -69,13 +69,6 @@ Each source is either **global** or **path-scoped**:
 
 Path-scoped sources walk the directory tree to find a project root (e.g., git looks for `.git/`, mise for `mise.toml` or `.mise.toml`). All subdirectories of the same project share one cache entry.
 
-## comb status — source column
+## comb status — source on the wire
 
-`comb status` shows one row per field. Each row carries a `source` field in the wire protocol identifying which source produced it. The `--show-sources` flag adds an optional source column between `PROVIDER` and `FIELD`.
-
-```
-PROVIDER  SOURCE  PATH    FIELD    VALUE      AGE     TTL
-git       refs    /repo   branch   main       14s     ★   60s×12 ◉
-git       status  /repo   dirty    true       14s     ★   60s×12 ◉
-git       diff    /repo   lines+   12         30s     ★   30s×04
-```
+`comb status` shows one row per field. Each row carries a `source` field in the wire protocol identifying which source produced it; SDKs expose it on the row struct. The default human-readable output is unchanged.
