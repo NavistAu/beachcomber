@@ -1,8 +1,9 @@
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::provider::{ProviderResult, Value};
+use beachcomber::provider::Value;
 use beachcomber::server::Server;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -30,13 +31,13 @@ async fn wait_fresh_entry_is_served_from_cache() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     // Put a fresh entry with a 60-second interval — it cannot be stale yet.
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("cached-host".to_string()));
-    result.insert("short", Value::String("cached".to_string()));
-    cache.put_with_interval("hostname", None, result, Some(60));
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("cached-host".to_string()));
+    fields.insert("short".to_string(), Value::String("cached".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(60));
 
     // Sanity-check the entry is not stale.
-    let entry = cache.get("hostname", None).expect("entry must be present");
+    let entry = cache.get_entry("hostname", None).expect("entry must be present");
     assert!(
         !entry.is_stale(),
         "entry with 60s interval must not be stale immediately"
@@ -85,16 +86,16 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     // interval=0 means stale after 0 seconds (elapsed > 0 is true immediately after 1s).
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("stale-host".to_string()));
-    result.insert("short", Value::String("stale".to_string()));
-    cache.put_with_interval("hostname", None, result, Some(0));
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("stale-host".to_string()));
+    fields.insert("short".to_string(), Value::String("stale".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(0));
 
     // Wait 1 second so elapsed().as_secs() > 0 (which makes is_stale() return true).
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
     // Confirm it is stale before we send the request.
-    let entry = cache.get("hostname", None).expect("entry must be present");
+    let entry = cache.get_entry("hostname", None).expect("entry must be present");
     assert!(
         entry.is_stale(),
         "entry with interval=0 must be stale after 1s"
@@ -155,15 +156,15 @@ async fn wait_virtual_provider_returns_cached_ignoring_stale() {
     // Register a virtual provider and seed an entry that will appear stale.
     registry.register_virtual("mystore");
 
-    let mut result = ProviderResult::new();
-    result.insert("val", Value::String("virtual-value".to_string()));
+    let mut fields = HashMap::new();
+    fields.insert("val".to_string(), Value::String("virtual-value".to_string()));
     // interval=0 will make it stale after 1 second.
-    cache.put_with_interval("mystore", None, result, Some(0));
+    cache.put_source("mystore", None, "virtual", fields, Some(0));
 
     // Wait so the entry becomes stale.
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
-    let entry = cache.get("mystore", None).expect("entry must be present");
+    let entry = cache.get_entry("mystore", None).expect("entry must be present");
     assert!(
         entry.is_stale(),
         "virtual entry with interval=0 must be stale after 1s"
@@ -209,10 +210,10 @@ async fn force_wins_over_wait() {
 
     // Seed a fresh (non-stale) entry. With wait only, this would be a cache hit.
     // With force, it must be evicted and re-executed regardless.
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("seeded-host".to_string()));
-    result.insert("short", Value::String("seeded".to_string()));
-    cache.put_with_interval("hostname", None, result, Some(60));
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("seeded-host".to_string()));
+    fields.insert("short".to_string(), Value::String("seeded".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });

@@ -40,34 +40,49 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
 | `src/scheduler/` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; owns all demand and watch state; heartbeat counter for watchdog liveness detection |
 | `src/scheduler/lifecycle.rs` | `LifecycleRegistry` — per-key cache lifecycle state machine: Active → Decay1 → Decay2 → Decay3 → Decay4 → Evicted. Exponential decay of poll interval and step duration each stage. See `docs/cache-lifecycle.md` for the full spec. |
-| `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; generation counter |
+| `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; per-source `SourceResult` sub-entries within each `CacheEntry` |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
-| `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`; `split_key()` |
+| `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`; `split_key()` — handles `provider.field`, `provider.source`, and `provider.source.field` addressing |
 | `src/config.rs` | TOML config loading from XDG directories; `Config`, `DaemonConfig`, `LifecycleConfig`, `ScriptProviderConfig` |
-| `src/provider/mod.rs` | `Provider` trait; `ProviderResult`, `Value`, `ProviderMetadata`, `FieldSchema`, `InvalidationStrategy` |
-| `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; built-in registration; script provider registration from config |
-| `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; notified by cache on every put |
-| `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, `Once` strategy, global scope |
-| `src/provider/git.rs` | `GitProvider`: `git status --porcelain=v2`, file reads for stash/state; `WatchAndPoll` on `.git` |
+| `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `SourceScope`, `FieldSchema`, `InvalidationStrategy`, `KeepAlive`, `FailbackConfig`; `expand_abs_path()` helper |
+| `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; `field → source` reverse map (`HashMap<(provider, field), source_name>`); built-in registration; validation at registration |
+| `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
+| `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, pure-watch global (`KeepAlive::Never`), `host` source |
+| `src/provider/git.rs` | `GitProvider`: three sources — `refs` (fsevent, `.git`), `diff` (poll, 30s), `status` (fsevent_poll, `.git/index`) |
 | `src/provider/script.rs` | `ScriptProvider`: runs arbitrary shell commands; parses JSON or KV output; strategy built from config |
-| `src/provider/library.rs` | `LibraryProvider`: loads shared libraries (`.so`/`.dylib`) via `libloading`; C ABI contract with `beachcomber_provider_metadata/execute/free` symbols |
+| `src/provider/library.rs` | `LibraryProvider`: loads shared libraries (`.so`/`.dylib`) via `libloading`; C ABI contract with `bc_source_count/metadata/execute` symbols |
 | `src/provider/http.rs` | `HttpProvider`: in-process HTTP client for REST API providers; `extract` for JSON path navigation |
 | `src/client.rs` | `Client` (one-shot) and `ClientSession` (persistent) for consumer-side socket communication |
 
-The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`, `sudo`, `op`) follow the same pattern as `git.rs` — each implements `Provider` for a specific domain.
+The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`, `sudo`, `op`) follow the same pattern — each implements `Provider` (namespace) declaring one or more `Source` objects.
+
+### Provider→Source layering
+
+The Provider/Source/Field model has three layers:
+
+- **Provider** — a named namespace (e.g., `git`). Declares 1+ Sources. The cache key `provider\0path` is still at this level.
+- **Source** — one invalidation strategy, one set of fields, one lifecycle entry. Key for lifecycle, watches, and failure backoff is `(provider, path, source)`. Examples: git's `refs`, `diff`, `status` sources.
+- **Field** — a typed value. Belongs to exactly one Source within a Provider.
+
+The registry builds a `field → source` reverse map at registration so that a `get(provider.field)` query can be routed to the owning source without scanning.
+
+**Lifecycle keying** uses `(provider, path, source)` — each source instance has its own Active/Decay/Evicted state, independent of sibling sources at the same `(provider, path)`.
+
+**Cache layout** — `CacheEntry.sources: HashMap<source_name, SourceResult>`. Each `SourceResult` holds `fields`, `last_refreshed_ms`, and `expected_interval_secs`. Reads flatten across sources; writes are per-source (`cache.put_source(provider, path, source_name, result)`).
+
+**Watch registration** — per `(provider, path, source)`. Each source declares relative `patterns` (matched within the scope path) and/or absolute `abs_paths` (e.g., `$XDG_CONFIG_HOME/mise`). The `expand_abs_path()` helper expands `~`, `$HOME`, and XDG env vars at registration time.
 
 ### Provider execution
 
-Providers implement `Provider::execute(path) -> Vec<(Option<String>, ProviderResult)>`.
-Each returned tuple is a scoped cache entry — `None` means a global (pathless)
-entry, `Some(p)` means an entry keyed under path `p`. Most providers return a
-one-element Vec; `mise` returns two (one global, one project-scoped) from a
-single execution.
+Sources implement `Source::execute(path) -> SourceResult`. The scheduler calls
+each source independently via `tokio::task::spawn_blocking`. Source results are
+written to `CacheEntry.sources[source_name]`; sibling sources in the same
+cache entry are untouched.
 
-Scope is a property of individual fields, declared on `FieldSchema::scope`
-(`FieldScope::Global` or `FieldScope::PathScoped`). A provider's effective
-"scope shape" is inferred from its field list — a provider with any
-PathScoped field is treated as path-scoped for whole-provider queries.
+Scope is a property of the Source (`SourceScope::Global` or `SourceScope::PathScoped`),
+not individual fields. A Provider with mixed-scope sources (e.g., `mise` with a
+`global` source and a `project` source) emits into different lifecycle keys and
+cache sub-entries per execution.
 
 Cache keys use `provider\0path` for path-scoped entries and bare `provider`
 for global. A single provider can own both kinds of entries simultaneously.

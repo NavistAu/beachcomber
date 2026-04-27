@@ -32,17 +32,7 @@
 evaluate if this is correct or if the object should be unpacked upwards so mise produces more top level keys without the
 redundant wrapper naming convention. — unpacked: `execute(None)` emits one field per global tool (pathless entry); `execute(Some(p))` emits one field per project-scoped tool (path-scoped entry). `comb get mise "$cwd"` returns project tools; `comb get mise.node "$cwd"` returns a single version string. Fields are no longer wrapped in `global`/`project` objects.
 - [x] mise global is showing up in status as a Once --- but its age timer appears to be behaving like the project key? — fixed by separating execution: project execution no longer cross-emits the global entry. Global entry is only populated (with its own lifecycle) when `mise` is queried without a path context.
-- [ ] Per-cache-entry absolute-path watches — the current scheduler registers fs watches relative to the cache entry's path. Global (pathless) cache entries receive no watches and rely on fallback polling for invalidation.
-
-  **Specific case:** `mise.global` cannot directly observe `~/.config/mise/config.toml` changes; it gets them within the 30s fallback poll window. Acceptable today, but other plausible providers want the same shape — an HTTP provider watching a local credentials file for rotation, a library provider watching an absolute-path state file, etc.
-
-  **Design questions when picked up:**
-  - Extend `InvalidationStrategy::Watch` to accept both relative patterns and absolute paths? Or a new `InvalidationStrategy::WatchAbsolute` variant?
-  - Watch registration keyed per-`(provider, cache_path)` rather than per-provider, so each cache entry can have its own distinct watch set.
-  - Path expansion for `~` and `$XDG_CONFIG_HOME` at registration time — who owns that?
-  - Interaction with `fsevents_reinstate` (cache lifecycle) — orthogonal; watches still persist through decay only if that flag is true.
-
-  **Scope when picked up:** affects `src/scheduler.rs` watch-registration code, `src/provider/mod.rs` `InvalidationStrategy`, and any provider that wants to use the new shape (starting with mise.global). Independent of the decay rebuild — doesn't block that work and isn't blocked by it.
+- [x] Per-cache-entry absolute-path watches — covered by the provider-source model (Phases 1-5). `InvalidationStrategy::Watch` now accepts both `patterns` (relative, matched within scope path) and `abs_paths` (absolute roots, expanded via `expand_abs_path()`). Watch registration is keyed per `(provider, path, source)`. `mise.global`'s `global` source watches `$XDG_CONFIG_HOME/mise` directly as a pure-watch global (`KeepAlive::Never`). Provider-source model phases 1-5 complete.
 
 ### CLI Ergonomics
 

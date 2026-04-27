@@ -177,6 +177,8 @@ pub struct CacheRow {
     pub fsevents_reinstate: Option<bool>,
     /// Phase 2.7: failure state if the provider has been failing.
     pub failure: Option<FailureSnapshot>,
+    /// Phase 5: source name within the provider that owns this field.
+    pub source: Option<String>,
 }
 
 impl CacheRow {
@@ -210,6 +212,10 @@ impl CacheRow {
         let failure = v
             .get("failure")
             .and_then(|x| serde_json::from_value(x.clone()).ok());
+        let source = v
+            .get("source")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
         Ok(CacheRow {
             provider,
             field,
@@ -222,6 +228,7 @@ impl CacheRow {
             keep_alive_polls,
             fsevents_reinstate,
             failure,
+            source,
         })
     }
 
@@ -257,7 +264,7 @@ pub enum IntrospectSubject {
     Providers,
     Config,
     Cache,
-    Backoff,
+    Lifecycle,
     Watches,
     Timers,
     Demand,
@@ -271,7 +278,7 @@ impl IntrospectSubject {
             Self::Providers => "providers",
             Self::Config => "config",
             Self::Cache => "cache",
-            Self::Backoff => "backoff",
+            Self::Lifecycle => "lifecycle",
             Self::Watches => "watches",
             Self::Timers => "timers",
             Self::Demand => "demand",

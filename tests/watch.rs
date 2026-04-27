@@ -1,9 +1,10 @@
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::provider::{ProviderResult, Value};
+use beachcomber::provider::Value;
 use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -24,14 +25,18 @@ fn setup() -> (
     (tmp, sock, cache, registry, watchers)
 }
 
+fn git_fields(branch: &str, dirty: bool) -> HashMap<String, Value> {
+    let mut fields = HashMap::new();
+    fields.insert("branch".to_string(), Value::String(branch.to_string()));
+    fields.insert("dirty".to_string(), Value::Bool(dirty));
+    fields
+}
+
 #[tokio::test]
 async fn watch_receives_initial_value() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let mut result = ProviderResult::new();
-    result.insert("branch", Value::String("main".to_string()));
-    result.insert("dirty", Value::Bool(false));
-    cache.put("git", None, result);
+    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -71,11 +76,7 @@ async fn watch_receives_initial_value() {
 async fn watch_receives_updates() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let mut result = ProviderResult::new();
-    result.insert("branch", Value::String("main".to_string()));
-    result.insert("dirty", Value::Bool(false));
-    cache.put("git", None, result);
-
+    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
     let cache_writer = cache.clone();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -104,10 +105,7 @@ async fn watch_receives_updates() {
     assert_eq!(response.data.unwrap(), serde_json::json!("main"));
 
     // Update cache with new branch
-    let mut updated = ProviderResult::new();
-    updated.insert("branch", Value::String("feature/new-branch".to_string()));
-    updated.insert("dirty", Value::Bool(false));
-    cache_writer.put("git", None, updated);
+    cache_writer.put_source("git", None, "refs", git_fields("feature/new-branch", false), Some(60));
 
     // Read the update
     line.clear();
@@ -135,11 +133,7 @@ async fn watch_receives_updates() {
 async fn watch_filters_unchanged_field() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let mut result = ProviderResult::new();
-    result.insert("branch", Value::String("main".to_string()));
-    result.insert("dirty", Value::Bool(false));
-    cache.put("git", None, result);
-
+    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
     let cache_writer = cache.clone();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -168,10 +162,7 @@ async fn watch_filters_unchanged_field() {
     assert_eq!(response.data.unwrap(), serde_json::json!("main"));
 
     // Update cache — change only dirty, branch stays "main"
-    let mut updated = ProviderResult::new();
-    updated.insert("branch", Value::String("main".to_string()));
-    updated.insert("dirty", Value::Bool(true));
-    cache_writer.put("git", None, updated);
+    cache_writer.put_source("git", None, "refs", git_fields("main", true), Some(60));
 
     // Should NOT receive any update — branch didn't change
     line.clear();
@@ -192,11 +183,7 @@ async fn watch_filters_unchanged_field() {
 async fn watch_provider_level_gets_all_changes() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let mut result = ProviderResult::new();
-    result.insert("branch", Value::String("main".to_string()));
-    result.insert("dirty", Value::Bool(false));
-    cache.put("git", None, result);
-
+    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
     let cache_writer = cache.clone();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -229,10 +216,7 @@ async fn watch_provider_level_gets_all_changes() {
 
     // Update cache — change only dirty, branch stays "main"
     // Provider-level watch should still fire since the overall object changed
-    let mut updated = ProviderResult::new();
-    updated.insert("branch", Value::String("main".to_string()));
-    updated.insert("dirty", Value::Bool(true));
-    cache_writer.put("git", None, updated);
+    cache_writer.put_source("git", None, "refs", git_fields("main", true), Some(60));
 
     // Should receive an update
     line.clear();
@@ -291,10 +275,7 @@ async fn watch_miss_then_update() {
     );
 
     // Now populate the cache
-    let mut result = ProviderResult::new();
-    result.insert("branch", Value::String("main".to_string()));
-    result.insert("dirty", Value::Bool(false));
-    cache_writer.put("git", None, result);
+    cache_writer.put_source("git", None, "refs", git_fields("main", false), Some(60));
 
     // Should receive the populated value
     line.clear();

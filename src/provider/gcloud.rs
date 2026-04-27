@@ -1,6 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 
 pub struct GcloudProvider;
@@ -8,35 +8,58 @@ pub struct GcloudProvider;
 impl Provider for GcloudProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            name: "gcloud".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "project".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "account".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-            ],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 60,
-                floor_secs: 10,
-            },
+            name: "gcloud".into(),
+            sources: vec![config_source_metadata()],
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(GcloudConfig)]
+    }
+}
+
+fn config_source_metadata() -> SourceMetadata {
+    SourceMetadata {
+        name: "config".into(),
+        fields: vec![
+            FieldSchema {
+                name: "project".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "account".into(),
+                field_type: FieldType::String,
+            },
+        ],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
+        keep_alive: KeepAlive::Polls(2),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 30,
+        },
+        fsevents_reinstate: false,
+    }
+}
+
+struct GcloudConfig;
+
+impl Source for GcloudConfig {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(config_source_metadata)
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
         let Some(config_dir) = gcloud_config_dir() else {
-            return Vec::new();
+            return SourceResult::new();
         };
 
         // Read the active configuration's properties
         let properties_path = config_dir.join("properties");
         let Some(content) = std::fs::read_to_string(&properties_path).ok() else {
-            return Vec::new();
+            return SourceResult::new();
         };
 
         let mut project = String::new();
@@ -61,13 +84,13 @@ impl Provider for GcloudProvider {
         }
 
         if project.is_empty() && account.is_empty() {
-            return Vec::new();
+            return SourceResult::new();
         }
 
-        let mut result = ProviderResult::new();
+        let mut result = SourceResult::new();
         result.insert("project", Value::String(project));
         result.insert("account", Value::String(account));
-        vec![(None, result)]
+        result
     }
 }
 

@@ -54,6 +54,7 @@ type CacheRow struct {
 	KeepAlivePolls    *uint32
 	FseventsReinstate *bool
 	Failure           map[string]interface{} // e.g. {"consecutive_failures":3}
+	Source            string                 // owning source name within the provider; empty when not set
 }
 
 // Verdict is one daemon-health assertion.

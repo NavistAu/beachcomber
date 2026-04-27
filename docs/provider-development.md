@@ -4,66 +4,266 @@ Step-by-step reference for writing new built-in providers. Built-in providers li
 
 ---
 
-## 1. The Provider Trait
+## 1. The Provider/Source/Field Model
 
-Every provider implements this trait (defined in `src/provider/mod.rs`):
+### Three layers
+
+- **Provider** — a namespace. Declares 1+ Sources. Named by the key used in `comb get <name>.<field>`.
+- **Source** — one invalidation strategy, one lifecycle, one set of fields. The unit of execution and scheduling.
+- **Field** — a typed value. Belongs to exactly one Source.
+
+Every provider implements:
 
 ```rust
 pub trait Provider: Send + Sync {
     fn metadata(&self) -> ProviderMetadata;
-    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)>;
+    fn sources(&self) -> Vec<Box<dyn Source>>;
 }
 ```
 
-**`metadata()`** is called at registration time and on every `comb check providers` request. It must be fast and allocation-light (it currently allocates; a future optimisation may switch to `Cow<'static, str>`). Return a `ProviderMetadata` describing:
+Every source implements:
 
-- `name`: the provider's key used in `comb get <name>.<field>`
-- `fields`: a list of `FieldSchema { name, field_type, scope }` describing what fields `execute()` will populate and whether each is `FieldScope::Global` or `FieldScope::PathScoped`
-- `invalidation`: when the cached value should be refreshed (see §3)
+```rust
+pub trait Source: Send + Sync {
+    fn metadata(&self) -> &SourceMetadata;
+    fn execute(&self, path: Option<&str>) -> SourceResult;
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        path.map(|s| s.to_string())  // default: pass through
+    }
+}
+```
 
-**`execute(path)`** runs the provider and returns a `Vec` of scoped cache entries. It is called on a blocking thread pool (`tokio::task::spawn_blocking`), so it may safely call `std::process::Command`, `std::fs::read_to_string`, and other blocking operations. Return an empty `Vec` to indicate that no value is available (the cache will not be updated). Each tuple in the return value is `(Option<String>, ProviderResult)` — `None` for a global (pathless) entry, `Some(path)` for a path-scoped entry. Most providers return a one-element Vec.
+**`Provider::metadata()`** returns `ProviderMetadata { name, sources: Vec<SourceMetadata> }`. Called at registration time.
 
-`ProviderResult` is a `HashMap<String, Value>` wrapper. Insert fields with `result.insert("fieldname", Value::String("..."))`.
+**`Provider::sources()`** returns one `Box<dyn Source>` per declared `SourceMetadata`. The registry validates that names and fields match the metadata declaration.
+
+**`Source::execute(path)`** runs the source and returns `SourceResult { fields: HashMap<String, Value> }`. Called on a blocking thread pool (`tokio::task::spawn_blocking`), so it may safely call `std::process::Command`, `std::fs::read_to_string`, and other blocking operations. Return an empty `SourceResult` (empty `fields` map) to indicate no value is available — the cache sub-entry for this source is not updated.
+
+**`Source::canonical_path(path)`** normalises the input path to a project-root. Providers that walk up to a marker (git, mise, direnv, asdf, terraform, python) override this; the default implementation passes the path through unchanged.
+
+### SourceMetadata fields
+
+```rust
+pub struct SourceMetadata {
+    pub name: String,
+    pub fields: Vec<FieldSchema>,
+    pub scope: SourceScope,          // Global or PathScoped
+    pub invalidation: InvalidationStrategy,
+    pub keep_alive: KeepAlive,
+    pub failback: FailbackConfig,
+    pub fsevents_reinstate: bool,    // default true for Watch / WatchAndPoll
+}
+```
+
+`SourceScope::Global` — lifecycle key is `(provider, None, source)`. Watched via `abs_paths` only.
+`SourceScope::PathScoped` — lifecycle key is `(provider, Some(path), source)`. Watched via relative `patterns` resolved under the scope path.
+
+### ProviderMetadata
+
+```rust
+pub struct ProviderMetadata {
+    pub name: String,
+    pub sources: Vec<SourceMetadata>,
+}
+```
+
+### FieldSchema
+
+`FieldSchema { name, field_type }` — scope is now a Source-level property, not per-field.
 
 ---
 
-## Per-field scope
+## Implementing a Source — worked example: git
 
-Every `FieldSchema` declares a `FieldScope`:
+`git` decomposes into three sources with different strategies:
 
-- `FieldScope::Global` — stored under the bare provider name (no path suffix). Queried regardless of any explicit or context path.
-- `FieldScope::PathScoped` — stored under `provider\0path`. Queried with an explicit or context path.
+```
+git.refs   → fsevent, path-scoped, watches .git/
+             fields: branch, commit, tag, ahead, behind, upstream, detached, state, stash
 
-A provider with all Global fields is a traditional global provider. A provider
-with all PathScoped fields is a traditional path-scoped provider. A provider
-with mixed scopes (e.g., `mise`) emits one cache entry per scope per execution.
+git.diff   → poll 30s, path-scoped
+             fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
 
-### Mixed-scope example
+git.status → fsevent_poll (watches .git/index + polls every 60s), path-scoped
+             fields: staged, unstaged, untracked, conflicted, dirty
+```
+
+This decomposition allows git branch lookups (hot path, fsevent-driven) to stay fresh without dragging along the slower diff computation.
+
+Consumers still use `comb get git.branch .` as before — the registry's `field → source` map routes the query to the `refs` source transparently.
+
+---
+
+## 2. Step-by-Step: Writing a New Provider
+
+### 2.1 Decide on sources
+
+Before writing code, answer these questions for each logical group of fields:
+
+1. How do these fields change? (filesystem event, timer, or both)
+2. What is the scope? (global: one instance total; path-scoped: one instance per project root)
+3. Do I need absolute-path watches? (e.g., watching `~/.config/mise/config.toml`)
+
+Use this decision table:
+
+| Signal | Scope | Use |
+|---|---|---|
+| File changes only | path or global | `fsevent` |
+| Timer only | path or global | `poll` |
+| File changes + safety timer | path or global | `fsevent_poll` |
+| Truly static (hostname, uname, user) | global | `fsevent` + `KeepAlive::Never` (pure-watch global — no decay) |
+| Global config file watch (mise.global, mise config dir) | global | `fsevent` + `abs_paths` + `KeepAlive::Never` |
+
+**Pure-watch global** sources use `Watch` strategy with `KeepAlive::Never` — no decay timer, no polling. They execute once on first demand and only re-execute when an fs event fires on their registered `abs_paths`. Suitable for values that can only change when a specific file is written: hostname (requires reboot), username (requires reboot), uname (requires reboot), mise global config.
+
+### 2.2 Create the file
+
+Create `src/provider/dockercontext.rs`:
 
 ```rust
-impl Provider for MyProvider {
+use crate::provider::{
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive,
+    Provider, ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope,
+};
+use std::path::PathBuf;
+
+// ── Provider ──────────────────────────────────────────────────────────────────
+
+pub struct DockerContextProvider;
+
+impl Provider for DockerContextProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            name: "myprov".into(),
-            fields: vec![
-                FieldSchema { name: "system".into(), field_type: FieldType::String, scope: FieldScope::Global },
-                FieldSchema { name: "project".into(), field_type: FieldType::String, scope: FieldScope::PathScoped },
-            ],
-            invalidation: InvalidationStrategy::Poll { interval_secs: 30, floor_secs: 1 },
+            name: "dockercontext".to_string(),
+            sources: vec![DockerContextSource.metadata().clone()],
         }
     }
 
-    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-        let mut out = Vec::new();
-        // Always emit the global part.
-        out.push((None, compute_system_state()));
-        // Emit the project part only if a path was given.
-        if let Some(p) = path {
-            out.push((Some(p.to_string()), compute_project_state(p)));
-        }
-        out
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(DockerContextSource)]
     }
 }
+
+// ── Source ────────────────────────────────────────────────────────────────────
+
+struct DockerContextSource;
+
+impl Source for DockerContextSource {
+    fn metadata(&self) -> &SourceMetadata {
+        // Lazily construct; in practice use once_cell or a static.
+        static META: std::sync::OnceLock<SourceMetadata> = std::sync::OnceLock::new();
+        META.get_or_init(|| SourceMetadata {
+            name: "config".to_string(),
+            fields: vec![
+                FieldSchema { name: "name".to_string(), field_type: FieldType::String },
+                FieldSchema { name: "endpoint".to_string(), field_type: FieldType::String },
+            ],
+            scope: SourceScope::Global,
+            invalidation: InvalidationStrategy::Watch {
+                patterns: vec![],
+                abs_paths: vec![
+                    home_subpath(".docker/config.json"),
+                    home_subpath(".docker/contexts"),
+                ],
+            },
+            keep_alive: KeepAlive::Duration(300),
+            failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+            fsevents_reinstate: true,
+        })
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
+        let home = match std::env::var("HOME").ok() {
+            Some(h) => h,
+            None => return SourceResult::default(),
+        };
+        let config_path = PathBuf::from(&home).join(".docker").join("config.json");
+        let config_text = match std::fs::read_to_string(&config_path).ok() {
+            Some(t) => t,
+            None => return SourceResult::default(),
+        };
+        let config: serde_json::Value = match serde_json::from_str(&config_text).ok() {
+            Some(v) => v,
+            None => return SourceResult::default(),
+        };
+        let context_name = config
+            .get("currentContext")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default")
+            .to_string();
+        let endpoint = read_context_endpoint(&home, &context_name)
+            .unwrap_or_else(|| "unix:///var/run/docker.sock".to_string());
+
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("name".to_string(), serde_json::json!(context_name));
+        fields.insert("endpoint".to_string(), serde_json::json!(endpoint));
+        SourceResult { fields }
+    }
+}
+```
+
+### 2.3 Register the provider
+
+Add the module to `src/provider/mod.rs`:
+
+```rust
+pub mod dockercontext;
+```
+
+Add the import and registration to `src/provider/registry.rs`:
+
+```rust
+use crate::provider::dockercontext::DockerContextProvider;
+
+// In with_defaults():
+("dockercontext", Box::new(DockerContextProvider)),
+```
+
+### 2.4 Use it
+
+```bash
+comb get dockercontext.name
+comb get dockercontext.endpoint
+# Source-level addressing (Phase 5+):
+comb get dockercontext.config
+```
+
+### 2.5 Write a test
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_is_valid() {
+        let provider = DockerContextProvider;
+        let meta = provider.metadata();
+        assert_eq!(meta.name, "dockercontext");
+        assert_eq!(meta.sources.len(), 1);
+        let src = &meta.sources[0];
+        assert_eq!(src.name, "config");
+        assert!(src.fields.iter().any(|f| f.name == "name"));
+        assert!(src.fields.iter().any(|f| f.name == "endpoint"));
+        assert_eq!(src.scope, SourceScope::Global);
+    }
+
+    #[test]
+    fn returns_empty_without_docker_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", dir.path());
+        let source = DockerContextSource;
+        let result = source.execute(None);
+        assert!(result.fields.is_empty());
+        std::env::remove_var("HOME");
+    }
+}
+```
+
+Run with:
+
+```bash
+cargo nextest run -p beachcomber -E 'test(provider::dockercontext)'
 ```
 
 ---
@@ -272,54 +472,62 @@ cargo test -p beachcomber provider::dockercontext
 
 ```rust
 pub enum InvalidationStrategy {
-    Once,
-    Poll { interval_secs: u64, floor_secs: u64 },
-    Watch { patterns: Vec<String>, fallback_poll_secs: Option<u64> },
-    WatchAndPoll { patterns: Vec<String>, interval_secs: u64, floor_secs: u64 },
+    Poll { interval_secs: u64 },
+    Watch { patterns: Vec<String>, abs_paths: Vec<PathBuf> },
+    WatchAndPoll { patterns: Vec<String>, abs_paths: Vec<PathBuf>, interval_secs: u64 },
 }
 ```
 
-**`Once`** — compute once at daemon startup, never again. Use for values that cannot change without a daemon restart: hostname, current user, static environment facts. Cost: one execution at startup, zero ongoing overhead.
+Strategy chooser:
 
-```rust
-// hostname: never changes while daemon is running
-invalidation: InvalidationStrategy::Once,
-```
+| Signals available | Use |
+|---|---|
+| Timer only, no watchable file | `Poll` |
+| Filesystem events only, no poll needed | `Watch` |
+| Filesystem events + safety backstop timer | `WatchAndPoll` |
+| Truly static value (hostname, uname, user) | `Watch` (empty patterns + abs_paths, `KeepAlive::Never`) |
+| Global config dir watch | `Watch` (abs_paths only, `KeepAlive::Never`) |
 
-**`Poll { interval_secs, floor_secs }`** — re-execute on a timer. Use when there is no file to watch that reliably reflects state changes. `floor_secs` prevents consumer-requested poll intervals from going below a minimum (usually 1). The interval is in seconds; `interval_secs: 30` means re-run every 30 seconds.
+**`Poll { interval_secs }`** — re-execute on a timer. Use when there is no file to watch that reliably reflects state changes.
 
 ```rust
 // battery level: no file to watch reliably, poll every 30s
-invalidation: InvalidationStrategy::Poll {
-    interval_secs: 30,
-    floor_secs: 1,
-},
+invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
 ```
 
-**`Watch { patterns, fallback_poll_secs }`** — re-execute when the filesystem paths in `patterns` change. Use when there is a file or directory that is written whenever the state changes. `fallback_poll_secs` is used as a poll interval on systems where file watching fails or is unavailable. Set it to `Some(60)` unless freshness is critical.
+**`Watch { patterns, abs_paths }`** — re-execute when filesystem paths change. `patterns` are relative path components matched within the source's scope path (path-scoped sources only). `abs_paths` are absolute roots watched directly (typically used by global sources or for cross-repo config files). Use `expand_abs_path()` to expand `~`, `$HOME`, and XDG vars at metadata construction time.
 
 ```rust
-// kubecontext: re-run when kubeconfig is written
+// git.refs: re-run on any change under .git/ (path-scoped)
 invalidation: InvalidationStrategy::Watch {
-    patterns: vec!["/home/user/.kube/config".to_string()],
-    fallback_poll_secs: Some(60),
+    patterns: vec![".git".to_string()],
+    abs_paths: vec![],
+},
+// mise.global: re-run when the global mise config dir changes
+invalidation: InvalidationStrategy::Watch {
+    patterns: vec![],
+    abs_paths: vec![
+        expand_abs_path("$XDG_CONFIG_HOME/mise").unwrap_or_else(|| {
+            dirs::config_dir().unwrap().join("mise")
+        }),
+    ],
 },
 ```
 
-In practice, `patterns` should use absolute paths where possible. For paths relative to `$HOME`, expand them in `metadata()` using `std::env::var("HOME")` (see the `dockercontext` example above).
+There is no automatic poll fallback for `Watch` sources. If filesystem watching registration fails at runtime, the scheduler logs a warning and the source serves its last cached value. If a fallback backstop is needed, use `WatchAndPoll` instead.
 
-**`WatchAndPoll { patterns, interval_secs, floor_secs }`** — watch files AND poll on a timer. Use when file watching catches most changes quickly but some changes don't touch a watchable file (e.g., network-propagated git changes that arrive via `git fetch`). The `git` provider uses this: it watches `.git` for local operations and polls every 60 seconds to catch remote state.
+**`WatchAndPoll { patterns, abs_paths, interval_secs }`** — watch files AND poll on a timer. Use when file watching catches most changes quickly but some changes don't touch a watchable file (e.g., network-propagated git changes via `git fetch`).
 
 ```rust
-// git: watch .git for local commits/checkouts, poll every 60s for remote changes
+// git.status: watch .git/index for staging changes, poll every 60s for remote drift
 invalidation: InvalidationStrategy::WatchAndPoll {
-    patterns: vec![".git".to_string()],
+    patterns: vec![".git/index".to_string()],
+    abs_paths: vec![],
     interval_secs: 60,
-    floor_secs: 1,
 },
 ```
 
-Note that for path-scoped providers (e.g., `git`), patterns like `".git"` are relative to the queried path and the FsWatcher receives the resolved absolute path when demand is first registered. For global providers, patterns should be absolute paths.
+For path-scoped sources, `patterns` like `".git"` are relative to the queried path. The scheduler resolves them to absolute watch roots when demand is first registered.
 
 ---
 

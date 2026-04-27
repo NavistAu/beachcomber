@@ -9,8 +9,9 @@
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::provider::{ProviderResult, Value};
+use beachcomber::provider::Value;
 use beachcomber::server::Server;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -45,15 +46,15 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
         .unwrap();
 
     // Seed a git.branch entry at the repo root (where canonical_path will land).
-    let mut git = ProviderResult::new();
-    git.insert("branch", Value::String("main".to_string()));
-    git.insert("dirty", Value::Bool(false));
-    cache.put("git", Some(&repo_path), git);
+    let mut git = HashMap::new();
+    git.insert("branch".to_string(), Value::String("main".to_string()));
+    git.insert("dirty".to_string(), Value::Bool(false));
+    cache.put_source("git", Some(&repo_path), "refs", git, Some(60));
 
     // Seed a hostname entry (global — no path).
-    let mut hostname = ProviderResult::new();
-    hostname.insert("name", Value::String("myhost".to_string()));
-    cache.put("hostname", None, hostname);
+    let mut hostname = HashMap::new();
+    hostname.insert("name".to_string(), Value::String("myhost".to_string()));
+    cache.put_source("hostname", None, "main", hostname, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     tokio::spawn(async move { server.run().await });

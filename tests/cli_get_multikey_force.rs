@@ -4,8 +4,9 @@
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::provider::{ProviderResult, Value};
+use beachcomber::provider::Value;
 use beachcomber::server::Server;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -17,10 +18,10 @@ async fn setup_seeded() -> (TempDir, std::path::PathBuf) {
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
     // Fresh seed with 60s interval — force must evict this.
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("seeded-value".to_string()));
-    result.insert("short", Value::String("seeded".to_string()));
-    cache.put_with_interval("hostname", None, result, Some(60));
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("seeded-value".to_string()));
+    fields.insert("short".to_string(), Value::String("seeded".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     tokio::spawn(async move { server.run().await });

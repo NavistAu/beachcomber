@@ -35,13 +35,56 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
         .map(|n| Duration::from_secs(n * multiplier))
 }
 
+// ── Source-knob keys that are ONLY valid inside [providers.<name>.<source>] blocks,
+// not at the top-level [providers.<name>] block.
+const SOURCE_KNOB_KEYS: &[&str] = &[
+    "poll_interval",
+    "poll_count",
+    "fsevent_patterns",
+    "fsevent_abs_paths",
+    "fsevent_lifespan",
+    "fsevent_reinstates",
+    "failback_count",
+    "failback_interval",
+    // Legacy flat keys that have moved to per-source blocks
+    "poll_interval_secs",
+    "poll_live_count",
+    "fsevents_reinstate",
+    "failure_reattempts",
+    "failure_backoff_interval",
+    "poll_secs",
+];
+
+// Keys that are valid at the [providers.<name>] (provider-level) block.
+const PROVIDER_LEVEL_KEYS: &[&str] = &[
+    "enabled",
+    "backend",
+    // Script/library/http backend keys (still accepted at provider level until Phase 4).
+    "type",
+    "command",
+    "invalidation",
+    "fields",
+    "output",
+    "scope",
+    "url",
+    "method",
+    "headers",
+    "body",
+    "extract",
+    "library_path",
+];
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub daemon: DaemonConfig,
     pub lifecycle: LifecycleConfig,
+    pub failback: FailbackGlobalConfig,
+    /// Raw TOML value for providers. Use accessor methods to get typed views.
+    /// Stored as raw toml::Value so we can distinguish scalar provider-level keys
+    /// from nested per-source sub-tables.
     #[serde(default)]
-    pub providers: HashMap<String, ScriptProviderConfig>,
+    pub providers: HashMap<String, toml::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -107,15 +150,15 @@ fn default_poll_live_count() -> u32 {
 #[serde(default)]
 pub struct LifecycleConfig {
     pub idle_shutdown_secs: Option<u64>,
-    pub failure_reattempts: u32,
-    pub failure_backoff_interval: String,
+    /// Global default poll interval. Used when no per-source override is set.
     #[serde(default = "default_poll_interval")]
     pub poll_interval: String,
+    /// Global default poll keep-alive count.
     #[serde(default = "default_poll_live_count")]
     pub poll_live_count: u32,
     /// Global default for `fsevents_reinstate`. `None` means "unset" —
-    /// providers fall through to their own `fsevents_reinstate_default()`.
-    /// `Some(v)` is an explicit user override that beats any provider default.
+    /// sources fall through to the per-source default declared in `SourceMetadata`.
+    /// `Some(v)` is an explicit user override that beats any source default.
     #[serde(default)]
     pub fsevents_reinstate: Option<bool>,
 }
@@ -124,8 +167,6 @@ impl Default for LifecycleConfig {
     fn default() -> Self {
         Self {
             idle_shutdown_secs: None,
-            failure_reattempts: 3,
-            failure_backoff_interval: "1s".to_string(),
             poll_interval: default_poll_interval(),
             poll_live_count: default_poll_live_count(),
             fsevents_reinstate: None,
@@ -133,9 +174,523 @@ impl Default for LifecycleConfig {
     }
 }
 
-impl LifecycleConfig {
-    pub fn failure_backoff_duration(&self) -> Duration {
-        parse_duration(&self.failure_backoff_interval).unwrap_or(Duration::from_secs(1))
+/// Global failback defaults. Replaces the old `[lifecycle] failure_*` keys.
+/// `[lifecycle] failure_reattempts` and `[lifecycle] failure_backoff_interval`
+/// are still accepted in `LifecycleConfig` for backward compatibility (they map to
+/// `FailbackGlobalConfig` via `Config::failback()`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct FailbackGlobalConfig {
+    /// Consecutive failures before suppression. Default 3.
+    pub count: u32,
+    /// Suppression duration string. Default "1s".
+    pub interval: String,
+}
+
+impl Default for FailbackGlobalConfig {
+    fn default() -> Self {
+        Self {
+            count: 3,
+            interval: "1s".to_string(),
+        }
+    }
+}
+
+impl FailbackGlobalConfig {
+    pub fn interval_duration(&self) -> Duration {
+        parse_duration(&self.interval).unwrap_or(Duration::from_secs(1))
+    }
+}
+
+/// Per-source override block: `[providers.<name>.<source>]`.
+/// All keys are optional; missing keys fall through to source defaults,
+/// then to [lifecycle]/[failback] globals, then to compile-time defaults.
+#[derive(Debug, Clone, Default)]
+pub struct SourceOverrideConfig {
+    /// Strategy type: "poll", "fsevent", or "fsevent_poll".
+    /// For built-ins, must match the Rust declaration if set.
+    pub strategy_type: Option<String>,
+    /// Scope: "path" or "global". For built-ins, must match Rust declaration if set.
+    pub scope: Option<String>,
+    /// Whether source is enabled. Default true.
+    pub enabled: Option<bool>,
+    // poll_* keys
+    pub poll_interval: Option<String>,
+    pub poll_count: Option<u32>,
+    // fsevent_* keys
+    pub fsevent_patterns: Option<Vec<String>>,
+    pub fsevent_abs_paths: Option<Vec<String>>,
+    pub fsevent_lifespan: Option<String>,
+    pub fsevent_reinstates: Option<bool>,
+    // failback_* keys
+    pub failback_count: Option<u32>,
+    pub failback_interval: Option<String>,
+}
+
+/// Valid strategy types per-source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrategyKind {
+    Poll,
+    Fsevent,
+    FseventPoll,
+}
+
+impl StrategyKind {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "poll" => Some(Self::Poll),
+            "fsevent" => Some(Self::Fsevent),
+            "fsevent_poll" => Some(Self::FseventPoll),
+            _ => None,
+        }
+    }
+}
+
+impl SourceOverrideConfig {
+    /// Parse from a `toml::Value::Table`. Returns error if keys are invalid.
+    /// `block_name` is used in error messages (e.g. "[providers.git.refs]").
+    pub fn from_toml_table(
+        block_name: &str,
+        table: &toml::value::Table,
+    ) -> Result<Self, String> {
+        let mut out = SourceOverrideConfig::default();
+
+        for (key, val) in table {
+            match key.as_str() {
+                "type" => {
+                    let s = val.as_str().ok_or_else(|| {
+                        format!("{block_name}: key 'type' must be a string")
+                    })?;
+                    out.strategy_type = Some(s.to_string());
+                }
+                "scope" => {
+                    let s = val.as_str().ok_or_else(|| {
+                        format!("{block_name}: key 'scope' must be a string")
+                    })?;
+                    out.scope = Some(s.to_string());
+                }
+                "enabled" => {
+                    let b = val.as_bool().ok_or_else(|| {
+                        format!("{block_name}: key 'enabled' must be a boolean")
+                    })?;
+                    out.enabled = Some(b);
+                }
+                "poll_interval" => {
+                    let s = val.as_str().ok_or_else(|| {
+                        format!("{block_name}: key 'poll_interval' must be a duration string")
+                    })?;
+                    out.poll_interval = Some(s.to_string());
+                }
+                "poll_count" => {
+                    let n = val.as_integer().ok_or_else(|| {
+                        format!("{block_name}: key 'poll_count' must be an integer")
+                    })?;
+                    out.poll_count = Some(n as u32);
+                }
+                "fsevent_patterns" => {
+                    let arr = val.as_array().ok_or_else(|| {
+                        format!("{block_name}: key 'fsevent_patterns' must be an array")
+                    })?;
+                    let patterns: Result<Vec<String>, _> = arr
+                        .iter()
+                        .map(|v| {
+                            v.as_str()
+                                .map(|s| s.to_string())
+                                .ok_or_else(|| format!("{block_name}: fsevent_patterns elements must be strings"))
+                        })
+                        .collect();
+                    out.fsevent_patterns = Some(patterns?);
+                }
+                "fsevent_abs_paths" => {
+                    let arr = val.as_array().ok_or_else(|| {
+                        format!("{block_name}: key 'fsevent_abs_paths' must be an array")
+                    })?;
+                    let paths: Result<Vec<String>, _> = arr
+                        .iter()
+                        .map(|v| {
+                            v.as_str()
+                                .map(|s| s.to_string())
+                                .ok_or_else(|| format!("{block_name}: fsevent_abs_paths elements must be strings"))
+                        })
+                        .collect();
+                    out.fsevent_abs_paths = Some(paths?);
+                }
+                "fsevent_lifespan" => {
+                    let s = val.as_str().ok_or_else(|| {
+                        format!("{block_name}: key 'fsevent_lifespan' must be a duration string")
+                    })?;
+                    out.fsevent_lifespan = Some(s.to_string());
+                }
+                "fsevent_reinstates" => {
+                    let b = val.as_bool().ok_or_else(|| {
+                        format!("{block_name}: key 'fsevent_reinstates' must be a boolean")
+                    })?;
+                    out.fsevent_reinstates = Some(b);
+                }
+                "failback_count" => {
+                    let n = val.as_integer().ok_or_else(|| {
+                        format!("{block_name}: key 'failback_count' must be an integer")
+                    })?;
+                    out.failback_count = Some(n as u32);
+                }
+                "failback_interval" => {
+                    let s = val.as_str().ok_or_else(|| {
+                        format!("{block_name}: key 'failback_interval' must be a duration string")
+                    })?;
+                    out.failback_interval = Some(s.to_string());
+                }
+                other => {
+                    return Err(format!(
+                        "{block_name}: unknown key '{other}'. Valid per-source keys are: \
+                         type, scope, enabled, poll_interval, poll_count, fsevent_patterns, \
+                         fsevent_abs_paths, fsevent_lifespan, fsevent_reinstates, \
+                         failback_count, failback_interval"
+                    ));
+                }
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Validate that the declared keys are consistent with the given strategy type.
+    /// Called only when `type` is set and parseable.
+    pub fn validate_strategy_keys(&self, block_name: &str) -> Result<(), String> {
+        let kind = match self.strategy_type.as_deref() {
+            Some(t) => match StrategyKind::from_str(t) {
+                Some(k) => k,
+                None => {
+                    return Err(format!(
+                        "{block_name}: unknown strategy type '{}'. \
+                         Valid values: \"poll\", \"fsevent\", \"fsevent_poll\"",
+                        t
+                    ));
+                }
+            },
+            None => return Ok(()), // No type declared; skip strategy validation.
+        };
+
+        // poll_* keys only valid for poll and fsevent_poll
+        if self.poll_interval.is_some() || self.poll_count.is_some() {
+            if kind == StrategyKind::Fsevent {
+                return Err(format!(
+                    "{block_name}: keys poll_interval/poll_count are not valid for \
+                     type = \"fsevent\". Use type = \"poll\" or \"fsevent_poll\"."
+                ));
+            }
+        }
+
+        // fsevent_* keys only valid for fsevent and fsevent_poll
+        if self.fsevent_patterns.is_some()
+            || self.fsevent_abs_paths.is_some()
+            || self.fsevent_lifespan.is_some()
+            || self.fsevent_reinstates.is_some()
+        {
+            if kind == StrategyKind::Poll {
+                return Err(format!(
+                    "{block_name}: keys fsevent_patterns/fsevent_abs_paths/fsevent_lifespan/\
+                     fsevent_reinstates are not valid for type = \"poll\". \
+                     Use type = \"fsevent\" or \"fsevent_poll\"."
+                ));
+            }
+        }
+
+        // fsevent_lifespan is forbidden for global fsevent (pure-watch global never decays)
+        if let (Some(_), Some(scope)) = (&self.fsevent_lifespan, &self.scope) {
+            if scope == "global" && kind == StrategyKind::Fsevent {
+                return Err(format!(
+                    "{block_name}: fsevent_lifespan is forbidden for \
+                     scope = \"global\" + type = \"fsevent\" (pure-watch global never decays)."
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Per-source config for external backends (script / http / library).
+///
+/// Used when a provider is declared with `backend = "script"` (or `"http"`, `"library"`)
+/// and each source lives in its own `[providers.<name>.<source>]` sub-table.
+///
+/// Accepts both declaration keys (`command`, `url`, `fields`, …) and all knob keys
+/// (`poll_interval`, `fsevent_patterns`, `failback_count`, …).
+#[derive(Debug, Clone, Default)]
+pub struct ExternalSourceConfig {
+    /// Source name (filled by the caller, not parsed from the table itself).
+    pub name: String,
+    /// Strategy type: "poll", "fsevent", or "fsevent_poll".
+    pub strategy_type: Option<String>,
+    /// Scope: "global" or "path".
+    pub scope: Option<String>,
+    /// Whether the source is enabled. Default true.
+    pub enabled: Option<bool>,
+
+    // ── Script-backend declaration keys ──────────────────────────────────────
+    pub command: Option<String>,
+    pub output: Option<String>,
+
+    // ── HTTP-backend declaration keys ─────────────────────────────────────────
+    pub url: Option<String>,
+    pub method: Option<String>,
+    /// HTTP headers as key→value map.
+    pub headers: Option<HashMap<String, String>>,
+    pub body: Option<String>,
+    pub extract: Option<String>,
+    pub default_timeout: Option<String>,
+
+    // ── Field declarations ────────────────────────────────────────────────────
+    pub fields: Option<Vec<ExternalFieldDecl>>,
+
+    // ── Knob overrides (same vocabulary as SourceOverrideConfig) ─────────────
+    pub poll_interval: Option<String>,
+    pub poll_count: Option<u32>,
+    pub fsevent_patterns: Option<Vec<String>>,
+    pub fsevent_abs_paths: Option<Vec<String>>,
+    pub fsevent_lifespan: Option<String>,
+    pub fsevent_reinstates: Option<bool>,
+    pub failback_count: Option<u32>,
+    pub failback_interval: Option<String>,
+}
+
+/// A field declaration inside an external source config block.
+///
+/// ```toml
+/// fields = [{ name = "temp", type = "float" }]
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct ExternalFieldDecl {
+    pub name: String,
+    pub field_type: String,
+}
+
+impl ExternalSourceConfig {
+    /// Parse from a TOML table. `block_name` is used in error messages.
+    pub fn from_toml_table(
+        block_name: &str,
+        table: &toml::value::Table,
+    ) -> Result<Self, String> {
+        let mut out = ExternalSourceConfig::default();
+
+        // ── headers sub-table ─────────────────────────────────────────────────
+        // headers may appear as a sub-table; we collect it first before the
+        // scalar-key loop which skips tables.
+        if let Some(headers_val) = table.get("headers") {
+            if let Some(headers_table) = headers_val.as_table() {
+                let mut map = HashMap::new();
+                for (k, v) in headers_table {
+                    let s = v.as_str().ok_or_else(|| {
+                        format!("{block_name}: headers.{k} must be a string")
+                    })?;
+                    map.insert(k.clone(), s.to_string());
+                }
+                out.headers = Some(map);
+            }
+        }
+
+        for (key, val) in table {
+            match key.as_str() {
+                "type" => {
+                    out.strategy_type = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'type' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "scope" => {
+                    out.scope = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'scope' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "enabled" => {
+                    out.enabled = Some(
+                        val.as_bool()
+                            .ok_or_else(|| format!("{block_name}: 'enabled' must be a boolean"))?,
+                    );
+                }
+                // Script
+                "command" => {
+                    out.command = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'command' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "output" => {
+                    out.output = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'output' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                // HTTP
+                "url" => {
+                    out.url = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'url' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "method" => {
+                    out.method = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'method' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "headers" => {
+                    // Already handled above; skip here.
+                }
+                "body" => {
+                    out.body = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'body' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "extract" => {
+                    out.extract = Some(
+                        val.as_str()
+                            .ok_or_else(|| format!("{block_name}: 'extract' must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "default_timeout" => {
+                    out.default_timeout = Some(
+                        val.as_str()
+                            .ok_or_else(|| {
+                                format!("{block_name}: 'default_timeout' must be a duration string")
+                            })?
+                            .to_string(),
+                    );
+                }
+                // Fields array
+                "fields" => {
+                    let arr = val
+                        .as_array()
+                        .ok_or_else(|| format!("{block_name}: 'fields' must be an array"))?;
+                    let mut field_decls = Vec::new();
+                    for (i, item) in arr.iter().enumerate() {
+                        let tbl = item.as_table().ok_or_else(|| {
+                            format!("{block_name}: fields[{i}] must be a table")
+                        })?;
+                        let name = tbl
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| {
+                                format!("{block_name}: fields[{i}].name is required and must be a string")
+                            })?
+                            .to_string();
+                        let field_type = tbl
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("string")
+                            .to_string();
+                        field_decls.push(ExternalFieldDecl { name, field_type });
+                    }
+                    out.fields = Some(field_decls);
+                }
+                // Knob keys
+                "poll_interval" => {
+                    out.poll_interval = Some(
+                        val.as_str()
+                            .ok_or_else(|| {
+                                format!("{block_name}: 'poll_interval' must be a duration string")
+                            })?
+                            .to_string(),
+                    );
+                }
+                "poll_count" => {
+                    out.poll_count = Some(
+                        val.as_integer()
+                            .ok_or_else(|| {
+                                format!("{block_name}: 'poll_count' must be an integer")
+                            })?
+                            as u32,
+                    );
+                }
+                "fsevent_patterns" => {
+                    let arr = val.as_array().ok_or_else(|| {
+                        format!("{block_name}: 'fsevent_patterns' must be an array")
+                    })?;
+                    let v: Result<Vec<String>, _> = arr
+                        .iter()
+                        .map(|v| {
+                            v.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                                format!("{block_name}: fsevent_patterns elements must be strings")
+                            })
+                        })
+                        .collect();
+                    out.fsevent_patterns = Some(v?);
+                }
+                "fsevent_abs_paths" => {
+                    let arr = val.as_array().ok_or_else(|| {
+                        format!("{block_name}: 'fsevent_abs_paths' must be an array")
+                    })?;
+                    let v: Result<Vec<String>, _> = arr
+                        .iter()
+                        .map(|v| {
+                            v.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                                format!("{block_name}: fsevent_abs_paths elements must be strings")
+                            })
+                        })
+                        .collect();
+                    out.fsevent_abs_paths = Some(v?);
+                }
+                "fsevent_lifespan" => {
+                    out.fsevent_lifespan = Some(
+                        val.as_str()
+                            .ok_or_else(|| {
+                                format!(
+                                    "{block_name}: 'fsevent_lifespan' must be a duration string"
+                                )
+                            })?
+                            .to_string(),
+                    );
+                }
+                "fsevent_reinstates" => {
+                    out.fsevent_reinstates = Some(
+                        val.as_bool().ok_or_else(|| {
+                            format!("{block_name}: 'fsevent_reinstates' must be a boolean")
+                        })?,
+                    );
+                }
+                "failback_count" => {
+                    out.failback_count = Some(
+                        val.as_integer()
+                            .ok_or_else(|| {
+                                format!("{block_name}: 'failback_count' must be an integer")
+                            })?
+                            as u32,
+                    );
+                }
+                "failback_interval" => {
+                    out.failback_interval = Some(
+                        val.as_str()
+                            .ok_or_else(|| {
+                                format!(
+                                    "{block_name}: 'failback_interval' must be a duration string"
+                                )
+                            })?
+                            .to_string(),
+                    );
+                }
+                other => {
+                    return Err(format!(
+                        "{block_name}: unknown key '{other}'. \
+                         Valid external-source keys are: type, scope, enabled, command, output, \
+                         url, method, headers, body, extract, default_timeout, fields, \
+                         poll_interval, poll_count, fsevent_patterns, fsevent_abs_paths, \
+                         fsevent_lifespan, fsevent_reinstates, failback_count, failback_interval"
+                    ));
+                }
+            }
+        }
+
+        Ok(out)
     }
 }
 
@@ -191,6 +746,8 @@ pub fn resolve_field_scope(config: &ScriptProviderConfig, field: &str) -> FieldS
     }
 }
 
+/// Configuration for a script/library/http provider extracted from the raw providers map.
+/// This preserves backward compatibility for Phase 4 which will restructure external backends.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct ScriptProviderConfig {
@@ -203,7 +760,6 @@ pub struct ScriptProviderConfig {
     pub scope: Option<String>,
     pub enabled: Option<bool>,
     pub poll_secs: Option<u64>,
-    pub poll_floor_secs: Option<u64>,
     // HTTP provider fields (used when type = "http")
     pub url: Option<String>,
     pub method: Option<String>,
@@ -242,108 +798,528 @@ pub struct ScriptInvalidation {
 }
 
 impl Config {
+    /// Returns true if a provider is explicitly disabled in config.
     pub fn is_provider_disabled(&self, name: &str) -> bool {
         self.providers
             .get(name)
-            .and_then(|p| p.enabled)
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool())
             .map(|e| !e)
             .unwrap_or(false)
     }
 
+    /// Parse the per-source override config for (provider, source).
+    /// Returns None if no block exists.
+    /// Returns Err if the block exists but is malformed.
+    pub fn source_override(
+        &self,
+        provider_name: &str,
+        source_name: &str,
+    ) -> Result<Option<SourceOverrideConfig>, String> {
+        let provider_val = match self.providers.get(provider_name) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let source_val = match provider_val.get(source_name) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let table = match source_val.as_table() {
+            Some(t) => t,
+            None => {
+                return Err(format!(
+                    "[providers.{provider_name}.{source_name}] must be a table"
+                ));
+            }
+        };
+        let block_name = format!("[providers.{provider_name}.{source_name}]");
+        let cfg = SourceOverrideConfig::from_toml_table(&block_name, table)?;
+        cfg.validate_strategy_keys(&block_name)?;
+        Ok(Some(cfg))
+    }
+
+    // ── Resolution methods ────────────────────────────────────────────────────
+    //
+    // Resolution order per spec §"Resolution order":
+    //   1. [providers.<provider>.<source>] block (user override)
+    //   2. Source's declared default in SourceMetadata (passed as `source_default`)
+    //   3. [lifecycle] / [failback] global blocks
+    //   4. Compile-time defaults
+
+    /// Resolve failure reattempts for a (provider, source) pair.
     pub fn resolve_failure_reattempts(&self, provider_name: &str) -> u32 {
-        self.providers
-            .get(provider_name)
-            .and_then(|p| p.failure_reattempts)
-            .unwrap_or(self.lifecycle.failure_reattempts)
+        self.resolve_failure_reattempts_for_source(provider_name, None, None)
     }
 
+    /// Resolve failure reattempts for a (provider, source) pair with optional source override.
+    pub fn resolve_failure_reattempts_for_source(
+        &self,
+        provider_name: &str,
+        source_name: Option<&str>,
+        source_default: Option<u32>,
+    ) -> u32 {
+        // 1. Per-source override
+        if let Some(src) = source_name {
+            if let Ok(Some(cfg)) = self.source_override(provider_name, src) {
+                if let Some(v) = cfg.failback_count {
+                    return v;
+                }
+            }
+        }
+        // 2. Source-declared default
+        if let Some(d) = source_default {
+            return d;
+        }
+        // 3. [failback] global
+        // 4. Compile-time default
+        self.failback.count
+    }
+
+    /// Resolve failure backoff interval for a (provider, source) pair.
     pub fn resolve_failure_backoff_interval(&self, provider_name: &str) -> Duration {
-        self.providers
-            .get(provider_name)
-            .and_then(|p| p.failure_backoff_interval.as_ref())
-            .and_then(|s| parse_duration(s))
-            .unwrap_or_else(|| {
-                parse_duration(&self.lifecycle.failure_backoff_interval)
-                    .unwrap_or(Duration::from_secs(1))
-            })
+        self.resolve_failure_backoff_for_source(provider_name, None, None)
     }
 
+    /// Resolve failure backoff interval for a (provider, source) pair with optional source override.
+    pub fn resolve_failure_backoff_for_source(
+        &self,
+        provider_name: &str,
+        source_name: Option<&str>,
+        source_default: Option<Duration>,
+    ) -> Duration {
+        // 1. Per-source override
+        if let Some(src) = source_name {
+            if let Ok(Some(cfg)) = self.source_override(provider_name, src) {
+                if let Some(ref s) = cfg.failback_interval {
+                    if let Some(d) = parse_duration(s) {
+                        return d;
+                    }
+                }
+            }
+        }
+        // 2. Source-declared default
+        if let Some(d) = source_default {
+            return d;
+        }
+        // 3. [failback] global then compile-time default
+        self.failback.interval_duration()
+    }
+
+    /// Resolve poll interval for a (provider, source) pair.
     pub fn resolve_poll_interval(&self, provider_name: &str) -> Duration {
-        self.providers
-            .get(provider_name)
-            .and_then(|p| p.poll_interval.as_ref())
-            .and_then(|s| parse_duration(s))
-            .unwrap_or_else(|| {
-                parse_duration(&self.lifecycle.poll_interval).unwrap_or(Duration::from_secs(60))
-            })
+        self.resolve_poll_interval_for_source(provider_name, None, None)
     }
 
+    /// Resolve poll interval for a (provider, source) pair with optional source override.
+    pub fn resolve_poll_interval_for_source(
+        &self,
+        provider_name: &str,
+        source_name: Option<&str>,
+        source_default: Option<Duration>,
+    ) -> Duration {
+        // 1. Per-source override
+        if let Some(src) = source_name {
+            if let Ok(Some(cfg)) = self.source_override(provider_name, src) {
+                if let Some(ref s) = cfg.poll_interval {
+                    if let Some(d) = parse_duration(s) {
+                        return d;
+                    }
+                }
+            }
+        }
+        // 2. Source-declared default
+        if let Some(d) = source_default {
+            return d;
+        }
+        // 3. [lifecycle] global then compile-time default
+        parse_duration(&self.lifecycle.poll_interval).unwrap_or(Duration::from_secs(60))
+    }
+
+    /// Resolve poll keep-alive count for a (provider, source) pair.
     pub fn resolve_poll_live_count(&self, provider_name: &str) -> u32 {
-        self.providers
-            .get(provider_name)
-            .and_then(|p| p.poll_live_count)
-            .unwrap_or(self.lifecycle.poll_live_count)
+        self.resolve_poll_live_count_for_source(provider_name, None, None)
     }
 
-    /// Resolve the effective `fsevents_reinstate` flag for a provider.
+    /// Resolve poll keep-alive count for a (provider, source) pair with optional source override.
+    pub fn resolve_poll_live_count_for_source(
+        &self,
+        provider_name: &str,
+        source_name: Option<&str>,
+        source_default: Option<u32>,
+    ) -> u32 {
+        // 1. Per-source override
+        if let Some(src) = source_name {
+            if let Ok(Some(cfg)) = self.source_override(provider_name, src) {
+                if let Some(v) = cfg.poll_count {
+                    return v;
+                }
+            }
+        }
+        // 2. Source-declared default
+        if let Some(d) = source_default {
+            return d;
+        }
+        // 3. [lifecycle] global then compile-time default
+        self.lifecycle.poll_live_count
+    }
+
+    /// Resolve the effective `fsevents_reinstate` flag for a (provider, source) pair.
     ///
     /// Priority (first match wins):
-    /// 1. Per-provider config: `[providers.<name>] fsevents_reinstate = <bool>`.
+    /// 1. Per-source config: `[providers.<name>.<source>] fsevent_reinstates = <bool>`.
     /// 2. Global lifecycle override: `[lifecycle] fsevents_reinstate = <bool>`.
-    /// 3. Provider-declared default via `Provider::fsevents_reinstate_default`.
-    ///
-    /// `provider_default` should be sourced from the provider's trait method;
-    /// pass `false` if the caller doesn't have access to the provider.
+    /// 3. Source-declared default via `SourceMetadata::fsevents_reinstate`.
     pub fn resolve_fsevents_reinstate(
         &self,
         provider_name: &str,
         provider_default: bool,
     ) -> bool {
-        self.providers
-            .get(provider_name)
-            .and_then(|p| p.fsevents_reinstate)
-            .or(self.lifecycle.fsevents_reinstate)
-            .unwrap_or(provider_default)
+        self.resolve_fsevents_reinstate_for_source(provider_name, None, provider_default)
+    }
+
+    /// Resolve `fsevents_reinstate` for a specific (provider, source) pair.
+    pub fn resolve_fsevents_reinstate_for_source(
+        &self,
+        provider_name: &str,
+        source_name: Option<&str>,
+        source_default: bool,
+    ) -> bool {
+        // 1. Per-source override
+        if let Some(src) = source_name {
+            if let Ok(Some(cfg)) = self.source_override(provider_name, src) {
+                if let Some(v) = cfg.fsevent_reinstates {
+                    return v;
+                }
+            }
+        }
+        // 2. Global lifecycle override
+        if let Some(v) = self.lifecycle.fsevents_reinstate {
+            return v;
+        }
+        // 3. Source-declared default
+        source_default
+    }
+
+    // ── External backend provider extraction ─────────────────────────────────
+    //
+    // Two families of extraction:
+    //
+    // 1. Legacy single-source (backward compat): provider-level block carries all
+    //    config. Used when there is NO `backend` key (old `type = "script"` shape).
+    //    `script_providers()`, `library_providers()`, `http_providers()`.
+    //
+    // 2. Phase 4 multi-source: provider-level block has `backend = "..."` key;
+    //    each source lives in a per-source sub-table. The provider-level block may
+    //    also carry `library_path` (library) or `default_timeout` (http).
+    //    `multi_script_providers()`, `multi_library_providers()`, `multi_http_providers()`.
+
+    fn as_script_provider_config(val: &toml::Value) -> Option<ScriptProviderConfig> {
+        // For external backends (script/library/http), deserialize the full provider-level
+        // table as ScriptProviderConfig. Sub-table entries like `fields` and `invalidation`
+        // are part of the external backend config shape (Phase 4 will restructure these).
+        let table = val.as_table()?.clone();
+        table.try_into().ok()
+    }
+
+    /// Return the `backend` value for a provider's top-level block, if present.
+    fn backend_for(val: &toml::Value) -> Option<&str> {
+        val.get("backend").and_then(|v| v.as_str())
     }
 
     pub fn script_providers(&self) -> Vec<(String, ScriptProviderConfig)> {
         self.providers
             .iter()
-            .filter(|(_, v)| {
-                v.provider_type.as_deref() == Some("script")
-                    || (!v.command.is_empty() && v.provider_type.is_none())
+            .filter_map(|(name, val)| {
+                // Skip Phase 4 multi-source style (has `backend` key).
+                if Self::backend_for(val).is_some() {
+                    return None;
+                }
+                let cfg = Self::as_script_provider_config(val)?;
+                let is_script = cfg.provider_type.as_deref() == Some("script")
+                    || (!cfg.command.is_empty() && cfg.provider_type.is_none());
+                if is_script { Some((name.clone(), cfg)) } else { None }
             })
-            .map(|(name, config)| (name.clone(), config.clone()))
             .collect()
     }
 
     pub fn library_providers(&self) -> Vec<(String, ScriptProviderConfig)> {
         self.providers
             .iter()
-            .filter(|(_, v)| v.provider_type.as_deref() == Some("library"))
-            .map(|(name, config)| (name.clone(), config.clone()))
+            .filter_map(|(name, val)| {
+                // Skip Phase 4 multi-source style (has `backend` key).
+                if Self::backend_for(val).is_some() {
+                    return None;
+                }
+                let cfg = Self::as_script_provider_config(val)?;
+                if cfg.provider_type.as_deref() == Some("library") {
+                    Some((name.clone(), cfg))
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
     pub fn http_providers(&self) -> Vec<(String, HttpProviderConfig)> {
         self.providers
             .iter()
-            .filter(|(_, v)| v.provider_type.as_deref() == Some("http"))
-            .map(|(name, config)| {
-                (
+            .filter_map(|(name, val)| {
+                // Skip Phase 4 multi-source style (has `backend` key).
+                if Self::backend_for(val).is_some() {
+                    return None;
+                }
+                let cfg = Self::as_script_provider_config(val)?;
+                if cfg.provider_type.as_deref() != Some("http") {
+                    return None;
+                }
+                Some((
                     name.clone(),
                     HttpProviderConfig {
-                        provider_type: config.provider_type.clone(),
-                        url: config.url.clone().unwrap_or_default(),
-                        method: config.method.clone(),
-                        headers: config.headers.clone(),
-                        body: config.body.clone(),
-                        extract: config.extract.clone(),
-                        invalidation: config.invalidation.clone(),
+                        provider_type: cfg.provider_type,
+                        url: cfg.url.unwrap_or_default(),
+                        method: cfg.method,
+                        headers: cfg.headers,
+                        body: cfg.body,
+                        extract: cfg.extract,
+                        invalidation: cfg.invalidation,
                     },
-                )
+                ))
             })
             .collect()
+    }
+
+    // ── Phase 4 multi-source external backend extraction ─────────────────────
+
+    /// Parse the per-source sub-tables for a provider declared with `backend = "..."`.
+    /// Returns `Err` if any sub-table is malformed, `Ok(vec)` otherwise (may be empty).
+    fn parse_external_sources(
+        prov_name: &str,
+        prov_val: &toml::Value,
+    ) -> Result<Vec<ExternalSourceConfig>, String> {
+        let table = match prov_val.as_table() {
+            Some(t) => t,
+            None => return Ok(vec![]),
+        };
+        let mut sources = Vec::new();
+        for (sub_key, sub_val) in table {
+            // Skip scalar provider-level keys; only process sub-tables.
+            let sub_table = match sub_val.as_table() {
+                Some(t) => t,
+                None => continue,
+            };
+            // Skip known provider-level-only sub-table names.
+            if matches!(sub_key.as_str(), "invalidation" | "fields") {
+                // These appear in legacy flat shape; in multi-source they live inside
+                // per-source blocks instead. Skip at provider level.
+                continue;
+            }
+            let block_name = format!("[providers.{prov_name}.{sub_key}]");
+            let mut src = ExternalSourceConfig::from_toml_table(&block_name, sub_table)?;
+            src.name = sub_key.clone();
+            sources.push(src);
+        }
+        Ok(sources)
+    }
+
+    /// Multi-source script providers: `backend = "script"` + per-source sub-tables.
+    /// Each source sub-table must contain `command`.
+    pub fn multi_script_providers(
+        &self,
+    ) -> Result<Vec<(String, Vec<ExternalSourceConfig>)>, String> {
+        let mut result = Vec::new();
+        for (name, val) in &self.providers {
+            if Self::backend_for(val) != Some("script") {
+                continue;
+            }
+            let sources = Self::parse_external_sources(name, val)?;
+            // Validate: each source must have a command.
+            for src in &sources {
+                if src.command.is_none() {
+                    return Err(format!(
+                        "provider '{}' source '{}' (backend = script): \
+                         missing required key 'command'",
+                        name, src.name
+                    ));
+                }
+            }
+            result.push((name.clone(), sources));
+        }
+        Ok(result)
+    }
+
+    /// Multi-source library providers: `backend = "library"` + `library_path`.
+    /// Source list comes from the library's C ABI; user TOML sub-tables only
+    /// override knobs, not declare sources. Returns `(name, library_path, source_overrides)`.
+    pub fn multi_library_providers(
+        &self,
+    ) -> Result<Vec<(String, String, Vec<ExternalSourceConfig>)>, String> {
+        let mut result = Vec::new();
+        for (name, val) in &self.providers {
+            if Self::backend_for(val) != Some("library") {
+                continue;
+            }
+            let library_path = val
+                .get("library_path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "provider '{}' (backend = library): missing required key 'library_path'",
+                        name
+                    )
+                })?
+                .to_string();
+            let sources = Self::parse_external_sources(name, val)?;
+            result.push((name.clone(), library_path, sources));
+        }
+        Ok(result)
+    }
+
+    /// Multi-source HTTP providers: `backend = "http"` + per-source sub-tables.
+    /// Each source sub-table must contain `url`. Returns `(name, default_timeout, sources)`.
+    pub fn multi_http_providers(
+        &self,
+    ) -> Result<Vec<(String, Option<String>, Vec<ExternalSourceConfig>)>, String> {
+        let mut result = Vec::new();
+        for (name, val) in &self.providers {
+            if Self::backend_for(val) != Some("http") {
+                continue;
+            }
+            let default_timeout = val
+                .get("default_timeout")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let sources = Self::parse_external_sources(name, val)?;
+            // Validate: each source must have a url.
+            for src in &sources {
+                if src.url.is_none() {
+                    return Err(format!(
+                        "provider '{}' source '{}' (backend = http): \
+                         missing required key 'url'",
+                        name, src.name
+                    ));
+                }
+            }
+            result.push((name.clone(), default_timeout, sources));
+        }
+        Ok(result)
+    }
+
+    // ── Startup validation ────────────────────────────────────────────────────
+
+    /// Validate provider config blocks. Returns (warnings, errors).
+    /// - Unknown provider names on built-in providers → error.
+    /// - Known provider, unknown source name → warn (cross-platform-config support).
+    /// - Old flat source-knob keys at provider level → error.
+    /// - Invalid strategy keys for declared type → error.
+    ///
+    /// `known_providers` is the list of registered provider names.
+    /// `known_sources` maps provider_name → list of source names.
+    pub fn validate_providers(
+        &self,
+        known_providers: &[String],
+        known_sources: &HashMap<String, Vec<String>>,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
+
+        for (prov_name, prov_val) in &self.providers {
+            let table = match prov_val.as_table() {
+                Some(t) => t,
+                None => continue,
+            };
+
+            // Check for old flat source-knob keys at the provider level.
+            // These are rejected for ALL providers (built-in and external).
+            // Exception: script/library/http providers still use some of these
+            // keys (failure_reattempts, failure_backoff_interval, poll_interval,
+            // poll_live_count, fsevents_reinstate, poll_secs) at provider level
+            // until Phase 4. We detect if this looks like an external backend.
+            let is_external_backend = table
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(|t| matches!(t, "script" | "library" | "http"))
+                .unwrap_or(false)
+                || table
+                    .get("backend")
+                    .and_then(|v| v.as_str())
+                    .map(|b| matches!(b, "script" | "library" | "http"))
+                    .unwrap_or(false)
+                || table.get("command").is_some()
+                || table.get("url").is_some()
+                || table.get("library_path").is_some();
+
+            if !is_external_backend {
+                // For non-external (built-in or declared) providers, reject old flat
+                // source-knob keys. These indicate the old schema.
+                for key in SOURCE_KNOB_KEYS {
+                    if table.contains_key(*key) {
+                        errors.push(format!(
+                            "[providers.{prov_name}] contains source-knob key '{key}'. \
+                             In the new schema, source-knob keys belong in a per-source block: \
+                             [providers.{prov_name}.<source_name>]. \
+                             See the configuration reference for the new per-source schema with \
+                             poll_*, fsevent_*, and failback_* prefixes."
+                        ));
+                    }
+                }
+            }
+
+            // Validate per-source sub-table blocks.
+            for (sub_key, sub_val) in table {
+                if !sub_val.is_table() {
+                    // Scalar key; already handled above or is a provider-level key.
+                    continue;
+                }
+
+                // sub_key is a potential source name.
+                let sub_table = sub_val.as_table().unwrap();
+                let block_name = format!("[providers.{prov_name}.{sub_key}]");
+
+                if is_external_backend {
+                    // Phase 4 multi-source: validate using ExternalSourceConfig parser
+                    // (which accepts backend-specific declaration keys).
+                    if let Err(e) = ExternalSourceConfig::from_toml_table(&block_name, sub_table) {
+                        errors.push(e);
+                    }
+                    // External backend sources are declared in TOML, not in built-ins;
+                    // no warn-and-skip for unknown sources needed.
+                    continue;
+                }
+
+                // Parse and validate the source override block (built-in provider path).
+                match SourceOverrideConfig::from_toml_table(&block_name, sub_table) {
+                    Err(e) => {
+                        errors.push(e);
+                        continue;
+                    }
+                    Ok(cfg) => {
+                        if let Err(e) = cfg.validate_strategy_keys(&block_name) {
+                            errors.push(e);
+                            continue;
+                        }
+                    }
+                }
+
+                // Check if the provider is a known (built-in) provider.
+                let is_known_builtin = known_providers.contains(prov_name);
+                if is_known_builtin {
+                    if let Some(sources) = known_sources.get(prov_name) {
+                        if !sources.contains(sub_key) {
+                            warnings.push(format!(
+                                "config block {block_name} does not match any registered \
+                                 source for provider '{prov_name}' \
+                                 (registered: {}) — skipping. \
+                                 If this is a typo, fix it; if it's a platform-conditional \
+                                 source, this block is inert on this platform.",
+                                sources.join(", ")
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        (warnings, errors)
     }
 
     pub fn load() -> Self {
@@ -472,7 +1448,7 @@ pub fn detect_deprecated_keys(toml_text: &str) -> Vec<String> {
         Err(_) => return warnings,
     };
 
-    // [lifecycle].{cache_lifespan, grace_period_secs}
+    // [lifecycle].{cache_lifespan, grace_period_secs, failure_reattempts, failure_backoff_interval}
     if let Some(lifecycle) = parsed.get("lifecycle").and_then(|v| v.as_table()) {
         if lifecycle.contains_key("cache_lifespan") {
             warnings.push(
@@ -485,6 +1461,20 @@ pub fn detect_deprecated_keys(toml_text: &str) -> Vec<String> {
             warnings.push(
                 "[lifecycle] grace_period_secs is deprecated and ignored; \
                  use poll_interval and poll_live_count instead"
+                    .to_string(),
+            );
+        }
+        if lifecycle.contains_key("failure_reattempts") {
+            warnings.push(
+                "[lifecycle] failure_reattempts is deprecated; \
+                 move failback_* keys to the [failback] block"
+                    .to_string(),
+            );
+        }
+        if lifecycle.contains_key("failure_backoff_interval") {
+            warnings.push(
+                "[lifecycle] failure_backoff_interval is deprecated; \
+                 move failback_* keys to the [failback] block"
                     .to_string(),
             );
         }

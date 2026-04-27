@@ -8,6 +8,7 @@ Before proposing changes or reasoning about behavior, read these. They are the a
 
 - **`docs/roadmap.md`** — what's built, what's deferred, what's broken. Contains the "Known Core Issues" section; check it before claiming anything is working. If behavior seems odd, look here first.
 - **`docs/canon/*`** — canonical spec major architechtural designs. Tests must match this document; code that disagrees is wrong.
+- **`docs/canon/provider_source.md`** — canonical Provider/Source/Field model. The authoritative spec for how providers declare sources, invalidation strategies, lifecycle keying, cache layout, and TOML config. Read this before touching any provider, scheduler, cache, or config code.
 - **`CHANGELOG.md`** — what shipped when, at what version.
 
 @docs/canon/ are 'canonical specs' in that they are long lived and only ever edited with explicit permission. Canon

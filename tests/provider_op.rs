@@ -1,15 +1,17 @@
-use beachcomber::provider::FieldScope;
 use beachcomber::provider::Provider;
 use beachcomber::provider::op::OpProvider;
+use beachcomber::provider::SourceScope;
 
 #[test]
 fn op_provider_metadata() {
     let p = OpProvider;
     let meta = p.metadata();
     assert_eq!(meta.name, "op");
-    assert_eq!(meta.inferred_scope(), FieldScope::Global);
-    assert_eq!(meta.fields.len(), 2);
-    let field_names: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(meta.sources.len(), 1);
+    let src = &meta.sources[0];
+    assert_eq!(src.name, "vault");
+    assert_eq!(src.scope, SourceScope::Global);
+    let field_names: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(field_names.contains(&"signed_in"));
     assert!(field_names.contains(&"account"));
 }
@@ -17,17 +19,14 @@ fn op_provider_metadata() {
 #[test]
 fn op_provider_executes() {
     let p = OpProvider;
-    let results = p.execute(None);
+    let sources = p.sources();
+    let result = sources[0].execute(None);
     assert!(
-        !results.is_empty(),
-        "op provider should always return a result"
-    );
-    let (_, result) = results.into_iter().next().unwrap();
-    let signed_in = result.get("signed_in");
-    assert!(
-        signed_in.is_some(),
+        result.fields.contains_key("signed_in"),
         "result should contain 'signed_in' field"
     );
-    let account = result.get("account");
-    assert!(account.is_some(), "result should contain 'account' field");
+    assert!(
+        result.fields.contains_key("account"),
+        "result should contain 'account' field"
+    );
 }

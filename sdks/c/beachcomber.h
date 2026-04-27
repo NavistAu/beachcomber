@@ -83,6 +83,8 @@ typedef struct comb_cache_row {
     bool     in_failure;                   /* true iff failure object present */
     uint32_t failure_consecutive_failures;
     int64_t  failure_suppressed_until_unix_ms; /* -1 if absent */
+    /* Phase 5: source name within the provider */
+    char    *source;                       /* owned; NULL if absent */
 } comb_cache_row_t;
 
 typedef struct comb_watch_event {

@@ -1,9 +1,10 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    expand_abs_path, FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive,
+    Provider, ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 
 pub struct MiseProvider;
 
@@ -56,92 +57,131 @@ fn run_mise_and_filter(
     Some(tools)
 }
 
-impl Provider for MiseProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "mise".to_string(),
-            // Fields are dynamic: one String field per tool name (e.g. "node", "rust").
-            // The sentinel "<tool>" drives inferred_scope=PathScoped so queries with a
-            // CWD route to the path-scoped project entry; queries without any path
-            // context fall through to the pathless global entry.
-            fields: vec![FieldSchema {
-                name: "<tool>".to_string(),
-                field_type: FieldType::String,
-                scope: FieldScope::PathScoped,
-            }],
-            invalidation: InvalidationStrategy::Watch {
-                patterns: vec![".mise.toml".to_string(), "mise.toml".to_string()],
-                fallback_poll_secs: Some(30),
-            },
+fn global_config_dir() -> String {
+    std::env::var("XDG_CONFIG_HOME")
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config")))
+        .map(|c| Path::new(&c).join("mise").to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+// ── SourceMetadata constructors ───────────────────────────────────────────────
+
+fn global_meta() -> SourceMetadata {
+    let abs_paths = expand_abs_path("$XDG_CONFIG_HOME/mise")
+        .map(|p| vec![p.to_string_lossy().to_string()])
+        .unwrap_or_default();
+    SourceMetadata {
+        name: "global".into(),
+        fields: vec![FieldSchema {
+            name: "<tool>".into(),
+            field_type: FieldType::String,
+        }],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![],
+            abs_paths,
+        },
+        keep_alive: KeepAlive::Never,
+        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        fsevents_reinstate: true,
+    }
+}
+
+fn project_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "project".into(),
+        fields: vec![FieldSchema {
+            name: "<tool>".into(),
+            field_type: FieldType::String,
+        }],
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![".mise.toml".into(), "mise.toml".into()],
+            abs_paths: vec![],
+        },
+        keep_alive: KeepAlive::Duration(120),
+        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        fsevents_reinstate: true,
+    }
+}
+
+// ── Source impls ──────────────────────────────────────────────────────────────
+
+struct MiseGlobal;
+
+impl Source for MiseGlobal {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(global_meta)
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
+        let gcd = global_config_dir();
+        let Ok(home) = std::env::var("HOME") else {
+            return SourceResult::new();
+        };
+        let Some(tools) = run_mise_and_filter(&home, &gcd, MiseFilter::Global) else {
+            return SourceResult::new();
+        };
+        let mut result = SourceResult::new();
+        for (tool, version) in tools {
+            result.insert(tool, version);
         }
+        result
     }
 
-    // Mise config changes are rare; keep project entries warm across shell idle
-    // so a subsequent mise.toml edit takes effect immediately rather than
-    // racing the decay→eviction window. Users can override with
-    // `[providers.mise] fsevents_reinstate = false`.
-    fn fsevents_reinstate_default(&self) -> bool {
-        true
+    // Global source: no canonical_path needed (uses default identity).
+}
+
+struct MiseProject;
+
+impl Source for MiseProject {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(project_meta)
     }
 
-    // Walk up from `path` to find the nearest directory containing
-    // `mise.toml` or `.mise.toml`. Returns that directory so shells in
-    // subdirectories of a mise project share a single cache entry.
-    //
-    // Returns None if no mise config is found upward. With the default impl
-    // (returning Some(path) regardless) mise project lookups from subdirs
-    // silently returned empty results because `execute` checks for marker
-    // files directly in `path`. Now the scheduler declines demand instead,
-    // which is cleaner and matches git's behaviour.
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        let Some(p) = path else {
+            return SourceResult::new();
+        };
+        let dir = Path::new(p);
+        let gcd = global_config_dir();
+
+        let has_config = dir.join("mise.toml").exists() || dir.join(".mise.toml").exists();
+        if !has_config {
+            return SourceResult::new();
+        }
+
+        let Some(tools) = run_mise_and_filter(p, &gcd, MiseFilter::Project) else {
+            return SourceResult::new();
+        };
+
+        let mut result = SourceResult::new();
+        for (tool, version) in tools {
+            result.insert(tool, version);
+        }
+        result
+    }
+
     fn canonical_path(&self, path: Option<&str>) -> Option<String> {
         let p = path?;
         find_mise_project_root(Path::new(p))
     }
+}
 
-    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-        let mut out = Vec::new();
+// ── Provider ──────────────────────────────────────────────────────────────────
 
-        let global_config_dir = std::env::var("XDG_CONFIG_HOME")
-            .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config")))
-            .map(|c| Path::new(&c).join("mise").to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        match path {
-            None => {
-                // Global entry: called with no path, emit only global tools (pathless slot).
-                // Each tool becomes its own field: e.g. result["node"] = "20.1.0".
-                if let Ok(home) = std::env::var("HOME")
-                    && let Some(global_tools) =
-                        run_mise_and_filter(&home, &global_config_dir, MiseFilter::Global)
-                {
-                    let mut result = ProviderResult::new();
-                    for (tool, version) in global_tools {
-                        result.insert(tool, version);
-                    }
-                    out.push((None, result));
-                }
-            }
-            Some(p) => {
-                // Project entry: emit only project-scoped tools for the given path.
-                // Does not cross-emit global data — global has its own lifecycle entry
-                // when demanded via comb get mise (no path context).
-                let dir = Path::new(p);
-                let has_config =
-                    dir.join("mise.toml").exists() || dir.join(".mise.toml").exists();
-                if has_config
-                    && let Some(project_tools) =
-                        run_mise_and_filter(p, &global_config_dir, MiseFilter::Project)
-                {
-                    let mut result = ProviderResult::new();
-                    for (tool, version) in project_tools {
-                        result.insert(tool, version);
-                    }
-                    out.push((Some(p.to_string()), result));
-                }
-            }
+impl Provider for MiseProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "mise".into(),
+            sources: vec![global_meta(), project_meta()],
         }
+    }
 
-        out
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(MiseGlobal), Box::new(MiseProject)]
     }
 }
 

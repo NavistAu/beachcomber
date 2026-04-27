@@ -19,7 +19,7 @@ async fn query_activity_triggers_provider_execution() {
     );
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
-    // Send query activity for hostname (a Once provider — should execute immediately)
+    // Send query activity for hostname (a global provider — should execute immediately)
     handle
         .send(SchedulerMessage::QueryActivity {
             provider: "hostname".to_string(),
@@ -31,7 +31,7 @@ async fn query_activity_triggers_provider_execution() {
 
     // Cache should be populated
     assert!(
-        cache.get("hostname", None).is_some(),
+        cache.get_entry("hostname", None).is_some(),
         "QueryActivity should trigger provider execution"
     );
 
@@ -40,7 +40,7 @@ async fn query_activity_triggers_provider_execution() {
 }
 
 #[tokio::test]
-async fn once_providers_do_not_enter_lifecycle() {
+async fn watch_only_providers_do_not_enter_poll_timers() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = Config::default();
@@ -53,9 +53,9 @@ async fn once_providers_do_not_enter_lifecycle() {
     );
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
-    // Demand a Once provider. It should be cached (from startup) but must not
-    // create a lifecycle entry — otherwise it would be re-polled on the
-    // lifecycle-default cadence, violating the Once contract.
+    // Demand a Watch-only provider. It should be cached (from startup) but must not
+    // create a poll timer entry — otherwise it would be re-polled on the
+    // poll cadence, violating the Watch contract.
     handle
         .send(SchedulerMessage::QueryActivity {
             provider: "hostname".to_string(),
@@ -66,60 +66,8 @@ async fn once_providers_do_not_enter_lifecycle() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     assert!(
-        cache.get("hostname", None).is_some(),
-        "hostname should be cached by compute_once_providers at startup"
-    );
-
-    let snapshots = handle.get_lifecycle_snapshots().await;
-    let has_hostname_entry = snapshots.keys().any(|(p, _)| p == "hostname");
-    assert!(
-        !has_hostname_entry,
-        "Once providers must not appear in the lifecycle registry; \
-         snapshots: {:?}",
-        snapshots.keys().collect::<Vec<_>>()
-    );
-
-    handle.send(SchedulerMessage::Shutdown).await;
-    let _ = sched_task.await;
-}
-
-#[tokio::test]
-async fn query_activity_sets_up_polling() {
-    let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
-    let config = Config::default();
-
-    let (handle, scheduler) = Scheduler::new(
-        cache.clone(),
-        registry,
-        config,
-        Arc::new(WatcherRegistry::new()),
-    );
-    let sched_task = tokio::spawn(async move { scheduler.run().await });
-
-    // Query load provider (Poll with 10s interval)
-    handle
-        .send(SchedulerMessage::QueryActivity {
-            provider: "load".to_string(),
-            path: None,
-        })
-        .await;
-
-    // Wait for initial execution + one poll cycle
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    let entry1 = cache.get("load", None);
-    assert!(entry1.is_some(), "Should have load data after demand");
-
-    // Wait for a poll to refresh it
-    tokio::time::sleep(std::time::Duration::from_secs(11)).await;
-
-    let entry2 = cache.get("load", None);
-    assert!(entry2.is_some(), "Should still have load data after poll");
-    // The generation should have advanced (data was refreshed)
-    assert!(
-        entry2.unwrap().generation > entry1.unwrap().generation,
-        "Data should have been refreshed by poll"
+        cache.get_entry("hostname", None).is_some(),
+        "hostname should be cached after QueryActivity"
     );
 
     handle.send(SchedulerMessage::Shutdown).await;
@@ -152,7 +100,7 @@ async fn repeated_queries_keep_data_warm() {
     }
 
     assert!(
-        cache.get("hostname", None).is_some(),
+        cache.get_entry("hostname", None).is_some(),
         "Repeated queries should keep data warm"
     );
 

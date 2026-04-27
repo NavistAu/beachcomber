@@ -1,76 +1,66 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::process::Command;
+use std::sync::OnceLock;
 
 pub struct BatteryProvider;
 
-impl Provider for BatteryProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "battery".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "percent".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "charging".to_string(),
-                    field_type: FieldType::Bool,
-                    scope: FieldScope::Global,
-                },
-                // time_remaining_secs uses 0 as a sentinel for "not applicable" —
-                // i.e. the battery is charged or the platform can't compute an estimate.
-                // Callers should read `status` to disambiguate.
-                FieldSchema {
-                    name: "time_remaining_secs".to_string(),
-                    field_type: FieldType::Int,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "status".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-            ],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 30,
-                floor_secs: 5,
-            },
-        }
-    }
+// ── macOS: pmset — single source ─────────────────────────────────────────────
 
-    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-        match execute_platform(_path) {
-            Some(result) => vec![(None, result)],
-            None => Vec::new(),
-        }
+#[cfg(target_os = "macos")]
+fn state_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "state".into(),
+        fields: vec![
+            FieldSchema { name: "percent".into(), field_type: FieldType::Int },
+            FieldSchema { name: "charging".into(), field_type: FieldType::Bool },
+            FieldSchema { name: "status".into(), field_type: FieldType::String },
+            FieldSchema { name: "time_remaining_secs".into(), field_type: FieldType::Int },
+        ],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
+        keep_alive: KeepAlive::Polls(4),
+        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        fsevents_reinstate: false,
     }
 }
 
-// === macOS: pmset ===
 #[cfg(target_os = "macos")]
-fn execute_platform(_path: Option<&str>) -> Option<ProviderResult> {
-    let output = Command::new("pmset").args(["-g", "batt"]).output().ok()?;
-    if !output.status.success() {
-        return None;
+struct BatteryState;
+
+#[cfg(target_os = "macos")]
+impl Source for BatteryState {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(state_meta)
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_pmset_output(&stdout)
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
+        let Ok(output) = Command::new("pmset").args(["-g", "batt"]).output() else {
+            return SourceResult::new();
+        };
+        if !output.status.success() {
+            return SourceResult::new();
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_pmset_output_to_source(&stdout)
+    }
 }
 
 #[cfg(target_os = "macos")]
-pub fn parse_pmset_output(output: &str) -> Option<ProviderResult> {
+fn parse_pmset_output_to_source(output: &str) -> SourceResult {
     let mut percent: i64 = 0;
     let mut charging = false;
     let mut time_remaining_secs: i64 = 0;
     let mut status: String = "unknown".to_string();
+    let mut found = false;
 
     for line in output.lines() {
         let line = line.trim();
         if let Some(pct_pos) = line.find('%') {
+            found = true;
             let before = &line[..pct_pos];
             let num_str: String = before
                 .chars()
@@ -118,57 +108,144 @@ pub fn parse_pmset_output(output: &str) -> Option<ProviderResult> {
         }
     }
 
-    if percent == 0 && !output.contains('%') {
-        return None;
+    if !found {
+        return SourceResult::new();
     }
 
-    let mut result = ProviderResult::new();
+    let mut result = SourceResult::new();
     result.insert("percent", Value::Int(percent));
     result.insert("charging", Value::Bool(charging));
     result.insert("time_remaining_secs", Value::Int(time_remaining_secs));
     result.insert("status", Value::String(status));
+    result
+}
+
+/// Expose the pmset parser for integration tests.
+#[cfg(target_os = "macos")]
+pub fn parse_pmset_output(output: &str) -> Option<crate::provider::ProviderResult> {
+    use crate::provider::ProviderResult;
+    let sr = parse_pmset_output_to_source(output);
+    if sr.fields.is_empty() {
+        return None;
+    }
+    let mut result = ProviderResult::new();
+    for (k, v) in sr.fields {
+        result.insert(k, v);
+    }
     Some(result)
 }
 
-// === Linux: sysfs + UPower ===
+// ── Linux: sysfs + UPower — two sources ──────────────────────────────────────
+
 #[cfg(target_os = "linux")]
-fn execute_platform(_path: Option<&str>) -> Option<ProviderResult> {
-    let battery_dir = find_battery_dir()?;
-    let capacity_str = std::fs::read_to_string(battery_dir.join("capacity")).ok()?;
-    let percent: i64 = capacity_str.trim().parse().ok()?;
+fn level_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "level".into(),
+        fields: vec![
+            FieldSchema { name: "percent".into(), field_type: FieldType::Int },
+            FieldSchema { name: "charging".into(), field_type: FieldType::Bool },
+            FieldSchema { name: "status_raw".into(), field_type: FieldType::String },
+        ],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
+        keep_alive: KeepAlive::Polls(4),
+        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        fsevents_reinstate: false,
+    }
+}
 
-    let status_str = std::fs::read_to_string(battery_dir.join("status")).ok()?;
-    let sysfs_status = status_str.trim();
-    let charging = sysfs_status == "Charging";
+#[cfg(target_os = "linux")]
+fn upower_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "upower".into(),
+        fields: vec![
+            FieldSchema { name: "time_remaining_secs".into(), field_type: FieldType::Int },
+            FieldSchema { name: "status".into(), field_type: FieldType::String },
+        ],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
+        keep_alive: KeepAlive::Polls(2),
+        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        fsevents_reinstate: false,
+    }
+}
 
-    let (time_remaining_secs, status) = if sysfs_status == "Full" {
-        (0i64, "charged".to_string())
-    } else if sysfs_status == "Charging" {
-        let secs = get_upower_time_remaining_secs().unwrap_or(0);
-        let st = if secs > 0 {
-            "charging".to_string()
-        } else {
-            "calculating".to_string()
+#[cfg(target_os = "linux")]
+struct BatteryLevel;
+
+#[cfg(target_os = "linux")]
+impl Source for BatteryLevel {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(level_meta)
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
+        let Some(battery_dir) = find_battery_dir() else {
+            return SourceResult::new();
         };
-        (secs, st)
-    } else if sysfs_status == "Discharging" {
-        let secs = get_upower_time_remaining_secs().unwrap_or(0);
-        let st = if secs > 0 {
-            "discharging".to_string()
-        } else {
-            "calculating".to_string()
+        let Ok(capacity_str) = std::fs::read_to_string(battery_dir.join("capacity")) else {
+            return SourceResult::new();
         };
-        (secs, st)
-    } else {
-        (0i64, "unknown".to_string())
-    };
+        let Ok(percent) = capacity_str.trim().parse::<i64>() else {
+            return SourceResult::new();
+        };
+        let Ok(status_str) = std::fs::read_to_string(battery_dir.join("status")) else {
+            return SourceResult::new();
+        };
+        let sysfs_status = status_str.trim().to_string();
+        let charging = sysfs_status == "Charging";
 
-    let mut result = ProviderResult::new();
-    result.insert("percent", Value::Int(percent));
-    result.insert("charging", Value::Bool(charging));
-    result.insert("time_remaining_secs", Value::Int(time_remaining_secs));
-    result.insert("status", Value::String(status));
-    Some(result)
+        let mut result = SourceResult::new();
+        result.insert("percent", Value::Int(percent));
+        result.insert("charging", Value::Bool(charging));
+        result.insert("status_raw", Value::String(sysfs_status));
+        result
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct BatteryUpower;
+
+#[cfg(target_os = "linux")]
+impl Source for BatteryUpower {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(upower_meta)
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
+        // Need the sysfs status to compute the human-readable status.
+        let sysfs_status = find_battery_dir()
+            .and_then(|d| std::fs::read_to_string(d.join("status")).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
+        let time_remaining_secs = get_upower_time_remaining_secs().unwrap_or(0);
+
+        let status = if sysfs_status == "Full" {
+            "charged".to_string()
+        } else if sysfs_status == "Charging" {
+            if time_remaining_secs > 0 {
+                "charging".to_string()
+            } else {
+                "calculating".to_string()
+            }
+        } else if sysfs_status == "Discharging" {
+            if time_remaining_secs > 0 {
+                "discharging".to_string()
+            } else {
+                "calculating".to_string()
+            }
+        } else {
+            "unknown".to_string()
+        };
+
+        let mut result = SourceResult::new();
+        result.insert("time_remaining_secs", Value::Int(time_remaining_secs));
+        result.insert("status", Value::String(status));
+        result
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -206,8 +283,6 @@ fn get_upower_time_remaining_secs() -> Option<i64> {
     for line in info_str.lines() {
         let line = line.trim();
         if line.starts_with("time to empty:") || line.starts_with("time to full:") {
-            // UPower reports time as "X.X hours" or "X minutes" etc.
-            // Parse into seconds as best we can.
             let val_str = line.splitn(2, ':').nth(1)?.trim().to_string();
             if val_str.contains("hour") {
                 let hours: f64 = val_str.split_whitespace().next()?.parse().ok()?;
@@ -223,4 +298,25 @@ fn get_upower_time_remaining_secs() -> Option<i64> {
         }
     }
     None
+}
+
+// ── Provider ──────────────────────────────────────────────────────────────────
+
+impl Provider for BatteryProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "battery".into(),
+            #[cfg(target_os = "macos")]
+            sources: vec![state_meta()],
+            #[cfg(target_os = "linux")]
+            sources: vec![level_meta(), upower_meta()],
+        }
+    }
+
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        #[cfg(target_os = "macos")]
+        return vec![Box::new(BatteryState)];
+        #[cfg(target_os = "linux")]
+        return vec![Box::new(BatteryLevel), Box::new(BatteryUpower)];
+    }
 }

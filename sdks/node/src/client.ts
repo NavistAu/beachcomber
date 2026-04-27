@@ -252,6 +252,7 @@ function parseCacheRows(resp: Record<string, unknown>): CacheRow[] {
       keepAlivePolls: r['keep_alive_polls'] != null ? Number(r['keep_alive_polls']) : undefined,
       fseventsReinstate: r['fsevents_reinstate'] != null ? Boolean(r['fsevents_reinstate']) : undefined,
       failure: r['failure'] != null ? (r['failure'] as CacheRow['failure']) : undefined,
+      source: r['source'] != null ? String(r['source']) : undefined,
     };
   });
 }

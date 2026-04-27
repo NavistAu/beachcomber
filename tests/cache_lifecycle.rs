@@ -6,8 +6,8 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use beachcomber::scheduler::{Scheduler, SchedulerHandle, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
@@ -16,6 +16,38 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static POLL_COUNT: AtomicU32 = AtomicU32::new(0);
 
+fn lc_counter_source_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "main".into(),
+        fields: vec![FieldSchema {
+            name: "value".into(),
+            field_type: FieldType::Int,
+        }],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Poll { interval_secs: 5 },
+        keep_alive: KeepAlive::Polls(2),
+        failback: FailbackConfig { reattempts: 3, interval_secs: 30 },
+        fsevents_reinstate: false,
+    }
+}
+
+struct LcCounterSourceImpl;
+
+impl Source for LcCounterSourceImpl {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(lc_counter_source_meta)
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
+        let count = POLL_COUNT.fetch_add(1, Ordering::SeqCst);
+        let mut result = SourceResult::new();
+        result.insert("value", Value::Int(count as i64));
+        result
+    }
+}
+
 /// A simple global provider that increments a counter on each execute.
 struct CountingGlobalProvider;
 
@@ -23,23 +55,12 @@ impl Provider for CountingGlobalProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "lc_counter".to_string(),
-            fields: vec![FieldSchema {
-                name: "value".to_string(),
-                field_type: FieldType::Int,
-                scope: FieldScope::Global,
-            }],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 5,
-                floor_secs: 1,
-            },
+            sources: vec![lc_counter_source_meta()],
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
-        let count = POLL_COUNT.fetch_add(1, Ordering::SeqCst);
-        let mut result = ProviderResult::new();
-        result.insert("value", Value::Int(count as i64));
-        vec![(None, result)]
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(LcCounterSourceImpl)]
     }
 }
 
@@ -51,7 +72,7 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
 
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(CountingGlobalProvider));
+    registry.register(Box::new(CountingGlobalProvider)).expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
 
@@ -65,7 +86,7 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
 
     // Before any query, the cache should be empty.
     assert!(
-        cache.get("lc_counter", None).is_none(),
+        cache.get_entry("lc_counter", None).is_none(),
         "cache should be cold before first query"
     );
 
@@ -81,7 +102,7 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
     assert!(
-        cache.get("lc_counter", None).is_some(),
+        cache.get_entry("lc_counter", None).is_some(),
         "cache should be populated after cold miss QueryActivity"
     );
     assert!(
@@ -98,7 +119,7 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
 async fn integration_active_entry_appears_in_status() {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(CountingGlobalProvider));
+    registry.register(Box::new(CountingGlobalProvider)).expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
 
@@ -154,7 +175,7 @@ async fn integration_active_entry_appears_in_status() {
 async fn setup_lifecycle_scheduler() -> (Arc<Cache>, SchedulerHandle, tokio::task::JoinHandle<()>) {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(CountingGlobalProvider));
+    registry.register(Box::new(CountingGlobalProvider)).expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
 
@@ -185,14 +206,15 @@ async fn integration_status_response_reports_decay_level() {
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
     assert!(
-        cache.get("lc_counter", None).is_some(),
+        cache.get_entry("lc_counter", None).is_some(),
         "cache should be warm before status check"
     );
 
     // Fetch the lifecycle snapshots from the scheduler.
     let snapshots = handle.get_lifecycle_snapshots().await;
 
-    let key = ("lc_counter".to_string(), None::<String>);
+    // Key is (provider, path, source_name)
+    let key = ("lc_counter".to_string(), None::<String>, "main".to_string());
     let decay_level = snapshots.get(&key).map(|s| s.decay);
 
     assert_eq!(
@@ -214,7 +236,7 @@ async fn integration_repeated_queries_keep_data_warm() {
 
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(CountingGlobalProvider));
+    registry.register(Box::new(CountingGlobalProvider)).expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
 
@@ -236,10 +258,9 @@ async fn integration_repeated_queries_keep_data_warm() {
 
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    let gen_after_first = cache
-        .get("lc_counter", None)
-        .expect("should have entry")
-        .generation;
+    let _entry_after_first = cache
+        .get_entry("lc_counter", None)
+        .expect("should have entry");
     let exec_after_first = POLL_COUNT.load(Ordering::SeqCst);
 
     // Subsequent queries should not re-execute (cache is warm, no inline miss).
@@ -256,16 +277,11 @@ async fn integration_repeated_queries_keep_data_warm() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let exec_after_repeated = POLL_COUNT.load(Ordering::SeqCst);
-    let gen_after_repeated = cache
-        .get("lc_counter", None)
-        .expect("should still have entry")
-        .generation;
+    let _entry_after_repeated = cache
+        .get_entry("lc_counter", None)
+        .expect("should still have entry");
 
-    // Generation should be the same (no re-execution triggered by repeat queries).
-    assert_eq!(
-        gen_after_first, gen_after_repeated,
-        "repeated queries on warm cache should not re-execute provider"
-    );
+    // Execution count should be the same (no re-execution triggered by repeat queries).
     assert_eq!(
         exec_after_first, exec_after_repeated,
         "exec count should not change for repeated queries on warm cache"

@@ -1,6 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::path::Path;
 
@@ -9,37 +9,54 @@ pub struct TerraformProvider;
 impl Provider for TerraformProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            name: "terraform".to_string(),
-            fields: vec![FieldSchema {
-                name: "workspace".to_string(),
-                field_type: FieldType::String,
-                scope: FieldScope::PathScoped,
-            }],
-            invalidation: InvalidationStrategy::Watch {
-                patterns: vec![".terraform".to_string()],
-                fallback_poll_secs: Some(30),
-            },
+            name: "terraform".into(),
+            sources: vec![state_source_metadata()],
         }
     }
 
-    // Walk up from `path` to the nearest directory containing `.terraform`.
-    // Terraform operations are executed relative to the module root (where
-    // terraform init writes `.terraform`), so subdirs should share that cache
-    // entry.
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        let p = path?;
-        find_terraform_root(Path::new(p))
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(TerraformState)]
+    }
+}
+
+fn state_source_metadata() -> SourceMetadata {
+    SourceMetadata {
+        name: "state".into(),
+        fields: vec![FieldSchema {
+            name: "workspace".into(),
+            field_type: FieldType::String,
+        }],
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![".terraform".into()],
+            abs_paths: vec![],
+        },
+        keep_alive: KeepAlive::Duration(120),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
+        fsevents_reinstate: true,
+    }
+}
+
+struct TerraformState;
+
+impl Source for TerraformState {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(state_source_metadata)
     }
 
-    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+    fn execute(&self, path: Option<&str>) -> SourceResult {
         let Some(path) = path else {
-            return Vec::new();
+            return SourceResult::new();
         };
-        let path_owned = path.to_string();
         let dir = Path::new(path);
         let tf_dir = dir.join(".terraform");
         if !tf_dir.exists() {
-            return Vec::new();
+            return SourceResult::new();
         }
 
         // Read workspace from .terraform/environment
@@ -48,9 +65,14 @@ impl Provider for TerraformProvider {
             .trim()
             .to_string();
 
-        let mut result = ProviderResult::new();
+        let mut result = SourceResult::new();
         result.insert("workspace", Value::String(workspace));
-        vec![(Some(path_owned), result)]
+        result
+    }
+
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let p = path?;
+        find_terraform_root(Path::new(p))
     }
 }
 

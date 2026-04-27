@@ -43,14 +43,14 @@ async fn e2e_script_provider_from_config() {
     let sock = tmp.path().join("sock");
 
     let mut config = Config::default();
-    config.providers.insert(
-        "test_echo".to_string(),
-        beachcomber::config::ScriptProviderConfig {
-            provider_type: Some("script".to_string()),
-            command: r#"echo '{"greeting":"hello"}'"#.to_string(),
-            ..Default::default()
-        },
+    // Insert a script provider using the toml::Value representation.
+    let mut table = toml::Table::new();
+    table.insert("type".to_string(), toml::Value::String("script".to_string()));
+    table.insert(
+        "command".to_string(),
+        toml::Value::String(r#"echo '{"greeting":"hello"}'"#.to_string()),
     );
+    config.providers.insert("test_echo".to_string(), toml::Value::Table(table));
 
     let handle = daemon::start_in_process(sock.clone(), config);
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;

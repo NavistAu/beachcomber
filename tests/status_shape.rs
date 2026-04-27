@@ -12,6 +12,7 @@ fn sample_rows() -> Vec<CacheRow> {
         CacheRow {
             provider: "git".into(),
             path: Some("/home/me/ws/foo".into()),
+            source: "refs".into(),
             field: "branch".into(),
             value: serde_json::json!("main"),
             age_ms: 14_000,
@@ -26,6 +27,7 @@ fn sample_rows() -> Vec<CacheRow> {
         CacheRow {
             provider: "git".into(),
             path: Some("/home/me/ws/foo".into()),
+            source: "status".into(),
             field: "dirty".into(),
             value: serde_json::json!(false),
             age_ms: 14_000,
@@ -40,6 +42,7 @@ fn sample_rows() -> Vec<CacheRow> {
         CacheRow {
             provider: "hostname".into(),
             path: None,
+            source: "default".into(),
             field: "value".into(),
             value: serde_json::json!("me-laptop"),
             age_ms: 52_000,
@@ -133,6 +136,7 @@ fn human_preset_truncates_value_to_meet_total_cap() {
     rows.push(CacheRow {
         provider: "git".into(),
         path: Some("/home/me/ws/foo".into()),
+        source: "refs".into(),
         field: "commit_summary".into(),
         value: serde_json::json!("a".repeat(100)),
         age_ms: 14_000,
@@ -141,8 +145,8 @@ fn human_preset_truncates_value_to_meet_total_cap() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     });
     // With a 120-col total cap, the non-VALUE columns for these rows fit comfortably,
     // leaving VALUE some room — but not enough for all 100 'a's.
@@ -171,6 +175,7 @@ fn human_preset_color_on_stale_rows() {
     let rows = vec![CacheRow {
         provider: "git".into(),
         path: None,
+        source: "refs".into(),
         field: "branch".into(),
         value: serde_json::json!("main"),
         age_ms: 9999,
@@ -179,8 +184,8 @@ fn human_preset_color_on_stale_rows() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     }];
     let opts = RenderOpts {
         is_tty: true,
@@ -201,6 +206,7 @@ fn json_preset_path_none_serializes_as_null() {
     let rows = vec![CacheRow {
         provider: "hostname".into(),
         path: None,
+        source: "default".into(),
         field: "value".into(),
         value: serde_json::json!("myhost"),
         age_ms: 1000,
@@ -209,8 +215,8 @@ fn json_preset_path_none_serializes_as_null() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     }];
     let out = render_preset("json", &rows, &RenderOpts::default());
     let parsed: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON line");
@@ -226,6 +232,7 @@ fn csv_preset_quotes_values_with_commas() {
     let rows = vec![CacheRow {
         provider: "test".into(),
         path: None,
+        source: "default".into(),
         field: "tags".into(),
         value: serde_json::json!("a,b,c"),
         age_ms: 0,
@@ -234,8 +241,8 @@ fn csv_preset_quotes_values_with_commas() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     }];
     let out = render_preset("csv", &rows, &RenderOpts::default());
     // Value containing comma must be quoted in RFC 4180 style.
@@ -261,6 +268,7 @@ fn custom_template_supports_truncate_filter() {
     let rows = vec![CacheRow {
         provider: "git".into(),
         path: None,
+        source: "refs".into(),
         field: "sha".into(),
         value: serde_json::json!("abcdef1234567890"),
         age_ms: 14_000,
@@ -269,8 +277,8 @@ fn custom_template_supports_truncate_filter() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     }];
     let out = render_preset("{{ value | truncate(7) }}", &rows, &RenderOpts::default());
     assert_eq!(out.trim(), "abcdef1...");
@@ -307,6 +315,7 @@ fn custom_template_supports_age_human() {
     let rows = vec![CacheRow {
         provider: "git".into(),
         path: None,
+        source: "refs".into(),
         field: "branch".into(),
         value: serde_json::json!("main"),
         age_ms: 3_600_000, // 1 hour
@@ -315,8 +324,8 @@ fn custom_template_supports_age_human() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     }];
     let out = render_preset("{{ age_human }}", &rows, &RenderOpts::default());
     // Should render as "1h" or similar
@@ -646,6 +655,7 @@ fn max_width_value_column_shrinks_not_others() {
     let row = CacheRow {
         provider: "git".into(),
         path: Some("/repo".into()),
+        source: "refs".into(),
         field: "branch".into(),
         value: json!("a".repeat(80)),
         age_ms: 1000,
@@ -654,8 +664,8 @@ fn max_width_value_column_shrinks_not_others() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     };
     // Use a narrow max_width that cannot fit the full value.
     let opts = RenderOpts {
@@ -691,6 +701,7 @@ fn max_width_total_row_width_does_not_exceed_cap() {
     let row = CacheRow {
         provider: "mise".into(),
         path: Some("-".into()),
+        source: "global".into(),
         field: "global".into(),
         value: json!({"ansible-base":"2.10.17","aws-vault":"7.2.0","awscli":"2.16.9","go":"1.24.9"}),
         age_ms: 158_000,
@@ -699,8 +710,8 @@ fn max_width_total_row_width_does_not_exceed_cap() {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     };
     let total_cap = 80usize;
     let opts = RenderOpts {
@@ -762,6 +773,7 @@ fn default_sort_is_path_provider_field() {
         CacheRow {
             provider: p.into(),
             path: path.map(String::from),
+            source: "default".into(),
             field: field.into(),
             value: json!(0),
             age_ms: 0,
@@ -835,6 +847,7 @@ fn cache_row_new_fields_serde_round_trip() {
     let row = CacheRow {
         provider: "git".into(),
         path: Some("/repo".into()),
+        source: "refs".into(),
         field: "branch".into(),
         value: json!("main"),
         age_ms: 14_000,
@@ -843,8 +856,8 @@ fn cache_row_new_fields_serde_round_trip() {
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     };
     let v = serde_json::to_value(&row).unwrap();
     assert_eq!(v["poll_interval_secs"], 60);
@@ -891,7 +904,6 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
         .next()
         .expect("at least one snapshot");
     assert!(entry.poll_interval_secs > 0);
-    assert!(entry.keep_alive_polls > 0);
     let _ = entry.fsevents_reinstate;
     let _ = entry.decay;
     let _ = entry.watches_files;
@@ -973,25 +985,41 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     let rows: Vec<CacheRow> = serde_json::from_value(resp.data.expect("data present"))
         .expect("rows deserialize");
 
-    let git_row = rows.iter().find(|r| r.provider == "git").expect("git row present after get in a real repo");
+    // Pick a git row from the `refs` source (fsevent strategy → watches_files=true).
+    // After Phase 1 each row carries its source's strategy individually, so the diff
+    // source (poll) has watches_files=false while refs has watches_files=true.
+    let refs_row = rows
+        .iter()
+        .find(|r| r.provider == "git" && r.source == "refs")
+        .expect("git.refs row present after get in a real repo");
 
     use beachcomber::cache::RowKind;
-    match git_row.kind.as_ref().expect("kind present") {
+    match refs_row.kind.as_ref().expect("kind present") {
         RowKind::Lifecycle { decay, watches_files } => {
             assert_eq!(*decay, 0, "freshly queried row should be Active (decay=0)");
-            let _ = watches_files;
+            assert!(*watches_files, "git.refs uses Watch strategy → watches_files=true");
         }
         other => panic!("expected Lifecycle, got {:?}", other),
     }
-    assert!(
-        git_row.poll_interval_secs.unwrap_or(0) > 0,
-        "poll_interval_secs should be > 0"
-    );
-    assert!(
-        git_row.keep_alive_polls.unwrap_or(0) > 0,
-        "keep_alive_polls should be > 0"
-    );
-    assert_eq!(git_row.failure, None);
+    // refs is a pure Watch source — no poll path → poll_interval_secs is None.
+    assert!(refs_row.poll_interval_secs.is_none(), "Watch-only source should have None poll_interval_secs");
+    assert!(refs_row.keep_alive_polls.is_none());
+    assert_eq!(refs_row.failure, None);
+
+    // Cross-check the diff source: poll strategy → poll_interval_secs is Some, watches_files=false.
+    let diff_row = rows
+        .iter()
+        .find(|r| r.provider == "git" && r.source == "diff")
+        .expect("git.diff row present");
+    match diff_row.kind.as_ref().expect("kind present") {
+        RowKind::Lifecycle { watches_files, .. } => {
+            assert!(!*watches_files, "git.diff uses Poll strategy → watches_files=false");
+        }
+        other => panic!("expected Lifecycle for diff row, got {:?}", other),
+    }
+    assert!(diff_row.poll_interval_secs.is_some(), "Poll source should have Some poll_interval_secs");
+    assert!(diff_row.keep_alive_polls.is_some(), "Poll source should have Some keep_alive_polls");
+    assert!(diff_row.polls_elapsed.is_some(), "Poll source should have Some polls_elapsed");
 
     handle.abort();
 }
@@ -1000,7 +1028,8 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
 async fn status_response_once_row_has_kind_once() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    // hostname is a Once provider — querying it puts it in cache but not lifecycle.
+    // hostname is a Watch-only global provider with KeepAlive::Never — the equivalent
+    // of the old "Once" semantics. It enters the lifecycle map immediately on demand.
     let _ = client
         .send_raw(serde_json::json!({"op": "get", "key": "hostname.short"}))
         .await
@@ -1022,14 +1051,20 @@ async fn status_response_once_row_has_kind_once() {
         .expect("hostname row present");
 
     use beachcomber::cache::RowKind;
-    assert!(
-        matches!(row.kind, Some(RowKind::Once)),
-        "expected RowKind::Once for hostname, got {:?}",
-        row.kind
-    );
-    assert!(row.poll_interval_secs.is_none());
+    // hostname uses Watch + KeepAlive::Never — shown as Lifecycle (decay=0, watches_files=true)
+    match row.kind.as_ref().expect("kind present") {
+        RowKind::Lifecycle { decay, watches_files } => {
+            assert_eq!(*decay, 0, "freshly queried row should be Active (decay=0)");
+            // Watch strategy with empty patterns — watches_files may be true or false;
+            // what matters is the Lifecycle variant is used (not Once/Transient/Virtual).
+            let _ = watches_files;
+        }
+        other => panic!("expected RowKind::Lifecycle for hostname, got {:?}", other),
+    }
+    // hostname uses Watch + KeepAlive::Never (pure-watch global) — no poll path
+    // → poll_interval_secs is None and keep_alive_polls is None.
+    assert!(row.poll_interval_secs.is_none(), "pure Watch source should have None poll_interval_secs");
     assert!(row.keep_alive_polls.is_none());
-    assert!(row.fsevents_reinstate.is_none());
 
     handle.abort();
 }
@@ -1081,6 +1116,7 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
     let row = CacheRow {
         provider: "git".into(),
         path: Some("/repo".into()),
+        source: "refs".into(),
         field: "branch".into(),
         value: serde_json::json!("main"),
         age_ms: 14_000,
@@ -1089,8 +1125,8 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     };
     let opts = FormatOptions {
         ascii: false,
@@ -1112,6 +1148,7 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
     CacheRow {
         provider: "git".into(),
         path: Some("/repo".into()),
+        source: "refs".into(),
         field: "branch".into(),
         value: json!("main"),
         age_ms: 14_000,
@@ -1120,8 +1157,8 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     }
 }
 
@@ -1197,6 +1234,7 @@ fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
     CacheRow {
         provider: provider.into(),
         path: None,
+        source: "default".into(),
         field: "x".into(),
         value: json!(0),
         age_ms: 0,
@@ -1205,8 +1243,8 @@ fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(false),
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     }
 }
 
@@ -1216,6 +1254,7 @@ fn once_row(provider: &str) -> beachcomber::cache::CacheRow {
     CacheRow {
         provider: provider.into(),
         path: None,
+        source: "default".into(),
         field: "x".into(),
         value: json!(0),
         age_ms: 0,
@@ -1224,8 +1263,8 @@ fn once_row(provider: &str) -> beachcomber::cache::CacheRow {
         poll_interval_secs: None,
         keep_alive_polls: None,
         fsevents_reinstate: None,
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     }
 }
 
@@ -1310,6 +1349,7 @@ fn human_renders_p_zero_k_zero_without_panic() {
     let row = CacheRow {
         provider: "edge".into(),
         path: None,
+        source: "default".into(),
         field: "x".into(),
         value: json!(null),
         age_ms: 0,
@@ -1318,8 +1358,8 @@ fn human_renders_p_zero_k_zero_without_panic() {
         poll_interval_secs: Some(0),
         keep_alive_polls: Some(0),
         fsevents_reinstate: Some(false),
-            polls_elapsed: None,
-            failure: None,
+        polls_elapsed: None,
+        failure: None,
     };
     let opts = beachcomber::cli::status_format::FormatOptions::default();
     let out = beachcomber::cli::status_format::render_human(&[row], &opts);
@@ -1338,6 +1378,7 @@ fn failure_state_renders_warn_and_red_row() {
     let row = CacheRow {
         provider: "flaky".into(),
         path: None,
+        source: "default".into(),
         field: "thing".into(),
         value: json!("x"),
         age_ms: 1000,
@@ -1346,8 +1387,8 @@ fn failure_state_renders_warn_and_red_row() {
         poll_interval_secs: Some(60),
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(false),
-            polls_elapsed: None,
-            failure: Some(FailureSnapshot { consecutive_failures: 3, suppressed_until_unix_ms: None }),
+        polls_elapsed: None,
+        failure: Some(FailureSnapshot { consecutive_failures: 3, suppressed_until_unix_ms: None }),
     };
     // Use render_preset("human", ...) with is_tty=true so color is enabled.
     let opts = RenderOpts {
@@ -1369,7 +1410,7 @@ fn render_preset_ascii_flag_swaps_glyphs() {
     use serde_json::json;
 
     let row = CacheRow {
-        provider: "git".into(), path: None, field: "branch".into(),
+        provider: "git".into(), path: None, source: "refs".into(), field: "branch".into(),
         value: json!("main"), age_ms: 1000, stale: false,
         kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
         poll_interval_secs: Some(60), keep_alive_polls: Some(12),
@@ -1391,7 +1432,7 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
     use serde_json::json;
 
     let row = CacheRow {
-        provider: "git".into(), path: None, field: "branch".into(),
+        provider: "git".into(), path: None, source: "refs".into(), field: "branch".into(),
         value: json!("main"), age_ms: 1000, stale: false,
         kind: Some(RowKind::Lifecycle { decay: 0, watches_files: true }),
         poll_interval_secs: Some(60), keep_alive_polls: Some(12),

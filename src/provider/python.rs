@@ -1,6 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::path::Path;
 
@@ -9,50 +9,60 @@ pub struct PythonProvider;
 impl Provider for PythonProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            name: "python".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "venv".to_string(),
-                    field_type: FieldType::Bool,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "venv_name".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                },
-                FieldSchema {
-                    name: "version".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::PathScoped,
-                },
-            ],
-            invalidation: InvalidationStrategy::Watch {
-                patterns: vec![".venv".to_string(), "pyproject.toml".to_string()],
-                fallback_poll_secs: Some(30),
-            },
+            name: "python".into(),
+            sources: vec![venv_source_metadata()],
         }
     }
 
-    // Walk up from `path` to the nearest directory that looks like a python
-    // project root. Markers (any-of):
-    //   - a venv directory (`.venv` / `venv` / `.virtualenv` / `env`) that
-    //     contains `pyvenv.cfg`, or
-    //   - `pyproject.toml`
-    //
-    // pyproject.toml alone is enough: a user can be working in a project tree
-    // before their venv is created, and we want subdir lookups to dedupe to
-    // the project root regardless.
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        let p = path?;
-        find_python_project_root(Path::new(p))
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(PythonVenv)]
+    }
+}
+
+fn venv_source_metadata() -> SourceMetadata {
+    SourceMetadata {
+        name: "venv".into(),
+        fields: vec![
+            FieldSchema {
+                name: "venv".into(),
+                field_type: FieldType::Bool,
+            },
+            FieldSchema {
+                name: "venv_name".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "version".into(),
+                field_type: FieldType::String,
+            },
+        ],
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![".venv".into(), "pyproject.toml".into()],
+            abs_paths: vec![],
+        },
+        keep_alive: KeepAlive::Duration(120),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
+        fsevents_reinstate: true,
+    }
+}
+
+struct PythonVenv;
+
+impl Source for PythonVenv {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(venv_source_metadata)
     }
 
-    fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+    fn execute(&self, path: Option<&str>) -> SourceResult {
         let Some(path) = path else {
-            return Vec::new();
+            return SourceResult::new();
         };
-        let path_owned = path.to_string();
         let dir = Path::new(path);
 
         // Check for common venv directory names
@@ -82,26 +92,33 @@ impl Provider for PythonProvider {
         }
 
         // Also check VIRTUAL_ENV env var
-        if !venv_found && let Ok(venv_path) = std::env::var("VIRTUAL_ENV") {
-            let p = Path::new(&venv_path);
-            if p.exists() {
-                venv_found = true;
-                venv_name = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
+        if !venv_found {
+            if let Ok(venv_path) = std::env::var("VIRTUAL_ENV") {
+                let p = Path::new(&venv_path);
+                if p.exists() {
+                    venv_found = true;
+                    venv_name = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                }
             }
         }
 
         if !venv_found {
-            return Vec::new();
+            return SourceResult::new();
         }
 
-        let mut result = ProviderResult::new();
+        let mut result = SourceResult::new();
         result.insert("venv", Value::Bool(true));
         result.insert("venv_name", Value::String(venv_name));
         result.insert("version", Value::String(version));
-        vec![(Some(path_owned), result)]
+        result
+    }
+
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let p = path?;
+        find_python_project_root(Path::new(p))
     }
 }
 

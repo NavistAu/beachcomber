@@ -3,6 +3,7 @@ module Beachcomber
   CacheRow = Struct.new(
     :provider, :field, :path, :value, :age_ms, :stale,
     :kind, :poll_interval_secs, :keep_alive_polls, :fsevents_reinstate, :failure,
+    :source,
     keyword_init: true
   )
   Verdict = Struct.new(:level, :message, keyword_init: true)

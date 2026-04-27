@@ -12,8 +12,9 @@
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::provider::{ProviderResult, Value};
+use beachcomber::provider::Value;
 use beachcomber::server::Server;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -25,10 +26,10 @@ async fn setup_stale() -> (TempDir, std::path::PathBuf) {
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
     // Seed hostname with a stale entry. interval=0 => stale after 0 elapsed secs.
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("stale-seed".to_string()));
-    result.insert("short", Value::String("stale".to_string()));
-    cache.put_with_interval("hostname", None, result, Some(0));
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("stale-seed".to_string()));
+    fields.insert("short".to_string(), Value::String("stale".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(0));
 
     // Ensure elapsed().as_secs() > 0 so is_stale() is true.
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;

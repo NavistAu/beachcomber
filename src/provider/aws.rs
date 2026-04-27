@@ -1,6 +1,6 @@
 use crate::provider::{
-    FieldSchema, FieldScope, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    ProviderResult, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 
 pub struct AwsProvider;
@@ -8,37 +8,58 @@ pub struct AwsProvider;
 impl Provider for AwsProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            name: "aws".to_string(),
-            fields: vec![
-                FieldSchema {
-                    name: "profile".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "region".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "source".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-                FieldSchema {
-                    name: "expiration".to_string(),
-                    field_type: FieldType::String,
-                    scope: FieldScope::Global,
-                },
-            ],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 60,
-                floor_secs: 10,
-            },
+            name: "aws".into(),
+            sources: vec![profile_source_metadata()],
         }
     }
 
-    fn execute(&self, _path: Option<&str>) -> Vec<(Option<String>, ProviderResult)> {
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(AwsProfile)]
+    }
+}
+
+fn profile_source_metadata() -> SourceMetadata {
+    SourceMetadata {
+        name: "profile".into(),
+        fields: vec![
+            FieldSchema {
+                name: "profile".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "region".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "source".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "expiration".into(),
+                field_type: FieldType::String,
+            },
+        ],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
+        keep_alive: KeepAlive::Polls(2),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 30,
+        },
+        fsevents_reinstate: false,
+    }
+}
+
+struct AwsProfile;
+
+impl Source for AwsProfile {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(profile_source_metadata)
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
         // Profile detection: AWS_PROFILE (native, granted) -> AWS_VAULT (aws-vault)
         let (profile, source) = if let Ok(p) = std::env::var("AWS_PROFILE") {
             if !p.is_empty() {
@@ -66,10 +87,10 @@ impl Provider for AwsProvider {
             .unwrap_or_default();
 
         if profile.is_empty() && region.is_empty() {
-            return Vec::new();
+            return SourceResult::new();
         }
 
-        let mut result = ProviderResult::new();
+        let mut result = SourceResult::new();
         result.insert("profile", Value::String(profile));
         result.insert("region", Value::String(region));
         if !source.is_empty() {
@@ -78,6 +99,6 @@ impl Provider for AwsProvider {
         if !expiration.is_empty() {
             result.insert("expiration", Value::String(expiration));
         }
-        vec![(None, result)]
+        result
     }
 }

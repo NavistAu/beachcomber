@@ -114,7 +114,13 @@ async fn introspect_providers_lists_catalog_with_scope_and_fields() {
     if let Some(h) = hostname {
         assert_eq!(h["source"].as_str(), Some("builtin"));
         assert_eq!(h["scope"].as_str(), Some("global"));
-        assert!(h.get("fields").and_then(|v| v.as_array()).is_some());
+        // Providers expose per-source metadata under "sources"; check first source's fields.
+        let sources = h.get("sources").and_then(|v| v.as_array());
+        assert!(sources.is_some(), "hostname missing 'sources' array");
+        if let Some(srcs) = sources {
+            let first = srcs.first().expect("at least one source");
+            assert!(first.get("fields").and_then(|v| v.as_array()).is_some());
+        }
         assert!(h.get("invalidation").is_some());
     }
 
@@ -532,7 +538,13 @@ async fn providers_introspect_has_entries_with_required_fields() {
         assert!(p.get("name").is_some(), "provider missing name: {p:?}");
         assert!(p.get("source").is_some(), "provider missing source: {p:?}");
         assert!(p.get("scope").is_some(), "provider missing scope: {p:?}");
-        assert!(p.get("fields").is_some(), "provider missing fields: {p:?}");
+        // Fields are now per-source — check the "sources" array contains at least one source
+        // with a fields entry. Virtual providers may have no sources (data-only).
+        if let Some(srcs) = p.get("sources").and_then(|v| v.as_array()) {
+            if !srcs.is_empty() {
+                assert!(srcs[0].get("fields").is_some(), "source missing fields: {p:?}");
+            }
+        }
         assert!(
             p.get("invalidation").is_some(),
             "provider missing invalidation: {p:?}"

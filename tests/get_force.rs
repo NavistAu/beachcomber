@@ -1,8 +1,9 @@
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::provider::{ProviderResult, Value};
+use beachcomber::provider::Value;
 use beachcomber::server::Server;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -31,14 +32,14 @@ async fn get_force_evicts_and_re_executes() {
 
     // Pre-seed the cache with a value for the hostname provider so a normal
     // get would return a hit with age > 0.
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("stale-host".to_string()));
-    result.insert("short", Value::String("stale".to_string()));
-    cache.put("hostname", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("stale-host".to_string()));
+    fields.insert("short".to_string(), Value::String("stale".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(60));
 
     // Confirm the cache has the stale entry.
     assert!(
-        cache.get("hostname", None).is_some(),
+        cache.get_entry("hostname", None).is_some(),
         "cache should have the seeded entry"
     );
 
@@ -92,10 +93,10 @@ async fn get_force_evicts_and_re_executes() {
 async fn get_without_force_returns_cached_entry() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let mut result = ProviderResult::new();
-    result.insert("name", Value::String("cached-host".to_string()));
-    result.insert("short", Value::String("cached".to_string()));
-    cache.put("hostname", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), Value::String("cached-host".to_string()));
+    fields.insert("short".to_string(), Value::String("cached".to_string()));
+    cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -129,22 +130,22 @@ async fn get_without_force_returns_cached_entry() {
 fn cache_remove_targets_path_scope() {
     let cache = Cache::new();
 
-    let mut a = ProviderResult::new();
-    a.insert("branch", Value::String("aaa".to_string()));
-    cache.put("git", Some("/tmp/a"), a);
+    let mut a = HashMap::new();
+    a.insert("branch".to_string(), Value::String("aaa".to_string()));
+    cache.put_source("git", Some("/tmp/a"), "refs", a, Some(60));
 
-    let mut b = ProviderResult::new();
-    b.insert("branch", Value::String("bbb".to_string()));
-    cache.put("git", Some("/tmp/b"), b);
+    let mut b = HashMap::new();
+    b.insert("branch".to_string(), Value::String("bbb".to_string()));
+    cache.put_source("git", Some("/tmp/b"), "refs", b, Some(60));
 
     cache.remove("git", Some("/tmp/a"));
 
     assert!(
-        cache.get("git", Some("/tmp/a")).is_none(),
+        cache.get_entry("git", Some("/tmp/a")).is_none(),
         "/tmp/a entry should be evicted"
     );
     assert!(
-        cache.get("git", Some("/tmp/b")).is_some(),
+        cache.get_entry("git", Some("/tmp/b")).is_some(),
         "/tmp/b entry should be unaffected"
     );
 }
@@ -157,9 +158,9 @@ async fn force_on_virtual_provider_returns_error() {
     // Register a virtual provider via the put path (mirrors what Request::Put does).
     registry.register_virtual("mystore");
 
-    let mut result = ProviderResult::new();
-    result.insert("val", Value::String("hello".to_string()));
-    cache.put("mystore", None, result);
+    let mut fields = HashMap::new();
+    fields.insert("val".to_string(), Value::String("hello".to_string()));
+    cache.put_source("mystore", None, "virtual", fields, None);
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = tokio::spawn(async move { server.run().await });
@@ -189,7 +190,7 @@ async fn force_on_virtual_provider_returns_error() {
 
     // The stored entry must still be present — the guard ran before eviction.
     assert!(
-        cache.get("mystore", None).is_some(),
+        cache.get_entry("mystore", None).is_some(),
         "virtual entry must not be evicted by a failed force"
     );
 

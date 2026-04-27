@@ -187,6 +187,7 @@ module Beachcomber
           keep_alive_polls:   row["keep_alive_polls"],
           fsevents_reinstate: row["fsevents_reinstate"],
           failure:            row["failure"],
+          source:             row["source"],
         )
       end
     end
