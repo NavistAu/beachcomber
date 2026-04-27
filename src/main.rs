@@ -1,10 +1,8 @@
 use beachcomber::cli::commands::get::{run_get, split_keys_and_path};
 use beachcomber::cli::commands::put::run_put;
-use beachcomber::cli::format::render_fmt_template_json;
+use beachcomber::cli::commands::watch::run_watch;
 use beachcomber::cli::introspect_types::{DaemonIntrospect, Verdict};
-use beachcomber::cli::output_format::{
-    OutputFormat, format_sv, parse_output_format, suffix_to_format,
-};
+use beachcomber::cli::output_format::{parse_output_format, suffix_to_format};
 use beachcomber::config::Config;
 use beachcomber::pid_check::pid_is_our_daemon;
 use clap::{Parser, Subcommand};
@@ -536,87 +534,6 @@ fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
     });
 
     ExitCode::SUCCESS
-}
-
-fn run_watch(config: &Config, key: &str, path: Option<&str>, format: OutputFormat) -> ExitCode {
-    let socket_path = config.resolve_socket_path();
-
-    if let Err(e) = beachcomber::daemon::ensure_daemon(&socket_path) {
-        eprintln!("Failed to start daemon: {e}");
-        return ExitCode::from(2);
-    }
-
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    rt.block_on(async {
-        let client = beachcomber::client::Client::new(socket_path);
-        let mut session = match client.connect().await {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Error: {e}");
-                return ExitCode::from(2);
-            }
-        };
-
-        let server_fmt = match &format {
-            OutputFormat::Text => Some("text"),
-            OutputFormat::Sh => Some("sh"),
-            _ => None,
-        };
-        if let Err(e) = session.watch(key, path, server_fmt).await {
-            eprintln!("Error: {e}");
-            return ExitCode::from(2);
-        }
-
-        // For server-side formats, stream lines directly.
-        // For client-side formats, each watch line is a JSON response we need to reformat.
-        loop {
-            match session.read_watch_line().await {
-                Ok(Some(line)) => match &format {
-                    OutputFormat::Json | OutputFormat::Text | OutputFormat::Sh => {
-                        print!("{line}");
-                    }
-                    _ => {
-                        if let Ok(response) =
-                            serde_json::from_str::<beachcomber::protocol::Response>(&line)
-                            && let Some(data) = &response.data
-                        {
-                            match &format {
-                                OutputFormat::Csv => {
-                                    println!("{}", format_sv(data, ",", false));
-                                }
-                                OutputFormat::Tsv => {
-                                    println!("{}", format_sv(data, "\t", false));
-                                }
-                                OutputFormat::CsvHeader => {
-                                    println!("{}", format_sv(data, ",", true));
-                                }
-                                OutputFormat::TsvHeader => {
-                                    println!("{}", format_sv(data, "\t", true));
-                                }
-                                OutputFormat::Fmt(template) => {
-                                    match render_fmt_template_json(template, data) {
-                                        Ok(rendered) => println!("{}", rendered),
-                                        Err(e) => {
-                                            eprintln!("Template error: {e}");
-                                            return ExitCode::from(2);
-                                        }
-                                    }
-                                }
-                                _ => unreachable!(),
-                            }
-                        }
-                    }
-                },
-                Ok(None) => break,
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    return ExitCode::from(2);
-                }
-            }
-        }
-
-        ExitCode::SUCCESS
-    })
 }
 
 fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
