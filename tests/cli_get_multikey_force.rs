@@ -77,9 +77,9 @@ async fn session_get_formatted_with_flags_forwards_wait() {
 fn run_get_multikey_server_side_uses_get_formatted_with_flags() {
     // The multi-key server-side loop must call get_formatted_with_flags,
     // not the flag-less get_formatted. This guards against regression to
-    // the Round 3 bug where force and wait were silently dropped at
-    // src/main.rs:617 (line numbers may drift; search the file).
-    let src = std::fs::read_to_string("src/main.rs").unwrap();
+    // the Round 3 bug where force and wait were silently dropped.
+    // run_get now lives in src/cli/commands/get.rs (moved in Task 2.2).
+    let src = std::fs::read_to_string("src/cli/commands/get.rs").unwrap();
     assert!(
         src.contains("get_formatted_with_flags(key, None, wire_fmt, force, wait)"),
         "run_get's multi-key server-side loop must forward force and wait via \
