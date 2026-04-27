@@ -85,21 +85,21 @@ async fn status_op_does_not_contain_pid_field() {
 
 #[test]
 fn query_daemon_pid_request_string_is_exact() {
-    // Contract: query_daemon_pid sends this exact line. If main.rs drifts
+    // Contract: query_daemon_pid sends this exact line. If kill.rs drifts
     // back to the old "status" op, grep will catch it, but this test locks
     // the expectation in a machine-checkable form.
-    let src = std::fs::read_to_string("src/main.rs").unwrap();
+    let src = std::fs::read_to_string("src/cli/commands/kill.rs").unwrap();
     assert!(
         src.contains(r#"{\"op\":\"introspect\",\"subject\":\"daemon\"}"#),
-        "src/main.rs must send introspect{{daemon}} from query_daemon_pid"
+        "src/cli/commands/kill.rs must send introspect{{daemon}} from query_daemon_pid"
     );
     // The old behavior must be gone from the PID-lookup path. query_daemon_pid
-    // is the only site in main.rs that sends a raw wire op as a byte literal;
+    // is the only site in kill.rs that sends a raw wire op as a byte literal;
     // if status is still there in that context it's a regression.
     let op_status_bytes = r#"b"{\"op\":\"status\"}\n""#;
     assert!(
         !src.contains(op_status_bytes),
-        "src/main.rs must no longer send the literal {op_status_bytes} \
+        "src/cli/commands/kill.rs must no longer send the literal {op_status_bytes} \
          (old comb kill pid lookup)"
     );
 }
