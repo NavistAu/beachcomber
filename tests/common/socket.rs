@@ -5,14 +5,22 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 pub struct IsolatedSocket {
-    _dir: TempDir,
+    pub dir: TempDir,
     pub path: PathBuf,
 }
 
 impl IsolatedSocket {
+    /// Create an isolated socket at `<tempdir>/beachcomber/sock`.
+    ///
+    /// The layout matches the XDG_RUNTIME_DIR convention used by
+    /// `Config::resolve_socket_path`: `$XDG_RUNTIME_DIR/beachcomber/sock`.
+    /// Setting `XDG_RUNTIME_DIR = dir.path()` in a test process points that
+    /// process at exactly this socket.
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("beachcomber.sock");
-        Self { _dir: dir, path }
+        // The daemon's server creates parent dirs via `create_dir_all`, so we
+        // don't need to pre-create the `beachcomber/` subdirectory here.
+        let path = dir.path().join("beachcomber").join("sock");
+        Self { dir, path }
     }
 }

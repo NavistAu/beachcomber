@@ -1,15 +1,22 @@
 use crate::common::socket::IsolatedSocket;
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 pub struct TestDaemon {
     pub socket: IsolatedSocket,
+    /// The value to set as `XDG_RUNTIME_DIR` so that client invocations of `comb`
+    /// resolve `$XDG_RUNTIME_DIR/beachcomber/sock` to this daemon's socket.
+    pub xdg_runtime_dir: PathBuf,
     process: Child,
 }
 
 impl TestDaemon {
     pub fn spawn() -> Self {
         let socket = IsolatedSocket::new();
+        // `socket.path` is `<tempdir>/beachcomber/sock`; the XDG_RUNTIME_DIR the
+        // client needs is the `<tempdir>` part.
+        let xdg_runtime_dir = socket.dir.path().to_path_buf();
         let process = Command::new(env!("CARGO_BIN_EXE_comb"))
             .args(["daemon", "--socket"])
             .arg(&socket.path)
@@ -19,7 +26,11 @@ impl TestDaemon {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             if socket.path.exists() {
-                return Self { socket, process };
+                return Self {
+                    socket,
+                    xdg_runtime_dir,
+                    process,
+                };
             }
             std::thread::sleep(Duration::from_millis(50));
         }
