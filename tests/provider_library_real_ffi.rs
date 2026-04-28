@@ -22,16 +22,16 @@
 /// 14. `call_metadata_malformed_json`     — returns invalid JSON string (not None)
 /// 15. `call_execute_malformed_json`      — returns invalid JSON string (not None)
 /// 16. `load_nonexistent_path`            — LibloadingLoader::load fails gracefully
+/// 17. `call_metadata_invalid_utf8_returns_none` — strict UTF-8 boundary: invalid bytes → None
 use beachcomber::boundaries::library::{LibloadingLoader, LibraryLoader};
 
 // ── dylib path helpers ────────────────────────────────────────────────────────
 
 const LIB_NAME: &str = if cfg!(target_os = "macos") {
     "libtest_provider_lib.dylib"
-} else if cfg!(target_os = "linux") {
-    "libtest_provider_lib.so"
 } else {
-    "libtest_provider_lib.so" // best-effort fallback
+    // Linux and all other platforms use .so
+    "libtest_provider_lib.so"
 };
 
 fn fixture_dylib_path() -> std::path::PathBuf {
@@ -278,5 +278,19 @@ fn load_nonexistent_path() {
     assert!(
         err.contains("failed to load library"),
         "error message should mention 'failed to load library', got: {err}"
+    );
+}
+
+#[test]
+fn call_metadata_invalid_utf8_returns_none() {
+    // bc_metadata_invalid_utf8 returns the two-byte sequence 0xc3 0x28 followed
+    // by a null terminator.  That is not valid UTF-8 (0x28 is not a valid
+    // continuation byte after 0xc3).  The strict-UTF-8 boundary must return
+    // None rather than silently substituting U+FFFD.
+    let lib = load_fixture();
+    let result = lib.call_metadata("bc_metadata_invalid_utf8".to_string());
+    assert!(
+        result.is_none(),
+        "call_metadata for a symbol returning invalid UTF-8 bytes must return None, got: {result:?}"
     );
 }

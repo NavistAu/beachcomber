@@ -127,3 +127,17 @@ pub extern "C" fn bc_metadata_malformed() -> *const c_char {
 pub extern "C" fn bc_execute_malformed(_path: *const c_char) -> *const c_char {
     static_cstr!("{bad json}")
 }
+
+/// Returns a C string that is NOT valid UTF-8.
+///
+/// The bytes `\xc3\x28` form an overlong / invalid UTF-8 sequence (a two-byte
+/// start byte followed by a byte outside the expected continuation range).
+/// Used by `tests/provider_library_real_ffi.rs` to assert that the strict-UTF-8
+/// boundary returns `None` rather than substituting U+FFFD.
+#[unsafe(no_mangle)]
+pub extern "C" fn bc_metadata_invalid_utf8() -> *const c_char {
+    // SAFETY: This is intentionally invalid UTF-8. The null terminator is at
+    // index 2 so CStr::from_ptr will read exactly these two bytes then stop.
+    static BYTES: [u8; 3] = [0xc3, 0x28, 0x00];
+    BYTES.as_ptr() as *const c_char
+}

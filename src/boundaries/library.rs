@@ -83,7 +83,9 @@ impl LibloadingLoadedLibrary {
                 return None;
             }
             let cstr = unsafe { std::ffi::CStr::from_ptr(ptr) };
-            Some(cstr.to_string_lossy().into_owned())
+            // Strict UTF-8: return None for invalid bytes rather than
+            // silently substituting U+FFFD (to_string_lossy behaviour).
+            cstr.to_str().ok().map(|s| s.to_string())
         }));
         match result {
             Ok(v) => v,
@@ -109,7 +111,9 @@ impl LibloadingLoadedLibrary {
                 return None;
             }
             let cstr = unsafe { std::ffi::CStr::from_ptr(ptr) };
-            Some(cstr.to_string_lossy().into_owned())
+            // Strict UTF-8: return None for invalid bytes rather than
+            // silently substituting U+FFFD (to_string_lossy behaviour).
+            cstr.to_str().ok().map(|s| s.to_string())
         }));
         match result {
             Ok(v) => v,
@@ -134,7 +138,9 @@ impl LibloadingLoadedLibrary {
                 return None;
             }
             let cstr = unsafe { std::ffi::CStr::from_ptr(ptr) };
-            Some(cstr.to_string_lossy().into_owned())
+            // Strict UTF-8: return None for invalid bytes rather than
+            // silently substituting U+FFFD (to_string_lossy behaviour).
+            cstr.to_str().ok().map(|s| s.to_string())
         }));
         match result {
             Ok(v) => v,
@@ -163,7 +169,9 @@ impl LibloadingLoadedLibrary {
                 return None;
             }
             let cstr = unsafe { std::ffi::CStr::from_ptr(ptr) };
-            Some(cstr.to_string_lossy().into_owned())
+            // Strict UTF-8: return None for invalid bytes rather than
+            // silently substituting U+FFFD (to_string_lossy behaviour).
+            cstr.to_str().ok().map(|s| s.to_string())
         }));
         match result {
             Ok(v) => v,
