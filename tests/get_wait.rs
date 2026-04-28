@@ -93,8 +93,11 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     fields.insert("short".to_string(), Value::String("stale".to_string()));
     cache.put_source("hostname", None, "main", fields, Some(0));
 
-    // Wait 1 second so elapsed().as_secs() > 0 (which makes is_stale() return true).
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    // Advance mock clock by 2s so elapsed().as_secs() > 0 — avoids a real 1.1s wall wait.
+    // Resume before starting the server so the socket-bind sleep runs on real time.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    tokio::time::resume();
 
     // Confirm it is stale before we send the request.
     let entry = cache
@@ -102,7 +105,7 @@ async fn wait_stale_entry_evicts_and_re_executes() {
         .expect("entry must be present");
     assert!(
         entry.is_stale(),
-        "entry with interval=0 must be stale after 1s"
+        "entry with interval=0 must be stale after clock advance"
     );
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
@@ -168,15 +171,18 @@ async fn wait_virtual_provider_returns_cached_ignoring_stale() {
     // interval=0 will make it stale after 1 second.
     cache.put_source("mystore", None, "virtual", fields, Some(0));
 
-    // Wait so the entry becomes stale.
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    // Advance mock clock by 2s so elapsed().as_secs() > 0 — avoids a real 1.1s wall wait.
+    // Resume before starting the server so the socket-bind sleep runs on real time.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    tokio::time::resume();
 
     let entry = cache
         .get_entry("mystore", None)
         .expect("entry must be present");
     assert!(
         entry.is_stale(),
-        "virtual entry with interval=0 must be stale after 1s"
+        "virtual entry with interval=0 must be stale after clock advance"
     );
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);

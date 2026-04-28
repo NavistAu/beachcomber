@@ -104,7 +104,10 @@ async fn rapid_refreshes_are_deduplicated() {
             .await;
     }
 
-    // Wait for execution to complete
+    // Wait for execution to complete.
+    // TODO: needs scheduler clock injection — this sleep lets spawn_blocking workers
+    // (each sleeping 200 ms real time) complete. Mock clock cannot substitute for
+    // real OS-scheduled blocking-pool work, so this remains a real sleep.
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     let count = exec_count.load(Ordering::SeqCst);

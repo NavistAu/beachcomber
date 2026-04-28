@@ -21,22 +21,20 @@ fn fresh_entry_is_not_stale() {
 
 /// Test 2: An entry whose age exceeds the interval is stale.
 /// We use an interval of 0 seconds so any elapsed time makes it stale.
-#[test]
-fn expired_entry_is_stale() {
+///
+/// Uses tokio mock clock: `start_paused = true` + `advance` avoids a real 1.1 s wall-clock wait.
+/// `is_stale()` calls `tokio::time::Instant::elapsed()` which respects the paused clock.
+#[tokio::test(start_paused = true)]
+async fn expired_entry_is_stale() {
     let cache = Cache::new();
     let mut fields = HashMap::new();
     fields.insert("value".to_string(), Value::String("hello".to_string()));
 
-    // Interval of 0 seconds means the entry is immediately stale after any elapsed time.
+    // Interval of 0 seconds: is_stale() returns true when elapsed().as_secs() > 0.
     cache.put_source("myprov", None, "main", fields, Some(0));
 
-    // Sleep just enough to ensure elapsed > 0 seconds (i.e. >= 1s is not needed;
-    // elapsed().as_secs() > 0 requires at least 1s, so we use a 1ms sleep but
-    // the check is > interval_secs, so with interval=0 even 1ms elapsed gives
-    // elapsed.as_secs()=0 which is NOT > 0. Use interval=0 and rely on:
-    // is_stale checks elapsed.as_secs() > interval, so we need elapsed >= 1s.
-    // Instead, use interval of 0 and sleep 1100ms to guarantee staleness.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    // Advance mock clock by 2 seconds — as_secs() truncates so 1s may give 0; 2s is safe.
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
 
     let entry = cache.get_entry("myprov", None).unwrap();
     assert!(

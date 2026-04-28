@@ -116,6 +116,8 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
         .await;
 
     // Allow time for async execution to complete.
+    // TODO: needs scheduler clock injection — waiting for spawn_blocking provider
+    // execution to finish. Mock clock cannot substitute for real blocking-pool work.
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
     assert!(

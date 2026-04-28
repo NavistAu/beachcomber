@@ -31,8 +31,11 @@ async fn setup_stale() -> (TempDir, std::path::PathBuf) {
     fields.insert("short".to_string(), Value::String("stale".to_string()));
     cache.put_source("hostname", None, "main", fields, Some(0));
 
-    // Ensure elapsed().as_secs() > 0 so is_stale() is true.
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    // Advance mock clock by 2s so elapsed().as_secs() > 0 — avoids a real 1.1s wall wait.
+    // Resume before starting the server so the socket-bind sleep runs on real time.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    tokio::time::resume();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     tokio::spawn(async move { server.run().await });

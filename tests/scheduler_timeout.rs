@@ -62,7 +62,17 @@ impl Provider for SlowProvider {
     }
 }
 
-#[tokio::test]
+/// Uses tokio mock clock to avoid the real 3 s wall-clock wait.
+///
+/// The scheduler wraps the spawn_blocking execution with `tokio::time::timeout(1s)`.
+/// Under a paused clock, `advance(1.5s)` fires that timeout without waiting for the
+/// real 2 s thread sleep. A `yield_now` loop lets the scheduler task process the
+/// timeout result before we assert.
+///
+/// The spawn_blocking thread still sleeps 2 s real time in the background, but the
+/// test assertion finishes well before it completes — the join handle is simply dropped
+/// when the scheduler shuts down.
+#[tokio::test(start_paused = true)]
 async fn slow_provider_times_out() {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
@@ -87,8 +97,15 @@ async fn slow_provider_times_out() {
         })
         .await;
 
-    // Wait longer than timeout but shorter than provider sleep
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    // Advance mock clock past the 1 s timeout. The tokio::time::timeout in the
+    // scheduler fires; the spawn_blocking thread keeps sleeping (real time) but
+    // the JoinHandle result is discarded via the Err(_) timeout arm.
+    tokio::time::advance(std::time::Duration::from_millis(1500)).await;
+
+    // Yield a few times so the scheduler task can process the timeout result.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
 
     // Cache should NOT have the value (timed out)
     assert!(

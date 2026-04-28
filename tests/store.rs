@@ -145,9 +145,12 @@ async fn store_with_ttl_shows_staleness() {
         "should not be stale immediately after store"
     );
 
-    // Wait 1.1s beyond the 1s TTL; as_secs() truncates so we need >2s total elapsed
-    // for elapsed.as_secs() > 1 to be true.
-    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    // Advance mock clock by 3 seconds past the 1s TTL.
+    // is_stale() checks elapsed().as_secs() > interval; with ttl=1, need elapsed >= 2s.
+    // Hybrid: pause tokio clock, advance past TTL, then resume so subsequent I/O works normally.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(3)).await;
+    tokio::time::resume();
 
     let resp2 = send_recv(&mut stream, get).await;
     assert!(resp2.ok);
