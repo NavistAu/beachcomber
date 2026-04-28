@@ -1,28 +1,11 @@
+use crate::boundaries::git::{GitExecutor, RealGitExecutor};
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::path::Path;
-use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Builds a `git` command with defensive env vars for daemon-safe invocation:
-/// - `GIT_OPTIONAL_LOCKS=0`: prevents `.git/index.lock` contention with concurrent user git ops.
-/// - `GIT_TERMINAL_PROMPT=0`: never prompt on tty for credentials (would hang the daemon).
-/// - `GIT_ASKPASS=true` / `SSH_ASKPASS=true`: suppress GUI credential prompts; git/ssh treat
-///   the empty output from `true(1)` as "no credential available" and fail gracefully.
-/// - `GCM_INTERACTIVE=Never`: disables interactive flows in Git Credential Manager.
-fn git_cmd(dir: &Path) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", "true")
-        .env("SSH_ASKPASS", "true")
-        .env("GCM_INTERACTIVE", "Never")
-        .current_dir(dir);
-    cmd
-}
 
 /// Walk upwards from `start` looking for a directory that contains `.git`.
 /// Returns the containing directory's absolute path, or `None` if no repo
@@ -201,7 +184,15 @@ fn status_meta() -> SourceMetadata {
 
 // ── Source impls ──────────────────────────────────────────────────────────────
 
-struct GitRefs;
+struct GitRefs {
+    executor: Arc<dyn GitExecutor>,
+}
+
+impl GitRefs {
+    fn new(executor: Arc<dyn GitExecutor>) -> Self {
+        Self { executor }
+    }
+}
 
 impl Source for GitRefs {
     fn metadata(&self) -> &SourceMetadata {
@@ -215,14 +206,14 @@ impl Source for GitRefs {
         };
         let dir = Path::new(path);
 
-        let Some(status) = parse_git_status(dir) else {
+        let Some(status) = parse_git_status(dir, &*self.executor) else {
             return SourceResult::new();
         };
         let stash_count = count_stashes(dir);
         let (state, state_step, state_total) = detect_repo_state(dir);
-        let (commit, last_commit_ts, commit_summary) = get_head_info(dir);
-        let tag = get_nearest_tag(dir);
-        let (push_ahead, push_behind) = get_push_divergence(dir, &status.branch);
+        let (commit, last_commit_ts, commit_summary) = get_head_info(dir, &*self.executor);
+        let tag = get_nearest_tag(dir, &*self.executor);
+        let (push_ahead, push_behind) = get_push_divergence(dir, &status.branch, &*self.executor);
 
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -258,7 +249,15 @@ impl Source for GitRefs {
     }
 }
 
-struct GitDiff;
+struct GitDiff {
+    executor: Arc<dyn GitExecutor>,
+}
+
+impl GitDiff {
+    fn new(executor: Arc<dyn GitExecutor>) -> Self {
+        Self { executor }
+    }
+}
 
 impl Source for GitDiff {
     fn metadata(&self) -> &SourceMetadata {
@@ -272,8 +271,8 @@ impl Source for GitDiff {
         };
         let dir = Path::new(path);
 
-        let (lines_added, lines_removed) = diff_numstat(dir);
-        let (lines_staged_added, lines_staged_removed) = diff_numstat_staged(dir);
+        let (lines_added, lines_removed) = diff_numstat(dir, &*self.executor);
+        let (lines_staged_added, lines_staged_removed) = diff_numstat_staged(dir, &*self.executor);
 
         let mut result = SourceResult::new();
         result.insert("lines_added", Value::Int(lines_added));
@@ -288,7 +287,15 @@ impl Source for GitDiff {
     }
 }
 
-struct GitStatus;
+struct GitStatus {
+    executor: Arc<dyn GitExecutor>,
+}
+
+impl GitStatus {
+    fn new(executor: Arc<dyn GitExecutor>) -> Self {
+        Self { executor }
+    }
+}
 
 impl Source for GitStatus {
     fn metadata(&self) -> &SourceMetadata {
@@ -302,7 +309,7 @@ impl Source for GitStatus {
         };
         let dir = Path::new(path);
 
-        let Some(status) = parse_git_status(dir) else {
+        let Some(status) = parse_git_status(dir, &*self.executor) else {
             return SourceResult::new();
         };
 
@@ -329,6 +336,12 @@ impl Source for GitStatus {
 
 pub struct GitProvider;
 
+impl GitProvider {
+    fn make_executor() -> Arc<dyn GitExecutor> {
+        Arc::new(RealGitExecutor)
+    }
+}
+
 impl Provider for GitProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
@@ -338,8 +351,39 @@ impl Provider for GitProvider {
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(GitRefs), Box::new(GitDiff), Box::new(GitStatus)]
+        let exec = Self::make_executor();
+        vec![
+            Box::new(GitRefs::new(Arc::clone(&exec))),
+            Box::new(GitDiff::new(Arc::clone(&exec))),
+            Box::new(GitStatus::new(exec)),
+        ]
     }
+}
+
+/// Construct a `GitProvider` whose sources use the given executor.
+/// Only available when the `test-helpers` feature is active (integration tests)
+/// or in `cfg(test)` builds.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn git_provider_with_executor(executor: Arc<dyn GitExecutor>) -> impl Provider {
+    struct GitProviderWithExecutor {
+        executor: Arc<dyn GitExecutor>,
+    }
+    impl Provider for GitProviderWithExecutor {
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "git".into(),
+                sources: vec![refs_meta(), diff_meta(), status_meta()],
+            }
+        }
+        fn sources(&self) -> Vec<Box<dyn Source>> {
+            vec![
+                Box::new(GitRefs::new(Arc::clone(&self.executor))),
+                Box::new(GitDiff::new(Arc::clone(&self.executor))),
+                Box::new(GitStatus::new(Arc::clone(&self.executor))),
+            ]
+        }
+    }
+    GitProviderWithExecutor { executor }
 }
 
 // ── Git internals ─────────────────────────────────────────────────────────────
@@ -356,10 +400,12 @@ struct ParsedGitStatus {
     conflicted: i64,
 }
 
-fn parse_git_status(dir: &Path) -> Option<ParsedGitStatus> {
-    let output = git_cmd(dir)
-        .args(["status", "--porcelain=v2", "--branch"])
-        .output()
+fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitStatus> {
+    let output = executor
+        .run_git(
+            dir,
+            vec!["status".into(), "--porcelain=v2".into(), "--branch".into()],
+        )
         .ok()?;
 
     if !output.status.success() {
@@ -479,16 +525,17 @@ fn read_int_file(path: &Path) -> i64 {
 }
 
 /// Runs `git diff --numstat` and returns (lines_added, lines_removed) summed across all files.
-fn diff_numstat(dir: &Path) -> (i64, i64) {
-    let output = git_cmd(dir).args(["diff", "--numstat"]).output();
+fn diff_numstat(dir: &Path, executor: &dyn GitExecutor) -> (i64, i64) {
+    let output = executor.run_git(dir, vec!["diff".into(), "--numstat".into()]);
     parse_numstat_output(output)
 }
 
 /// Runs `git diff --cached --numstat` and returns (lines_added, lines_removed) summed.
-fn diff_numstat_staged(dir: &Path) -> (i64, i64) {
-    let output = git_cmd(dir)
-        .args(["diff", "--cached", "--numstat"])
-        .output();
+fn diff_numstat_staged(dir: &Path, executor: &dyn GitExecutor) -> (i64, i64) {
+    let output = executor.run_git(
+        dir,
+        vec!["diff".into(), "--cached".into(), "--numstat".into()],
+    );
     parse_numstat_output(output)
 }
 
@@ -512,10 +559,11 @@ fn parse_numstat_output(output: Result<std::process::Output, std::io::Error>) ->
 }
 
 /// Runs `git log -1 --format="%h %ct %s"` and returns (short_hash, commit_timestamp, subject).
-fn get_head_info(dir: &Path) -> (String, i64, String) {
-    let output = git_cmd(dir)
-        .args(["log", "-1", "--format=%h %ct %s"])
-        .output();
+fn get_head_info(dir: &Path, executor: &dyn GitExecutor) -> (String, i64, String) {
+    let output = executor.run_git(
+        dir,
+        vec!["log".into(), "-1".into(), "--format=%h %ct %s".into()],
+    );
 
     let output = match output {
         Ok(o) if o.status.success() => o,
@@ -535,10 +583,11 @@ fn get_head_info(dir: &Path) -> (String, i64, String) {
 }
 
 /// Runs `git describe --tags --abbrev=0` and returns the nearest tag or empty string.
-fn get_nearest_tag(dir: &Path) -> String {
-    let output = git_cmd(dir)
-        .args(["describe", "--tags", "--abbrev=0"])
-        .output();
+fn get_nearest_tag(dir: &Path, executor: &dyn GitExecutor) -> String {
+    let output = executor.run_git(
+        dir,
+        vec!["describe".into(), "--tags".into(), "--abbrev=0".into()],
+    );
 
     match output {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
@@ -548,14 +597,14 @@ fn get_nearest_tag(dir: &Path) -> String {
 
 /// Returns (push_ahead, push_behind) relative to the push remote.
 /// If no push remote is configured, returns (0, 0).
-fn get_push_divergence(dir: &Path, branch: &str) -> (i64, i64) {
+fn get_push_divergence(dir: &Path, branch: &str, executor: &dyn GitExecutor) -> (i64, i64) {
     if branch.is_empty() || branch == "(detached)" {
         return (0, 0);
     }
 
     // Resolve push remote: branch.<name>.pushRemote, then remote.pushDefault
-    let push_remote = get_git_config(dir, &format!("branch.{branch}.pushRemote"))
-        .or_else(|| get_git_config(dir, "remote.pushDefault"));
+    let push_remote = get_git_config(dir, &format!("branch.{branch}.pushRemote"), executor)
+        .or_else(|| get_git_config(dir, "remote.pushDefault", executor));
 
     let push_remote = match push_remote {
         Some(r) => r,
@@ -565,27 +614,29 @@ fn get_push_divergence(dir: &Path, branch: &str) -> (i64, i64) {
     let refspec = format!("{push_remote}/{branch}");
 
     // Check the ref exists before rev-list
-    let check = git_cmd(dir)
-        .args([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/{refspec}"),
-        ])
-        .output();
+    let check = executor.run_git(
+        dir,
+        vec![
+            "rev-parse".into(),
+            "--verify".into(),
+            "--quiet".into(),
+            format!("refs/remotes/{refspec}"),
+        ],
+    );
     match check {
         Ok(o) if o.status.success() => {}
         _ => return (0, 0),
     }
 
-    let output = git_cmd(dir)
-        .args([
-            "rev-list",
-            "--count",
-            "--left-right",
-            &format!("HEAD...{refspec}"),
-        ])
-        .output();
+    let output = executor.run_git(
+        dir,
+        vec![
+            "rev-list".into(),
+            "--count".into(),
+            "--left-right".into(),
+            format!("HEAD...{refspec}"),
+        ],
+    );
 
     let output = match output {
         Ok(o) if o.status.success() => o,
@@ -603,8 +654,10 @@ fn get_push_divergence(dir: &Path, branch: &str) -> (i64, i64) {
     }
 }
 
-fn get_git_config(dir: &Path, key: &str) -> Option<String> {
-    let output = git_cmd(dir).args(["config", "--get", key]).output().ok()?;
+fn get_git_config(dir: &Path, key: &str, executor: &dyn GitExecutor) -> Option<String> {
+    let output = executor
+        .run_git(dir, vec!["config".into(), "--get".into(), key.into()])
+        .ok()?;
     if output.status.success() {
         let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if val.is_empty() { None } else { Some(val) }

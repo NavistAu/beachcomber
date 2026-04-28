@@ -1,8 +1,9 @@
+use crate::boundaries::process::{ProcessExecutor, RealProcessExecutor};
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
-use std::process::Command;
+use std::sync::Arc;
 
 pub struct OpProvider;
 
@@ -15,8 +16,14 @@ impl Provider for OpProvider {
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(OpVault)]
+        vec![Box::new(OpVault::new())]
     }
+}
+
+/// Construct an `OpVault` source with a custom executor for seam testing.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn op_source_with_executor(executor: Arc<dyn ProcessExecutor>) -> Box<dyn Source> {
+    Box::new(OpVault::with_executor(executor))
 }
 
 fn vault_source_metadata() -> SourceMetadata {
@@ -43,7 +50,22 @@ fn vault_source_metadata() -> SourceMetadata {
     }
 }
 
-struct OpVault;
+struct OpVault {
+    executor: Arc<dyn ProcessExecutor>,
+}
+
+impl OpVault {
+    fn new() -> Self {
+        Self {
+            executor: Arc::new(RealProcessExecutor),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn with_executor(executor: Arc<dyn ProcessExecutor>) -> Self {
+        Self { executor }
+    }
+}
 
 impl Source for OpVault {
     fn metadata(&self) -> &SourceMetadata {
@@ -63,9 +85,9 @@ impl Source for OpVault {
         }
 
         // Check if op CLI is available and authenticated.
-        let output = Command::new("op")
-            .args(["whoami", "--format=json"])
-            .output();
+        let output = self
+            .executor
+            .run("op", vec!["whoami".into(), "--format=json".into()]);
 
         match output {
             Ok(out) if out.status.success() => {

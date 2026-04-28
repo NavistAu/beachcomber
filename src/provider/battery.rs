@@ -1,9 +1,9 @@
+use crate::boundaries::process::{ProcessExecutor, RealProcessExecutor};
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
-use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 pub struct BatteryProvider;
 
@@ -43,7 +43,23 @@ fn state_meta() -> SourceMetadata {
 }
 
 #[cfg(target_os = "macos")]
-struct BatteryState;
+struct BatteryState {
+    executor: Arc<dyn ProcessExecutor>,
+}
+
+#[cfg(target_os = "macos")]
+impl BatteryState {
+    fn new() -> Self {
+        Self {
+            executor: Arc::new(RealProcessExecutor),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn with_executor(executor: Arc<dyn ProcessExecutor>) -> Self {
+        Self { executor }
+    }
+}
 
 #[cfg(target_os = "macos")]
 impl Source for BatteryState {
@@ -53,7 +69,7 @@ impl Source for BatteryState {
     }
 
     fn execute(&self, _path: Option<&str>) -> SourceResult {
-        let Ok(output) = Command::new("pmset").args(["-g", "batt"]).output() else {
+        let Ok(output) = self.executor.run("pmset", vec!["-g".into(), "batt".into()]) else {
             return SourceResult::new();
         };
         if !output.status.success() {
@@ -241,7 +257,23 @@ impl Source for BatteryLevel {
 }
 
 #[cfg(target_os = "linux")]
-struct BatteryUpower;
+struct BatteryUpower {
+    executor: Arc<dyn ProcessExecutor>,
+}
+
+#[cfg(target_os = "linux")]
+impl BatteryUpower {
+    fn new() -> Self {
+        Self {
+            executor: Arc::new(RealProcessExecutor),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn with_executor(executor: Arc<dyn ProcessExecutor>) -> Self {
+        Self { executor }
+    }
+}
 
 #[cfg(target_os = "linux")]
 impl Source for BatteryUpower {
@@ -257,7 +289,7 @@ impl Source for BatteryUpower {
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
 
-        let time_remaining_secs = get_upower_time_remaining_secs().unwrap_or(0);
+        let time_remaining_secs = get_upower_time_remaining_secs(&*self.executor).unwrap_or(0);
 
         let status = if sysfs_status == "Full" {
             "charged".to_string()
@@ -300,17 +332,20 @@ fn find_battery_dir() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn get_upower_time_remaining_secs() -> Option<i64> {
-    let output = Command::new("upower").args(["-e"]).output().ok()?;
+fn get_upower_time_remaining_secs(executor: &dyn ProcessExecutor) -> Option<i64> {
+    let output = executor.run("upower", vec!["-e".into()]).ok()?;
     if !output.status.success() {
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let battery_path = stdout.lines().find(|l| l.contains("battery"))?;
+    let battery_path = stdout
+        .lines()
+        .find(|l| l.contains("battery"))?
+        .trim()
+        .to_string();
 
-    let info = Command::new("upower")
-        .args(["-i", battery_path.trim()])
-        .output()
+    let info = executor
+        .run("upower", vec!["-i".into(), battery_path])
         .ok()?;
     if !info.status.success() {
         return None;
@@ -351,8 +386,20 @@ impl Provider for BatteryProvider {
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
         #[cfg(target_os = "macos")]
-        return vec![Box::new(BatteryState)];
+        return vec![Box::new(BatteryState::new())];
         #[cfg(target_os = "linux")]
-        return vec![Box::new(BatteryLevel), Box::new(BatteryUpower)];
+        return vec![Box::new(BatteryLevel), Box::new(BatteryUpower::new())];
     }
+}
+
+/// Construct the macOS pmset source with a custom executor for seam testing.
+#[cfg(all(target_os = "macos", any(test, feature = "test-helpers")))]
+pub fn battery_state_source_with_executor(executor: Arc<dyn ProcessExecutor>) -> Box<dyn Source> {
+    Box::new(BatteryState::with_executor(executor))
+}
+
+/// Construct the Linux upower source with a custom executor for seam testing.
+#[cfg(all(target_os = "linux", any(test, feature = "test-helpers")))]
+pub fn battery_upower_source_with_executor(executor: Arc<dyn ProcessExecutor>) -> Box<dyn Source> {
+    Box::new(BatteryUpower::with_executor(executor))
 }
