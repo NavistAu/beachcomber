@@ -14,7 +14,7 @@ impl Provider for KubecontextProvider {
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(KubeContext)]
+        vec![Box::new(KubeContext::new())]
     }
 }
 
@@ -42,7 +42,28 @@ fn context_source_metadata() -> SourceMetadata {
     }
 }
 
-struct KubeContext;
+struct KubeContext {
+    /// Explicit kubeconfig path override. When `None`, path resolution falls
+    /// back to `$KUBECONFIG` → `~/.kube/config` (the normal runtime path).
+    override_path: Option<std::path::PathBuf>,
+}
+
+impl KubeContext {
+    fn new() -> Self {
+        Self {
+            override_path: None,
+        }
+    }
+
+    /// Construct a `KubeContext` that reads from an explicit path, bypassing
+    /// `$KUBECONFIG` and the `~/.kube/config` fallback. Intended for tests.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn with_kubeconfig_path(path: std::path::PathBuf) -> Self {
+        Self {
+            override_path: Some(path),
+        }
+    }
+}
 
 impl Source for KubeContext {
     fn metadata(&self) -> &SourceMetadata {
@@ -52,8 +73,13 @@ impl Source for KubeContext {
     }
 
     fn execute(&self, _path: Option<&str>) -> SourceResult {
-        let Some(config_path) = kubeconfig_path() else {
-            return SourceResult::new();
+        let config_path = if let Some(ref p) = self.override_path {
+            p.clone()
+        } else {
+            let Some(p) = kubeconfig_path() else {
+                return SourceResult::new();
+            };
+            p
         };
         let Some(content) = std::fs::read_to_string(&config_path).ok() else {
             return SourceResult::new();
@@ -93,6 +119,13 @@ fn kubeconfig_path() -> Option<std::path::PathBuf> {
     }
     let home = std::env::var("HOME").ok()?;
     Some(std::path::PathBuf::from(home).join(".kube").join("config"))
+}
+
+/// Construct the kubecontext source reading from an explicit kubeconfig path.
+/// Intended for seam tests — bypasses `$KUBECONFIG` and `~/.kube/config`.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn kubecontext_source_with_path(path: std::path::PathBuf) -> Box<dyn Source> {
+    Box::new(KubeContext::with_kubeconfig_path(path))
 }
 
 fn find_context_namespace(content: &str, context_name: &str) -> Option<String> {
