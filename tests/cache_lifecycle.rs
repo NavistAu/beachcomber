@@ -14,8 +14,6 @@ use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-static POLL_COUNT: AtomicU32 = AtomicU32::new(0);
-
 fn lc_counter_source_meta() -> SourceMetadata {
     SourceMetadata {
         name: "main".into(),
@@ -34,7 +32,9 @@ fn lc_counter_source_meta() -> SourceMetadata {
     }
 }
 
-struct LcCounterSourceImpl;
+struct LcCounterSourceImpl {
+    counter: Arc<AtomicU32>,
+}
 
 impl Source for LcCounterSourceImpl {
     fn metadata(&self) -> &SourceMetadata {
@@ -44,15 +44,23 @@ impl Source for LcCounterSourceImpl {
     }
 
     fn execute(&self, _path: Option<&str>) -> SourceResult {
-        let count = POLL_COUNT.fetch_add(1, Ordering::SeqCst);
+        let count = self.counter.fetch_add(1, Ordering::SeqCst);
         let mut result = SourceResult::new();
         result.insert("value", Value::Int(count as i64));
         result
     }
 }
 
-/// A simple global provider that increments a counter on each execute.
-struct CountingGlobalProvider;
+/// A simple global provider that increments a per-test counter on each execute.
+struct CountingGlobalProvider {
+    counter: Arc<AtomicU32>,
+}
+
+impl CountingGlobalProvider {
+    fn new(counter: Arc<AtomicU32>) -> Self {
+        Self { counter }
+    }
+}
 
 impl Provider for CountingGlobalProvider {
     fn metadata(&self) -> ProviderMetadata {
@@ -63,7 +71,9 @@ impl Provider for CountingGlobalProvider {
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(LcCounterSourceImpl)]
+        vec![Box::new(LcCounterSourceImpl {
+            counter: Arc::clone(&self.counter),
+        })]
     }
 }
 
@@ -71,12 +81,14 @@ impl Provider for CountingGlobalProvider {
 /// and the cache entry is populated.
 #[tokio::test]
 async fn integration_cold_miss_populates_cache_and_enters_active() {
-    POLL_COUNT.store(0, Ordering::SeqCst);
+    let poll_count = Arc::new(AtomicU32::new(0));
 
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(CountingGlobalProvider))
+        .register(Box::new(CountingGlobalProvider::new(Arc::clone(
+            &poll_count,
+        ))))
         .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
@@ -111,7 +123,7 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
         "cache should be populated after cold miss QueryActivity"
     );
     assert!(
-        POLL_COUNT.load(Ordering::SeqCst) >= 1,
+        poll_count.load(Ordering::SeqCst) >= 1,
         "provider should have executed at least once"
     );
 
@@ -122,10 +134,14 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
 /// Verifies that the scheduler status reports a poll timer for an active entry.
 #[tokio::test]
 async fn integration_active_entry_appears_in_status() {
+    let poll_count = Arc::new(AtomicU32::new(0));
+
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(CountingGlobalProvider))
+        .register(Box::new(CountingGlobalProvider::new(Arc::clone(
+            &poll_count,
+        ))))
         .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
@@ -179,11 +195,13 @@ async fn integration_active_entry_appears_in_status() {
 }
 
 /// Helper: start a scheduler and register the counting provider.
-async fn setup_lifecycle_scheduler() -> (Arc<Cache>, SchedulerHandle, tokio::task::JoinHandle<()>) {
+async fn setup_lifecycle_scheduler(
+    poll_count: Arc<AtomicU32>,
+) -> (Arc<Cache>, SchedulerHandle, tokio::task::JoinHandle<()>) {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(CountingGlobalProvider))
+        .register(Box::new(CountingGlobalProvider::new(poll_count)))
         .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
@@ -201,7 +219,8 @@ async fn setup_lifecycle_scheduler() -> (Arc<Cache>, SchedulerHandle, tokio::tas
 /// Verifies that the scheduler reports decay=0 for an Active cache entry.
 #[tokio::test]
 async fn integration_status_response_reports_decay_level() {
-    let (cache, handle, sched_task) = setup_lifecycle_scheduler().await;
+    let poll_count = Arc::new(AtomicU32::new(0));
+    let (cache, handle, sched_task) = setup_lifecycle_scheduler(Arc::clone(&poll_count)).await;
 
     // Trigger demand so the entry enters Active state.
     handle
@@ -241,12 +260,14 @@ async fn integration_status_response_reports_decay_level() {
 /// if the cache is already populated.
 #[tokio::test]
 async fn integration_repeated_queries_keep_data_warm() {
-    POLL_COUNT.store(0, Ordering::SeqCst);
+    let poll_count = Arc::new(AtomicU32::new(0));
 
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(CountingGlobalProvider))
+        .register(Box::new(CountingGlobalProvider::new(Arc::clone(
+            &poll_count,
+        ))))
         .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
@@ -272,7 +293,7 @@ async fn integration_repeated_queries_keep_data_warm() {
     let _entry_after_first = cache
         .get_entry("lc_counter", None)
         .expect("should have entry");
-    let exec_after_first = POLL_COUNT.load(Ordering::SeqCst);
+    let exec_after_first = poll_count.load(Ordering::SeqCst);
 
     // Subsequent queries should not re-execute (cache is warm, no inline miss).
     for _ in 0..5 {
@@ -287,7 +308,7 @@ async fn integration_repeated_queries_keep_data_warm() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let exec_after_repeated = POLL_COUNT.load(Ordering::SeqCst);
+    let exec_after_repeated = poll_count.load(Ordering::SeqCst);
     let _entry_after_repeated = cache
         .get_entry("lc_counter", None)
         .expect("should still have entry");

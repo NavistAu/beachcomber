@@ -62,9 +62,16 @@ fn missing_env_file_returns_zero() {
 
 #[test]
 fn no_env_file_configured_returns_zero() {
-    // Default config with no env_file and no default file on disk
-    let config = Config::default();
-    // This will look for ~/.config/beachcomber/env which may or may not exist
-    // Just verify it doesn't panic
-    let _ = config.load_env_file();
+    // Config with env_file pointing to a guaranteed-nonexistent path so we
+    // never fall through to ~/.config/beachcomber/env on the developer's machine.
+    let tmp = TempDir::new().unwrap();
+    let mut config = Config::default();
+    config.daemon.env_file = Some(
+        tmp.path()
+            .join("nonexistent_env_file")
+            .to_string_lossy()
+            .to_string(),
+    );
+    let count = config.load_env_file();
+    assert_eq!(count, 0, "nonexistent env_file should return 0");
 }

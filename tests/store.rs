@@ -191,25 +191,25 @@ async fn store_with_path_scope() {
 
     send_recv(
         &mut stream,
-        r#"{"op":"put","key":"myapp","data":{"v":"proj-a"},"path":"/tmp/proj-a"}"#,
+        r#"{"op":"put","key":"myapp","data":{"v":"proj-a"},"path":"fake-scope-a"}"#,
     )
     .await;
     send_recv(
         &mut stream,
-        r#"{"op":"put","key":"myapp","data":{"v":"proj-b"},"path":"/tmp/proj-b"}"#,
+        r#"{"op":"put","key":"myapp","data":{"v":"proj-b"},"path":"fake-scope-b"}"#,
     )
     .await;
 
     let resp = send_recv(
         &mut stream,
-        r#"{"op":"get","key":"myapp.v","path":"/tmp/proj-a"}"#,
+        r#"{"op":"get","key":"myapp.v","path":"fake-scope-a"}"#,
     )
     .await;
     assert_eq!(resp.data.unwrap(), "proj-a");
 
     let resp = send_recv(
         &mut stream,
-        r#"{"op":"get","key":"myapp.v","path":"/tmp/proj-b"}"#,
+        r#"{"op":"get","key":"myapp.v","path":"fake-scope-b"}"#,
     )
     .await;
     assert_eq!(resp.data.unwrap(), "proj-b");

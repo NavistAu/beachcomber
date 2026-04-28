@@ -84,7 +84,7 @@ async fn client_refresh() {
 async fn client_put_and_get() {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
-    let config = beachcomber::config::Config::load();
+    let config = beachcomber::config::Config::default();
     let handle = beachcomber::daemon::start_in_process(sock.clone(), config);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 

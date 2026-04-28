@@ -10,8 +10,6 @@ use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-static FAIL_EXEC_COUNT: AtomicU32 = AtomicU32::new(0);
-
 fn failing_source_meta() -> SourceMetadata {
     SourceMetadata {
         name: "main".into(),
@@ -30,7 +28,9 @@ fn failing_source_meta() -> SourceMetadata {
     }
 }
 
-struct FailingSourceImpl;
+struct FailingSourceImpl {
+    counter: Arc<AtomicU32>,
+}
 
 impl Source for FailingSourceImpl {
     fn metadata(&self) -> &SourceMetadata {
@@ -40,12 +40,20 @@ impl Source for FailingSourceImpl {
     }
 
     fn execute(&self, _path: Option<&str>) -> SourceResult {
-        FAIL_EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
+        self.counter.fetch_add(1, Ordering::SeqCst);
         SourceResult::new() // Always returns empty (failure)
     }
 }
 
-struct FailingProvider;
+struct FailingProvider {
+    counter: Arc<AtomicU32>,
+}
+
+impl FailingProvider {
+    fn new(counter: Arc<AtomicU32>) -> Self {
+        Self { counter }
+    }
+}
 
 impl Provider for FailingProvider {
     fn metadata(&self) -> ProviderMetadata {
@@ -56,18 +64,20 @@ impl Provider for FailingProvider {
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(FailingSourceImpl)]
+        vec![Box::new(FailingSourceImpl {
+            counter: Arc::clone(&self.counter),
+        })]
     }
 }
 
 #[tokio::test]
 async fn repeated_failures_trigger_backoff() {
-    FAIL_EXEC_COUNT.store(0, Ordering::SeqCst);
+    let fail_exec_count = Arc::new(AtomicU32::new(0));
 
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(FailingProvider))
+        .register(Box::new(FailingProvider::new(Arc::clone(&fail_exec_count))))
         .expect("failing");
     let registry = Arc::new(registry);
     let config = Config::default();
@@ -93,7 +103,7 @@ async fn repeated_failures_trigger_backoff() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let count = FAIL_EXEC_COUNT.load(Ordering::SeqCst);
+    let count = fail_exec_count.load(Ordering::SeqCst);
     // After 3 consecutive failures, subsequent refreshes should be suppressed
     // So we expect fewer than 10 executions
     assert!(

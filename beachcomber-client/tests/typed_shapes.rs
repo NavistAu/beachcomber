@@ -1,26 +1,10 @@
 // Phase 3: typed-shape integration tests for the public SDK crate.
 
-use beachcomber::config::Config;
-use beachcomber::daemon;
-use libbeachcomber::{Client, ClientConfig, RowKind};
-use std::time::Duration;
-use tempfile::TempDir;
+mod common;
+use common::daemon::DaemonGuard;
 
-fn spawn_daemon() -> (TempDir, std::path::PathBuf) {
-    let tmp = TempDir::new().unwrap();
-    let sock = tmp.path().join("test.sock");
-    let sock_clone = sock.clone();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let handle = daemon::start_in_process(sock_clone, Config::default());
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            handle.await.ok();
-        });
-    });
-    std::thread::sleep(Duration::from_millis(150));
-    (tmp, sock)
-}
+use libbeachcomber::{Client, ClientConfig};
+use std::time::Duration;
 
 fn client_for(sock: &std::path::Path) -> Client {
     Client::with_config(ClientConfig {
@@ -32,8 +16,8 @@ fn client_for(sock: &std::path::Path) -> Client {
 
 #[test]
 fn status_returns_typed_cache_rows() {
-    let (_tmp, sock) = spawn_daemon();
-    let client = client_for(&sock);
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
 
     client.put_null("phase3_marker", None).ok(); // ensure something virtual registered
 
@@ -54,8 +38,8 @@ use libbeachcomber::{CombResult, IntrospectResponse, IntrospectSubject};
 
 #[test]
 fn put_with_data_then_get_round_trips() {
-    let (_tmp, sock) = spawn_daemon();
-    let client = client_for(&sock);
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
 
     client
         .put(
@@ -76,8 +60,8 @@ fn put_with_data_then_get_round_trips() {
 
 #[test]
 fn introspect_daemon_returns_typed_health() {
-    let (_tmp, sock) = spawn_daemon();
-    let client = client_for(&sock);
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
     let resp = client
         .introspect(IntrospectSubject::Daemon, None)
         .expect("introspect");
@@ -92,8 +76,8 @@ fn introspect_daemon_returns_typed_health() {
 
 #[test]
 fn introspect_providers_returns_other_variant() {
-    let (_tmp, sock) = spawn_daemon();
-    let client = client_for(&sock);
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
     let resp = client
         .introspect(IntrospectSubject::Providers, None)
         .expect("introspect providers");
@@ -105,8 +89,8 @@ fn introspect_providers_returns_other_variant() {
 
 #[test]
 fn watch_receives_initial_event() {
-    let (_tmp, sock) = spawn_daemon();
-    let client = client_for(&sock);
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
 
     client
         .put("phase3_watch", serde_json::json!({"x": 1}), None, None)
@@ -129,7 +113,7 @@ fn watch_receives_initial_event() {
 fn status_row_exposes_lifecycle_fields() {
     // Build a CacheRow directly from the wire-format JSON to test the new fields
     // without needing a live daemon with a lifecycle provider registered.
-    use libbeachcomber::CacheRow;
+    use libbeachcomber::{CacheRow, RowKind};
 
     let wire = serde_json::json!({
         "provider": "git",

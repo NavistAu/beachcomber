@@ -132,21 +132,21 @@ fn cache_remove_targets_path_scope() {
 
     let mut a = HashMap::new();
     a.insert("branch".to_string(), Value::String("aaa".to_string()));
-    cache.put_source("git", Some("/tmp/a"), "refs", a, Some(60));
+    cache.put_source("git", Some("fake-path-a"), "refs", a, Some(60));
 
     let mut b = HashMap::new();
     b.insert("branch".to_string(), Value::String("bbb".to_string()));
-    cache.put_source("git", Some("/tmp/b"), "refs", b, Some(60));
+    cache.put_source("git", Some("fake-path-b"), "refs", b, Some(60));
 
-    cache.remove("git", Some("/tmp/a"));
+    cache.remove("git", Some("fake-path-a"));
 
     assert!(
-        cache.get_entry("git", Some("/tmp/a")).is_none(),
-        "/tmp/a entry should be evicted"
+        cache.get_entry("git", Some("fake-path-a")).is_none(),
+        "fake-path-a entry should be evicted"
     );
     assert!(
-        cache.get_entry("git", Some("/tmp/b")).is_some(),
-        "/tmp/b entry should be unaffected"
+        cache.get_entry("git", Some("fake-path-b")).is_some(),
+        "fake-path-b entry should be unaffected"
     );
 }
 

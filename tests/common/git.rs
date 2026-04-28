@@ -23,6 +23,11 @@ impl GitRepoFixture {
     /// Git user identity is set to `test@test.com` / `Test` so commits work in
     /// environments without a global git config.
     pub fn new() -> Self {
+        if !has_git() {
+            panic!(
+                "git binary not found — call has_git() and skip the test before constructing GitRepoFixture"
+            );
+        }
         let dir = TempDir::new().expect("TempDir::new");
         let path = dir.path();
 
@@ -102,6 +107,20 @@ impl GitRepoFixture {
         std::fs::create_dir_all(&p).unwrap_or_else(|e| panic!("create_dir_all {rel}: {e}"));
         p
     }
+}
+
+// ---------------------------------------------------------------------------
+// Public helper
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if the `git` binary is available on `$PATH`.
+/// Tests that depend on real git should call this and skip cleanly if false.
+#[allow(dead_code)]
+pub fn has_git() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok()
 }
 
 // ---------------------------------------------------------------------------

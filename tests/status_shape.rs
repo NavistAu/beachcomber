@@ -509,7 +509,7 @@ use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<()>) {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
-    let config = Config::load();
+    let config = Config::default();
     let handle = beachcomber::daemon::start_in_process(sock.clone(), config);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let client = Client::new(sock);

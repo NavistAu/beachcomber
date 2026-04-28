@@ -10,8 +10,6 @@ use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-static EXEC_COUNT: AtomicU32 = AtomicU32::new(0);
-
 fn counter_source_meta() -> SourceMetadata {
     SourceMetadata {
         name: "main".into(),
@@ -30,7 +28,9 @@ fn counter_source_meta() -> SourceMetadata {
     }
 }
 
-struct CountingSourceImpl;
+struct CountingSourceImpl {
+    counter: Arc<AtomicU32>,
+}
 
 impl Source for CountingSourceImpl {
     fn metadata(&self) -> &SourceMetadata {
@@ -40,7 +40,7 @@ impl Source for CountingSourceImpl {
     }
 
     fn execute(&self, _path: Option<&str>) -> SourceResult {
-        let count = EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
+        let count = self.counter.fetch_add(1, Ordering::SeqCst);
         // Simulate some work
         std::thread::sleep(std::time::Duration::from_millis(200));
         let mut result = SourceResult::new();
@@ -49,7 +49,15 @@ impl Source for CountingSourceImpl {
     }
 }
 
-struct CountingProvider;
+struct CountingProvider {
+    counter: Arc<AtomicU32>,
+}
+
+impl CountingProvider {
+    fn new(counter: Arc<AtomicU32>) -> Self {
+        Self { counter }
+    }
+}
 
 impl Provider for CountingProvider {
     fn metadata(&self) -> ProviderMetadata {
@@ -60,18 +68,20 @@ impl Provider for CountingProvider {
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(CountingSourceImpl)]
+        vec![Box::new(CountingSourceImpl {
+            counter: Arc::clone(&self.counter),
+        })]
     }
 }
 
 #[tokio::test]
 async fn rapid_refreshes_are_deduplicated() {
-    EXEC_COUNT.store(0, Ordering::SeqCst);
+    let exec_count = Arc::new(AtomicU32::new(0));
 
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(CountingProvider))
+        .register(Box::new(CountingProvider::new(Arc::clone(&exec_count))))
         .expect("counting");
     let registry = Arc::new(registry);
     let config = Config::default();
@@ -97,12 +107,12 @@ async fn rapid_refreshes_are_deduplicated() {
     // Wait for execution to complete
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let exec_count = EXEC_COUNT.load(Ordering::SeqCst);
+    let count = exec_count.load(Ordering::SeqCst);
     // Should execute significantly fewer than 10 times due to dedup
     // At minimum 1, at most ~2-3 (one running + one queued rerun)
     assert!(
-        exec_count < 5,
-        "Expected deduplication to reduce 10 refreshes to fewer executions, got {exec_count}"
+        count < 5,
+        "Expected deduplication to reduce 10 refreshes to fewer executions, got {count}"
     );
 
     handle.send(SchedulerMessage::Shutdown).await;

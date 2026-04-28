@@ -6,6 +6,8 @@
 ///
 /// Unit tests for the disambiguation logic itself live in src/main.rs
 /// under `#[cfg(test)] mod path_disambiguation_tests`.
+mod common;
+
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::provider::Value;
@@ -66,6 +68,10 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
 /// Path context set via set_context reaches the correct cache entry.
 #[tokio::test]
 async fn path_context_resolves_git_branch() {
+    if !common::git::has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
     let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
     let client = Client::new(sock);
     let mut session = client.connect().await.unwrap();
@@ -80,6 +86,10 @@ async fn path_context_resolves_git_branch() {
 /// Global providers (hostname) work regardless of path context.
 #[tokio::test]
 async fn global_provider_ignores_path_context() {
+    if !common::git::has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
     let (_sock_tmp, sock, _repo_tmp, _repo_path) = setup_server_with_git_repo().await;
     let client = Client::new(sock);
     let mut session = client.connect().await.unwrap();
@@ -95,6 +105,10 @@ async fn global_provider_ignores_path_context() {
 /// Querying multiple keys in one session shares the same path context.
 #[tokio::test]
 async fn multiple_keys_share_path_context() {
+    if !common::git::has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
     let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
     let client = Client::new(sock);
     let mut session = client.connect().await.unwrap();
@@ -114,6 +128,10 @@ async fn multiple_keys_share_path_context() {
 /// Without set_context, a path-scoped key is still queried (may return not-found).
 #[tokio::test]
 async fn no_context_path_scoped_query_returns_response() {
+    if !common::git::has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
     let (_sock_tmp, sock, _repo_tmp, _repo_path) = setup_server_with_git_repo().await;
     let client = Client::new(sock);
 
@@ -127,6 +145,10 @@ async fn no_context_path_scoped_query_returns_response() {
 /// Passing explicit path to get() (not via set_context) also works.
 #[tokio::test]
 async fn explicit_path_in_get_resolves_correctly() {
+    if !common::git::has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
     let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
     let client = Client::new(sock);
 
@@ -145,6 +167,10 @@ async fn explicit_path_in_get_resolves_correctly() {
 /// the repo root, hitting the same cache entry seeded at the root.
 #[tokio::test]
 async fn subdir_query_resolves_to_repo_root() {
+    if !common::git::has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
     let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
 
     // Create a subdir inside the repo and query git.branch from there.
