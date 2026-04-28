@@ -78,12 +78,11 @@ pub fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
         }
     };
 
-    if let Ok(exe) = std::env::current_exe() {
-        let reaped = crate::singleton::reap_orphans(&exe);
-        if reaped > 0 {
-            tracing::info!("reaped {reaped} orphan daemon(s) on startup");
-        }
-    }
+    // No separate reap step needed here: `acquire_or_supersede` already kills
+    // any live competing daemon (via `supersede_existing`) before we reach this
+    // point. Killing processes by binary path (`reap_orphans`) was removed
+    // because it also killed peer daemons running on different socket paths,
+    // breaking concurrent test runs.
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {

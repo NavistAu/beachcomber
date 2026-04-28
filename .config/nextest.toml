@@ -26,13 +26,6 @@ leak-timeout = { period = "100ms", result = "fail" }
 filter = 'test(e2e_) + test(scheduler_) + test(check_subjects) + test(status_shape) + test(get_force) + test(get_wait) + test(put_null) + test(metadata_suffixes) + test(client)'
 test-group = "daemon"
 
-# cli_golden tests each spawn a real `comb daemon` process. The singleton's
-# reap_orphans() kills all other processes with the same binary on startup, so
-# only one test daemon may be alive at a time. Serialise them completely.
-[[profile.default.overrides]]
-filter = 'test(golden_) + test(daemon_fixture_)'
-test-group = "cli_golden_serial"
-
 # --- Retries for environment-sensitive tests ---
 # watcher_*, uptime_*, and battery_* depend on OS-level subsystems that can
 # legitimately flake. Two retries with exponential backoff give them a chance
@@ -44,11 +37,6 @@ retries = { backoff = "exponential", count = 2, delay = "1s", jitter = true }
 [test-groups.daemon]
 # At most 2 daemon-spawning tests run concurrently.
 max-threads = 2
-
-[test-groups.cli_golden_serial]
-# Golden CLI tests spawn real daemon processes. The singleton's reap_orphans()
-# mechanism means only one test daemon may be alive at a time. Must be serial.
-max-threads = 1
 
 # ---------------------------------------------------------------------------
 # CI profile — inherits everything from default, overrides what differs.
