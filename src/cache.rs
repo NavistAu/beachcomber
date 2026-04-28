@@ -3,7 +3,7 @@ use crate::watcher_registry::WatcherRegistry;
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use tokio::time::Instant;
 
 type CacheKey = String;
 
