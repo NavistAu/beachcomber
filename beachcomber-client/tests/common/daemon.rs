@@ -2,10 +2,9 @@ use crate::common::socket::IsolatedSocket;
 use beachcomber::config::Config;
 use beachcomber::daemon;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 
 /// RAII guard for an in-process daemon spawned in its own thread.
 ///
@@ -13,13 +12,18 @@ use tokio::runtime::Runtime;
 /// which aborts all still-running tasks), and the thread is joined.
 /// This replaces detached `thread::spawn` calls that previously leaked daemon
 /// threads across test boundaries.
+///
+/// The `Runtime` is owned directly (not Arc-wrapped) so that `Drop` can call
+/// `shutdown_background(self)`, which takes ownership. The worker thread
+/// receives a `Handle` (Clone + Send + Sync + 'static) instead.
 pub struct DaemonGuard {
     /// Socket path the daemon is listening on.
     pub path: PathBuf,
     /// Kept alive so the temp directory (and therefore the socket) survives.
     _socket: IsolatedSocket,
-    /// Shared runtime — calling `shutdown_background` stops the daemon tasks.
-    runtime: Arc<Runtime>,
+    /// Owned runtime — `Drop` takes it out via `Option::take` to call
+    /// `shutdown_background(self)`, which requires ownership.
+    runtime: Option<Runtime>,
     /// Thread handle so we can join after shutdown.
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -31,17 +35,14 @@ impl DaemonGuard {
         let iso = IsolatedSocket::new();
         let sock = iso.path.clone();
 
-        let rt = Arc::new(
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("build tokio runtime"),
-        );
-        let rt_clone = Arc::clone(&rt);
+        let rt = Runtime::new().expect("build tokio runtime");
+        // Pass a Handle into the worker thread — Handle is Clone + Send + Sync + 'static,
+        // so it crosses the thread boundary without needing to share the Runtime itself.
+        let handle: Handle = rt.handle().clone();
         let sock_clone = sock.clone();
 
-        let handle = thread::spawn(move || {
-            rt_clone.block_on(async {
+        let thread = thread::spawn(move || {
+            handle.block_on(async {
                 let join = daemon::start_in_process(sock_clone, Config::default());
                 // Drive the daemon until the runtime is shut down externally.
                 let _ = join.await;
@@ -60,16 +61,19 @@ impl DaemonGuard {
         Self {
             path: sock,
             _socket: iso,
-            runtime: rt,
-            thread: Some(handle),
+            runtime: Some(rt),
+            thread: Some(thread),
         }
     }
 }
 
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
-        // Shut down the runtime — aborts all tasks including the daemon.
-        self.runtime.shutdown_background();
+        // Take ownership of the runtime so we can call shutdown_background(self),
+        // which consumes the Runtime — impossible through Arc or &mut.
+        if let Some(rt) = self.runtime.take() {
+            rt.shutdown_background();
+        }
         // Join the thread so we don't leave zombie OS threads.
         if let Some(h) = self.thread.take() {
             let _ = h.join();
