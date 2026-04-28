@@ -1372,14 +1372,25 @@ impl Config {
     }
 
     pub fn resolve_socket_path(&self) -> PathBuf {
+        // 1. Config-file override (highest priority)
         if let Some(ref path) = self.daemon.socket_path {
             return PathBuf::from(path);
         }
 
+        // 2. BEACHCOMBER_SOCKET env var
+        if let Some(env_path) = std::env::var_os("BEACHCOMBER_SOCKET") {
+            let p = std::path::PathBuf::from(env_path);
+            if !p.as_os_str().is_empty() {
+                return p;
+            }
+        }
+
+        // 3. XDG_RUNTIME_DIR
         if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
             return PathBuf::from(runtime_dir).join("beachcomber").join("sock");
         }
 
+        // 4. TMPDIR fallback
         let uid = unsafe { libc::getuid() };
         PathBuf::from("/tmp")
             .join(format!("beachcomber-{uid}"))
@@ -1481,4 +1492,34 @@ fn shellexpand(path: &str) -> String {
         return format!("{}{}", home, &path[1..]);
     }
     path.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn beachcomber_socket_env_var_takes_precedence_over_xdg() {
+        temp_env::with_vars(
+            [
+                ("BEACHCOMBER_SOCKET", Some("/explicit/test/path.sock")),
+                ("XDG_RUNTIME_DIR", Some("/should/be/ignored")),
+            ],
+            || {
+                let cfg = Config::default();
+                let path = cfg.resolve_socket_path();
+                assert_eq!(path, std::path::PathBuf::from("/explicit/test/path.sock"));
+            },
+        );
+    }
+
+    #[test]
+    fn config_file_socket_path_takes_precedence_over_env() {
+        let mut cfg = Config::default();
+        cfg.daemon.socket_path = Some("/from/config/file.sock".into());
+        temp_env::with_var("BEACHCOMBER_SOCKET", Some("/from/env.sock"), || {
+            let path = cfg.resolve_socket_path();
+            assert_eq!(path, std::path::PathBuf::from("/from/config/file.sock"));
+        });
+    }
 }

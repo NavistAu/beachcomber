@@ -11,16 +11,16 @@ fn daemon_fixture_starts_and_exits() {
 
 // ── helper ────────────────────────────────────────────────────────────────────
 
-/// Build a `comb` Command pre-configured with `XDG_RUNTIME_DIR` pointing at the
-/// test daemon's socket directory, so `Config::resolve_socket_path()` resolves
-/// to `<xdg_runtime_dir>/beachcomber/sock`.
+/// Build a `comb` Command pre-configured with `BEACHCOMBER_SOCKET` pointing
+/// directly at the test daemon's socket path, so `Config::resolve_socket_path()`
+/// resolves to the isolated test socket without overriding `XDG_RUNTIME_DIR`.
 ///
 /// The current_dir is fixed to "/" so that path-scoped virtual keys written with
 /// `--path /` are found by `get` (which always injects CWD as path context for
 /// virtual providers).
 fn comb(d: &TestDaemon) -> assert_cmd::Command {
     let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("XDG_RUNTIME_DIR", &d.xdg_runtime_dir);
+    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path);
     // Suppress daemon-start output from bleeding into stdout assertions.
     cmd.env("RUST_LOG", "error");
     // Fix CWD to "/" so `get` injects a stable, known path context. Virtual
@@ -144,7 +144,7 @@ fn golden_kill_terminates_daemon() {
     // The socket flag is only accepted on the Kill subcommand, not at top level.
     assert_cmd::Command::cargo_bin("comb")
         .unwrap()
-        .env("XDG_RUNTIME_DIR", &d.xdg_runtime_dir)
+        .env("BEACHCOMBER_SOCKET", &d.socket.path)
         .env("RUST_LOG", "error")
         .args(["kill", "--socket"])
         .arg(&d.socket.path)
