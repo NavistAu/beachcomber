@@ -61,7 +61,9 @@ jobs:
     name: Test
     needs: rust-version
     runs-on: macos-latest
-    timeout-minutes: 5
+    # Cold builds (cargo + llvm-cov instrumented compile) take 3-4 min alone;
+    # 15 min gives enough headroom without masking genuine hangs.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -100,7 +102,9 @@ jobs:
     name: Test (Linux)
     needs: rust-version
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Cold builds (cargo + llvm-cov instrumented compile) take 3-4 min alone;
+    # 15 min gives enough headroom without masking genuine hangs.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

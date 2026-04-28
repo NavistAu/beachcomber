@@ -48,7 +48,9 @@ max-threads = 2
 # ---------------------------------------------------------------------------
 [profile.ci]
 # Longer global timeout for CI machines that may be slower than laptops.
-global-timeout = "5m"
+# Cold builds (cargo + llvm-cov instrumented compile) take 3-4 min alone;
+# 10m ensures the suite can complete on a fresh cache without hitting the wall.
+global-timeout = "10m"
 # Keep the same per-test limits as default.
 slow-timeout = { period = "15s", terminate-after = 2 }
 # Never stop the suite early on a single failure — collect all results.
