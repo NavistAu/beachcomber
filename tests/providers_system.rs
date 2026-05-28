@@ -54,7 +54,6 @@ fn load_provider_executes() {
 
 #[cfg(target_os = "linux")]
 mod battery_linux_tests {
-    use beachcomber::provider::Provider;
     use beachcomber::provider::battery::BatteryProvider;
 
     #[test]
