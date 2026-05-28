@@ -909,15 +909,13 @@ impl Scheduler {
 
                     for key in &actions.evictions {
                         debug!(
-                            "Evicting cache for provider={} path={:?} source={}",
+                            "Evicting source provider={} path={:?} source={}",
                             key.0, key.1, key.2
                         );
-                        // Evict only this source's contribution. If no sources remain,
-                        // the cache entry is effectively empty but we don't remove the
-                        // whole entry — other sources may still be active.
-                        // For now, remove the whole (provider, path) entry on eviction
-                        // of any source. Phase 2 can refine to per-source removal.
-                        self.cache.remove(&key.0, key.1.as_deref());
+                        // Evict only this source's contribution; the entry is removed
+                        // only when its last source evicts (canon: lifecycle is keyed
+                        // per (provider, path, source)).
+                        self.cache.remove_source(&key.0, key.1.as_deref(), &key.2);
                         drop_watches_for_key(key, &mut watch_paths, &mut fs_watcher);
                     }
 
@@ -1075,10 +1073,13 @@ impl Scheduler {
 
                     for key in &actions.evictions {
                         debug!(
-                            "Evicting cache for provider={} path={:?} source={}",
+                            "Evicting source provider={} path={:?} source={}",
                             key.0, key.1, key.2
                         );
-                        self.cache.remove(&key.0, key.1.as_deref());
+                        // Evict only this source's contribution; the entry is removed
+                        // only when its last source evicts (canon: lifecycle is keyed
+                        // per (provider, path, source)).
+                        self.cache.remove_source(&key.0, key.1.as_deref(), &key.2);
                     }
 
                     for (key, new_state) in &actions.transitions {

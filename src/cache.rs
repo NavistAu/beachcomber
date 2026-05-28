@@ -212,6 +212,32 @@ impl Cache {
         self.entries.remove(&key);
     }
 
+    /// Remove a single source's contribution from the (provider, path) entry.
+    /// If that was the last source, the whole entry is removed. No-op if the
+    /// entry or the named source is absent — in which case no watcher
+    /// notification is emitted (nothing changed).
+    pub fn remove_source(&self, provider: &str, path: Option<&str>, source: &str) {
+        let key = make_cache_key(provider, path);
+        // Drop the source under the shard lock, recording whether anything
+        // actually changed. The `get_mut` guard must be released before the
+        // `remove_if` below or DashMap deadlocks on the same shard.
+        let mut changed = false;
+        if let Some(mut entry) = self.entries.get_mut(&key) {
+            changed = entry.sources.remove(source).is_some();
+        }
+        if changed {
+            // Drop the entry only if it is *still* empty when re-checked under
+            // the shard lock — `remove_if` guards against a concurrent
+            // `put_source` repopulating it in the window after the guard above
+            // was released (it won't remove a non-empty entry).
+            self.entries
+                .remove_if(&key, |_, entry| entry.sources.is_empty());
+            if let Some(ref watchers) = self.watchers {
+                watchers.notify(provider, path);
+            }
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -415,6 +441,77 @@ mod tests {
             base_src.fields.get("sha").unwrap().as_text(),
             "def456",
             "base.sha must be updated"
+        );
+    }
+
+    #[test]
+    fn remove_source_drops_only_named_source() {
+        let cache = Cache::new();
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "refs",
+            make_fields(&[("branch", "main")]),
+            None,
+        );
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "diff",
+            make_fields(&[("dirty", "true")]),
+            None,
+        );
+
+        cache.remove_source("git", Some("/repo"), "refs");
+
+        // refs gone, diff intact, entry still present.
+        assert!(
+            cache.get_source("git", Some("/repo"), "refs").is_none(),
+            "refs removed"
+        );
+        let (dirty, _) = cache
+            .get_field("git", Some("/repo"), "dirty")
+            .expect("diff.dirty survives");
+        assert_eq!(dirty.as_text(), "true");
+        assert!(
+            cache.get_entry("git", Some("/repo")).is_some(),
+            "entry survives while diff remains"
+        );
+    }
+
+    #[test]
+    fn remove_source_removes_entry_when_last() {
+        let cache = Cache::new();
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "refs",
+            make_fields(&[("branch", "main")]),
+            None,
+        );
+
+        cache.remove_source("git", Some("/repo"), "refs");
+
+        assert!(
+            cache.get_entry("git", Some("/repo")).is_none(),
+            "entry removed when last source gone"
+        );
+    }
+
+    #[test]
+    fn remove_source_nonexistent_is_noop() {
+        let cache = Cache::new();
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "refs",
+            make_fields(&[("branch", "main")]),
+            None,
+        );
+        cache.remove_source("git", Some("/repo"), "nope");
+        assert!(
+            cache.get_source("git", Some("/repo"), "refs").is_some(),
+            "unrelated source untouched"
         );
     }
 
