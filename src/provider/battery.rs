@@ -354,7 +354,7 @@ fn get_upower_time_remaining_secs(executor: &dyn ProcessExecutor) -> Option<i64>
     for line in info_str.lines() {
         let line = line.trim();
         if line.starts_with("time to empty:") || line.starts_with("time to full:") {
-            let val_str = line.splitn(2, ':').nth(1)?.trim().to_string();
+            let val_str = line.split_once(':')?.1.trim().to_string();
             if val_str.contains("hour") {
                 let hours: f64 = val_str.split_whitespace().next()?.parse().ok()?;
                 return Some((hours * 3600.0) as i64);

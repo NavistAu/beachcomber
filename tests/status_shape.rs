@@ -4,10 +4,13 @@
 //
 // Also contains unit tests for the status_format preset renderers (T28).
 
+mod common;
+
 use beachcomber::cache::CacheRow;
 use beachcomber::cli::status_format::{
     RenderOpts, render_csv, render_preset, render_sh_env, render_tsv, row_context,
 };
+use common::git::GitRepoFixture;
 
 fn sample_rows() -> Vec<CacheRow> {
     vec![
@@ -1019,12 +1022,15 @@ async fn status_empty_cache_returns_empty_array() {
 async fn status_response_lifecycle_row_carries_kind_and_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    // Use a git repo path that actually exists so the provider writes a cache entry.
-    // The beachcomber workspace itself is a git repo.
+    // Use a small dedicated temp git repo (not CARGO_MANIFEST_DIR) so the diff/status
+    // git subprocesses are instant. The real workspace carries a huge untracked
+    // `target/` working tree; `git status`/`git diff` over it on the Linux CI runner
+    // took >30s and timed the test out.
     // Request the whole provider ("git") so both sources (refs + diff) are warmed.
     // A field request like "git.branch" only demands the refs source (canon §150/§268),
     // which would leave the diff source absent from the status output.
-    let repo_path = env!("CARGO_MANIFEST_DIR");
+    let repo = GitRepoFixture::new();
+    let repo_path = repo.path_str();
     let _ = client
         .send_raw(serde_json::json!({"op": "get", "key": "git", "path": repo_path}))
         .await
