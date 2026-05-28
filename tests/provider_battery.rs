@@ -1,3 +1,8 @@
+// `parse_pmset_output` is the macOS pmset parser (gated `#[cfg(target_os = "macos")]`
+// in the provider). These tests exercise it directly, so the whole file is macOS-only;
+// on Linux it compiles to nothing (Linux battery parsing is covered elsewhere).
+#![cfg(target_os = "macos")]
+
 use beachcomber::provider::Value;
 use beachcomber::provider::battery::parse_pmset_output;
 

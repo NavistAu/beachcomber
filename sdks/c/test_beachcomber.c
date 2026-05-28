@@ -670,19 +670,6 @@ done:
     unlink(sock_path);
 }
 
-static void test_status(void) {
-    const char *resp =
-        "{\"ok\":true,\"data\":{\"queued\":0,\"running\":1,\"cache_entries\":42}}";
-    comb_result_t *r = get_with_mock(resp);
-    CHECK(r != NULL);
-    CHECK(comb_result_ok(r) == 1);
-
-    int64_t entries = 0;
-    CHECK(comb_result_get_int(r, "cache_entries", &entries) == 1);
-    CHECK(entries == 42);
-    comb_result_free(r);
-}
-
 /* -------------------------------------------------------------------------
  * Integration test: connect to a non-existent socket
  * ---------------------------------------------------------------------- */
@@ -1379,7 +1366,6 @@ int main(void) {
     SUITE("Integration — mock server");
     test_refresh();
     test_set_context();
-    test_status();
     test_connect_fail();
     test_refresh_on_null_client();
     test_multiple_requests();

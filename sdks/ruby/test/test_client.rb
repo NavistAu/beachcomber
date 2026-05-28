@@ -98,9 +98,9 @@ class TestClient < Minitest::Test
   # --- status ---
 
   def test_status_sends_op
-    @server.enqueue('{"ok":true,"data":{"queue_depth":0}}')
-    result = @client.status
-    assert result.hit?
+    @server.enqueue('{"ok":true,"data":[]}')
+    rows = @client.status
+    assert_equal [], rows
     assert_equal 'status', @server.requests.last['op']
   end
 
@@ -180,7 +180,7 @@ class TestClient < Minitest::Test
   end
 
   def test_status_op_field
-    @server.enqueue('{"ok":true,"data":{}}')
+    @server.enqueue('{"ok":true,"data":[]}')
     @client.status
     assert_equal 'status', @server.requests.last['op']
   end
