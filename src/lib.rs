@@ -8,6 +8,7 @@ pub mod pid_check;
 pub mod proc_snapshot;
 pub mod protocol;
 pub mod provider;
+pub mod query;
 pub mod scheduler;
 pub mod server;
 pub mod singleton;
