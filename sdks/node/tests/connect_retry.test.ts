@@ -11,18 +11,30 @@ test('connect retries succeed after brief outage', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'comb-retry-'));
     const sockPath = join(dir, 'sock');
 
-    setTimeout(() => {
-        const srv = createServer();
+    let srv: ReturnType<typeof createServer> | undefined;
+    const timer = setTimeout(() => {
+        srv = createServer();
         srv.listen(sockPath);
     }, 400);
 
-    const start = Date.now();
-    const sock = await connectWithRetry(sockPath);
-    const elapsed = Date.now() - start;
+    try {
+        const start = Date.now();
+        const sock = await connectWithRetry(sockPath);
+        const elapsed = Date.now() - start;
 
-    assert.ok(sock);
-    assert.ok(elapsed >= 250, `expected retry; elapsed=${elapsed}`);
-    sock.end();
+        assert.ok(sock);
+        assert.ok(elapsed >= 250, `expected retry; elapsed=${elapsed}`);
+        sock.end();
+    } finally {
+        // Close the listening server and clear the timer so no open handle
+        // keeps the test runner's event loop alive (otherwise the file-level
+        // subtest can hang to the 30s timeout under CI's loader).
+        clearTimeout(timer);
+        await new Promise<void>((resolve) => {
+            if (srv) srv.close(() => resolve());
+            else resolve();
+        });
+    }
 });
 
 test('connect retries exhaust', async () => {

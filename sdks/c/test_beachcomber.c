@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/time.h>
+#include <poll.h>
 #include <errno.h>
 
 /* -------------------------------------------------------------------------
@@ -1209,22 +1210,89 @@ static void test_status_free_null(void) {
  * New API tests: comb_watch
  * ---------------------------------------------------------------------- */
 
-/* Watch mock server: sends the watch response on the same connection the
- * client opens for the watch stream. We use the multi_mock infrastructure
- * but the watch handle opens its own fd to the listening socket. */
+/* Watch mock server. comb_watch() opens a SECOND connection (a dedicated stream)
+ * separate from the initial comb_connect_path() handle, so the mock must accept
+ * both connections and write the event on the second one. (The old single-accept
+ * multi_mock could not serve the watch stream — the watch connection was left
+ * unaccepted in the listen backlog, so comb_watch_next always timed out.) */
+typedef struct {
+    int server_fd;
+    const char *event;
+} watch_mock_args_t;
+
+static void *watch_mock_server_thread(void *arg) {
+    watch_mock_args_t *a = (watch_mock_args_t *)arg;
+    int c1 = accept(a->server_fd, NULL, NULL); /* comb_connect_path handle */
+    int c2 = accept(a->server_fd, NULL, NULL); /* comb_watch() stream */
+    if (c2 >= 0) {
+        /* Drain the watch request line. */
+        char ch;
+        ssize_t n;
+        while ((n = read(c2, &ch, 1)) > 0 && ch != '\n') { /* drain */ }
+        const char *resp = a->event;
+        size_t len = strlen(resp);
+        write(c2, resp, len);
+        if (len == 0 || resp[len - 1] != '\n') write(c2, "\n", 1);
+        /* Keep the stream open until the client has read the event and closed
+         * its handle (up to 1s). Closing early can surface POLLHUP to the
+         * client's poll() before it reads, which comb_watch_next treats as an
+         * error. */
+        struct pollfd pfd;
+        pfd.fd = c2;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        poll(&pfd, 1, 1000);
+        close(c2);
+    }
+    if (c1 >= 0) close(c1);
+    return NULL;
+}
+
+static comb_client_t *start_watch_mock(const char *event, int *srv_fd_out,
+                                        char *sock_path_out, pthread_t *tid_out,
+                                        watch_mock_args_t *args_out) {
+    const char *tmpdir2 = getenv("TMPDIR");
+    if (!tmpdir2 || !*tmpdir2) tmpdir2 = "/tmp";
+    char tmpdir_buf2[256];
+    strncpy(tmpdir_buf2, tmpdir2, sizeof(tmpdir_buf2) - 1);
+    tmpdir_buf2[sizeof(tmpdir_buf2) - 1] = '\0';
+    size_t tlen2 = strlen(tmpdir_buf2);
+    if (tlen2 > 0 && tmpdir_buf2[tlen2 - 1] == '/') tmpdir_buf2[tlen2 - 1] = '\0';
+    snprintf(sock_path_out, 256,
+             "%s/comb_watch_%d_%d.sock", tmpdir_buf2, (int)getpid(), rand());
+
+    int srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (srv_fd < 0) return NULL;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, sock_path_out, sizeof(addr.sun_path) - 1);
+    unlink(sock_path_out);
+
+    if (bind(srv_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        listen(srv_fd, 4) != 0) {
+        close(srv_fd);
+        return NULL;
+    }
+
+    *srv_fd_out = srv_fd;
+    args_out->server_fd = srv_fd;
+    args_out->event = event;
+    pthread_create(tid_out, NULL, watch_mock_server_thread, args_out);
+
+    return comb_connect_path(sock_path_out);
+}
+
 static void test_watch_next(void) {
-    const char *resp =
+    const char *event =
         "{\"ok\":true,\"data\":7,\"age_ms\":30,\"stale\":false}";
-    const char *responses[] = { resp, NULL };
     char sock_path[256];
     int srv_fd;
     pthread_t tid;
-    multi_mock_args_t args;
+    watch_mock_args_t args;
 
-    /* We use start_multi_mock but connect the client ourselves so the
-     * watch handle can open its own connection to the same srv_fd. */
-    comb_client_t *c = start_multi_mock(responses, &srv_fd, sock_path,
-                                         &tid, &args);
+    comb_client_t *c = start_watch_mock(event, &srv_fd, sock_path, &tid, &args);
     CHECK(c != NULL);
     if (!c) goto done;
 
