@@ -6,123 +6,78 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-29
+
+A large release. The daemon's internal model was rebuilt around a
+Provider→Source→Field architecture, the wire protocol and CLI were overhauled,
+and typed client SDKs reached parity across all six languages. Many changes are
+breaking; pre-1.0, these ship under a minor bump.
+
 ### Added
 
-- **Provider-source model (Phases 1-5).** Internal refactor of the provider/scheduler/cache layer.
+#### Provider / Source / Field architecture
 
-  - `Provider` is now a namespace declaring 1+ `Source` objects. Each `Source` has its own `InvalidationStrategy`, `KeepAlive`, `FailbackConfig`, `SourceScope`, and set of fields.
-  - Lifecycle keying moves from `(provider, path)` to `(provider, path, source)`. Each source instance has its own independent Active/Decay/Evicted lifecycle.
-  - Cache entries at `(provider, path)` hold per-source `SourceResult` sub-entries. Field ownership is disjoint across sources; flatten reads are unambiguous.
-  - `InvalidationStrategy::Watch` gains `abs_paths: Vec<PathBuf>` for absolute-path filesystem watches. Global sources can now watch `$XDG_CONFIG_HOME` and other absolute roots directly.
-  - `expand_abs_path()` helper expands `~`, `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME`, `$XDG_STATE_HOME`, `$XDG_CACHE_HOME` to absolute paths in `Source::metadata()`.
-  - Pure-watch global sources (`Watch + Global + KeepAlive::Never`): execute once on first demand, re-execute only on fs event, no decay. Replaces `InvalidationStrategy::Once` for hostname, user, uname.
-  - `Watch::fallback_poll_secs` removed. Sources that want poll-backstop use `WatchAndPoll`.
-  - `Poll::floor_secs` removed. Global poll floor lives in `[lifecycle]` config.
-  - `ProviderRegistry` builds a `field → source` reverse map at registration. `comb get git.branch` routes to `git.refs` transparently without a linear field scan.
-  - New addressing forms: `provider.source` and `provider.source.field` accepted by `get`, `refresh`, and `watch` ops.
-  - TOML config schema rewritten to per-source nesting `[providers.<name>.<source>]` with consistent `poll_*` / `fsevent_*` / `failback_*` key prefixes. Old flat `[providers.<name>]` key shape is rejected with a clear error pointing to the new schema.
-  - `comb status` wire response gains `source: String` per row. All 7 SDKs updated.
-  - `--show-sources` flag on `comb status` adds an optional source column (hidden by default).
+- **Provider→Source→Field model.** A `Provider` is now a namespace declaring 1+ `Source` objects; each `Source` has its own `InvalidationStrategy`, `KeepAlive`, `FailbackConfig`, `SourceScope`, and field set.
+- Lifecycle keying moved from `(provider, path)` to `(provider, path, source)` — each source instance has an independent Active/Decay/Evicted lifecycle.
+- Cache entries at `(provider, path)` hold per-source sub-entries; field ownership is disjoint across sources, so flatten reads are unambiguous.
+- **Per-source eviction:** an evicting source removes only its own contribution; the `(provider, path)` entry is dropped only when its last source evicts.
+- `InvalidationStrategy::Watch` gains `abs_paths` for absolute-path filesystem watches; global sources can watch `$XDG_CONFIG_HOME` and other absolute roots directly. `expand_abs_path()` expands `~`, `$HOME`, and the XDG vars in `Source::metadata()`.
+- Pure-watch global sources (`Watch + Global + KeepAlive::Never`) execute once on first demand, re-execute only on fs events, and never decay.
+- `ProviderRegistry` builds a `field → source` reverse map at registration; `comb get git.branch` routes to the owning `git.refs` source without a linear scan.
 
-### Breaking (pre-1.0)
+#### Source-aware query planning
 
-- **TOML config:** `[providers.<name>]` flat keys for source-knobs (`poll_interval`, `poll_live_count`, `fsevents_reinstate`) are no longer accepted. Move them to `[providers.<name>.<source>]` blocks. Provider-level `enabled` remains in `[providers.<name>]`.
-- **`InvalidationStrategy::Once` removed.** Providers that used `Once` (hostname, user, uname) now use pure-watch global (`Watch` + `KeepAlive::Never`).
-- **`Watch::fallback_poll_secs` removed.** Users that relied on the fallback should switch to `fsevent_poll` type in TOML.
+- New `src/query.rs` request planner (`QueryPlan` / `SourceDemand`); `get` and `watch` build one plan so they share identical key semantics.
+- A field query warms **only its owning source** — `comb get git.branch` no longer warms sibling `git` sources (`diff`, `status`). Whole-provider queries still warm all applicable sources.
+- New addressing forms `provider.source` and `provider.source.field` accepted by `get`, `refresh`, and `watch`; `watch` now resolves source-qualified keys identically to `get`.
+
+#### Protocol, clients, and SDKs
+
+- `Request::Introspect` wire op with subjects `daemon`, `providers`, `config`, `cache`, `lifecycle`, `watches`, `timers`, `demand`, `procs`. `comb check` rewired onto it (top-level aggregation; each subject a subcommand).
+- Typed client surface across `beachcomber-client` and all six SDKs (Python, Go, Node, Ruby, C, Lua): `status()` returns typed cache rows directly; `RowKind` discriminator and `FailureSnapshot` exposed on `CacheRow`.
+- Provider conformance harness wired into the test suite; protocol spec / hello version negotiation documented.
+- **Client connect retry** in the CLI and all six SDKs + `beachcomber-client`: transient `ECONNREFUSED`/`ENOENT` retried 3× with exponential backoff (250ms / 500ms / 1s), covering the daemon-restart window.
+
+#### Daemon lifecycle
+
+- **Singleton enforcement** via an exclusive `flock` on a PID file: a same-version second daemon exits; a different-version one takes over the old (SIGTERM → SIGKILL).
+- **Automatic restart on binary change** (the daemon fs-watches its own executable) and **orphan reaping** of stale `comb daemon` processes sharing its binary path.
+- `comb --version` reports `BEACHCOMBER_VERSION`, including git sha for dev/dirty builds.
+- `BEACHCOMBER_SOCKET` env var overrides the socket path.
+
+#### CLI: get / put / status
+
+- `comb get` variadic keys, `--force` (immediate recompute) and `--wait` (block for a fresh value); `comb put --null` clears a virtual entry.
+- `comb status` tabular output (one row per warm entry) with a `TTL`/lifecycle column (`★`/`3`–`0` countdown, poll interval, keep-alive, fsevents-reinstate), a failure `⚠` indicator, and flags `--show-sources`, `--ascii`, `--filter`, `--sort` (incl. `lifecycle` / `poll_interval`), `--max-width=auto`, and minijinja `--format` templates.
+- minijinja templating across `comb eval`, the `.f` format suffix, and `comb status --format` (filters: `truncate`, `default`, `upper`, `lower`, `length`); script provider `output = "text"`.
 
 ### Changed
-- **BREAKING (pre-1.0):** daemon socket path no longer depends on `$TMPDIR`. Resolution is now: config override → `$XDG_RUNTIME_DIR/beachcomber/sock` (if set) → `/tmp/beachcomber-<uid>/sock`. On macOS this means every shell talks to the same daemon (previously each shell spawned its own via per-session TMPDIR).
 
-### Added
-- **Daemon singleton enforcement.** Only one daemon per user runs at a time. New daemon startup takes an exclusive `flock` on a PID file at `<socket-parent>/pid`. If another daemon holds it, version comparison decides: same version → new daemon exits silently; different version → new daemon kills the old (SIGTERM with 1s grace, then SIGKILL) and takes over.
-- **Automatic restart on binary change.** The daemon fs-watches its own executable; when the binary is modified (e.g., after `cargo build`), it gracefully shuts down so the next client invocation respawns with the new binary. No manual restart needed.
-- **Orphan reaping.** New daemon startup scans for other `comb daemon` processes with a matching binary path and reaps them. Daemons with different binaries (e.g., worktree builds) are untouched.
-- **`comb --version` now reports `BEACHCOMBER_VERSION`** which includes git sha for dev/dirty builds (e.g., `0.5.1+sha.abc1234.dirty`). Clean tagged builds show just the cargo version (e.g., `0.5.1`).
-- **Client connect retry.** CLI and all 6 SDKs (Python, Go, Ruby, Node, C, Lua) and `beachcomber-client` retry transient connection failures (`ECONNREFUSED`, `ENOENT`) three times with exponential backoff (250ms, 500ms, 1s). Covers the brief restart window when the old daemon has shut down and the new one hasn't bound yet.
-
-### Changed
-- **BREAKING (pre-1.0, all SDKs):** `status_rows()` / `statusRows()` / `StatusRows()` removed from all six SDKs (Python, Go, Ruby, Node, Lua, C). `status()` now returns typed cache rows directly (`list[CacheRow]`, `[]CacheRow`, `Array<CacheRow>`, `CacheRow[]`, `table[]`, `comb_cache_row_t[]`). The old raw-envelope `status()` is gone. Callers that need the raw JSON can drop to each SDK's low-level request method.
-- **BREAKING (pre-1.0):** `comb status` now defaults to the `human` preset regardless of TTY. Scripts piping `comb status` should switch to `comb status -f tsv` or `-f json` for the previous behaviour.
-- **BREAKING (pre-1.0):** `comb status` `--no-color` removed. Use `--color=never` (or `--color=auto|always`).
-- `comb status` `--max-width` default raised from 40 to 120; new `--max-width=auto` value uses the terminal width.
-- `comb status` default sort changed from `path` to `(provider, path, field)` for stable rows under `watch(1)`.
-- `comb status` TSV/CSV columns extended with one column per `CacheRow` field (lifecycle data, fsevents-reinstate flag, failure snapshot). TSV column count: 13.
-- **BREAKING (pre-1.0, C SDK):** `comb_status_rows` API redesigned from cap-based fixed-array (`comb_status_rows(client, rows, cap)`) to heap-allocating (`comb_status_rows(client, rows_out, n_out)`); pair with new `comb_free_cache_rows()`. `comb_cache_row_t` field types changed from fixed `char[N]` arrays to owned `char*` pointers.
-
-### Added
-- `comb status` `TTL` column showing per-entry lifecycle (`★`/`3`/`2`/`1`/`0` countdown), effective poll interval, keep-alive count, and fsevents-reinstate indicator.
-- `comb status` `--ascii` flag for ASCII-only glyphs (`*`/`!`/`x`/`F`).
-- `comb status` `--filter=lifecycle=active|decay1..4|once|virtual` and `--filter=fsevents_reinstate=true|false`.
-- `comb status` `--sort=lifecycle` (most-decayed first) and `--sort=poll_interval` (slowest-pollers first).
-- Failure-state `⚠` indicator: providers in failure-suppress show `⚠` in the TTL cell and red foreground on the row.
-- `WATCH_INTERVAL` env (set by `watch(1)`) promotes `--color=auto` from off to on when stdout is a pipe (so `watch -c comb status` stays coloured).
-- `RowKind` discriminator and `FailureSnapshot` exposed on `CacheRow` in all 7 client SDKs (Python, Go, Ruby, Node, C, Lua, beachcomber-client).
-
-### Removed
-- `comb status` `decay` field on `CacheRow` (superseded by `RowKind::Lifecycle.decay`; no SDK previously surfaced it).
+- **BREAKING (pre-1.0):** daemon socket path no longer depends on `$TMPDIR` — resolution is config override → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`. On macOS all shells now share one daemon.
+- **BREAKING (pre-1.0):** `introspect` subject `backoff` → `lifecycle`, with state values `Active` / `Decay1`–`Decay4` replacing `Grace` / `SlowPoll` / `Frozen` / `Evict`; all SDK constants renamed (no legacy alias).
+- **BREAKING (pre-1.0, all SDKs):** `status_rows()` removed; `status()` returns typed rows. The C SDK `comb_status_rows` is redesigned to heap-allocating (pair with `comb_free_cache_rows()`); `comb_cache_row_t` fields are now owned `char*`.
+- **BREAKING (pre-1.0):** `comb status` defaults to the `human` preset regardless of TTY (use `-f tsv` / `-f json` in scripts); `--no-color` removed in favour of `--color=never|auto|always`.
+- `comb status` default sort is `(provider, path, field)`; `--max-width` default raised 40 → 120; TSV/CSV gain one column per `CacheRow` field.
+- Provider scope declared per field via `FieldSchema::scope`; `Provider::execute` returns `Vec<(Option<String>, ProviderResult)>` (wire protocol unchanged).
 
 ### Fixed
 
-- Cache decay now works as designed. Previously, `BackoffStage::SlowPoll`, `Frozen`, and `Evict` were defined but unreachable; cache entries never evicted and accumulated until daemon restart. Now: Active → Decay1 → Decay2 → Decay3 → Decay4 → Evicted runs end-to-end with exponential decay polling (poll interval and step duration both double per step). See `docs/cache-lifecycle.md` for the full behaviour spec.
-- Global providers (hostname, user, battery, etc.) no longer create ghost cache entries when queried with an explicit path. Previously `comb get hostname.short /some/dir` cached hostname under `/some/dir` in addition to the real pathless entry.
-- `mise.global` is no longer duplicated per project directory. The `mise` provider now emits its global tool state as a pathless cache entry and its project tool state as a path-scoped cache entry.
-- **Lua SDK:** `Client:get_with_flags` now returns `nil, error` on server-side failures (`ok=false`) to match the documented contract and the `Client:get` behaviour. Previously it returned a `Result` wrapping the failure envelope, which callers could mistake for a miss.
-
-### Added
-
-- Per-provider cache lifecycle tuning: `poll_interval` (base poll rate `P`) and `poll_live_count` (keep-alive count `K` in polls) in `[lifecycle]` and `[providers.<name>]`.
-- `fsevents_reinstate` per-provider bool. When true, an fsevent on a watched path reinstates a decaying entry back to Active.
-- `DECAY` column in `comb status` showing the lifecycle level 0-4 per entry (0 = Active).
-
-### Changed
-
-- **Protocol-breaking:** `introspect` subject renamed from `"backoff"` to `"lifecycle"`. Payload shape carries new state values (`"Active"`, `"Decay1"`–`"Decay4"`) in place of the old `"Grace"` / `"SlowPoll"` / `"Frozen"` / `"Evict"`. All SDK `IntrospectSubject` constants renamed accordingly (no legacy alias — pre-1.0).
-- Provider scope is now declared per field via `FieldSchema::scope` (`FieldScope::Global` or `FieldScope::PathScoped`). The `ProviderMetadata.global: bool` field is removed. Custom TOML and library providers can declare per-field scope; the provider-level `scope` key continues to work as a default.
-- `Provider::execute` signature widened to return `Vec<(Option<String>, ProviderResult)>`, enabling one provider to emit multiple scoped cache entries per execution. SDKs are unaffected — wire protocol is unchanged.
+- Cache decay works end-to-end (Active → Decay1–4 → Evicted with exponential backoff); previously the decay stages were unreachable and entries never evicted.
+- Global providers no longer create ghost cache entries when queried with an explicit path; `mise.global` is no longer duplicated per project directory.
+- Library (FFI) provider dispatch is now strict UTF-8 (was silently lossy).
+- **Lua SDK:** `Client:get_with_flags` returns `nil, error` on server-side failures, matching `Client:get`.
+- `:age` metadata suffix returns a JSON number, not a string. Watcher registrations are GC'd on cache eviction and on a periodic tick.
 
 ### Removed
 
-- `[lifecycle] cache_lifespan` config key — now derived as `poll_interval × poll_live_count`.
-- `[providers.<name>] poll_idle_interval` config key — subsumed by the decay ladder plus `fsevents_reinstate`.
-- `[providers.<name>] poll_live_interval` config key — renamed to `poll_interval`.
-- The unused `[lifecycle] eviction_timeout_secs` config field. Configs that still declare these legacy keys continue to parse cleanly (serde ignores unknown fields); the daemon emits a `WARN` log at startup for each deprecated key detected.
+- **BREAKING (pre-1.0):** wire ops `poke` → `refresh`, `store` → `put`; `Request::List` removed; `status` reshaped to a cache-row array (old health fields via `introspect daemon`).
+- **BREAKING (pre-1.0):** CLI `comb refresh`/`r`, `comb fetch`/`f`, `comb list`/`l` removed; single-brace `{field}` template syntax removed (use `{{ field }}`).
+- **BREAKING (pre-1.0):** `InvalidationStrategy::Once`, `Watch::fallback_poll_secs`, and `Poll::floor_secs` removed; TOML moved to per-source `[providers.<name>.<source>]` blocks with `poll_*` / `fsevent_*` / `failback_*` prefixes (old flat source-knob keys are rejected with a clear error).
+- `[lifecycle] cache_lifespan` (now derived as `poll_interval × poll_live_count`), `poll_idle_interval`, `poll_live_interval` (→ `poll_interval`), and `eviction_timeout_secs` config keys removed.
 
-## [0.6.0] - 2026-04-22
+### Internal
 
-### Breaking
-
-- **Wire:** `{"op":"poke"}` renamed to `{"op":"refresh"}` — all clients must update
-- **Wire:** `{"op":"store"}` renamed to `{"op":"put"}` — all clients must update
-- **Wire:** `Request::List` removed — the `list` op is no longer accepted
-- **Wire:** `{"op":"status"}` response reshaped from a daemon-health object to an array of cache-entry row objects (`[{provider, path, field, value, age_ms, stale}, ...]`). Use `{"op":"introspect","subject":"daemon"}` for the old health fields
-- **CLI:** `comb refresh` / `comb r` removed — use `comb get --force` to trigger immediate recomputation
-- **CLI:** `comb fetch` / `comb f` removed — `comb get` now accepts variadic keys
-- **CLI:** `comb list` / `comb l` removed — no replacement (provider introspection via `comb check providers`)
-- **Templates:** single-brace `{field}` placeholder syntax removed from `.f` format and `comb eval`. Use minijinja double-brace `{{ field }}` syntax everywhere
-- **`:age`:** now returns a JSON number (integer milliseconds), not a quoted string
-
-### Added
-
-- `Request::Introspect` wire op with 9 subjects: `daemon`, `providers`, `config`, `cache`, `backoff`, `watches`, `timers`, `demand`, `procs`
-- `comb check` rewired onto `Introspect` — top-level aggregation when no subcommand given; each subject is a standalone subcommand (`backoff`, `watches`, `timers`, `demand` are new)
-- `comb get --force` — trigger immediate provider recomputation before returning the result
-- `comb get --wait` — block until a fresh value arrives (useful after an external trigger)
-- `comb get` variadic keys — query multiple keys in a single connection: `comb g git.branch git.dirty battery.percent .`
-- `comb put --null` — clear a previously written virtual provider entry
-- `comb status` tabular output — one row per warm cache entry with provider/field/value/age_ms/stale columns
-- `comb status` flags: `--format <template>`, `--filter <provider>`, `--sort <field|age|stale>`, `--no-trunc`, `--max-width <n>`, `--no-color` / `--no-colour`
-- `comb status` custom minijinja templates via `--format "{{ provider }}.{{ field }}={{ value }}"`
-- minijinja templating across `comb eval`, `.f` format suffix, and `comb status --format`; available filters: `truncate`, `default`, `upper`, `lower`, `length`
-- Script provider `output = "text"` produces `{value: <stdout>}` in cache — field is `value`
-- Watcher GC subscription lifecycle hook — watcher registrations are cleaned up when cache entries are evicted
-- Watcher GC periodic tick — background task evicts stale watcher registrations on a fixed schedule
-
-### Fixed
-
-- `:age` metadata suffix now returns a JSON number, not a string
-- Watcher registry could leak registrations when cache entries were evicted without triggering the GC hook
-- `uptime_provider_executes` test marked as sandbox-unsafe to avoid flakiness in CI environments
-- Various doc drift between shipped behaviour and reference pages (this release)
+- Test-suite-health initiative: dependency-injection seams for process / git / HTTP / library boundaries, golden CLI tests, mock-clock TTL tests, a shared git fixture, the provider conformance harness, and a coverage gate raised to 70%.
 
 ## [0.5.1] - 2026-04-21
 

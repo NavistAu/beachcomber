@@ -146,14 +146,14 @@ The npm and pip packages download the correct pre-built binary for your platform
 Download the `.deb` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.5.1-1_amd64.deb
-sudo dpkg -i beachcomber_0.5.1-1_amd64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.6.0-1_amd64.deb
+sudo dpkg -i beachcomber_0.6.0-1_amd64.deb
 ```
 
 ```sh
 # ARM64
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.5.1-1_arm64.deb
-sudo dpkg -i beachcomber_0.5.1-1_arm64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.6.0-1_arm64.deb
+sudo dpkg -i beachcomber_0.6.0-1_arm64.deb
 ```
 
 #### Fedora/RHEL
@@ -161,14 +161,14 @@ sudo dpkg -i beachcomber_0.5.1-1_arm64.deb
 Download the `.rpm` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.5.1-1.x86_64.rpm
-sudo rpm -i beachcomber-0.5.1-1.x86_64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.6.0-1.x86_64.rpm
+sudo rpm -i beachcomber-0.6.0-1.x86_64.rpm
 ```
 
 ```sh
 # ARM64
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.5.1-1.aarch64.rpm
-sudo rpm -i beachcomber-0.5.1-1.aarch64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.6.0-1.aarch64.rpm
+sudo rpm -i beachcomber-0.6.0-1.aarch64.rpm
 ```
 
 #### Arch Linux (AUR)
@@ -1829,7 +1829,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 ### Operations
 
-**`hello`:** Version negotiation. Clients should send this as the first op on any new connection. Returns `{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.5.1"}}`. `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
+**`hello`:** Version negotiation. Clients should send this as the first op on any new connection. Returns `{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.6.0"}}`. `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
 
 **`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
 

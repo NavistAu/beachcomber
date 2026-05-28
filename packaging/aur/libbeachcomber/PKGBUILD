@@ -1,6 +1,6 @@
 # Maintainer: NavistAu <github@navistau.io>
 pkgname=libbeachcomber
-pkgver=0.5.1
+pkgver=0.6.0
 pkgrel=1
 pkgdesc="C client library for the beachcomber daemon (headers, shared/static lib, pkg-config)"
 arch=('x86_64' 'aarch64')
