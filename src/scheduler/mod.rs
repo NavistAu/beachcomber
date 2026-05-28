@@ -9,6 +9,8 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use tracing::{debug, info, warn};
 
+use crate::query::SourceDemand;
+
 use crate::cache::Cache;
 pub use crate::cache::FailureSnapshot;
 use crate::config::Config;
@@ -36,10 +38,13 @@ pub enum SchedulerMessage {
     GetStatus {
         reply: tokio::sync::oneshot::Sender<SchedulerStatus>,
     },
-    /// A provider+path was queried via get. Signals demand to keep it warm.
+    /// A provider+path was queried via get/watch. Signals demand to keep the
+    /// queried Sources warm. `demand` selects which Sources: `All` for a
+    /// whole-provider query, `Sources(..)` for a field/source query.
     QueryActivity {
         provider: String,
         path: Option<String>,
+        demand: SourceDemand,
     },
     /// Request a snapshot of all (provider, path, source) entries with non-zero failure counts.
     /// Returns an empty map when no failures are tracked.
@@ -740,13 +745,24 @@ impl Scheduler {
                                 .collect();
                             let _ = reply.send(map);
                         }
-                        Some(SchedulerMessage::QueryActivity { provider, path }) => {
+                        Some(SchedulerMessage::QueryActivity { provider, path, demand }) => {
                             let now = Instant::now();
                             let Some(sources) = self.registry.provider_sources(&provider) else {
                                 last_activity = now;
                                 continue;
                             };
-                            let sources_vec = sources.to_vec();
+                            // Narrow to the demanded Sources. Scope/path policy in the
+                            // loop below is unchanged and applies to whichever Sources
+                            // survive this filter (canon §150/§268: a field demands only
+                            // its owning Source).
+                            let sources_vec: Vec<_> = match &demand {
+                                SourceDemand::All => sources.to_vec(),
+                                SourceDemand::Sources(names) => sources
+                                    .iter()
+                                    .filter(|sm| names.iter().any(|n| n == &sm.name))
+                                    .cloned()
+                                    .collect(),
+                            };
                             for sm in &sources_vec {
                                 // Scope filter:
                                 //  - PathScoped sources: skip when no path was provided
@@ -992,13 +1008,24 @@ impl Scheduler {
                                 .collect();
                             let _ = reply.send(map);
                         }
-                        Some(SchedulerMessage::QueryActivity { provider, path }) => {
+                        Some(SchedulerMessage::QueryActivity { provider, path, demand }) => {
                             let now = Instant::now();
                             let Some(sources) = self.registry.provider_sources(&provider) else {
                                 last_activity = now;
                                 continue;
                             };
-                            let sources_vec = sources.to_vec();
+                            // Narrow to the demanded Sources. Scope/path policy in the
+                            // loop below is unchanged and applies to whichever Sources
+                            // survive this filter (canon §150/§268: a field demands only
+                            // its owning Source).
+                            let sources_vec: Vec<_> = match &demand {
+                                SourceDemand::All => sources.to_vec(),
+                                SourceDemand::Sources(names) => sources
+                                    .iter()
+                                    .filter(|sm| names.iter().any(|n| n == &sm.name))
+                                    .cloned()
+                                    .collect(),
+                            };
                             for sm in &sources_vec {
                                 if matches!(sm.scope, SourceScope::PathScoped) && path.is_none() {
                                     continue;

@@ -1,6 +1,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::query::SourceDemand;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -24,6 +25,7 @@ async fn query_activity_triggers_provider_execution() {
         .send(SchedulerMessage::QueryActivity {
             provider: "hostname".to_string(),
             path: None,
+            demand: SourceDemand::All,
         })
         .await;
 
@@ -60,6 +62,7 @@ async fn watch_only_providers_do_not_enter_poll_timers() {
         .send(SchedulerMessage::QueryActivity {
             provider: "hostname".to_string(),
             path: None,
+            demand: SourceDemand::All,
         })
         .await;
 
@@ -94,6 +97,7 @@ async fn repeated_queries_keep_data_warm() {
             .send(SchedulerMessage::QueryActivity {
                 provider: "hostname".to_string(),
                 path: None,
+                demand: SourceDemand::All,
             })
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -102,6 +106,51 @@ async fn repeated_queries_keep_data_warm() {
     assert!(
         cache.get_entry("hostname", None).is_some(),
         "Repeated queries should keep data warm"
+    );
+
+    handle.send(SchedulerMessage::Shutdown).await;
+    let _ = sched_task.await;
+}
+
+#[tokio::test]
+async fn field_demand_warms_only_owning_source() {
+    let cache = Arc::new(Cache::new());
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let config = Config::default();
+
+    let (handle, scheduler) = Scheduler::new(
+        cache.clone(),
+        registry,
+        config,
+        Arc::new(WatcherRegistry::new()),
+    );
+    let sched_task = tokio::spawn(async move { scheduler.run().await });
+
+    // Demand the git "refs" source only (as a field query for git.branch would).
+    // We assert lifecycle *warming* (which sources get on_demand'd), not cache
+    // data, so a non-git temp path is fine — the lifecycle entry is created
+    // before execute() runs regardless of whether a .git repo is found.
+    let tmp = std::env::temp_dir();
+    let path = tmp.to_string_lossy().to_string();
+    handle
+        .send(SchedulerMessage::QueryActivity {
+            provider: "git".to_string(),
+            path: Some(path.clone()),
+            demand: SourceDemand::Sources(vec!["refs".to_string()]),
+        })
+        .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let snaps = handle.get_lifecycle_snapshots().await;
+    let warmed: Vec<String> = snaps.keys().map(|k| k.2.clone()).collect();
+    assert!(
+        warmed.iter().any(|s| s == "refs"),
+        "refs must be warmed, got {warmed:?}"
+    );
+    assert!(
+        !warmed.iter().any(|s| s == "diff" || s == "status"),
+        "sibling git sources must NOT be warmed, got {warmed:?}"
     );
 
     handle.send(SchedulerMessage::Shutdown).await;

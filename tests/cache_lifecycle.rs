@@ -9,6 +9,7 @@ use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
+use beachcomber::query::SourceDemand;
 use beachcomber::scheduler::{Scheduler, SchedulerHandle, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -112,6 +113,7 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
         .send(SchedulerMessage::QueryActivity {
             provider: "lc_counter".to_string(),
             path: None,
+            demand: SourceDemand::All,
         })
         .await;
 
@@ -160,6 +162,7 @@ async fn integration_active_entry_appears_in_status() {
         .send(SchedulerMessage::QueryActivity {
             provider: "lc_counter".to_string(),
             path: None,
+            demand: SourceDemand::All,
         })
         .await;
 
@@ -229,6 +232,7 @@ async fn integration_status_response_reports_decay_level() {
         .send(SchedulerMessage::QueryActivity {
             provider: "lc_counter".to_string(),
             path: None,
+            demand: SourceDemand::All,
         })
         .await;
 
@@ -287,6 +291,7 @@ async fn integration_repeated_queries_keep_data_warm() {
         .send(SchedulerMessage::QueryActivity {
             provider: "lc_counter".to_string(),
             path: None,
+            demand: SourceDemand::All,
         })
         .await;
 
@@ -303,6 +308,7 @@ async fn integration_repeated_queries_keep_data_warm() {
             .send(SchedulerMessage::QueryActivity {
                 provider: "lc_counter".to_string(),
                 path: None,
+                demand: SourceDemand::All,
             })
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

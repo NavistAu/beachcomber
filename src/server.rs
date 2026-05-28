@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::{InvalidationStrategy, SourceScope};
-use crate::query::{KeyParse, parse_key, resolve_path, split_metadata_suffix};
+use crate::query::{KeyParse, SourceDemand, parse_key, resolve_path, split_metadata_suffix};
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
 };
@@ -226,6 +226,7 @@ async fn handle_watch(
             .send(SchedulerMessage::QueryActivity {
                 provider: provider_name.to_string(),
                 path: effective_path.clone(),
+                demand: SourceDemand::All,
             })
             .await;
     }
@@ -251,6 +252,7 @@ async fn handle_watch(
                         .send(SchedulerMessage::QueryActivity {
                             provider: provider_name.to_string(),
                             path: effective_path.clone(),
+                            demand: SourceDemand::All,
                         })
                         .await;
                 }
@@ -452,6 +454,7 @@ async fn handle_request(
                     .send(SchedulerMessage::QueryActivity {
                         provider: provider_name.to_string(),
                         path: effective_path.clone(),
+                        demand: SourceDemand::All,
                     })
                     .await;
             }
