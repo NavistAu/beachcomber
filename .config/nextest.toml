@@ -17,12 +17,13 @@ slow-timeout = { period = "15s", terminate-after = 2 }
 # Treat leaky tests (subprocesses that outlive the test) as failures rather
 # than warnings. { period, result } syntax available since nextest 0.9.76;
 # running 0.9.132 here.
-# Period bumped from 100ms → 250ms 2026-04-27 after observing intermittent
-# LEAK-FAIL on hand-written-stub seam tests under cold-build system load
-# (no real subprocesses leaked; TempDir teardown + Arc drop ordering can
-# exceed 100ms on first cargo build). 250ms is comfortably below any real
-# subprocess-leak timeline while removing the spurious flake.
-leak-timeout = { period = "250ms", result = "fail" }
+# Period bumped 100ms → 250ms (2026-04-27) then → 1s (2026-05-29) after the
+# LEAK-FAIL recurred on the Coverage gate, where llvm-cov instrumentation makes
+# TempDir teardown + Arc drop ordering several times slower than a plain build.
+# No real subprocesses leak here — a genuinely leaked daemon runs indefinitely
+# and is still caught at 1s — so this only removes the spurious instrumented-run
+# flake. If it recurs at 1s, investigate what is actually outliving the test.
+leak-timeout = { period = "1s", result = "fail" }
 
 # --- Test groups ---
 # Daemon-spawning tests share per-process state (socket paths, filesystem

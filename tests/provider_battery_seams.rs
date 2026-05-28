@@ -36,6 +36,9 @@ fn success_output(stdout: &[u8]) -> std::io::Result<Output> {
     make_output(0, stdout)
 }
 
+// Only the macOS test module exercises a non-zero git/pmset exit; gating this
+// keeps clippy's dead_code lint quiet on Linux (where the macOS module is cfg'd out).
+#[cfg(target_os = "macos")]
 fn failed_output() -> std::io::Result<Output> {
     make_output(1, b"")
 }
