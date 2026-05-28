@@ -1021,11 +1021,14 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
 
     // Use a git repo path that actually exists so the provider writes a cache entry.
     // The beachcomber workspace itself is a git repo.
+    // Request the whole provider ("git") so both sources (refs + diff) are warmed.
+    // A field request like "git.branch" only demands the refs source (canon §150/§268),
+    // which would leave the diff source absent from the status output.
     let repo_path = env!("CARGO_MANIFEST_DIR");
     let _ = client
-        .send_raw(serde_json::json!({"op": "get", "key": "git.branch", "path": repo_path}))
+        .send_raw(serde_json::json!({"op": "get", "key": "git", "path": repo_path}))
         .await
-        .expect("get git.branch");
+        .expect("get git");
 
     // Give the scheduler time to populate lifecycle state.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;

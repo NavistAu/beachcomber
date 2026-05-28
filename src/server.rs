@@ -448,13 +448,23 @@ async fn handle_request(
                 // Fall through to the normal miss path, which executes inline.
             }
 
+            // Source-aware demand for the warming signal (canon §150/§268):
+            // a field query demands only its owning Source.
+            //
+            // This re-derives parse/path from the same pure helpers used for the
+            // locals above (build() strips the suffix from `key` internally, so it
+            // resolves the same `stripped_key`); the duplicate parse is deliberately
+            // tolerated for now — collapsing the Get arm's locals into the plan is a
+            // deferred cleanup (see spec §3).
+            let demand = crate::query::QueryPlan::build(key, requested, registry).demand;
+
             // Signal demand to scheduler — this keeps the data warm.
             if let Some(sched) = scheduler {
                 sched
                     .send(SchedulerMessage::QueryActivity {
                         provider: provider_name.to_string(),
                         path: effective_path.clone(),
-                        demand: SourceDemand::All,
+                        demand,
                     })
                     .await;
             }
