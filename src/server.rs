@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::{InvalidationStrategy, SourceScope};
-use crate::query::{KeyParse, SourceDemand, parse_key, resolve_path, split_metadata_suffix};
+use crate::query::{KeyParse, parse_key, resolve_path, split_metadata_suffix};
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
 };
@@ -216,26 +216,27 @@ async fn handle_watch(
     watchers: &Arc<WatcherRegistry>,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) {
-    let (provider_name, field) = protocol::split_key(&key);
+    let plan =
+        crate::query::QueryPlan::build(&key, path.as_deref().or(context_path.as_deref()), registry);
+    let provider_name = plan.provider.clone();
+    let effective_path = plan.effective_path.clone();
 
-    let effective_path = resolve_path(&key, path.as_deref().or(context_path.as_deref()), registry);
-
-    // Signal demand
+    // Signal demand (source-aware: canon §150/§268).
     if let Some(sched) = scheduler {
         sched
             .send(SchedulerMessage::QueryActivity {
-                provider: provider_name.to_string(),
+                provider: provider_name.clone(),
                 path: effective_path.clone(),
-                demand: SourceDemand::All,
+                demand: plan.demand.clone(),
             })
             .await;
     }
 
     // Subscribe to notifications
-    let mut rx = watchers.subscribe(provider_name, effective_path.as_deref());
+    let mut rx = watchers.subscribe(provider_name.as_str(), effective_path.as_deref());
 
     // Send initial value
-    let initial = read_watch_value(cache, provider_name, field, effective_path.as_deref());
+    let initial = read_watch_value(cache, &plan.target, effective_path.as_deref());
     if write_watch_line(writer, &initial, &format).await.is_err() {
         return;
     }
@@ -250,15 +251,14 @@ async fn handle_watch(
                 if let Some(sched) = scheduler {
                     sched
                         .send(SchedulerMessage::QueryActivity {
-                            provider: provider_name.to_string(),
+                            provider: provider_name.clone(),
                             path: effective_path.clone(),
-                            demand: SourceDemand::All,
+                            demand: plan.demand.clone(),
                         })
                         .await;
                 }
 
-                let response =
-                    read_watch_value(cache, provider_name, field, effective_path.as_deref());
+                let response = read_watch_value(cache, &plan.target, effective_path.as_deref());
 
                 // Field-level filtering: skip if value unchanged
                 if response.data == last_data {
@@ -272,8 +272,7 @@ async fn handle_watch(
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                 debug!("Watch subscriber lagged by {n} messages, catching up");
-                let response =
-                    read_watch_value(cache, provider_name, field, effective_path.as_deref());
+                let response = read_watch_value(cache, &plan.target, effective_path.as_deref());
                 if response.data != last_data {
                     last_data = response.data.clone();
                     if write_watch_line(writer, &response, &format).await.is_err() {
@@ -336,28 +335,64 @@ async fn inline_execute_source(
     true
 }
 
-fn read_watch_value(
-    cache: &Cache,
-    provider_name: &str,
-    field: Option<&str>,
-    path: Option<&str>,
-) -> Response {
-    if let Some(field_name) = field {
-        // Field-targeted: surface the owning source's last_refreshed as age,
-        // not the entry-level oldest. Canon §"Field freshness".
-        match cache.get_field(provider_name, path, field_name) {
-            Some((value, last_refreshed)) => {
-                let age_ms = last_refreshed.elapsed().as_millis();
-                let data = serde_json::to_value(&value).unwrap_or(serde_json::Value::Null);
-                Response::ok(data, age_ms, false)
+// Watch reads only from cache — no inline-execute on cold miss (unlike Get).
+// A cache miss in a streaming context means the scheduler has not populated the
+// entry yet; the caller receives an update when it does. Routing by KeyParse
+// here mirrors Get's cache routing exactly so `watch X` resolves identically to
+// `get X` (the core parity goal of this change).
+fn read_watch_value(cache: &Cache, target: &KeyParse, path: Option<&str>) -> Response {
+    match target {
+        KeyParse::Field(provider, field) => {
+            // Field-targeted: surface the owning source's last_refreshed as age,
+            // not the entry-level oldest. Canon §"Field freshness".
+            match cache.get_field(provider, path, field) {
+                Some((value, last_refreshed)) => {
+                    let age_ms = last_refreshed.elapsed().as_millis();
+                    let data = serde_json::to_value(&value).unwrap_or(serde_json::Value::Null);
+                    Response::ok(data, age_ms, false)
+                }
+                // Mirror Get's Field-miss semantics exactly: a failed nested
+                // sub-path (e.g. `p.project.nonesuch` where `project` exists but
+                // `nonesuch` doesn't) is a loud "unknown field" error; anything
+                // else is a plain miss.
+                None => {
+                    let nested_head_exists = field.contains('.')
+                        && field
+                            .split('.')
+                            .next()
+                            .is_some_and(|head| cache.get_field(provider, path, head).is_some());
+                    if nested_head_exists {
+                        Response::error(format!("unknown field: {provider}.{field}"))
+                    } else {
+                        Response::miss()
+                    }
+                }
             }
-            None => match cache.get_entry(provider_name, path) {
-                Some(_) => Response::error(format!("unknown field: {provider_name}.{field_name}")),
-                None => Response::miss(),
-            },
         }
-    } else {
-        match cache.get_entry(provider_name, path) {
+        KeyParse::Source(provider, source) => match cache.get_source(provider, path, source) {
+            Some(src) => {
+                let age_ms = src.age_ms();
+                let stale = src.is_stale();
+                let data = serde_json::to_value(&src.fields).unwrap_or(serde_json::Value::Null);
+                Response::ok(data, age_ms, stale)
+            }
+            None => Response::miss(),
+        },
+        KeyParse::SourceField(provider, source, field) => {
+            match cache.get_source(provider, path, source) {
+                Some(src) => match src.fields.get(field.as_str()) {
+                    Some(value) => {
+                        let age_ms = src.age_ms();
+                        let stale = src.is_stale();
+                        let data = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+                        Response::ok(data, age_ms, stale)
+                    }
+                    None => Response::error(format!("unknown field: {provider}.{source}.{field}")),
+                },
+                None => Response::miss(),
+            }
+        }
+        KeyParse::Provider(provider) => match cache.get_entry(provider, path) {
             Some(entry) => {
                 let age_ms = entry.age_ms();
                 let stale = entry.is_stale();
@@ -366,7 +401,7 @@ fn read_watch_value(
                 Response::ok(data, age_ms, stale)
             }
             None => Response::miss(),
-        }
+        },
     }
 }
 
@@ -1490,5 +1525,59 @@ fn format_data(format: &Format, response: &Response) -> String {
             out.push('\n');
             out
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_watch_value_routes_source_target() {
+        use crate::cache::Cache;
+        use crate::provider::Value;
+        use crate::query::KeyParse;
+        use std::collections::HashMap;
+
+        let cache = Cache::new();
+        let mut refs_fields = HashMap::new();
+        refs_fields.insert("branch".to_string(), Value::String("main".to_string()));
+        cache.put_source("git", Some("/repo"), "refs", refs_fields, None);
+        let mut diff_fields = HashMap::new();
+        diff_fields.insert("lines_added".to_string(), Value::String("3".to_string()));
+        cache.put_source("git", Some("/repo"), "diff", diff_fields, None);
+
+        // Source target returns ONLY that source's fields.
+        let target = KeyParse::Source("git".to_string(), "refs".to_string());
+        let resp = read_watch_value(&cache, &target, Some("/repo"));
+        assert!(resp.ok);
+        let data = resp.data.expect("source data");
+        let obj = data.as_object().expect("object");
+        assert!(obj.contains_key("branch"), "refs.branch present");
+        assert!(
+            !obj.contains_key("lines_added"),
+            "diff field absent from refs source"
+        );
+    }
+
+    #[test]
+    fn read_watch_value_field_target_finds_field() {
+        use crate::cache::Cache;
+        use crate::provider::Value;
+        use crate::query::KeyParse;
+        use std::collections::HashMap;
+
+        let cache = Cache::new();
+        let mut refs_fields = HashMap::new();
+        refs_fields.insert("branch".to_string(), Value::String("main".to_string()));
+        cache.put_source("git", Some("/repo"), "refs", refs_fields, None);
+
+        let target = KeyParse::Field("git".to_string(), "branch".to_string());
+        let resp = read_watch_value(&cache, &target, Some("/repo"));
+        assert!(resp.ok);
+        assert_eq!(
+            resp.data.unwrap(),
+            serde_json::Value::String("main".to_string())
+        );
     }
 }
