@@ -27,6 +27,7 @@ pub fn split_metadata_suffix(key: &str) -> (&str, Option<&str>) {
 
 /// Parse a request key into one of four forms, disambiguating source vs field
 /// for 2-segment keys using the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyParse {
     /// "provider"
     Provider(String),
@@ -140,6 +141,72 @@ pub fn resolve_path(
     Some(raw)
 }
 
+/// Which Sources a query demands warming for.
+///
+/// Approach A from the design spec: an explicit enum keeps field→source
+/// resolution in this layer while leaving scope/path policy in the scheduler.
+/// `Sources(vec![])` means "warm nothing" (e.g. an unknown field) and is
+/// deliberately distinct from `All`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceDemand {
+    /// Whole-provider query: warm every applicable Source (scheduler applies scope filter).
+    All,
+    /// Field/source query: warm only these named Sources.
+    Sources(Vec<String>),
+}
+
+/// A resolved, source-aware request. Built once per request and consumed by
+/// both `Get` and `Watch` so they share identical resolution semantics.
+#[derive(Debug, Clone)]
+pub struct QueryPlan {
+    pub provider: String,
+    pub effective_path: Option<String>,
+    pub target: KeyParse,
+    pub meta: Option<String>,
+    pub demand: SourceDemand,
+}
+
+impl QueryPlan {
+    /// Resolve a raw request key + optional path hint into a plan.
+    /// `raw_key` may carry a metadata suffix (e.g. `git.branch:fresh`).
+    pub fn build(raw_key: &str, path_hint: Option<&str>, registry: &ProviderRegistry) -> QueryPlan {
+        let (stripped_key, meta) = split_metadata_suffix(raw_key);
+        let effective_path = resolve_path(stripped_key, path_hint, registry);
+        let target = parse_key(stripped_key, registry);
+
+        let provider = match &target {
+            KeyParse::Provider(p) => p.clone(),
+            KeyParse::Field(p, _) => p.clone(),
+            KeyParse::Source(p, _) => p.clone(),
+            KeyParse::SourceField(p, _, _) => p.clone(),
+        };
+
+        let demand = match &target {
+            KeyParse::Provider(_) => SourceDemand::All,
+            KeyParse::Source(_, s) => SourceDemand::Sources(vec![s.clone()]),
+            KeyParse::SourceField(_, s, _) => SourceDemand::Sources(vec![s.clone()]),
+            KeyParse::Field(p, f) => {
+                // A field's demand is its owning Source only (canon §150/§268).
+                // The owning source is matched on the top-level field name (nested
+                // sub-paths like "project.rust" are owned by whoever owns "project").
+                let head = f.split('.').next().unwrap_or(f);
+                match registry.source_for_field(p, head) {
+                    Some(src) => SourceDemand::Sources(vec![src.to_string()]),
+                    None => SourceDemand::Sources(Vec::new()),
+                }
+            }
+        };
+
+        QueryPlan {
+            provider,
+            effective_path,
+            target,
+            meta: meta.map(|s| s.to_string()),
+            demand,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +265,69 @@ mod tests {
             split_metadata_suffix("git.branch:bogus"),
             ("git.branch:bogus", None)
         );
+    }
+
+    #[test]
+    fn build_provider_demands_all() {
+        let reg = ProviderRegistry::with_defaults();
+        let plan = QueryPlan::build("git", None, &reg);
+        assert!(matches!(plan.demand, SourceDemand::All));
+        assert_eq!(plan.provider, "git");
+    }
+
+    #[test]
+    fn build_field_demands_only_owning_source() {
+        let reg = ProviderRegistry::with_defaults();
+        // branch is owned by the refs source.
+        let plan = QueryPlan::build("git.branch", None, &reg);
+        match plan.demand {
+            SourceDemand::Sources(v) => assert_eq!(v, vec!["refs".to_string()]),
+            other => panic!("expected Sources([refs]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_source_demands_that_source() {
+        let reg = ProviderRegistry::with_defaults();
+        let plan = QueryPlan::build("git.refs", None, &reg);
+        // Disambiguation: git.refs must parse as a Source target, not a Field,
+        // since refs is a registered source. This pins the path, not just the outcome.
+        assert!(matches!(plan.target, KeyParse::Source(_, ref s) if s == "refs"));
+        match plan.demand {
+            SourceDemand::Sources(v) => assert_eq!(v, vec!["refs".to_string()]),
+            other => panic!("expected Sources([refs]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_source_field_demands_that_source() {
+        let reg = ProviderRegistry::with_defaults();
+        let plan = QueryPlan::build("git.refs.branch", None, &reg);
+        match plan.demand {
+            SourceDemand::Sources(v) => assert_eq!(v, vec!["refs".to_string()]),
+            other => panic!("expected Sources([refs]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_unknown_field_demands_nothing() {
+        let reg = ProviderRegistry::with_defaults();
+        let plan = QueryPlan::build("git.totally_bogus_field", None, &reg);
+        match plan.demand {
+            SourceDemand::Sources(v) => assert!(v.is_empty(), "unknown field warms nothing"),
+            other => panic!("expected Sources([]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_strips_metadata_suffix() {
+        let reg = ProviderRegistry::with_defaults();
+        let plan = QueryPlan::build("git.branch:fresh", None, &reg);
+        assert_eq!(plan.meta.as_deref(), Some("fresh"));
+        match plan.demand {
+            SourceDemand::Sources(v) => assert_eq!(v, vec!["refs".to_string()]),
+            other => panic!("expected Sources([refs]), got {other:?}"),
+        }
     }
 }
 
