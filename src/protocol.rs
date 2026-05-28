@@ -122,6 +122,10 @@ impl Response {
     }
 }
 
+/// Split a key on the FIRST dot only: `"git.branch"` → `("git", Some("branch"))`,
+/// `"battery"` → `("battery", None)`. This does NOT understand `provider.source`
+/// or `provider.source.field` addressing — use `crate::query::parse_key` for
+/// source-aware parsing. Retained for `Refresh`, which only needs the provider.
 pub fn split_key(key: &str) -> (&str, Option<&str>) {
     match key.split_once('.') {
         Some((provider, field)) => (provider, Some(field)),
