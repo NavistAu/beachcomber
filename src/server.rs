@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::{InvalidationStrategy, SourceScope};
-use crate::query::{KeyParse, parse_key, resolve_path, split_metadata_suffix};
+use crate::query::{KeyParse, resolve_path};
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
 };
@@ -435,22 +435,14 @@ async fn handle_request(
             wait,
             ..
         } => {
-            let (stripped_key, meta) = split_metadata_suffix(key);
-
-            // Determine effective path using new per-source scope resolution.
+            // One source-aware plan drives the whole request: provider, resolved
+            // path, parsed target, metadata suffix, and the warming demand. Get
+            // and Watch both build this so they share identical key semantics.
             let requested = path.as_deref().or(context_path.as_deref());
-            let effective_path = resolve_path(stripped_key, requested, registry);
-
-            // Parse the key to understand what is being requested.
-            let parsed = parse_key(stripped_key, registry);
-
-            // Extract provider name for registry/cache lookups.
-            let provider_name = match &parsed {
-                KeyParse::Provider(p) => p.as_str(),
-                KeyParse::Field(p, _) => p.as_str(),
-                KeyParse::Source(p, _) => p.as_str(),
-                KeyParse::SourceField(p, _, _) => p.as_str(),
-            };
+            let plan = crate::query::QueryPlan::build(key, requested, registry);
+            let provider_name = plan.provider.as_str();
+            let effective_path = plan.effective_path.clone();
+            let meta = plan.meta.as_deref();
 
             // Unknown provider check: virtual providers are also valid.
             let is_known = registry.provider_metadata(provider_name).is_some()
@@ -483,23 +475,14 @@ async fn handle_request(
                 // Fall through to the normal miss path, which executes inline.
             }
 
-            // Source-aware demand for the warming signal (canon §150/§268):
-            // a field query demands only its owning Source.
-            //
-            // This re-derives parse/path from the same pure helpers used for the
-            // locals above (build() strips the suffix from `key` internally, so it
-            // resolves the same `stripped_key`); the duplicate parse is deliberately
-            // tolerated for now — collapsing the Get arm's locals into the plan is a
-            // deferred cleanup (see spec §3).
-            let demand = crate::query::QueryPlan::build(key, requested, registry).demand;
-
-            // Signal demand to scheduler — this keeps the data warm.
+            // Signal demand to scheduler — keeps only the queried Source(s) warm
+            // (canon §150/§268: a field query demands only its owning Source).
             if let Some(sched) = scheduler {
                 sched
                     .send(SchedulerMessage::QueryActivity {
                         provider: provider_name.to_string(),
                         path: effective_path.clone(),
-                        demand,
+                        demand: plan.demand.clone(),
                     })
                     .await;
             }
@@ -519,7 +502,7 @@ async fn handle_request(
             // Cache lookup with cold-miss inline-execute, routed by key parse form.
             // Canon §"Cold cache miss triggers inline fetch": on cache miss, synchronously
             // execute the relevant source(s), write to cache, then re-read.
-            let (cache_hit, normal_response) = match &parsed {
+            let (cache_hit, normal_response) = match &plan.target {
                 KeyParse::Field(provider, field) => {
                     // First check cache.
                     let mut hit = cache.get_field(provider, effective_path.as_deref(), field);
