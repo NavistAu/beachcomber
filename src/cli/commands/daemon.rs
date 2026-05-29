@@ -79,11 +79,12 @@ pub fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
         }
     };
 
-    // No separate reap step needed here: `acquire_or_supersede` already kills
-    // any live competing daemon (via `supersede_existing`) before we reach this
-    // point. Killing processes by binary path (`reap_orphans`) was removed
-    // because it also killed peer daemons running on different socket paths,
-    // breaking concurrent test runs.
+    // No separate reap step here: `acquire_or_supersede` handles all contention.
+    // A different-build owner is superseded; a same-build owner is left alone if
+    // it is serving the socket, or superseded (after a short serving-probe grace)
+    // if it is wedged before bind. Startup orphan-reaping by binary path was
+    // removed (it also killed peer daemons on other socket paths). See
+    // `docs/canon/singleton.md` §"Same-build serving probe".
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {

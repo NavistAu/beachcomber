@@ -1,7 +1,7 @@
 //! Pure decision logic for the singleton enforcement layer — no OS calls, fully unit-testable.
 //!
 //! Functions here operate only on their arguments and return plain values.
-//! OS-bound work (filesystem access, process signaling, sysinfo enumeration) lives in
+//! OS-bound work (filesystem access, process signaling) lives in
 //! `crate::singleton` (`src/singleton/mod.rs`).
 
 use crate::singleton::PidFileRecord;
@@ -51,19 +51,6 @@ pub fn is_binary_newer(mtime_unix_ms: u64, process_start_unix_ms: u64) -> bool {
 /// and supplying the boolean.
 pub fn is_pidfile_stale(process_alive: bool) -> bool {
     !process_alive
-}
-
-/// Given the set of process PIDs that share our binary path and our own PID, return
-/// only the PIDs that are genuine orphans (not us).
-///
-/// This is the pure filtering half of `find_orphan_daemons`.  The OS-bound half
-/// (enumerating processes via sysinfo) stays in `crate::singleton`.
-pub fn filter_orphan_pids(candidates: &[u32], our_pid: u32) -> Vec<u32> {
-    candidates
-        .iter()
-        .copied()
-        .filter(|&p| p != our_pid)
-        .collect()
 }
 
 #[cfg(test)]
@@ -183,38 +170,5 @@ mod tests {
     #[test]
     fn fresh_when_process_alive() {
         assert!(!is_pidfile_stale(true));
-    }
-
-    // --- filter_orphan_pids ---
-
-    #[test]
-    fn filter_removes_our_pid() {
-        let candidates = vec![100u32, 200, std::process::id(), 300];
-        let our = std::process::id();
-        let orphans = filter_orphan_pids(&candidates, our);
-        assert!(!orphans.contains(&our), "self pid must be excluded");
-        assert_eq!(orphans.len(), 3);
-    }
-
-    #[test]
-    fn filter_keeps_all_when_self_absent() {
-        let candidates = vec![100u32, 200, 300];
-        let our = 999; // not in the list
-        let orphans = filter_orphan_pids(&candidates, our);
-        assert_eq!(orphans, vec![100, 200, 300]);
-    }
-
-    #[test]
-    fn filter_empty_input_gives_empty_output() {
-        let orphans = filter_orphan_pids(&[], 1);
-        assert!(orphans.is_empty());
-    }
-
-    #[test]
-    fn filter_all_self_gives_empty_output() {
-        let our = 42u32;
-        let candidates = vec![our, our, our];
-        let orphans = filter_orphan_pids(&candidates, our);
-        assert!(orphans.is_empty());
     }
 }

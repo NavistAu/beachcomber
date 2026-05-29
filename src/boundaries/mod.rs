@@ -3,7 +3,6 @@
 
 pub mod git;
 pub mod http;
-pub mod killer;
 pub mod library;
 pub mod proc_snap;
 pub mod process;

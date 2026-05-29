@@ -1,5 +1,5 @@
-//! Singleton daemon enforcement: PID file with flock, version comparison,
-//! graceful handover on version mismatch, orphan reaping.
+//! Singleton daemon enforcement: PID file with flock, build-identity comparison,
+//! graceful handover on build mismatch, same-build serving probe.
 
 pub mod policy;
 
@@ -11,8 +11,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-use crate::boundaries::killer::{ProcessKiller, RealProcessKiller};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PidFileRecord {
@@ -379,130 +377,6 @@ pub fn binary_newer_than(binary: &Path, process_start_unix_ms: u64) -> std::io::
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     Ok(policy::is_binary_newer(mtime_ms, process_start_unix_ms))
-}
-
-/// Low-level helper: enumerate process PIDs whose binary matches `our_exe`, excluding
-/// `our_pid`.  Calls directly into sysinfo; has no injection seam.  Public only so
-/// `RealProcessKiller` can delegate here.
-pub fn find_orphan_daemons_raw(our_exe: &Path, our_pid: u32) -> Vec<u32> {
-    use sysinfo::System;
-
-    let our_canonical = std::fs::canonicalize(our_exe).unwrap_or_else(|_| our_exe.to_path_buf());
-
-    let mut sys = System::new();
-    sys.refresh_processes();
-
-    let candidates: Vec<u32> = sys
-        .processes()
-        .iter()
-        .filter_map(|(pid, proc)| {
-            let pid_u = pid.as_u32();
-            let exe = proc.exe()?;
-            let exe_canonical = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
-            if exe_canonical == our_canonical {
-                Some(pid_u)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    policy::filter_orphan_pids(&candidates, our_pid)
-}
-
-/// Find PIDs of other processes whose binary matches `our_exe`. Used to identify
-/// orphan `comb daemon` processes that need reaping.
-///
-/// Matches the canonicalised (realpath) binary path. Excludes the current process.
-pub fn find_orphan_daemons(our_exe: &Path) -> Vec<u32> {
-    find_orphan_daemons_raw(our_exe, std::process::id())
-}
-
-/// Find and reap all orphan daemon processes (matching binary, excluding self).
-/// Uses the default `RealProcessKiller` which calls libc::kill directly.
-/// Returns the count of orphans killed.
-///
-/// # Deprecation note
-///
-/// Prefer [`reap_stale_owner_at_socket`] for production use. This function
-/// enumerates ALL processes sharing the binary path and kills them, which is
-/// unsafe when multiple daemon instances run against different socket paths
-/// (e.g. concurrent test daemons). It is kept for testing and injection-point
-/// verification via [`reap_orphans_with`].
-pub fn reap_orphans(our_exe: &Path) -> usize {
-    reap_orphans_with(&RealProcessKiller, our_exe)
-}
-
-/// Injection-point variant of `reap_orphans` — accepts any `ProcessKiller`.
-///
-/// Useful for tests: pass a hand-written double to verify list/kill behaviour
-/// without touching the OS.
-pub fn reap_orphans_with(killer: &dyn ProcessKiller, our_exe: &Path) -> usize {
-    let our_pid = std::process::id();
-    let orphans = killer.list_by_exe(our_exe, our_pid);
-    let mut count = 0;
-    for pid in orphans {
-        match killer.kill_gracefully(pid, 1000) {
-            Ok(()) => {
-                tracing::info!("reaped orphan daemon: pid={pid}");
-                count += 1;
-            }
-            Err(e) => {
-                tracing::warn!("failed to reap orphan pid={pid}: {e}");
-            }
-        }
-    }
-    count
-}
-
-/// Reap the previous daemon owner of `pid_path`, if any.
-///
-/// Reads the PID file at `pid_path`, checks whether the recorded PID is a
-/// live process other than ourselves, and if so sends SIGTERM (then SIGKILL
-/// after 1 s grace). This is the correct production behaviour: it only touches
-/// the daemon that previously owned **this specific socket path**, so multiple
-/// daemon instances running against different socket paths (e.g. concurrent
-/// test daemons) do not kill each other.
-///
-/// Returns `true` if a stale owner was found and successfully reaped.
-/// Returns `false` if the pidfile is absent, unreadable, already dead, or
-/// points at ourselves.
-/// Logs a warning on kill failure but does not propagate the error.
-pub fn reap_stale_owner_at_socket(pid_path: &Path) -> bool {
-    let rec = match SingletonLock::read_record(pid_path) {
-        Ok(r) => r,
-        Err(_) => return false, // no pidfile or unreadable — nothing to reap
-    };
-
-    let our_pid = std::process::id();
-    if rec.pid == our_pid {
-        return false; // that's us (shouldn't happen, but be safe)
-    }
-
-    // Check whether the process is still alive.
-    let alive = unsafe { libc::kill(rec.pid as libc::pid_t, 0) } == 0;
-    if !alive {
-        tracing::debug!(
-            "pidfile at {pid_path:?} points at dead pid {}; nothing to reap",
-            rec.pid
-        );
-        return false;
-    }
-
-    tracing::info!(
-        "reaping stale daemon at pid {} (recorded in {pid_path:?})",
-        rec.pid
-    );
-    match supersede_existing(rec.pid, Duration::from_secs(1)) {
-        Ok(()) => {
-            tracing::info!("reaped stale daemon: pid={}", rec.pid);
-            true
-        }
-        Err(e) => {
-            tracing::warn!("failed to reap stale daemon pid={}: {e}", rec.pid);
-            false
-        }
-    }
 }
 
 /// Send SIGTERM to `pid`, wait up to `grace` for graceful exit, then SIGKILL if still alive.
