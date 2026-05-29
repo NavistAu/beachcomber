@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A wedged daemon no longer blackholes the socket.** On startup, when another daemon holds the lock with the same build, the new process now probes the canonical socket before exiting: it exits silently only if that daemon is actually serving. A same-build owner that acquired the lock but never bound the socket (or whose socket was deleted) is superseded after a short grace, so a healthy daemon rebinds instead of clients hitting a permanently dead socket. Startup orphan-reaping (which could kill peer daemons on other socket paths) was removed in favour of this targeted probe.
+
 ## [0.6.1] - 2026-05-29
 
 ### Fixed
