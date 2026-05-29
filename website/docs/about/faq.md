@@ -29,7 +29,7 @@ On a system with 20 shells and typical usage, expect the daemon to use 10-30MB o
 
 The socket file is cleaned up on graceful exit. If the daemon crashes unexpectedly, the stale socket file may remain. The next client connection will attempt to connect, fail, detect the stale socket, remove it, start a fresh daemon instance, and retry. This is handled transparently — `comb g` will succeed with a slight delay on the restart.
 
-You can verify the daemon is responsive at any time with `comb s`. If the daemon is unhealthy, `comb r` on any key will trigger a restart if needed.
+You can verify the daemon is responsive at any time with `comb s`. If the daemon is unhealthy, run `comb kill` to stop it — it will socket-activate automatically on the next query.
 
 ### Can I use this on Linux?
 

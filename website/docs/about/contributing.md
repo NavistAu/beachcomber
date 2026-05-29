@@ -27,7 +27,7 @@ cargo run -- get hostname.name
 ### Prerequisites
 
 - Rust 1.85+ (see `mise.toml` for exact version)
-- macOS (Linux support is planned but not yet implemented)
+- macOS and Linux
 
 ### Running Tests
 

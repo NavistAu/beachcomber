@@ -101,7 +101,7 @@ The daemon socket path depends on `$XDG_RUNTIME_DIR` (Linux) or `$TMPDIR` (macOS
 
 ```sh
 ls -la /run/user/$(id -u)/beachcomber/   # Linux
-ls -la $TMPDIR/beachcomber-$(id -u)/     # macOS fallback
+ls -la /tmp/beachcomber-$(id -u)/        # fallback (no XDG_RUNTIME_DIR)
 ```
 
 If the socket is missing, run `comb d` in the foreground to see why it failed to start.

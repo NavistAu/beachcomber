@@ -260,7 +260,7 @@ graph TB
 
 **Connection context** means consumers can set a working directory once on connect. `comb g git.branch` without an explicit path uses the connection's context directory, making prompt integration natural.
 
-**Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a backoff/drain sequence after queries stop — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
+**Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a decay sequence after queries stop — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
 
 **Virtual providers and streaming:** external processes can also write data into the cache via `comb p`, exposing arbitrary state to prompt and statusline consumers without writing a script provider. Long-lived connections can stream changes via `comb w`, receiving an NDJSON line each time a cache value is updated.
 
@@ -333,17 +333,13 @@ comb s --filter=fsevents_reinstate=true
 # Sort options
 comb s --sort age             # oldest first
 comb s --sort lifecycle       # most-decayed first
-comb s --sort poll_interval   # slowest-pollers first
-
-# Custom per-row template
-comb s --format "{{ provider }}.{{ field }}={{ value }}"
 
 # Script-friendly formats (bypass the human preset)
 comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <template>`, `--filter <provider>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <field|age|stale|lifecycle|poll_interval>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <provider>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
 
@@ -357,6 +353,12 @@ comb d --socket /tmp/beachcomber-debug.sock            # override socket path
 ```
 
 The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
+
+**Socket path resolution** — the daemon (and all client commands) resolve the socket path in this order:
+1. `daemon.socket_path` in config, if set
+2. `BEACHCOMBER_SOCKET` environment variable, if set
+3. `$XDG_RUNTIME_DIR/beachcomber/sock`
+4. `/tmp/beachcomber-<uid>/sock`
 
 ### `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--null]`
 
@@ -417,6 +419,16 @@ comb i
 # Prints ready-to-paste integration snippets for each detected tool.
 ```
 
+### `comb k` (kill)
+
+Stop the running daemon. The daemon will socket-activate again on the next client query.
+
+```sh
+comb k                           # stop the daemon (waits up to 5s for exit)
+comb kill --timeout 10           # wait up to 10s for exit
+comb kill --socket /tmp/other.sock  # target a specific socket
+```
+
 ### `comb c` (check) `[subcommand]`
 
 Run health checks and introspect daemon internals. Without a subcommand, runs top-level aggregation.
@@ -427,7 +439,7 @@ comb c daemon            # daemon health: pid, version, uptime, request counts, 
 comb c providers         # provider health and backoff state
 comb c config            # validate config file syntax
 comb c cache             # cache entries, staleness, hit/miss summary
-comb c backoff           # keys in the backoff/drain sequence
+comb c lifecycle         # keys in the decay sequence
 comb c watches           # active filesystem watch registrations
 comb c timers            # poll timers and last-run times
 comb c demand            # demand-tracked keys and last-query times
@@ -502,7 +514,7 @@ beachcomber runs with sensible defaults and requires no configuration. The optio
 
 # Override the Unix socket path.
 # Default: $XDG_RUNTIME_DIR/beachcomber/sock
-#          Falls back to: $TMPDIR/beachcomber-<uid>/sock
+#          Falls back to: /tmp/beachcomber-<uid>/sock
 socket_path = ""
 
 # Log level for daemon output.
@@ -537,51 +549,58 @@ provider_timeout_secs = 10
 
 [lifecycle]
 
-# How long cached data stays warm after last query.
-# Default: "30s"
-cache_lifespan = "30s"
-
 # How long (in seconds) the daemon waits with no active connections before
 # shutting itself down. The next client connection will socket-activate a
 # fresh instance.
 # Set to null to disable idle shutdown (daemon stays resident permanently).
-# Default: 300 (5 minutes)
-idle_shutdown_secs = 300
+# Default: null (disabled — daemon stays resident)
+# idle_shutdown_secs = 300
 
-# Consecutive failures before the daemon backs off retrying a provider.
-# Default: 3
-failure_reattempts = 3
+# Global default poll interval. Per-source [providers.<name>.<source>] blocks override this.
+# Default: "60s"
+poll_interval = "60s"
 
-# Initial delay between retries after failure_reattempts is exceeded.
-# Doubles each attempt for 4 levels, then stays at level 4.
-# Default: "1s"
-failure_backoff_interval = "1s"
+# Global default poll keep-alive count.
+# Default: 12
+poll_live_count = 12
+
+# Global default for fsevents_reinstate. Overrides per-source defaults when set.
+# Default: unset (each source uses its own declared default)
+# fsevents_reinstate = true
+
+
+# ─── Failback (global retry defaults) ──────────────────────────────────────────
+
+[failback]
+
+# Consecutive failures before suppression. Default: 3
+# count = 3
+
+# Suppression duration (doubles each level). Default: "1s"
+# interval = "1s"
 
 
 # ─── Built-in Provider Overrides ───────────────────────────────────────────────
-# Use [providers.<name>] to override defaults for any built-in provider.
-# Only specify the fields you want to change.
+# Use [providers.<name>] to set provider-level knobs (only `enabled` is valid here).
+# Source-level knobs (poll_interval, poll_count, fsevent_*, failback_*) go in
+# [providers.<name>.<source>] sub-tables.
 
 # Disable a provider entirely (it will never execute or appear in results)
 [providers.conda]
 enabled = false
 
-# Override polling interval and floor for battery
-[providers.battery]
-poll_live_interval = "60s"  # default: 30s
-poll_floor_secs = 10        # default: 5
+# Override polling interval for battery (source name: "level")
+[providers.battery.level]
+poll_interval = "60s"   # default: 30s
+poll_count = 10         # keep-alive poll count; default: 12
 
-# Make git refresh more frequently (useful on fast machines or large repos)
-[providers.git]
-poll_live_interval = "30s"  # default: no poll (filesystem-triggered only)
-poll_floor_secs = 2         # default: not set
-# Keep git data warm longer between queries
-cache_lifespan = "2m"
+# Add a safety-net poll to git's refs source (filesystem-triggered by default)
+[providers.git.refs]
+poll_interval = "30s"   # default: no poll (filesystem-triggered only)
 
 # Override network polling interval
-[providers.network]
-poll_live_interval = "30s"  # default: 10s
-poll_floor_secs = 10        # default: 5
+[providers.network.state]
+poll_interval = "30s"   # default: 10s
 
 
 # ─── Custom Script Providers ───────────────────────────────────────────────────
@@ -674,24 +693,40 @@ poll = "86400s"
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `cache_lifespan` | duration | `"30s"` | How long cached data stays warm after last query |
-| `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
-| `failure_reattempts` | int | `3` | Consecutive failures before backing off retries |
-| `failure_backoff_interval` | duration | `"1s"` | Initial retry delay after failure_reattempts exceeded |
+| `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down; `null` keeps daemon resident |
+| `poll_interval` | duration | `"60s"` | Global default poll interval (overridden by per-source blocks) |
+| `poll_live_count` | int | `12` | Global default poll keep-alive count |
+| `fsevents_reinstate` | bool or null | `null` (unset) | Global override for fsevents_reinstate; unset means each source uses its declared default |
+
+**`[failback]` section:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `count` | int | `3` | Consecutive failures before suppression |
+| `interval` | duration | `"1s"` | Initial suppression duration (doubles each level) |
 
 > Duration fields accept whole-second strings: `"30s"`, `"5m"`, `"1h"`, `"2h30m"`. Sub-second values (e.g. `"500ms"`) are not accepted.
 
 **`[providers.<name>]` section (built-in overrides):**
 
+Only `enabled` is valid at the provider level. All source-level knobs go in `[providers.<name>.<source>]` sub-tables.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` | Set `false` to disable provider entirely |
-| `poll_live_interval` | duration | provider-specific | Poll interval when provider has active demand |
-| `poll_idle_interval` | duration | provider-specific | Poll interval when provider has no active demand |
-| `poll_floor_secs` | int | provider-specific | Minimum poll interval consumers can request |
-| `cache_lifespan` | duration | provider-specific | How long cached data stays warm after last query |
-| `failure_reattempts` | int | `3` | Consecutive failures before backing off retries |
-| `failure_backoff_interval` | duration | `"1s"` | Initial retry delay after failure_reattempts exceeded |
+
+**`[providers.<name>.<source>]` section (per-source overrides for built-ins and script providers):**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `poll_interval` | duration | source-specific | Poll interval for this source |
+| `poll_count` | int | `12` | Keep-alive poll count — how many polls before demand must be re-signalled |
+| `fsevent_patterns` | array of strings | source-specific | Relative path patterns to watch |
+| `fsevent_abs_paths` | array of strings | source-specific | Absolute paths to watch |
+| `fsevent_lifespan` | duration | source-specific | How long filesystem watches stay registered |
+| `fsevent_reinstates` | bool | source-specific | Whether watches survive decay back to active |
+| `failback_count` | int | `3` | Consecutive failures before suppression |
+| `failback_interval` | duration | `"1s"` | Initial suppression duration |
 
 **`[providers.<name>]` section (custom script providers):**
 
@@ -701,14 +736,10 @@ poll = "86400s"
 | `output` | string | no | `"json"` (default), `"kv"`, or `"text"` |
 | `scope` | string | no | `"global"` (default) or `"path"` |
 | `enabled` | bool | no | `false` to disable |
-| `poll_live_interval` | duration | no | Poll interval when provider has active demand |
-| `poll_idle_interval` | duration | no | Poll interval when provider has no active demand |
-| `poll_floor_secs` | int | no | Minimum poll interval |
-| `cache_lifespan` | duration | no | How long cached data stays warm after last query |
-| `failure_reattempts` | int | no | Consecutive failures before backing off retries |
-| `failure_backoff_interval` | duration | no | Initial retry delay after failure_reattempts exceeded |
 | `invalidation.poll` | string | no | Poll interval as duration string (`"30s"`, `"2m"`) |
 | `invalidation.watch` | array of strings | no | File/directory patterns to watch |
+
+Source-level knobs (`poll_interval`, `poll_count`, `fsevent_*`, `failback_*`) go in `[providers.<name>.<source>]` — see the per-source table above.
 
 **`[providers.<name>]` section (HTTP providers):**
 
@@ -1682,12 +1713,12 @@ battery    percent    85           4200  false
 comb s --filter git
 ```
 
-For daemon internals (pid, uptime, watchers, request counts, backoff state, poll timers), use `comb check`:
+For daemon internals (pid, uptime, watchers, request counts, lifecycle state, poll timers), use `comb check`:
 
 ```sh
 comb check daemon     # pid, version, uptime, request counts, active watchers
 comb check watches    # active filesystem watch registrations, paths being watched
-comb check backoff    # keys in the drain/eviction sequence after demand expired
+comb check lifecycle  # keys in the decay/eviction sequence after demand expired
 comb check timers     # active poll timers and when they last ran
 comb check demand     # demand-tracked keys and last-query times
 ```
@@ -1697,9 +1728,8 @@ comb check demand     # demand-tracked keys and last-query times
 The daemon will restart automatically the next time any client queries it (socket activation). To force a restart:
 
 ```sh
-# Kill by PID file (socket path depends on your platform)
-kill $(cat ~/.local/state/beachcomber/daemon.pid 2>/dev/null || \
-       cat /run/user/$(id -u)/beachcomber/daemon.pid 2>/dev/null)
+# Preferred: use the kill command
+comb kill
 
 # Or by process name
 pkill -f 'comb daemon'
@@ -1712,11 +1742,11 @@ comb g hostname.short
 
 **Daemon never starts / connection refused**
 
-The daemon socket path depends on `$XDG_RUNTIME_DIR` (Linux) or `$TMPDIR` (macOS). Check that the socket exists:
+The daemon socket path depends on `$XDG_RUNTIME_DIR` (Linux) or `/tmp` (macOS). Check that the socket exists:
 
 ```sh
-ls -la /run/user/$(id -u)/beachcomber/   # Linux
-ls -la $TMPDIR/beachcomber-$(id -u)/     # macOS fallback
+ls -la /run/user/$(id -u)/beachcomber/       # Linux
+ls -la /tmp/beachcomber-$(id -u)/            # macOS fallback
 ```
 
 If the socket is missing, run `comb d` in the foreground to see why it failed to start.
@@ -1726,7 +1756,7 @@ If the socket is missing, run `comb d` in the foreground to see why it failed to
 Check whether the provider is in a failure backoff loop:
 
 ```sh
-comb check backoff
+comb check lifecycle
 # Also check the daemon log for "suppressed due to failure backoff"
 ```
 
@@ -1772,14 +1802,16 @@ beachcomber uses a simple newline-delimited JSON protocol over a Unix socket. An
 
 Socket path resolution order:
 1. `daemon.socket_path` in config, if set
-2. `$XDG_RUNTIME_DIR/beachcomber/sock`
-3. `$TMPDIR/beachcomber-<uid>/sock`
+2. `BEACHCOMBER_SOCKET` environment variable, if set
+3. `$XDG_RUNTIME_DIR/beachcomber/sock`
+4. `/tmp/beachcomber-<uid>/sock`
 
 Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each response is a JSON object followed by `\n`.
 
 ### Request Format
 
 ```json
+{"op": "hello"}
 {"op": "get", "key": "git.branch", "path": "/home/user/project"}
 {"op": "get", "key": "git", "path": "/home/user/project"}
 {"op": "get", "key": "battery"}
@@ -1795,13 +1827,20 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "status"}
 {"op": "introspect", "subject": "daemon"}
 {"op": "introspect", "subject": "providers"}
+{"op": "introspect", "subject": "config"}
+{"op": "introspect", "subject": "cache"}
+{"op": "introspect", "subject": "lifecycle"}
+{"op": "introspect", "subject": "watches"}
+{"op": "introspect", "subject": "timers"}
+{"op": "introspect", "subject": "demand"}
+{"op": "introspect", "subject": "procs"}
 ```
 
 **Fields:**
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `get`, `refresh`, `put`, `watch`, `context`, `status`, `introspect` |
+| `op` | string | Operation: `hello`, `get`, `refresh`, `put`, `watch`, `context`, `status`, `introspect` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
 | `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
@@ -2006,9 +2045,7 @@ You can verify the daemon is responsive at any time with `comb s`. If the daemon
 
 ### Can I use this on Linux?
 
-macOS is the primary target and the only supported platform for the current release. Linux support is designed in from the beginning — the filesystem watcher, battery reader, and network reader are all abstracted behind platform traits — and is planned for v0.2.0.
-
-The providers that read config files directly (`kubecontext`, `gcloud`, `aws`, `conda`) work identically on Linux. The providers that use platform-specific APIs (`battery` via IOKit/pmset, `network` via getifaddrs + airport) will need Linux implementations reading `/sys/class/power_supply/` and `/sys/class/net/`.
+Yes. macOS and Linux are both fully supported in 0.6.0. Pre-built packages ship for `.deb`, `.rpm`, `aarch64`, and `x86_64` targets. The filesystem watcher, battery reader, and network reader are all abstracted behind platform traits; Linux-specific paths (`/sys/class/power_supply/`, `/sys/class/net/`) are used on Linux just as IOKit/pmset are used on macOS.
 
 ### Can I run multiple daemons simultaneously?
 

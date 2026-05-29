@@ -62,7 +62,7 @@ Standard Rust API compatibility rules apply. Public API changes follow [the Carg
 
 ### Shared Library Provider C ABI
 
-The C ABI documented in [Provider Development §7](/docs/internals/provider-development#7-shared-library-providers) is a public binary interface. The three exported symbols — `beachcomber_provider_metadata`, `beachcomber_provider_execute`, `beachcomber_provider_free` — and their signatures are covered by the same stability guarantees as the wire protocol.
+The C ABI documented in [Provider Development §8](/docs/internals/provider-development#8-shared-library-providers) is a public binary interface. Both the multi-source symbols (`bc_source_count`, `bc_source_metadata`, `bc_source_execute`) and the legacy single-source symbols (`beachcomber_provider_metadata`, `beachcomber_provider_execute`, `beachcomber_provider_free`) — and their signatures — are covered by the same stability guarantees as the wire protocol.
 
 | Change | Version bump |
 |---|---|

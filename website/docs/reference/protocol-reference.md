@@ -11,8 +11,9 @@ beachcomber uses a simple newline-delimited JSON protocol over a Unix socket. An
 
 Socket path resolution order:
 1. `daemon.socket_path` in config, if set
-2. `$XDG_RUNTIME_DIR/beachcomber/sock`
-3. `$TMPDIR/beachcomber-<uid>/sock`
+2. `BEACHCOMBER_SOCKET` env var, if non-empty
+3. `$XDG_RUNTIME_DIR/beachcomber/sock`
+4. `/tmp/beachcomber-<uid>/sock`
 
 Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each response is a JSON object followed by `\n`.
 
@@ -68,7 +69,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 Response:
 
 ```json
-{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.5.1"}}
+{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.6.0"}}
 ```
 
 `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
@@ -79,7 +80,7 @@ Response:
 
 **`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
 
-**`status`:** Returns warm cache entries as an array of row objects. Each row has `provider`, `path`, `field`, `value`, `age_ms`, and `stale` fields. This is the data that `comb s` renders as a table. For daemon internals (pid, uptime, etc.), use `{"op":"introspect","subject":"daemon"}`.
+**`status`:** Returns warm cache entries as an array of row objects. Each row has `provider`, `path`, `source`, `field`, `value`, `age_ms`, `stale`, `kind`, and `failure` fields (`source`, `kind`, and `failure` are omitted when null/not applicable). This is the data that `comb s` renders as a table. For daemon internals (pid, uptime, etc.), use `{"op":"introspect","subject":"daemon"}`.
 
 ```json
 {"op":"status"}
@@ -94,7 +95,7 @@ Response:
 ]}
 ```
 
-**`introspect`:** Inspect daemon internals. The `subject` field selects what to inspect: `daemon`, `providers`, `config`, `cache`, `backoff`, `watches`, `timers`, `demand`, `procs`.
+**`introspect`:** Inspect daemon internals. The `subject` field selects what to inspect: `daemon`, `providers`, `config`, `cache`, `lifecycle`, `watches`, `timers`, `demand`, `procs`.
 
 ```json
 {"op":"introspect","subject":"daemon"}

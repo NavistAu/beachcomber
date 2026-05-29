@@ -5,7 +5,7 @@ title: Architecture
 
 # beachcomber Architecture
 
-Internal reference for contributors. Describes how the daemon (`comb d`) is structured, how components relate, and the reasoning behind key design choices.
+Internal reference for contributors. Describes how the daemon (`comb daemon`) is structured, how components relate, and the reasoning behind key design choices.
 
 ---
 
@@ -22,14 +22,14 @@ graph TB
     Scheduler --> FSW["FsWatcher<br/>(notify crate)"]
     Scheduler --> Watchdog["Watchdog<br/>(heartbeat monitor)"]
 
-    SB --> Provider["Arc‹dyn Provider›<br/>executes, returns ProviderResult"]
-    Provider --> Put["Cache.put()"]
+    SB --> Provider["Arc‹dyn Provider›<br/>sources() → Source::execute() → SourceResult"]
+    Provider --> Put["Cache.put_source()"]
 ```
 
 Data flow summary:
 
 - **Read path**: client -> Server -> Cache.get() -> response (no provider involved)
-- **Write path**: trigger (fs event or poll timer) -> Scheduler -> spawn_blocking(provider.execute()) -> Cache.put()
+- **Write path**: trigger (fs event or poll timer) -> Scheduler -> spawn_blocking(source.execute()) -> Cache.put_source()
 - **Miss path**: client asks for uncached key -> Server executes provider inline (synchronous, blocking) -> result written to Cache -> response returned to client
 
 The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Server sends messages to the Scheduler over an `mpsc::Sender<SchedulerMessage>`. The Scheduler owns the `FsWatcher` and all demand/poll state.
@@ -47,33 +47,50 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/scheduler/lifecycle.rs` | `LifecycleRegistry` state machine: Active → Decay1..4 → Evicted. Per-entry poll and decay timers. Canonical behaviour in `docs/cache-lifecycle.md` |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; generation counter |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
-| `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`; `split_key()` |
-| `src/config.rs` | TOML config loading from XDG directories; `Config`, `DaemonConfig`, `LifecycleConfig`, `ScriptProviderConfig` |
-| `src/provider/mod.rs` | `Provider` trait; `ProviderResult`, `Value`, `ProviderMetadata`, `FieldSchema`, `InvalidationStrategy` |
-| `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; built-in registration; script provider registration from config |
-| `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; notified by cache on every put |
-| `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, `Once` strategy, global scope |
-| `src/provider/git.rs` | `GitProvider`: `git status --porcelain=v2`, file reads for stash/state; `WatchAndPoll` on `.git` |
+| `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`; `split_key()` — first-dot-only `provider.field` split. Source-aware parsing lives in `src/query.rs` |
+| `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` / `provider.source` / `provider.source.field`), `resolve_path`, `split_metadata_suffix`, and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
+| `src/config.rs` | TOML config loading from XDG directories; `Config`, `DaemonConfig`, `LifecycleConfig`, `ScriptProviderConfig`, `SourceOverrideConfig` |
+| `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `SourceScope`, `FieldSchema`, `InvalidationStrategy`, `KeepAlive`, `FailbackConfig`, `SourceResult`; `expand_abs_path()` helper |
+| `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; `field → source` reverse map (`HashMap<(provider, field), source_name>`); built-in registration; validation at registration |
+| `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
+| `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, pure-watch global (`KeepAlive::Never`), `Watch { patterns: [], abs_paths: [...] }` — no `Once` strategy |
+| `src/provider/git.rs` | `GitProvider`: three sources — `refs` (Watch, `.git/`), `diff` (Poll, 30s), `status` (WatchAndPoll, `.git/index`, 60s) |
 | `src/provider/script.rs` | `ScriptProvider`: runs arbitrary shell commands; parses JSON or KV output; strategy built from config |
-| `src/provider/library.rs` | `LibraryProvider`: loads shared libraries (`.so`/`.dylib`) via `libloading`; C ABI contract with `beachcomber_provider_metadata/execute/free` symbols |
+| `src/provider/library.rs` | `LibraryProvider`: loads shared libraries (`.so`/`.dylib`) via `libloading`; detects ABI at load time — multi-source (`bc_source_count` / `bc_source_metadata` / `bc_source_execute`) or legacy (`beachcomber_provider_metadata` / `beachcomber_provider_execute` / `beachcomber_provider_free`) |
 | `src/provider/http.rs` | `HttpProvider`: in-process HTTP client for REST API providers; `extract` for JSON path navigation |
 | `src/client.rs` | `Client` (one-shot) and `ClientSession` (persistent) for consumer-side socket communication |
 
-The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`, `sudo`, `op`) follow the same pattern as `git.rs` — each implements `Provider` for a specific domain.
+The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`, `sudo`, `op`) follow the same pattern — each implements `Provider` (namespace) declaring one or more `Source` objects.
+
+### Provider→Source layering
+
+The Provider/Source/Field model has three layers:
+
+- **Provider** — a named namespace (e.g., `git`). Declares 1+ Sources. The cache key `provider\0path` is still at this level.
+- **Source** — one invalidation strategy, one set of fields, one lifecycle entry. Key for lifecycle, watches, and failure backoff is `(provider, path, source)`. Examples: git's `refs`, `diff`, `status` sources.
+- **Field** — a typed value. Belongs to exactly one Source within a Provider.
+
+The registry builds a `field → source` reverse map at registration so that a `get(provider.field)` query can be routed to the owning source without scanning.
+
+**Lifecycle keying** uses `(provider, path, source)` — each source instance has its own Active/Decay/Evicted state, independent of sibling sources at the same `(provider, path)`.
+
+**Cache layout** — `CacheEntry.sources: HashMap<source_name, SourceResult>`. Each `SourceResult` holds `fields`, `last_refreshed_ms`, and `expected_interval_secs`. Reads flatten across sources; writes are per-source (`cache.put_source(provider, path, source_name, result)`).
+
+**Watch registration** — per `(provider, path, source)`. Each source declares relative `patterns` (matched within the scope path) and/or absolute `abs_paths` (e.g., `$XDG_CONFIG_HOME/mise`). The `expand_abs_path()` helper expands `~`, `$HOME`, and XDG env vars at registration time.
 
 ---
 
-## 3. Request Lifecycle: `comb g git.branch .`
+## 3. Request Lifecycle: `comb get git.branch .`
 
 This traces the full path from CLI invocation to output on stdout.
 
 **Step 1: CLI entry point**
 
-The `comb g` subcommand resolves the socket path (XDG runtime dir or `$TMPDIR/beachcomber-$UID/sock`). If no socket exists, it calls `daemon::ensure_daemon()` which forks `comb d --socket <path>` as a detached child and waits up to ~1.5s for the socket to appear.
+The `comb get` subcommand resolves the socket path (config override → `BEACHCOMBER_SOCKET` env → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`). If no socket exists, it calls `daemon::ensure_daemon()` which forks `comb daemon --socket <path>` as a detached child and waits up to ~1.5s for the socket to appear.
 
 **Step 2: Socket connection**
 
-The client opens a Unix stream to the socket. For a one-shot `comb g`, this is a fresh connection. For `ClientSession` consumers (prompts, status bars), the connection is reused.
+The client opens a Unix stream to the socket. For a one-shot `comb get`, this is a fresh connection. For `ClientSession` consumers (prompts, status bars), the connection is reused.
 
 **Step 3: Request serialisation**
 
@@ -93,7 +110,7 @@ and writes it as a single newline-terminated line.
 
 **Step 6: Path resolution**
 
-`resolve_path(Some("."), &context_path, "git", Some("branch"), &registry)` looks up the `git.branch` field's declared `FieldScope`. It is `PathScoped`, so the explicit path `"."` is used. (If the CLI had omitted the path argument, the session's context path would be used instead.) Global fields — e.g., `hostname.short` — return `None` here regardless of the explicit or context path.
+`resolve_path(Some("."), &context_path, "git", &registry)` checks whether the `git` provider has any `PathScoped` sources (it does). The explicit path `"."` is used. (If the CLI had omitted the path argument, the session's context path would be used instead.) Global-only providers return `None` here regardless of any explicit or context path.
 
 **Step 7: Cache lookup**
 
@@ -101,7 +118,7 @@ and writes it as a single newline-terminated line.
 
 **Step 8: Field extraction**
 
-The handler accesses `entry.result.get("branch")` and converts the `Value::String` to a `serde_json::Value`. It packages this into `Response::ok(data, age_ms, stale)`.
+The handler looks up the `refs` source (via the `field → source` reverse map for `git.branch`) and accesses `entry.sources["refs"].fields.get("branch")`. It converts the `Value::String` to a `serde_json::Value` and packages it into `Response::ok(data, age_ms, stale)`.
 
 **Step 9: Response formatting**
 
@@ -113,7 +130,7 @@ The client reads the response line, strips metadata, and writes the plain text t
 
 **On a cache miss:**
 
-The server executes the provider inline, synchronously, before returning the response. The provider runs via `spawn_blocking` on the blocking thread pool and the server task awaits the result. Once execution completes, the result is written to the cache and returned to the client in the same response. Subsequent requests for the same key hit the cache immediately.
+The server detects no cached value for the key and executes the owning source inline via `tokio::task::spawn_blocking`, awaiting the result. The result is written to the cache and returned directly in the same response. The client receives data on the first query — there is no empty response or polling step.
 
 ---
 
@@ -147,26 +164,26 @@ Before launching, the scheduler checks `failure_counts`. If the provider has exc
 
 **Step 7: spawn_blocking**
 
-The scheduler clones `Arc<dyn Provider>` from the registry and calls:
+The scheduler clones `Arc<dyn Source>` for the matching source and calls:
 ```rust
 tokio::spawn(async move {
     let result = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
-        tokio::task::spawn_blocking(move || provider.execute(path)),
+        tokio::task::spawn_blocking(move || source.execute(path)),
     ).await;
     ...
 });
 ```
 
-`spawn_blocking` runs `provider.execute()` on tokio's dedicated blocking thread pool. This is critical: the scheduler's async loop continues processing messages, poll ticks, and more filesystem events while the provider runs.
+`spawn_blocking` runs `source.execute()` on tokio's dedicated blocking thread pool. This is critical: the scheduler's async loop continues processing messages, poll ticks, and more filesystem events while the source runs.
 
-**Step 8: Provider executes**
+**Step 8: Source executes**
 
-`GitProvider::execute(Some("/home/user/myrepo"))` runs `git status --porcelain=v2 --branch` in a subprocess and reads `.git/logs/refs/stash` directly. It returns `Some(ProviderResult)`.
+The matching `GitProvider` source (e.g., `refs`) runs its logic — reads `.git/HEAD`, `.git/refs/`, stash log, etc. — and returns a `SourceResult`.
 
 **Step 9: Cache write**
 
-Back in the async context, on success: `cache.put_with_interval("git", Some("/home/user/myrepo"), result, poll_interval_secs)`. The DashMap insert is lock-free.
+Back in the async context, on success: `cache.put_source("git", Some("/home/user/myrepo"), "refs", result)`. The DashMap insert is lock-free. Sibling sources (`diff`, `status`) are untouched.
 
 **Step 10: Rerun check**
 
@@ -186,31 +203,35 @@ The scheduler's per-second tick checks all demand entries. Any key not queried w
 
 - The poll timer for that key is removed.
 - Filesystem watches for that key are removed (if no other keys share the watch path).
-- A `BackoffState` is started in `Grace` stage.
+- The key enters the decay lifecycle managed by `LifecycleRegistry` (`src/scheduler/lifecycle.rs`).
 
-**Cache lifecycle**
+**Cache lifecycle (decay sequence)**
 
-Each cache entry advances through the states defined in `docs/cache-lifecycle.md`. `LifecycleRegistry` in `src/scheduler/lifecycle.rs` owns the state machine:
+Lifecycle state is tracked **per source instance** at `(provider, path, source)`. Sibling sources at the same `(provider, path)` decay independently. `LifecycleRegistry` in `src/scheduler/lifecycle.rs` owns the state machine:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Active : first demand signal
-    Active --> Decay1 : keep-alive elapses
-    Decay1 --> Decay2 : step duration elapses
-    Decay2 --> Decay3 : step duration elapses
-    Decay3 --> Decay4 : step duration elapses
-    Decay4 --> [*] : cache.remove() (eviction)
-    Decay1 --> Active : demand signal
-    Decay2 --> Active : demand signal
-    Decay3 --> Active : demand signal
-    Decay4 --> Active : demand signal
+    [*] --> Active : demand present
+    Active --> Decay1 : demand expires
+    Decay1 --> Decay2
+    Decay2 --> Decay3
+    Decay3 --> Decay4
+    Decay4 --> Evicted : cache.remove()
+    Decay1 --> Active : QueryActivity
+    Decay2 --> Active : QueryActivity
+    Decay3 --> Active : QueryActivity
+    Decay4 --> Active : QueryActivity
 ```
 
-Each decay step doubles the poll interval and the step duration, so every state contains exactly `K` polls at its rate. Demand signals (consumer requests or fsevents on watched paths when `fsevents_reinstate=true`) reset the timer and reinstate any decaying entry to Active. See `docs/cache-lifecycle.md` for the full behaviour spec.
+Each decay step doubles the poll interval and the step duration relative to the previous step. At `Evicted`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any decay stage, the key is reinstated to `Active` immediately. If `fsevents_reinstate` is true for the source, a matching filesystem event also reinstates it.
+
+There are no `Grace`, `BackoffState`, `SlowPoll`, or `Frozen` states. The only states are Active, Decay1..4, and Evicted.
+
+See `docs/cache-lifecycle.md` for the canonical spec: state machine, sequence diagrams, BDD assertions, and config knobs (`poll_interval`, `poll_live_count`, `fsevents_reinstate`).
 
 **Idle shutdown**
 
-When `cache.is_empty()` and `lifecycle.is_empty()` both hold true and no activity has been seen for `lifecycle.idle_shutdown_secs`, the daemon exits.
+When `cache.is_empty()` and `demand.is_empty()` both hold true and no activity has been seen for `lifecycle.idle_shutdown_secs`, the daemon exits.
 
 ---
 
@@ -234,7 +255,7 @@ Providers are stored as `Arc<dyn Provider>`. When the scheduler needs to execute
 
 **Scheduler-owned mutable state**
 
-The Scheduler owns all mutable coordination state: `demand`, `poll_states`, `watch_paths`, `backoff`. This state is only accessed from the single scheduler task, so it requires no synchronisation. The `in_flight`, `pending_rerun`, and `failure_counts` maps are wrapped in `Mutex` because they are accessed from both the scheduler task and from within `tokio::spawn` closures that run after `spawn_blocking` completes.
+The Scheduler owns all mutable coordination state: `demand`, `poll_states`, `watch_paths`, `lifecycle`. This state is only accessed from the single scheduler task, so it requires no synchronisation. The `in_flight`, `pending_rerun`, and `failure_counts` maps are wrapped in `Mutex` because they are accessed from both the scheduler task and from within `tokio::spawn` closures that run after `spawn_blocking` completes.
 
 **No provider-side concurrency**
 
@@ -248,9 +269,9 @@ Providers are `Send + Sync` but stateless. They hold no mutable state. The same 
 
 Early versions used a `(String, Option<String>)` tuple as the DashMap key, requiring two heap allocations per lookup. Changing to a single string with a null-byte separator (`"git\0/home/user/repo"`) reduced this to one allocation and improved cache read latency by 16% (183ns to 157ns). The null byte is safe as a separator because it cannot appear in valid filesystem paths. See `docs/performance.md` §1.2.
 
-**spawn_blocking, not async providers**
+**spawn_blocking, not async sources**
 
-The `Provider` trait's `execute` method is synchronous (`fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)>`). This is intentional. Providers need to call blocking APIs: `std::process::Command`, `std::fs::read_to_string`, `libc` syscalls. Async providers would require those calls to be wrapped in `spawn_blocking` internally anyway. Keeping the interface synchronous is simpler, and `spawn_blocking` at the callsite (the scheduler) is the right place to manage the thread pool boundary. This also means provider authors don't need to think about async. Each returned tuple is `(cache_path, result)` — `None` for a pathless global entry, `Some(p)` for a path-scoped one.
+The `Source` trait's `execute` method is synchronous (`fn execute(&self, path: Option<&str>) -> SourceResult`). This is intentional. Sources need to call blocking APIs: `std::process::Command`, `std::fs::read_to_string`, `libc` syscalls. Async sources would require those calls to be wrapped in `spawn_blocking` internally anyway. Keeping the interface synchronous is simpler, and `spawn_blocking` at the callsite (the scheduler) is the right place to manage the thread pool boundary. This also means provider authors don't need to think about async.
 
 **Fire-and-forget execution**
 

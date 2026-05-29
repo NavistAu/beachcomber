@@ -137,18 +137,14 @@ comb s --filter=fsevents_reinstate=true
 
 # Sort options
 comb s --sort age             # oldest first
-comb s --sort lifecycle       # most-decayed first
-comb s --sort poll_interval   # slowest-pollers first
-
-# Custom per-row template
-comb s --format "{{ provider }}.{{ field }}={{ value }}"
+comb s --sort stale           # stale entries first
 
 # Script-friendly formats (bypass the human preset)
 comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <template>`, `--filter <provider>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <field|age|stale|lifecycle|poll_interval>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+**Flags:** `--format <preset>` (`human` (default), `tsv`, `json`, `csv`, `table`, `sh`), `--filter <key=value>` (keys: `provider`, `path`, `field`, `stale`, `lifecycle`, `fsevents_reinstate`; e.g. `--filter=lifecycle=active`, `--filter=provider=git`, `--filter=fsevents_reinstate=true`), `--sort <default|provider|path|field|value|age|stale>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
 
 **TTL column key:**
 
@@ -267,6 +263,8 @@ Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
 ## `comb d` (daemon) `[--socket <path>]`
 
 Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
+
+Socket path resolution order: `daemon.socket_path` in config → `BEACHCOMBER_SOCKET` env var → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`.
 
 ```sh
 # Run with debug logging

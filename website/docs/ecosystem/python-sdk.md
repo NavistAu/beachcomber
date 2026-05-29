@@ -73,9 +73,10 @@ client = Client(socket_path="/run/user/1000/beachcomber/sock")
 
 The SDK discovers the daemon socket at:
 
-1. `$XDG_RUNTIME_DIR/beachcomber/sock`
-2. `$TMPDIR/beachcomber-<uid>/sock`
-3. `/tmp/beachcomber-<uid>/sock`
+1. Config file override (if set in `~/.config/beachcomber/config.toml`)
+2. `$BEACHCOMBER_SOCKET` environment variable
+3. `$XDG_RUNTIME_DIR/beachcomber/sock`
+4. `/tmp/beachcomber-<uid>/sock`
 
 ## API reference
 
@@ -108,7 +109,7 @@ Write a value into the cache as a virtual provider. `data=None` clears the entry
 
 #### `client.introspect(subject, duration_secs=None)`
 
-Inspect a daemon subsystem. `subject` is an `IntrospectSubject` enum value (`DAEMON`, `PROVIDERS`, `CONFIG`, `CACHE`, `BACKOFF`, `WATCHES`). Returns an `IntrospectResponse`.
+Inspect a daemon subsystem. `subject` is an `IntrospectSubject` enum value (`DAEMON`, `PROVIDERS`, `CONFIG`, `CACHE`, `LIFECYCLE`, `WATCHES`). Returns an `IntrospectResponse`.
 
 #### `client.watch(key, path=None)`
 

@@ -52,13 +52,15 @@ The registry resolves which source owns each field. The `provider.field` form is
 
 Each source declares one of three strategies:
 
-| Strategy | TOML `type` | Trigger |
-|---|---|---|
-| `Poll` | `"poll"` | Re-executes on a fixed timer |
-| `Watch` | `"fsevent"` | Re-executes when watched paths change |
-| `WatchAndPoll` | `"fsevent_poll"` | Re-executes on watched path changes AND on a timer backstop |
+| Strategy | TOML `type` | Trigger | Watch config keys |
+|---|---|---|---|
+| `Poll` | `"poll"` | Re-executes on a fixed timer | — |
+| `Watch` | `"fsevent"` | Re-executes when watched paths change | `fsevent_patterns`, `fsevent_abs_paths` |
+| `WatchAndPoll` | `"fsevent_poll"` | Re-executes on watched path changes AND on a timer backstop | `fsevent_patterns`, `fsevent_abs_paths` |
 
-**Pure-watch global sources** are a special case of `Watch` with `scope = "global"` and no decay (`KeepAlive::Never`). These execute once on first demand and re-execute only when an fs event fires. Used for values that can only change when a specific config file is written: hostname, username, OS name, mise global config.
+`fsevent_patterns` — relative path components matched within the source's scope path (path-scoped sources). `fsevent_abs_paths` — absolute filesystem roots watched directly; used by global sources and for cross-directory config files. Use `expand_abs_path()` when building metadata in Rust to expand `~`, `$HOME`, and XDG vars.
+
+**Pure-watch global sources** are a special case of `Watch` with `scope = "global"` and no decay (`KeepAlive::Never`). These execute once on first demand and re-execute only when an fs event fires on their `fsevent_abs_paths`. Used for values that can only change when a specific config file is written: hostname, username, OS name, mise global config.
 
 ## Scope
 

@@ -48,8 +48,8 @@ breaking; pre-1.0, these ship under a minor bump.
 #### CLI: get / put / status
 
 - `comb get` variadic keys, `--force` (immediate recompute) and `--wait` (block for a fresh value); `comb put --null` clears a virtual entry.
-- `comb status` tabular output (one row per warm entry) with a `TTL`/lifecycle column (`★`/`3`–`0` countdown, poll interval, keep-alive, fsevents-reinstate), a failure `⚠` indicator, and flags `--show-sources`, `--ascii`, `--filter`, `--sort` (incl. `lifecycle` / `poll_interval`), `--max-width=auto`, and minijinja `--format` templates.
-- minijinja templating across `comb eval`, the `.f` format suffix, and `comb status --format` (filters: `truncate`, `default`, `upper`, `lower`, `length`); script provider `output = "text"`.
+- `comb status` tabular output (one row per warm entry) with a `TTL`/lifecycle column (`★`/`3`–`0` countdown, poll interval, keep-alive, fsevents-reinstate), a failure `⚠` indicator, and flags `--filter`, `--sort` (incl. `lifecycle`), `--no-trunc`, `--max-width` (int or `auto`), `--color` (`auto`/`always`/`never`), `--ascii`, and `-f/--format` presets (`human`/`tsv`/`json`/`csv`/`table`/`sh`).
+- minijinja templating in `comb eval` and the `.f` format suffix (filters: `truncate`, `default`, `upper`, `lower`, `length`); script provider `output = "text"`.
 
 ### Changed
 

@@ -14,17 +14,17 @@ Each provider declares one or more **sources** — independent units of executio
 | Provider | Source | Strategy | Scope | Fields |
 |---|---|---|---|---|
 | `asdf` | `tools` | fsevent | path | tool versions (one field per tool) |
-| `aws` | `profile` | poll 60s | global | `profile`, `region`, `account` |
+| `aws` | `profile` | poll 60s | global | `profile`, `region`, `source`, `expiration` |
 | `battery` | `state` | poll 30s | global | `percent`, `charging`, `status`, `time_remaining_secs` (macOS) |
 | `battery` | `level` | poll 30s | global | `percent`, `charging`, `status_raw` (Linux) |
 | `battery` | `upower` | poll 60s | global | `time_remaining_secs`, `status` (Linux, requires UPower) |
-| `conda` | `env` | poll 30s | global | `env`, `python_version` |
-| `direnv` | `state` | fsevent | path | `loaded`, `allowed` |
-| `gcloud` | `config` | poll 60s | global | `account`, `project`, `region` |
+| `conda` | `env` | poll 30s | global | `env` |
+| `direnv` | `state` | fsevent | path | `status`, `allowed` |
+| `gcloud` | `config` | poll 60s | global | `project`, `account` |
 | `git` | `refs` | fsevent | path | `branch`, `commit`, `tag`, `ahead`, `behind`, `upstream`, `detached`, `state`, `stash` |
 | `git` | `diff` | poll 30s | path | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
 | `git` | `status` | fsevent_poll | path | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
-| `hostname` | `host` | fsevent (pure-watch global) | global | `host`, `short`, `fqdn` |
+| `hostname` | `host` | fsevent (pure-watch global) | global | `name`, `short` |
 | `kubecontext` | `context` | poll 30s | global | `context`, `namespace` |
 | `load` | `loadavg` | poll 10s | global | `one`, `five`, `fifteen` |
 | `mise` | `global` | fsevent (pure-watch global) | global | global tool versions (one field per tool) |
@@ -33,8 +33,8 @@ Each provider declares one or more **sources** — independent units of executio
 | `op` | `vault` | poll 60s | global | `signed_in`, `account` |
 | `python` | `venv` | fsevent | path | `venv`, `venv_name`, `version` |
 | `sudo` | `state` | poll 30s | global | `active` |
-| `terraform` | `state` | fsevent | path | `workspace`, `backend` |
-| `uname` | `system` | fsevent (pure-watch global) | global | `os`, `arch`, `kernel` |
+| `terraform` | `state` | fsevent | path | `workspace` |
+| `uname` | `system` | fsevent (pure-watch global) | global | `sysname`, `release`, `version`, `machine` |
 | `uptime` | `time` | poll 60s | global | `seconds`, `days`, `hours`, `minutes` |
 | `user` | `name` | fsevent (pure-watch global) | global | `name`, `uid` |
 
@@ -173,7 +173,7 @@ feature/fast-cache
 |---|---|---|---|---|
 | `kubecontext` | global | `context` (string), `namespace` (string) | poll 30s | 749 ns |
 | `gcloud` | global | `project` (string), `account` (string) | poll 60s | 1.08 µs |
-| `aws` | global | `profile` (string), `region` (string) | poll 60s | < 1 µs |
+| `aws` | global | `profile` (string), `region` (string), `source` (string), `expiration` (string) | poll 60s | < 1 µs |
 | `terraform` | path | `workspace` (string) | watch `.terraform/` | < 1 µs |
 
 `kubecontext` reads `~/.kube/config` directly (respecting `$KUBECONFIG`) — no `kubectl` subprocess. `gcloud` reads `~/.config/gcloud/properties` directly — no Python CLI subprocess.
@@ -191,7 +191,7 @@ feature/fast-cache
 // comb g aws
 {
   "ok": true,
-  "data": { "profile": "work-prod", "region": "us-east-1" },
+  "data": { "profile": "work-prod", "region": "us-east-1", "source": "profile", "expiration": "2026-05-30T12:00:00Z" },
   "age_ms": 42100
 }
 ```

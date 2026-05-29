@@ -299,7 +299,7 @@ The library must export three C-compatible functions:
 - `beachcomber_provider_execute(path)` — returns JSON field values (or NULL on failure)
 - `beachcomber_provider_free(ptr)` — frees strings returned by the above
 
-See the [Provider Development Guide](/docs/internals/provider-development#7-shared-library-providers) for the full C ABI contract and example code.
+See the [Provider Development Guide](/docs/internals/provider-development#8-shared-library-providers) for the full C ABI contract and example code.
 
 ## Secrets and Environment Variables
 

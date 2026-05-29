@@ -11,15 +11,15 @@ A minimal C client library for the beachcomber shell-state daemon. Uses only POS
 ### Debian/Ubuntu
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-dev_0.3.1_amd64.deb
-sudo dpkg -i libbeachcomber-dev_0.3.1_amd64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-dev_0.6.0_amd64.deb
+sudo dpkg -i libbeachcomber-dev_0.6.0_amd64.deb
 ```
 
 ### Fedora/RHEL
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-devel-0.3.1-1.x86_64.rpm
-sudo rpm -i libbeachcomber-devel-0.3.1-1.x86_64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-devel-0.6.0-1.x86_64.rpm
+sudo rpm -i libbeachcomber-devel-0.6.0-1.x86_64.rpm
 ```
 
 ### Arch Linux (AUR)
@@ -85,10 +85,18 @@ int main(void) {
     /* Force recomputation */
     comb_refresh(c, "git", "/path/to/repo");
 
-    /* Daemon status */
-    r = comb_status(c);
-    printf("raw status: %s\n", comb_result_raw_json(r));
-    comb_result_free(r);
+    /* Daemon status — iterate typed cache rows */
+    comb_cache_row_t *rows = NULL;
+    size_t n = 0;
+    if (comb_status(c, &rows, &n) == 0) {
+        for (size_t i = 0; i < n; i++) {
+            printf("%s age=%llums stale=%d\n",
+                   rows[i].provider,
+                   (unsigned long long)rows[i].age_ms,
+                   (int)rows[i].stale);
+        }
+        comb_free_cache_rows(rows, n);
+    }
 
     comb_disconnect(c);
     return 0;
@@ -165,9 +173,10 @@ All operations follow the wire contract defined in [docs/protocol-spec.md](https
 
 ## Socket discovery
 
-1. `$XDG_RUNTIME_DIR/beachcomber/sock`
-2. `$TMPDIR/beachcomber-<uid>/sock`
-3. `/tmp/beachcomber-<uid>/sock`
+1. Config file override (if set in `~/.config/beachcomber/config.toml`)
+2. `$BEACHCOMBER_SOCKET` environment variable
+3. `$XDG_RUNTIME_DIR/beachcomber/sock`
+4. `/tmp/beachcomber-<uid>/sock`
 
 ## Files
 

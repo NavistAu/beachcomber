@@ -15,8 +15,9 @@ beachcomber runs with sensible defaults and requires no configuration. The optio
 [daemon]
 
 # Override the Unix socket path.
-# Default: $XDG_RUNTIME_DIR/beachcomber/sock
-#          Falls back to: $TMPDIR/beachcomber-<uid>/sock
+# Default resolution order: BEACHCOMBER_SOCKET env var →
+#          $XDG_RUNTIME_DIR/beachcomber/sock →
+#          /tmp/beachcomber-<uid>/sock
 socket_path = ""
 
 # Log level for daemon output.
@@ -63,27 +64,32 @@ poll_interval = "60s"
 # Default: 12
 poll_live_count = 12
 
-# Whether an fsevent during decay reinstates the entry to Active. Default
-# false drops filesystem watches on entry to Decay1; set true to keep
-# watches live through every decay step. Useful for providers whose
-# watched files change rarely but matter quickly.
-# Default: false
-fsevents_reinstate = false
-
-# How many times to retry a provider after consecutive failures before backing off.
-# Default: 3
-failure_reattempts = 3
-
-# How long to wait between failure retry attempts.
-# Default: "1s"
-failure_backoff_interval = "1s"
+# Whether an fsevent during decay reinstates the entry to Active.
+# When set, overrides all per-source defaults. When unset (default),
+# each source uses its own declared default (true for Watch/WatchAndPoll
+# sources that benefit from it, false for Poll-only sources).
+# Default: unset (each source uses its own default)
+# fsevents_reinstate = true
 
 # How long (in seconds) the daemon waits with no active connections before
 # shutting itself down. The next client connection will socket-activate a
 # fresh instance.
 # Set to null to disable idle shutdown (daemon stays resident permanently).
-# Default: 300 (5 minutes)
-idle_shutdown_secs = 300
+# Default: null (disabled — daemon stays resident)
+# idle_shutdown_secs = 300
+
+
+# ─── Failback (failure suppression) ────────────────────────────────────────────
+
+[failback]
+
+# Consecutive failures before suppression (provider stops executing).
+# Default: 3
+# count = 3
+
+# Duration of suppression after count failures.
+# Default: "1s"
+# interval = "1s"
 
 
 # ─── Built-in Provider Overrides ───────────────────────────────────────────────
@@ -243,7 +249,7 @@ JSON metadata:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `socket_path` | string | `$XDG_RUNTIME_DIR/beachcomber/sock` | Unix socket path |
+| `socket_path` | string | (see resolution order) | Unix socket path. Resolution order: this key → `BEACHCOMBER_SOCKET` env var → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock` |
 | `log_level` | string | `"info"` | Tracing log level |
 | `provider_timeout_secs` | int | `10` | Max seconds for any provider to run |
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
@@ -256,26 +262,44 @@ JSON metadata:
 |---|---|---|---|
 | `poll_interval` | duration | `"60s"` | Base polling interval `P` used in Active state |
 | `poll_live_count` | int | `12` | Keep-alive count `K` in polls (see `docs/cache-lifecycle.md`) |
-| `fsevents_reinstate` | bool | `false` | Whether fsevents during decay reinstate the entry to Active |
+| `fsevents_reinstate` | bool or null | `null` (unset — per-source defaults apply) | Global override for fsevent-during-decay policy; unset means each source uses its own default |
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
-| `failure_reattempts` | int | `3` | Number of retries after consecutive provider failures before backing off |
-| `failure_backoff_interval` | duration | `"1s"` | Wait time between failure retry attempts |
 
 > `cache_lifespan`, `poll_idle_interval`, and `poll_live_interval` have been removed. Cache warmth is now `poll_interval × poll_live_count`; the decay ladder plus `fsevents_reinstate` replaces the single idle rate. Legacy configs parse cleanly — the daemon emits a `WARN` log at startup for each deprecated key.
 
 > Duration strings use whole-second values: `"30s"` (seconds), `"2m"` (minutes), `"1h"` (hours), `"2h30m"` (compound). Sub-second values (e.g. `"500ms"`) are not accepted.
 
+**`[failback]` section:**
+
+Global failure-suppression defaults. These apply to all providers and sources unless overridden at the per-source level with `failback_count`/`failback_interval`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `count` | int | `3` | Consecutive failures before suppression (provider stops executing until interval elapses) |
+| `interval` | duration | `"1s"` | Suppression duration after `count` failures |
+
+> `[lifecycle] failure_reattempts` and `[lifecycle] failure_backoff_interval` are deprecated aliases for `[failback] count` and `[failback] interval`. They still parse but emit a `WARN` log at startup.
+
 **`[providers.<name>]` section (built-in overrides):**
+
+Only `enabled` is valid directly under `[providers.<name>]` for built-in providers. Source knobs belong in a per-source sub-table: `[providers.<name>.<source>]`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` | Set `false` to disable provider entirely |
+
+**`[providers.<name>.<source>]` section (built-in source overrides):**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
 | `poll_interval` | duration | inherited from `[lifecycle]` | Override base poll rate `P` |
-| `poll_live_count` | int | inherited from `[lifecycle]` | Override keep-alive count `K` |
-| `fsevents_reinstate` | bool | inherited from `[lifecycle]` | Override fsevent-during-decay policy |
-| `poll_floor_secs` | int | provider-specific | Minimum poll interval consumers can request |
-| `failure_reattempts` | int | inherited from `[lifecycle]` | Retries after consecutive failures before backing off |
-| `failure_backoff_interval` | duration | inherited from `[lifecycle]` | Wait time between failure retry attempts |
+| `poll_count` | int | inherited from `[lifecycle]` | Override keep-alive count `K` |
+| `fsevent_reinstates` | bool | per-source default | Override fsevent-during-decay policy |
+| `fsevent_patterns` | array of strings | per-source default | Relative path components to watch |
+| `fsevent_abs_paths` | array of strings | per-source default | Absolute roots to watch |
+| `fsevent_lifespan` | duration | per-source default | Keep-alive duration before decay (path-scoped fsevent sources) |
+| `failback_count` | int | inherited from `[failback]` | Consecutive failures before suppression |
+| `failback_interval` | duration | inherited from `[failback]` | Suppression duration after failback_count hit |
 
 **`[providers.<name>]` section (custom script providers):**
 
@@ -285,12 +309,6 @@ JSON metadata:
 | `output` | string | no | `"json"` (default), `"kv"`, or `"text"` |
 | `scope` | string | no | `"global"` (default) or `"path"` |
 | `enabled` | bool | no | `false` to disable |
-| `poll_interval` | duration | no | Base poll rate `P` |
-| `poll_live_count` | int | no | Keep-alive count `K` |
-| `fsevents_reinstate` | bool | no | Keep watches live during decay |
-| `poll_floor_secs` | int | no | Minimum poll interval |
-| `failure_reattempts` | int | no | Retries after consecutive failures before backing off |
-| `failure_backoff_interval` | duration | no | Wait time between failure retry attempts |
 | `invalidation.poll` | string | no | Poll interval as duration string (`"30s"`, `"2m"`) |
 | `invalidation.watch` | array of strings | no | File/directory patterns to watch |
 
