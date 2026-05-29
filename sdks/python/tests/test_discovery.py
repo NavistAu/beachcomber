@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import tempfile
 
 import pytest
 
@@ -21,59 +20,42 @@ class TestGetUid:
 
 
 class TestDiscoverSocketPath:
-    def test_falls_back_to_tmpdir(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
-        monkeypatch.setenv("TMPDIR", "/tmp")
-        uid = get_uid()
-        path = discover_socket_path()
-        assert path == f"/tmp/beachcomber-{uid}/sock"
-
-    def test_uses_custom_tmpdir(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
-        monkeypatch.setenv("TMPDIR", "/var/run/user/tmp")
-        uid = get_uid()
-        path = discover_socket_path()
-        assert path == f"/var/run/user/tmp/beachcomber-{uid}/sock"
-
-    def test_strips_trailing_slash_from_tmpdir(
+    def test_beachcomber_socket_takes_precedence(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
-        monkeypatch.setenv("TMPDIR", "/tmp/")
-        uid = get_uid()
-        path = discover_socket_path()
-        assert path == f"/tmp/beachcomber-{uid}/sock"
+        monkeypatch.setenv("BEACHCOMBER_SOCKET", "/custom/path/comb.sock")
+        monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+        monkeypatch.setenv("TMPDIR", "/should-not-be-used")
+        assert discover_socket_path() == "/custom/path/comb.sock"
 
-    def test_uses_xdg_runtime_dir_when_socket_exists(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFixture
-    ) -> None:
-        xdg = tmp_path / "run"
-        sock_dir = xdg / "beachcomber"
-        sock_dir.mkdir(parents=True)
-        (sock_dir / "sock").touch()
-
-        monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg))
-        path = discover_socket_path()
-        assert path == str(sock_dir / "sock")
-
-    def test_ignores_xdg_runtime_dir_when_socket_missing(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFixture
-    ) -> None:
-        xdg = tmp_path / "run"
-        xdg.mkdir()
-        # No sock file created.
-
-        monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg))
-        monkeypatch.setenv("TMPDIR", "/tmp")
-        uid = get_uid()
-        path = discover_socket_path()
-        assert path == f"/tmp/beachcomber-{uid}/sock"
-
-    def test_no_tmpdir_env_uses_slash_tmp(
+    def test_uses_xdg_runtime_dir_unconditionally(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # No existence probe: resolves to the XDG path whether or not the
+        # socket exists yet, matching where the daemon binds.
+        monkeypatch.delenv("BEACHCOMBER_SOCKET", raising=False)
+        monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+        monkeypatch.setenv("TMPDIR", "/should-not-be-used")
+        assert discover_socket_path() == "/run/user/1000/beachcomber/sock"
+
+    def test_falls_back_to_slash_tmp(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BEACHCOMBER_SOCKET", raising=False)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.setenv("TMPDIR", "/should-not-be-used")
+        uid = get_uid()
+        assert discover_socket_path() == f"/tmp/beachcomber-{uid}/sock"
+
+    def test_tmpdir_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # TMPDIR must never influence resolution.
+        monkeypatch.delenv("BEACHCOMBER_SOCKET", raising=False)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.setenv("TMPDIR", "/var/folders/xyz")
+        uid = get_uid()
+        assert discover_socket_path() == f"/tmp/beachcomber-{uid}/sock"
+
+    def test_no_env_uses_slash_tmp(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BEACHCOMBER_SOCKET", raising=False)
         monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
         monkeypatch.delenv("TMPDIR", raising=False)
         uid = get_uid()
-        path = discover_socket_path()
-        assert path == f"/tmp/beachcomber-{uid}/sock"
+        assert discover_socket_path() == f"/tmp/beachcomber-{uid}/sock"

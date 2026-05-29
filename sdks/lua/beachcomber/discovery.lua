@@ -1,9 +1,14 @@
 --- Socket path discovery for the beachcomber daemon.
 --
--- Discovery order:
--- 1. $XDG_RUNTIME_DIR/beachcomber/sock
--- 2. $TMPDIR/beachcomber-<uid>/sock
+-- Mirrors the daemon's bind-path resolution (Config::resolve_socket_path),
+-- minus the config-file step which is daemon-only. Discovery order:
+-- 1. $BEACHCOMBER_SOCKET  (if set and non-empty)
+-- 2. $XDG_RUNTIME_DIR/beachcomber/sock  (if XDG_RUNTIME_DIR is set)
 -- 3. /tmp/beachcomber-<uid>/sock
+--
+-- There is no existence probe and $TMPDIR is not consulted: the result is the
+-- single path the daemon binds for the same environment. Non-standard setups
+-- point clients at the daemon via BEACHCOMBER_SOCKET.
 
 local M = {}
 
@@ -27,33 +32,21 @@ function M.get_uid()
   return uid
 end
 
---- Check whether a file/socket exists.
--- Uses a neutral approach compatible with Lua 5.1+.
--- @param path string
--- @return boolean
-local function path_exists(path)
-  local f = io.open(path, "r")
-  if f then
-    f:close()
-    return true
-  end
-  return false
-end
-
 --- Return the expected socket path for the running daemon.
 --
--- Checks standard locations in order. Returns the first candidate path
--- according to the discovery rules. Callers are responsible for verifying
--- the socket is actually reachable.
+-- Resolves to the single path the daemon binds for the current environment.
+-- Callers are responsible for verifying the socket is actually reachable.
 --
 -- @return string path, or nil, error_message
 function M.discover_socket_path()
+  local sock = os.getenv("BEACHCOMBER_SOCKET")
+  if sock and sock ~= "" then
+    return sock
+  end
+
   local xdg = os.getenv("XDG_RUNTIME_DIR")
   if xdg and xdg ~= "" then
-    local candidate = xdg .. "/beachcomber/sock"
-    if path_exists(candidate) then
-      return candidate
-    end
+    return xdg .. "/beachcomber/sock"
   end
 
   local uid, err = M.get_uid()
@@ -61,10 +54,7 @@ function M.discover_socket_path()
     return nil, "socket path discovery: could not determine uid: " .. err
   end
 
-  local tmpdir = os.getenv("TMPDIR") or "/tmp"
-  -- Strip trailing slashes
-  tmpdir = tmpdir:gsub("/+$", "")
-  return tmpdir .. "/beachcomber-" .. uid .. "/sock"
+  return "/tmp/beachcomber-" .. uid .. "/sock"
 end
 
 return M

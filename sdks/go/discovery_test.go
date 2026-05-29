@@ -10,62 +10,51 @@ import (
 	beachcomber "github.com/NavistAu/beachcomber/sdks/go"
 )
 
-func TestDiscoverSocketPath_XDG(t *testing.T) {
-	dir := t.TempDir()
-	sockDir := filepath.Join(dir, "beachcomber")
-	if err := os.MkdirAll(sockDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	sockPath := filepath.Join(sockDir, "sock")
-	// Create the socket file so stat succeeds.
-	f, err := os.Create(sockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-
-	t.Setenv("XDG_RUNTIME_DIR", dir)
+func TestDiscoverSocketPath_BeachcomberSocket(t *testing.T) {
+	// BEACHCOMBER_SOCKET takes precedence over everything else.
+	t.Setenv("BEACHCOMBER_SOCKET", "/custom/path/comb.sock")
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	t.Setenv("TMPDIR", "/should-not-be-used")
 
 	got := beachcomber.DiscoverSocketPath()
-	if got != sockPath {
-		t.Errorf("expected %q, got %q", sockPath, got)
+	if got != "/custom/path/comb.sock" {
+		t.Errorf("expected %q, got %q", "/custom/path/comb.sock", got)
 	}
 }
 
-func TestDiscoverSocketPath_XDGMissing(t *testing.T) {
-	// XDG is set but the path does not exist — fall through to TMPDIR.
-	dir := t.TempDir()
-	tmpdir := t.TempDir()
-
-	t.Setenv("XDG_RUNTIME_DIR", dir) // dir exists but beachcomber/sock does not
-	t.Setenv("TMPDIR", tmpdir)
+func TestDiscoverSocketPath_XDG(t *testing.T) {
+	// XDG_RUNTIME_DIR resolves unconditionally (no existence probe), matching
+	// where the daemon binds.
+	t.Setenv("BEACHCOMBER_SOCKET", "")
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	t.Setenv("TMPDIR", "/should-not-be-used")
 
 	got := beachcomber.DiscoverSocketPath()
-	uid := os.Getuid()
-	want := filepath.Join(tmpdir, fmt.Sprintf("beachcomber-%d", uid), "sock")
+	want := filepath.Join("/run/user/1000", "beachcomber", "sock")
 	if got != want {
 		t.Errorf("expected %q, got %q", want, got)
 	}
 }
 
 func TestDiscoverSocketPath_XDGUnset(t *testing.T) {
-	tmpdir := t.TempDir()
-
+	// XDG unset: fall through to /tmp. TMPDIR is NOT consulted.
+	t.Setenv("BEACHCOMBER_SOCKET", "")
 	t.Setenv("XDG_RUNTIME_DIR", "")
-	t.Setenv("TMPDIR", tmpdir)
+	t.Setenv("TMPDIR", "/should-not-be-used")
 
 	got := beachcomber.DiscoverSocketPath()
 	uid := os.Getuid()
-	want := filepath.Join(tmpdir, fmt.Sprintf("beachcomber-%d", uid), "sock")
+	want := fmt.Sprintf("/tmp/beachcomber-%d/sock", uid)
 	if got != want {
 		t.Errorf("expected %q, got %q", want, got)
 	}
 }
 
-func TestDiscoverSocketPath_NoTMPDIR(t *testing.T) {
+func TestDiscoverSocketPath_TMPDIRIgnored(t *testing.T) {
+	// TMPDIR must never influence resolution.
+	t.Setenv("BEACHCOMBER_SOCKET", "")
 	t.Setenv("XDG_RUNTIME_DIR", "")
-	t.Setenv("TMPDIR", "")
+	t.Setenv("TMPDIR", "/var/folders/xyz")
 
 	got := beachcomber.DiscoverSocketPath()
 	uid := os.Getuid()
@@ -76,8 +65,8 @@ func TestDiscoverSocketPath_NoTMPDIR(t *testing.T) {
 }
 
 func TestDiscoverSocketPath_ContainsUID(t *testing.T) {
+	t.Setenv("BEACHCOMBER_SOCKET", "")
 	t.Setenv("XDG_RUNTIME_DIR", "")
-	t.Setenv("TMPDIR", "/tmp")
 
 	got := beachcomber.DiscoverSocketPath()
 	uid := fmt.Sprintf("%d", os.Getuid())
@@ -87,8 +76,8 @@ func TestDiscoverSocketPath_ContainsUID(t *testing.T) {
 }
 
 func TestDiscoverSocketPath_EndsSock(t *testing.T) {
+	t.Setenv("BEACHCOMBER_SOCKET", "")
 	t.Setenv("XDG_RUNTIME_DIR", "")
-	t.Setenv("TMPDIR", "/tmp")
 
 	got := beachcomber.DiscoverSocketPath()
 	if !strings.HasSuffix(got, "/sock") {

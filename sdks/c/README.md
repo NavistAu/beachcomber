@@ -139,9 +139,9 @@ cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber \
 | `comb_connect_path(path)` | Connect to an explicit socket path |
 | `comb_disconnect(c)` | Close connection and free client |
 
-Socket discovery order:
-1. `$XDG_RUNTIME_DIR/beachcomber/sock`
-2. `$TMPDIR/beachcomber-<uid>/sock`
+Socket discovery order (mirrors the daemon's bind path):
+1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
+2. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set)
 3. `/tmp/beachcomber-<uid>/sock`
 
 ### Operations

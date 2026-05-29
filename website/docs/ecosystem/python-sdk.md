@@ -73,9 +73,11 @@ client = Client(socket_path="/run/user/1000/beachcomber/sock")
 
 The SDK discovers the daemon socket at:
 
-1. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set and the path exists)
-2. `$TMPDIR/beachcomber-<uid>/sock` (if `TMPDIR` is set)
+1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
+2. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set)
 3. `/tmp/beachcomber-<uid>/sock`
+
+This mirrors the daemon's bind path; `$TMPDIR` is not consulted.
 
 ## API reference
 

@@ -356,7 +356,7 @@ jobs:
       - name: Install JSON library
         run: luarocks install dkjson
       - name: Publish
-        run: luarocks upload --skip-pack rockspec/libbeachcomber-0.6.0-1.rockspec --api-key=${{ secrets.LUAROCKS_API_KEY }} || echo "Already published, skipping"
+        run: luarocks upload --skip-pack rockspec/libbeachcomber-0.6.1-1.rockspec --api-key=${{ secrets.LUAROCKS_API_KEY }} || echo "Already published, skipping"
 
   publish-go:
     name: Tag Go module

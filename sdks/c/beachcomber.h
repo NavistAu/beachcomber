@@ -112,9 +112,9 @@ typedef enum {
 /*
  * Connect to the beachcomber daemon, auto-discovering the socket path.
  *
- * Discovery order:
- *   1. $XDG_RUNTIME_DIR/beachcomber/sock
- *   2. $TMPDIR/beachcomber-<uid>/sock
+ * Discovery order (see comb_socket_path):
+ *   1. $BEACHCOMBER_SOCKET  (if set and non-empty)
+ *   2. $XDG_RUNTIME_DIR/beachcomber/sock  (if XDG_RUNTIME_DIR is set)
  *   3. /tmp/beachcomber-<uid>/sock
  *
  * Returns NULL if the socket does not exist or the connection fails.

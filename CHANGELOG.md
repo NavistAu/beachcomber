@@ -6,7 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-05-29
+## [0.6.1] - 2026-05-29
+
+### Fixed
+
+- **Socket-path resolution now agrees across the daemon, CLI, and every client.** All client SDKs (Rust, Go, Python, Ruby, Node, Lua, C) resolve the daemon socket as `$BEACHCOMBER_SOCKET` → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`, mirroring the daemon's bind path (minus the daemon-only config-file step). Previously the clients ignored `BEACHCOMBER_SOCKET` and consulted `$TMPDIR` (a per-session `/var/folders/...` path on macOS), so on macOS with `XDG_RUNTIME_DIR` unset a client could look in `$TMPDIR` while the daemon bound `/tmp/beachcomber-<uid>/sock` — and they would fail to find each other. There is no longer an existence probe on the `XDG_RUNTIME_DIR` step: clients resolve to the single path the daemon binds and rely on connect-retry; non-standard layouts use `BEACHCOMBER_SOCKET`.
+- Node SDK published type artifact (`dist/types.d.ts`) regenerated so the `IntrospectSubject` union reflects the `backoff` → `lifecycle` rename from 0.6.0. The npm publish step rebuilds `dist/` from `src/` via `prepublishOnly`, so the compiled artifact can no longer drift from source.
 
 A large release. The daemon's internal model was rebuilt around a
 Provider→Source→Field architecture, the wire protocol and CLI were overhauled,

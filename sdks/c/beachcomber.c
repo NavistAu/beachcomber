@@ -83,38 +83,41 @@ static comb_result_t *result_error(const char *msg) {
  * Socket path discovery
  * ---------------------------------------------------------------------- */
 
+/*
+ * Mirrors the daemon's bind-path resolution (Config::resolve_socket_path),
+ * minus the config-file step which is daemon-only:
+ *   1. $BEACHCOMBER_SOCKET  (if set and non-empty)
+ *   2. $XDG_RUNTIME_DIR/beachcomber/sock  (if XDG_RUNTIME_DIR is set)
+ *   3. /tmp/beachcomber-<uid>/sock
+ *
+ * There is no existence probe and $TMPDIR is not consulted: the result is the
+ * single path the daemon binds for the same environment. Non-standard setups
+ * point clients at the daemon via BEACHCOMBER_SOCKET.
+ */
 char *comb_socket_path(char *dst, size_t dst_len) {
     if (!dst || dst_len == 0) return NULL;
 
-    /* 1. $XDG_RUNTIME_DIR/beachcomber/sock */
-    const char *xdg = getenv("XDG_RUNTIME_DIR");
-    if (xdg && *xdg) {
-        char candidate[4096];
-        snprintf(candidate, sizeof(candidate), "%s/beachcomber/sock", xdg);
-        /* Check existence with a non-blocking connect attempt */
-        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (fd >= 0) {
-            struct sockaddr_un addr;
-            memset(&addr, 0, sizeof(addr));
-            addr.sun_family = AF_UNIX;
-            strncpy(addr.sun_path, candidate, sizeof(addr.sun_path) - 1);
-            if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-                close(fd);
-                if (!safe_strcpy(dst, dst_len, candidate)) return NULL;
-                return dst;
-            }
-            close(fd);
-        }
+    /* 1. $BEACHCOMBER_SOCKET */
+    const char *sock = getenv("BEACHCOMBER_SOCKET");
+    if (sock && *sock) {
+        if (!safe_strcpy(dst, dst_len, sock)) return NULL;
+        return dst;
     }
 
-    /* 2. $TMPDIR/beachcomber-<uid>/sock */
-    uid_t uid = getuid();
-    const char *tmpdir = getenv("TMPDIR");
-    if (!tmpdir || !*tmpdir) tmpdir = "/tmp";
-
     char candidate[4096];
+
+    /* 2. $XDG_RUNTIME_DIR/beachcomber/sock */
+    const char *xdg = getenv("XDG_RUNTIME_DIR");
+    if (xdg && *xdg) {
+        snprintf(candidate, sizeof(candidate), "%s/beachcomber/sock", xdg);
+        if (!safe_strcpy(dst, dst_len, candidate)) return NULL;
+        return dst;
+    }
+
+    /* 3. /tmp/beachcomber-<uid>/sock */
+    uid_t uid = getuid();
     snprintf(candidate, sizeof(candidate),
-             "%s/beachcomber-%u/sock", tmpdir, (unsigned)uid);
+             "/tmp/beachcomber-%u/sock", (unsigned)uid);
     if (!safe_strcpy(dst, dst_len, candidate)) return NULL;
     return dst;
 }

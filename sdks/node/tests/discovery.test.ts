@@ -3,60 +3,62 @@ import assert from 'node:assert/strict';
 import { discoverSocketPath, getUid } from '../src/discovery.js';
 
 describe('discoverSocketPath', () => {
+  let savedSock: string | undefined;
   let savedXdg: string | undefined;
   let savedTmpdir: string | undefined;
 
+  const restore = (key: string, saved: string | undefined): void => {
+    if (saved === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = saved;
+    }
+  };
+
   before(() => {
+    savedSock = process.env['BEACHCOMBER_SOCKET'];
     savedXdg = process.env['XDG_RUNTIME_DIR'];
     savedTmpdir = process.env['TMPDIR'];
   });
 
   after(() => {
-    if (savedXdg === undefined) {
-      delete process.env['XDG_RUNTIME_DIR'];
-    } else {
-      process.env['XDG_RUNTIME_DIR'] = savedXdg;
-    }
-    if (savedTmpdir === undefined) {
-      delete process.env['TMPDIR'];
-    } else {
-      process.env['TMPDIR'] = savedTmpdir;
-    }
+    restore('BEACHCOMBER_SOCKET', savedSock);
+    restore('XDG_RUNTIME_DIR', savedXdg);
+    restore('TMPDIR', savedTmpdir);
   });
 
-  it('uses XDG_RUNTIME_DIR when set', () => {
+  it('BEACHCOMBER_SOCKET takes precedence over everything', () => {
+    process.env['BEACHCOMBER_SOCKET'] = '/custom/path/comb.sock';
     process.env['XDG_RUNTIME_DIR'] = '/run/user/1000';
-    delete process.env['TMPDIR'];
+    process.env['TMPDIR'] = '/should-not-be-used';
 
-    const p = discoverSocketPath();
-    assert.equal(p, '/run/user/1000/beachcomber/sock');
+    assert.equal(discoverSocketPath(), '/custom/path/comb.sock');
   });
 
-  it('falls back to TMPDIR when XDG_RUNTIME_DIR is unset', () => {
-    delete process.env['XDG_RUNTIME_DIR'];
-    process.env['TMPDIR'] = '/tmp/custom';
+  it('uses XDG_RUNTIME_DIR unconditionally when set', () => {
+    delete process.env['BEACHCOMBER_SOCKET'];
+    process.env['XDG_RUNTIME_DIR'] = '/run/user/1000';
+    process.env['TMPDIR'] = '/should-not-be-used';
 
-    const p = discoverSocketPath();
+    assert.equal(discoverSocketPath(), '/run/user/1000/beachcomber/sock');
+  });
+
+  it('falls back to /tmp when XDG_RUNTIME_DIR is unset', () => {
+    delete process.env['BEACHCOMBER_SOCKET'];
+    delete process.env['XDG_RUNTIME_DIR'];
+    process.env['TMPDIR'] = '/should-not-be-used';
+
     const uid = getUid();
-    assert.equal(p, `/tmp/custom/beachcomber-${uid}/sock`);
+    assert.equal(discoverSocketPath(), `/tmp/beachcomber-${uid}/sock`);
   });
 
-  it('falls back to os.tmpdir() when both XDG_RUNTIME_DIR and TMPDIR are unset', () => {
+  it('ignores TMPDIR entirely', () => {
+    delete process.env['BEACHCOMBER_SOCKET'];
     delete process.env['XDG_RUNTIME_DIR'];
-    delete process.env['TMPDIR'];
+    process.env['TMPDIR'] = '/var/folders/xyz';
 
-    const p = discoverSocketPath();
-    // Just verify the path ends with the right suffix
-    assert.ok(p.endsWith('/sock'), `expected path to end with /sock, got: ${p}`);
-    assert.ok(p.includes('beachcomber-'), `expected path to include 'beachcomber-', got: ${p}`);
-  });
-
-  it('XDG_RUNTIME_DIR takes priority over TMPDIR', () => {
-    process.env['XDG_RUNTIME_DIR'] = '/run/user/2000';
-    process.env['TMPDIR'] = '/tmp/other';
-
-    const p = discoverSocketPath();
-    assert.equal(p, '/run/user/2000/beachcomber/sock');
+    const uid = getUid();
+    assert.equal(discoverSocketPath(), `/tmp/beachcomber-${uid}/sock`);
   });
 });
 

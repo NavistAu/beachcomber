@@ -262,51 +262,65 @@ static void test_json_accessors(void) {
  * Socket path discovery tests
  * ---------------------------------------------------------------------- */
 
-static void test_socket_path_tmpdir(void) {
-    /* Save TMPDIR before overriding — subsequent tests rely on it. */
-    const char *saved_tmpdir = getenv("TMPDIR");
-    char saved_tmpdir_buf[4096] = {0};
-    if (saved_tmpdir) strncpy(saved_tmpdir_buf, saved_tmpdir, sizeof(saved_tmpdir_buf) - 1);
+/*
+ * The mock-server tests below derive their listen socket from $TMPDIR, so the
+ * socket-discovery tests must leave the process environment exactly as they
+ * found it. Snapshot all three relevant vars on entry and restore on exit.
+ */
+typedef struct {
+    char socket[4096];  int had_socket;
+    char xdg[4096];     int had_xdg;
+    char tmpdir[4096];  int had_tmpdir;
+} socket_env_snapshot_t;
 
-    /* Unset XDG_RUNTIME_DIR so we fall through to TMPDIR path */
-    unsetenv("XDG_RUNTIME_DIR");
-    setenv("TMPDIR", "/tmp/testdir", 1);
-
-    char buf[512];
-    char *p = comb_socket_path(buf, sizeof(buf));
-    CHECK(p != NULL);
-
-    /* Path must contain "beachcomber-<uid>" */
-    CHECK(strstr(buf, "beachcomber-") != NULL);
-    CHECK(strstr(buf, "/sock") != NULL);
-    /* Must not start with the xdg path */
-    CHECK(strncmp(buf, "/tmp/testdir/beachcomber-", 25) == 0);
-
-    /* Restore TMPDIR. */
-    if (saved_tmpdir_buf[0]) setenv("TMPDIR", saved_tmpdir_buf, 1);
-    else unsetenv("TMPDIR");
+static void socket_env_save(socket_env_snapshot_t *s) {
+    const char *v;
+    v = getenv("BEACHCOMBER_SOCKET");
+    s->had_socket = v != NULL;
+    if (v) { strncpy(s->socket, v, sizeof(s->socket) - 1); s->socket[sizeof(s->socket) - 1] = '\0'; }
+    v = getenv("XDG_RUNTIME_DIR");
+    s->had_xdg = v != NULL;
+    if (v) { strncpy(s->xdg, v, sizeof(s->xdg) - 1); s->xdg[sizeof(s->xdg) - 1] = '\0'; }
+    v = getenv("TMPDIR");
+    s->had_tmpdir = v != NULL;
+    if (v) { strncpy(s->tmpdir, v, sizeof(s->tmpdir) - 1); s->tmpdir[sizeof(s->tmpdir) - 1] = '\0'; }
 }
 
-static void test_socket_path_xdg_nonexistent(void) {
-    /* Save TMPDIR before overriding — subsequent tests rely on it. */
-    const char *saved_tmpdir = getenv("TMPDIR");
-    char saved_tmpdir_buf[4096] = {0};
-    if (saved_tmpdir) strncpy(saved_tmpdir_buf, saved_tmpdir, sizeof(saved_tmpdir_buf) - 1);
+static void socket_env_restore(const socket_env_snapshot_t *s) {
+    if (s->had_socket) setenv("BEACHCOMBER_SOCKET", s->socket, 1); else unsetenv("BEACHCOMBER_SOCKET");
+    if (s->had_xdg)    setenv("XDG_RUNTIME_DIR", s->xdg, 1);       else unsetenv("XDG_RUNTIME_DIR");
+    if (s->had_tmpdir) setenv("TMPDIR", s->tmpdir, 1);             else unsetenv("TMPDIR");
+}
 
-    /* Set XDG to a path that will have no running socket */
-    setenv("XDG_RUNTIME_DIR", "/nonexistent_xdg_8f3a2b", 1);
-    setenv("TMPDIR", "/tmp/fallback99", 1);
+static void test_socket_path_beachcomber_socket(void) {
+    socket_env_snapshot_t saved; socket_env_save(&saved);
+
+    setenv("BEACHCOMBER_SOCKET", "/custom/path/comb.sock", 1);
+    setenv("XDG_RUNTIME_DIR", "/run/user/1000", 1);
 
     char buf[512];
     char *p = comb_socket_path(buf, sizeof(buf));
     CHECK(p != NULL);
-    /* Should have fallen back to TMPDIR */
-    CHECK(strncmp(buf, "/tmp/fallback99/beachcomber-", 28) == 0);
+    /* BEACHCOMBER_SOCKET wins over everything else. */
+    CHECK(strcmp(buf, "/custom/path/comb.sock") == 0);
 
-    unsetenv("XDG_RUNTIME_DIR");
-    /* Restore TMPDIR. */
-    if (saved_tmpdir_buf[0]) setenv("TMPDIR", saved_tmpdir_buf, 1);
-    else unsetenv("TMPDIR");
+    socket_env_restore(&saved);
+}
+
+static void test_socket_path_xdg(void) {
+    socket_env_snapshot_t saved; socket_env_save(&saved);
+
+    unsetenv("BEACHCOMBER_SOCKET");
+    /* XDG resolves unconditionally — no existence probe — matching the daemon. */
+    setenv("XDG_RUNTIME_DIR", "/run/user/1000", 1);
+    setenv("TMPDIR", "/should-not-be-used", 1);
+
+    char buf[512];
+    char *p = comb_socket_path(buf, sizeof(buf));
+    CHECK(p != NULL);
+    CHECK(strcmp(buf, "/run/user/1000/beachcomber/sock") == 0);
+
+    socket_env_restore(&saved);
 }
 
 static void test_socket_path_too_small(void) {
@@ -315,23 +329,24 @@ static void test_socket_path_too_small(void) {
     CHECK(p == NULL);
 }
 
-static void test_socket_path_no_tmpdir(void) {
-    /* Save TMPDIR before unsetting — subsequent tests rely on it. */
-    const char *saved_tmpdir = getenv("TMPDIR");
-    char saved_tmpdir_buf[4096] = {0};
-    if (saved_tmpdir) strncpy(saved_tmpdir_buf, saved_tmpdir, sizeof(saved_tmpdir_buf) - 1);
+static void test_socket_path_slash_tmp(void) {
+    socket_env_snapshot_t saved; socket_env_save(&saved);
 
+    unsetenv("BEACHCOMBER_SOCKET");
     unsetenv("XDG_RUNTIME_DIR");
-    unsetenv("TMPDIR");
+    /* TMPDIR is ignored: fallback is always /tmp/beachcomber-<uid>/sock. */
+    setenv("TMPDIR", "/should-not-be-used", 1);
 
     char buf[512];
     char *p = comb_socket_path(buf, sizeof(buf));
     CHECK(p != NULL);
-    /* Should fall back to /tmp */
     CHECK(strncmp(buf, "/tmp/beachcomber-", 17) == 0);
+    CHECK(strstr(buf, "beachcomber-") != NULL);
+    CHECK(strstr(buf, "/sock") != NULL);
+    /* TMPDIR must not leak into the path. */
+    CHECK(strstr(buf, "should-not-be-used") == NULL);
 
-    /* Restore TMPDIR so subsequent tests that create sockets are not affected. */
-    if (saved_tmpdir_buf[0]) setenv("TMPDIR", saved_tmpdir_buf, 1);
+    socket_env_restore(&saved);
 }
 
 /* -------------------------------------------------------------------------
@@ -1406,10 +1421,10 @@ int main(void) {
     test_json_accessors();
 
     SUITE("Socket path discovery");
-    test_socket_path_tmpdir();
-    test_socket_path_xdg_nonexistent();
+    test_socket_path_beachcomber_socket();
+    test_socket_path_xdg();
     test_socket_path_too_small();
-    test_socket_path_no_tmpdir();
+    test_socket_path_slash_tmp();
 
     SUITE("Result accessors — scalar hit");
     test_result_hit_scalar();

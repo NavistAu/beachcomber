@@ -80,7 +80,7 @@ Virtual providers created by `put` are data-only entries in the cache — no `ex
 
 TOML at `~/.config/beachcomber/config.toml`. Three sections: `[daemon]`, `[lifecycle]`, `[providers.<name>]`.
 
-Socket path resolution: config override → `$XDG_RUNTIME_DIR/beachcomber/sock` → `$TMPDIR/beachcomber-<uid>/sock`.
+Socket path resolution (daemon): config override → `$BEACHCOMBER_SOCKET` → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`. Client SDKs mirror this minus the config-file step (`$BEACHCOMBER_SOCKET` → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`); `$TMPDIR` is not consulted by either.
 
 ## SDKs
 

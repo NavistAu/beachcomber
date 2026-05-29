@@ -1,9 +1,15 @@
 """Socket path discovery for the beachcomber daemon.
 
-Discovery order:
-1. ``$XDG_RUNTIME_DIR/beachcomber/sock``
-2. ``$TMPDIR/beachcomber-<uid>/sock``
+Mirrors the daemon's bind-path resolution (``Config::resolve_socket_path``),
+minus the config-file step which is daemon-only. Discovery order:
+
+1. ``$BEACHCOMBER_SOCKET``  (if set and non-empty)
+2. ``$XDG_RUNTIME_DIR/beachcomber/sock``  (if ``XDG_RUNTIME_DIR`` is set)
 3. ``/tmp/beachcomber-<uid>/sock``
+
+There is no existence probe and ``$TMPDIR`` is not consulted: the result is the
+single path the daemon binds for the same environment. Non-standard setups
+point clients at the daemon via ``BEACHCOMBER_SOCKET``.
 """
 
 import os
@@ -17,19 +23,19 @@ def get_uid() -> int:
 def discover_socket_path() -> str:
     """Return the expected socket path for the running daemon.
 
-    Checks the standard locations in order. Returns the first path that
-    *should* exist according to the discovery rules — callers are
-    responsible for verifying the socket is reachable.
+    Resolves to the single path the daemon binds for the current environment.
+    Callers are responsible for verifying the socket is reachable.
 
     Returns:
         Absolute path string for the Unix domain socket.
     """
+    sock = os.environ.get("BEACHCOMBER_SOCKET", "")
+    if sock:
+        return sock
+
     xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", "")
     if xdg_runtime:
-        candidate = os.path.join(xdg_runtime, "beachcomber", "sock")
-        if os.path.exists(candidate):
-            return candidate
+        return os.path.join(xdg_runtime, "beachcomber", "sock")
 
     uid = get_uid()
-    tmpdir = os.environ.get("TMPDIR", "/tmp").rstrip("/")
-    return os.path.join(tmpdir, f"beachcomber-{uid}", "sock")
+    return os.path.join("/tmp", f"beachcomber-{uid}", "sock")

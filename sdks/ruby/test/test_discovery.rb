@@ -3,64 +3,65 @@ require_relative 'test_helper'
 class TestDiscovery < Minitest::Test
   # Preserve and restore environment modifications around each test.
   def setup
+    @orig_sock   = ENV['BEACHCOMBER_SOCKET']
     @orig_xdg    = ENV['XDG_RUNTIME_DIR']
     @orig_tmpdir = ENV['TMPDIR']
   end
 
   def teardown
-    ENV['XDG_RUNTIME_DIR'] = @orig_xdg
-    ENV['TMPDIR']          = @orig_tmpdir
+    ENV['BEACHCOMBER_SOCKET'] = @orig_sock
+    ENV['XDG_RUNTIME_DIR']    = @orig_xdg
+    ENV['TMPDIR']             = @orig_tmpdir
   end
 
-  def test_xdg_path_used_when_socket_exists
-    Dir.mktmpdir do |dir|
-      sock_dir  = File.join(dir, 'beachcomber')
-      sock_path = File.join(sock_dir, 'sock')
-      Dir.mkdir(sock_dir)
-      FileUtils.touch(sock_path)
+  def test_beachcomber_socket_takes_precedence
+    ENV['BEACHCOMBER_SOCKET'] = '/custom/path/comb.sock'
+    ENV['XDG_RUNTIME_DIR']    = '/run/user/1000'
+    ENV['TMPDIR']             = '/should-not-be-used'
 
-      ENV['XDG_RUNTIME_DIR'] = dir
-      assert_equal sock_path, Beachcomber::Discovery.socket_path
-    end
+    assert_equal '/custom/path/comb.sock', Beachcomber::Discovery.socket_path
   end
 
-  def test_xdg_skipped_when_socket_missing
-    Dir.mktmpdir do |dir|
-      # XDG dir exists but no sock inside it
-      ENV['XDG_RUNTIME_DIR'] = dir
-      ENV['TMPDIR']          = dir
+  def test_xdg_path_used_unconditionally
+    # No existence probe: resolves to the XDG path whether or not the socket
+    # exists yet, matching where the daemon binds.
+    ENV.delete('BEACHCOMBER_SOCKET')
+    ENV['XDG_RUNTIME_DIR'] = '/run/user/1000'
+    ENV['TMPDIR']          = '/should-not-be-used'
 
-      result = Beachcomber::Discovery.socket_path
-      refute_equal File.join(dir, 'beachcomber', 'sock'), result
-      assert_match(/beachcomber-#{Process.uid}/, result)
-    end
+    assert_equal '/run/user/1000/beachcomber/sock', Beachcomber::Discovery.socket_path
   end
 
   def test_xdg_skipped_when_env_empty
+    ENV.delete('BEACHCOMBER_SOCKET')
     ENV['XDG_RUNTIME_DIR'] = ''
-    ENV['TMPDIR']          = '/tmp'
+    ENV['TMPDIR']          = '/should-not-be-used'
 
     result = Beachcomber::Discovery.socket_path
     assert_equal "/tmp/beachcomber-#{Process.uid}/sock", result
   end
 
   def test_xdg_skipped_when_env_unset
+    ENV.delete('BEACHCOMBER_SOCKET')
     ENV.delete('XDG_RUNTIME_DIR')
-    ENV['TMPDIR'] = '/tmp'
+    ENV['TMPDIR'] = '/should-not-be-used'
 
     result = Beachcomber::Discovery.socket_path
     assert_equal "/tmp/beachcomber-#{Process.uid}/sock", result
   end
 
-  def test_tmpdir_used_when_set
+  def test_tmpdir_is_ignored
+    # TMPDIR must never influence resolution.
+    ENV.delete('BEACHCOMBER_SOCKET')
     ENV.delete('XDG_RUNTIME_DIR')
-    ENV['TMPDIR'] = '/custom/tmp'
+    ENV['TMPDIR'] = '/var/folders/xyz'
 
     result = Beachcomber::Discovery.socket_path
-    assert_equal "/custom/tmp/beachcomber-#{Process.uid}/sock", result
+    assert_equal "/tmp/beachcomber-#{Process.uid}/sock", result
   end
 
   def test_falls_back_to_slash_tmp
+    ENV.delete('BEACHCOMBER_SOCKET')
     ENV.delete('XDG_RUNTIME_DIR')
     ENV.delete('TMPDIR')
 
@@ -69,8 +70,8 @@ class TestDiscovery < Minitest::Test
   end
 
   def test_uid_embedded_in_path
+    ENV.delete('BEACHCOMBER_SOCKET')
     ENV.delete('XDG_RUNTIME_DIR')
-    ENV['TMPDIR'] = '/tmp'
 
     result = Beachcomber::Discovery.socket_path
     assert_includes result, Process.uid.to_s
