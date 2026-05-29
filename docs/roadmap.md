@@ -2,6 +2,12 @@
 
 ---
 
+### High Priority (next)
+
+- [ ] **Socket-path resolution divergence between daemon and SDK clients.** The daemon resolves its bind path as config override → `BEACHCOMBER_SOCKET` → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock` (`Config::resolve_socket_path`, `src/config.rs:1374`). But the client SDKs resolve `$XDG_RUNTIME_DIR/beachcomber/sock` → `$TMPDIR/beachcomber-<uid>/sock` → `/tmp/beachcomber-<uid>/sock` — they do **not** read the config file and do **not** honor `BEACHCOMBER_SOCKET` (`sdks/{go,python,node,ruby,lua}/…discovery.*`, `beachcomber-client/src/lib.rs:1050`, and the C header in `sdks/c/beachcomber.h`). On macOS with `XDG_RUNTIME_DIR` unset, the daemon binds `/tmp/beachcomber-<uid>/sock` while clients first try `$TMPDIR/beachcomber-<uid>/sock` (a per-session `/var/folders/...` path) → **they can fail to find each other**, and `BEACHCOMBER_SOCKET` set for the daemon is invisible to clients. Decide the single canonical resolution order and make daemon + CLI + all SDKs agree (honor `BEACHCOMBER_SOCKET` everywhere; pick `$TMPDIR` vs `/tmp` consistently). Surfaced during the 0.6.0 docs audit.
+
+- [ ] **Stale Node SDK compiled type artifact.** `sdks/node/dist/types.d.ts` still declares the introspect subject `'backoff'`, but the source `sdks/node/src/types.ts` correctly has `'lifecycle'` (renamed in 0.6.0). The published `dist/` is out of sync with `src/`. Regenerate `dist/` (`npm run build` in `sdks/node`) and verify the release/publish pipeline rebuilds `dist/` from `src/` so compiled artifacts can't drift from source. Surfaced during the 0.6.0 docs audit.
+
 ### General
 
 - [x] Do we still need to put in support for {% %} style tags in our jinja templates? — already shipped; `{% %}` works in `.f`, `comb e`, and `comb status --format` via `minijinja::Environment::render_str`, and the eval key-discovery scanner (`find_eval_template_pairs` in `src/cli/format.rs`) walks block tags, whitespace-control dashes, and comments. Tests in `tests/template.rs`; examples in `README.md` and `website/docs/reference/cli-commands.md`.
