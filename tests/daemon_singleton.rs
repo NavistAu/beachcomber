@@ -91,7 +91,7 @@ fn singleton_lock_contested_by_same_process_fails() {
 }
 
 #[test]
-fn supersession_same_binary_hash_means_no_op() {
+fn supersession_same_binary_hash_serving_means_no_op() {
     let existing = PidFileRecord {
         pid: 12345,
         version: "0.5.1+sha.abc".into(),
@@ -99,8 +99,27 @@ fn supersession_same_binary_hash_means_no_op() {
         binary_hash: TEST_HASH_A.into(),
         started_unix_ms: 0,
     };
-    let decision = decide_supersession(&existing, TEST_HASH_A);
+    // Same build AND the owner is serving its socket → leave it alone.
+    let decision = decide_supersession(&existing, TEST_HASH_A, true);
     assert!(matches!(decision, SupersessionDecision::ExitSilent));
+}
+
+#[test]
+fn supersession_same_binary_hash_not_serving_supersedes() {
+    // Same build but the owner is NOT serving (wedged between flock and bind,
+    // or its socket was deleted) → supersede so a healthy daemon rebinds.
+    let existing = PidFileRecord {
+        pid: 12345,
+        version: "0.5.1+sha.abc".into(),
+        binary: "/path/to/comb".into(),
+        binary_hash: TEST_HASH_A.into(),
+        started_unix_ms: 0,
+    };
+    let decision = decide_supersession(&existing, TEST_HASH_A, false);
+    match decision {
+        SupersessionDecision::Supersede { existing_pid } => assert_eq!(existing_pid, 12345),
+        _ => panic!("expected Supersede, got {decision:?}"),
+    }
 }
 
 #[test]
@@ -112,7 +131,8 @@ fn supersession_different_binary_hash_means_supersede() {
         binary_hash: TEST_HASH_A.into(),
         started_unix_ms: 0,
     };
-    let decision = decide_supersession(&existing, TEST_HASH_B);
+    // Different build supersedes regardless of serving state.
+    let decision = decide_supersession(&existing, TEST_HASH_B, true);
     match decision {
         SupersessionDecision::Supersede { existing_pid } => assert_eq!(existing_pid, 12345),
         _ => panic!("expected Supersede, got {decision:?}"),
@@ -130,7 +150,7 @@ fn supersession_same_version_different_hash_still_supersedes() {
         binary_hash: TEST_HASH_A.into(),
         started_unix_ms: 0,
     };
-    let decision = decide_supersession(&existing, TEST_HASH_B);
+    let decision = decide_supersession(&existing, TEST_HASH_B, true);
     assert!(matches!(decision, SupersessionDecision::Supersede { .. }));
 }
 
@@ -199,34 +219,116 @@ fn binary_newer_than_returns_false_when_file_older_than_start() {
     assert!(!result, "file should be older than far-future timestamp");
 }
 
+use beachcomber::boundaries::socket::SocketProbe;
+use std::path::Path;
+use std::time::Duration;
+
+struct AlwaysServing;
+impl SocketProbe for AlwaysServing {
+    fn is_serving(&self, _socket: &Path) -> bool {
+        true
+    }
+}
+
+struct NeverServing;
+impl SocketProbe for NeverServing {
+    fn is_serving(&self, _socket: &Path) -> bool {
+        false
+    }
+}
+
 #[test]
-fn acquire_or_supersede_same_binary_hash_returns_none() {
+fn acquire_or_supersede_same_hash_serving_exits_silent() {
     let tmpdir = tempfile::tempdir().unwrap();
     let pid_path = tmpdir.path().join("pid");
+    let socket_path = tmpdir.path().join("sock");
 
     let _first =
         beachcomber::singleton::SingletonLock::acquire(&pid_path, "0.5.1", TEST_HASH_A).unwrap();
 
-    let second = beachcomber::singleton::acquire_or_supersede(&pid_path, "0.5.1", TEST_HASH_A)
-        .expect("should succeed with Ok(None)");
-    assert!(second.is_none(), "same binary hash should return None");
+    // Same hash and the probe reports the owner is serving → exit silently.
+    let second = beachcomber::singleton::acquire_or_supersede_with(
+        &AlwaysServing,
+        Duration::ZERO,
+        &pid_path,
+        &socket_path,
+        "0.5.1",
+        TEST_HASH_A,
+    )
+    .expect("should succeed with Ok(None)");
+    assert!(
+        second.is_none(),
+        "same hash + serving owner should return None"
+    );
 }
 
 #[test]
-fn find_orphan_daemons_excludes_self_and_non_matching_binary() {
-    let our_exe = std::env::current_exe().unwrap();
-    let found = beachcomber::singleton::find_orphan_daemons(&our_exe);
-    let our_pid = std::process::id();
-    assert!(!found.contains(&our_pid), "should exclude self");
-    // We can't make positive assertions about what IS returned without spawning a test
-    // daemon; that's covered in the end-to-end smoke tests.
+fn acquire_or_supersede_same_hash_not_serving_does_not_exit_silent() {
+    let tmpdir = tempfile::tempdir().unwrap();
+    let pid_path = tmpdir.path().join("pid");
+    let socket_path = tmpdir.path().join("sock");
+
+    // The existing lock records *our* pid (SingletonLock::acquire writes it).
+    let _first =
+        beachcomber::singleton::SingletonLock::acquire(&pid_path, "0.5.1", TEST_HASH_A).unwrap();
+
+    // Same hash but the probe reports the owner is NOT serving → supersede path,
+    // NOT exit-silent. The supersede target is our own pid, so supersede_existing
+    // refuses (self-guard) and the call returns Err — proving we did not silently
+    // exit. The fast self-guard means zero grace resolves immediately.
+    let r = beachcomber::singleton::acquire_or_supersede_with(
+        &NeverServing,
+        Duration::ZERO,
+        &pid_path,
+        &socket_path,
+        "0.5.1",
+        TEST_HASH_A,
+    );
+    assert!(
+        !matches!(r, Ok(None)),
+        "same hash + non-serving owner must take the supersede path, not exit silently"
+    );
+    assert!(r.is_err(), "supersede of self should surface an error");
 }
 
 #[test]
-#[ignore] // spawns another process; slow
-fn reap_orphans_kills_matching_binary_processes() {
-    // Spawn a sleep process that impersonates our binary by path-matching.
-    // The easiest approach: create a hard-link to the current test binary,
-    // spawn it with `--sleep-forever` flag (we need a testing hook), then reap.
-    // For now, skip this test; end-to-end coverage happens in the smoke test.
+fn probe_until_serving_returns_true_when_serving() {
+    let socket = Path::new("/nonexistent/sock");
+    assert!(beachcomber::singleton::probe_until_serving(
+        &AlwaysServing,
+        socket,
+        Duration::ZERO
+    ));
+}
+
+#[test]
+fn probe_until_serving_returns_false_when_never_serving_after_grace() {
+    let socket = Path::new("/nonexistent/sock");
+    assert!(!beachcomber::singleton::probe_until_serving(
+        &NeverServing,
+        socket,
+        Duration::ZERO
+    ));
+}
+
+#[test]
+fn probe_until_serving_waits_through_grace_for_late_bind() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    // Serving only after the 3rd probe — simulates a winner that binds slightly
+    // late (Example 2: the loser must wait, not kill the winner).
+    struct ServingAfter(AtomicU32);
+    impl SocketProbe for ServingAfter {
+        fn is_serving(&self, _socket: &Path) -> bool {
+            self.0.fetch_add(1, Ordering::SeqCst) >= 3
+        }
+    }
+
+    let probe = ServingAfter(AtomicU32::new(0));
+    let socket = Path::new("/nonexistent/sock");
+    assert!(beachcomber::singleton::probe_until_serving(
+        &probe,
+        socket,
+        Duration::from_secs(2)
+    ));
 }

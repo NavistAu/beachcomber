@@ -152,22 +152,56 @@ pub enum SupersessionDecision {
     Supersede { existing_pid: u32 },
 }
 
-/// Given the existing singleton's record and our own binary hash, decide whether
-/// to supersede (kill and take over) or exit silently (existing daemon is fine).
+/// Given the existing singleton's record, our own binary hash, and whether the
+/// existing owner is actually serving its socket, decide whether to supersede
+/// (kill and take over) or exit silently (existing daemon is fine).
 ///
 /// Compares on `binary_hash` — the SHA256 of the binary file content at daemon
-/// startup. Same hash = identical binary = existing daemon is fine. Different
-/// hash = rebuilt binary = supersede.
+/// startup — and the owner's serving state:
+/// - Different hash → supersede (rebuilt binary), regardless of serving state.
+/// - Same hash **and serving** → exit silently; the existing daemon is healthy.
+/// - Same hash but **not serving** → supersede; the owner is wedged between flock
+///   and bind (or its socket was deleted), so a healthy daemon must rebind.
+///
+/// See `docs/canon/singleton.md` §"Same-build serving probe".
 pub fn decide_supersession(
     existing: &PidFileRecord,
     our_binary_hash: &str,
+    owner_serving: bool,
 ) -> SupersessionDecision {
-    if existing.binary_hash == our_binary_hash {
+    if existing.binary_hash == our_binary_hash && owner_serving {
         SupersessionDecision::ExitSilent
     } else {
         SupersessionDecision::Supersede {
             existing_pid: existing.pid,
         }
+    }
+}
+
+/// Probe `socket` until a daemon is serving it or `grace` elapses.
+///
+/// Probes immediately (fast path: a serving owner returns `true` at once,
+/// preserving the common idempotent-contention case). If the first probe fails,
+/// retries every 50ms until the owner starts serving or the grace window
+/// expires. A grace of `Duration::ZERO` probes exactly once.
+///
+/// The grace window preserves the concurrent-start race (singleton.md Example 2):
+/// the losing process waits for the winner to bind rather than killing a daemon
+/// that is merely slow to reach `bind`.
+pub fn probe_until_serving(
+    probe: &dyn crate::boundaries::socket::SocketProbe,
+    socket: &Path,
+    grace: Duration,
+) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        if probe.is_serving(socket) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -180,6 +214,29 @@ pub fn decide_supersession(
 /// - `Err(...)`: unexpected failure (IO, permission, etc.).
 pub fn acquire_or_supersede(
     pid_path: &Path,
+    socket_path: &Path,
+    our_version: &str,
+    our_binary_hash: &str,
+) -> Result<Option<SingletonLock>, SingletonLockError> {
+    acquire_or_supersede_with(
+        &crate::boundaries::socket::RealSocketProbe,
+        Duration::from_secs(2),
+        pid_path,
+        socket_path,
+        our_version,
+        our_binary_hash,
+    )
+}
+
+/// Injection-point variant of [`acquire_or_supersede`] — accepts a [`SocketProbe`]
+/// double and an explicit probe grace, for tests.
+///
+/// [`SocketProbe`]: crate::boundaries::socket::SocketProbe
+pub fn acquire_or_supersede_with(
+    probe: &dyn crate::boundaries::socket::SocketProbe,
+    probe_grace: Duration,
+    pid_path: &Path,
+    socket_path: &Path,
     our_version: &str,
     our_binary_hash: &str,
 ) -> Result<Option<SingletonLock>, SingletonLockError> {
@@ -188,7 +245,15 @@ pub fn acquire_or_supersede(
         Err(SingletonLockError::AlreadyHeld {
             existing: Some(rec),
         }) => {
-            match decide_supersession(&rec, our_binary_hash) {
+            // Same-build contention: probe the socket before concluding the owner
+            // is fine. A different-build owner is superseded regardless, so skip
+            // the (up-to-`probe_grace`) probe in that case.
+            let owner_serving = if rec.binary_hash == our_binary_hash {
+                probe_until_serving(probe, socket_path, probe_grace)
+            } else {
+                false
+            };
+            match decide_supersession(&rec, our_binary_hash, owner_serving) {
                 SupersessionDecision::ExitSilent => Ok(None),
                 SupersessionDecision::Supersede { existing_pid } => {
                     supersede_existing(existing_pid, Duration::from_secs(1))?;

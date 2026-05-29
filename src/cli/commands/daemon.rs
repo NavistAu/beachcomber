@@ -62,6 +62,7 @@ pub fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
     };
     let _singleton_lock = match crate::singleton::acquire_or_supersede(
         &pid_path,
+        &socket_path,
         env!("BEACHCOMBER_VERSION"),
         &binary_hash,
     ) {

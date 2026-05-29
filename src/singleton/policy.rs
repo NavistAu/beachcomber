@@ -11,20 +11,21 @@ use crate::singleton::PidFileRecord;
 /// See `decide_supersession` for the full decision rule.
 pub use crate::singleton::SupersessionDecision;
 
-/// Given the existing singleton's record and our own binary hash, decide whether
-/// to supersede (kill and take over) or exit silently (existing daemon is fine).
+/// Given the existing singleton's record, our own binary hash, and whether the
+/// existing owner is serving its socket, decide whether to supersede (kill and
+/// take over) or exit silently (existing daemon is fine).
 ///
-/// Compares on `binary_hash` — the SHA256 of the binary file content at daemon
-/// startup. Same hash = identical binary = existing daemon is fine. Different
-/// hash = rebuilt binary = supersede.
+/// Different hash → supersede. Same hash + serving → exit silently. Same hash but
+/// not serving → supersede (owner wedged before bind, or socket deleted).
 ///
 /// This is the same function re-exported from `crate::singleton` for callers that
 /// want to import from the pure-policy module explicitly.
 pub fn decide_supersession(
     existing: &PidFileRecord,
     our_binary_hash: &str,
+    owner_serving: bool,
 ) -> SupersessionDecision {
-    crate::singleton::decide_supersession(existing, our_binary_hash)
+    crate::singleton::decide_supersession(existing, our_binary_hash, owner_serving)
 }
 
 /// Given a file's last-modified timestamp (in milliseconds since the Unix epoch) and
@@ -86,19 +87,32 @@ mod tests {
     // --- decide_supersession ---
 
     #[test]
-    fn same_hash_means_exit_silent() {
+    fn same_hash_serving_means_exit_silent() {
         let rec = make_record(1234, HASH_A);
-        let decision = decide_supersession(&rec, HASH_A);
+        let decision = decide_supersession(&rec, HASH_A, true);
         assert!(
             matches!(decision, SupersessionDecision::ExitSilent),
-            "same hash should yield ExitSilent, got {decision:?}"
+            "same hash + serving should yield ExitSilent, got {decision:?}"
         );
+    }
+
+    #[test]
+    fn same_hash_not_serving_means_supersede() {
+        let rec = make_record(1234, HASH_A);
+        let decision = decide_supersession(&rec, HASH_A, false);
+        match decision {
+            SupersessionDecision::Supersede { existing_pid } => {
+                assert_eq!(existing_pid, 1234, "should carry the existing PID");
+            }
+            other => panic!("expected Supersede for non-serving owner, got {other:?}"),
+        }
     }
 
     #[test]
     fn different_hash_means_supersede() {
         let rec = make_record(1234, HASH_A);
-        let decision = decide_supersession(&rec, HASH_B);
+        // Serving state is irrelevant when the build differs.
+        let decision = decide_supersession(&rec, HASH_B, true);
         match decision {
             SupersessionDecision::Supersede { existing_pid } => {
                 assert_eq!(existing_pid, 1234, "should carry the existing PID");
@@ -113,7 +127,7 @@ mod tests {
         // human version matches, but binary_hash differs, so we supersede.
         let mut rec = make_record(9999, HASH_A);
         rec.version = "0.5.1".into(); // same version string
-        let decision = decide_supersession(&rec, HASH_B);
+        let decision = decide_supersession(&rec, HASH_B, true);
         assert!(
             matches!(decision, SupersessionDecision::Supersede { .. }),
             "version string is advisory only; hash difference must supersede"
@@ -123,7 +137,7 @@ mod tests {
     #[test]
     fn supersede_carries_existing_pid_correctly() {
         let rec = make_record(42, HASH_A);
-        let decision = decide_supersession(&rec, HASH_B);
+        let decision = decide_supersession(&rec, HASH_B, true);
         if let SupersessionDecision::Supersede { existing_pid } = decision {
             assert_eq!(existing_pid, 42);
         } else {
