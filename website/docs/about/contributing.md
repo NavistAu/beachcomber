@@ -13,7 +13,7 @@ Thanks for your interest in contributing! beachcomber is a Rust project that ben
 git clone https://github.com/OWNER/beachcomber.git
 cd beachcomber
 cargo build
-cargo nextest run    # or: cargo test (no timeout safety net)
+cargo nextest run    # mandatory — plain cargo test aborts immediately with exit code 2
 ```
 
 The binary is `comb` (not `beachcomber`):
@@ -38,7 +38,7 @@ cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'   #
 
 `cargo-nextest` is the blessed test runner. Install once with `cargo install cargo-nextest --locked`. Config at `.config/nextest.toml` enforces a 2-minute global wall-clock cap on the suite plus a 15s-warn / 30s-kill cap per test — a hung test terminates the run with a failure instead of blocking forever.
 
-Plain `cargo test -- --skip watcher_ --skip uptime_provider_executes` still works; it just lacks the kill-on-hang safety.
+Plain `cargo test` aborts immediately with exit code 2 (a ctor advisory fires before any test runs). Use `cargo nextest run` exclusively.
 
 Some tests require filesystem watching (FSEvents) and may not work inside sandboxed environments. These are the `watcher_*` tests and the `uptime_provider_executes` test; skip them as shown.
 
@@ -54,7 +54,7 @@ See `docs/performance.md` for the performance regression checklist — verify th
 
 See `docs/architecture.md` for a full overview. Key files:
 
-- `src/scheduler.rs` — the core: trigger management, provider execution, subscriptions
+- `src/scheduler/` — the core: trigger management, provider execution, subscriptions
 - `src/server.rs` — Unix socket server, protocol handling
 - `src/cache.rs` — concurrent cache (DashMap)
 - `src/provider/` — all provider implementations

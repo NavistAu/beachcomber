@@ -116,7 +116,7 @@ Clear a virtual provider entry (shorthand for `put` with `data=nil`).
 
 ### `Client:introspect(subject, duration_secs)` → `table | nil, error`
 
-Inspect a daemon subsystem. `subject` is a string: `"daemon"`, `"providers"`, `"config"`, `"cache"`, `"lifecycle"`, or `"watches"`.
+Inspect a daemon subsystem. `subject` is a string: `"daemon"`, `"providers"`, `"config"`, `"cache"`, `"lifecycle"`, `"watches"`, `"timers"`, `"demand"`, or `"procs"`.
 
 ### `Client:watch(key, path)` → `WatchStream | nil, error`
 
@@ -151,10 +151,9 @@ All operations follow the wire contract defined in [docs/protocol-spec.md](https
 
 The SDK looks for the daemon socket in this order:
 
-1. Config file override (if set in `~/.config/beachcomber/config.toml`)
-2. `$BEACHCOMBER_SOCKET` environment variable
-3. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set and the path exists)
-4. `/tmp/beachcomber-<uid>/sock`
+1. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set and the path exists)
+2. `$TMPDIR/beachcomber-<uid>/sock` (if `TMPDIR` is set)
+3. `/tmp/beachcomber-<uid>/sock`
 
 ## Neovim example
 

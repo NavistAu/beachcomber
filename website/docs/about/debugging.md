@@ -97,7 +97,7 @@ comb g hostname.short
 
 **Daemon never starts / connection refused**
 
-The daemon socket path depends on `$XDG_RUNTIME_DIR` (Linux) or `$TMPDIR` (macOS). Check that the socket exists:
+The daemon socket path depends on `$XDG_RUNTIME_DIR` when set; without it, the fallback is `/tmp/beachcomber-<uid>/sock`. Check that the socket exists:
 
 ```sh
 ls -la /run/user/$(id -u)/beachcomber/   # Linux

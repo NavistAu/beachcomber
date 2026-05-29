@@ -278,10 +278,10 @@ Both produce the same result. The HTTP version skips the ~5ms process spawn over
 HTTP providers share the same lifecycle as script providers:
 
 - **`provider_timeout_secs`** (default `10`, set under `[daemon]`) — the maximum time a single request may take. Requests that exceed this are cancelled and the last good cached value is retained.
-- **`failure_reattempts`** (default `3`) — the number of consecutive failures before the provider enters exponential backoff (up to 60s). Applies to any non-2xx response, connection error, or timeout.
-- **`failure_backoff_interval`** (default `"1s"`) — the wait between retry attempts before backoff kicks in.
+- **`failback_count`** (default `3`) — the number of consecutive failures before the provider enters exponential backoff (up to 60s). Applies to any non-2xx response, connection error, or timeout.
+- **`failback_interval`** (default `"1s"`) — the wait between retry attempts before backoff kicks in.
 
-All three can be overridden per-provider under `[providers.<name>]`. A transient 5xx or network error will not remove the last cached value — consumers will see `stale: true` in the envelope once the value is past its expected refresh time.
+All three can be overridden per-source under `[providers.<name>.<source>]`. A transient 5xx or network error will not remove the last cached value — consumers will see `stale: true` in the envelope once the value is past its expected refresh time.
 
 ## Shared Library Providers
 

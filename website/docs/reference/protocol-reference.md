@@ -44,7 +44,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 ```json
 {"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240, "stale": false}
 {"ok": true, "data": "main", "age_ms": 1240, "stale": false}
-{"ok": true, "data": null, "age_ms": null, "stale": false}
+{"ok": true, "data": null, "stale": false}
 {"ok": false, "error": "unknown provider: git2"}
 ```
 
@@ -80,7 +80,7 @@ Response:
 
 **`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
 
-**`status`:** Returns warm cache entries as an array of row objects. Each row has `provider`, `path`, `source`, `field`, `value`, `age_ms`, `stale`, `kind`, and `failure` fields (`source`, `kind`, and `failure` are omitted when null/not applicable). This is the data that `comb s` renders as a table. For daemon internals (pid, uptime, etc.), use `{"op":"introspect","subject":"daemon"}`.
+**`status`:** Returns warm cache entries as an array of row objects. Each row has `provider`, `path`, `source`, `field`, `value`, `age_ms`, `stale`, `kind`, and `failure` fields (`kind` and `failure` are omitted when null/not applicable; `source` is always present). This is the data that `comb s` renders as a table. For daemon internals (pid, uptime, etc.), use `{"op":"introspect","subject":"daemon"}`.
 
 ```json
 {"op":"status"}
@@ -90,8 +90,8 @@ Response:
 
 ```json
 {"ok":true,"data":[
-  {"provider":"git","path":"/project","field":"branch","value":"main","age_ms":234,"stale":false},
-  {"provider":"battery","path":null,"field":"percent","value":85,"age_ms":4200,"stale":false}
+  {"provider":"git","path":"/project","source":"refs","field":"branch","value":"main","age_ms":234,"stale":false},
+  {"provider":"battery","path":null,"source":"state","field":"percent","value":85,"age_ms":4200,"stale":false}
 ]}
 ```
 

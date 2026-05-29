@@ -173,10 +173,9 @@ All operations follow the wire contract defined in [docs/protocol-spec.md](https
 
 ## Socket discovery
 
-1. Config file override (if set in `~/.config/beachcomber/config.toml`)
-2. `$BEACHCOMBER_SOCKET` environment variable
-3. `$XDG_RUNTIME_DIR/beachcomber/sock`
-4. `/tmp/beachcomber-<uid>/sock`
+1. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set and the path exists)
+2. `$TMPDIR/beachcomber-<uid>/sock` (if `TMPDIR` is set)
+3. `/tmp/beachcomber-<uid>/sock`
 
 ## Files
 

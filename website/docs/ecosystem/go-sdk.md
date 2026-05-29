@@ -100,7 +100,7 @@ Write a value into the cache as a virtual provider.
 
 #### `c.Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)`
 
-Inspect a daemon subsystem (`"daemon"`, `"providers"`, `"config"`, `"cache"`, `"lifecycle"`, `"watches"`).
+Inspect a daemon subsystem (`"daemon"`, `"providers"`, `"config"`, `"cache"`, `"lifecycle"`, `"watches"`, `"timers"`, `"demand"`, `"procs"`).
 
 #### `c.Watch(key, path string) (*WatchStream, error)`
 
@@ -117,6 +117,11 @@ Open a persistent connection.
 | `Get(key, path string) (*Result, error)` | Read a cached value |
 | `Refresh(key, path string) error` | Force recomputation |
 | `SetContext(path string) error` | Set default path for subsequent queries |
+| `GetWithFlags(key, path string, force, wait bool) (*Result, error)` | Read with force/wait flags |
+| `Hello() (*HelloInfo, error)` | Handshake — returns daemon and protocol versions |
+| `Put(key string, data interface{}, ttl, path string) error` | Write a virtual provider entry |
+| `Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)` | Inspect a daemon subsystem |
+| `Status() ([]CacheRow, error)` | Return typed cache rows |
 | `Close() error` | Close the connection |
 
 ### `Result`
@@ -159,7 +164,6 @@ All operations follow the wire contract defined in [docs/protocol-spec.md](https
 
 The SDK discovers the daemon socket at:
 
-1. Config file override (if set in `~/.config/beachcomber/config.toml`)
-2. `$BEACHCOMBER_SOCKET` environment variable
-3. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set and the path exists)
-4. `/tmp/beachcomber-<uid>/sock`
+1. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set and the path exists)
+2. `$TMPDIR/beachcomber-<uid>/sock` (if `TMPDIR` is set)
+3. `/tmp/beachcomber-<uid>/sock`

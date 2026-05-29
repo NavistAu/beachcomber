@@ -339,7 +339,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <provider>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
 
@@ -1272,7 +1272,7 @@ This lets integrations write `comb g git.branch .` and have it work everywhere �
 source <(curl -fsSL https://beachcomber.sh/scripts/polyfill.sh)
 ```
 
-Covered keys: `git.branch`, `git.dirty`, `git.ahead`, `git.behind`, `git.stash_count`, `git.commit_summary`, `hostname.name`, `hostname.short`, `user.name`, `load.one/five/fifteen`, `battery.percent`, `battery.charging`.
+Covered keys: `git.branch`, `git.dirty`, `git.ahead`, `git.behind`, `git.stash`, `git.commit_summary`, `hostname.name`, `hostname.short`, `user.name`, `load.one/five/fifteen`, `battery.percent`, `battery.charging`.
 
 ### The chpwd hook
 
@@ -1648,7 +1648,7 @@ Then `chmod 600` and restart the daemon (`pkill -f 'comb daemon'` — it socket-
 
 ### Script Provider Tips
 
-- **Exit codes:** A non-zero exit is treated as a failure. The last cached value is retained. After repeated failures (configurable via `failure_reattempts`, default 3), the provider enters exponential backoff from `failure_backoff_interval` (default 1s, 4 doubling levels).
+- **Exit codes:** A non-zero exit is treated as a failure. The last cached value is retained. After repeated failures (configurable via `failback_count` in `[failback]` globally or `[providers.<name>.<source>]` per-source, default 3), the provider enters exponential backoff from `failback_interval` (default 1s, 4 doubling levels).
 - **Stderr:** Stderr output from script providers is captured and logged at `debug` level. It does not affect the result.
 - **Timeouts:** Script providers are subject to `provider_timeout_secs` (default 10s). Long-running scripts are cancelled and retried on the next trigger.
 - **Shell:** Commands are executed via `sh -c`. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
@@ -1705,12 +1705,14 @@ Logs print directly to your terminal. Press Ctrl+C to shut down.
 
 ```sh
 $ comb s
-provider   field      value      age_ms  stale
-git        branch     main          234  false
-battery    percent    85           4200  false
+PROVIDER  PATH    FIELD    VALUE    AGE   TTL
+git       /repo   branch   main     14s   ★     60s×12 ◉
+git       /repo   dirty    true     14s   ★     60s×12 ◉
+battery   -       percent  87       8s    ★     30s×04
+hostname  -       short    artemis  3h    ---
 
 # Filter to a specific provider
-comb s --filter git
+comb s --filter provider=git
 ```
 
 For daemon internals (pid, uptime, watchers, request counts, lifecycle state, poll timers), use `comb check`:

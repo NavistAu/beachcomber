@@ -148,6 +148,33 @@ use crate::provider::{
 };
 use std::path::PathBuf;
 
+// ── SourceMetadata constructor ────────────────────────────────────────────────
+
+fn config_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "config".to_string(),
+        fields: vec![
+            FieldSchema { name: "name".to_string(), field_type: FieldType::String },
+            FieldSchema { name: "endpoint".to_string(), field_type: FieldType::String },
+        ],
+        scope: SourceScope::Global,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![],
+            abs_paths: vec![
+                expand_abs_path("~/.docker/config.json")
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                expand_abs_path("~/.docker/contexts")
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ],
+        },
+        keep_alive: KeepAlive::Never,
+        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
+        fsevents_reinstate: true,
+    }
+}
+
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 pub struct DockerContextProvider;
@@ -156,7 +183,7 @@ impl Provider for DockerContextProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "dockercontext".to_string(),
-            sources: vec![DockerContextSource.metadata().clone()],
+            sources: vec![config_meta()],
         }
     }
 
@@ -172,28 +199,7 @@ struct DockerContextSource;
 impl Source for DockerContextSource {
     fn metadata(&self) -> &SourceMetadata {
         static META: std::sync::OnceLock<SourceMetadata> = std::sync::OnceLock::new();
-        META.get_or_init(|| SourceMetadata {
-            name: "config".to_string(),
-            fields: vec![
-                FieldSchema { name: "name".to_string(), field_type: FieldType::String },
-                FieldSchema { name: "endpoint".to_string(), field_type: FieldType::String },
-            ],
-            scope: SourceScope::Global,
-            invalidation: InvalidationStrategy::Watch {
-                patterns: vec![],
-                abs_paths: vec![
-                    expand_abs_path("~/.docker/config.json")
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                    expand_abs_path("~/.docker/contexts")
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                ],
-            },
-            keep_alive: KeepAlive::Never,
-            failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
-            fsevents_reinstate: true,
-        })
+        META.get_or_init(config_meta)
     }
 
     fn execute(&self, _path: Option<&str>) -> SourceResult {
@@ -257,10 +263,10 @@ pub mod dockercontext;
 Add the import and registration to `src/provider/registry.rs`:
 
 ```rust
-use crate::provider::dockercontext::DockerContextProvider;
-
 // In with_defaults():
-("dockercontext", Box::new(DockerContextProvider)),
+registry
+    .register(Box::new(crate::provider::dockercontext::DockerContextProvider))
+    .expect("dockercontext");
 ```
 
 ### 2.4 Use it
@@ -296,11 +302,12 @@ mod tests {
     #[test]
     fn returns_empty_without_docker_config() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", dir.path());
+        // SAFETY: test-only env mutation; nextest runs each test in its own process
+        unsafe { std::env::set_var("HOME", dir.path()); }
         let source = DockerContextSource;
         let result = source.execute(None);
         assert!(result.fields.is_empty());
-        std::env::remove_var("HOME");
+        unsafe { std::env::remove_var("HOME"); }
     }
 
     #[test]
@@ -313,14 +320,15 @@ mod tests {
             r#"{"auths": {}, "currentContext": "default"}"#,
         ).unwrap();
 
-        std::env::set_var("HOME", dir.path());
+        // SAFETY: test-only env mutation; nextest runs each test in its own process
+        unsafe { std::env::set_var("HOME", dir.path()); }
         let source = DockerContextSource;
         let result = source.execute(None);
         assert_eq!(
             result.fields.get("name"),
             Some(&crate::provider::Value::String("default".to_string()))
         );
-        std::env::remove_var("HOME");
+        unsafe { std::env::remove_var("HOME"); }
     }
 }
 ```
@@ -547,15 +555,18 @@ Sources that depend on optional tools must return an empty `SourceResult` gracef
 #[test]
 fn returns_empty_without_kubeconfig() {
     let dir = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", dir.path());
-    std::env::remove_var("KUBECONFIG");
+    // SAFETY: test-only env mutation; nextest runs each test in its own process
+    unsafe {
+        std::env::set_var("HOME", dir.path());
+        std::env::remove_var("KUBECONFIG");
+    }
 
     let provider = KubecontextProvider;
     let sources = provider.sources();
     let result = sources[0].execute(None);
     assert!(result.fields.is_empty());
 
-    std::env::remove_var("HOME");
+    unsafe { std::env::remove_var("HOME"); }
 }
 ```
 
@@ -678,34 +689,38 @@ Shared library providers load a `.so` (Linux) or `.dylib` (macOS) at daemon star
 
 ```c
 // Returns the number of sources this library exports.
-uintptr_t bc_source_count(void);
+size_t bc_source_count(void);
 
 // Returns JSON SourceMetadata for source at index `idx`.
-// Caller frees via beachcomber_provider_free().
-const char* bc_source_metadata(uintptr_t idx);
+// The daemon copies the returned string immediately; the library retains
+// ownership and lifetime of what it returns.
+const char* bc_source_metadata(size_t idx);
 
 // Execute source `idx`. path is NULL for global sources.
 // Returns a JSON object of field values, or NULL on failure.
-// Caller frees via beachcomber_provider_free().
-const char* bc_source_execute(uintptr_t idx, const char* path);
+// The daemon copies the returned string immediately; the library retains
+// ownership and lifetime of what it returns.
+const char* bc_source_execute(size_t idx, const char* path);
 ```
 
 **Legacy ABI (backwards-compatible):** Used when `bc_source_count` is absent:
 
 ```c
 // Returns JSON metadata for the single source.
-// Caller frees via beachcomber_provider_free().
+// The daemon copies the returned string immediately; the library retains
+// ownership and lifetime of what it returns.
 const char* beachcomber_provider_metadata(void);
 
 // Execute the single source. path is NULL for global sources.
-// Caller frees via beachcomber_provider_free().
+// The daemon copies the returned string immediately; the library retains
+// ownership and lifetime of what it returns.
 const char* beachcomber_provider_execute(const char* path);
 
 // Free a string previously returned by metadata or execute.
 void beachcomber_provider_free(char* ptr);
 ```
 
-Both ABIs use the same free symbol: `beachcomber_provider_free`.
+The daemon copies every returned C string before the call returns. The library retains full ownership of the pointer's lifetime. `beachcomber_provider_free` is provided for symmetry with libraries that allocate dynamically, but the daemon never calls it.
 
 ### Configuration
 
@@ -734,18 +749,22 @@ library_path = "/usr/local/lib/beachcomber/libmy_provider.so"
 #include <string.h>
 #include <stddef.h>
 
-uintptr_t bc_source_count(void) { return 1; }
+size_t bc_source_count(void) { return 1; }
 
-const char* bc_source_metadata(uintptr_t idx) {
+const char* bc_source_metadata(size_t idx) {
     (void)idx;
-    return strdup("{\"name\":\"main\","
-                  "\"fields\":{\"value\":{\"type\":\"string\"}},"
-                  "\"invalidation\":{\"poll\":\"10s\"}}");
+    /* The daemon copies the returned C string immediately; the library owns
+       the pointer's lifetime. Using a static string is fine here. */
+    return "{\"name\":\"main\","
+           "\"fields\":{\"value\":{\"type\":\"string\"}},"
+           "\"invalidation\":{\"poll\":\"10s\"}}";
 }
 
-const char* bc_source_execute(uintptr_t idx, const char* path) {
+const char* bc_source_execute(size_t idx, const char* path) {
     (void)idx; (void)path;
-    return strdup("{\"value\":\"hello from C\"}");
+    /* The daemon copies the returned C string immediately; the library owns
+       the pointer's lifetime. Using a static string is fine here. */
+    return "{\"value\":\"hello from C\"}";
 }
 
 void beachcomber_provider_free(char* ptr) { free(ptr); }

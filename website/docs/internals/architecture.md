@@ -22,7 +22,7 @@ graph TB
     Scheduler --> FSW["FsWatcher<br/>(notify crate)"]
     Scheduler --> Watchdog["Watchdog<br/>(heartbeat monitor)"]
 
-    SB --> Provider["Arc‹dyn Provider›<br/>sources() → Source::execute() → SourceResult"]
+    SB --> Provider["Arc‹dyn Source›<br/>Source::execute() → SourceResult"]
     Provider --> Put["Cache.put_source()"]
 ```
 
@@ -51,7 +51,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` / `provider.source` / `provider.source.field`), `resolve_path`, `split_metadata_suffix`, and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
 | `src/config.rs` | TOML config loading from XDG directories; `Config`, `DaemonConfig`, `LifecycleConfig`, `ScriptProviderConfig`, `SourceOverrideConfig` |
 | `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `SourceScope`, `FieldSchema`, `InvalidationStrategy`, `KeepAlive`, `FailbackConfig`, `SourceResult`; `expand_abs_path()` helper |
-| `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; `field → source` reverse map (`HashMap<(provider, field), source_name>`); built-in registration; validation at registration |
+| `src/provider/registry.rs` | `ProviderRegistry`: `sources: HashMap<(String, String), Arc<dyn Source>>` keyed by `(provider_name, source_name)` and `providers: HashMap<String, ProviderMetadata>` (metadata snapshot); `Box<dyn Provider>` objects are consumed at `register()` and not retained; `field → source` reverse map (`HashMap<(provider, field), source_name>`); built-in registration; validation at registration |
 | `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
 | `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, pure-watch global (`KeepAlive::Never`), `Watch { patterns: [], abs_paths: [...] }` — no `Once` strategy |
 | `src/provider/git.rs` | `GitProvider`: three sources — `refs` (Watch, `.git/`), `diff` (Poll, 30s), `status` (WatchAndPoll, `.git/index`, 60s) |
@@ -249,17 +249,17 @@ All provider `execute()` calls happen in `tokio::task::spawn_blocking`. This mov
 
 `Cache` wraps a `DashMap<String, CacheEntry>`. DashMap provides fine-grained shard locking, allowing concurrent reads and writes without a global mutex. Cache reads — the hot path hit on every client request — are effectively lock-free under contention.
 
-**`Arc<dyn Provider>` for registry**
+**`Arc<dyn Source>` for registry**
 
-Providers are stored as `Arc<dyn Provider>`. When the scheduler needs to execute a provider, it calls `registry.get(name)` which returns `Arc::clone()`. The cloned Arc is moved into `spawn_blocking`. The registry itself is never mutated after startup; reads from multiple tasks are contention-free.
+Sources are stored as `Arc<dyn Source>` in the registry (keyed by `(provider_name, source_name)`). `Box<dyn Provider>` objects are consumed at `register()` and not retained. When the scheduler needs to execute a source, it calls `registry.source(provider, source)` which returns `Option<Arc<dyn Source>>`. The cloned Arc is moved into `spawn_blocking`. The registry itself is never mutated after startup; reads from multiple tasks are contention-free.
 
 **Scheduler-owned mutable state**
 
 The Scheduler owns all mutable coordination state: `demand`, `poll_states`, `watch_paths`, `lifecycle`. This state is only accessed from the single scheduler task, so it requires no synchronisation. The `in_flight`, `pending_rerun`, and `failure_counts` maps are wrapped in `Mutex` because they are accessed from both the scheduler task and from within `tokio::spawn` closures that run after `spawn_blocking` completes.
 
-**No provider-side concurrency**
+**No source-side concurrency**
 
-Providers are `Send + Sync` but stateless. They hold no mutable state. The same `Arc<dyn Provider>` can be passed to multiple concurrent `spawn_blocking` calls for different paths without coordination.
+Sources are `Send + Sync` but stateless. They hold no mutable state. The same `Arc<dyn Source>` can be passed to multiple concurrent `spawn_blocking` calls for different paths without coordination.
 
 ---
 
@@ -299,4 +299,4 @@ Watching `git.branch` only emits a line when the branch value itself changes, no
 
 **Virtual providers via put**
 
-External processes can write arbitrary data into the cache via the `put` protocol op. The server creates a virtual provider entry — a `CacheEntry` with no associated `Arc<dyn Provider>` — and inserts it directly. Virtual providers have no `execute()` method and are never polled or evicted by the scheduler. Namespace hierarchy (builtin > script > virtual) prevents a `put` call from shadowing a real provider: if a built-in or script provider already owns the namespace, the put op is rejected.
+External processes can write arbitrary data into the cache via the `put` protocol op. The server creates a virtual provider entry — a `CacheEntry` with no associated `Arc<dyn Source>` — and inserts it directly. Virtual providers have no `execute()` method and are never polled or evicted by the scheduler. Namespace hierarchy (builtin > script > virtual) prevents a `put` call from shadowing a real provider: if a built-in or script provider already owns the namespace, the put op is rejected.

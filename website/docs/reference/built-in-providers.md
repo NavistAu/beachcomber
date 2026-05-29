@@ -13,7 +13,7 @@ Each provider declares one or more **sources** — independent units of executio
 
 | Provider | Source | Strategy | Scope | Fields |
 |---|---|---|---|---|
-| `asdf` | `tools` | fsevent | path | tool versions (one field per tool) |
+| `asdf` | `tools` | fsevent | path | `tools` (object keyed by tool name) |
 | `aws` | `profile` | poll 60s | global | `profile`, `region`, `source`, `expiration` |
 | `battery` | `state` | poll 30s | global | `percent`, `charging`, `status`, `time_remaining_secs` (macOS) |
 | `battery` | `level` | poll 30s | global | `percent`, `charging`, `status_raw` (Linux) |
@@ -48,10 +48,10 @@ Each provider declares one or more **sources** — independent units of executio
 |---|---|---|---|---|
 | `hostname` | global | `name` (string), `short` (string) | once at startup | 400 ns |
 | `user` | global | `name` (string), `uid` (int) | once at startup | 395 ns |
-| `load` | global | `one` (float), `five` (float), `fifteen` (float) | poll 10s / floor 5s | 550 ns |
+| `load` | global | `one` (float), `five` (float), `fifteen` (float) | poll 10s | 550 ns |
 | `uptime` | global | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
-| `battery` | global | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s / floor 5s | 6 ms |
-| `network` | global | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
+| `battery` | global | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s | 6 ms |
+| `network` | global | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s | 2 ms |
 | `sudo` | global | `active` (bool) | poll 30s | < 1 µs |
 | `op` | global | `signed_in` (bool), `account` (string) | poll 60s | varies |
 
@@ -174,7 +174,7 @@ feature/fast-cache
 | `kubecontext` | global | `context` (string), `namespace` (string) | poll 30s | 749 ns |
 | `gcloud` | global | `project` (string), `account` (string) | poll 60s | 1.08 µs |
 | `aws` | global | `profile` (string), `region` (string), `source` (string), `expiration` (string) | poll 60s | < 1 µs |
-| `terraform` | path | `workspace` (string) | watch `.terraform/` | < 1 µs |
+| `terraform` | path | `workspace` (string) | watch `.terraform` | < 1 µs |
 
 `kubecontext` reads `~/.kube/config` directly (respecting `$KUBECONFIG`) — no `kubectl` subprocess. `gcloud` reads `~/.config/gcloud/properties` directly — no Python CLI subprocess.
 
@@ -200,10 +200,10 @@ feature/fast-cache
 
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `python` | path | `venv` (bool), `venv_name` (string), `version` (string) | watch `.venv/`, `pyproject.toml` | < 1 µs |
+| `python` | path | `venv` (bool), `venv_name` (string), `version` (string) | watch `.venv`, `pyproject.toml` | < 1 µs |
 | `conda` | global | `env` (string) | poll 30s | < 1 µs |
-| `mise` | path | one string field per tool name (e.g. `node`, `rust`) | watch `.mise.toml`, `mise.toml` | varies |
-| `asdf` | path | `tools` (object) | watch `.tool-versions` | < 1 µs |
+| `mise` | global/path | one string field per tool name (e.g. `node`, `rust`) — `global` source (Global scope) and `project` source (PathScoped) | watch `.mise.toml`, `mise.toml` | varies |
+| `asdf` | path | `tools` (object keyed by tool name) | watch `.tool-versions` | < 1 µs |
 | `direnv` | path | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 
 **Example output:**

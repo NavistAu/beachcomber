@@ -89,6 +89,29 @@ client.refresh("git", Some("/path/to/repo"))?;
 
 Return daemon scheduler and cache status.
 
+#### `client.hello()`
+
+Handshake — returns a `HelloInfo` with daemon and protocol version strings.
+
+#### `client.put(key, data, ttl, path)`
+
+Write a JSON value into the cache as a virtual provider. `ttl` and `path` are `Option<&str>`. Pass `None` for `data` (via `put_null`) to clear the entry.
+
+#### `client.introspect(subject, duration_secs)`
+
+Inspect a daemon subsystem. `subject` is an `IntrospectSubject` enum variant: `Daemon`, `Providers`, `Config`, `Cache`, `Lifecycle`, `Watches`, `Timers`, `Demand`, `Procs`. `duration_secs` is `Option<u64>` (only used by `Procs`).
+
+#### `client.watch(key, path)`
+
+Subscribe to live cache updates. Returns a `WatchStream`; call `next_event()` in a loop and drop the stream when done. The first event is always the current cached value.
+
+```rust
+let mut stream = client.watch("git.branch", Some("/path/to/repo"))?;
+while let Some(event) = stream.next_event()? {
+    println!("branch update: {:?} (age {}ms)", event.data, event.age_ms);
+}
+```
+
 #### `client.session()`
 
 Open a persistent connection. Reduces per-query overhead to ~15µs.
@@ -111,32 +134,13 @@ match result {
 
 `data` provides typed accessors: `as_text()`, `get_str(field)`, `get_bool(field)`, `get_i64(field)`, `get_f64(field)`.
 
-## Additional operations
-
-#### `client.put(key, data, ttl, path)`
-
-Write a JSON value into the cache as a virtual provider. `ttl` and `path` are `Option<&str>`.
-
 #### `client.put_null(key, path)`
 
 Clear a virtual provider entry (equivalent to `put` with no data).
-
-#### `client.watch(key, path)`
-
-Subscribe to live cache updates. Returns a `WatchStream`; call `next_event()` in a loop and drop the stream when done. The first event is always the current cached value.
-
-```rust
-let mut stream = client.watch("git.branch", Some("/path/to/repo"))?;
-while let Some(event) = stream.next_event()? {
-    println!("branch update: {:?} (age {}ms)", event.data, event.age_ms);
-}
-```
 
 ## Socket discovery
 
 The SDK discovers the daemon socket at:
 
-1. Config file override (if set in `~/.config/beachcomber/config.toml`)
-2. `$BEACHCOMBER_SOCKET` environment variable
-3. `$XDG_RUNTIME_DIR/beachcomber/sock`
-4. `/tmp/beachcomber-<uid>/sock`
+1. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set)
+2. `$TMPDIR/beachcomber-<uid>/sock` (`TMPDIR` defaults to `/tmp` when unset)

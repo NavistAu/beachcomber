@@ -18,7 +18,7 @@ beachcomber runs with sensible defaults and requires no configuration. The optio
 # Default resolution order: BEACHCOMBER_SOCKET env var →
 #          $XDG_RUNTIME_DIR/beachcomber/sock →
 #          /tmp/beachcomber-<uid>/sock
-socket_path = ""
+# socket_path = "/path/to/socket.sock"
 
 # Log level for daemon output.
 # Options: "error", "warn", "info", "debug", "trace"
@@ -323,7 +323,7 @@ Only `enabled` is valid directly under `[providers.<name>]` for built-in provide
 | `body` | string | no | Request body (for POST/PUT) |
 | `extract` | string | no | Dot-separated path into the JSON response (e.g., `"status.indicator"`, `"rates.AUD"`) |
 | `enabled` | bool | no | `false` to disable |
-| `invalidation.poll` | string | no | Poll interval (default `"60s"`, floor `5s`) |
+| `invalidation.poll` | string | no | Poll interval (default `"60s"`) |
 
 **`[providers.<name>]` section (shared library providers):**
 

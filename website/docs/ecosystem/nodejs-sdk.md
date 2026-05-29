@@ -74,7 +74,7 @@ Write a value into the cache as a virtual provider. Omit `data` or pass `null` t
 
 #### `client.introspect(subject, opts?)`
 
-Inspect a daemon subsystem (`"daemon"` | `"providers"` | `"config"` | `"cache"` | `"lifecycle"` | `"watches"`).
+Inspect a daemon subsystem (`"daemon"` | `"providers"` | `"config"` | `"cache"` | `"lifecycle"` | `"watches"` | `"timers"` | `"demand"` | `"procs"`).
 
 #### `client.watch(key, path?)`
 
@@ -136,9 +136,8 @@ All operations follow the wire contract defined in [docs/protocol-spec.md](https
 
 The socket path is resolved in this order:
 
-1. Config file override (if set in `~/.config/beachcomber/config.toml`)
-2. `$BEACHCOMBER_SOCKET` environment variable
-3. `$XDG_RUNTIME_DIR/beachcomber/sock`
-4. `/tmp/beachcomber-<uid>/sock`
+1. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set and the path exists)
+2. `$TMPDIR/beachcomber-<uid>/sock` (if `TMPDIR` is set)
+3. `/tmp/beachcomber-<uid>/sock`
 
 Override with the `socketPath` option.
