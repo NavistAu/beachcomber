@@ -4,6 +4,8 @@
 
 **Scope:** the demand/decay state machine. Out of scope items are listed at the end.
 
+> **Relationship to the Source model.** This document describes the state machine for a single unit of refresh. Since the provider-source rebuild, that unit is a **Source instance**, keyed `(provider, path, source)`, not a whole provider — see [`provider_source.md`](./provider_source.md). The machine below runs independently per Source instance; a `(provider, path)` cache entry with multiple Sources runs one of these machines per Source, and the entry holds the union of each Source's disjoint Fields. Where this doc says "entry" or "the provider executes," read "Source instance" / "the Source executes" for the multi-Source case; the single-Source framing here is kept for readability and the math is identical.
+
 ## Glossary
 
 | Term | Meaning |
@@ -12,7 +14,7 @@
 | **Field** | A named component of a provider's output. Each field has a declared type and scope (Global or PathScoped). |
 | **Provider** | Code that computes a set of fields on demand. A built-in `impl Provider` in Rust, a script, an HTTP endpoint, or a loaded shared library. |
 | **Consumer** | Any caller that issues a cache request: CLI command, shell prompt integration, SDK client. Consumers are anonymous and transient. |
-| **Cache entry** | One `(provider, path)` slot. Holds the complete `ProviderResult` — all fields the provider emitted in a single execution — plus timestamp and state metadata. |
+| **Cache entry** | One `(provider, path)` slot. Holds the union of all the provider's Sources' Field outputs at that key (each Source contributes a disjoint Field subset), plus per-Source timestamp and state metadata. See [`provider_source.md`](./provider_source.md) for the composition model. |
 | **Demand signal** | An event that counts as activity for a cache entry. Two sources: (a) a consumer request, (b) an fsevent on a filesystem path watched by that entry's provider. Both reset the keep-alive timer. |
 | **Base poll interval (`P`)** | Polling rate used in the Active state. Provider-declared default, overridable per-provider. |
 | **Keep-alive count (`K`)** | Number of base-rate polls' worth of time the entry stays in Active after the last demand signal. Expressed as an integer count, not a duration. Keep-alive duration in seconds is `K × P`. |
@@ -63,10 +65,10 @@ A consumer request and an fsevent on a watched path are symmetric demand signals
 
 ### Filesystem watches during decay
 
-Watch behaviour during decay is per-provider configurable:
+Watch behaviour during decay is per-Source configurable via `fsevents_reinstate` (see [`provider_source.md`](./provider_source.md) §"fsevents_reinstate default"):
 
-- **Drop-on-decay (default):** watches torn down when the entry enters Decay1. Only consumer requests can reinstate during decay. Appropriate for providers whose watched paths fire frequently (e.g., `.git` during active development) — idle entries don't burn watch registrations.
-- **Keep-during-decay:** watches remain registered through every decay step until eviction. An fsevent can reinstate an entry all the way down to Decay4. Appropriate for providers whose watched paths fire rarely but whose refresh latency matters when they do (e.g., a config file consumers read once an hour).
+- **Keep-during-decay (default — `fsevents_reinstate = true` for `Watch`/`WatchAndPoll`):** watches remain registered through every decay step until eviction. An fsevent can reinstate an entry all the way down to Decay4. This is the default: a watch is cheap to keep registered, and keeping it lets an idle entry refresh promptly when its watched path finally changes (e.g., a config file consumers read once an hour).
+- **Drop-on-decay (`fsevents_reinstate = false`):** watches torn down when the entry enters Decay1. Only consumer requests can reinstate during decay. Provider authors opt into this for Sources whose watched paths fire frequently during quiet periods, where reacting to every event during decay would defeat the decay's purpose.
 
 ### Timers
 
@@ -155,7 +157,7 @@ sequenceDiagram
     participant Ca as Cache
 
     Note over Sch: keep-alive expires
-    Sch->>Sch: drop watches<br/>set poll interval to 2P<br/>set step duration to 2K
+    Sch->>Sch: drop watches (if fsevents_reinstate=false)<br/>set poll interval to 2P<br/>set step duration to 2K
     loop each step n ∈ {1..4}
         loop every 2^n × P while step n
             Sch->>P: execute(path)
@@ -222,7 +224,7 @@ sequenceDiagram
 |---|---|---|---|
 | Base poll interval `P` | per-provider | seconds | configurable, with provider-declared default |
 | Keep-alive count `K` | per-provider | polls (integer) | configurable, with provider-declared default |
-| Watches-during-decay | per-provider | bool | configurable, default drop-on-decay |
+| Watches-during-decay (`fsevents_reinstate`) | per-Source | bool | configurable, default keep-during-decay for `Watch`/`WatchAndPoll` |
 | Decay step count | global | — | fixed at 4 |
 | Decay ratio | global | — | fixed at 2 |
 
