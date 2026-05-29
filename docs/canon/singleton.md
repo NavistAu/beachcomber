@@ -2,7 +2,7 @@
 
 **Status:** canonical. Describes how at most one beachcomber daemon runs per user at any time, how startup detects existing instances, how a rebuilt binary triggers automatic restart, and how clients tolerate the brief restart window. Tests must match this document; disagreements mean the code is wrong.
 
-**Scope:** the daemon-lifetime singleton property — startup contention, version-mismatch supersession, self-triggered restart on binary change, orphan reaping, client-side connect retry. Out-of-scope items at the end.
+**Scope:** the daemon-lifetime singleton property — startup contention, version-mismatch supersession, same-build serving-probe supersession, self-triggered restart on binary change, client-side connect retry. Out-of-scope items at the end.
 
 ## Glossary
 
@@ -14,7 +14,7 @@
 | **Build identity** | A SHA256 of the daemon binary file content, computed at startup. The canonical answer to "is the running daemon the same physical build as the one that just started?" |
 | **Human version** | A user-facing build label (e.g., `0.5.1` or `0.5.1+sha.abc12345.dirty`) emitted into the binary at compile time. Stored alongside build identity in the PID file but **not** used for singleton decisions. |
 | **Supersession** | The act of a starting daemon killing an existing daemon with a different build identity, then taking the lock itself. |
-| **Reap** | At startup, kill any other process whose `current_exe()` matches ours (orphan daemons left over from prior socket-path schemes or `--socket` overrides). |
+| **Serving probe** | A fast `connect()` to the canonical socket used during same-build contention to decide whether the existing owner is actually serving. A serving owner is left alone; a non-serving owner (wedged between flock and bind, or with a deleted socket) is superseded after a short grace. |
 | **Self-supervision** | The running daemon watches its own binary file. On modify, it gracefully shuts down so the next client invocation respawns the new binary. |
 | **Connect retry** | Each client (CLI + every SDK) retries a failed `connect()` three times with 250ms / 500ms / 1s backoff before surfacing the error. Covers the daemon-restart window. |
 
@@ -25,12 +25,13 @@
 ```mermaid
 stateDiagram-v2
     [*] --> Starting: process exec
-    Starting --> ExitSilent: existing daemon holds lock<br/>and binary hashes match
+    Starting --> Probing: existing daemon holds lock<br/>and binary hashes match
+    Probing --> ExitSilent: owner is serving its socket
+    Probing --> Superseding: owner not serving<br/>after grace
     ExitSilent --> [*]
     Starting --> Superseding: existing daemon holds lock<br/>but binary hashes differ
     Superseding --> Starting: SIGTERM old, wait 1s<br/>SIGKILL if still alive<br/>retry acquire
-    Starting --> Reaping: lock acquired
-    Reaping --> Running: orphan processes killed<br/>(matching binary path only)
+    Starting --> Running: lock acquired
     Running --> ShuttingDown: fs-watch fires<br/>(binary modified)
     Running --> ShuttingDown: SIGINT / SIGTERM
     Running --> ShuttingDown: mtime race detected at startup
@@ -71,7 +72,7 @@ Two distinct concerns:
 - **Human version** (`BEACHCOMBER_VERSION`) — emitted by `build.rs` at compile time. Reads `COMB_BUILD_SHA` / `COMB_BUILD_DIRTY` env vars (set by CI for releases); falls back to bare `CARGO_PKG_VERSION` for dev builds. Build-cache safe: changes to git state do **not** invalidate the cache.
 - **Build identity** (`binary_hash`) — SHA256 of the running binary's file content, computed at daemon startup (~50ms one-time cost). Always uniquely identifies the physical build artefact, regardless of what version string is embedded in it.
 
-`decide_supersession` compares on `binary_hash`. Same hash = same physical build = the existing daemon is fine, exit silently. Different hash = supersede.
+`decide_supersession` compares on `binary_hash` and the existing owner's serving state. Different hash = supersede. Same hash **and the owner is serving** its socket = the existing daemon is fine, exit silently. Same hash but the owner is **not serving** (wedged between flock and bind, or its socket was deleted) = supersede, so a healthy daemon rebinds the socket.
 
 ### Self-supervision
 
@@ -83,9 +84,14 @@ The daemon registers an `fs-watch` (via `notify`) on the parent directory of `cu
 
 Additionally, immediately after the watch is registered, the daemon checks `binary_newer_than(current_exe, our_start_unix_ms)`. If true (binary was replaced between exec and watch arming), trigger shutdown immediately. Catches the small race window before the watch is live.
 
-### Orphan reaping
+### Same-build serving probe
 
-Once the lock is acquired, the new daemon walks all processes (`sysinfo`), filters to those whose `current_exe()` canonicalises to the same path as ours, excludes self, and SIGTERM-then-SIGKILLs each. Worktree daemons (different binary path) are **not** killed.
+When flock contention reveals an existing owner with the **same** `binary_hash`, the new daemon does not blindly exit. It probes the canonical socket with a fast `connect()`:
+
+- **Serving** (connect succeeds) → the existing daemon is healthy; exit silently. This is the common idempotent-contention path.
+- **Not serving** (connect fails) → the owner may be wedged between acquiring the flock and binding the socket, or its socket file was deleted. The new daemon grace-retries the probe for ~2s; if the owner never starts serving, it supersedes the owner (SIGTERM→SIGKILL) and rebinds the socket itself.
+
+The grace window preserves the concurrent-start race (Example 2): the losing process waits for the winner to bind rather than killing a daemon that is merely slow to reach `bind`.
 
 ### Client connect retry
 
@@ -112,12 +118,13 @@ sequenceDiagram
     Note over P: enter Running
 ```
 
-### Same-build start: exit silently
+### Same-build start: probe, then exit silently or supersede
 
 ```mermaid
 sequenceDiagram
     participant N as New process
     participant L as PID file
+    participant S as Canonical socket
     participant E as Existing daemon
 
     N->>L: open + flock(EX | NB)
@@ -125,8 +132,17 @@ sequenceDiagram
     N->>L: read JSON record
     L-->>N: existing.binary_hash = X
     Note over N: our binary_hash = X
-    N->>N: ExitSilent — log and exit 0
-    Note over E: undisturbed
+    N->>S: connect() probe
+    alt owner serving
+        S-->>N: connected
+        N->>N: ExitSilent — log and exit 0
+        Note over E: undisturbed
+    else not serving after ~2s grace
+        S-->>N: ECONNREFUSED / ENOENT
+        N->>E: SIGTERM (1s grace) → SIGKILL
+        N->>L: retry acquire, bind socket
+        Note over N: enter Running
+    end
 ```
 
 ### Different-build start: supersede
@@ -211,38 +227,17 @@ sequenceDiagram
     Note over C: proceed with request
 ```
 
-### Reap orphans on startup
-
-```mermaid
-sequenceDiagram
-    participant N as New daemon
-    participant PS as Process table
-    participant O as Orphan daemon
-
-    N->>L: lock acquired
-    N->>PS: walk all processes (sysinfo)
-    PS-->>N: list with exe paths
-    Note over N: filter: exe canonical == our exe canonical<br/>exclude self pid
-    loop for each orphan
-        N->>O: SIGTERM
-        Note over N: 1s grace, then SIGKILL
-        N->>N: log reap
-    end
-    N->>S: bind canonical socket
-```
-
 ## Invariants
 
 1. At any instant, at most one process holds the canonical PID file's `flock`. That process is the singleton.
 2. A daemon holding the singleton lock has a build identity (`binary_hash`) recorded in the PID file. Any starting daemon reads it.
-3. Same-build-identity contention resolves to the existing daemon staying live; the new process exits silently.
+3. Same-build-identity contention resolves by probing the canonical socket: if the existing owner is serving, the new process exits silently; if it is not serving after a short grace, the new daemon supersedes it and rebinds the socket.
 4. Different-build-identity contention resolves to the new daemon taking over; the existing daemon receives SIGTERM (1s grace) then SIGKILL.
 5. The PID file is deleted on graceful shutdown (`SingletonLock::drop`). The flock is released when the file descriptor closes — including on SIGKILL or ungraceful exit.
 6. Stale PID files (file present but no process holds the flock) do not block startup — `flock(LOCK_EX | LOCK_NB)` succeeds and the new daemon overwrites the file.
 7. The daemon's binary on disk being modified causes the daemon to shut down within `200ms (debounce) + drain time`. Next client invocation respawns from the new binary.
-8. Orphan reaping kills only processes whose canonicalised `current_exe()` matches the new daemon's. Worktree daemons (different binary path) are unaffected.
-9. Clients tolerate up to ~1.75s of socket-unavailable through retry. Connection errors surfacing past that point indicate genuine daemon-down conditions.
-10. Connect retry only fires on initial `connect()` failure. Mid-request socket errors propagate immediately to the caller.
+8. Clients tolerate up to ~1.75s of socket-unavailable through retry. Connection errors surfacing past that point indicate genuine daemon-down conditions.
+9. Connect retry only fires on initial `connect()` failure. Mid-request socket errors propagate immediately to the caller.
 
 ## Parameters
 
@@ -255,6 +250,7 @@ sequenceDiagram
 | SIGTERM grace before SIGKILL | global | seconds | fixed at 1s |
 | Post-SIGKILL wait | global | seconds | fixed at 1s |
 | Acquire-after-supersession retry deadline | global | seconds | fixed at 2s |
+| Same-build serving-probe grace | global | seconds | fixed at 2s |
 | fs-watch debounce | global | milliseconds | fixed at 200ms |
 | Client connect retry count | per-SDK | retries | fixed at 3 |
 | Client connect retry backoffs | per-SDK | milliseconds | fixed at 250 / 500 / 1000 |
@@ -288,17 +284,19 @@ Two shells run `comb get hostname.short` at the same time. Both find no daemon a
 
 No supersession. No SIGTERM. Idempotent contention.
 
-### Example 3 — orphan TMPDIR-derived daemons after upgrade
+### Example 3 — wedged same-build owner not serving
 
-User upgrades from a pre-singleton beachcomber to the current one. Their machine has 4 stale `comb daemon` processes from prior shell sessions, each on a TMPDIR-derived socket path.
+A daemon acquired the flock and wrote its PID file, then stalled before binding the socket (or its socket file was deleted out from under it). Its `binary_hash` equals the new process's.
 
 | Event | Outcome |
 |---|---|
-| Run `comb status` | CLI auto-spawns new daemon at `/tmp/beachcomber-501/sock` (canonical). |
-| New daemon's startup | Acquires flock at `/tmp/beachcomber-501/pid`. Walks process table. Finds 4 other `comb daemon` processes whose binary canonicalises to the same path as ours. SIGTERMs each; SIGKILLs the stragglers. Logs the reap. |
-| Subsequent `ps -ef \| grep comb` | One `comb daemon` process remains. |
+| Run `comb status` | CLI auto-spawns a new daemon; it contends on the flock. |
+| New daemon reads PID file | `existing.binary_hash` = ours; same build. |
+| New daemon probes canonical socket | `connect()` fails (owner never bound, or socket deleted). Retries the probe for ~2s; still failing. |
+| New daemon supersedes | SIGTERM→SIGKILL the wedged owner, re-acquires the flock, binds the socket, enters Running. |
+| Client retry | The client's connect retry covers the brief window; the next `connect()` lands on the new daemon. |
 
-The 4 orphan daemons' sockets become orphaned files on disk; they are not the canonical socket and no client will reconnect to them. Cleanup of those stale socket files is not part of the singleton work (orphan socket files don't violate the singleton invariant).
+Without the serving probe, the new process would have exited silently on the matching hash, leaving the socket unbound and clients hitting "nothing here boss" indefinitely.
 
 ## Behaviour assertions
 
@@ -312,12 +310,23 @@ Feature: Daemon singleton
     And an exclusive flock is held on the PID file
     And the daemon enters Running
 
-  Scenario: Same binary hash — exit silently
+  Scenario: Same binary hash and owner serving — exit silently
     Given an existing daemon holds the lock with binary_hash = X
+    And the existing daemon is serving its canonical socket
     When a new daemon starts with binary_hash = X
-    Then the new daemon exits with status 0
+    Then the new daemon probes the socket and finds it serving
+    And the new daemon exits with status 0
     And the existing daemon is undisturbed
     And the PID file is unchanged
+
+  Scenario: Same binary hash but owner not serving — supersede
+    Given an existing daemon holds the lock with binary_hash = X (pid = P)
+    And the existing daemon is not serving its canonical socket
+    When a new daemon starts with binary_hash = X
+    And the socket probe still fails after the grace window
+    Then the new daemon sends SIGTERM to P
+    And acquires the flock once released
+    And binds the canonical socket
 
   Scenario: Different binary hash — supersede
     Given an existing daemon holds the lock with binary_hash = X (pid = P)
@@ -347,23 +356,6 @@ Feature: Daemon singleton
     When the daemon checks binary_newer_than(T) after registering the fs-watch
     Then the check returns true
     And the daemon initiates graceful shutdown
-
-  Scenario: Orphan reaping kills matching binaries
-    Given an orphan daemon is running whose current_exe canonicalises to the new daemon's current_exe
-    When the new daemon completes startup lock acquisition
-    Then the orphan is sent SIGTERM
-    And SIGKILL if still alive after 1s
-    And the orphan is removed from the process table
-
-  Scenario: Worktree daemon is not reaped
-    Given an orphan daemon is running whose current_exe is a different path (worktree)
-    When the new daemon completes startup lock acquisition
-    Then the orphan is not signalled
-
-  Scenario: Self pid is not reaped
-    Given the new daemon scans for orphans
-    When its own pid appears in the process list
-    Then it is excluded
 
   Scenario: PID 1 is not reaped
     Given supersede_existing is invoked with pid 1
@@ -412,7 +404,7 @@ Feature: Daemon singleton
 
 - **Multi-user daemons.** Each `<uid>` has its own canonical path. Two users on the same machine each run their own singleton; they do not collide.
 - **Network / TCP daemons.** Singleton enforcement is per-user-per-host via Unix socket. There is no networked variant.
-- **Backwards compatibility with old TMPDIR-derived sockets.** The TMPDIR-step removal is a breaking change for users with running daemons on old paths. Orphan reaping handles them on next canonical-daemon startup; no in-place migration of clients with cached socket paths.
+- **Backwards compatibility with old TMPDIR-derived sockets.** The TMPDIR-step removal is a breaking change for users with running daemons on old paths. Such daemons sit on non-canonical sockets that no client resolves to; they age out on their own (self-supervision on rebuild, or manual kill). No in-place migration of clients with cached socket paths, and no startup reaping.
 - **`daemon.pid` (the older file).** A separate `daemon.pid` is written by `fork_daemon` for the auto-spawn mechanism. It is unrelated to the singleton's `pid` file. Coexists today; possible future cleanup to merge or remove.
 - **In-process drain semantics.** The acceptor loop and connection-handler tasks do not currently honour the cancellation token cleanly — they are abandoned mid-await on shutdown rather than draining gracefully. Pre-existing concern, tracked separately. The singleton design assumes graceful shutdown completes; in practice, in-flight requests may be aborted abruptly. Not a singleton-property violation, but a quality-of-shutdown gap.
 - **Distributed coordination.** Singleton applies to one host. There is no cross-host election.
