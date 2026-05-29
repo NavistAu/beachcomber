@@ -39,11 +39,12 @@ stateDiagram-v2
 
 ### Canonical socket path resolution
 
-Three steps, identical on macOS and Linux:
+Four steps, identical on macOS and Linux:
 
 1. **Config override** — `config.daemon.socket_path` if set.
-2. **`$XDG_RUNTIME_DIR/beachcomber/sock`** — if the env var is set (any platform).
-3. **`/tmp/beachcomber-<uid>/sock`** — hardcoded `/tmp` fallback. **Does NOT consult `$TMPDIR`.**
+2. **`$BEACHCOMBER_SOCKET`** — if set and non-empty (any platform). Lets a user or integration point the daemon (and, identically, every client) at an explicit socket. Clients honor the same variable, so daemon and clients always agree.
+3. **`$XDG_RUNTIME_DIR/beachcomber/sock`** — if the env var is set (any platform).
+4. **`/tmp/beachcomber-<uid>/sock`** — hardcoded `/tmp` fallback. **Does NOT consult `$TMPDIR`.**
 
 The TMPDIR step was removed because macOS gives every shell session a unique TMPDIR (sandbox/launchd-managed). With the TMPDIR step, two shells produced two socket paths and two daemons — violating singleton.
 
@@ -247,7 +248,7 @@ sequenceDiagram
 
 | Parameter | Scope | Unit | Configurability |
 |---|---|---|---|
-| Canonical socket path | per-user | path | config override → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock` |
+| Canonical socket path | per-user | path | config override → `$BEACHCOMBER_SOCKET` → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock` |
 | PID file location | per-user | path | derived: `<socket-parent>/pid` |
 | `BEACHCOMBER_VERSION` (human) | per-build | string | `build.rs` reads `COMB_BUILD_SHA` / `COMB_BUILD_DIRTY` env at compile time |
 | `binary_hash` (build identity) | per-build | hex SHA256 | computed at daemon startup; not configurable |
