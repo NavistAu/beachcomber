@@ -47,6 +47,26 @@ const config: Config = {
     {tagName: 'link', attributes: {rel: 'alternate icon', type: 'image/png', sizes: '32x32', href: '/img/favicon-32.png'}},
     {tagName: 'link', attributes: {rel: 'alternate icon', type: 'image/png', sizes: '64x64', href: '/img/favicon-64.png'}},
     {tagName: 'link', attributes: {rel: 'apple-touch-icon', sizes: '180x180', href: '/img/favicon-180.png'}},
+    // Umami first-party tracker (renamed script, DNT on, scoped to prod domain)
+    {
+      tagName: 'script',
+      attributes: {
+        defer: 'true',
+        src: 'https://stats.beachcomber.sh/s.js',
+        'data-website-id': 'f1aec07f-0cf7-4ee5-9b69-f1060bc396c4',
+        'data-do-not-track': 'true',
+        'data-domains': 'beachcomber.sh',
+      },
+    },
+    // Cloudflare Web Analytics beacon
+    {
+      tagName: 'script',
+      attributes: {
+        defer: 'true',
+        src: 'https://static.cloudflareinsights.com/beacon.min.js',
+        'data-cf-beacon': '{"token": "abe354cbd2964292a527d18635d2d484"}',
+      },
+    },
   ],
 
   markdown: {
