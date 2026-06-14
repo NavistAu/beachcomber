@@ -57,6 +57,20 @@ fn has_git() -> bool {
     Command::new("git").arg("--version").output().is_ok()
 }
 
+/// Point `.git/HEAD` at `refs/heads/<branch>` directly. This is the essential
+/// on-disk change of a branch switch; doing it with a single file write (rather
+/// than a `git checkout` subprocess) lets the caller take `t0` at the precise
+/// instant the branch change hits disk, with no checkout-subprocess tail
+/// overlapping the refresh pipeline. `branch` must already exist under
+/// `.git/refs/heads/`.
+fn set_head(repo: &str, branch: &str) {
+    std::fs::write(
+        Path::new(repo).join(".git").join("HEAD"),
+        format!("ref: refs/heads/{branch}\n"),
+    )
+    .unwrap();
+}
+
 /// A throwaway git repo with two branches `a` and `b` at the same commit.
 /// Checking out between them rewrites `.git/HEAD` with no working-tree churn -
 /// an isolated branch-change signal. Returns the `TempDir` (keep it alive) and
@@ -142,7 +156,14 @@ fn bench_fsevents_delivery(c: &mut Criterion) {
                     let f = dir.path().join(format!("f{n}"));
                     let t0 = Instant::now();
                     std::fs::write(&f, b"x").unwrap();
-                    let _ = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+                    if tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                        .await
+                        .is_err()
+                    {
+                        eprintln!(
+                            "prompt_race: fsevents_delivery recv timed out (dropped event?); sample unreliable"
+                        );
+                    }
                     total += t0.elapsed();
                     while rx.try_recv().is_ok() {}
                 }
@@ -188,7 +209,7 @@ fn bench_convergence_l(c: &mut Criterion) {
     // Probe: flip to "a" and wait up to 3s for the watch-driven refresh to land.
     // If it never lands, the native watcher isn't delivering here - self-skip.
     let probe_ok = rt.block_on(async {
-        run_git(Path::new(&path), &["checkout", "a"]);
+        set_head(&path, "a");
         wait_for_branch(&cache, &path, "a", Duration::from_secs(3)).await
     });
     if !probe_ok {
@@ -206,14 +227,13 @@ fn bench_convergence_l(c: &mut Criterion) {
                     // Alternate target so each iteration is a real HEAD change.
                     // Probe left HEAD on "a", so i=0 flips to "b".
                     let target = if i % 2 == 0 { "b" } else { "a" };
-                    // Mutation (UNTIMED): rewrite .git/HEAD.
-                    let p = path.clone();
-                    let t = target.to_string();
-                    tokio::task::spawn_blocking(move || run_git(Path::new(&p), &["checkout", &t]))
-                        .await
-                        .unwrap();
-                    // Measure: mutation -> cache reflects the new branch.
+                    // Time from the instant the branch change hits disk (the
+                    // .git/HEAD write) to the cache reflecting it. t0 is taken
+                    // before the write so the entire watch->refresh pipeline is
+                    // inside the measured region (no checkout-subprocess tail can
+                    // overlap it and bias L low).
                     let t0 = Instant::now();
+                    set_head(&path, target);
                     wait_for_branch(&cache, &path, target, Duration::from_secs(5)).await;
                     total += t0.elapsed();
                 }
