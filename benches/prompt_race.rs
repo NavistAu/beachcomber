@@ -32,8 +32,8 @@ use beachcomber::watcher_registry::WatcherRegistry;
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
@@ -81,10 +81,10 @@ fn make_repo_with_branches() -> (TempDir, String) {
 async fn wait_for_branch(cache: &Cache, path: &str, target: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some((Value::String(s), _)) = cache.get_field("git", Some(path), "branch") {
-            if s == target {
-                return true;
-            }
+        if let Some((Value::String(s), _)) = cache.get_field("git", Some(path), "branch")
+            && s == target
+        {
+            return true;
         }
         if Instant::now() >= deadline {
             return false;
@@ -125,7 +125,9 @@ fn bench_fsevents_delivery(c: &mut Criterion) {
             .is_ok()
     });
     if !delivering {
-        eprintln!("prompt_race: native watcher not delivering (sandboxed?); skipping fsevents_delivery");
+        eprintln!(
+            "prompt_race: native watcher not delivering (sandboxed?); skipping fsevents_delivery"
+        );
         return;
     }
 
@@ -190,7 +192,9 @@ fn bench_convergence_l(c: &mut Criterion) {
         wait_for_branch(&cache, &path, "a", Duration::from_secs(3)).await
     });
     if !probe_ok {
-        eprintln!("prompt_race: convergence probe failed (sandboxed watcher?); skipping convergence_L");
+        eprintln!(
+            "prompt_race: convergence probe failed (sandboxed watcher?); skipping convergence_L"
+        );
         return;
     }
 
