@@ -78,6 +78,10 @@ harness = false
 name = "throughput"
 harness = false
 
+[[bench]]
+name = "prompt_race"
+harness = false
+
 [profile.dev]
 # macOS: skip dsymutil during link (keep debug info in .o files). Faster link.
 split-debuginfo = "unpacked"
