@@ -7,18 +7,22 @@
 //!
 //! Measurements:
 //!   * `fsevents_delivery` - the irreducible async floor: file write -> native
-//!     watcher callback fires.
-//!   * `convergence_L`     - end-to-end: `.git/HEAD` change -> cache reflects the
+//!     watcher callback fires (steady-state, after the stream has started).
+//!   * `convergence_L`     - end-to-end: `.git/HEAD` written -> cache reflects the
 //!     new branch (FSEvents delivery + scheduler dispatch + refs execute + write).
 //!
 //! Budget B is NOT benched here - it is the prompt's read round-trip: ~5 ms via
 //! the `comb` CLI (process spawn + socket), ~0.3 ms via an in-process SDK client
-//! (see `benches/socket.rs::socket_roundtrip_cold`). Either way B << L, so the
-//! async watch path cannot win the race; these numbers quantify by how much.
+//! (see `benches/socket.rs::socket_roundtrip_cold`).
 //!
-//! These benches REQUIRE a working native watcher. Under a sandbox that blocks
-//! FSEvents/inotify they self-skip (print a message and return) rather than hang.
-//! Run for real on an unsandboxed macOS and Linux host:
+//! macOS notes (verified via examples/fswatch_probe.rs):
+//!   * FSEvents does NOT deliver events for `$TMPDIR` (`/var/folders/...`), so
+//!     fixtures live under `$HOME` instead.
+//!   * FSEvents stream startup can take several seconds, so both benches warm the
+//!     watcher until events actually flow before timing anything.
+//!
+//! If the watcher never delivers (sandbox/CI), the benches self-skip rather than
+//! hang. Run on a real, unsandboxed host:
 //!     cargo bench --bench prompt_race
 
 use beachcomber::cache::Cache;
@@ -30,13 +34,30 @@ use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher::FsWatcher;
 use beachcomber::watcher_registry::WatcherRegistry;
 use criterion::{Criterion, criterion_group, criterion_main};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
+use tokio::sync::mpsc::Receiver;
+
+/// Create a temp dir under `$HOME`, NOT `$TMPDIR`. On macOS, FSEvents does not
+/// deliver events for `$TMPDIR` (`/var/folders/...`) - verified via
+/// examples/fswatch_probe.rs (zero events there; events under `$HOME`). These
+/// benches exist to measure native watch delivery, so the fixtures must live
+/// where FSEvents actually reports.
+fn fsevents_tempdir() -> TempDir {
+    match std::env::var_os("HOME") {
+        Some(home) => {
+            let base = PathBuf::from(home).join(".cache").join("beachcomber-bench");
+            std::fs::create_dir_all(&base).ok();
+            TempDir::new_in(base).expect("create tempdir under $HOME/.cache")
+        }
+        None => TempDir::new().expect("create tempdir"),
+    }
+}
 
 /// Run a git subcommand in `dir`, panicking on failure. Bench-local because
 /// benches cannot reach `tests/common`.
@@ -72,11 +93,11 @@ fn set_head(repo: &str, branch: &str) {
 }
 
 /// A throwaway git repo with two branches `a` and `b` at the same commit.
-/// Checking out between them rewrites `.git/HEAD` with no working-tree churn -
-/// an isolated branch-change signal. Returns the `TempDir` (keep it alive) and
-/// the repo root path. HEAD is left on branch `b`.
+/// Checking out (or writing HEAD) between them rewrites `.git/HEAD` with no
+/// working-tree churn - an isolated branch-change signal. Returns the `TempDir`
+/// (keep it alive) and the repo root path. HEAD is left on branch `b`.
 fn make_repo_with_branches() -> (TempDir, String) {
-    let dir = TempDir::new().unwrap();
+    let dir = fsevents_tempdir();
     let p = dir.path();
     run_git(p, &["init"]);
     run_git(p, &["config", "user.email", "bench@bench.test"]);
@@ -107,11 +128,36 @@ async fn wait_for_branch(cache: &Cache, path: &str, target: &str, timeout: Durat
     }
 }
 
+/// Warm a freshly-created native watcher until it actually delivers an event,
+/// then drain the startup backlog. Returns false if nothing arrives within
+/// `timeout` (sandboxed / non-delivering path). macOS FSEvents stream startup
+/// can take several seconds; this absorbs that one-off latency before measuring.
+async fn warm_until_delivering(
+    dir: &Path,
+    rx: &mut Receiver<Vec<PathBuf>>,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut n = 0u64;
+    while Instant::now() < deadline {
+        std::fs::write(dir.join(format!("warm{n}")), b"x").unwrap();
+        n += 1;
+        if tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .is_ok()
+        {
+            while rx.try_recv().is_ok() {} // drain the startup backlog
+            return true;
+        }
+    }
+    false
+}
+
 /// Bench 1: irreducible async floor - time from a file write to the native
-/// watcher delivering the corresponding event.
+/// watcher delivering the corresponding event, in steady state.
 fn bench_fsevents_delivery(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let dir = TempDir::new().unwrap();
+    let dir = fsevents_tempdir();
 
     let (mut watcher, mut rx) = match FsWatcher::new() {
         Ok(pair) => pair,
@@ -125,28 +171,20 @@ fn bench_fsevents_delivery(c: &mut Criterion) {
         return;
     }
 
-    // FSEvents/inotify streams take a moment to start delivering. Warm up, then
-    // confirm a write produces an event within 2s - else self-skip (sandboxed).
     let delivering = rt.block_on(async {
-        for i in 0..20 {
-            std::fs::write(dir.path().join(format!("warm{i}")), b"x").unwrap();
-            let _ = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
-        }
-        while rx.try_recv().is_ok() {}
-        std::fs::write(dir.path().join("probe"), b"x").unwrap();
-        tokio::time::timeout(Duration::from_secs(2), rx.recv())
-            .await
-            .is_ok()
+        warm_until_delivering(dir.path(), &mut rx, Duration::from_secs(20)).await
     });
     if !delivering {
         eprintln!(
-            "prompt_race: native watcher not delivering (sandboxed?); skipping fsevents_delivery"
+            "prompt_race: native watcher delivered nothing in 20s (sandbox, or a non-FSEvents path); skipping fsevents_delivery"
         );
         return;
     }
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    c.bench_function("fsevents_delivery", |b| {
+    let mut group = c.benchmark_group("fsevents_delivery");
+    group.sample_size(10);
+    group.bench_function("write_to_event", |b| {
         b.iter_custom(|iters| {
             rt.block_on(async {
                 while rx.try_recv().is_ok() {}
@@ -156,12 +194,12 @@ fn bench_fsevents_delivery(c: &mut Criterion) {
                     let f = dir.path().join(format!("f{n}"));
                     let t0 = Instant::now();
                     std::fs::write(&f, b"x").unwrap();
-                    if tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                    if tokio::time::timeout(Duration::from_secs(10), rx.recv())
                         .await
                         .is_err()
                     {
                         eprintln!(
-                            "prompt_race: fsevents_delivery recv timed out (dropped event?); sample unreliable"
+                            "prompt_race: fsevents_delivery recv timed out (dropped/slow event); sample unreliable"
                         );
                     }
                     total += t0.elapsed();
@@ -171,9 +209,10 @@ fn bench_fsevents_delivery(c: &mut Criterion) {
             })
         })
     });
+    group.finish();
 }
 
-/// Bench 2: end-to-end convergence - time from a `.git/HEAD` change to the cache
+/// Bench 2: end-to-end convergence - time from a `.git/HEAD` write to the cache
 /// reflecting the new branch, driven by the real Scheduler + native watcher.
 fn bench_convergence_l(c: &mut Criterion) {
     if !has_git() {
@@ -206,20 +245,23 @@ fn bench_convergence_l(c: &mut Criterion) {
         tokio::time::sleep(Duration::from_millis(500)).await;
     });
 
-    // Probe: flip to "a" and wait up to 3s for the watch-driven refresh to land.
-    // If it never lands, the native watcher isn't delivering here - self-skip.
+    // Probe / warm-up: flip to "a" and wait up to 20s for the watch-driven refresh
+    // to land. Absorbs FSEvents stream startup (several seconds on macOS). If it
+    // never lands, the native watcher isn't delivering here - self-skip.
     let probe_ok = rt.block_on(async {
         set_head(&path, "a");
-        wait_for_branch(&cache, &path, "a", Duration::from_secs(3)).await
+        wait_for_branch(&cache, &path, "a", Duration::from_secs(20)).await
     });
     if !probe_ok {
         eprintln!(
-            "prompt_race: convergence probe failed (sandboxed watcher?); skipping convergence_L"
+            "prompt_race: convergence probe failed in 20s (sandbox, or a non-FSEvents path); skipping convergence_L"
         );
         return;
     }
 
-    c.bench_function("convergence_L", |b| {
+    let mut group = c.benchmark_group("convergence_L");
+    group.sample_size(10);
+    group.bench_function("head_to_cache", |b| {
         b.iter_custom(|iters| {
             rt.block_on(async {
                 let mut total = Duration::ZERO;
@@ -228,19 +270,21 @@ fn bench_convergence_l(c: &mut Criterion) {
                     // Probe left HEAD on "a", so i=0 flips to "b".
                     let target = if i % 2 == 0 { "b" } else { "a" };
                     // Time from the instant the branch change hits disk (the
-                    // .git/HEAD write) to the cache reflecting it. t0 is taken
-                    // before the write so the entire watch->refresh pipeline is
-                    // inside the measured region (no checkout-subprocess tail can
-                    // overlap it and bias L low).
+                    // .git/HEAD write) to the cache reflecting it.
                     let t0 = Instant::now();
                     set_head(&path, target);
-                    wait_for_branch(&cache, &path, target, Duration::from_secs(5)).await;
+                    if !wait_for_branch(&cache, &path, target, Duration::from_secs(10)).await {
+                        eprintln!(
+                            "prompt_race: convergence_L iteration timed out (watcher not delivering live events?)"
+                        );
+                    }
                     total += t0.elapsed();
                 }
                 total
             })
         })
     });
+    group.finish();
 }
 
 criterion_group!(benches, bench_fsevents_delivery, bench_convergence_l);
