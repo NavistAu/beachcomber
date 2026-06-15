@@ -15,8 +15,12 @@ impl TestDaemon {
         let socket = IsolatedSocket::new();
         // The Child is stored in the returned struct and wait()ed in the Drop impl.
         #[allow(clippy::zombie_processes)]
+        // `--exit-with-parent`: the daemon self-terminates if this test process
+        // dies without running `Drop` (e.g. nextest SIGKILLs a timed-out test),
+        // so a daemon can never be orphaned. Drop below still handles the normal
+        // and panic-unwind paths.
         let process = Command::new(env!("CARGO_BIN_EXE_comb"))
-            .args(["daemon", "--socket"])
+            .args(["daemon", "--exit-with-parent", "--socket"])
             .arg(&socket.path)
             .spawn()
             .expect("spawn comb daemon");

@@ -37,6 +37,11 @@ enum Commands {
         /// Override socket path
         #[arg(long)]
         socket: Option<PathBuf>,
+        /// Exit automatically when the spawning parent process dies. Used by the
+        /// test harness so a daemon never outlives the test that spawned it —
+        /// even when the test process is SIGKILLed (which skips normal cleanup).
+        #[arg(long)]
+        exit_with_parent: bool,
     },
     /// Query one or more cached values.
     ///
@@ -185,9 +190,12 @@ fn main() -> ExitCode {
     let config = Config::load();
 
     match cli.command {
-        Commands::Daemon { socket } => {
+        Commands::Daemon {
+            socket,
+            exit_with_parent,
+        } => {
             let socket_path = socket.unwrap_or_else(|| config.resolve_socket_path());
-            run_daemon(socket_path, config)
+            run_daemon(socket_path, config, exit_with_parent)
         }
         Commands::Get {
             keys,
