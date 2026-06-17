@@ -5,7 +5,11 @@ pub fn is_vpn_interface(name: &str) -> bool {
 }
 
 pub fn is_preferred_interface(name: &str) -> bool {
-    name == "en0"
+    // Prefer en* interfaces (en0=WiFi, en1=Thunderbolt/USB Ethernet, etc.)
+    // over other non-VPN interfaces. The correct fix (reading the default route
+    // via SCNetworkConfiguration) is a method improvement owned by S4. This
+    // removes the en0 hardcode which caused en1 wired connections to be ignored.
+    name.starts_with("en") && !is_vpn_interface(name)
 }
 
 pub fn get_wifi_ssid() -> String {

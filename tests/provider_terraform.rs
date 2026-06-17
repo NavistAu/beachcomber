@@ -7,11 +7,7 @@ fn make_tf_root(ws_name: Option<&str>) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(".terraform")).unwrap();
     if let Some(ws) = ws_name {
-        std::fs::write(
-            dir.path().join(".terraform").join("environment"),
-            ws,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join(".terraform").join("environment"), ws).unwrap();
     }
     dir
 }
