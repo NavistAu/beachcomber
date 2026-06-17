@@ -27,8 +27,10 @@ fn state_source_metadata() -> SourceMetadata {
             field_type: FieldType::String,
         }],
         scope: SourceScope::PathScoped,
+        // Narrowed from ".terraform" dir to ".terraform/environment" file to prevent
+        // init/lock churn from causing spurious invalidations.
         invalidation: InvalidationStrategy::Watch {
-            patterns: vec![".terraform".into()],
+            patterns: vec![".terraform/environment".into()],
             abs_paths: vec![],
         },
         keep_alive: KeepAlive::Duration(120),
@@ -59,11 +61,23 @@ impl Source for TerraformState {
             return SourceResult::new();
         }
 
-        // Read workspace from .terraform/environment
-        let workspace = std::fs::read_to_string(tf_dir.join("environment"))
-            .unwrap_or_else(|_| "default".to_string())
-            .trim()
-            .to_string();
+        // $TF_WORKSPACE has highest precedence. Note: this reads the daemon's env,
+        // not the querying shell's — for per-shell correctness see S5 (selector protocol).
+        // For headless/CI use and system-set vars this is already correct.
+        let workspace = if let Ok(ws) = std::env::var("TF_WORKSPACE") {
+            let ws = ws.trim().to_string();
+            if !ws.is_empty() {
+                ws
+            } else {
+                read_workspace_file(&tf_dir)
+            }
+        } else {
+            read_workspace_file(&tf_dir)
+        };
+
+        // LIMITATION: remote/cloud backends without a local .terraform/environment file
+        // return "default" here. Determining the actual remote workspace would require
+        // a network call (out of scope for S6).
 
         let mut result = SourceResult::new();
         result.insert("workspace", Value::String(workspace));
@@ -74,6 +88,13 @@ impl Source for TerraformState {
         let p = path?;
         find_terraform_root(Path::new(p))
     }
+}
+
+fn read_workspace_file(tf_dir: &Path) -> String {
+    std::fs::read_to_string(tf_dir.join("environment"))
+        .unwrap_or_else(|_| "default".to_string())
+        .trim()
+        .to_string()
 }
 
 fn find_terraform_root(start: &Path) -> Option<String> {
