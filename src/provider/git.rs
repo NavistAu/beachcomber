@@ -732,3 +732,64 @@ fn get_git_config(dir: &Path, key: &str, executor: &dyn GitExecutor) -> Option<S
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn resolve_git_dir_plain_repo_uses_dot_git_for_both() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join(".git")).unwrap();
+
+        let dirs = resolve_git_dir(tmp.path()).expect("plain repo resolves");
+        assert_eq!(dirs.gitdir, tmp.path().join(".git"));
+        assert_eq!(dirs.commondir, tmp.path().join(".git"));
+    }
+
+    #[test]
+    fn resolve_git_dir_missing_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        assert!(resolve_git_dir(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn resolve_git_dir_linked_worktree_follows_pointer_and_commondir() {
+        let tmp = TempDir::new().unwrap();
+        let main_git = tmp.path().join("main").join(".git");
+        let wt_gitdir = main_git.join("worktrees").join("wt");
+        fs::create_dir_all(&wt_gitdir).unwrap();
+        // commondir points back to <main>/.git, relative to the worktree gitdir.
+        fs::write(wt_gitdir.join("commondir"), "../..\n").unwrap();
+
+        let wt_root = tmp.path().join("wt");
+        fs::create_dir_all(&wt_root).unwrap();
+        fs::write(
+            wt_root.join(".git"),
+            format!("gitdir: {}\n", wt_gitdir.display()),
+        )
+        .unwrap();
+
+        let dirs = resolve_git_dir(&wt_root).expect("worktree resolves");
+        assert_eq!(dirs.gitdir, fs::canonicalize(&wt_gitdir).unwrap());
+        assert_eq!(dirs.commondir, fs::canonicalize(&main_git).unwrap());
+    }
+
+    #[test]
+    fn resolve_git_dir_relative_pointer_without_commondir_falls_back() {
+        let tmp = TempDir::new().unwrap();
+        // Submodule layout: superproject .git/modules/sub is the gitdir.
+        let sub_gitdir = tmp.path().join(".git").join("modules").join("sub");
+        fs::create_dir_all(&sub_gitdir).unwrap();
+        let sub_root = tmp.path().join("sub");
+        fs::create_dir_all(&sub_root).unwrap();
+        fs::write(sub_root.join(".git"), "gitdir: ../.git/modules/sub\n").unwrap();
+
+        let dirs = resolve_git_dir(&sub_root).expect("submodule resolves");
+        assert_eq!(dirs.gitdir, fs::canonicalize(&sub_gitdir).unwrap());
+        // No commondir file → commondir falls back to gitdir.
+        assert_eq!(dirs.commondir, fs::canonicalize(&sub_gitdir).unwrap());
+    }
+}
