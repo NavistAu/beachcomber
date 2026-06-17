@@ -293,11 +293,22 @@ fn asdf_detects_tool_versions() {
     )
     .unwrap();
 
-    use beachcomber::provider::Value;
     let sources = AsdfProvider.sources();
     let result = sources[0].execute(Some(tmp.path().to_str().unwrap()));
+    // Each tool is a flat top-level field (not nested under "tools" Object).
     assert!(
-        matches!(result.fields.get("tools"), Some(Value::Object(_))),
-        "tools field must be a Value::Object"
+        !result.fields.contains_key("tools"),
+        "tools must not be a nested Object; got keys: {:?}",
+        result.fields.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        result.fields.get("nodejs").unwrap().as_text(),
+        "20.0.0",
+        "nodejs should be a flat field"
+    );
+    assert_eq!(
+        result.fields.get("ruby").unwrap().as_text(),
+        "3.2.0",
+        "ruby should be a flat field"
     );
 }
