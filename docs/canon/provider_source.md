@@ -251,6 +251,14 @@ Source: upower
 
 `level` polls cheap sysfs reads frequently; `upower` polls the expensive subprocess less often. Each Source has its own demand timestamps, decay timeline, and failure backoff.
 
+## Read-always Sources
+
+A Source may be **read-always**: its `execute` is a cheap file or syscall read, so the request path re-executes it on every `get` / `context` / `watch` initial snapshot instead of serving the cached value. The Source declares this by returning `true` from `read_always()` (default: `false`).
+
+Read-always is reserved for Sources whose `execute` cost is comparable to a single file read (e.g. reading `<gitdir>/HEAD`). Expensive Sources — subprocess spawns, worktree scans, network calls — must remain `false` and stay event/poll-driven.
+
+The cache entry for a read-always Source is still written on every re-execution and remains available to the scheduler's poll/watch path. The distinction is only in the request path: instead of returning the cached value, it re-executes first.
+
 ## Invariants
 
 1. Every Field belongs to exactly one Source. Field names are unique within a Provider.
@@ -266,6 +274,7 @@ Source: upower
 11. A Source's refresh produces exactly the Fields the Source declares — no more, no less.
 12. Sources writing to the same cache entry produce disjoint Field sets. A Field-name overlap between Sources of the same Provider is a configuration error.
 13. A consumer query for `provider.field` is demand for the Source that owns `field`. It is not demand for sibling Sources of the same Provider.
+14. A read-always Source is re-executed on every request-path read; its value is never served from cache. Read-always is reserved for Sources whose `execute` is a cheap file/syscall read.
 
 ## Behaviour assertions
 
