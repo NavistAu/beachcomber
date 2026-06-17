@@ -539,11 +539,7 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
 }
 
 fn count_stashes(dirs: &GitDirs) -> i64 {
-    let stash_log = dirs
-        .commondir
-        .join("logs")
-        .join("refs")
-        .join("stash");
+    let stash_log = dirs.commondir.join("logs").join("refs").join("stash");
     std::fs::read_to_string(&stash_log)
         .map(|s| s.lines().count() as i64)
         .unwrap_or(0)
