@@ -422,6 +422,14 @@ pub trait Source: Send + Sync {
     fn canonical_path(&self, path: Option<&str>) -> Option<String> {
         path.map(|s| s.to_string())
     }
+
+    /// If true, the request path re-executes this source on every read instead
+    /// of serving cache. Only for sources whose execute is a cheap file/syscall
+    /// read. Expensive sources (subprocess, worktree scan, network) must return
+    /// false and stay event/poll-driven.
+    fn read_always(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

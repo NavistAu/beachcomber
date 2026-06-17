@@ -49,16 +49,28 @@ fn git_canonical_path_passes_none_through() {
 fn git_provider_metadata() {
     let meta = GitProvider.metadata();
     assert_eq!(meta.name, "git");
-    assert_eq!(meta.sources.len(), 3);
+    assert_eq!(meta.sources.len(), 4);
+
+    let head_src = meta.sources.iter().find(|s| s.name == "head").unwrap();
+    assert_eq!(head_src.scope, SourceScope::PathScoped);
+    let head_fields: Vec<&str> = head_src.fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(head_fields.contains(&"branch"));
+    assert!(head_fields.contains(&"detached"));
 
     let refs_src = meta.sources.iter().find(|s| s.name == "refs").unwrap();
     assert_eq!(refs_src.scope, SourceScope::PathScoped);
     let refs_fields: Vec<&str> = refs_src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(refs_fields.contains(&"branch"));
+    assert!(
+        !refs_fields.contains(&"branch"),
+        "branch moved to head source"
+    );
+    assert!(
+        !refs_fields.contains(&"detached"),
+        "detached moved to head source"
+    );
     assert!(refs_fields.contains(&"ahead"));
     assert!(refs_fields.contains(&"behind"));
     assert!(refs_fields.contains(&"upstream"));
-    assert!(refs_fields.contains(&"detached"));
     assert!(refs_fields.contains(&"commit"));
     assert!(refs_fields.contains(&"tag"));
     assert!(refs_fields.contains(&"stash"));
@@ -91,8 +103,9 @@ fn git_provider_metadata() {
 #[test]
 fn git_provider_source_names() {
     let sources = GitProvider.sources();
-    assert_eq!(sources.len(), 3);
+    assert_eq!(sources.len(), 4);
     let names: Vec<&str> = sources.iter().map(|s| s.metadata().name.as_str()).collect();
+    assert!(names.contains(&"head"));
     assert!(names.contains(&"refs"));
     assert!(names.contains(&"diff"));
     assert!(names.contains(&"status"));
@@ -115,13 +128,14 @@ fn git_refs_returns_empty_for_non_repo() {
 
 #[test]
 fn git_refs_returns_branch() {
+    // branch and detached moved to the head source; verify head reports the branch.
     let repo = GitRepoFixture::new();
     let sources = GitProvider.sources();
-    let refs_src = sources
+    let head_src = sources
         .iter()
-        .find(|s| s.metadata().name == "refs")
+        .find(|s| s.metadata().name == "head")
         .unwrap();
-    let result = refs_src.execute(Some(repo.path_str()));
+    let result = head_src.execute(Some(repo.path_str()));
     let branch = result.fields.get("branch").unwrap().as_text();
     assert!(!branch.is_empty(), "Branch should not be empty");
 }
@@ -218,13 +232,23 @@ fn git_refs_clean_repo_new_fields() {
 
     // No upstream in a local-only repo
     assert_eq!(result.fields.get("upstream").unwrap().as_text(), "");
-    // HEAD is not detached after a normal commit
-    assert_eq!(result.fields.get("detached").unwrap().as_text(), "false");
     // state_step and state_total are 0 in a clean repo
     assert_eq!(result.fields.get("state_step").unwrap().as_text(), "0");
     assert_eq!(result.fields.get("state_total").unwrap().as_text(), "0");
     // state is clean
     assert_eq!(result.fields.get("state").unwrap().as_text(), "clean");
+
+    // detached is now owned by the head source
+    let head_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "head")
+        .unwrap();
+    let head_result = head_src.execute(Some(repo.path_str()));
+    // HEAD is not detached after a normal commit
+    assert_eq!(
+        head_result.fields.get("detached").unwrap().as_text(),
+        "false"
+    );
 }
 
 #[test]
@@ -364,14 +388,15 @@ fn git_refs_push_ahead_behind_no_push_remote() {
 
 #[test]
 fn git_refs_detached_head() {
+    // detached is now owned by the head source.
     let repo = GitRepoFixture::new().with_detached_head();
 
     let sources = GitProvider.sources();
-    let refs_src = sources
+    let head_src = sources
         .iter()
-        .find(|s| s.metadata().name == "refs")
+        .find(|s| s.metadata().name == "head")
         .unwrap();
-    let result = refs_src.execute(Some(repo.path_str()));
+    let result = head_src.execute(Some(repo.path_str()));
     assert_eq!(result.fields.get("detached").unwrap().as_text(), "true");
 }
 
@@ -485,5 +510,65 @@ fn git_refs_state_detected_in_linked_worktree() {
         result.fields.get("state").unwrap().as_text(),
         "merge",
         "in-progress merge in a linked worktree must be detected via the resolved gitdir"
+    );
+}
+
+#[test]
+fn git_head_source_reports_branch() {
+    let repo = GitRepoFixture::new();
+    let sources = GitProvider.sources();
+    let head_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "head")
+        .unwrap();
+
+    let result = head_src.execute(Some(repo.path_str()));
+    let branch = result.fields.get("branch").unwrap().as_text();
+    assert!(!branch.is_empty(), "head source must report branch name");
+    assert_eq!(
+        result.fields.get("detached").unwrap().as_text(),
+        "false",
+        "head source must report detached=false on a normal checkout"
+    );
+}
+
+#[test]
+fn git_head_source_is_read_always() {
+    let sources = GitProvider.sources();
+    let head_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "head")
+        .unwrap();
+    assert!(
+        head_src.read_always(),
+        "head source must return read_always() == true"
+    );
+}
+
+#[test]
+fn git_head_branch_correct_in_linked_worktree() {
+    if !common::git::has_git() {
+        return;
+    }
+    let repo = GitRepoFixture::new();
+    // add_worktree creates a new branch "wt-branch" checked out in the linked worktree.
+    let wt = repo.add_worktree("my-wt", "wt-branch");
+
+    let sources = GitProvider.sources();
+    let head_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "head")
+        .unwrap();
+
+    let result = head_src.execute(Some(wt.to_str().unwrap()));
+    let branch = result.fields.get("branch").unwrap().as_text();
+    assert_eq!(
+        branch, "wt-branch",
+        "head source must read the correct branch for a linked worktree via resolve_git_dir"
+    );
+    assert_eq!(
+        result.fields.get("detached").unwrap().as_text(),
+        "false",
+        "linked worktree on a branch must not be detached"
     );
 }

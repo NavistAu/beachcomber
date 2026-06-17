@@ -90,14 +90,37 @@ fn resolve_against(base: &Path, raw: &str) -> PathBuf {
 
 // ── SourceMetadata constructors ───────────────────────────────────────────────
 
-fn refs_meta() -> SourceMetadata {
+fn head_meta() -> SourceMetadata {
     SourceMetadata {
-        name: "refs".into(),
+        name: "head".into(),
         fields: vec![
             FieldSchema {
                 name: "branch".into(),
                 field_type: FieldType::String,
             },
+            FieldSchema {
+                name: "detached".into(),
+                field_type: FieldType::Bool,
+            },
+        ],
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![".git".into()],
+            abs_paths: vec![],
+        },
+        keep_alive: KeepAlive::Duration(120),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
+        fsevents_reinstate: true,
+    }
+}
+
+fn refs_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "refs".into(),
+        fields: vec![
             FieldSchema {
                 name: "commit".into(),
                 field_type: FieldType::String,
@@ -117,10 +140,6 @@ fn refs_meta() -> SourceMetadata {
             FieldSchema {
                 name: "upstream".into(),
                 field_type: FieldType::String,
-            },
-            FieldSchema {
-                name: "detached".into(),
-                field_type: FieldType::Bool,
             },
             FieldSchema {
                 name: "state".into(),
@@ -243,6 +262,66 @@ fn status_meta() -> SourceMetadata {
 
 // ── Source impls ──────────────────────────────────────────────────────────────
 
+/// Read-always source: parses `<gitdir>/HEAD` directly, no subprocess.
+/// Returns `branch` (String) and `detached` (Bool) on every request.
+struct GitHead;
+
+impl GitHead {
+    /// Parse the HEAD file of the given gitdir.
+    ///
+    /// Returns (branch, detached):
+    /// - `ref: refs/heads/<name>` → branch=<name>, detached=false
+    /// - 40/64-hex line (detached HEAD) → branch="", detached=true
+    /// - missing/other → branch="", detached=false
+    fn parse_head(dirs: &GitDirs) -> (String, bool) {
+        let head_path = dirs.gitdir.join("HEAD");
+        let Ok(contents) = std::fs::read_to_string(&head_path) else {
+            return (String::new(), false);
+        };
+        let line = contents.trim();
+        if let Some(branch) = line.strip_prefix("ref: refs/heads/") {
+            return (branch.to_string(), false);
+        }
+        // Detached HEAD: 40-char (SHA-1) or 64-char (SHA-256) hex string
+        if (line.len() == 40 || line.len() == 64) && line.chars().all(|c| c.is_ascii_hexdigit()) {
+            return (String::new(), true);
+        }
+        (String::new(), false)
+    }
+}
+
+impl Source for GitHead {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(head_meta)
+    }
+
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        let Some(path) = path else {
+            return SourceResult::new();
+        };
+        // Only emit fields when we can confirm a git repo exists. An empty
+        // SourceResult causes inline_execute_source to skip the cache write,
+        // preserving a cache miss for non-repo paths.
+        let Some(dirs) = resolve_git_dir(Path::new(path)) else {
+            return SourceResult::new();
+        };
+        let (branch, detached) = Self::parse_head(&dirs);
+        let mut result = SourceResult::new();
+        result.insert("branch", Value::String(branch));
+        result.insert("detached", Value::Bool(detached));
+        result
+    }
+
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        walk_to_git(path)
+    }
+
+    fn read_always(&self) -> bool {
+        true
+    }
+}
+
 struct GitRefs {
     executor: Arc<dyn GitExecutor>,
 }
@@ -289,11 +368,9 @@ impl Source for GitRefs {
         };
 
         let mut result = SourceResult::new();
-        result.insert("branch", Value::String(status.branch.clone()));
         result.insert("ahead", Value::Int(status.ahead));
         result.insert("behind", Value::Int(status.behind));
         result.insert("upstream", Value::String(status.upstream));
-        result.insert("detached", Value::Bool(status.detached));
         result.insert("stash", Value::Int(stash_count));
         result.insert("state", Value::String(state));
         result.insert("state_step", Value::Int(state_step));
@@ -409,13 +486,14 @@ impl Provider for GitProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "git".into(),
-            sources: vec![refs_meta(), diff_meta(), status_meta()],
+            sources: vec![head_meta(), refs_meta(), diff_meta(), status_meta()],
         }
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
         let exec = Self::make_executor();
         vec![
+            Box::new(GitHead),
             Box::new(GitRefs::new(Arc::clone(&exec))),
             Box::new(GitDiff::new(Arc::clone(&exec))),
             Box::new(GitStatus::new(exec)),
@@ -435,11 +513,12 @@ pub fn git_provider_with_executor(executor: Arc<dyn GitExecutor>) -> impl Provid
         fn metadata(&self) -> ProviderMetadata {
             ProviderMetadata {
                 name: "git".into(),
-                sources: vec![refs_meta(), diff_meta(), status_meta()],
+                sources: vec![head_meta(), refs_meta(), diff_meta(), status_meta()],
             }
         }
         fn sources(&self) -> Vec<Box<dyn Source>> {
             vec![
+                Box::new(GitHead),
                 Box::new(GitRefs::new(Arc::clone(&self.executor))),
                 Box::new(GitDiff::new(Arc::clone(&self.executor))),
                 Box::new(GitStatus::new(Arc::clone(&self.executor))),
@@ -454,7 +533,6 @@ pub fn git_provider_with_executor(executor: Arc<dyn GitExecutor>) -> impl Provid
 struct ParsedGitStatus {
     branch: String,
     upstream: String,
-    detached: bool,
     ahead: i64,
     behind: i64,
     staged: i64,
@@ -478,7 +556,6 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut branch = String::new();
     let mut upstream = String::new();
-    let mut detached = false;
     let mut ahead: i64 = 0;
     let mut behind: i64 = 0;
     let mut staged: i64 = 0;
@@ -488,13 +565,10 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
 
     for line in stdout.lines() {
         if line.starts_with("# branch.head ") {
-            let head = line.strip_prefix("# branch.head ").unwrap_or("");
-            if head == "(detached)" {
-                detached = true;
-                branch = head.to_string();
-            } else {
-                branch = head.to_string();
-            }
+            branch = line
+                .strip_prefix("# branch.head ")
+                .unwrap_or("")
+                .to_string();
         } else if line.starts_with("# branch.upstream ") {
             upstream = line
                 .strip_prefix("# branch.upstream ")
@@ -528,7 +602,6 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
     Some(ParsedGitStatus {
         branch,
         upstream,
-        detached,
         ahead,
         behind,
         staged,
