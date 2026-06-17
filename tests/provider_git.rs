@@ -411,3 +411,79 @@ fn git_sibling_sources_have_disjoint_fields() {
         }
     }
 }
+
+#[test]
+fn git_refs_stash_counted_in_linked_worktree() {
+    if !common::git::has_git() {
+        return;
+    }
+    let repo = GitRepoFixture::new();
+    let wt = repo.add_worktree("wt", "feature");
+
+    // Dirty the worktree's copy of README.md, then stash it from the worktree.
+    std::fs::write(wt.join("README.md"), "stash me in the worktree").unwrap();
+    repo.git_in(&wt, &["stash"]);
+
+    let sources = GitProvider.sources();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
+    let result = refs_src.execute(Some(wt.to_str().unwrap()));
+
+    // The stash reflog lives in the SHARED commondir, not <wt>/.git (a file).
+    assert_eq!(
+        result.fields.get("stash").unwrap().as_text(),
+        "1",
+        "stash created in a linked worktree must be counted via commondir"
+    );
+}
+
+#[test]
+fn git_refs_state_detected_in_linked_worktree() {
+    if !common::git::has_git() {
+        return;
+    }
+    let repo = GitRepoFixture::new();
+    let wt = repo.add_worktree("wt", "feature");
+
+    // Build a REAL conflicting merge so MERGE_HEAD is guaranteed to be written.
+    //
+    // From the worktree on `feature`:
+    //   1. Create branch `other`, write "A" to README.md, commit.
+    //   2. Back on `feature`, write "B" to README.md, commit.
+    //   3. `git merge other` — this WILL conflict (exit non-zero). That is
+    //      expected and correct; the conflict is what writes MERGE_HEAD.
+    //
+    // `git_in_allow_failure` is used for step 3 because git exits non-zero
+    // on a conflict. All other calls use the normal `git_in` which panics on failure.
+
+    // 1. branch `other` with "A"
+    repo.git_in(&wt, &["checkout", "-b", "other"]);
+    std::fs::write(wt.join("README.md"), "A").expect("write README.md A");
+    repo.git_in(&wt, &["add", "README.md"]);
+    repo.git_in(&wt, &["commit", "-m", "other: set A"]);
+
+    // 2. back on `feature` with "B"
+    repo.git_in(&wt, &["checkout", "feature"]);
+    std::fs::write(wt.join("README.md"), "B").expect("write README.md B");
+    repo.git_in(&wt, &["add", "README.md"]);
+    repo.git_in(&wt, &["commit", "-m", "feature: set B"]);
+
+    // 3. conflicting merge — exit non-zero is EXPECTED (conflict writes MERGE_HEAD)
+    repo.git_in_allow_failure(&wt, &["merge", "other"]);
+
+    let sources = GitProvider.sources();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
+    let result = refs_src.execute(Some(wt.to_str().unwrap()));
+
+    // MERGE_HEAD lives under <main>/.git/worktrees/wt, not <wt>/.git (a file).
+    assert_eq!(
+        result.fields.get("state").unwrap().as_text(),
+        "merge",
+        "in-progress merge in a linked worktree must be detected via the resolved gitdir"
+    );
+}

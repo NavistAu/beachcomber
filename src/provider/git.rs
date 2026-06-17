@@ -3,7 +3,7 @@ use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,6 +27,65 @@ fn find_repo_root(start: &Path) -> Option<String> {
         cur = dir.parent();
     }
     None
+}
+
+/// Resolved git directory locations for a working-tree root.
+///
+/// For a normal checkout `gitdir == commondir == <root>/.git`. For a linked
+/// worktree (`git worktree add`) or a submodule, `<root>/.git` is a *file*
+/// pointing at the real per-worktree gitdir; shared state (refs, packed-refs,
+/// stash reflog) lives under `commondir`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitDirs {
+    /// Per-worktree git dir: holds HEAD, index, MERGE_HEAD, rebase-merge/, …
+    gitdir: PathBuf,
+    /// Shared common dir: holds refs/, packed-refs, logs/refs/stash, objects/.
+    commondir: PathBuf,
+}
+
+/// Resolve the gitdir/commondir for a working-tree root, following the
+/// `.git`-is-a-file indirection used by linked worktrees and submodules.
+/// Returns `None` if `<root>/.git` does not exist.
+fn resolve_git_dir(root: &Path) -> Option<GitDirs> {
+    let dot_git = root.join(".git");
+    // Use `metadata` (follows symlinks) so a `.git` that is a symlink to a
+    // directory correctly reports `is_dir() == true`. A `.git` file (worktree
+    // pointer) still gives `is_dir() == false` because it is a regular file.
+    let meta = std::fs::metadata(&dot_git).ok()?;
+
+    if meta.is_dir() {
+        return Some(GitDirs {
+            gitdir: dot_git.clone(),
+            commondir: dot_git,
+        });
+    }
+
+    // `.git` is a file whose first line is `gitdir: <path>` — absolute for
+    // worktrees, relative for submodules.
+    let contents = std::fs::read_to_string(&dot_git).ok()?;
+    let rel = contents.lines().next()?.strip_prefix("gitdir:")?.trim();
+    let gitdir = resolve_against(root, rel);
+
+    // `<gitdir>/commondir`, if present, points at the shared common dir (usually
+    // relative to the gitdir, e.g. "../.."). Absent for submodules → fall back.
+    let commondir = match std::fs::read_to_string(gitdir.join("commondir")) {
+        Ok(s) => resolve_against(&gitdir, s.trim()),
+        Err(_) => gitdir.clone(),
+    };
+
+    Some(GitDirs { gitdir, commondir })
+}
+
+/// Join `raw` onto `base` unless `raw` is absolute, then normalise via
+/// `canonicalize` (falling back to the lexical join if it cannot be canonicalised).
+fn resolve_against(base: &Path, raw: &str) -> PathBuf {
+    let p = Path::new(raw);
+    let joined = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    };
+    std::fs::canonicalize(&joined).unwrap_or(joined)
 }
 
 // ── SourceMetadata constructors ───────────────────────────────────────────────
@@ -209,8 +268,12 @@ impl Source for GitRefs {
         let Some(status) = parse_git_status(dir, &*self.executor) else {
             return SourceResult::new();
         };
-        let stash_count = count_stashes(dir);
-        let (state, state_step, state_total) = detect_repo_state(dir);
+        let dirs = resolve_git_dir(dir);
+        let stash_count = dirs.as_ref().map(count_stashes).unwrap_or(0);
+        let (state, state_step, state_total) = dirs
+            .as_ref()
+            .map(detect_repo_state)
+            .unwrap_or_else(|| ("clean".to_string(), 0, 0));
         let (commit, last_commit_ts, commit_summary) = get_head_info(dir, &*self.executor);
         let tag = get_nearest_tag(dir, &*self.executor);
         let (push_ahead, push_behind) = get_push_divergence(dir, &status.branch, &*self.executor);
@@ -475,16 +538,20 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
     })
 }
 
-fn count_stashes(dir: &Path) -> i64 {
-    let stash_log = dir.join(".git").join("logs").join("refs").join("stash");
+fn count_stashes(dirs: &GitDirs) -> i64 {
+    let stash_log = dirs
+        .commondir
+        .join("logs")
+        .join("refs")
+        .join("stash");
     std::fs::read_to_string(&stash_log)
         .map(|s| s.lines().count() as i64)
         .unwrap_or(0)
 }
 
 /// Returns (state_name, step, total).
-fn detect_repo_state(dir: &Path) -> (String, i64, i64) {
-    let git_dir = dir.join(".git");
+fn detect_repo_state(dirs: &GitDirs) -> (String, i64, i64) {
+    let git_dir = &dirs.gitdir;
 
     if git_dir.join("MERGE_HEAD").exists() {
         return ("merge".to_string(), 0, 0);
