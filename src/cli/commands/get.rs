@@ -4,8 +4,95 @@
 
 use crate::cli::format::render_fmt_template_json;
 use crate::cli::output_format::{OutputFormat, format_sv, value_to_string};
+use crate::cli::virtual_fields::{EvalContext, VirtualFields, discover_expression_refs};
 use crate::config::Config;
+use std::collections::HashMap;
 use std::process::ExitCode;
+
+/// Returns true if a `provider.field` key should be resolved client-side
+/// (virtual field or env.* namespace) rather than forwarded to the daemon.
+fn is_client_side_key(key: &str, vf: &VirtualFields) -> bool {
+    let Some(dot) = key.find('.') else {
+        return false;
+    };
+    let provider = &key[..dot];
+    let field = &key[dot + 1..];
+    provider == "env" || vf.is_virtual(provider, field)
+}
+
+/// Returns true if the key requires the daemon to be running.
+///
+/// env.* keys never need the daemon. Virtual fields only need the daemon
+/// if their expression references non-env, non-virtual fields.
+/// Plain daemon fields always need the daemon.
+fn key_needs_daemon(key: &str, vf: &VirtualFields) -> bool {
+    let Some(dot) = key.find('.') else {
+        return false;
+    };
+    let provider = &key[..dot];
+    let field = &key[dot + 1..];
+    if provider == "env" {
+        return false;
+    }
+    if vf.is_virtual(provider, field) {
+        let expr = vf.expression(provider, field).unwrap_or("");
+        let refs = discover_expression_refs(expr);
+        // Needs daemon if any ref is a non-env, non-virtual field.
+        refs.iter().any(|(p, f)| p != "env" && !vf.is_virtual(p, f))
+    } else {
+        true // plain daemon field
+    }
+}
+
+/// Format a virtual/env field value for the given output format.
+fn format_virtual_value(val: &serde_json::Value, format: &OutputFormat) -> Result<String, String> {
+    match format {
+        OutputFormat::Text => Ok(value_to_string(val)),
+        OutputFormat::Sh => {
+            // POSIX single-quote escape: wrap in single quotes, replace each ' with '\''
+            let s = value_to_string(val);
+            let escaped = s.replace('\'', r#"'\''"#);
+            Ok(format!("'{escaped}'"))
+        }
+        OutputFormat::Json => {
+            // For virtual fields, emit just the value (no age/stale wrapper).
+            serde_json::to_string_pretty(val).map_err(|e| e.to_string())
+        }
+        _ => Ok(value_to_string(val)),
+    }
+}
+
+/// Evaluate a client-side key (virtual field or env.*) and format its value.
+///
+/// `daemon_data` must contain pre-fetched values for any daemon-backed refs
+/// the expression needs (keyed as `"provider.field"`).
+///
+/// Returns `Ok(formatted_string)` or `Err(error_message)`.
+fn evaluate_client_side(
+    key: &str,
+    format: &OutputFormat,
+    daemon_data: &HashMap<String, serde_json::Value>,
+) -> Result<String, String> {
+    let dot = key.find('.').ok_or_else(|| format!("invalid key: {key}"))?;
+    let provider = &key[..dot];
+    let field = &key[dot + 1..];
+
+    let vf = VirtualFields::defaults_only(); // TODO Task 6: pass config overrides
+    let env_vars: HashMap<String, String> = std::env::vars().collect();
+
+    if provider == "env" {
+        let val = env_vars.get(field).cloned().unwrap_or_default();
+        let json_val = serde_json::Value::String(val);
+        return format_virtual_value(&json_val, format);
+    }
+
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data,
+    };
+    let json_val = vf.evaluate(provider, field, &ctx, &mut Default::default())?;
+    format_virtual_value(&json_val, format)
+}
 
 /// Returns true if `s` looks like a filesystem path rather than a provider key.
 ///
@@ -51,19 +138,77 @@ pub fn run_get(
 ) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
-    if let Err(e) = crate::daemon::ensure_daemon(&socket_path) {
+    // Build the virtual field registry once. TODO Task 6: load from config.
+    let vf = VirtualFields::defaults_only();
+
+    // Skip ensure_daemon if all keys are client-side and need no daemon deps.
+    let any_needs_daemon = keys.iter().any(|k| key_needs_daemon(k, &vf));
+    if any_needs_daemon && let Err(e) = crate::daemon::ensure_daemon(&socket_path) {
         eprintln!("Failed to start daemon: {e}");
         return ExitCode::from(2);
     }
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let client = crate::client::Client::new(socket_path.clone());
+        // Single-key shortcut: check client-side first, then delegate to daemon.
+        if keys.len() == 1 {
+            let key = &keys[0];
+            if is_client_side_key(key, &vf) {
+                // Fetch any daemon-backed refs the expression needs.
+                let daemon_data = if key_needs_daemon(key, &vf) {
+                    // Expression has daemon refs — fetch them via the daemon.
+                    let client = crate::client::Client::new(socket_path.clone());
+                    let mut session = match client.connect().await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            return ExitCode::from(2);
+                        }
+                    };
+                    if let Some(p) = path
+                        && let Err(e) = session.set_context(p).await
+                    {
+                        eprintln!("Error: {e}");
+                        return ExitCode::from(2);
+                    }
+                    let dot = key.find('.').unwrap_or(key.len());
+                    let provider = &key[..dot];
+                    let field = &key[dot + 1..];
+                    let expr = vf.expression(provider, field).unwrap_or("");
+                    let refs = discover_expression_refs(expr);
+                    let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
+                    for (p, f) in refs {
+                        if p != "env" && !vf.is_virtual(&p, &f) {
+                            let dep_key = format!("{p}.{f}");
+                            if let Ok(resp) = session.get(&dep_key, None).await
+                                && let Some(data) = resp.data
+                            {
+                                dd.insert(dep_key, data);
+                            }
+                        }
+                    }
+                    dd
+                } else {
+                    HashMap::new()
+                };
+                match evaluate_client_side(key, &format, &daemon_data) {
+                    Ok(text) => {
+                        print!("{text}");
+                        return ExitCode::SUCCESS;
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+        }
 
         // Single-key shortcut for server-side formats (text / sh): delegate directly to the
         // client helper so the daemon renders the value consistently.
         if keys.len() == 1 && format.is_server_side() {
             let key = &keys[0];
+            let client = crate::client::Client::new(socket_path.clone());
             match client
                 .get_formatted_with_flags(key, path, format.server_format(), force, wait)
                 .await
@@ -82,15 +227,22 @@ pub fn run_get(
         // Multi-key (or single-key with client-side format): open one session and issue one
         // Request::Get per key.  Results are aggregated before rendering so that formats like
         // JSON / CSV / TSV can produce a single coherent output document.
-        let mut session = match client.connect().await {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Error: {e}");
-                return ExitCode::from(2);
+        // Only connect to the daemon when at least one key actually requires it.
+        let client = crate::client::Client::new(socket_path.clone());
+        let mut session_opt = if any_needs_daemon {
+            match client.connect().await {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    return ExitCode::from(2);
+                }
             }
+        } else {
+            None
         };
 
-        if let Some(p) = path
+        if let Some(ref mut session) = session_opt
+            && let Some(p) = path
             && let Err(e) = session.set_context(p).await
         {
             eprintln!("Error: {e}");
@@ -102,19 +254,62 @@ pub fn run_get(
             let wire_fmt = format.server_format();
             let mut any_error = false;
             for key in keys {
-                match session
-                    .get_formatted_with_flags(key, None, wire_fmt, force, wait)
-                    .await
-                {
-                    Ok(text) => {
-                        if !text.is_empty() {
-                            println!("{text}");
+                if is_client_side_key(key, &vf) {
+                    // Fetch daemon deps for this virtual key if needed.
+                    let daemon_data = if key_needs_daemon(key, &vf) {
+                        let dot = key.find('.').unwrap_or(key.len());
+                        let provider = &key[..dot];
+                        let field = &key[dot + 1..];
+                        let expr = vf.expression(provider, field).unwrap_or("");
+                        let refs = discover_expression_refs(expr);
+                        let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
+                        if let Some(ref mut session) = session_opt {
+                            for (p, f) in refs {
+                                if p != "env" && !vf.is_virtual(&p, &f) {
+                                    let dep_key = format!("{p}.{f}");
+                                    if let Ok(resp) = session.get(&dep_key, None).await
+                                        && let Some(data) = resp.data
+                                    {
+                                        dd.insert(dep_key, data);
+                                    }
+                                }
+                            }
+                        }
+                        dd
+                    } else {
+                        HashMap::new()
+                    };
+                    match evaluate_client_side(key, &format, &daemon_data) {
+                        Ok(text) => {
+                            if !text.is_empty() {
+                                println!("{text}");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            any_error = true;
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Error querying {key}: {e}");
-                        any_error = true;
+                    continue;
+                }
+                if let Some(ref mut session) = session_opt {
+                    match session
+                        .get_formatted_with_flags(key, None, wire_fmt, force, wait)
+                        .await
+                    {
+                        Ok(text) => {
+                            if !text.is_empty() {
+                                println!("{text}");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error querying {key}: {e}");
+                            any_error = true;
+                        }
                     }
+                } else {
+                    eprintln!("Error querying {key}: daemon not available");
+                    any_error = true;
                 }
             }
             return if any_error {
@@ -126,25 +321,77 @@ pub fn run_get(
 
         // Client-side formats: collect all responses (preserving per-key association), then
         // render.  Errors are recorded but do not prevent successful keys from being emitted.
+        // Client-side keys (env.* / virtual) are evaluated without daemon contact.
         let mut responses: Vec<(String, crate::protocol::Response)> = Vec::new();
         let mut any_error = false;
         for key in keys {
-            match session.get_with_flags(key, None, force, wait).await {
-                Ok(response) => {
-                    if !response.ok {
-                        eprintln!(
-                            "Error querying {key}: {}",
-                            response.error.as_deref().unwrap_or("unknown error")
-                        );
-                        any_error = true;
-                    } else {
+            if is_client_side_key(key, &vf) {
+                // Fetch daemon deps if expression needs them.
+                let daemon_data = if key_needs_daemon(key, &vf) {
+                    let dot = key.find('.').unwrap_or(key.len());
+                    let provider = &key[..dot];
+                    let field = &key[dot + 1..];
+                    let expr = vf.expression(provider, field).unwrap_or("");
+                    let refs = discover_expression_refs(expr);
+                    let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
+                    if let Some(ref mut session) = session_opt {
+                        for (p, f) in refs {
+                            if p != "env" && !vf.is_virtual(&p, &f) {
+                                let dep_key = format!("{p}.{f}");
+                                if let Ok(resp) = session.get(&dep_key, None).await
+                                    && let Some(data) = resp.data
+                                {
+                                    dd.insert(dep_key, data);
+                                }
+                            }
+                        }
+                    }
+                    dd
+                } else {
+                    HashMap::new()
+                };
+                // Evaluate and synthesize a Response-like value for the aggregation path.
+                match evaluate_client_side(key, &OutputFormat::Json, &daemon_data) {
+                    Ok(json_str) => {
+                        let data: serde_json::Value =
+                            serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null);
+                        let response = crate::protocol::Response {
+                            ok: true,
+                            data: Some(data),
+                            error: None,
+                            age_ms: None,
+                            stale: None,
+                        };
                         responses.push((key.clone(), response));
                     }
+                    Err(e) => {
+                        eprintln!("Error querying {key}: {e}");
+                        any_error = true;
+                    }
                 }
-                Err(e) => {
-                    eprintln!("Error querying {key}: {e}");
-                    any_error = true;
+                continue;
+            }
+            if let Some(ref mut session) = session_opt {
+                match session.get_with_flags(key, None, force, wait).await {
+                    Ok(response) => {
+                        if !response.ok {
+                            eprintln!(
+                                "Error querying {key}: {}",
+                                response.error.as_deref().unwrap_or("unknown error")
+                            );
+                            any_error = true;
+                        } else {
+                            responses.push((key.clone(), response));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error querying {key}: {e}");
+                        any_error = true;
+                    }
                 }
+            } else {
+                eprintln!("Error querying {key}: daemon not available");
+                any_error = true;
             }
         }
 
