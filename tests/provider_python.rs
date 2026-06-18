@@ -64,3 +64,39 @@ fn python_venv_bool_true_when_venv_found() {
         "venv field must be bool true"
     );
 }
+
+#[test]
+fn python_venv_version_exact_key_match_no_version_info_bleed() {
+    // virtualenv writes `version_info = X.Y.Z.final.0` and NO bare `version` line.
+    // strip_prefix("version") incorrectly matches version_info; exact-key match must not.
+    // With no bare `version` key present, venv_version must be "" (empty string).
+    let dir = TempDir::new().unwrap();
+    let venv = dir.path().join(".venv");
+    std::fs::create_dir_all(venv.join("bin")).unwrap();
+    std::fs::write(
+        venv.join("pyvenv.cfg"),
+        "version_info = 3.12.1.final.0\nhome = /usr/bin\n",
+    )
+    .unwrap();
+
+    let sources = PythonProvider.sources();
+    let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
+    let ver = result.fields["venv_version"].as_text();
+    assert!(
+        !ver.contains("_info"),
+        "venv_version must not contain '_info' garbage from version_info line; got: {ver:?}"
+    );
+    assert_eq!(
+        ver, "",
+        "with only version_info present (no bare version key), venv_version must be empty; got: {ver:?}"
+    );
+}
+
+#[test]
+fn python_venv_version_bare_version_key_returns_value() {
+    // Confirm the stdlib venv `version = X.Y.Z` line is still parsed correctly.
+    let dir = make_venv(".venv", "3.12.1");
+    let sources = PythonProvider.sources();
+    let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
+    assert_eq!(result.fields["venv_version"].as_text(), "3.12.1");
+}

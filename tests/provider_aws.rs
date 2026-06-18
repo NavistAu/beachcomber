@@ -68,6 +68,13 @@ fn aws_config_region_missing_default_profile_returns_empty() {
 fn aws_profile_source_no_longer_reads_env() {
     // Confirms the profile source doesn't read AWS_PROFILE / AWS_VAULT / AWS_REGION.
     // Those are now client-side virtual fields (expression form).
+    assert!(
+        AwsProvider
+            .sources()
+            .iter()
+            .all(|s| s.metadata().name != "profile"),
+        "profile source must be gone"
+    );
     temp_env::with_vars(
         [
             ("AWS_PROFILE", Some("test-profile")),

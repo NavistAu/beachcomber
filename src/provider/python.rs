@@ -69,8 +69,7 @@ impl Source for PythonVenv {
         // resolved client-side via:
         //   venv_name = "python.local_venv_name or (env.VIRTUAL_ENV | basename)"
         // The daemon only reads from the filesystem at the given path.
-        let venv_dirs = [".venv", "venv", ".virtualenv", "env"];
-        for name in &venv_dirs {
+        for name in VENV_DIRS {
             let venv_path = dir.join(name);
             let cfg_path = venv_path.join("pyvenv.cfg");
             if cfg_path.exists() {
@@ -97,9 +96,13 @@ fn parse_pyvenv_version(cfg_path: &Path) -> String {
         return String::new();
     };
     for line in cfg.lines() {
-        if let Some(v) = line.strip_prefix("version") {
-            let v = v.trim_start_matches([' ', '=']).trim();
-            return v.to_string();
+        if let Some((key, val)) = line.split_once('=')
+            && key.trim() == "version"
+        {
+            let v = val.trim().to_string();
+            if !v.is_empty() {
+                return v;
+            }
         }
     }
     String::new()
