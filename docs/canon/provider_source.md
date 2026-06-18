@@ -390,6 +390,55 @@ Feature: Source-level invalidation
 - **Migration / phasing.** How the codebase moves from monolithic `Provider::execute()` to the per-Source dispatch model is implementation planning, not part of the canonical model.
 - **Failure backoff on watch-registration failure.** This canonical model does not specify automatic retry of failed watch registrations; whether and how the scheduler retries is an implementation concern bounded by the FailbackConfig contract.
 
+## Field-definition family: virtual fields and env.*
+
+Every `provider.field` value is produced by one of the following mechanisms. How it is produced sits on a spectrum:
+
+| Kind | Produced by | Where resolved | Cached? | Env-aware? | Defined by |
+|---|---|---|---|---|---|
+| Built-in provider | Rust `execute()` over files/syscalls | daemon | yes | no (path only) | code |
+| Script / library / HTTP | external backend run by daemon | daemon | yes | no | config |
+| **Virtual (literal)** | literal data (`comb put`) | daemon | yes (opt TTL) | no | runtime |
+| **Virtual (expression)** | a minijinja **expression** over other fields + `env.*` | client (CLI) | no | **yes** | config + built-in defaults |
+| **`env.*`** | caller's shell environment variable | client (CLI) | no | by definition | shell |
+
+**Virtual (literal) and virtual (expression) are siblings** — both define a field declaratively without a Rust provider implementation. They cannot be the same mechanism: a virtual (literal) lives in the daemon and cannot see the caller's shell environment; a virtual (expression) is evaluated on the CLI side and can. Docs present them together ("defining your own fields") with `eval`/templates as the same idea surfaced at the template layer.
+
+**Evaluation locus:** literal = daemon-side (stored, no env access); expression = client-side/env-aware (never cached in the daemon).
+
+### `env.*` namespace
+
+- `env.FOO_BAR` resolves `$FOO_BAR` from the calling shell's environment.
+- **Miss → `""`**, never an error. It is a value-only namespace: no `age`, `ttl`, or `stale` metadata (it is live by definition).
+- **Never contacts the daemon.** The daemon's copy of the environment is frozen at launch and is wrong for the calling shell.
+- Usable in virtual fields (expression form) (`env.PYENV_VERSION or python.venv_version`) and `eval` templates (`{{ env.FOO }}`).
+- `--format sh` shell-escapes the value; `--format json` emits just the string value with no metadata wrapper.
+
+### Virtual fields (expression form)
+
+A virtual field (expression form) is a **minijinja expression** (not a template — no `{{ }}`). Evaluation is via `compile_expression` + `eval`, producing a **typed `Value`** (string / bool / number). The result type is the natural type of the expression — no bespoke type tag in config.
+
+Config syntax: `virtual.<field> = "<expression>"` under `[providers.<name>]`. This is TOML's dotted-key form, namespacing definitions under the `virtual` sub-table so they cannot collide with source knobs.
+
+- **Ref discovery** uses `Expression::undeclared_variables(true)` (nested) to enumerate all `provider.field` and `env.*` refs in the expression. This supersedes byte-level scanning (`find_eval_template_pairs`) for virtual field evaluation.
+- **Empty = jinja-falsy** (`""`, `None`, undefined). Non-strict undefined: a missing provider ref is simply falsy, enabling `a or b or c` without error.
+- **All-falsy → `""`.**
+- **Cascade idiom:** `"env.X or provider.field"` — first non-empty value wins.
+- **Transforms** are inline filters, e.g. `"python.local_venv_name or (env.VIRTUAL_ENV | basename)"`.
+- **Typed output:** `--format json` emits the real type (bool/number/string); `--format text`/`sh` stringifies.
+- **Cycle detection** across virtual→virtual references is required; a detected cycle is a config error, not a panic.
+- A virtual field (expression form) may **shadow** a daemon intrinsic of the same name. The intrinsic is exposed under a renamed key and referenced as one term in the cascade.
+- **Built-in defaults** are compiled into the CLI; no config file is required. Config overrides them per provider/field. `comb init --write-config` materializes built-in defaults into a config file.
+
+### Invariants
+
+15. `env.*` is a client-resolved, value-only namespace. It never contacts the daemon and carries no metadata.
+16. A virtual field (expression form) is evaluated on the CLI side, never cached in the daemon.
+17. Virtual fields (expression form) may shadow daemon intrinsics; the intrinsic is exposed under a distinct name.
+18. Virtual field ref discovery uses `Expression::undeclared_variables(true)` — not byte-level scanning.
+19. A cycle in virtual→virtual references is a config error surfaced at evaluation time, not a panic.
+20. Built-in default virtual fields (expression form) are present with no config file.
+
 ## See also
 
 - [`cache-lifecycle.md`](./cache-lifecycle.md) — the universal Active/Decay/Evicted state machine that Source instances follow
