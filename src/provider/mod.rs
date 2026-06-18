@@ -1,7 +1,6 @@
 pub mod asdf;
 pub mod aws;
 pub mod battery;
-pub mod conda;
 pub mod direnv;
 pub mod gcloud;
 pub mod git;
@@ -12,7 +11,6 @@ pub mod library;
 pub mod load;
 pub mod mise;
 pub mod network;
-pub mod op;
 pub mod python;
 pub mod registry;
 pub mod script;

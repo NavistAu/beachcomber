@@ -161,9 +161,6 @@ impl ProviderRegistry {
             .register(Box::new(crate::provider::battery::BatteryProvider))
             .expect("battery");
         registry
-            .register(Box::new(crate::provider::conda::CondaProvider))
-            .expect("conda");
-        registry
             .register(Box::new(crate::provider::direnv::DirenvProvider))
             .expect("direnv");
         registry
@@ -187,9 +184,6 @@ impl ProviderRegistry {
         registry
             .register(Box::new(crate::provider::network::NetworkProvider))
             .expect("network");
-        registry
-            .register(Box::new(crate::provider::op::OpProvider))
-            .expect("op");
         registry
             .register(Box::new(crate::provider::python::PythonProvider))
             .expect("python");
@@ -237,7 +231,6 @@ impl ProviderRegistry {
         add_builtin!("aws", crate::provider::aws::AwsProvider);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         add_builtin!("battery", crate::provider::battery::BatteryProvider);
-        add_builtin!("conda", crate::provider::conda::CondaProvider);
         add_builtin!("direnv", crate::provider::direnv::DirenvProvider);
         add_builtin!("gcloud", crate::provider::gcloud::GcloudProvider);
         add_builtin!("git", crate::provider::git::GitProvider);
@@ -249,7 +242,6 @@ impl ProviderRegistry {
         add_builtin!("load", crate::provider::load::LoadProvider);
         add_builtin!("mise", crate::provider::mise::MiseProvider);
         add_builtin!("network", crate::provider::network::NetworkProvider);
-        add_builtin!("op", crate::provider::op::OpProvider);
         add_builtin!("python", crate::provider::python::PythonProvider);
         add_builtin!("sudo", crate::provider::sudo::SudoProvider);
         add_builtin!("terraform", crate::provider::terraform::TerraformProvider);

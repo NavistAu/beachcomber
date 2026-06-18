@@ -1,7 +1,6 @@
 use beachcomber::provider::Provider;
 use beachcomber::provider::SourceScope;
 use beachcomber::provider::asdf::AsdfProvider;
-use beachcomber::provider::conda::CondaProvider;
 use beachcomber::provider::direnv::DirenvProvider;
 use beachcomber::provider::mise::MiseProvider;
 use beachcomber::provider::python::PythonProvider;
@@ -200,21 +199,6 @@ fn python_canonical_path_none_outside_project() {
 fn python_canonical_path_passes_none_through() {
     let sources = PythonProvider.sources();
     assert_eq!(sources[0].canonical_path(None), None);
-}
-
-// --- Conda ---
-
-#[test]
-fn conda_metadata() {
-    let p = CondaProvider;
-    let meta = p.metadata();
-    assert_eq!(meta.name, "conda");
-    assert_eq!(meta.sources.len(), 1);
-    let src = &meta.sources[0];
-    assert_eq!(src.name, "env");
-    assert_eq!(src.scope, SourceScope::Global);
-    let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"env"));
 }
 
 // --- Mise ---
