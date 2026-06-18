@@ -28,11 +28,11 @@ fn venv_source_metadata() -> SourceMetadata {
                 field_type: FieldType::Bool,
             },
             FieldSchema {
-                name: "venv_name".into(),
+                name: "local_venv_name".into(),
                 field_type: FieldType::String,
             },
             FieldSchema {
-                name: "version".into(),
+                name: "venv_version".into(),
                 field_type: FieldType::String,
             },
         ],
@@ -65,59 +65,44 @@ impl Source for PythonVenv {
         };
         let dir = Path::new(path);
 
-        // Check for common venv directory names
+        // Scan common venv directory names. $VIRTUAL_ENV is a per-shell var
+        // resolved client-side via:
+        //   venv_name = "python.local_venv_name or (env.VIRTUAL_ENV | basename)"
+        // The daemon only reads from the filesystem at the given path.
         let venv_dirs = [".venv", "venv", ".virtualenv", "env"];
-        let mut venv_found = false;
-        let mut venv_name = String::new();
-        let mut version = String::new();
-
         for name in &venv_dirs {
             let venv_path = dir.join(name);
             let cfg_path = venv_path.join("pyvenv.cfg");
             if cfg_path.exists() {
-                venv_found = true;
-                venv_name = name.to_string();
-                // Parse version from pyvenv.cfg
-                if let Ok(cfg) = std::fs::read_to_string(&cfg_path) {
-                    for line in cfg.lines() {
-                        if let Some(v) = line.strip_prefix("version") {
-                            let v = v.trim_start_matches([' ', '=']).trim();
-                            version = v.to_string();
-                            break;
-                        }
-                    }
-                }
-                break;
+                let venv_version = parse_pyvenv_version(&cfg_path);
+                let mut result = SourceResult::new();
+                result.insert("venv", Value::Bool(true));
+                result.insert("local_venv_name", Value::String(name.to_string()));
+                result.insert("venv_version", Value::String(venv_version));
+                return result;
             }
         }
 
-        // Also check VIRTUAL_ENV env var
-        if !venv_found && let Ok(venv_path) = std::env::var("VIRTUAL_ENV") {
-            let p = Path::new(&venv_path);
-            if p.exists() {
-                venv_found = true;
-                venv_name = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-            }
-        }
-
-        if !venv_found {
-            return SourceResult::new();
-        }
-
-        let mut result = SourceResult::new();
-        result.insert("venv", Value::Bool(true));
-        result.insert("venv_name", Value::String(venv_name));
-        result.insert("version", Value::String(version));
-        result
+        SourceResult::new()
     }
 
     fn canonical_path(&self, path: Option<&str>) -> Option<String> {
         let p = path?;
         find_python_project_root(Path::new(p))
     }
+}
+
+fn parse_pyvenv_version(cfg_path: &Path) -> String {
+    let Ok(cfg) = std::fs::read_to_string(cfg_path) else {
+        return String::new();
+    };
+    for line in cfg.lines() {
+        if let Some(v) = line.strip_prefix("version") {
+            let v = v.trim_start_matches([' ', '=']).trim();
+            return v.to_string();
+        }
+    }
+    String::new()
 }
 
 const VENV_DIRS: &[&str] = &[".venv", "venv", ".virtualenv", "env"];
