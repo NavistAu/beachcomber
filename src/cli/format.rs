@@ -8,9 +8,10 @@ use crate::provider::{ProviderResult, Value as ProvValue};
 ///
 /// Shared by all rendering helpers so the `truncate` filter (and any future
 /// additions) are available in `fmt`, `eval`, and any other template surface.
-pub(crate) fn build_env<'a>() -> Environment<'a> {
+pub fn build_env<'a>() -> Environment<'a> {
     let mut env = Environment::new();
     env.add_filter("truncate", truncate_filter);
+    env.add_filter("basename", basename_filter);
     env
 }
 
@@ -236,6 +237,15 @@ pub fn find_eval_template_refs(template: &str) -> HashSet<String> {
 pub fn render_eval_template(template: &str, context: &serde_json::Value) -> Result<String, String> {
     let env = build_env();
     env.render_str(template, context).map_err(|e| e.to_string())
+}
+
+fn basename_filter(value: String) -> String {
+    // Remove trailing slashes, then take the last path component.
+    let trimmed = value.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
 }
 
 fn truncate_filter(value: String, length: u32) -> String {
