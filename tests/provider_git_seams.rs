@@ -156,11 +156,11 @@ fn git_refs_clean_repo_produces_correct_branch() {
     let result = refs_src.execute(Some(dir.path().to_str().unwrap()));
 
     assert!(
-        result.fields.get("branch").is_none(),
+        !result.fields.contains_key("branch"),
         "branch moved to head source; must not be present in refs"
     );
     assert!(
-        result.fields.get("detached").is_none(),
+        !result.fields.contains_key("detached"),
         "detached moved to head source; must not be present in refs"
     );
     assert_eq!(result.fields.get("ahead").unwrap(), &Value::Int(0));
@@ -201,7 +201,7 @@ fn git_refs_detached_head_sets_detached_true() {
     let result = refs_src.execute(Some(dir.path().to_str().unwrap()));
 
     assert!(
-        result.fields.get("detached").is_none(),
+        !result.fields.contains_key("detached"),
         "detached moved to head source; must not be present in refs"
     );
     assert_eq!(result.fields.get("push_ahead").unwrap(), &Value::Int(0));
