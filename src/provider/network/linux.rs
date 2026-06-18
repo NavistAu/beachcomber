@@ -1,7 +1,11 @@
 use std::process::Command;
 
 pub fn is_vpn_interface(name: &str) -> bool {
-    name.starts_with("tun") || name.starts_with("tap") || name.starts_with("wg")
+    name.starts_with("tun")
+        || name.starts_with("tap")
+        || name.starts_with("wg")
+        || name == "tailscale0"
+        || name.starts_with("tailscale")
 }
 
 pub fn is_preferred_interface(name: &str) -> bool {

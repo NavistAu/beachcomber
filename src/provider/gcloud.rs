@@ -56,8 +56,31 @@ impl Source for GcloudConfig {
             return SourceResult::new();
         };
 
-        // Read the active configuration's properties
-        let properties_path = config_dir.join("properties");
+        // Resolve the active configuration name:
+        // $CLOUDSDK_ACTIVE_CONFIG_NAME takes precedence, then active_config file.
+        let active_name = if let Ok(name) = std::env::var("CLOUDSDK_ACTIVE_CONFIG_NAME") {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return SourceResult::new();
+            }
+            name
+        } else {
+            let active_path = config_dir.join("active_config");
+            let Ok(content) = std::fs::read_to_string(&active_path) else {
+                return SourceResult::new();
+            };
+            let name = content.trim().to_string();
+            if name.is_empty() {
+                return SourceResult::new();
+            }
+            name
+        };
+
+        // Read the named configuration's properties file.
+        let properties_path = config_dir
+            .join("configurations")
+            .join(format!("config_{}", active_name))
+            .join("properties");
         let Some(content) = std::fs::read_to_string(&properties_path).ok() else {
             return SourceResult::new();
         };
@@ -72,13 +95,13 @@ impl Source for GcloudConfig {
                 in_core = line == "[core]";
                 continue;
             }
-            if in_core {
-                if let Some(val) = line.strip_prefix("project") {
-                    let val = val.trim_start_matches([' ', '=']).trim();
-                    project = val.to_string();
-                } else if let Some(val) = line.strip_prefix("account") {
-                    let val = val.trim_start_matches([' ', '=']).trim();
-                    account = val.to_string();
+            if in_core && let Some((key, val)) = line.split_once('=') {
+                let key = key.trim();
+                let val = val.trim().to_string();
+                match key {
+                    "project" => project = val,
+                    "account" => account = val,
+                    _ => {}
                 }
             }
         }

@@ -202,3 +202,137 @@ contexts:
         "namespace field must be Value::String"
     );
 }
+
+// ── Multi-file merge tests ─────────────────────────────────────────────────────
+
+/// Expose a test-only constructor that accepts multiple kubeconfig paths.
+/// This tests the merge logic without touching $KUBECONFIG.
+use beachcomber::provider::kubecontext::kubecontext_source_with_paths;
+
+#[test]
+fn multi_file_kubeconfig_active_context_in_second_file() {
+    // File 1: defines context "prod" but current-context is NOT here.
+    let f1 = write_kubeconfig(
+        "\
+apiVersion: v1
+kind: Config
+contexts:
+- context:
+    cluster: prod-cluster
+    namespace: production
+  name: prod
+",
+    );
+    // File 2: defines context "dev" and declares it as current-context.
+    let f2 = write_kubeconfig(
+        "\
+apiVersion: v1
+kind: Config
+current-context: dev
+contexts:
+- context:
+    cluster: dev-cluster
+    namespace: dev-ns
+  name: dev
+",
+    );
+
+    let source =
+        kubecontext_source_with_paths(vec![f1.path().to_path_buf(), f2.path().to_path_buf()]);
+    let result = source.execute(None);
+
+    assert_eq!(
+        result.fields.get("context").unwrap().as_text(),
+        "dev",
+        "current-context in second file must be honored"
+    );
+    assert_eq!(result.fields.get("namespace").unwrap().as_text(), "dev-ns");
+}
+
+#[test]
+fn multi_file_kubeconfig_context_namespace_from_different_file() {
+    // current-context set in file 2, but the context's namespace is defined in file 1.
+    let f1 = write_kubeconfig(
+        "\
+apiVersion: v1
+kind: Config
+contexts:
+- context:
+    cluster: shared-cluster
+    namespace: shared-ns
+  name: shared
+",
+    );
+    let f2 = write_kubeconfig(
+        "\
+apiVersion: v1
+kind: Config
+current-context: shared
+contexts: []
+",
+    );
+
+    let source =
+        kubecontext_source_with_paths(vec![f1.path().to_path_buf(), f2.path().to_path_buf()]);
+    let result = source.execute(None);
+
+    assert_eq!(result.fields.get("context").unwrap().as_text(), "shared");
+    assert_eq!(
+        result.fields.get("namespace").unwrap().as_text(),
+        "shared-ns",
+        "namespace must be found even when context definition is in a different file"
+    );
+}
+
+#[test]
+fn name_match_not_a_substring() {
+    // Context named "prod" must not be confused with "production".
+    // The substring bug: `block.contains("name: prod")` fires on a block
+    // that has `name: production` because "name: production" contains the
+    // substring "name: prod". Verified against kubecontext.rs lines 170-171.
+    let f = write_kubeconfig(
+        "\
+apiVersion: v1
+kind: Config
+current-context: prod
+contexts:
+- context:
+    cluster: production-cluster
+    namespace: wrong-ns
+  name: production
+- context:
+    cluster: prod-cluster
+    namespace: correct-ns
+  name: prod
+",
+    );
+    let source = kubecontext_source_with_path(f.path().to_path_buf());
+    let result = source.execute(None);
+
+    assert_eq!(result.fields.get("context").unwrap().as_text(), "prod");
+    assert_eq!(
+        result.fields.get("namespace").unwrap().as_text(),
+        "correct-ns",
+        "exact name match required — 'prod' must not match context named 'production'"
+    );
+}
+
+#[test]
+fn nonexistent_files_in_list_are_skipped() {
+    let f = write_kubeconfig(
+        "\
+apiVersion: v1
+kind: Config
+current-context: real
+contexts:
+- context:
+    namespace: real-ns
+  name: real
+",
+    );
+    let missing = std::path::PathBuf::from("/tmp/beachcomber_test_nonexistent_s6_kube");
+    let source = kubecontext_source_with_paths(vec![missing, f.path().to_path_buf()]);
+    let result = source.execute(None);
+
+    assert_eq!(result.fields.get("context").unwrap().as_text(), "real");
+}
