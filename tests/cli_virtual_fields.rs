@@ -233,6 +233,28 @@ fn ref_discovery_finds_all_refs_in_cascade() {
     assert_eq!(refs.len(), 3, "must find exactly 3 refs; got: {refs:?}");
 }
 
+// ── large u64 integer preservation ───────────────────────────────────────────
+
+#[test]
+fn large_u64_daemon_field_preserved_as_integer() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
+    daemon_data.insert("bignum.value".to_string(), json!(18446744073709551615u64)); // u64::MAX
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon_data,
+    };
+    let result = vf
+        .evaluate_expression("bignum.value", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!(18446744073709551615u64),
+        "u64::MAX must round-trip as an integer, not a lossy float; got: {result}"
+    );
+}
+
 // ── is_virtual / built-in defaults ──────────────────────────────────────────
 
 #[test]

@@ -292,6 +292,9 @@ pub(crate) fn mj_to_json(v: MjValue) -> JsonValue {
         if let Ok(n) = v.clone().try_into() as Result<i64, _> {
             return JsonValue::Number(serde_json::Number::from(n));
         }
+        if let Ok(n) = v.clone().try_into() as Result<u64, _> {
+            return JsonValue::Number(serde_json::Number::from(n));
+        }
         if let Ok(f) = v.clone().try_into() as Result<f64, _>
             && let Some(n) = serde_json::Number::from_f64(f)
         {
