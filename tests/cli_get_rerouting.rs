@@ -50,3 +50,23 @@ fn discover_refs_finds_daemon_dep_in_cascade() {
         "cascade must discover daemon dep terraform.path_workspace; got: {refs:?}"
     );
 }
+
+/// Canon invariant 15: env.* keys NEVER contact the daemon.
+///
+/// This is a regression guard — the guarantee already holds, but this test
+/// catches any future refactor that accidentally routes env.* through the
+/// daemon. By pointing BEACHCOMBER_SOCKET at a nonexistent path, any daemon
+/// contact (connect or spawn) would fail and make the command exit non-zero.
+#[test]
+fn get_env_star_succeeds_without_daemon_contact() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let bogus_sock = dir.path().join("nonexistent.sock");
+    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
+    cmd.env("BEACHCOMBER_SOCKET", &bogus_sock)
+        .env("RUST_LOG", "error")
+        .env("COMB_TEST_ENV_STAR", "hello-from-env")
+        .args(["get", "env.COMB_TEST_ENV_STAR"]);
+    cmd.assert()
+        .success()
+        .stdout(predicates::str::contains("hello-from-env"));
+}

@@ -9,6 +9,38 @@ use crate::config::Config;
 use std::collections::HashMap;
 use std::process::ExitCode;
 
+/// Fetch the daemon-backed refs a virtual field's expression needs.
+///
+/// Cascade semantics (non-strict undefined): a ref that fails to fetch or is
+/// absent is simply omitted, so the evaluator treats it as falsy and the
+/// cascade falls through to the next term. This is deliberate — a broken
+/// daemon dep must not abort an `env.X or provider.field` cascade.
+async fn fetch_daemon_deps(
+    key: &str,
+    vf: &VirtualFields,
+    session: Option<&mut crate::client::ClientSession>,
+) -> HashMap<String, serde_json::Value> {
+    let Some((provider, field)) = key.split_once('.') else {
+        return HashMap::new();
+    };
+    let expr = vf.expression(provider, field).unwrap_or("");
+    let refs = discover_expression_refs(expr);
+    let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
+    if let Some(session) = session {
+        for (p, f) in refs {
+            if p != "env" && !vf.is_virtual(&p, &f) {
+                let dep_key = format!("{p}.{f}");
+                if let Ok(resp) = session.get(&dep_key, None).await
+                    && let Some(data) = resp.data
+                {
+                    dd.insert(dep_key, data);
+                }
+            }
+        }
+    }
+    dd
+}
+
 /// Returns true if a `provider.field` key should be resolved client-side
 /// (virtual field or env.* namespace) rather than forwarded to the daemon.
 fn is_client_side_key(key: &str, vf: &VirtualFields) -> bool {
@@ -171,23 +203,7 @@ pub fn run_get(
                         eprintln!("Error: {e}");
                         return ExitCode::from(2);
                     }
-                    let dot = key.find('.').unwrap_or(key.len());
-                    let provider = &key[..dot];
-                    let field = &key[dot + 1..];
-                    let expr = vf.expression(provider, field).unwrap_or("");
-                    let refs = discover_expression_refs(expr);
-                    let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
-                    for (p, f) in refs {
-                        if p != "env" && !vf.is_virtual(&p, &f) {
-                            let dep_key = format!("{p}.{f}");
-                            if let Ok(resp) = session.get(&dep_key, None).await
-                                && let Some(data) = resp.data
-                            {
-                                dd.insert(dep_key, data);
-                            }
-                        }
-                    }
-                    dd
+                    fetch_daemon_deps(key, &vf, Some(&mut session)).await
                 } else {
                     HashMap::new()
                 };
@@ -257,25 +273,7 @@ pub fn run_get(
                 if is_client_side_key(key, &vf) {
                     // Fetch daemon deps for this virtual key if needed.
                     let daemon_data = if key_needs_daemon(key, &vf) {
-                        let dot = key.find('.').unwrap_or(key.len());
-                        let provider = &key[..dot];
-                        let field = &key[dot + 1..];
-                        let expr = vf.expression(provider, field).unwrap_or("");
-                        let refs = discover_expression_refs(expr);
-                        let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
-                        if let Some(ref mut session) = session_opt {
-                            for (p, f) in refs {
-                                if p != "env" && !vf.is_virtual(&p, &f) {
-                                    let dep_key = format!("{p}.{f}");
-                                    if let Ok(resp) = session.get(&dep_key, None).await
-                                        && let Some(data) = resp.data
-                                    {
-                                        dd.insert(dep_key, data);
-                                    }
-                                }
-                            }
-                        }
-                        dd
+                        fetch_daemon_deps(key, &vf, session_opt.as_mut()).await
                     } else {
                         HashMap::new()
                     };
@@ -328,29 +326,14 @@ pub fn run_get(
             if is_client_side_key(key, &vf) {
                 // Fetch daemon deps if expression needs them.
                 let daemon_data = if key_needs_daemon(key, &vf) {
-                    let dot = key.find('.').unwrap_or(key.len());
-                    let provider = &key[..dot];
-                    let field = &key[dot + 1..];
-                    let expr = vf.expression(provider, field).unwrap_or("");
-                    let refs = discover_expression_refs(expr);
-                    let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
-                    if let Some(ref mut session) = session_opt {
-                        for (p, f) in refs {
-                            if p != "env" && !vf.is_virtual(&p, &f) {
-                                let dep_key = format!("{p}.{f}");
-                                if let Ok(resp) = session.get(&dep_key, None).await
-                                    && let Some(data) = resp.data
-                                {
-                                    dd.insert(dep_key, data);
-                                }
-                            }
-                        }
-                    }
-                    dd
+                    fetch_daemon_deps(key, &vf, session_opt.as_mut()).await
                 } else {
                     HashMap::new()
                 };
                 // Evaluate and synthesize a Response-like value for the aggregation path.
+                // Multi-key --format json wraps every key (virtual and daemon) uniformly in the
+                // response shape, intentionally matching existing daemon multi-key JSON output.
+                // Single-key client-side JSON emits the bare value (see single-key path above).
                 match evaluate_client_side(key, &OutputFormat::Json, &daemon_data) {
                     Ok(json_str) => {
                         let data: serde_json::Value =
