@@ -23,12 +23,10 @@ fn state_source_metadata() -> SourceMetadata {
     SourceMetadata {
         name: "state".into(),
         fields: vec![FieldSchema {
-            name: "workspace".into(),
+            name: "path_workspace".into(),
             field_type: FieldType::String,
         }],
         scope: SourceScope::PathScoped,
-        // Narrowed from ".terraform" dir to ".terraform/environment" file to prevent
-        // init/lock churn from causing spurious invalidations.
         invalidation: InvalidationStrategy::Watch {
             patterns: vec![".terraform/environment".into()],
             abs_paths: vec![],
@@ -61,26 +59,13 @@ impl Source for TerraformState {
             return SourceResult::new();
         }
 
-        // $TF_WORKSPACE has highest precedence. Note: this reads the daemon's env,
-        // not the querying shell's — for per-shell correctness see S5 (selector protocol).
-        // For headless/CI use and system-set vars this is already correct.
-        let workspace = if let Ok(ws) = std::env::var("TF_WORKSPACE") {
-            let ws = ws.trim().to_string();
-            if !ws.is_empty() {
-                ws
-            } else {
-                read_workspace_file(&tf_dir)
-            }
-        } else {
-            read_workspace_file(&tf_dir)
-        };
-
-        // LIMITATION: remote/cloud backends without a local .terraform/environment file
-        // return "default" here. Determining the actual remote workspace would require
-        // a network call (out of scope for S6).
+        // Read from .terraform/environment file only. $TF_WORKSPACE is a
+        // per-shell override resolved client-side in the virtual cascade:
+        //   workspace = "env.TF_WORKSPACE or terraform.path_workspace"
+        let workspace = read_workspace_file(&tf_dir);
 
         let mut result = SourceResult::new();
-        result.insert("workspace", Value::String(workspace));
+        result.insert("path_workspace", Value::String(workspace));
         result
     }
 

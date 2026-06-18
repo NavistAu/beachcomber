@@ -19,7 +19,7 @@ fn terraform_metadata() {
     assert_eq!(src.name, "state");
     assert_eq!(src.scope, SourceScope::PathScoped);
     let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"workspace"));
+    assert!(fields.contains(&"path_workspace"));
 }
 
 #[test]
