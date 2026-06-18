@@ -134,13 +134,11 @@ fn check_file_recent(path: &Path) -> bool {
 pub fn sudo_active_with_ts_path(path: &Path) -> SourceResult {
     let mut result = SourceResult::new();
     if path.is_dir() {
-        // macOS-style: directory of timestamp files
-        match std::fs::read_dir(path) {
-            Ok(entries) => {
-                let fresh = entries.flatten().any(|e| check_file_recent(&e.path()));
-                result.insert("active", Value::Bool(fresh));
-            }
-            Err(_) => {} // unreadable → omit
+        // macOS-style: directory of timestamp files.
+        // Unreadable dir → leave `active` unset (omit), per the tri-state contract.
+        if let Ok(entries) = std::fs::read_dir(path) {
+            let fresh = entries.flatten().any(|e| check_file_recent(&e.path()));
+            result.insert("active", Value::Bool(fresh));
         }
     } else if path.is_file() {
         result.insert("active", Value::Bool(check_file_recent(path)));
