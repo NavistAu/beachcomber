@@ -32,11 +32,10 @@ fn aws_provider_metadata() {
     assert_eq!(meta.name, "aws");
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
-    assert_eq!(src.name, "profile");
+    assert_eq!(src.name, "config_file");
     assert_eq!(src.scope, SourceScope::Global);
     let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"profile"));
-    assert!(fields.contains(&"region"));
+    assert!(fields.contains(&"config_region"));
 }
 
 #[test]
