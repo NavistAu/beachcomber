@@ -925,3 +925,50 @@ not_a_valid_key = "oops"
         errors
     );
 }
+
+#[test]
+fn config_parses_virtual_field_expressions() {
+    let toml = r#"
+[providers.terraform]
+virtual.workspace = "env.MY_TF_WORKSPACE or terraform.path_workspace"
+
+[providers.python]
+virtual.version = "env.PYENV_VERSION or python.venv_version"
+"#;
+    let config: Config = toml::from_str(toml).expect("valid toml");
+    let fields = config.virtual_fields();
+    assert_eq!(
+        fields
+            .get(&("terraform".to_string(), "workspace".to_string()))
+            .map(|s| s.as_str()),
+        Some("env.MY_TF_WORKSPACE or terraform.path_workspace"),
+    );
+    assert_eq!(
+        fields
+            .get(&("python".to_string(), "version".to_string()))
+            .map(|s| s.as_str()),
+        Some("env.PYENV_VERSION or python.venv_version"),
+    );
+}
+
+#[test]
+fn config_source_knobs_not_confused_with_virtual_fields() {
+    // Source knobs (poll_interval etc.) are siblings of virtual, not inside it.
+    // They must NOT appear in virtual_fields() output.
+    let toml = r#"
+[providers.terraform]
+poll_interval = 30
+virtual.workspace = "env.TF_WORKSPACE or terraform.path_workspace"
+"#;
+    let config: Config = toml::from_str(toml).expect("valid toml");
+    let fields = config.virtual_fields();
+    assert!(
+        fields.contains_key(&("terraform".to_string(), "workspace".to_string())),
+        "virtual.workspace must be present"
+    );
+    // poll_interval is a sibling of the virtual sub-table, not inside it — not returned.
+    assert!(
+        !fields.contains_key(&("terraform".to_string(), "poll_interval".to_string())),
+        "poll_interval must not appear in virtual_fields"
+    );
+}

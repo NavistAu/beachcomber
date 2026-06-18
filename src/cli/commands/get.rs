@@ -104,12 +104,12 @@ fn evaluate_client_side(
     key: &str,
     format: &OutputFormat,
     daemon_data: &HashMap<String, serde_json::Value>,
+    vf: &VirtualFields,
 ) -> Result<String, String> {
     let dot = key.find('.').ok_or_else(|| format!("invalid key: {key}"))?;
     let provider = &key[..dot];
     let field = &key[dot + 1..];
 
-    let vf = VirtualFields::defaults_only(); // TODO Task 6: pass config overrides
     let env_vars: HashMap<String, String> = std::env::vars().collect();
 
     if provider == "env" {
@@ -170,8 +170,8 @@ pub fn run_get(
 ) -> ExitCode {
     let socket_path = config.resolve_socket_path();
 
-    // Build the virtual field registry once. TODO Task 6: load from config.
-    let vf = VirtualFields::defaults_only();
+    // Build the virtual field registry once, config overrides win over built-in defaults.
+    let vf = VirtualFields::with_config_overrides(config.virtual_fields());
 
     // Skip ensure_daemon if all keys are client-side and need no daemon deps.
     let any_needs_daemon = keys.iter().any(|k| key_needs_daemon(k, &vf));
@@ -207,7 +207,7 @@ pub fn run_get(
                 } else {
                     HashMap::new()
                 };
-                match evaluate_client_side(key, &format, &daemon_data) {
+                match evaluate_client_side(key, &format, &daemon_data, &vf) {
                     Ok(text) => {
                         print!("{text}");
                         return ExitCode::SUCCESS;
@@ -277,7 +277,7 @@ pub fn run_get(
                     } else {
                         HashMap::new()
                     };
-                    match evaluate_client_side(key, &format, &daemon_data) {
+                    match evaluate_client_side(key, &format, &daemon_data, &vf) {
                         Ok(text) => {
                             if !text.is_empty() {
                                 println!("{text}");
@@ -334,7 +334,7 @@ pub fn run_get(
                 // Multi-key --format json wraps every key (virtual and daemon) uniformly in the
                 // response shape, intentionally matching existing daemon multi-key JSON output.
                 // Single-key client-side JSON emits the bare value (see single-key path above).
-                match evaluate_client_side(key, &OutputFormat::Json, &daemon_data) {
+                match evaluate_client_side(key, &OutputFormat::Json, &daemon_data, &vf) {
                     Ok(json_str) => {
                         let data: serde_json::Value =
                             serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null);
