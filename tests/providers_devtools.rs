@@ -143,7 +143,10 @@ fn python_detects_venv() {
     let sources = PythonProvider.sources();
     let result = sources[0].execute(Some(tmp.path().to_str().unwrap()));
     assert_eq!(result.fields.get("venv").unwrap().as_text(), "true");
-    assert_eq!(result.fields.get("local_venv_name").unwrap().as_text(), ".venv");
+    assert_eq!(
+        result.fields.get("local_venv_name").unwrap().as_text(),
+        ".venv"
+    );
 }
 
 #[test]

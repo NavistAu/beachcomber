@@ -5,7 +5,10 @@ use tempfile::TempDir;
 fn make_gcloud_config(dir: &TempDir, active: &str, project: &str, account: &str) {
     // Create: <dir>/active_config  +  <dir>/configurations/config_<active>/properties
     std::fs::write(dir.path().join("active_config"), active).unwrap();
-    let conf_dir = dir.path().join("configurations").join(format!("config_{active}"));
+    let conf_dir = dir
+        .path()
+        .join("configurations")
+        .join(format!("config_{active}"));
     std::fs::create_dir_all(&conf_dir).unwrap();
     let props = format!("[core]\nproject = {project}\naccount = {account}\n");
     std::fs::write(conf_dir.join("properties"), props).unwrap();

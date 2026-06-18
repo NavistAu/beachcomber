@@ -22,7 +22,9 @@ fn aws_config_region_reads_default_profile() {
         || {
             let sources = AwsProvider.sources();
             // Find the config_file source (not profile).
-            let cfg_src = sources.iter().find(|s| s.metadata().name == "config_file")
+            let cfg_src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_file")
                 .expect("config_file source must exist");
             cfg_src.execute(None)
         },
@@ -44,13 +46,20 @@ fn aws_config_region_missing_default_profile_returns_empty() {
         Some(dir.path().join("config").to_str().unwrap()),
         || {
             let sources = AwsProvider.sources();
-            let cfg_src = sources.iter().find(|s| s.metadata().name == "config_file").unwrap();
+            let cfg_src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_file")
+                .unwrap();
             cfg_src.execute(None)
         },
     );
     // No [default] section → empty result or absent field.
     assert!(
-        result.fields.get("config_region").map(|v| v.as_text() == "").unwrap_or(true),
+        result
+            .fields
+            .get("config_region")
+            .map(|v| v.as_text() == "")
+            .unwrap_or(true),
         "no default profile → config_region must be empty or absent"
     );
 }
@@ -59,7 +68,7 @@ fn aws_config_region_missing_default_profile_returns_empty() {
 fn aws_profile_source_no_longer_reads_env() {
     // Confirms the profile source doesn't read AWS_PROFILE / AWS_VAULT / AWS_REGION.
     // Those are now client-side virtual fields (expression form).
-    let result = temp_env::with_vars(
+    temp_env::with_vars(
         [
             ("AWS_PROFILE", Some("test-profile")),
             ("AWS_REGION", Some("us-west-2")),
@@ -85,7 +94,6 @@ fn aws_profile_source_no_longer_reads_env() {
             }
         },
     );
-    let _ = result;
 }
 
 #[test]
@@ -93,7 +101,9 @@ fn aws_source_field_named_config_region_not_region() {
     // Confirms the daemon intrinsic is 'config_region', not 'region'.
     // 'region' is the virtual cascade: "env.AWS_REGION or ... or aws.config_region"
     let meta = AwsProvider.metadata();
-    let all_fields: Vec<&str> = meta.sources.iter()
+    let all_fields: Vec<&str> = meta
+        .sources
+        .iter()
         .flat_map(|s| s.fields.iter().map(|f| f.name.as_str()))
         .collect();
     assert!(

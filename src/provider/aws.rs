@@ -45,10 +45,10 @@ fn config_file_source_metadata() -> SourceMetadata {
 /// Returns absolute paths to watch for `~/.aws/config` invalidation.
 /// Expanded at metadata time so the scheduler receives canonical paths.
 fn aws_config_abs_paths() -> Vec<String> {
-    if let Ok(p) = std::env::var("AWS_CONFIG_FILE") {
-        if !p.is_empty() {
-            return vec![p];
-        }
+    if let Ok(p) = std::env::var("AWS_CONFIG_FILE")
+        && !p.is_empty()
+    {
+        return vec![p];
     }
     if let Ok(home) = std::env::var("HOME") {
         return vec![format!("{home}/.aws/config")];
@@ -79,10 +79,10 @@ impl Source for AwsConfigFile {
 /// Resolve the path to the AWS config file.
 /// $AWS_CONFIG_FILE overrides (standard AWS SDK convention; also used in tests).
 fn resolve_aws_config_path() -> PathBuf {
-    if let Ok(p) = std::env::var("AWS_CONFIG_FILE") {
-        if !p.is_empty() {
-            return PathBuf::from(p);
-        }
+    if let Ok(p) = std::env::var("AWS_CONFIG_FILE")
+        && !p.is_empty()
+    {
+        return PathBuf::from(p);
     }
     if let Ok(home) = std::env::var("HOME") {
         return PathBuf::from(home).join(".aws").join("config");
@@ -103,14 +103,13 @@ fn parse_default_profile_region(path: &Path) -> Option<String> {
             in_default = line == "[default]";
             continue;
         }
-        if in_default {
-            if let Some((key, val)) = line.split_once('=') {
-                if key.trim() == "region" {
-                    let v = val.trim().to_string();
-                    if !v.is_empty() {
-                        return Some(v);
-                    }
-                }
+        if in_default
+            && let Some((key, val)) = line.split_once('=')
+            && key.trim() == "region"
+        {
+            let v = val.trim().to_string();
+            if !v.is_empty() {
+                return Some(v);
             }
         }
     }
