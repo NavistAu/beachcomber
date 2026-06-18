@@ -128,7 +128,11 @@ enum Commands {
     },
     /// Detect installed tools and show integration snippets
     #[command(visible_alias = "i")]
-    Init,
+    Init {
+        /// Append built-in virtual field defaults to ~/.config/beachcomber/config.toml
+        #[arg(long)]
+        write_config: bool,
+    },
     /// Run health checks
     #[command(visible_alias = "c")]
     Check {
@@ -254,7 +258,7 @@ fn main() -> ExitCode {
         Commands::Eval { template, path } => {
             beachcomber::cli::commands::eval::run_eval(&config, &template, path.as_deref())
         }
-        Commands::Init => run_init(),
+        Commands::Init { write_config } => run_init(write_config),
         Commands::Check { check_cmd } => run_check(&config, check_cmd),
         Commands::Kill { timeout, socket } => {
             let socket_path = socket.unwrap_or_else(|| config.resolve_socket_path());

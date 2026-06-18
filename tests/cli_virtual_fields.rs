@@ -286,3 +286,19 @@ fn built_in_defaults_present_without_config() {
         "op.signed_in must be a built-in virtual field"
     );
 }
+
+// ── to_config_toml ────────────────────────────────────────────────────────────
+
+#[test]
+fn materialize_defaults_produces_valid_toml() {
+    // Confirms that the built-in defaults can be serialized to a valid TOML snippet.
+    let vf = VirtualFields::defaults_only();
+    let toml_str = vf.to_config_toml();
+    // Must be parseable TOML.
+    toml::from_str::<toml::Value>(&toml_str).expect("materialized defaults must be valid TOML");
+    // Must contain at least the terraform.workspace entry.
+    assert!(
+        toml_str.contains("workspace"),
+        "materialized TOML must contain 'workspace'; got:\n{toml_str}"
+    );
+}

@@ -6,7 +6,33 @@ struct DetectedTool {
     snippet: &'static str,
 }
 
-pub fn run_init() -> ExitCode {
+pub fn run_init(write_config: bool) -> ExitCode {
+    if write_config {
+        use crate::cli::virtual_fields::VirtualFields;
+        let vf = VirtualFields::defaults_only();
+        let toml = vf.to_config_toml();
+        let home = std::env::var("HOME").unwrap_or_default();
+        let xdg_config =
+            std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{home}/.config"));
+        let config_dir = format!("{xdg_config}/beachcomber");
+        let config_path = format!("{config_dir}/config.toml");
+
+        std::fs::create_dir_all(&config_dir).unwrap_or_else(|e| {
+            eprintln!("Warning: could not create config dir {config_dir}: {e}");
+        });
+
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&config_path)
+            .expect("could not open config file");
+        file.write_all(toml.as_bytes())
+            .expect("could not write config");
+        println!("Wrote virtual field defaults to {config_path}");
+        return ExitCode::SUCCESS;
+    }
+
     let home = std::env::var("HOME").unwrap_or_default();
     let xdg_config = std::env::var("XDG_CONFIG_HOME").unwrap_or(format!("{home}/.config"));
 
