@@ -103,45 +103,9 @@ fn gcloud_reads_active_config_indirection() {
     );
 }
 
-#[test]
-fn gcloud_cloudsdk_active_config_name_overrides_active_config_file() {
-    let dir = tempfile::tempdir().unwrap();
-    // active_config file says "default" ...
-    std::fs::write(dir.path().join("active_config"), "default\n").unwrap();
-    // ... but env var says "prod", so we expect prod's properties.
-    for name in &["default", "prod"] {
-        let cfg_dir = dir
-            .path()
-            .join("configurations")
-            .join(format!("config_{}", name));
-        std::fs::create_dir_all(&cfg_dir).unwrap();
-        std::fs::write(
-            cfg_dir.join("properties"),
-            format!(
-                "[core]\nproject = {}-project\naccount = {}-user@example.com\n",
-                name, name
-            ),
-        )
-        .unwrap();
-    }
-
-    let result = temp_env::with_vars(
-        [
-            ("CLOUDSDK_CONFIG", Some(dir.path().to_str().unwrap())),
-            ("CLOUDSDK_ACTIVE_CONFIG_NAME", Some("prod")),
-        ],
-        || {
-            let sources = GcloudProvider.sources();
-            sources[0].execute(None)
-        },
-    );
-
-    assert_eq!(
-        result.fields.get("project").unwrap().as_text(),
-        "prod-project",
-        "$CLOUDSDK_ACTIVE_CONFIG_NAME must override active_config file"
-    );
-}
+// Note: gcloud_cloudsdk_active_config_name_overrides_active_config_file was removed in P1.
+// $CLOUDSDK_ACTIVE_CONFIG_NAME is now a client-side concern (P2 live.* path).
+// The daemon follows only active_config file. See tests/provider_gcloud.rs.
 
 #[test]
 fn gcloud_missing_active_config_returns_empty() {

@@ -56,15 +56,10 @@ impl Source for GcloudConfig {
             return SourceResult::new();
         };
 
-        // Resolve the active configuration name:
-        // $CLOUDSDK_ACTIVE_CONFIG_NAME takes precedence, then active_config file.
-        let active_name = if let Ok(name) = std::env::var("CLOUDSDK_ACTIVE_CONFIG_NAME") {
-            let name = name.trim().to_string();
-            if name.is_empty() {
-                return SourceResult::new();
-            }
-            name
-        } else {
+        // Resolve the active configuration name from the active_config file only.
+        // $CLOUDSDK_ACTIVE_CONFIG_NAME is a per-shell override resolved client-side
+        // via the P2 live.* path (later phase). The daemon serves the default config.
+        let active_name = {
             let active_path = config_dir.join("active_config");
             let Ok(content) = std::fs::read_to_string(&active_path) else {
                 return SourceResult::new();
