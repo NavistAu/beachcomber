@@ -15,10 +15,15 @@ use std::process::ExitCode;
 /// absent is simply omitted, so the evaluator treats it as falsy and the
 /// cascade falls through to the next term. This is deliberate — a broken
 /// daemon dep must not abort an `env.X or provider.field` cascade.
+///
+/// Bug #6 fix: `force` and `wait` are threaded through so dep fetches honor
+/// the same flags as the top-level `comb get --force`/`--wait` invocation.
 async fn fetch_daemon_deps(
     key: &str,
     vf: &VirtualFields,
     session: Option<&mut crate::client::ClientSession>,
+    force: bool,
+    wait: bool,
 ) -> HashMap<String, serde_json::Value> {
     let Some((provider, field)) = key.split_once('.') else {
         return HashMap::new();
@@ -30,7 +35,7 @@ async fn fetch_daemon_deps(
         for (p, f) in refs {
             if p != "env" && !vf.is_virtual(&p, &f) {
                 let dep_key = format!("{p}.{f}");
-                if let Ok(resp) = session.get(&dep_key, None).await
+                if let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait).await
                     && let Some(data) = resp.data
                 {
                     dd.insert(dep_key, data);
@@ -54,22 +59,35 @@ fn is_client_side_key(key: &str, vf: &VirtualFields) -> bool {
 
 /// Returns true if the key requires the daemon to be running.
 ///
-/// env.* keys never need the daemon. Virtual fields only need the daemon
-/// if their expression references non-env, non-virtual fields.
-/// Plain daemon fields always need the daemon.
-fn key_needs_daemon(key: &str, vf: &VirtualFields) -> bool {
+/// env.* keys never need the daemon (canon invariant 15).
+/// Dotless keys (whole-provider queries like `comb get hostname`) always need
+/// the daemon — they are passed through to the daemon as-is.
+/// Virtual fields need the daemon only if their expression references daemon
+/// (non-env, non-virtual) fields; pure-env virtuals never need the daemon.
+/// Plain `provider.field` keys that are not virtual always need the daemon.
+///
+/// Bug #4 fix: dotless keys were returning false (no dot → early return false).
+/// They must return true: a bare provider name is a whole-provider daemon query.
+pub fn key_needs_daemon(key: &str, vf: &VirtualFields) -> bool {
     let Some(dot) = key.find('.') else {
-        return false;
+        // Dotless key: whole-provider daemon query (e.g. `comb get hostname`).
+        // #4: must return true so ensure_daemon is called.
+        return true;
     };
     let provider = &key[..dot];
     let field = &key[dot + 1..];
     if provider == "env" {
+        // Canon invariant 15: env.* keys never contact the daemon.
         return false;
     }
     if vf.is_virtual(provider, field) {
         let expr = vf.expression(provider, field).unwrap_or("");
         let refs = discover_expression_refs(expr);
         // Needs daemon if any ref is a non-env, non-virtual field.
+        // Note: for single-key virtual with daemon refs, run_get does an env-first
+        // pass (#7) and only calls ensure_daemon when the env terms don't win.
+        // key_needs_daemon is used for: (a) multi-key any_needs_daemon check,
+        // (b) routing within multi-key loops, and (c) single-key fetch_daemon_deps guard.
         refs.iter().any(|(p, f)| p != "env" && !vf.is_virtual(p, f))
     } else {
         true // plain daemon field
@@ -173,11 +191,27 @@ pub fn run_get(
     // Build the virtual field registry once, config overrides win over built-in defaults.
     let vf = VirtualFields::with_config_overrides(config.virtual_fields());
 
-    // Skip ensure_daemon if all keys are client-side and need no daemon deps.
-    let any_needs_daemon = keys.iter().any(|k| key_needs_daemon(k, &vf));
-    if any_needs_daemon && let Err(e) = crate::daemon::ensure_daemon(&socket_path) {
-        eprintln!("Failed to start daemon: {e}");
-        return ExitCode::from(2);
+    // Bug #7 fix: for a single virtual key whose expression has daemon refs, we
+    // use an env-first lazy strategy — try evaluation with empty daemon_data first.
+    // If the env terms win (non-empty result), we return without ever contacting
+    // the daemon. Only if the env-only result is empty do we then ensure_daemon,
+    // fetch deps, and re-evaluate. This allows e.g. `TF_WORKSPACE=dev comb get
+    // terraform.workspace` to work even when the daemon is not running.
+    //
+    // For all other cases (multi-key, plain daemon key, dotless key) we use the
+    // original upfront any_needs_daemon → ensure_daemon logic.
+    let is_single_virtual_with_daemon_refs = keys.len() == 1 && {
+        let k = &keys[0];
+        is_client_side_key(k, &vf) && key_needs_daemon(k, &vf)
+    };
+
+    if !is_single_virtual_with_daemon_refs {
+        // Original path: ensure_daemon upfront if any key needs it.
+        let any_needs_daemon = keys.iter().any(|k| key_needs_daemon(k, &vf));
+        if any_needs_daemon && let Err(e) = crate::daemon::ensure_daemon(&socket_path) {
+            eprintln!("Failed to start daemon: {e}");
+            return ExitCode::from(2);
+        }
     }
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
@@ -186,9 +220,43 @@ pub fn run_get(
         if keys.len() == 1 {
             let key = &keys[0];
             if is_client_side_key(key, &vf) {
-                // Fetch any daemon-backed refs the expression needs.
-                let daemon_data = if key_needs_daemon(key, &vf) {
-                    // Expression has daemon refs — fetch them via the daemon.
+                if key_needs_daemon(key, &vf) {
+                    // Bug #7: env-first lazy evaluation.
+                    // Try with empty daemon_data: only env vars + virtual refs are consulted.
+                    let empty_daemon_data = HashMap::new();
+                    let env_only_result =
+                        evaluate_client_side(key, &format, &empty_daemon_data, &vf);
+                    let env_only_is_nonempty = match &env_only_result {
+                        Ok(text) => {
+                            // A non-empty string or non-null value means the env term won.
+                            // For Text/Sh this is the formatted string; for Json it's the
+                            // stringified value. An empty string or "null" means fell through.
+                            !text.is_empty() && text != "\"\"" && text != "null" && text != "''"
+                        }
+                        Err(_) => false,
+                    };
+
+                    if env_only_is_nonempty {
+                        // Env term won — output it and skip the daemon entirely.
+                        match env_only_result {
+                            Ok(text) => {
+                                print!("{text}");
+                                return ExitCode::SUCCESS;
+                            }
+                            Err(e) => {
+                                eprintln!("Error: {e}");
+                                return ExitCode::from(2);
+                            }
+                        }
+                    }
+
+                    // Env term was empty — now we need the daemon. Ensure it's running.
+                    if let Err(e) = crate::daemon::ensure_daemon(&socket_path) {
+                        eprintln!("Failed to start daemon: {e}");
+                        return ExitCode::from(2);
+                    }
+
+                    // Fetch daemon deps (honoring force/wait — bug #6 fix).
                     let client = crate::client::Client::new(socket_path.clone());
                     let mut session = match client.connect().await {
                         Ok(s) => s,
@@ -203,18 +271,29 @@ pub fn run_get(
                         eprintln!("Error: {e}");
                         return ExitCode::from(2);
                     }
-                    fetch_daemon_deps(key, &vf, Some(&mut session)).await
-                } else {
-                    HashMap::new()
-                };
-                match evaluate_client_side(key, &format, &daemon_data, &vf) {
-                    Ok(text) => {
-                        print!("{text}");
-                        return ExitCode::SUCCESS;
+                    let daemon_data =
+                        fetch_daemon_deps(key, &vf, Some(&mut session), force, wait).await;
+                    match evaluate_client_side(key, &format, &daemon_data, &vf) {
+                        Ok(text) => {
+                            print!("{text}");
+                            return ExitCode::SUCCESS;
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            return ExitCode::from(2);
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        return ExitCode::from(2);
+                } else {
+                    // Pure env/virtual with no daemon refs — evaluate directly.
+                    match evaluate_client_side(key, &format, &HashMap::new(), &vf) {
+                        Ok(text) => {
+                            print!("{text}");
+                            return ExitCode::SUCCESS;
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            return ExitCode::from(2);
+                        }
                     }
                 }
             }
@@ -244,8 +323,11 @@ pub fn run_get(
         // Request::Get per key.  Results are aggregated before rendering so that formats like
         // JSON / CSV / TSV can produce a single coherent output document.
         // Only connect to the daemon when at least one key actually requires it.
+        // (any_needs_daemon was already satisfied by ensure_daemon above for the non-single-
+        // virtual path; we re-derive it here for the session-open decision.)
+        let any_needs_daemon_for_session = keys.iter().any(|k| key_needs_daemon(k, &vf));
         let client = crate::client::Client::new(socket_path.clone());
-        let mut session_opt = if any_needs_daemon {
+        let mut session_opt = if any_needs_daemon_for_session {
             match client.connect().await {
                 Ok(s) => Some(s),
                 Err(e) => {
@@ -271,9 +353,9 @@ pub fn run_get(
             let mut any_error = false;
             for key in keys {
                 if is_client_side_key(key, &vf) {
-                    // Fetch daemon deps for this virtual key if needed.
+                    // Fetch daemon deps for this virtual key if needed (bug #6: pass force/wait).
                     let daemon_data = if key_needs_daemon(key, &vf) {
-                        fetch_daemon_deps(key, &vf, session_opt.as_mut()).await
+                        fetch_daemon_deps(key, &vf, session_opt.as_mut(), force, wait).await
                     } else {
                         HashMap::new()
                     };
@@ -324,9 +406,9 @@ pub fn run_get(
         let mut any_error = false;
         for key in keys {
             if is_client_side_key(key, &vf) {
-                // Fetch daemon deps if expression needs them.
+                // Fetch daemon deps if expression needs them (bug #6: pass force/wait).
                 let daemon_data = if key_needs_daemon(key, &vf) {
-                    fetch_daemon_deps(key, &vf, session_opt.as_mut()).await
+                    fetch_daemon_deps(key, &vf, session_opt.as_mut(), force, wait).await
                 } else {
                     HashMap::new()
                 };
