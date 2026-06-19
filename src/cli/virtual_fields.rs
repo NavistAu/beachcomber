@@ -65,7 +65,7 @@ const BUILTIN_DEFAULTS: &[(&str, &str, &str)] = &[
     (
         "gcloud",
         "project",
-        "env.CLOUDSDK_CORE_PROJECT or gcloud.project",
+        "env.CLOUDSDK_CORE_PROJECT or gcloud.config_project",
     ),
 ];
 

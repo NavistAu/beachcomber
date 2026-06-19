@@ -336,6 +336,56 @@ fn init_write_config_is_idempotent_and_valid() {
         .expect("config.toml must remain valid TOML after second run (idempotency regression)");
 }
 
+// ── gcloud.project cascade (self-cycle regression) ───────────────────────────
+
+#[test]
+fn gcloud_project_cascade_no_self_cycle() {
+    // Regression: gcloud.project virtual field must NOT cycle into itself.
+    // Before fix: expression was "env.CLOUDSDK_CORE_PROJECT or gcloud.project"
+    // where gcloud.project IS this virtual field → cycle detected → error.
+    // After fix: expression falls back to gcloud.config_project (daemon intrinsic).
+    let vf = VirtualFields::defaults_only();
+
+    // Case 1: env var set → must return env value, not a cycle error.
+    {
+        let env_vars: HashMap<String, String> =
+            [("CLOUDSDK_CORE_PROJECT".to_string(), "myproj".to_string())]
+                .into_iter()
+                .collect();
+        let ctx = EvalContext {
+            env_vars: &env_vars,
+            daemon_data: &HashMap::new(),
+        };
+        let result = vf.evaluate("gcloud", "project", &ctx, &mut Default::default());
+        assert!(
+            result.is_ok(),
+            "env var set: expected Ok, got cycle error: {result:?}"
+        );
+        assert_eq!(result.unwrap(), json!("myproj"), "env var must win");
+    }
+
+    // Case 2: env unset + daemon has gcloud.config_project → must return daemon value.
+    {
+        let env_vars: HashMap<String, String> = HashMap::new();
+        let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
+        daemon_data.insert("gcloud.config_project".to_string(), json!("fromfile"));
+        let ctx = EvalContext {
+            env_vars: &env_vars,
+            daemon_data: &daemon_data,
+        };
+        let result = vf.evaluate("gcloud", "project", &ctx, &mut Default::default());
+        assert!(
+            result.is_ok(),
+            "daemon fallback: expected Ok, got cycle error: {result:?}"
+        );
+        assert_eq!(
+            result.unwrap(),
+            json!("fromfile"),
+            "daemon value must be used when env unset"
+        );
+    }
+}
+
 // ── to_config_toml ────────────────────────────────────────────────────────────
 
 #[test]

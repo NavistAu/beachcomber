@@ -55,7 +55,7 @@ fn gcloud_provider_metadata() {
     assert_eq!(src.name, "config");
     assert_eq!(src.scope, SourceScope::Global);
     let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"project"));
+    assert!(fields.contains(&"config_project"));
     assert!(fields.contains(&"account"));
 }
 
@@ -93,9 +93,9 @@ fn gcloud_reads_active_config_indirection() {
     );
 
     assert_eq!(
-        result.fields.get("project").unwrap().as_text(),
+        result.fields.get("config_project").unwrap().as_text(),
         "my-project",
-        "project should be read from configurations/config_staging/properties"
+        "config_project should be read from configurations/config_staging/properties"
     );
     assert_eq!(
         result.fields.get("account").unwrap().as_text(),
@@ -149,7 +149,7 @@ fn gcloud_project_strip_not_greedy() {
     );
 
     assert_eq!(
-        result.fields.get("project").unwrap().as_text(),
+        result.fields.get("config_project").unwrap().as_text(),
         "correct-project",
         "strip_prefix must not match 'projectid'"
     );

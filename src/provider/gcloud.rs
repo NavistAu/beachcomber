@@ -23,7 +23,7 @@ fn config_source_metadata() -> SourceMetadata {
         name: "config".into(),
         fields: vec![
             FieldSchema {
-                name: "project".into(),
+                name: "config_project".into(),
                 field_type: FieldType::String,
             },
             FieldSchema {
@@ -94,7 +94,7 @@ impl Source for GcloudConfig {
                 let key = key.trim();
                 let val = val.trim().to_string();
                 match key {
-                    "project" => project = val,
+                    "project" => project = val, // TOML key stays "project"
                     "account" => account = val,
                     _ => {}
                 }
@@ -106,7 +106,7 @@ impl Source for GcloudConfig {
         }
 
         let mut result = SourceResult::new();
-        result.insert("project", Value::String(project));
+        result.insert("config_project", Value::String(project));
         result.insert("account", Value::String(account));
         result
     }

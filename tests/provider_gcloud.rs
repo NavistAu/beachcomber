@@ -34,7 +34,7 @@ fn gcloud_env_override_not_honored_in_daemon() {
     );
     // Daemon must use active_config file → "default" → project/account present.
     assert_eq!(
-        result.fields.get("project").map(|v| v.as_text()),
+        result.fields.get("config_project").map(|v| v.as_text()),
         Some("my-project".to_string()),
         "daemon must follow active_config file, not $CLOUDSDK_ACTIVE_CONFIG_NAME"
     );
