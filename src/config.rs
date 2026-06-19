@@ -1079,9 +1079,11 @@ impl Config {
                 None => continue,
             };
             // Skip known provider-level-only sub-table names.
-            if matches!(sub_key.as_str(), "invalidation" | "fields") {
-                // These appear in legacy flat shape; in multi-source they live inside
-                // per-source blocks instead. Skip at provider level.
+            if matches!(sub_key.as_str(), "invalidation" | "fields" | "virtual") {
+                // "invalidation"/"fields" appear in legacy flat shape; in multi-source they
+                // live inside per-source blocks instead. "virtual" holds client-side
+                // virtual-field expressions (canon invariant 16: evaluated CLI-side, never
+                // by the daemon). Skip all three at provider level.
                 continue;
             }
             let block_name = format!("[providers.{prov_name}.{sub_key}]");
@@ -1233,6 +1235,12 @@ impl Config {
             for (sub_key, sub_val) in table {
                 if !sub_val.is_table() {
                     // Scalar key; already handled above or is a provider-level key.
+                    continue;
+                }
+
+                // Skip the `virtual` sub-table — it holds client-side virtual-field
+                // expressions (canon invariant 16: evaluated CLI-side, never by the daemon).
+                if sub_key == "virtual" {
                     continue;
                 }
 

@@ -972,3 +972,63 @@ virtual.workspace = "env.TF_WORKSPACE or terraform.path_workspace"
         "poll_interval must not appear in virtual_fields"
     );
 }
+
+#[test]
+fn validate_providers_ignores_virtual_subtable() {
+    // A built-in provider that has a `virtual` sub-table must NOT produce validation
+    // errors. The daemon skips the `virtual` sub-table — it is client-side only.
+    //
+    // Note: TOML requires [providers.git] before [providers.git.diff] to avoid a
+    // "cannot redefine table" error. virtual.branch_display is set as a dotted key
+    // inside [providers.git] before the diff sub-table header.
+    let toml_str = r#"
+[providers.terraform]
+virtual.workspace = "env.TF_WORKSPACE or terraform.path_workspace"
+
+[providers.aws]
+virtual.region = "env.AWS_REGION or env.AWS_DEFAULT_REGION or aws.config_region"
+
+[providers.git]
+virtual.branch_display = "env.GIT_BRANCH or git.branch"
+
+[providers.git.diff]
+type = "poll"
+poll_interval = "30s"
+poll_count = 12
+"#;
+    let config: Config = toml::from_str(toml_str).expect("valid toml");
+    let known_providers = vec![
+        "terraform".to_string(),
+        "aws".to_string(),
+        "git".to_string(),
+    ];
+    let mut known_sources = std::collections::HashMap::new();
+    known_sources.insert(
+        "git".to_string(),
+        vec!["diff".to_string(), "refs".to_string(), "status".to_string()],
+    );
+
+    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
+    assert!(
+        errors.is_empty(),
+        "virtual sub-table must not produce validation errors: {:?}",
+        errors
+    );
+
+    // Also verify virtual_fields() still returns the expressions.
+    let fields = config.virtual_fields();
+    assert_eq!(
+        fields
+            .get(&("terraform".to_string(), "workspace".to_string()))
+            .map(|s| s.as_str()),
+        Some("env.TF_WORKSPACE or terraform.path_workspace"),
+        "virtual_fields() must still return terraform.workspace"
+    );
+    assert_eq!(
+        fields
+            .get(&("git".to_string(), "branch_display".to_string()))
+            .map(|s| s.as_str()),
+        Some("env.GIT_BRANCH or git.branch"),
+        "virtual_fields() must still return git.branch_display"
+    );
+}
