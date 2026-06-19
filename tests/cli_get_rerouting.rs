@@ -183,7 +183,9 @@ fn virtual_cascade_env_wins_skips_unstartable_daemon() {
         .args(["get", "terraform.workspace"]);
     // env wins → daemon never started → succeeds with "dev" despite an
     // unstartable socket path.
-    cmd.assert().success().stdout(predicates::str::contains("dev"));
+    cmd.assert()
+        .success()
+        .stdout(predicates::str::contains("dev"));
 }
 
 // ── Bug #6: fetch_daemon_deps propagates force/wait ──────────────────────────
