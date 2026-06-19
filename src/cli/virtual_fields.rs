@@ -282,11 +282,22 @@ pub fn discover_expression_refs(expr: &str) -> Vec<FieldRef> {
     let mut refs: Vec<FieldRef> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
     for v in compiled.undeclared_variables(true) {
-        if let Some((provider, field)) = v.split_once('.') {
-            let pair = (provider.to_string(), field.to_string());
-            if seen.insert(pair.clone()) {
-                refs.push(pair);
-            }
+        // Daemon keys are `provider.field` (exactly one dot). Any segments
+        // beyond the second are MiniJinja nested attribute access into the
+        // field's value and must NOT be included in the daemon fetch key.
+        // Split on `.` and take only the first two segments.
+        let mut segments = v.splitn(3, '.');
+        let Some(provider) = segments.next() else {
+            continue;
+        };
+        let Some(field) = segments.next() else {
+            // Bare name with no dot — not a provider.field ref; skip.
+            continue;
+        };
+        // `segments.next()` (the remainder) is intentionally dropped.
+        let pair = (provider.to_string(), field.to_string());
+        if seen.insert(pair.clone()) {
+            refs.push(pair);
         }
     }
     refs

@@ -386,6 +386,60 @@ fn gcloud_project_cascade_no_self_cycle() {
     }
 }
 
+// ── nested ref discovery ──────────────────────────────────────────────────────
+
+#[test]
+fn nested_ref_discovery_three_segments_returns_provider_and_second_segment() {
+    // foo.object.key must yield ("foo", "object") — deeper segments are MiniJinja
+    // attribute navigation into the fetched value, not part of the daemon key.
+    use beachcomber::cli::virtual_fields::discover_expression_refs;
+    let refs = discover_expression_refs("foo.object.key");
+    assert_eq!(refs.len(), 1, "one ref expected; got: {refs:?}");
+    assert!(
+        refs.iter().any(|(p, f)| p == "foo" && f == "object"),
+        "expected (\"foo\", \"object\"); got: {refs:?}"
+    );
+}
+
+#[test]
+fn nested_ref_discovery_four_segments_and_two_segment_ref() {
+    // "a.b.c.d or env.X" → [("a", "b"), ("env", "X")]
+    use beachcomber::cli::virtual_fields::discover_expression_refs;
+    let refs = discover_expression_refs("a.b.c.d or env.X");
+    assert_eq!(refs.len(), 2, "two refs expected; got: {refs:?}");
+    assert!(
+        refs.iter().any(|(p, f)| p == "a" && f == "b"),
+        "expected (\"a\", \"b\"); got: {refs:?}"
+    );
+    assert!(
+        refs.iter().any(|(p, f)| p == "env" && f == "X"),
+        "expected (\"env\", \"X\"); got: {refs:?}"
+    );
+}
+
+#[test]
+fn nested_ref_evaluates_via_minijinja_attribute_navigation() {
+    // With daemon_data containing key "git.info" = {"sub": "val"},
+    // expression "git.info.sub" must resolve to json!("val") via MiniJinja
+    // navigating into the fetched object value.
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
+    daemon_data.insert("git.info".to_string(), json!({"sub": "val"}));
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon_data,
+    };
+    let result = vf
+        .evaluate_expression("git.info.sub", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("val"),
+        "nested attribute navigation must resolve to inner value; got: {result}"
+    );
+}
+
 // ── to_config_toml ────────────────────────────────────────────────────────────
 
 #[test]
