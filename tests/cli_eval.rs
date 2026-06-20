@@ -79,34 +79,27 @@ fn expr_tag_skips_string_literal_dotted_pairs() {
 
 // ── #2: eval resolves virtual fields (end-to-end via the real binary) ─────────
 
-/// A virtual field whose env term wins renders the env value. (terraform.workspace
-/// is virtual: `env.TF_WORKSPACE or terraform.path_workspace`.) Before the fix,
-/// eval sent `terraform.workspace` to the daemon — a field that no longer exists
-/// after the P1 rename — and rendered undefined.
+/// eval resolves a client-side virtual field (rather than querying the daemon for
+/// a field that no longer exists after the P1 rename). Uses `aws.profile`
+/// (`env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE`) — a pure-env
+/// virtual cascade with no daemon dependency, so the test needs no daemon and is
+/// deterministic on CI. Before the fix, eval sent `aws.profile` to the daemon
+/// (where it does not exist) and rendered undefined; now it evaluates the
+/// virtual cascade client-side. The bogus socket asserts no daemon is contacted.
 #[test]
-fn eval_resolves_virtual_field_env_wins() {
+fn eval_resolves_virtual_field_from_env() {
     let dir = tempfile::TempDir::new().unwrap();
-    // Parent of the socket exists so ensure_daemon (for the path_workspace dep)
-    // can spawn a daemon; the env term still wins the cascade.
-    std::fs::create_dir_all(dir.path().join("run")).unwrap();
-    let sock = dir.path().join("run").join("sock");
+    let bogus_sock = dir.path().join("nonexistent.sock");
     let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &sock)
+    cmd.env("BEACHCOMBER_SOCKET", &bogus_sock)
         .env("RUST_LOG", "error")
-        .env("TF_WORKSPACE", "dev")
+        .env("AWS_PROFILE", "prod-account")
         .env("HOME", dir.path())
         .env("XDG_CONFIG_HOME", dir.path().join("cfg"))
-        .args(["eval", "{{ terraform.workspace }}"]);
+        .args(["eval", "{{ aws.profile }}"]);
     cmd.assert()
         .success()
-        .stdout(predicates::str::contains("dev"));
-    // Best-effort daemon cleanup.
-    let _ = assert_cmd::Command::cargo_bin("comb")
-        .unwrap()
-        .env("BEACHCOMBER_SOCKET", &sock)
-        .args(["kill", "--socket"])
-        .arg(&sock)
-        .ok();
+        .stdout(predicates::str::contains("prod-account"));
 }
 
 /// A template referencing only env.* never starts/contacts the daemon, even with
