@@ -336,3 +336,43 @@ contexts:
 
     assert_eq!(result.fields.get("context").unwrap().as_text(), "real");
 }
+
+// ── P1 env-cascade: daemon is path-only — must NOT read $KUBECONFIG ───────────
+
+/// The daemon reads only the default `~/.kube/config` and must ignore
+/// `$KUBECONFIG` (a per-shell selector that would be frozen-wrong in the daemon;
+/// honoring it is deferred to the P2 `live.*` path). Exercises the production
+/// path (no override) via the real provider.
+#[test]
+fn daemon_reads_default_kube_config_and_ignores_kubeconfig_env() {
+    use beachcomber::provider::Provider;
+    use beachcomber::provider::kubecontext::KubecontextProvider;
+    use tempfile::TempDir;
+
+    let home = TempDir::new().unwrap();
+    // Default ~/.kube/config → context "home-ctx".
+    let kube_dir = home.path().join(".kube");
+    std::fs::create_dir_all(&kube_dir).unwrap();
+    std::fs::write(kube_dir.join("config"), "current-context: home-ctx\n").unwrap();
+    // A different file that $KUBECONFIG points at → "env-ctx". Must be ignored.
+    let other = home.path().join("other.yaml");
+    std::fs::write(&other, "current-context: env-ctx\n").unwrap();
+
+    let result = temp_env::with_vars(
+        [
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("KUBECONFIG", Some(other.to_str().unwrap())),
+        ],
+        || {
+            let sources = KubecontextProvider.sources();
+            sources[0].execute(None)
+        },
+    );
+
+    assert_eq!(
+        result.fields.get("context").map(|v| v.as_text()),
+        Some("home-ctx".to_string()),
+        "daemon must read ~/.kube/config and ignore $KUBECONFIG; got: {:?}",
+        result.fields.get("context")
+    );
+}

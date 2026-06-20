@@ -45,8 +45,9 @@ fn context_source_metadata() -> SourceMetadata {
 }
 
 struct KubeContext {
-    /// Explicit kubeconfig paths override. When `None`, path resolution falls
-    /// back to `$KUBECONFIG` (colon-separated) → `~/.kube/config`.
+    /// Explicit kubeconfig paths override (test seam). When `None`, the daemon
+    /// reads only the default `~/.kube/config` — it does not consult `$KUBECONFIG`
+    /// (a per-shell selector; deferred to the P2 `live.*` path).
     override_paths: Option<Vec<PathBuf>>,
 }
 
@@ -58,7 +59,7 @@ impl KubeContext {
     }
 
     /// Construct a `KubeContext` that reads from a single explicit path,
-    /// bypassing `$KUBECONFIG` and `~/.kube/config`. Intended for tests.
+    /// bypassing the default `~/.kube/config`. Intended for tests.
     #[cfg(any(test, feature = "test-helpers"))]
     pub fn with_kubeconfig_path(path: PathBuf) -> Self {
         Self {
@@ -111,36 +112,20 @@ impl Source for KubeContext {
     }
 }
 
-/// Return all kubeconfig paths to merge.
-/// $KUBECONFIG may be colon-separated; each entry is tilde-expanded.
-/// Falls back to ~/.kube/config if $KUBECONFIG is unset.
+/// Return the kubeconfig path the daemon reads.
+///
+/// The daemon is path-only (P1 env-cascade design): it reads the default
+/// `~/.kube/config` and deliberately does NOT consult `$KUBECONFIG`.
+/// `$KUBECONFIG` is a per-shell selector — it chooses which cluster/context is
+/// active and which files are merged — so a single daemon-frozen value would be
+/// wrong for every other shell. Honoring a caller's `$KUBECONFIG` (a per-shell
+/// override) is deferred to the P2 `live.*` path. Only `$HOME` is consulted, as
+/// a file-location var (the same way other providers locate their config files).
 fn kubeconfig_paths() -> Vec<PathBuf> {
-    if let Ok(val) = std::env::var("KUBECONFIG") {
-        return val
-            .split(':')
-            .filter(|s| !s.is_empty())
-            .map(expand_tilde)
-            .collect();
-    }
-    let home = match std::env::var("HOME") {
-        Ok(h) => h,
-        Err(_) => return vec![],
+    let Ok(home) = std::env::var("HOME") else {
+        return vec![];
     };
     vec![PathBuf::from(home).join(".kube").join("config")]
-}
-
-/// Expand a leading `~` to $HOME. Does not handle `~user`.
-fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    } else if path == "~"
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return PathBuf::from(home);
-    }
-    PathBuf::from(path)
 }
 
 /// Merge multiple kubeconfig files.
@@ -246,7 +231,7 @@ fn extract_context_namespaces(content: &str) -> Vec<(String, String)> {
 }
 
 /// Construct the kubecontext source reading from an explicit single kubeconfig path.
-/// Intended for seam tests — bypasses `$KUBECONFIG` and `~/.kube/config`.
+/// Intended for seam tests — bypasses the default `~/.kube/config`.
 #[cfg(any(test, feature = "test-helpers"))]
 pub fn kubecontext_source_with_path(path: PathBuf) -> Box<dyn Source> {
     Box::new(KubeContext::with_kubeconfig_path(path))
