@@ -41,8 +41,11 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
         .unwrap()
         .to_string_lossy()
         .to_string();
+    // Force the initial branch to `main` regardless of the host's
+    // `init.defaultBranch` (CI runners default to `master`); the read-always git
+    // provider reports the repo's real branch, which these tests assert == "main".
     std::process::Command::new("git")
-        .args(["init"])
+        .args(["init", "-b", "main"])
         .current_dir(&repo_path)
         .output()
         .unwrap();
