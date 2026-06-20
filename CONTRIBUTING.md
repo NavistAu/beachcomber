@@ -67,8 +67,19 @@ See `docs/provider-development.md` for a step-by-step walkthrough. The short ver
 
 **Performance guidelines:** Read a file instead of spawning a process whenever possible. See the performance tiers in `docs/performance.md`.
 
+## Branch Workflow
+
+beachcomber uses a two-branch model:
+
+- **`develop`** is the default branch and the integration target. Branch your feature/fix work off `develop` and open PRs **back into `develop`**. This is where day-to-day development lands.
+- **`main`** is the release branch. It only advances via a PR from `develop` → `main`, and that PR is the **release gate**: `main` is protected so a PR cannot merge until all CI checks pass (no direct pushes to `main`).
+- **Releases** are cut from `main`: once a `develop` → `main` PR merges, a maintainer tags `vX.Y.Z` on `main`, which triggers the release workflow. Tags are only ever created on `main`. See `docs/releasing.md`.
+
+CI (`.github/workflows/ci.yml`) runs on pushes to and PRs targeting both `develop` and `main`, so your PR into `develop` is fully checked before it lands.
+
 ## Pull Requests
 
+- **Target `develop`** (the default branch), not `main` — only release PRs go `develop` → `main`
 - One logical change per PR
 - Include tests for new functionality
 - Run `cargo clippy` and `cargo fmt` before submitting
