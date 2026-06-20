@@ -12,7 +12,7 @@
 //! A template that needs no daemon-backed data never starts/contacts the daemon.
 
 use crate::cli::format::{find_eval_template_pairs, render_eval_template};
-use crate::cli::virtual_fields::{EvalContext, VirtualFields, discover_expression_refs};
+use crate::cli::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
 use crate::config::Config;
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
@@ -52,12 +52,29 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
     }
     for (p, f) in &virtual_refs {
         if let Some(expr) = vf.expression(p, f) {
-            for (dp, df) in discover_expression_refs(expr) {
-                if dp != "env"
-                    && !vf.is_virtual(&dp, &df)
-                    && seen_daemon.insert((dp.clone(), df.clone()))
-                {
-                    daemon_keys.push((dp, df));
+            for r in discover_expression_refs(expr) {
+                match r {
+                    Ref::Env(_) => {
+                        // env.* — no daemon fetch needed.
+                    }
+                    Ref::CacheField(dp, df) => {
+                        if seen_daemon.insert((dp.clone(), df.clone())) {
+                            daemon_keys.push((dp, df));
+                        }
+                    }
+                    Ref::CacheProvider(dp) => {
+                        // Whole provider object — represented as (provider, "") sentinel.
+                        let sentinel = (dp.clone(), String::new());
+                        if seen_daemon.insert(sentinel.clone()) {
+                            daemon_keys.push(sentinel);
+                        }
+                    }
+                    Ref::Resolved(dp, df) => {
+                        if !vf.is_virtual(&dp, &df) && seen_daemon.insert((dp.clone(), df.clone()))
+                        {
+                            daemon_keys.push((dp, df));
+                        }
+                    }
                 }
             }
         }
@@ -106,11 +123,16 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
             }
             let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
             for (p, f) in &daemon_keys {
-                let key = format!("{p}.{f}");
+                // Sentinel: empty field means whole-provider fetch (CacheProvider ref).
+                let (key, store_key) = if f.is_empty() {
+                    (p.clone(), p.clone())
+                } else {
+                    (format!("{p}.{f}"), format!("{p}.{f}"))
+                };
                 match session.get(&key, None).await {
                     Ok(resp) => {
                         if let Some(data) = resp.data {
-                            dd.insert(key, data);
+                            dd.insert(store_key, data);
                         }
                     }
                     Err(e) => {

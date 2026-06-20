@@ -71,14 +71,32 @@ const BUILTIN_DEFAULTS: &[(&str, &str, &str)] = &[
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-/// A (provider, field) pair from expression ref discovery.
-pub type FieldRef = (String, String);
+/// A kinded reference discovered in an expression.
+///
+/// Three reference kinds per the field_resolution.md canonical spec:
+/// - `env.X` → `Env(X)`
+/// - `cache.P.F` → `CacheField(P, F)` (raw cached value, bypasses field expressions)
+/// - `cache.P` → `CacheProvider(P)` (the whole provider object)
+/// - `P.F` (P ∉ {env, cache}) → `Resolved(P, F)` (resolved field, recurse if virtual)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Ref {
+    /// `env.X` — the calling shell's environment variable X.
+    Env(String),
+    /// `cache.P.F` — the raw cached field value, bypassing field expressions.
+    CacheField(String, String),
+    /// `cache.P` — the whole provider object from the cache.
+    CacheProvider(String),
+    /// `P.F` — the resolved field value (recursive if virtual, daemon fetch if not).
+    Resolved(String, String),
+}
 
 /// The evaluation context: resolved env vars + pre-fetched daemon data.
 pub struct EvalContext<'a> {
     /// The calling shell's environment variables.
     pub env_vars: &'a HashMap<String, String>,
-    /// Pre-fetched daemon values: key = "provider.field", value = JSON value.
+    /// Pre-fetched daemon values:
+    /// - key = "provider.field" for individual fields
+    /// - key = "provider" for whole-provider objects (CacheProvider refs)
     pub daemon_data: &'a HashMap<String, JsonValue>,
 }
 
@@ -114,6 +132,21 @@ impl VirtualFields {
     pub fn is_virtual(&self, provider: &str, field: &str) -> bool {
         self.fields
             .contains_key(&(provider.to_string(), field.to_string()))
+    }
+
+    /// Returns the list of virtual fields defined for a provider.
+    ///
+    /// Used for whole-namespace evaluation: if `fields_for(P)` is non-empty,
+    /// a bare `comb get P` evaluates each virtual field and assembles an object.
+    pub fn fields_for(&self, provider: &str) -> Vec<String> {
+        let mut fields: Vec<String> = self
+            .fields
+            .keys()
+            .filter(|(p, _)| p == provider)
+            .map(|(_, f)| f.clone())
+            .collect();
+        fields.sort();
+        fields
     }
 
     /// Serialize the built-in virtual fields to a TOML config snippet.
@@ -186,27 +219,22 @@ impl VirtualFields {
     /// Evaluate an arbitrary expression string against the given context.
     ///
     /// Refs in the expression are discovered via `undeclared_variables(true)`.
-    /// `env.*` refs are resolved from `ctx.env_vars`.
-    /// `provider.field` refs that are themselves virtual fields are evaluated
-    /// recursively (with cycle detection via `stack`).
-    /// Other `provider.field` refs are looked up in `ctx.daemon_data`.
+    ///
+    /// - `Env(X)` refs → `ctx.env_vars.get(X)` (empty string on miss).
+    /// - `CacheField(P, F)` refs → `ctx.daemon_data["P.F"]` (raw cached value).
+    /// - `CacheProvider(P)` refs → `ctx.daemon_data["P"]` (whole provider object).
+    /// - `Resolved(P, F)` refs → if virtual, recurse `self.evaluate(P, F, ...)`
+    ///   with cycle detection; otherwise `ctx.daemon_data["P.F"]`.
     pub fn evaluate_expression(
         &self,
         expr: &str,
         ctx: &EvalContext<'_>,
         stack: &mut HashSet<(String, String)>,
     ) -> Result<JsonValue, String> {
-        // Build the minijinja context object from refs.
-        // env.* → provided by env_vars (always present, empty string on miss).
-        // provider.field → from daemon_data or recursive virtual evaluation.
         let refs = discover_expression_refs(expr);
-
-        // Assemble a nested JSON context: { "env": { "FOO": "val" }, "provider": { "field": val }, ... }
-        // Use serde_json serialization path — minijinja can deserialize a serde_json::Value.
-        let ctx_json: serde_json::Value = build_context_json(&refs, ctx, self, stack)?;
+        let ctx_json = build_context_json(&refs, ctx, self, stack)?;
         let top = MjValue::from_serialize(&ctx_json);
 
-        // Evaluate the expression.
         let env = build_expression_env();
         let compiled = env
             .compile_expression(expr)
@@ -219,58 +247,143 @@ impl VirtualFields {
     }
 }
 
+/// Evaluate all virtual fields for a provider and return them as a JSON object.
+///
+/// Fields that fail to evaluate (e.g., cycle errors) are silently omitted.
+/// Callers may merge additional daemon-backed fields on top.
+pub fn evaluate_namespace(
+    provider: &str,
+    vf: &VirtualFields,
+    env_vars: &HashMap<String, String>,
+    daemon_data: &HashMap<String, JsonValue>,
+) -> JsonValue {
+    let ctx = EvalContext {
+        env_vars,
+        daemon_data,
+    };
+    let mut obj = serde_json::Map::new();
+    for field in vf.fields_for(provider) {
+        let mut stack = HashSet::new();
+        match vf.evaluate(provider, &field, &ctx, &mut stack) {
+            Ok(v) => {
+                obj.insert(field, v);
+            }
+            Err(_) => {
+                // Silently omit fields that error (e.g., cycle errors, missing deps).
+            }
+        }
+    }
+    JsonValue::Object(obj)
+}
+
 /// Build a serde_json context object from the discovered refs and the eval context.
+///
+/// Assembles a nested object:
+/// - `env` ← `{X: env_vars.get(X) || ""}` for each `Env(X)`
+/// - `cache` ← `{P: {F: daemon_data["P.F"]}}` for each `CacheField(P, F)`
+///   and `{P: daemon_data["P"]}` for each `CacheProvider(P)`
+/// - Top-level `P: {F: <resolved>}` for each `Resolved(P, F)`
+///   (if `vf.is_virtual(P, F)` → recurse `vf.evaluate(...)`; else `daemon_data["P.F"]`)
 fn build_context_json(
-    refs: &[FieldRef],
+    refs: &[Ref],
     ctx: &EvalContext<'_>,
     vf: &VirtualFields,
     stack: &mut HashSet<(String, String)>,
-) -> Result<serde_json::Value, String> {
-    let mut top: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+) -> Result<JsonValue, String> {
+    let mut top: serde_json::Map<String, JsonValue> = serde_json::Map::new();
 
-    // env.* namespace
-    let mut env_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-    for (p, f) in refs {
-        if p == "env" {
-            let val = ctx.env_vars.get(f).cloned().unwrap_or_default();
-            env_map.insert(f.clone(), serde_json::Value::String(val));
+    // Ensure env namespace always present (even if empty).
+    top.insert("env".to_string(), JsonValue::Object(serde_json::Map::new()));
+
+    // Ensure cache namespace always present.
+    top.insert(
+        "cache".to_string(),
+        JsonValue::Object(serde_json::Map::new()),
+    );
+
+    for r in refs {
+        match r {
+            Ref::Env(var) => {
+                let val = ctx.env_vars.get(var).cloned().unwrap_or_default();
+                // Insert into the pre-created env namespace.
+                let env_entry = top
+                    .entry("env".to_string())
+                    .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+                if let JsonValue::Object(env_map) = env_entry {
+                    env_map.insert(var.clone(), JsonValue::String(val));
+                }
+            }
+
+            Ref::CacheField(provider, field) => {
+                let raw_val = ctx
+                    .daemon_data
+                    .get(&format!("{provider}.{field}"))
+                    .cloned()
+                    .unwrap_or(JsonValue::Null);
+                let cache_entry = top
+                    .entry("cache".to_string())
+                    .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+                if let JsonValue::Object(cache_map) = cache_entry {
+                    let provider_entry = cache_map
+                        .entry(provider.clone())
+                        .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+                    if let JsonValue::Object(pmap) = provider_entry {
+                        pmap.insert(field.clone(), raw_val);
+                    }
+                }
+            }
+
+            Ref::CacheProvider(provider) => {
+                let whole_obj = ctx
+                    .daemon_data
+                    .get(provider.as_str())
+                    .cloned()
+                    .unwrap_or(JsonValue::Null);
+                let cache_entry = top
+                    .entry("cache".to_string())
+                    .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+                if let JsonValue::Object(cache_map) = cache_entry {
+                    cache_map.insert(provider.clone(), whole_obj);
+                }
+            }
+
+            Ref::Resolved(provider, field) => {
+                let resolved_val = if vf.is_virtual(provider, field) {
+                    vf.evaluate(provider, field, ctx, stack)?
+                } else {
+                    ctx.daemon_data
+                        .get(&format!("{provider}.{field}"))
+                        .cloned()
+                        .unwrap_or(JsonValue::Null)
+                };
+                let provider_entry = top
+                    .entry(provider.clone())
+                    .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+                if let JsonValue::Object(pmap) = provider_entry {
+                    pmap.insert(field.clone(), resolved_val);
+                }
+            }
         }
     }
-    top.insert("env".to_string(), serde_json::Value::Object(env_map));
 
-    // provider.field namespace
-    for (p, f) in refs {
-        if p == "env" {
-            continue;
-        }
-        let json_key = format!("{p}.{f}");
-        let json_val = if vf.is_virtual(p, f) {
-            vf.evaluate(p, f, ctx, stack)?
-        } else if let Some(v) = ctx.daemon_data.get(&json_key) {
-            v.clone()
-        } else {
-            serde_json::Value::Null
-        };
-
-        let provider_entry = top
-            .entry(p.clone())
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        if let serde_json::Value::Object(m) = provider_entry {
-            m.insert(f.clone(), json_val);
-        }
-    }
-
-    Ok(serde_json::Value::Object(top))
+    Ok(JsonValue::Object(top))
 }
 
 // ── Ref discovery ─────────────────────────────────────────────────────────────
 
-/// Discover all `provider.field` refs in an expression using minijinja's
+/// Discover all refs in an expression using minijinja's
 /// `Expression::undeclared_variables(true)` (nested = true).
 ///
-/// Returns a deduplicated list of `(provider, field)` pairs.
-/// `env.FOO` → `("env", "FOO")`.
-pub fn discover_expression_refs(expr: &str) -> Vec<FieldRef> {
+/// Classifies each dotted name:
+/// - `env.X` → `Ref::Env(X)`
+/// - `cache.P.F` → `Ref::CacheField(P, F)`
+/// - `cache.P` → `Ref::CacheProvider(P)`
+/// - `cwd` → ignored (path-expression variable, reserved for a later task)
+/// - `P.F` (P ∉ {env, cache, cwd}) → `Ref::Resolved(P, F)`
+/// - bare single name → ignored
+///
+/// Returns a deduplicated list of refs.
+pub fn discover_expression_refs(expr: &str) -> Vec<Ref> {
     let env = build_expression_env();
     let Ok(compiled) = env.compile_expression(expr) else {
         return vec![];
@@ -279,27 +392,47 @@ pub fn discover_expression_refs(expr: &str) -> Vec<FieldRef> {
     // nested = true, an attribute chain `a.b` is recorded as the dotted string "a.b"
     // (e.g. `env.PYENV_VERSION or mise.python` → {"env.PYENV_VERSION", "mise.python"}).
     // So we split each entry on the first '.' — no byte-scanning needed.
-    let mut refs: Vec<FieldRef> = Vec::new();
-    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut refs: Vec<Ref> = Vec::new();
+    let mut seen: HashSet<Ref> = HashSet::new();
+
     for v in compiled.undeclared_variables(true) {
-        // Daemon keys are `provider.field` (exactly one dot). Any segments
-        // beyond the second are MiniJinja nested attribute access into the
-        // field's value and must NOT be included in the daemon fetch key.
-        // Split on `.` and take only the first two segments.
-        let mut segments = v.splitn(3, '.');
-        let Some(provider) = segments.next() else {
-            continue;
+        let mut segments = v.splitn(4, '.');
+        let first = match segments.next() {
+            Some(s) => s,
+            None => continue,
         };
-        let Some(field) = segments.next() else {
-            // Bare name with no dot — not a provider.field ref; skip.
-            continue;
+        let second = match segments.next() {
+            Some(s) => s,
+            None => {
+                // Bare name — skip (includes "cwd").
+                continue;
+            }
         };
-        // `segments.next()` (the remainder) is intentionally dropped.
-        let pair = (provider.to_string(), field.to_string());
-        if seen.insert(pair.clone()) {
-            refs.push(pair);
+        // Segments beyond the second are MiniJinja attribute navigation into
+        // the fetched value — NOT part of the ref key itself.
+        let third = segments.next(); // optional: None for two-segment refs
+
+        let r = match first {
+            "env" => Ref::Env(second.to_string()),
+            "cache" => match third {
+                Some(_) => Ref::CacheField(second.to_string(), third.unwrap().to_string()),
+                None => Ref::CacheProvider(second.to_string()),
+            },
+            "cwd" => {
+                // Path-expression variable — reserved for a later task; ignore here.
+                continue;
+            }
+            _ => {
+                // P.F where P ∉ {env, cache, cwd} → Resolved(P, F)
+                Ref::Resolved(first.to_string(), second.to_string())
+            }
+        };
+
+        if seen.insert(r.clone()) {
+            refs.push(r);
         }
     }
+
     refs
 }
 

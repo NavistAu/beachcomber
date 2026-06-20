@@ -4,7 +4,7 @@
 
 use crate::cli::format::render_fmt_template_json;
 use crate::cli::output_format::{OutputFormat, format_sv, value_to_string};
-use crate::cli::virtual_fields::{EvalContext, VirtualFields, discover_expression_refs};
+use crate::cli::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
 use crate::config::Config;
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -32,13 +32,39 @@ async fn fetch_daemon_deps(
     let refs = discover_expression_refs(expr);
     let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
     if let Some(session) = session {
-        for (p, f) in refs {
-            if p != "env" && !vf.is_virtual(&p, &f) {
-                let dep_key = format!("{p}.{f}");
-                if let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait).await
-                    && let Some(data) = resp.data
-                {
-                    dd.insert(dep_key, data);
+        for r in refs {
+            match r {
+                Ref::Env(_) => {
+                    // env.* — never contacts the daemon.
+                }
+                Ref::CacheField(p, f) => {
+                    // Raw cached field: fetch "P.F" and store under "P.F".
+                    let dep_key = format!("{p}.{f}");
+                    if let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait).await
+                        && let Some(data) = resp.data
+                    {
+                        dd.insert(dep_key, data);
+                    }
+                }
+                Ref::CacheProvider(p) => {
+                    // Whole provider object: fetch "P" and store under "P".
+                    if let Ok(resp) = session.get_with_flags(&p, None, force, wait).await
+                        && let Some(data) = resp.data
+                    {
+                        dd.insert(p, data);
+                    }
+                }
+                Ref::Resolved(p, f) => {
+                    // Resolved field: if not virtual, fetch "P.F".
+                    // Virtual resolved refs are evaluated client-side during expression eval.
+                    if !vf.is_virtual(&p, &f) {
+                        let dep_key = format!("{p}.{f}");
+                        if let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait).await
+                            && let Some(data) = resp.data
+                        {
+                            dd.insert(dep_key, data);
+                        }
+                    }
                 }
             }
         }
@@ -83,12 +109,17 @@ pub fn key_needs_daemon(key: &str, vf: &VirtualFields) -> bool {
     if vf.is_virtual(provider, field) {
         let expr = vf.expression(provider, field).unwrap_or("");
         let refs = discover_expression_refs(expr);
-        // Needs daemon if any ref is a non-env, non-virtual field.
+        // Needs daemon if any ref requires a daemon fetch.
         // Note: for single-key virtual with daemon refs, run_get does an env-first
         // pass (#7) and only calls ensure_daemon when the env terms don't win.
         // key_needs_daemon is used for: (a) multi-key any_needs_daemon check,
         // (b) routing within multi-key loops, and (c) single-key fetch_daemon_deps guard.
-        refs.iter().any(|(p, f)| p != "env" && !vf.is_virtual(p, f))
+        refs.iter().any(|r| match r {
+            Ref::Env(_) => false,
+            Ref::CacheField(_, _) => true,
+            Ref::CacheProvider(_) => true,
+            Ref::Resolved(p, f) => !vf.is_virtual(p, f),
+        })
     } else {
         true // plain daemon field
     }

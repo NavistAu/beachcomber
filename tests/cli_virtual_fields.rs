@@ -216,18 +216,15 @@ fn all_falsy_cascade_returns_empty_string() {
 fn ref_discovery_finds_all_refs_in_cascade() {
     // Guards against first-ref-only regression.
     // "env.A or provider.field or other.field2" must discover ALL three.
-    use beachcomber::cli::virtual_fields::discover_expression_refs;
+    use beachcomber::cli::virtual_fields::{Ref, discover_expression_refs};
     let refs = discover_expression_refs("env.A or provider.field or other.field2");
+    assert!(refs.contains(&Ref::Env("A".into())), "env.A missing");
     assert!(
-        refs.iter().any(|(p, f)| p == "env" && f == "A"),
-        "env.A missing"
-    );
-    assert!(
-        refs.iter().any(|(p, f)| p == "provider" && f == "field"),
+        refs.contains(&Ref::Resolved("provider".into(), "field".into())),
         "provider.field missing"
     );
     assert!(
-        refs.iter().any(|(p, f)| p == "other" && f == "field2"),
+        refs.contains(&Ref::Resolved("other".into(), "field2".into())),
         "other.field2 missing"
     );
     assert_eq!(refs.len(), 3, "must find exactly 3 refs; got: {refs:?}");
@@ -390,30 +387,30 @@ fn gcloud_project_cascade_no_self_cycle() {
 
 #[test]
 fn nested_ref_discovery_three_segments_returns_provider_and_second_segment() {
-    // foo.object.key must yield ("foo", "object") — deeper segments are MiniJinja
+    // foo.object.key must yield Resolved("foo", "object") — deeper segments are MiniJinja
     // attribute navigation into the fetched value, not part of the daemon key.
-    use beachcomber::cli::virtual_fields::discover_expression_refs;
+    use beachcomber::cli::virtual_fields::{Ref, discover_expression_refs};
     let refs = discover_expression_refs("foo.object.key");
     assert_eq!(refs.len(), 1, "one ref expected; got: {refs:?}");
     assert!(
-        refs.iter().any(|(p, f)| p == "foo" && f == "object"),
-        "expected (\"foo\", \"object\"); got: {refs:?}"
+        refs.contains(&Ref::Resolved("foo".into(), "object".into())),
+        "expected Resolved(\"foo\", \"object\"); got: {refs:?}"
     );
 }
 
 #[test]
 fn nested_ref_discovery_four_segments_and_two_segment_ref() {
-    // "a.b.c.d or env.X" → [("a", "b"), ("env", "X")]
-    use beachcomber::cli::virtual_fields::discover_expression_refs;
+    // "a.b.c.d or env.X" → [Resolved("a", "b"), Env("X")]
+    use beachcomber::cli::virtual_fields::{Ref, discover_expression_refs};
     let refs = discover_expression_refs("a.b.c.d or env.X");
     assert_eq!(refs.len(), 2, "two refs expected; got: {refs:?}");
     assert!(
-        refs.iter().any(|(p, f)| p == "a" && f == "b"),
-        "expected (\"a\", \"b\"); got: {refs:?}"
+        refs.contains(&Ref::Resolved("a".into(), "b".into())),
+        "expected Resolved(\"a\", \"b\"); got: {refs:?}"
     );
     assert!(
-        refs.iter().any(|(p, f)| p == "env" && f == "X"),
-        "expected (\"env\", \"X\"); got: {refs:?}"
+        refs.contains(&Ref::Env("X".into())),
+        "expected Env(\"X\"); got: {refs:?}"
     );
 }
 

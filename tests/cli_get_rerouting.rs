@@ -40,12 +40,10 @@ fn git_branch_is_not_virtual() {
 
 #[test]
 fn discover_refs_finds_daemon_dep_in_cascade() {
-    use beachcomber::cli::virtual_fields::discover_expression_refs;
+    use beachcomber::cli::virtual_fields::{Ref, discover_expression_refs};
     // The cascade "env.TF_WORKSPACE or terraform.path_workspace" has a daemon dep.
     let refs = discover_expression_refs("env.TF_WORKSPACE or terraform.path_workspace");
-    let has_daemon_dep = refs
-        .iter()
-        .any(|(p, f)| p == "terraform" && f == "path_workspace");
+    let has_daemon_dep = refs.contains(&Ref::Resolved("terraform".into(), "path_workspace".into()));
     assert!(
         has_daemon_dep,
         "cascade must discover daemon dep terraform.path_workspace; got: {refs:?}"
