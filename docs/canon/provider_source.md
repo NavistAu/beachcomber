@@ -94,6 +94,15 @@ For `Watch` and `WatchAndPoll` Sources, when the Source instance enters Active s
 
 A filesystem event whose path is under any registered watch root and matches any registered pattern (or hits any watched abs_path) triggers refresh of the corresponding Source instance.
 
+### File-path scope and per-instance watched files
+
+A `PathScoped` Source's scope path is usually a directory (e.g. a project root), within which `Watch` patterns are matched. A Source may instead be scoped by a **file path** — or a separator-joined list of file paths — when its value lives in a file the *consumer* selects (the path-phase of env-driven selection; see [`field_resolution.md`](./field_resolution.md)). Such a Source:
+
+- reads (and, for a list, merges) the file(s) named by its scope path in `execute(path)`;
+- declares the absolute files to watch for that instance via `watched_files(path)` (default: none). For a `Watch`/`WatchAndPoll` Source the scheduler registers a watch on each returned file, so the instance is invalidated by changes to its component files even though the scope path is not a single watchable directory.
+
+The cache coordinate is the file-path scope; distinct selections are distinct Source instances sharing the normal `PathScoped` lifecycle and decay. The Source never reads the selector env var — consumer-side resolution supplies the concrete path.
+
 ### Cache entry composition
 
 A cache entry at `(provider, path)` holds the union of all Source instances' Field outputs at that key:
@@ -275,6 +284,7 @@ The cache entry for a read-always Source is still written on every re-execution 
 12. Sources writing to the same cache entry produce disjoint Field sets. A Field-name overlap between Sources of the same Provider is a configuration error.
 13. A consumer query for `provider.field` is demand for the Source that owns `field`. It is not demand for sibling Sources of the same Provider.
 14. A read-always Source is re-executed on every request-path read; its value is never served from cache. Read-always is reserved for Sources whose `execute` is a cheap file/syscall read.
+15. A `PathScoped` Source may be scoped by a file path or separator-joined file list; it reads/merges those file(s) in `execute` and declares the files to watch via `watched_files`. For `Watch`/`WatchAndPoll` Sources the scheduler registers a watch on each declared file. The Source never reads the selector env var.
 
 ## Behaviour assertions
 
@@ -389,58 +399,11 @@ Feature: Source-level invalidation
 - **Status TTL column rendering.** The visual representation of pure-watch sources (e.g., the F-only glyph render with no `D PxK` element) is governed by `docs/status_ttl.md`.
 - **Migration / phasing.** How the codebase moves from monolithic `Provider::execute()` to the per-Source dispatch model is implementation planning, not part of the canonical model.
 - **Failure backoff on watch-registration failure.** This canonical model does not specify automatic retry of failed watch registrations; whether and how the scheduler retries is an implementation concern bounded by the FailbackConfig contract.
-
-## Field-definition family: virtual fields and env.*
-
-Every `provider.field` value is produced by one of the following mechanisms. How it is produced sits on a spectrum:
-
-| Kind | Produced by | Where resolved | Cached? | Env-aware? | Defined by |
-|---|---|---|---|---|---|
-| Built-in provider | Rust `execute()` over files/syscalls | daemon | yes | no (path only) | code |
-| Script / library / HTTP | external backend run by daemon | daemon | yes | no | config |
-| **Virtual (literal)** | literal data (`comb put`) | daemon | yes (opt TTL) | no | runtime |
-| **Virtual (expression)** | a minijinja **expression** over other fields + `env.*` | client (CLI) | no | **yes** | config + built-in defaults |
-| **`env.*`** | caller's shell environment variable | client (CLI) | no | by definition | shell |
-
-**Virtual (literal) and virtual (expression) are siblings** — both define a field declaratively without a Rust provider implementation. They cannot be the same mechanism: a virtual (literal) lives in the daemon and cannot see the caller's shell environment; a virtual (expression) is evaluated on the CLI side and can. Docs present them together ("defining your own fields") with `eval`/templates as the same idea surfaced at the template layer.
-
-**Evaluation locus:** literal = daemon-side (stored, no env access); expression = client-side/env-aware (never cached in the daemon).
-
-### `env.*` namespace
-
-- `env.FOO_BAR` resolves `$FOO_BAR` from the calling shell's environment.
-- **Miss → `""`**, never an error. It is a value-only namespace: no `age`, `ttl`, or `stale` metadata (it is live by definition).
-- **Never contacts the daemon.** The daemon's copy of the environment is frozen at launch and is wrong for the calling shell.
-- Usable in virtual fields (expression form) (`env.PYENV_VERSION or python.venv_version`) and `eval` templates (`{{ env.FOO }}`).
-- `--format sh` shell-escapes the value; `--format json` emits just the string value with no metadata wrapper.
-
-### Virtual fields (expression form)
-
-A virtual field (expression form) is a **minijinja expression** (not a template — no `{{ }}`). Evaluation is via `compile_expression` + `eval`, producing a **typed `Value`** (string / bool / number). The result type is the natural type of the expression — no bespoke type tag in config.
-
-Config syntax: `virtual.<field> = "<expression>"` under `[providers.<name>]`. This is TOML's dotted-key form, namespacing definitions under the `virtual` sub-table so they cannot collide with source knobs.
-
-- **Ref discovery** uses `Expression::undeclared_variables(true)` (nested) to enumerate all `provider.field` and `env.*` refs in the expression. This supersedes byte-level scanning (`find_eval_template_pairs`) for virtual field evaluation.
-- **Empty = jinja-falsy** (`""`, `None`, undefined). Non-strict undefined: a missing provider ref is simply falsy, enabling `a or b or c` without error.
-- **All-falsy → `""`.**
-- **Cascade idiom:** `"env.X or provider.field"` — first non-empty value wins.
-- **Transforms** are inline filters, e.g. `"python.local_venv_name or (env.VIRTUAL_ENV | basename)"`.
-- **Typed output:** `--format json` emits the real type (bool/number/string); `--format text`/`sh` stringifies.
-- **Cycle detection** across virtual→virtual references is required; a detected cycle is a config error, not a panic.
-- A virtual field (expression form) may **shadow** a daemon intrinsic of the same name. The intrinsic is exposed under a renamed key and referenced as one term in the cascade.
-- **Built-in defaults** are compiled into the CLI; no config file is required. Config overrides them per provider/field. `comb init --write-config` materializes built-in defaults into a config file.
-
-### Invariants
-
-15. `env.*` is a client-resolved, value-only namespace. It never contacts the daemon and carries no metadata.
-16. A virtual field (expression form) is evaluated on the CLI side, never cached in the daemon.
-17. Virtual fields (expression form) may shadow daemon intrinsics; the intrinsic is exposed under a distinct name.
-18. Virtual field ref discovery uses `Expression::undeclared_variables(true)` — not byte-level scanning.
-19. A cycle in virtual→virtual references is a config error surfaced at evaluation time, not a panic.
-20. Built-in default virtual fields (expression form) are present with no config file.
+- **Field resolution.** How a consumer query is resolved into a value — the field-type taxonomy, `cache.*`/`env.*`, path expressions, virtual fields, and env-driven selection — is governed by [`field_resolution.md`](./field_resolution.md), not this model.
 
 ## See also
 
+- [`field_resolution.md`](./field_resolution.md) — how cached values, `env.*`, and path expressions resolve into the values consumers query
 - [`cache-lifecycle.md`](./cache-lifecycle.md) — the universal Active/Decay/Evicted state machine that Source instances follow
 - [`singleton.md`](./singleton.md) — daemon-singleton invariants (orthogonal; included here as the third canonical doc for cross-reference)
 - `docs/status_ttl.md` — TTL column rendering, including pure-watch source render
