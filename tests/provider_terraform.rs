@@ -13,23 +13,23 @@ fn make_tf_root(ws_name: Option<&str>) -> tempfile::TempDir {
 }
 
 #[test]
-fn terraform_path_workspace_field_present_after_rename() {
-    // Confirms that the daemon field is named 'path_workspace', not 'workspace'.
-    // This is the field the virtual cascade 'workspace = "env.TF_WORKSPACE or terraform.path_workspace"' references.
+fn terraform_workspace_field_present() {
+    // Confirms that the daemon field is named 'workspace'.
+    // This is the field the virtual cascade 'workspace = "env.TF_WORKSPACE or cache.terraform.workspace"' references.
     let dir = make_tf_root(Some("staging"));
     let sources = TerraformProvider.sources();
     let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
     assert!(
-        result.fields.contains_key("path_workspace"),
-        "daemon field must be 'path_workspace' after rename; got keys: {:?}",
+        result.fields.contains_key("workspace"),
+        "daemon field must be 'workspace'; got keys: {:?}",
         result.fields.keys().collect::<Vec<_>>()
     );
     assert!(
-        !result.fields.contains_key("workspace"),
-        "old 'workspace' key must be gone; found it in: {:?}",
+        !result.fields.contains_key("path_workspace"),
+        "'path_workspace' key must be gone; found it in: {:?}",
         result.fields.keys().collect::<Vec<_>>()
     );
-    assert_eq!(result.fields["path_workspace"].as_text(), "staging");
+    assert_eq!(result.fields["workspace"].as_text(), "staging");
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn terraform_no_env_read_for_tf_workspace() {
     });
     // Daemon must return 'from-file' (file value), not 'from-env' (env).
     assert_eq!(
-        result.fields.get("path_workspace").unwrap().as_text(),
+        result.fields.get("workspace").unwrap().as_text(),
         "from-file",
         "daemon must not read $TF_WORKSPACE; that is a client-side virtual field (expression form)"
     );
@@ -56,7 +56,7 @@ fn terraform_no_environment_file_defaults_to_default() {
         sources[0].execute(Some(dir.path().to_str().unwrap()))
     });
     assert_eq!(
-        result.fields.get("path_workspace").unwrap().as_text(),
+        result.fields.get("workspace").unwrap().as_text(),
         "default",
         "no environment file → default workspace"
     );

@@ -23,7 +23,7 @@ fn state_source_metadata() -> SourceMetadata {
     SourceMetadata {
         name: "state".into(),
         fields: vec![FieldSchema {
-            name: "path_workspace".into(),
+            name: "workspace".into(),
             field_type: FieldType::String,
         }],
         scope: SourceScope::PathScoped,
@@ -61,11 +61,11 @@ impl Source for TerraformState {
 
         // Read from .terraform/environment file only. $TF_WORKSPACE is a
         // per-shell override resolved client-side in the virtual cascade:
-        //   workspace = "env.TF_WORKSPACE or terraform.path_workspace"
+        //   workspace = "env.TF_WORKSPACE or cache.terraform.workspace"
         let workspace = read_workspace_file(&tf_dir);
 
         let mut result = SourceResult::new();
-        result.insert("path_workspace", Value::String(workspace));
+        result.insert("workspace", Value::String(workspace));
         result
     }
 
