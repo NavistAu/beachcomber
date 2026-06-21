@@ -329,12 +329,18 @@ fn build_context_json(
                     .entry("cache".to_string())
                     .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
                 if let JsonValue::Object(cache_map) = cache_entry {
+                    // If a CacheProvider binding already inserted a whole object for
+                    // this provider, insert just the individual field key into it
+                    // rather than replacing the whole map.
                     let provider_entry = cache_map
                         .entry(provider.clone())
                         .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
                     if let JsonValue::Object(pmap) = provider_entry {
                         pmap.insert(field.clone(), raw_val);
                     }
+                    // If provider_entry is not an Object (e.g. it was set to Null by a
+                    // CacheProvider ref that returned nothing), leave it — the field
+                    // value would not be navigable anyway.
                 }
             }
 
@@ -348,7 +354,21 @@ fn build_context_json(
                     .entry("cache".to_string())
                     .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
                 if let JsonValue::Object(cache_map) = cache_entry {
-                    cache_map.insert(provider.clone(), whole_obj);
+                    // Merge whole-object keys into any existing partial map so that
+                    // CacheField bindings that were already inserted (e.g. `cache.P.F`)
+                    // are not lost.  Whole-object values win on key collision (the
+                    // whole object is the authoritative snapshot); keys already in the
+                    // partial map that are absent from the whole object survive.
+                    if let Some(JsonValue::Object(existing)) = cache_map.get_mut(provider) {
+                        if let JsonValue::Object(whole_map) = whole_obj {
+                            for (k, v) in whole_map {
+                                existing.insert(k, v);
+                            }
+                        }
+                        // If whole_obj is not an object (e.g. Null), leave existing as-is.
+                    } else {
+                        cache_map.insert(provider.clone(), whole_obj);
+                    }
                 }
             }
 

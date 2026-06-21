@@ -307,3 +307,65 @@ fn evaluate_namespace_all_virtual_fields_present() {
         "aws object must contain 'expiration'"
     );
 }
+
+// ── Fix 1 regression: CacheProvider + CacheField coexist for same provider ───
+
+/// The gcloud.project expression uses BOTH `cache.gcloud_configs` (CacheProvider)
+/// and `cache.gcloud_configs.active_config` (CacheField) in a single expression.
+/// This test verifies that binding both refs for the SAME provider in one
+/// expression does not lose either: the whole-object keys survive and the
+/// separately-provided CacheField value is also present.
+///
+/// daemon_data provides:
+///   "gcloud_configs" (CacheProvider key) = whole object WITHOUT active_config embedded
+///   "gcloud_configs.active_config" (CacheField key) = "default"
+///
+/// The expression must resolve gcloud_configs.active_config → "default" and
+/// gcloud_configs["default"].project → "proj-default".
+#[test]
+fn cache_provider_and_cache_field_same_provider_both_visible() {
+    let vf = VirtualFields::defaults_only();
+    let env: HashMap<String, String> = HashMap::new();
+
+    // Whole object WITHOUT active_config key embedded — only the config entries.
+    let whole_without_active = json!({
+        "default": {"project": "proj-default", "account": "default@example.com"},
+        "work":    {"project": "proj-work",    "account": "work@example.com"}
+    });
+    // active_config provided as a separate CacheField entry (key "gcloud_configs.active_config").
+    let daemon: HashMap<String, serde_json::Value> = [
+        ("gcloud_configs".to_string(), whole_without_active),
+        ("gcloud_configs.active_config".to_string(), json!("default")),
+    ]
+    .into_iter()
+    .collect();
+
+    let ctx = EvalContext {
+        env_vars: &env,
+        daemon_data: &daemon,
+    };
+
+    // Evaluate gcloud.project:
+    //   env.CLOUDSDK_CORE_PROJECT (unset)
+    //   or cache.gcloud_configs[ env.CLOUDSDK_ACTIVE_CONFIG_NAME or cache.gcloud_configs.active_config ].project
+    // → cache.gcloud_configs.active_config = "default"
+    // → cache.gcloud_configs["default"].project = "proj-default"
+    let result = vf
+        .evaluate("gcloud", "project", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("proj-default"),
+        "CacheProvider whole-object and CacheField active_config for same provider must both be visible in one expression; got: {result}"
+    );
+
+    // Also verify gcloud.account resolves correctly in the same setup.
+    let acct = vf
+        .evaluate("gcloud", "account", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        acct,
+        json!("default@example.com"),
+        "gcloud.account must also resolve via the merged provider context; got: {acct}"
+    );
+}

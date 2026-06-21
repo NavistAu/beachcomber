@@ -849,3 +849,223 @@ fn op_signed_in_is_bool_false_when_token_unset() {
         "op.signed_in must be false when token unset"
     );
 }
+
+// ── aws.region: AWS_DEFAULT_REGION beats profile index ───────────────────────
+
+/// Canon: direct env wins over indexed value.
+/// AWS_DEFAULT_REGION is set; AWS_REGION is not.
+/// The cascade is: AWS_REGION or AWS_DEFAULT_REGION or cache index.
+/// Result must be AWS_DEFAULT_REGION's value, not the indexed profile region.
+#[test]
+fn aws_region_aws_default_region_beats_profile_index() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> =
+        [("AWS_DEFAULT_REGION".to_string(), "ca-central-1".to_string())]
+            .into_iter()
+            .collect();
+    // Provide aws_profiles data — it must NOT be selected because env wins.
+    let daemon: HashMap<String, serde_json::Value> = [(
+        "aws_profiles".to_string(),
+        json!({"default": {"region": "us-east-1"}}),
+    )]
+    .into_iter()
+    .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon,
+    };
+    let result = vf
+        .evaluate("aws", "region", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("ca-central-1"),
+        "AWS_DEFAULT_REGION must win over the profile-indexed region; got: {result}"
+    );
+}
+
+// ── aws.region / aws.profile: AWS_VAULT selects profile when AWS_PROFILE unset
+
+/// When AWS_PROFILE is unset, AWS_VAULT is the fallback profile selector.
+#[test]
+fn aws_region_aws_vault_selects_profile_when_aws_profile_unset() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = [("AWS_VAULT".to_string(), "staging".to_string())]
+        .into_iter()
+        .collect();
+    let daemon: HashMap<String, serde_json::Value> = [(
+        "aws_profiles".to_string(),
+        json!({"default": {"region": "us-east-1"}, "staging": {"region": "eu-central-1"}}),
+    )]
+    .into_iter()
+    .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon,
+    };
+    let result = vf
+        .evaluate("aws", "region", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("eu-central-1"),
+        "AWS_VAULT must select the staging profile region when AWS_PROFILE is unset; got: {result}"
+    );
+}
+
+#[test]
+fn aws_profile_aws_vault_wins_when_aws_profile_unset() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = [("AWS_VAULT".to_string(), "prod".to_string())]
+        .into_iter()
+        .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &HashMap::new(),
+    };
+    let result = vf
+        .evaluate("aws", "profile", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("prod"),
+        "AWS_VAULT must be used as profile name when AWS_PROFILE is unset; got: {result}"
+    );
+}
+
+// ── python.version: MISE_PYTHON_VERSION beats cache ──────────────────────────
+
+#[test]
+fn python_version_mise_env_beats_cache() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> =
+        [("MISE_PYTHON_VERSION".to_string(), "3.13.0".to_string())]
+            .into_iter()
+            .collect();
+    let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
+    daemon_data.insert("asdf.python".to_string(), json!("3.11.0"));
+    daemon_data.insert("python.venv_version".to_string(), json!("3.10.0"));
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon_data,
+    };
+    let result = vf
+        .evaluate("python", "version", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("3.13.0"),
+        "MISE_PYTHON_VERSION env must beat cache.asdf.python and cache.python.venv_version; got: {result}"
+    );
+}
+
+/// cache.asdf.python beats cache.python.venv_version when mise env is empty.
+#[test]
+fn python_version_cache_asdf_python_beats_venv_version() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
+    daemon_data.insert("asdf.python".to_string(), json!("3.11.9"));
+    daemon_data.insert("python.venv_version".to_string(), json!("3.10.0"));
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon_data,
+    };
+    let result = vf
+        .evaluate("python", "version", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("3.11.9"),
+        "cache.asdf.python must beat cache.python.venv_version when mise env is empty; got: {result}"
+    );
+}
+
+// ── python.venv_name: cache wins; basename(VIRTUAL_ENV) as fallback ──────────
+
+#[test]
+fn python_venv_name_cache_local_venv_name_wins() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = [(
+        "VIRTUAL_ENV".to_string(),
+        "/home/u/.some-other-venv".to_string(),
+    )]
+    .into_iter()
+    .collect();
+    let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
+    daemon_data.insert("python.local_venv_name".to_string(), json!("project-venv"));
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon_data,
+    };
+    let result = vf
+        .evaluate("python", "venv_name", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("project-venv"),
+        "cache.python.local_venv_name must win over basename(VIRTUAL_ENV); got: {result}"
+    );
+}
+
+#[test]
+fn python_venv_name_basename_virtual_env_when_cache_empty() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> =
+        [("VIRTUAL_ENV".to_string(), "/home/u/.venv".to_string())]
+            .into_iter()
+            .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &HashMap::new(),
+    };
+    let result = vf
+        .evaluate("python", "venv_name", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!(".venv"),
+        "basename(VIRTUAL_ENV) must be used when cache.python.local_venv_name is absent; got: {result}"
+    );
+}
+
+// ── conda.env: CONDA_DEFAULT_ENV → value; unset → "" ─────────────────────────
+
+#[test]
+fn conda_env_returns_conda_default_env_value() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> =
+        [("CONDA_DEFAULT_ENV".to_string(), "myenv".to_string())]
+            .into_iter()
+            .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &HashMap::new(),
+    };
+    let result = vf
+        .evaluate("conda", "env", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("myenv"),
+        "conda.env must return CONDA_DEFAULT_ENV value; got: {result}"
+    );
+}
+
+#[test]
+fn conda_env_returns_empty_string_when_unset() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &HashMap::new(),
+    };
+    let result = vf
+        .evaluate("conda", "env", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!(""),
+        "conda.env must return empty string when CONDA_DEFAULT_ENV is unset; got: {result}"
+    );
+}
