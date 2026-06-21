@@ -12,7 +12,9 @@ fn kubecontext_provider_metadata() {
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "context");
-    assert_eq!(src.scope, SourceScope::Global);
+    // PathScoped (Task 8): the source reads the kubeconfig path the CLI hands it
+    // (resolved from $KUBECONFIG via the provider's path expression), not a fixed file.
+    assert_eq!(src.scope, SourceScope::PathScoped);
     let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"context"));
     assert!(fields.contains(&"namespace"));
