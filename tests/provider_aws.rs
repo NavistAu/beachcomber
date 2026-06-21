@@ -3,10 +3,9 @@ use beachcomber::provider::Value;
 use beachcomber::provider::aws::AwsProvider;
 use tempfile::TempDir;
 
-fn write_aws_config(dir: &TempDir, content: &str) -> std::path::PathBuf {
+fn write_aws_config(dir: &TempDir, content: &str) {
     let config_path = dir.path().join("config");
     std::fs::write(&config_path, content).unwrap();
-    config_path
 }
 
 // ── metadata name ─────────────────────────────────────────────────────────────
@@ -217,4 +216,93 @@ fn aws_has_no_profile_source() {
             .all(|s| s.metadata().name != "profile"),
         "profile source must be gone"
     );
+}
+
+// ── unknown sections (e.g. [sso-session]) interleaved between profiles ────────
+
+#[test]
+fn aws_profiles_unknown_section_does_not_leak() {
+    let dir = TempDir::new().unwrap();
+    write_aws_config(
+        &dir,
+        "[default]\nregion = eu-west-1\n\n[sso-session prod]\nstart_url = https://x\n\n[profile staging]\nregion = us-east-1\n",
+    );
+
+    let result = temp_env::with_var(
+        "AWS_CONFIG_FILE",
+        Some(dir.path().join("config").to_str().unwrap()),
+        || {
+            let sources = AwsProvider.sources();
+            let src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_file")
+                .expect("config_file source must exist");
+            src.execute(None)
+        },
+    );
+
+    // Both real profiles present
+    assert!(
+        result.fields.contains_key("default"),
+        "'default' must be present"
+    );
+    assert!(
+        result.fields.contains_key("staging"),
+        "'staging' must be present"
+    );
+
+    // No key leakage from the [sso-session prod] section
+    assert!(
+        !result.fields.contains_key("sso-session"),
+        "'sso-session' must not appear as a profile key"
+    );
+    assert!(
+        !result.fields.contains_key("prod"),
+        "'prod' must not appear as a profile key"
+    );
+    assert!(
+        !result.fields.contains_key("sso-session prod"),
+        "'sso-session prod' must not appear as a profile key"
+    );
+}
+
+// ── section headers with interior spaces are recognised (e.g. [ default ]) ───
+
+#[test]
+fn aws_profiles_interior_spaces_in_section_header_recognised() {
+    let dir = TempDir::new().unwrap();
+    write_aws_config(&dir, "[ default ]\nregion = ap-southeast-2\n");
+
+    let result = temp_env::with_var(
+        "AWS_CONFIG_FILE",
+        Some(dir.path().join("config").to_str().unwrap()),
+        || {
+            let sources = AwsProvider.sources();
+            let src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_file")
+                .expect("config_file source must exist");
+            src.execute(None)
+        },
+    );
+
+    let default_val = result
+        .fields
+        .get("default")
+        .expect("'default' must be recognised even with interior spaces in the section header");
+
+    match default_val {
+        Value::Object(map) => {
+            assert_eq!(
+                map.get("region").and_then(|v| if let Value::String(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }),
+                Some("ap-southeast-2"),
+                "[ default ] region must be ap-southeast-2"
+            );
+        }
+        other => panic!("'default' must be Value::Object, got {other:?}"),
+    }
 }

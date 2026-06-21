@@ -122,7 +122,7 @@ fn parse_all_profiles(path: &Path) -> HashMap<String, HashMap<String, Value>> {
             }
             current_fields = HashMap::new();
 
-            let section = &line[1..line.len() - 1];
+            let section = line[1..line.len() - 1].trim();
             current_profile = if section == "default" {
                 Some("default".to_string())
             } else if let Some(name) = section.strip_prefix("profile ") {
