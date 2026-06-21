@@ -1,4 +1,5 @@
 use beachcomber::provider::Provider;
+use beachcomber::provider::Value;
 use beachcomber::provider::aws::AwsProvider;
 use tempfile::TempDir;
 
@@ -8,117 +9,212 @@ fn write_aws_config(dir: &TempDir, content: &str) -> std::path::PathBuf {
     config_path
 }
 
-#[test]
-fn aws_config_region_reads_default_profile() {
-    let dir = TempDir::new().unwrap();
-    write_aws_config(&dir, "[default]\nregion = eu-west-1\noutput = json\n");
+// ── metadata name ─────────────────────────────────────────────────────────────
 
-    // The aws provider needs a way to know the config path. We use the
-    // AWS_CONFIG_FILE env var (standard AWS SDK convention) to override the
-    // default ~/.aws/config in tests.
+#[test]
+fn aws_provider_name_is_aws_profiles() {
+    assert_eq!(AwsProvider.metadata().name, "aws_profiles");
+}
+
+// ── data provider shape: fields = profile names, each an Object{region} ──────
+
+#[test]
+fn aws_profiles_default_and_staging_profiles() {
+    let dir = TempDir::new().unwrap();
+    write_aws_config(
+        &dir,
+        "[default]\nregion = eu-west-1\noutput = json\n\n[profile staging]\nregion = us-east-1\n",
+    );
+
     let result = temp_env::with_var(
         "AWS_CONFIG_FILE",
         Some(dir.path().join("config").to_str().unwrap()),
         || {
             let sources = AwsProvider.sources();
-            // Find the config_file source (not profile).
-            let cfg_src = sources
+            let src = sources
                 .iter()
                 .find(|s| s.metadata().name == "config_file")
                 .expect("config_file source must exist");
-            cfg_src.execute(None)
+            src.execute(None)
         },
     );
-    assert_eq!(
-        result.fields.get("config_region").unwrap().as_text(),
-        "eu-west-1",
-        "config_region must be the default-profile region from ~/.aws/config"
+
+    // Both profiles present
+    let default_val = result
+        .fields
+        .get("default")
+        .expect("'default' field must be present");
+    let staging_val = result
+        .fields
+        .get("staging")
+        .expect("'staging' field must be present");
+
+    // Each is an Object with a 'region' key (no wrapper field)
+    match default_val {
+        Value::Object(map) => {
+            assert_eq!(
+                map.get("region").and_then(|v| if let Value::String(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }),
+                Some("eu-west-1"),
+                "default.region must be eu-west-1"
+            );
+        }
+        other => panic!("'default' must be Value::Object, got {other:?}"),
+    }
+    match staging_val {
+        Value::Object(map) => {
+            assert_eq!(
+                map.get("region").and_then(|v| if let Value::String(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }),
+                Some("us-east-1"),
+                "staging.region must be us-east-1"
+            );
+        }
+        other => panic!("'staging' must be Value::Object, got {other:?}"),
+    }
+
+    // No 'profiles' wrapper, no 'config_region'
+    assert!(
+        !result.fields.contains_key("profiles"),
+        "must not have a 'profiles' wrapper key"
+    );
+    assert!(
+        !result.fields.contains_key("config_region"),
+        "must not have the old 'config_region' field"
     );
 }
 
+// ── all profiles published regardless of $AWS_PROFILE ────────────────────────
+
 #[test]
-fn aws_config_region_missing_default_profile_returns_empty() {
+fn aws_profiles_published_regardless_of_aws_profile_env() {
     let dir = TempDir::new().unwrap();
-    write_aws_config(&dir, "[profile staging]\nregion = us-east-1\n");
+    write_aws_config(
+        &dir,
+        "[default]\nregion = eu-west-1\n\n[profile staging]\nregion = us-east-1\n",
+    );
+
+    let result = temp_env::with_vars(
+        [
+            (
+                "AWS_CONFIG_FILE",
+                Some(dir.path().join("config").to_str().unwrap()),
+            ),
+            ("AWS_PROFILE", Some("staging")),
+        ],
+        || {
+            let sources = AwsProvider.sources();
+            let src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_file")
+                .expect("config_file source must exist");
+            src.execute(None)
+        },
+    );
+
+    assert!(
+        result.fields.contains_key("default"),
+        "default profile must be published even when AWS_PROFILE=staging"
+    );
+    assert!(
+        result.fields.contains_key("staging"),
+        "staging profile must be published"
+    );
+}
+
+// ── missing config → empty result ─────────────────────────────────────────────
+
+#[test]
+fn aws_profiles_missing_config_returns_empty() {
+    let dir = TempDir::new().unwrap();
+    // No config file written
 
     let result = temp_env::with_var(
         "AWS_CONFIG_FILE",
         Some(dir.path().join("config").to_str().unwrap()),
         || {
             let sources = AwsProvider.sources();
-            let cfg_src = sources
+            let src = sources
                 .iter()
                 .find(|s| s.metadata().name == "config_file")
-                .unwrap();
-            cfg_src.execute(None)
+                .expect("config_file source must exist");
+            src.execute(None)
         },
     );
-    // No [default] section → empty result or absent field.
+
     assert!(
-        result
-            .fields
-            .get("config_region")
-            .map(|v| v.as_text() == "")
-            .unwrap_or(true),
-        "no default profile → config_region must be empty or absent"
+        result.fields.is_empty(),
+        "missing config → empty result; got: {:?}",
+        result.fields
     );
 }
 
+// ── profiles with no region are skipped ──────────────────────────────────────
+
 #[test]
-fn aws_profile_source_no_longer_reads_env() {
-    // Confirms the profile source doesn't read AWS_PROFILE / AWS_VAULT / AWS_REGION.
-    // Those are now client-side virtual fields (expression form).
+fn aws_profiles_skips_profiles_with_no_region() {
+    let dir = TempDir::new().unwrap();
+    write_aws_config(
+        &dir,
+        "[default]\noutput = json\n\n[profile staging]\nregion = us-east-1\n",
+    );
+
+    let result = temp_env::with_var(
+        "AWS_CONFIG_FILE",
+        Some(dir.path().join("config").to_str().unwrap()),
+        || {
+            let sources = AwsProvider.sources();
+            let src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_file")
+                .expect("config_file source must exist");
+            src.execute(None)
+        },
+    );
+
+    // 'default' has no region → skipped
+    assert!(
+        !result.fields.contains_key("default"),
+        "default has no region; must not be published"
+    );
+    // 'staging' has region → published
+    assert!(
+        result.fields.contains_key("staging"),
+        "staging has region; must be published"
+    );
+}
+
+// ── source metadata shape ─────────────────────────────────────────────────────
+
+#[test]
+fn aws_provider_source_is_config_file_with_dynamic_field_sentinel() {
+    let meta = AwsProvider.metadata();
+    assert_eq!(meta.sources.len(), 1);
+    let src = &meta.sources[0];
+    assert_eq!(src.name, "config_file");
+    // Dynamic sentinel (like mise's <tool>) for profile names
+    let field_names: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(
+        field_names.iter().any(|n| n.starts_with('<')),
+        "source must declare a dynamic field sentinel; got: {field_names:?}"
+    );
+}
+
+// ── no profile source (legacy env-read source must be gone) ──────────────────
+
+#[test]
+fn aws_has_no_profile_source() {
     assert!(
         AwsProvider
             .sources()
             .iter()
             .all(|s| s.metadata().name != "profile"),
         "profile source must be gone"
-    );
-    temp_env::with_vars(
-        [
-            ("AWS_PROFILE", Some("test-profile")),
-            ("AWS_REGION", Some("us-west-2")),
-        ],
-        || {
-            let sources = AwsProvider.sources();
-            // The profile source (if it still exists as a thin shell) should return empty
-            // now that env reads are removed. If the source is gone, that's also fine —
-            // the registry will have one source: config_file.
-            let profile_src = sources.iter().find(|s| s.metadata().name == "profile");
-            match profile_src {
-                None => {
-                    // Profile source was removed entirely — correct, env reads gone.
-                }
-                Some(src) => {
-                    let result = src.execute(None);
-                    // If the source still exists, it must not return env-derived fields.
-                    assert!(
-                        !result.fields.contains_key("profile"),
-                        "profile source must not read $AWS_PROFILE from env"
-                    );
-                }
-            }
-        },
-    );
-}
-
-#[test]
-fn aws_source_field_named_config_region_not_region() {
-    // Confirms the daemon intrinsic is 'config_region', not 'region'.
-    // 'region' is the virtual cascade: "env.AWS_REGION or ... or aws.config_region"
-    let meta = AwsProvider.metadata();
-    let all_fields: Vec<&str> = meta
-        .sources
-        .iter()
-        .flat_map(|s| s.fields.iter().map(|f| f.name.as_str()))
-        .collect();
-    assert!(
-        all_fields.contains(&"config_region"),
-        "daemon must expose 'config_region'; fields: {all_fields:?}"
-    );
-    assert!(
-        !all_fields.contains(&"region"),
-        "'region' must not be a daemon field; it is a virtual cascade (expression form); fields: {all_fields:?}"
     );
 }

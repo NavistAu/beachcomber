@@ -29,13 +29,17 @@ fn kubecontext_executes_without_panic() {
 fn aws_provider_metadata() {
     let p = AwsProvider;
     let meta = p.metadata();
-    assert_eq!(meta.name, "aws");
+    assert_eq!(meta.name, "aws_profiles");
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "config_file");
     assert_eq!(src.scope, SourceScope::Global);
-    let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"config_region"));
+    // Dynamic sentinel field — profile names are not known at compile time.
+    let field_names: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(
+        field_names.iter().any(|n| n.starts_with('<')),
+        "source must declare a dynamic field sentinel; got: {field_names:?}"
+    );
 }
 
 #[test]

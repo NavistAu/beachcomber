@@ -155,7 +155,7 @@ impl ProviderRegistry {
             .expect("asdf");
         registry
             .register(Box::new(crate::provider::aws::AwsProvider))
-            .expect("aws");
+            .expect("aws_profiles");
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         registry
             .register(Box::new(crate::provider::battery::BatteryProvider))
@@ -228,7 +228,7 @@ impl ProviderRegistry {
         }
 
         add_builtin!("asdf", crate::provider::asdf::AsdfProvider);
-        add_builtin!("aws", crate::provider::aws::AwsProvider);
+        add_builtin!("aws_profiles", crate::provider::aws::AwsProvider);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         add_builtin!("battery", crate::provider::battery::BatteryProvider);
         add_builtin!("direnv", crate::provider::direnv::DirenvProvider);
