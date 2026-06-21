@@ -151,8 +151,8 @@ fn parse_core_section(content: &str) -> (String, String) {
 
     for line in content.lines() {
         let line = line.trim();
-        if line.starts_with('[') {
-            in_core = line == "[core]";
+        if line.starts_with('[') && line.ends_with(']') {
+            in_core = line[1..line.len() - 1].trim() == "core";
             continue;
         }
         if in_core && let Some((key, val)) = line.split_once('=') {

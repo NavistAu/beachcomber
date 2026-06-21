@@ -269,6 +269,68 @@ fn gcloud_configs_skips_config_with_empty_project_and_account() {
     );
 }
 
+// ── padded section header [ core ] is parsed correctly ───────────────────────
+
+#[test]
+fn gcloud_padded_core_section_header_is_parsed() {
+    let dir = TempDir::new().unwrap();
+    write_active_config(&dir, "default");
+
+    // Write a properties file with interior-spaced section header
+    let conf_dir = dir.path().join("configurations").join("config_default");
+    std::fs::create_dir_all(&conf_dir).unwrap();
+    std::fs::write(
+        conf_dir.join("properties"),
+        "[ core ]\nproject = padded-project\naccount = padded@x.com\n",
+    )
+    .unwrap();
+
+    let result = temp_env::with_var(
+        "CLOUDSDK_CONFIG",
+        Some(dir.path().to_str().unwrap()),
+        || {
+            let sources = GcloudProvider.sources();
+            let src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_dir")
+                .expect("config_dir source must exist");
+            src.execute(None)
+        },
+    );
+
+    let default_val = result
+        .fields
+        .get("default")
+        .expect("'default' config must be present even with padded [ core ] header");
+    match default_val {
+        Value::Object(map) => {
+            assert_eq!(
+                map.get("project").and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                }),
+                Some("padded-project"),
+                "project must be parsed from [ core ] (padded) section"
+            );
+            assert_eq!(
+                map.get("account").and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                }),
+                Some("padded@x.com"),
+                "account must be parsed from [ core ] (padded) section"
+            );
+        }
+        other => panic!("'default' must be Value::Object, got {other:?}"),
+    }
+}
+
 // ── source metadata shape ─────────────────────────────────────────────────────
 
 #[test]
