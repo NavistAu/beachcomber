@@ -1,21 +1,26 @@
-/// Seam tests for the `kubecontext` provider.
+/// Tests for the `kubecontext` provider (PathScoped + Watch).
 ///
-/// Uses `kubecontext_source_with_path` to inject a tempdir-rooted kubeconfig
-/// YAML file, making every test independent of `~/.kube/config` and
-/// `$KUBECONFIG`.
+/// The source receives the kubeconfig path (single or ':'-joined list) via the
+/// `path` argument to `execute`, matching the PathScoped contract. Tests use
+/// tempdir-rooted kubeconfig YAML files so each test is independent of
+/// `~/.kube/config` and `$KUBECONFIG`.
 ///
 /// Coverage:
-/// - current_context_returns_value — kubeconfig with `current-context`; value
-///   is returned in the `context` field.
-/// - missing_kubeconfig_returns_empty — nonexistent path; source returns empty,
-///   no panic.
-/// - malformed_kubeconfig_returns_failure — garbage file; source returns empty,
-///   no panic.
-/// - multiple_contexts_picks_current — kubeconfig with several contexts; the
-///   `current-context` entry is honored, not the first.
-/// - empty_kubeconfig_returns_empty — empty file; source returns empty result.
-use beachcomber::provider::Value;
-use beachcomber::provider::kubecontext::kubecontext_source_with_path;
+/// - source metadata declares PathScoped scope and Watch invalidation
+/// - execute(Some(single_file)) returns context + namespace from that file
+/// - execute(Some("fileA:fileB")) merges; later file's current-context wins
+/// - watched_files(Some("a:b")) returns [PathBuf("a"), PathBuf("b")]
+/// - execute(None) returns empty
+/// - missing file returns empty (no panic)
+/// - malformed file returns empty (no panic)
+/// - multiple contexts in one file: current-context is honored
+/// - context without namespace defaults to "default"
+/// - blank current-context value returns empty
+/// - context field is Value::String
+/// - name match is exact (not substring)
+/// - nonexistent files in a ':'-joined list are skipped
+use beachcomber::provider::kubecontext::KubecontextProvider;
+use beachcomber::provider::{InvalidationStrategy, Provider, SourceScope, Value};
 use std::io::Write;
 use tempfile::NamedTempFile;
 
@@ -27,7 +32,42 @@ fn write_kubeconfig(content: &str) -> NamedTempFile {
     f
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+fn source() -> Box<dyn beachcomber::provider::Source> {
+    KubecontextProvider.sources().into_iter().next().unwrap()
+}
+
+// ── Metadata tests ─────────────────────────────────────────────────────────────
+
+#[test]
+fn source_is_path_scoped() {
+    assert_eq!(source().metadata().scope, SourceScope::PathScoped);
+}
+
+#[test]
+fn source_uses_watch_invalidation() {
+    assert!(
+        matches!(
+            source().metadata().invalidation,
+            InvalidationStrategy::Watch { .. }
+        ),
+        "expected Watch invalidation, got: {:?}",
+        source().metadata().invalidation
+    );
+}
+
+// ── execute(None) ──────────────────────────────────────────────────────────────
+
+#[test]
+fn execute_none_returns_empty() {
+    let result = source().execute(None);
+    assert!(
+        result.fields.is_empty(),
+        "execute(None) must return empty, got: {:?}",
+        result.fields
+    );
+}
+
+// ── Single-file execute ────────────────────────────────────────────────────────
 
 #[test]
 fn current_context_returns_value() {
@@ -42,8 +82,7 @@ contexts:
   name: my-cluster
 ";
     let f = write_kubeconfig(yaml);
-    let source = kubecontext_source_with_path(f.path().to_path_buf());
-    let result = source.execute(None);
+    let result = source().execute(Some(f.path().to_str().unwrap()));
 
     assert_eq!(
         result.fields.get("context").unwrap().as_text(),
@@ -57,11 +96,7 @@ contexts:
 
 #[test]
 fn missing_kubeconfig_returns_empty() {
-    // Point at a path that does not exist.
-    let path = std::path::PathBuf::from("/tmp/beachcomber_test_nonexistent_kubeconfig_abc123");
-    let source = kubecontext_source_with_path(path);
-    let result = source.execute(None);
-
+    let result = source().execute(Some("/tmp/beachcomber_test_nonexistent_kubeconfig_abc123"));
     assert!(
         result.fields.is_empty(),
         "missing file should produce empty result, got: {:?}",
@@ -71,12 +106,8 @@ fn missing_kubeconfig_returns_empty() {
 
 #[test]
 fn malformed_kubeconfig_returns_failure() {
-    // Garbage content — not valid YAML, no `current-context:` key.
     let f = write_kubeconfig("not: valid: kubeconfig: garbage !!!\n\x00\x01\x02\n");
-    let source = kubecontext_source_with_path(f.path().to_path_buf());
-
-    // Must not panic; result should be empty (no current-context found).
-    let result = source.execute(None);
+    let result = source().execute(Some(f.path().to_str().unwrap()));
     assert!(
         result.fields.is_empty(),
         "malformed kubeconfig should produce empty result, got: {:?}",
@@ -86,7 +117,6 @@ fn malformed_kubeconfig_returns_failure() {
 
 #[test]
 fn multiple_contexts_picks_current() {
-    // Three contexts; `current-context` names the second one.
     let yaml = "\
 apiVersion: v1
 kind: Config
@@ -106,8 +136,7 @@ contexts:
   name: development
 ";
     let f = write_kubeconfig(yaml);
-    let source = kubecontext_source_with_path(f.path().to_path_buf());
-    let result = source.execute(None);
+    let result = source().execute(Some(f.path().to_str().unwrap()));
 
     assert_eq!(result.fields.get("context").unwrap().as_text(), "staging");
     assert_eq!(
@@ -119,9 +148,7 @@ contexts:
 #[test]
 fn empty_kubeconfig_returns_empty() {
     let f = write_kubeconfig("");
-    let source = kubecontext_source_with_path(f.path().to_path_buf());
-    let result = source.execute(None);
-
+    let result = source().execute(Some(f.path().to_str().unwrap()));
     assert!(
         result.fields.is_empty(),
         "empty file should produce empty result, got: {:?}",
@@ -131,7 +158,6 @@ fn empty_kubeconfig_returns_empty() {
 
 #[test]
 fn context_without_namespace_defaults_to_default() {
-    // A context entry that omits the namespace field → provider returns "default".
     let yaml = "\
 apiVersion: v1
 kind: Config
@@ -142,8 +168,7 @@ contexts:
   name: no-ns-context
 ";
     let f = write_kubeconfig(yaml);
-    let source = kubecontext_source_with_path(f.path().to_path_buf());
-    let result = source.execute(None);
+    let result = source().execute(Some(f.path().to_str().unwrap()));
 
     assert_eq!(
         result.fields.get("context").unwrap().as_text(),
@@ -158,7 +183,6 @@ contexts:
 
 #[test]
 fn current_context_present_but_empty_returns_empty() {
-    // `current-context:` with no value after the colon → treated as empty → no result.
     let yaml = "\
 apiVersion: v1
 kind: Config
@@ -166,9 +190,7 @@ current-context:
 contexts: []
 ";
     let f = write_kubeconfig(yaml);
-    let source = kubecontext_source_with_path(f.path().to_path_buf());
-    let result = source.execute(None);
-
+    let result = source().execute(Some(f.path().to_str().unwrap()));
     assert!(
         result.fields.is_empty(),
         "blank current-context value should produce empty result, got: {:?}",
@@ -189,10 +211,8 @@ contexts:
   name: dev
 ";
     let f = write_kubeconfig(yaml);
-    let source = kubecontext_source_with_path(f.path().to_path_buf());
-    let result = source.execute(None);
+    let result = source().execute(Some(f.path().to_str().unwrap()));
 
-    // Confirm the Value variant is String, not some other type.
     assert!(
         matches!(result.fields.get("context"), Some(Value::String(_))),
         "context field must be Value::String"
@@ -203,15 +223,10 @@ contexts:
     );
 }
 
-// ── Multi-file merge tests ─────────────────────────────────────────────────────
-
-/// Expose a test-only constructor that accepts multiple kubeconfig paths.
-/// This tests the merge logic without touching $KUBECONFIG.
-use beachcomber::provider::kubecontext::kubecontext_source_with_paths;
+// ── Multi-file ':'-joined path ─────────────────────────────────────────────────
 
 #[test]
-fn multi_file_kubeconfig_active_context_in_second_file() {
-    // File 1: defines context "prod" but current-context is NOT here.
+fn multi_file_active_context_in_second_file() {
     let f1 = write_kubeconfig(
         "\
 apiVersion: v1
@@ -223,7 +238,6 @@ contexts:
   name: prod
 ",
     );
-    // File 2: defines context "dev" and declares it as current-context.
     let f2 = write_kubeconfig(
         "\
 apiVersion: v1
@@ -236,10 +250,12 @@ contexts:
   name: dev
 ",
     );
-
-    let source =
-        kubecontext_source_with_paths(vec![f1.path().to_path_buf(), f2.path().to_path_buf()]);
-    let result = source.execute(None);
+    let joined = format!(
+        "{}:{}",
+        f1.path().to_str().unwrap(),
+        f2.path().to_str().unwrap()
+    );
+    let result = source().execute(Some(&joined));
 
     assert_eq!(
         result.fields.get("context").unwrap().as_text(),
@@ -250,8 +266,7 @@ contexts:
 }
 
 #[test]
-fn multi_file_kubeconfig_context_namespace_from_different_file() {
-    // current-context set in file 2, but the context's namespace is defined in file 1.
+fn multi_file_context_namespace_from_different_file() {
     let f1 = write_kubeconfig(
         "\
 apiVersion: v1
@@ -271,10 +286,12 @@ current-context: shared
 contexts: []
 ",
     );
-
-    let source =
-        kubecontext_source_with_paths(vec![f1.path().to_path_buf(), f2.path().to_path_buf()]);
-    let result = source.execute(None);
+    let joined = format!(
+        "{}:{}",
+        f1.path().to_str().unwrap(),
+        f2.path().to_str().unwrap()
+    );
+    let result = source().execute(Some(&joined));
 
     assert_eq!(result.fields.get("context").unwrap().as_text(), "shared");
     assert_eq!(
@@ -286,10 +303,6 @@ contexts: []
 
 #[test]
 fn name_match_not_a_substring() {
-    // Context named "prod" must not be confused with "production".
-    // The substring bug: `block.contains("name: prod")` fires on a block
-    // that has `name: production` because "name: production" contains the
-    // substring "name: prod". Verified against kubecontext.rs lines 170-171.
     let f = write_kubeconfig(
         "\
 apiVersion: v1
@@ -306,8 +319,7 @@ contexts:
   name: prod
 ",
     );
-    let source = kubecontext_source_with_path(f.path().to_path_buf());
-    let result = source.execute(None);
+    let result = source().execute(Some(f.path().to_str().unwrap()));
 
     assert_eq!(result.fields.get("context").unwrap().as_text(), "prod");
     assert_eq!(
@@ -330,49 +342,42 @@ contexts:
   name: real
 ",
     );
-    let missing = std::path::PathBuf::from("/tmp/beachcomber_test_nonexistent_s6_kube");
-    let source = kubecontext_source_with_paths(vec![missing, f.path().to_path_buf()]);
-    let result = source.execute(None);
+    let joined = format!(
+        "/tmp/beachcomber_test_nonexistent_s6_kube:{}",
+        f.path().to_str().unwrap()
+    );
+    let result = source().execute(Some(&joined));
 
     assert_eq!(result.fields.get("context").unwrap().as_text(), "real");
 }
 
-// ── P1 env-cascade: daemon is path-only — must NOT read $KUBECONFIG ───────────
+// ── watched_files ─────────────────────────────────────────────────────────────
 
-/// The daemon reads only the default `~/.kube/config` and must ignore
-/// `$KUBECONFIG` (a per-shell selector that would be frozen-wrong in the daemon;
-/// honoring it is deferred to the P2 `live.*` path). Exercises the production
-/// path (no override) via the real provider.
 #[test]
-fn daemon_reads_default_kube_config_and_ignores_kubeconfig_env() {
-    use beachcomber::provider::Provider;
-    use beachcomber::provider::kubecontext::KubecontextProvider;
-    use tempfile::TempDir;
-
-    let home = TempDir::new().unwrap();
-    // Default ~/.kube/config → context "home-ctx".
-    let kube_dir = home.path().join(".kube");
-    std::fs::create_dir_all(&kube_dir).unwrap();
-    std::fs::write(kube_dir.join("config"), "current-context: home-ctx\n").unwrap();
-    // A different file that $KUBECONFIG points at → "env-ctx". Must be ignored.
-    let other = home.path().join("other.yaml");
-    std::fs::write(&other, "current-context: env-ctx\n").unwrap();
-
-    let result = temp_env::with_vars(
-        [
-            ("HOME", Some(home.path().to_str().unwrap())),
-            ("KUBECONFIG", Some(other.to_str().unwrap())),
-        ],
-        || {
-            let sources = KubecontextProvider.sources();
-            sources[0].execute(None)
-        },
-    );
-
+fn watched_files_splits_colon_joined_path() {
+    use std::path::PathBuf;
+    let src = source();
+    let files = src.watched_files(Some("/home/user/.kube/config:/etc/kube/extra.yaml"));
     assert_eq!(
-        result.fields.get("context").map(|v| v.as_text()),
-        Some("home-ctx".to_string()),
-        "daemon must read ~/.kube/config and ignore $KUBECONFIG; got: {:?}",
-        result.fields.get("context")
+        files,
+        vec![
+            PathBuf::from("/home/user/.kube/config"),
+            PathBuf::from("/etc/kube/extra.yaml"),
+        ]
     );
+}
+
+#[test]
+fn watched_files_none_returns_empty() {
+    let src = source();
+    let files = src.watched_files(None);
+    assert!(files.is_empty());
+}
+
+#[test]
+fn watched_files_single_path() {
+    use std::path::PathBuf;
+    let src = source();
+    let files = src.watched_files(Some("/home/user/.kube/config"));
+    assert_eq!(files, vec![PathBuf::from("/home/user/.kube/config")]);
 }

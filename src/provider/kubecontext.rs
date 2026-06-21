@@ -33,47 +33,36 @@ fn context_source_metadata() -> SourceMetadata {
                 field_type: FieldType::String,
             },
         ],
-        scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
-        keep_alive: KeepAlive::Polls(2),
+        // PathScoped: the instance path is the kubeconfig path (single, or a
+        // ':'-joined list) computed by the CLI from $KUBECONFIG via the provider's
+        // path expression. The daemon never reads $KUBECONFIG. Watch: the scheduler
+        // watches the path's component files via Source::watched_files.
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![],
+            abs_paths: vec![],
+        },
+        keep_alive: KeepAlive::Duration(120),
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 30,
         },
-        fsevents_reinstate: false,
+        fsevents_reinstate: true,
     }
 }
 
-struct KubeContext {
-    /// Explicit kubeconfig paths override (test seam). When `None`, the daemon
-    /// reads only the default `~/.kube/config` — it does not consult `$KUBECONFIG`
-    /// (a per-shell selector; deferred to the P2 `live.*` path).
-    override_paths: Option<Vec<PathBuf>>,
+fn path_to_files(path: &str) -> Vec<PathBuf> {
+    path.split(':')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect()
 }
+
+struct KubeContext;
 
 impl KubeContext {
     fn new() -> Self {
-        Self {
-            override_paths: None,
-        }
-    }
-
-    /// Construct a `KubeContext` that reads from a single explicit path,
-    /// bypassing the default `~/.kube/config`. Intended for tests.
-    #[cfg(any(test, feature = "test-helpers"))]
-    pub fn with_kubeconfig_path(path: PathBuf) -> Self {
-        Self {
-            override_paths: Some(vec![path]),
-        }
-    }
-
-    /// Construct a `KubeContext` that merges multiple explicit paths.
-    /// Intended for tests of multi-file merge logic.
-    #[cfg(any(test, feature = "test-helpers"))]
-    pub fn with_kubeconfig_paths(paths: Vec<PathBuf>) -> Self {
-        Self {
-            override_paths: Some(paths),
-        }
+        Self
     }
 }
 
@@ -84,18 +73,16 @@ impl Source for KubeContext {
         M.get_or_init(context_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
-        let paths = if let Some(ref p) = self.override_paths {
-            p.clone()
-        } else {
-            kubeconfig_paths()
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        let Some(p) = path else {
+            return SourceResult::new();
         };
-
-        if paths.is_empty() {
+        let files = path_to_files(p);
+        if files.is_empty() {
             return SourceResult::new();
         }
 
-        let (current_context, ns_map) = merge_kubeconfigs(&paths);
+        let (current_context, ns_map) = merge_kubeconfigs(&files);
         let Some(context) = current_context else {
             return SourceResult::new();
         };
@@ -110,22 +97,29 @@ impl Source for KubeContext {
         result.insert("namespace", Value::String(namespace));
         result
     }
-}
 
-/// Return the kubeconfig path the daemon reads.
-///
-/// The daemon is path-only (P1 env-cascade design): it reads the default
-/// `~/.kube/config` and deliberately does NOT consult `$KUBECONFIG`.
-/// `$KUBECONFIG` is a per-shell selector — it chooses which cluster/context is
-/// active and which files are merged — so a single daemon-frozen value would be
-/// wrong for every other shell. Honoring a caller's `$KUBECONFIG` (a per-shell
-/// override) is deferred to the P2 `live.*` path. Only `$HOME` is consulted, as
-/// a file-location var (the same way other providers locate their config files).
-fn kubeconfig_paths() -> Vec<PathBuf> {
-    let Ok(home) = std::env::var("HOME") else {
-        return vec![];
-    };
-    vec![PathBuf::from(home).join(".kube").join("config")]
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let p = path?;
+        let joined = p
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(|c| {
+                std::fs::canonicalize(c)
+                    .map(|q| q.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| c.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(":");
+        if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        }
+    }
+
+    fn watched_files(&self, path: Option<&str>) -> Vec<PathBuf> {
+        path.map(path_to_files).unwrap_or_default()
+    }
 }
 
 /// Merge multiple kubeconfig files.
@@ -228,18 +222,4 @@ fn extract_context_namespaces(content: &str) -> Vec<(String, String)> {
         out.push((name, namespace.unwrap_or_else(|| "default".to_string())));
     }
     out
-}
-
-/// Construct the kubecontext source reading from an explicit single kubeconfig path.
-/// Intended for seam tests — bypasses the default `~/.kube/config`.
-#[cfg(any(test, feature = "test-helpers"))]
-pub fn kubecontext_source_with_path(path: PathBuf) -> Box<dyn Source> {
-    Box::new(KubeContext::with_kubeconfig_path(path))
-}
-
-/// Construct the kubecontext source reading from multiple explicit kubeconfig paths.
-/// Intended for seam tests of multi-file merge logic.
-#[cfg(any(test, feature = "test-helpers"))]
-pub fn kubecontext_source_with_paths(paths: Vec<PathBuf>) -> Box<dyn Source> {
-    Box::new(KubeContext::with_kubeconfig_paths(paths))
 }
