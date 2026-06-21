@@ -27,45 +27,50 @@ const BUILTIN_DEFAULTS: &[(&str, &str, &str)] = &[
     (
         "terraform",
         "workspace",
-        "env.TF_WORKSPACE or terraform.path_workspace",
+        "env.TF_WORKSPACE or cache.terraform.workspace",
     ),
     // python
     (
         "python",
         "version",
-        "env.PYENV_VERSION or env.MISE_PYTHON_VERSION or mise.python or asdf.python or python.venv_version",
+        "env.PYENV_VERSION or env.MISE_PYTHON_VERSION or cache.mise.python or cache.asdf.python or cache.python.venv_version",
     ),
     (
         "python",
         "venv_name",
-        r#"python.local_venv_name or (env.VIRTUAL_ENV | basename)"#,
+        r#"cache.python.local_venv_name or (env.VIRTUAL_ENV | basename)"#,
     ),
     // conda (daemon provider removed; virtual from env only)
     ("conda", "env", "env.CONDA_DEFAULT_ENV"),
+    // op (daemon provider removed; virtual from env only)
+    // Security: expression returns a bool, NOT the token string.
+    ("op", "signed_in", r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#),
     // aws
     (
         "aws",
         "profile",
-        "env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE",
+        r#"env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default""#,
     ),
     (
         "aws",
         "region",
-        "env.AWS_REGION or env.AWS_DEFAULT_REGION or aws.config_region",
+        r#"env.AWS_REGION or env.AWS_DEFAULT_REGION or cache.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" ].region"#,
     ),
     (
         "aws",
         "expiration",
         "env.AWS_CREDENTIAL_EXPIRATION or env.AWS_SESSION_EXPIRATION",
     ),
-    // op (daemon provider removed; virtual from env only)
-    // Security: expression returns a bool, NOT the token string.
-    ("op", "signed_in", r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#),
-    // gcloud (P1: env direct values only; live.* override is P2)
+    // gcloud
     (
         "gcloud",
         "project",
-        "env.CLOUDSDK_CORE_PROJECT or gcloud.config_project",
+        "env.CLOUDSDK_CORE_PROJECT or cache.gcloud_configs[ env.CLOUDSDK_ACTIVE_CONFIG_NAME or cache.gcloud_configs.active_config ].project",
+    ),
+    (
+        "gcloud",
+        "account",
+        "cache.gcloud_configs[ env.CLOUDSDK_ACTIVE_CONFIG_NAME or cache.gcloud_configs.active_config ].account",
     ),
 ];
 

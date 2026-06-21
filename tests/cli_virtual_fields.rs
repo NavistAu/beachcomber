@@ -161,14 +161,14 @@ fn cascade_first_non_empty_wins() {
         .into_iter()
         .collect();
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
-    daemon_data.insert("terraform.path_workspace".to_string(), json!("staging"));
+    daemon_data.insert("terraform.workspace".to_string(), json!("staging"));
     let ctx = EvalContext {
         env_vars: &env_vars,
         daemon_data: &daemon_data,
     };
     let result = vf
         .evaluate_expression(
-            "env.TF_WORKSPACE or terraform.path_workspace",
+            "env.TF_WORKSPACE or cache.terraform.workspace",
             &ctx,
             &mut Default::default(),
         )
@@ -181,14 +181,14 @@ fn cascade_falls_through_to_daemon_when_env_empty() {
     let vf = VirtualFields::defaults_only();
     let env_vars: HashMap<String, String> = HashMap::new();
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
-    daemon_data.insert("terraform.path_workspace".to_string(), json!("staging"));
+    daemon_data.insert("terraform.workspace".to_string(), json!("staging"));
     let ctx = EvalContext {
         env_vars: &env_vars,
         daemon_data: &daemon_data,
     };
     let result = vf
         .evaluate_expression(
-            "env.TF_WORKSPACE or terraform.path_workspace",
+            "env.TF_WORKSPACE or cache.terraform.workspace",
             &ctx,
             &mut Default::default(),
         )
@@ -338,9 +338,8 @@ fn init_write_config_is_idempotent_and_valid() {
 #[test]
 fn gcloud_project_cascade_no_self_cycle() {
     // Regression: gcloud.project virtual field must NOT cycle into itself.
-    // Before fix: expression was "env.CLOUDSDK_CORE_PROJECT or gcloud.project"
-    // where gcloud.project IS this virtual field → cycle detected → error.
-    // After fix: expression falls back to gcloud.config_project (daemon intrinsic).
+    // Expression: env.CLOUDSDK_CORE_PROJECT or cache.gcloud_configs[...].project
+    // The cache.* form avoids any self-reference.
     let vf = VirtualFields::defaults_only();
 
     // Case 1: env var set → must return env value, not a cycle error.
@@ -361,11 +360,16 @@ fn gcloud_project_cascade_no_self_cycle() {
         assert_eq!(result.unwrap(), json!("myproj"), "env var must win");
     }
 
-    // Case 2: env unset + daemon has gcloud.config_project → must return daemon value.
+    // Case 2: env unset + daemon has gcloud_configs → must return project from active config.
     {
         let env_vars: HashMap<String, String> = HashMap::new();
         let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
-        daemon_data.insert("gcloud.config_project".to_string(), json!("fromfile"));
+        // cache.gcloud_configs is a CacheProvider ref — key is "gcloud_configs" (no dot).
+        // cache.gcloud_configs.active_config is a CacheField ref — key is "gcloud_configs.active_config".
+        // Both are needed: the CacheProvider for indexing, the CacheField for active_config lookup.
+        let configs_obj = json!({"active_config": "default", "default": {"project": "fromfile", "account": "user@example.com"}});
+        daemon_data.insert("gcloud_configs".to_string(), configs_obj.clone());
+        daemon_data.insert("gcloud_configs.active_config".to_string(), json!("default"));
         let ctx = EvalContext {
             env_vars: &env_vars,
             daemon_data: &daemon_data,
@@ -450,5 +454,398 @@ fn materialize_defaults_produces_valid_toml() {
     assert!(
         toml_str.contains("workspace"),
         "materialized TOML must contain 'workspace'; got:\n{toml_str}"
+    );
+}
+
+// ── Per-cascade behavior tests (Task 5) ──────────────────────────────────────
+
+// Helper: build daemon_data with aws_profiles whole-object (CacheProvider key "aws_profiles").
+fn aws_profiles_daemon_data() -> HashMap<String, serde_json::Value> {
+    let mut d = HashMap::new();
+    d.insert(
+        "aws_profiles".to_string(),
+        json!({"default": {"region": "us-east-1"}, "staging": {"region": "eu-west-1"}}),
+    );
+    d
+}
+
+// Helper: build daemon_data with gcloud_configs whole-object plus active_config CacheField.
+fn gcloud_configs_daemon_data(active: &str) -> HashMap<String, serde_json::Value> {
+    let mut d = HashMap::new();
+    let obj = json!({
+        "active_config": active,
+        "default": {"project": "proj-default", "account": "default@example.com"},
+        "work": {"project": "proj-work", "account": "work@example.com"}
+    });
+    d.insert("gcloud_configs".to_string(), obj);
+    d.insert("gcloud_configs.active_config".to_string(), json!(active));
+    d
+}
+
+// ── aws.region cascade ────────────────────────────────────────────────────────
+
+#[test]
+fn aws_region_env_aws_region_wins() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> =
+        [("AWS_REGION".to_string(), "ap-southeast-1".to_string())]
+            .into_iter()
+            .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &aws_profiles_daemon_data(),
+    };
+    let result = vf
+        .evaluate("aws", "region", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("ap-southeast-1"),
+        "AWS_REGION env var must win"
+    );
+}
+
+#[test]
+fn aws_region_named_profile_via_aws_profile_env() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = [("AWS_PROFILE".to_string(), "staging".to_string())]
+        .into_iter()
+        .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &aws_profiles_daemon_data(),
+    };
+    let result = vf
+        .evaluate("aws", "region", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("eu-west-1"),
+        "AWS_PROFILE=staging should select staging profile region"
+    );
+}
+
+#[test]
+fn aws_region_default_profile_when_no_env() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &aws_profiles_daemon_data(),
+    };
+    let result = vf
+        .evaluate("aws", "region", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("us-east-1"),
+        "unset AWS_PROFILE must fall back to 'default' profile region"
+    );
+}
+
+// ── aws.profile cascade ───────────────────────────────────────────────────────
+
+#[test]
+fn aws_profile_returns_default_when_all_env_unset() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &HashMap::new(),
+    };
+    let result = vf
+        .evaluate("aws", "profile", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("default"),
+        "aws.profile must return \"default\" when all env vars unset"
+    );
+}
+
+#[test]
+fn aws_profile_aws_profile_env_wins() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = [("AWS_PROFILE".to_string(), "prod".to_string())]
+        .into_iter()
+        .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &HashMap::new(),
+    };
+    let result = vf
+        .evaluate("aws", "profile", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(result, json!("prod"), "AWS_PROFILE env var must win");
+}
+
+// ── gcloud.project cascade ────────────────────────────────────────────────────
+
+#[test]
+fn gcloud_project_active_config_from_cache() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &gcloud_configs_daemon_data("default"),
+    };
+    let result = vf
+        .evaluate("gcloud", "project", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("proj-default"),
+        "gcloud.project must use active_config from cache"
+    );
+}
+
+#[test]
+fn gcloud_project_cloudsdk_active_config_name_env_overrides() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = [(
+        "CLOUDSDK_ACTIVE_CONFIG_NAME".to_string(),
+        "work".to_string(),
+    )]
+    .into_iter()
+    .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &gcloud_configs_daemon_data("default"),
+    };
+    let result = vf
+        .evaluate("gcloud", "project", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("proj-work"),
+        "CLOUDSDK_ACTIVE_CONFIG_NAME env var must override cache.gcloud_configs.active_config"
+    );
+}
+
+#[test]
+fn gcloud_project_cloudsdk_core_project_env_wins() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = [(
+        "CLOUDSDK_CORE_PROJECT".to_string(),
+        "explicit-project".to_string(),
+    )]
+    .into_iter()
+    .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &gcloud_configs_daemon_data("default"),
+    };
+    let result = vf
+        .evaluate("gcloud", "project", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("explicit-project"),
+        "CLOUDSDK_CORE_PROJECT env var must win over cache"
+    );
+}
+
+// ── gcloud.account cascade ────────────────────────────────────────────────────
+
+#[test]
+fn gcloud_account_active_config_from_cache() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &gcloud_configs_daemon_data("work"),
+    };
+    let result = vf
+        .evaluate("gcloud", "account", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("work@example.com"),
+        "gcloud.account must use active_config from cache"
+    );
+}
+
+#[test]
+fn gcloud_account_cloudsdk_active_config_name_env_overrides() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = [(
+        "CLOUDSDK_ACTIVE_CONFIG_NAME".to_string(),
+        "work".to_string(),
+    )]
+    .into_iter()
+    .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &gcloud_configs_daemon_data("default"),
+    };
+    let result = vf
+        .evaluate("gcloud", "account", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("work@example.com"),
+        "CLOUDSDK_ACTIVE_CONFIG_NAME must select the work config account"
+    );
+}
+
+// ── python.version cascade ────────────────────────────────────────────────────
+
+#[test]
+fn python_version_env_pyenv_version_wins() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = [("PYENV_VERSION".to_string(), "3.12.0".to_string())]
+        .into_iter()
+        .collect();
+    let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
+    daemon_data.insert("mise.python".to_string(), json!("3.11.0"));
+    daemon_data.insert("python.venv_version".to_string(), json!("3.10.0"));
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon_data,
+    };
+    let result = vf
+        .evaluate("python", "version", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("3.12.0"),
+        "PYENV_VERSION must win over cache.mise.python and cache.python.venv_version"
+    );
+}
+
+#[test]
+fn python_version_cache_mise_python_fallback() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
+    daemon_data.insert("mise.python".to_string(), json!("3.11.5"));
+    daemon_data.insert("python.venv_version".to_string(), json!("3.10.0"));
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon_data,
+    };
+    let result = vf
+        .evaluate("python", "version", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("3.11.5"),
+        "cache.mise.python must win over cache.python.venv_version"
+    );
+}
+
+#[test]
+fn python_version_cache_python_venv_version_fallback() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
+    daemon_data.insert("python.venv_version".to_string(), json!("3.10.14"));
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon_data,
+    };
+    let result = vf
+        .evaluate("python", "version", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("3.10.14"),
+        "cache.python.venv_version must be used when mise/asdf not available"
+    );
+}
+
+// ── terraform.workspace cascade ───────────────────────────────────────────────
+
+#[test]
+fn terraform_workspace_env_wins() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = [("TF_WORKSPACE".to_string(), "prod".to_string())]
+        .into_iter()
+        .collect();
+    let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
+    daemon_data.insert("terraform.workspace".to_string(), json!("staging"));
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon_data,
+    };
+    let result = vf
+        .evaluate("terraform", "workspace", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(result, json!("prod"), "TF_WORKSPACE env var must win");
+}
+
+#[test]
+fn terraform_workspace_cache_fallback() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
+    daemon_data.insert("terraform.workspace".to_string(), json!("main"));
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &daemon_data,
+    };
+    let result = vf
+        .evaluate("terraform", "workspace", &ctx, &mut Default::default())
+        .unwrap();
+    assert_eq!(
+        result,
+        json!("main"),
+        "cache.terraform.workspace must be used when TF_WORKSPACE unset"
+    );
+}
+
+// ── op.signed_in security guard ───────────────────────────────────────────────
+
+#[test]
+fn op_signed_in_is_bool_true_when_token_set() {
+    let vf = VirtualFields::defaults_only();
+    let token = "service-account-token-xyz";
+    let env_vars: HashMap<String, String> =
+        [("OP_SERVICE_ACCOUNT_TOKEN".to_string(), token.to_string())]
+            .into_iter()
+            .collect();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &HashMap::new(),
+    };
+    let result = vf
+        .evaluate("op", "signed_in", &ctx, &mut Default::default())
+        .unwrap();
+    assert!(
+        result.is_boolean(),
+        "op.signed_in must be a bool, not a string"
+    );
+    assert_eq!(
+        result,
+        json!(true),
+        "op.signed_in must be true when token set"
+    );
+    // Security: must NEVER contain the token string.
+    assert_ne!(
+        result.as_str().unwrap_or(""),
+        token,
+        "op.signed_in must not leak the token value"
+    );
+}
+
+#[test]
+fn op_signed_in_is_bool_false_when_token_unset() {
+    let vf = VirtualFields::defaults_only();
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let ctx = EvalContext {
+        env_vars: &env_vars,
+        daemon_data: &HashMap::new(),
+    };
+    let result = vf
+        .evaluate("op", "signed_in", &ctx, &mut Default::default())
+        .unwrap();
+    assert!(
+        result.is_boolean(),
+        "op.signed_in must be a bool, not a string"
+    );
+    assert_eq!(
+        result,
+        json!(false),
+        "op.signed_in must be false when token unset"
     );
 }

@@ -41,12 +41,12 @@ fn git_branch_is_not_virtual() {
 #[test]
 fn discover_refs_finds_daemon_dep_in_cascade() {
     use beachcomber::cli::virtual_fields::{Ref, discover_expression_refs};
-    // The cascade "env.TF_WORKSPACE or terraform.path_workspace" has a daemon dep.
-    let refs = discover_expression_refs("env.TF_WORKSPACE or terraform.path_workspace");
-    let has_daemon_dep = refs.contains(&Ref::Resolved("terraform".into(), "path_workspace".into()));
+    // The cascade "env.TF_WORKSPACE or cache.terraform.workspace" has a daemon dep (CacheField).
+    let refs = discover_expression_refs("env.TF_WORKSPACE or cache.terraform.workspace");
+    let has_daemon_dep = refs.contains(&Ref::CacheField("terraform".into(), "workspace".into()));
     assert!(
         has_daemon_dep,
-        "cascade must discover daemon dep terraform.path_workspace; got: {refs:?}"
+        "cascade must discover daemon dep cache.terraform.workspace; got: {refs:?}"
     );
 }
 
@@ -85,13 +85,13 @@ fn dotless_key_needs_daemon() {
 }
 
 /// #4 unit: dotless keys that match a virtual-namespace provider with daemon refs still
-/// need the daemon. terraform.workspace cascades through to terraform.path_workspace (a
+/// need the daemon. terraform.workspace cascades through to cache.terraform.workspace (a
 /// daemon field), so the daemon must be available even though the key is handled client-side.
 #[test]
 fn dotless_virtual_provider_name_still_needs_daemon() {
     let vf = VirtualFields::defaults_only();
     // "terraform" is a virtual-namespace provider (handled client-side), but its
-    // workspace field has a daemon ref (terraform.path_workspace), so needs the daemon.
+    // workspace field has a daemon ref (cache.terraform.workspace), so needs the daemon.
     assert!(
         key_needs_daemon("terraform", &vf),
         "bare 'terraform' has a virtual field with a daemon dep — must need the daemon"
@@ -134,7 +134,7 @@ fn virtual_cascade_env_wins_no_daemon_needed() {
 }
 
 /// #7 negative: with TF_WORKSPACE unset, the env term is empty so the cascade
-/// must fall through to the daemon dep (terraform.path_workspace) — i.e. the
+/// must fall through to the daemon dep (cache.terraform.workspace) — i.e. the
 /// daemon must be attempted, NOT short-circuited to an empty result.
 ///
 /// We prove "the daemon was attempted" deterministically by making daemon
@@ -197,7 +197,7 @@ fn virtual_cascade_env_wins_skips_unstartable_daemon() {
 #[test]
 fn virtual_field_with_daemon_ref_needs_daemon() {
     let vf = VirtualFields::defaults_only();
-    // terraform.workspace has daemon ref terraform.path_workspace — needs daemon.
+    // terraform.workspace has daemon ref cache.terraform.workspace — needs daemon.
     assert!(
         key_needs_daemon("terraform.workspace", &vf),
         "terraform.workspace has a daemon dep and must need the daemon for force/wait propagation"
@@ -246,8 +246,8 @@ fn bare_virtual_namespace_provider_env_only_does_not_need_daemon() {
 /// Step 1.4 unit: `key_needs_daemon` returns true for bare-provider keys that
 /// have at least one virtual field with a daemon ref (e.g. `terraform`).
 ///
-/// terraform.workspace = env.TF_WORKSPACE or terraform.path_workspace
-/// — falls through to a daemon field, so the daemon must be available.
+/// terraform.workspace = env.TF_WORKSPACE or cache.terraform.workspace
+/// — falls through to a cache field, so the daemon must be available.
 #[test]
 fn bare_virtual_namespace_provider_with_daemon_ref_needs_daemon() {
     let vf = VirtualFields::defaults_only();

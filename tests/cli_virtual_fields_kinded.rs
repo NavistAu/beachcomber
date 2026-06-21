@@ -281,7 +281,13 @@ fn evaluate_namespace_all_virtual_fields_present() {
 
     let vf = VirtualFields::defaults_only();
     let env: HashMap<String, String> = HashMap::new();
-    let daemon: HashMap<String, serde_json::Value> = HashMap::new();
+    // aws.region uses cache.aws_profiles[...].region — provide daemon data so it evaluates.
+    let daemon: HashMap<String, serde_json::Value> = [(
+        "aws_profiles".to_string(),
+        serde_json::json!({"default":{"region":"us-east-1"}}),
+    )]
+    .into_iter()
+    .collect();
 
     // "aws" namespace has profile, region, expiration virtual fields
     let result = evaluate_namespace("aws", &vf, &env, &daemon);

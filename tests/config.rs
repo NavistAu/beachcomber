@@ -930,10 +930,10 @@ not_a_valid_key = "oops"
 fn config_parses_virtual_field_expressions() {
     let toml = r#"
 [providers.terraform]
-virtual.workspace = "env.MY_TF_WORKSPACE or terraform.path_workspace"
+virtual.workspace = "env.MY_TF_WORKSPACE or cache.terraform.workspace"
 
 [providers.python]
-virtual.version = "env.PYENV_VERSION or python.venv_version"
+virtual.version = "env.PYENV_VERSION or cache.python.venv_version"
 "#;
     let config: Config = toml::from_str(toml).expect("valid toml");
     let fields = config.virtual_fields();
@@ -941,13 +941,13 @@ virtual.version = "env.PYENV_VERSION or python.venv_version"
         fields
             .get(&("terraform".to_string(), "workspace".to_string()))
             .map(|s| s.as_str()),
-        Some("env.MY_TF_WORKSPACE or terraform.path_workspace"),
+        Some("env.MY_TF_WORKSPACE or cache.terraform.workspace"),
     );
     assert_eq!(
         fields
             .get(&("python".to_string(), "version".to_string()))
             .map(|s| s.as_str()),
-        Some("env.PYENV_VERSION or python.venv_version"),
+        Some("env.PYENV_VERSION or cache.python.venv_version"),
     );
 }
 
@@ -958,7 +958,7 @@ fn config_source_knobs_not_confused_with_virtual_fields() {
     let toml = r#"
 [providers.terraform]
 poll_interval = 30
-virtual.workspace = "env.TF_WORKSPACE or terraform.path_workspace"
+virtual.workspace = "env.TF_WORKSPACE or cache.terraform.workspace"
 "#;
     let config: Config = toml::from_str(toml).expect("valid toml");
     let fields = config.virtual_fields();
@@ -983,10 +983,10 @@ fn validate_providers_ignores_virtual_subtable() {
     // inside [providers.git] before the diff sub-table header.
     let toml_str = r#"
 [providers.terraform]
-virtual.workspace = "env.TF_WORKSPACE or terraform.path_workspace"
+virtual.workspace = "env.TF_WORKSPACE or cache.terraform.workspace"
 
 [providers.aws]
-virtual.region = "env.AWS_REGION or env.AWS_DEFAULT_REGION or aws.config_region"
+virtual.region = "env.AWS_REGION or env.AWS_DEFAULT_REGION or cache.aws_profiles[env.AWS_PROFILE or \"default\"].region"
 
 [providers.git]
 virtual.branch_display = "env.GIT_BRANCH or git.branch"
@@ -1021,7 +1021,7 @@ poll_count = 12
         fields
             .get(&("terraform".to_string(), "workspace".to_string()))
             .map(|s| s.as_str()),
-        Some("env.TF_WORKSPACE or terraform.path_workspace"),
+        Some("env.TF_WORKSPACE or cache.terraform.workspace"),
         "virtual_fields() must still return terraform.workspace"
     );
     assert_eq!(
