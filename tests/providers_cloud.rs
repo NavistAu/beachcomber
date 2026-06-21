@@ -53,14 +53,19 @@ fn aws_executes_without_panic() {
 fn gcloud_provider_metadata() {
     let p = GcloudProvider;
     let meta = p.metadata();
-    assert_eq!(meta.name, "gcloud");
+    assert_eq!(meta.name, "gcloud_configs");
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
-    assert_eq!(src.name, "config");
+    assert_eq!(src.name, "config_dir");
     assert_eq!(src.scope, SourceScope::Global);
-    let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"config_project"));
-    assert!(fields.contains(&"account"));
+    let field_names: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
+    // Fixed active_config String field
+    assert!(field_names.contains(&"active_config"));
+    // Dynamic sentinel for per-config Object fields
+    assert!(
+        field_names.iter().any(|n| n.starts_with('<')),
+        "source must declare a dynamic field sentinel; got: {field_names:?}"
+    );
 }
 
 #[test]
@@ -96,15 +101,50 @@ fn gcloud_reads_active_config_indirection() {
         },
     );
 
+    // New shape: 'staging' is an Object with project/account sub-fields.
+    // active_config is a String field with the name of the active config.
     assert_eq!(
-        result.fields.get("config_project").unwrap().as_text(),
-        "my-project",
-        "config_project should be read from configurations/config_staging/properties"
+        result.fields.get("active_config").and_then(|v| {
+            if let beachcomber::provider::Value::String(s) = v {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        }),
+        Some("staging"),
+        "active_config must be 'staging'"
     );
-    assert_eq!(
-        result.fields.get("account").unwrap().as_text(),
-        "user@example.com"
-    );
+    let staging_val = result
+        .fields
+        .get("staging")
+        .expect("'staging' config must be present");
+    match staging_val {
+        beachcomber::provider::Value::Object(map) => {
+            assert_eq!(
+                map.get("project").and_then(|v| {
+                    if let beachcomber::provider::Value::String(s) = v {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                }),
+                Some("my-project"),
+                "staging.project should be my-project"
+            );
+            assert_eq!(
+                map.get("account").and_then(|v| {
+                    if let beachcomber::provider::Value::String(s) = v {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                }),
+                Some("user@example.com"),
+                "staging.account should be user@example.com"
+            );
+        }
+        other => panic!("'staging' must be Value::Object, got {other:?}"),
+    }
 }
 
 // Note: gcloud_cloudsdk_active_config_name_overrides_active_config_file was removed in P1.
@@ -152,9 +192,25 @@ fn gcloud_project_strip_not_greedy() {
         },
     );
 
-    assert_eq!(
-        result.fields.get("config_project").unwrap().as_text(),
-        "correct-project",
-        "strip_prefix must not match 'projectid'"
-    );
+    // New shape: 'default' is an Object with a 'project' sub-field.
+    let default_val = result
+        .fields
+        .get("default")
+        .expect("'default' config must be present");
+    match default_val {
+        beachcomber::provider::Value::Object(map) => {
+            assert_eq!(
+                map.get("project").and_then(|v| {
+                    if let beachcomber::provider::Value::String(s) = v {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                }),
+                Some("correct-project"),
+                "strip_prefix must not match 'projectid'; default.project must be correct-project"
+            );
+        }
+        other => panic!("'default' must be Value::Object, got {other:?}"),
+    }
 }

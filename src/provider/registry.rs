@@ -165,7 +165,7 @@ impl ProviderRegistry {
             .expect("direnv");
         registry
             .register(Box::new(crate::provider::gcloud::GcloudProvider))
-            .expect("gcloud");
+            .expect("gcloud_configs");
         registry
             .register(Box::new(crate::provider::git::GitProvider))
             .expect("git");
@@ -232,7 +232,7 @@ impl ProviderRegistry {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         add_builtin!("battery", crate::provider::battery::BatteryProvider);
         add_builtin!("direnv", crate::provider::direnv::DirenvProvider);
-        add_builtin!("gcloud", crate::provider::gcloud::GcloudProvider);
+        add_builtin!("gcloud_configs", crate::provider::gcloud::GcloudProvider);
         add_builtin!("git", crate::provider::git::GitProvider);
         add_builtin!("hostname", crate::provider::hostname::HostnameProvider);
         add_builtin!(

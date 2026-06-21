@@ -1,41 +1,291 @@
 use beachcomber::provider::Provider;
+use beachcomber::provider::Value;
 use beachcomber::provider::gcloud::GcloudProvider;
 use tempfile::TempDir;
 
-fn make_gcloud_config(dir: &TempDir, active: &str, project: &str, account: &str) {
-    // Create: <dir>/active_config  +  <dir>/configurations/config_<active>/properties
-    std::fs::write(dir.path().join("active_config"), active).unwrap();
+// Helper: write active_config file and one config_<name>/properties under a tempdir.
+fn write_config(dir: &TempDir, name: &str, project: &str, account: &str) {
     let conf_dir = dir
         .path()
         .join("configurations")
-        .join(format!("config_{active}"));
+        .join(format!("config_{name}"));
     std::fs::create_dir_all(&conf_dir).unwrap();
     let props = format!("[core]\nproject = {project}\naccount = {account}\n");
-    std::fs::write(conf_dir.join("properties"), props).unwrap();
+    std::fs::write(conf_dir.join("properties"), &props).unwrap();
 }
 
-#[test]
-fn gcloud_env_override_not_honored_in_daemon() {
-    // Confirms CLOUDSDK_ACTIVE_CONFIG_NAME is NOT read by the daemon.
-    // The daemon must use only the active_config file.
-    let dir = TempDir::new().unwrap();
-    make_gcloud_config(&dir, "default", "my-project", "me@example.com");
+fn write_active_config(dir: &TempDir, name: &str) {
+    std::fs::write(dir.path().join("active_config"), name).unwrap();
+}
 
-    // Set env var to a non-existent config — if daemon reads it, execute will return empty.
+// ── metadata name ─────────────────────────────────────────────────────────────
+
+#[test]
+fn gcloud_provider_name_is_gcloud_configs() {
+    assert_eq!(GcloudProvider.metadata().name, "gcloud_configs");
+}
+
+// ── data provider shape: one Object field per config + active_config String ──
+
+#[test]
+fn gcloud_configs_two_configs_and_active_config_field() {
+    let dir = TempDir::new().unwrap();
+    write_active_config(&dir, "default");
+    write_config(&dir, "default", "proj-a", "a@x.com");
+    write_config(&dir, "work", "proj-b", "b@x.com");
+
+    let result = temp_env::with_var(
+        "CLOUDSDK_CONFIG",
+        Some(dir.path().to_str().unwrap()),
+        || {
+            let sources = GcloudProvider.sources();
+            let src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_dir")
+                .expect("config_dir source must exist");
+            src.execute(None)
+        },
+    );
+
+    // active_config String field
+    assert_eq!(
+        result.fields.get("active_config").map(|v| {
+            if let Value::String(s) = v {
+                s.as_str()
+            } else {
+                ""
+            }
+        }),
+        Some("default"),
+        "active_config must be 'default'"
+    );
+
+    // 'default' config Object{project, account}
+    let default_val = result
+        .fields
+        .get("default")
+        .expect("'default' field must be present");
+    match default_val {
+        Value::Object(map) => {
+            assert_eq!(
+                map.get("project").and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                }),
+                Some("proj-a"),
+                "default.project must be proj-a"
+            );
+            assert_eq!(
+                map.get("account").and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                }),
+                Some("a@x.com"),
+                "default.account must be a@x.com"
+            );
+        }
+        other => panic!("'default' must be Value::Object, got {other:?}"),
+    }
+
+    // 'work' config Object{project, account}
+    let work_val = result
+        .fields
+        .get("work")
+        .expect("'work' field must be present");
+    match work_val {
+        Value::Object(map) => {
+            assert_eq!(
+                map.get("project").and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                }),
+                Some("proj-b"),
+                "work.project must be proj-b"
+            );
+            assert_eq!(
+                map.get("account").and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                }),
+                Some("b@x.com"),
+                "work.account must be b@x.com"
+            );
+        }
+        other => panic!("'work' must be Value::Object, got {other:?}"),
+    }
+
+    // No 'configs' wrapper, no 'config_project' field
+    assert!(
+        !result.fields.contains_key("configs"),
+        "must not have a 'configs' wrapper key"
+    );
+    assert!(
+        !result.fields.contains_key("config_project"),
+        "must not have the old 'config_project' field"
+    );
+}
+
+// ── $CLOUDSDK_ACTIVE_CONFIG_NAME does NOT change active_config ────────────────
+
+#[test]
+fn gcloud_active_config_name_env_does_not_override_file() {
+    let dir = TempDir::new().unwrap();
+    write_active_config(&dir, "default");
+    write_config(&dir, "default", "proj-a", "a@x.com");
+
     let result = temp_env::with_vars(
         [
             ("CLOUDSDK_CONFIG", Some(dir.path().to_str().unwrap())),
-            ("CLOUDSDK_ACTIVE_CONFIG_NAME", Some("nonexistent-config")),
+            ("CLOUDSDK_ACTIVE_CONFIG_NAME", Some("work")),
         ],
         || {
             let sources = GcloudProvider.sources();
-            sources[0].execute(None)
+            let src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_dir")
+                .expect("config_dir source must exist");
+            src.execute(None)
         },
     );
-    // Daemon must use active_config file → "default" → project/account present.
+
+    // active_config must still be "default" from the file, not "work" from env
     assert_eq!(
-        result.fields.get("config_project").map(|v| v.as_text()),
-        Some("my-project".to_string()),
-        "daemon must follow active_config file, not $CLOUDSDK_ACTIVE_CONFIG_NAME"
+        result.fields.get("active_config").map(|v| {
+            if let Value::String(s) = v {
+                s.as_str()
+            } else {
+                ""
+            }
+        }),
+        Some("default"),
+        "active_config must follow the active_config file, not $CLOUDSDK_ACTIVE_CONFIG_NAME"
+    );
+}
+
+// ── missing active_config file still returns configs ─────────────────────────
+
+#[test]
+fn gcloud_configs_without_active_config_file_still_enumerates() {
+    let dir = TempDir::new().unwrap();
+    // No active_config file
+    write_config(&dir, "default", "proj-a", "a@x.com");
+
+    let result = temp_env::with_var(
+        "CLOUDSDK_CONFIG",
+        Some(dir.path().to_str().unwrap()),
+        || {
+            let sources = GcloudProvider.sources();
+            let src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_dir")
+                .expect("config_dir source must exist");
+            src.execute(None)
+        },
+    );
+
+    // No active_config field (file absent), but config objects still present
+    assert!(
+        !result.fields.contains_key("active_config"),
+        "active_config must be absent when file is missing"
+    );
+    assert!(
+        result.fields.contains_key("default"),
+        "'default' config must still be enumerated"
+    );
+}
+
+// ── no configs and no active_config → empty result ───────────────────────────
+
+#[test]
+fn gcloud_configs_empty_dir_returns_empty() {
+    let dir = TempDir::new().unwrap();
+    // Empty: no active_config, no configurations/
+
+    let result = temp_env::with_var(
+        "CLOUDSDK_CONFIG",
+        Some(dir.path().to_str().unwrap()),
+        || {
+            let sources = GcloudProvider.sources();
+            let src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_dir")
+                .expect("config_dir source must exist");
+            src.execute(None)
+        },
+    );
+
+    assert!(
+        result.fields.is_empty(),
+        "empty dir must produce empty result; got: {:?}",
+        result.fields
+    );
+}
+
+// ── configs with both fields empty are skipped ────────────────────────────────
+
+#[test]
+fn gcloud_configs_skips_config_with_empty_project_and_account() {
+    let dir = TempDir::new().unwrap();
+    write_active_config(&dir, "default");
+    // 'empty' config: properties file but no project/account values
+    let conf_dir = dir.path().join("configurations").join("config_empty");
+    std::fs::create_dir_all(&conf_dir).unwrap();
+    std::fs::write(conf_dir.join("properties"), "[core]\n").unwrap();
+    // 'default' with real values
+    write_config(&dir, "default", "proj-a", "a@x.com");
+
+    let result = temp_env::with_var(
+        "CLOUDSDK_CONFIG",
+        Some(dir.path().to_str().unwrap()),
+        || {
+            let sources = GcloudProvider.sources();
+            let src = sources
+                .iter()
+                .find(|s| s.metadata().name == "config_dir")
+                .expect("config_dir source must exist");
+            src.execute(None)
+        },
+    );
+
+    assert!(
+        !result.fields.contains_key("empty"),
+        "'empty' config (no project/account) must be skipped"
+    );
+    assert!(
+        result.fields.contains_key("default"),
+        "'default' config must be present"
+    );
+}
+
+// ── source metadata shape ─────────────────────────────────────────────────────
+
+#[test]
+fn gcloud_provider_source_has_active_config_and_dynamic_sentinel() {
+    let meta = GcloudProvider.metadata();
+    assert_eq!(meta.sources.len(), 1);
+    let src = &meta.sources[0];
+    assert_eq!(src.name, "config_dir");
+    let field_names: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
+    // Fixed active_config field
+    assert!(
+        field_names.contains(&"active_config"),
+        "source must declare 'active_config' field; got: {field_names:?}"
+    );
+    // Dynamic config sentinel
+    assert!(
+        field_names.iter().any(|n| n.starts_with('<')),
+        "source must declare a dynamic field sentinel; got: {field_names:?}"
     );
 }
