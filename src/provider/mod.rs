@@ -421,6 +421,15 @@ pub trait Source: Send + Sync {
         path.map(|s| s.to_string())
     }
 
+    /// Absolute files this PathScoped instance should watch, derived from its
+    /// scope `path`. Default: none. An env-selected file source (kube/talos)
+    /// returns the concrete files encoded in its (possibly ':'-joined) path so
+    /// the scheduler can watch each one even though the path is not a single
+    /// watchable directory. Only consulted for Watch/WatchAndPoll PathScoped sources.
+    fn watched_files(&self, _path: Option<&str>) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
     /// If true, the request path re-executes this source on every read instead
     /// of serving cache. Only for sources whose execute is a cheap file/syscall
     /// read. Expensive sources (subprocess, worktree scan, network) must return
