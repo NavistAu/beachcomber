@@ -334,6 +334,14 @@ This mirrors the policy in `docs/versioning.md`. The `Hello` handshake
 exists so clients can detect incompatibility at connection time rather
 than at first-op failure.
 
+## Env-cascade P2 — no wire change
+
+Env-cascade P2 (env-selected file resolution, Tier B providers: `kubecontext`, `talos`) adds **no** wire-protocol change. The client resolves the env-selected file path via a path expression (`env.KUBECONFIG or '~/.kube/config'`, etc.) and passes the result as the existing `path` field of the `Get` request. The daemon receives only the resolved path as a cache coordinate — it never reads `$KUBECONFIG`, `$TALOSCONFIG`, or any other selector env var.
+
+The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs`) is a provider-name change visible in the `key` field of `Get`/`Refresh` requests and in `Status` rows — not a change to request/response shape or encoding.
+
+---
+
 ## Glossary
 
 - **Provider** — a source of data (e.g. `git`, `hostname`, `mise`). Produces

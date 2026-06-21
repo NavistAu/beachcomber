@@ -6,9 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+#### Field resolution model + `cache.*` namespace (env-cascade P2)
+
+- **New canon doc `docs/canon/field_resolution.md`.** Defines the client-side field-resolution model: field-type taxonomy (`native` / `external` / `literal` / `virtual` / `env`), the `cache.*` namespace, path expressions, and value expressions. This is now the authoritative spec for how consumers address and resolve provider fields.
+- **`cache.*` value-expression model.** Expressions reference raw cached values as `cache.<provider>.<field>` (the stored value, bypassing any field expression) vs bare `<provider>.<field>` (the resolved field, with expression applied). A cached field's default expression is the identity; no rename is needed when a virtual field overrides a same-named cached value.
+- **Path expressions.** A provider's cache-key path is computed client-side by an expression over `cwd` and `env.*` (`[providers.<name>] path = "<expr>"`). Empty/falsy ⇒ global slot. Built-in defaults compiled into the CLI; user config overrides per provider.
+
+#### Data providers and consumer namespaces
+
+- **`aws` → `aws_profiles` data provider.** The `aws` daemon provider is now named `aws_profiles`. It returns one field per profile (each an `Object{region}`) parsed from `~/.aws/config`. The `aws` consumer namespace is now composed of **virtual fields** that index the data provider by the active profile selector: `aws.region = env.AWS_REGION or env.AWS_DEFAULT_REGION or cache.aws_profiles[env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default"].region`. `comb get aws` returns computed fields; `comb get aws_profiles` returns the raw profile enumeration.
+- **`gcloud` → `gcloud_configs` data provider.** The `gcloud` daemon provider is now named `gcloud_configs`. It returns one field per gcloud configuration (each an `Object{project, account}`) plus an `active_config` field, parsed from `~/.config/gcloud/`. The `gcloud` consumer namespace is virtual fields indexing the data provider by active config. `comb get gcloud` returns computed fields; `comb get gcloud_configs` returns the raw config enumeration.
+
+#### Env-selected file providers (Tier B)
+
+- **`kubecontext` is now PathScoped.** The provider reads the kubeconfig file named by the path expression `env.KUBECONFIG or '~/.kube/config'`. A `:`-joined list is merged (later file wins). The daemon watches each resolved file via `Source::watched_files`; the daemon never reads `$KUBECONFIG` itself — the CLI resolves it to a path and sends that as the cache coordinate.
+- **New `talos` provider.** Same shape as `kubecontext`: reads the Talos config file named by `env.TALOSCONFIG or '~/.talos/config'` as a PathScoped source. Fields: `context` (string), `endpoints` (array), `nodes` (array). Watches the resolved file via `Source::watched_files`.
+- **`Source::watched_files`.** New trait method (default: empty) returning the explicit file paths this source needs to watch, given the resolved path. Used by Tier B env-selected-file providers to register per-file watches without relying on pattern-based watch registration.
+
+### Changed (breaking, pre-1.0)
+
+- **BREAKING (pre-1.0):** `aws` daemon provider renamed to `aws_profiles`. `aws.config_region` field removed. `comb get aws_profiles` returns the raw profile dump; `comb get aws` evaluates the consumer virtual namespace. Scripts querying `aws.config_region` must be updated.
+- **BREAKING (pre-1.0):** `gcloud` daemon provider renamed to `gcloud_configs`. `gcloud.config_project` field removed. `comb get gcloud_configs` returns the raw config dump; `comb get gcloud` evaluates the consumer virtual namespace. Scripts querying `gcloud.config_project` must be updated.
+- **BREAKING (pre-1.0):** `terraform.path_workspace` renamed back to `terraform.workspace`. The P1 rename was forced by a virtual-field self-reference cycle; the `cache.*` model eliminates the cycle, so the field returns to its natural name.
+
 ### Fixed
 
 - **A wedged daemon no longer blackholes the socket.** On startup, when another daemon holds the lock with the same build, the new process now probes the canonical socket before exiting: it exits silently only if that daemon is actually serving. A same-build owner that acquired the lock but never bound the socket (or whose socket was deleted) is superseded after a short grace, so a healthy daemon rebinds instead of clients hitting a permanently dead socket. Startup orphan-reaping (which could kill peer daemons on other socket paths) was removed in favour of this targeted probe.
+
+### No wire-protocol change
+
+- Env-cascade P2 (env-selected file resolution, Tier B providers) adds **no** wire-protocol change. The existing `path` field on the `Get` request carries the client-resolved file path as the cache coordinate. See `docs/protocol-spec.md`.
 
 ## [0.6.1] - 2026-05-29
 
