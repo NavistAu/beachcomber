@@ -1082,7 +1082,7 @@ impl Config {
             if matches!(sub_key.as_str(), "invalidation" | "fields" | "virtual") {
                 // "invalidation"/"fields" appear in legacy flat shape; in multi-source they
                 // live inside per-source blocks instead. "virtual" holds client-side
-                // virtual-field expressions (canon invariant 16: evaluated CLI-side, never
+                // virtual-field expressions (canon invariant 7: evaluated CLI-side, never
                 // by the daemon). Skip all three at provider level.
                 continue;
             }
@@ -1239,7 +1239,7 @@ impl Config {
                 }
 
                 // Skip the `virtual` sub-table — it holds client-side virtual-field
-                // expressions (canon invariant 16: evaluated CLI-side, never by the daemon).
+                // expressions (canon invariant 7: evaluated CLI-side, never by the daemon).
                 if sub_key == "virtual" {
                     continue;
                 }

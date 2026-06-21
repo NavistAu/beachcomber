@@ -226,7 +226,7 @@ fn is_client_side_key(key: &str, vf: &VirtualFields) -> bool {
 
 /// Returns true if the key requires the daemon to be running.
 ///
-/// env.* keys never need the daemon (canon invariant 15).
+/// env.* keys never need the daemon (canon invariant 6).
 /// Dotless keys that match a virtual-namespace provider (one with at least one
 /// virtual field) need the daemon only if any of their virtual field expressions
 /// reference daemon (non-env, non-virtual) fields; if all virtual fields are
