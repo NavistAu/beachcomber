@@ -1032,3 +1032,42 @@ poll_count = 12
         "virtual_fields() must still return git.branch_display"
     );
 }
+
+#[test]
+fn path_expressions_parsed_from_config() {
+    let toml_str = r#"
+[providers.kubecontext]
+path = "env.KUBECONFIG or '~/.kube/config'"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let exprs = config.path_expressions();
+    assert_eq!(
+        exprs.get("kubecontext").map(|s| s.as_str()),
+        Some("env.KUBECONFIG or '~/.kube/config'"),
+        "path_expressions() must return the kubecontext path expression"
+    );
+}
+
+#[test]
+fn path_key_does_not_trip_provider_validation() {
+    // [providers.kubecontext] with a `path` string key must not cause validation errors.
+    // `path` is a scalar and is skipped by the source-block validation loop.
+    let toml_str = r#"
+[providers.kubecontext]
+path = "env.KUBECONFIG or '~/.kube/config'"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let known_providers = vec!["kubecontext".to_string()];
+    let known_sources = std::collections::HashMap::new();
+    let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
+    assert!(
+        errors.is_empty(),
+        "path key on provider must not produce validation errors: {:?}",
+        errors
+    );
+    assert!(
+        warnings.is_empty(),
+        "path key on provider must not produce validation warnings: {:?}",
+        warnings
+    );
+}

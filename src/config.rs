@@ -1294,6 +1294,23 @@ impl Config {
         (warnings, errors)
     }
 
+    /// Return per-provider path expression overrides from config.
+    ///
+    /// Reads the `path` scalar key from each `[providers.<name>]` section.
+    /// Returns a map of provider_name → path_expression_string.
+    pub fn path_expressions(&self) -> std::collections::HashMap<String, String> {
+        let mut out = std::collections::HashMap::new();
+        for (provider_name, provider_val) in &self.providers {
+            let toml::Value::Table(table) = provider_val else {
+                continue;
+            };
+            if let Some(toml::Value::String(expr)) = table.get("path") {
+                out.insert(provider_name.clone(), expr.clone());
+            }
+        }
+        out
+    }
+
     /// Return per-provider virtual field expression overrides from config.
     ///
     /// Reads the `virtual` sub-table from each `[providers.<name>]` section.

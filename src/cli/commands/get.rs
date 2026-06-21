@@ -11,6 +11,24 @@ use crate::config::Config;
 use std::collections::HashMap;
 use std::process::ExitCode;
 
+/// Compute the cache-key path for a daemon-bound key using its provider's path
+/// expression, if one is declared (built-in or config override).
+///
+/// Returns:
+/// - `Some(Some(path))` — a computed, non-empty path.
+/// - `Some(None)` — expression evaluated to empty/falsy → global slot.
+/// - `None` — no path expression for this provider → keep existing path logic.
+fn path_for_key(key: &str, config: &Config) -> Option<Option<String>> {
+    let provider = key.split('.').next().unwrap_or("");
+    let expr = crate::cli::path_expr::path_expression_for(provider, &config.path_expressions())?;
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let env: HashMap<String, String> = std::env::vars().collect();
+    Some(crate::cli::path_expr::evaluate_path(&expr, &cwd, &env))
+}
+
 /// Fetch the daemon-backed refs a virtual field's expression needs.
 ///
 /// Cascade semantics (non-strict undefined): a ref that fails to fetch or is
@@ -583,9 +601,16 @@ pub fn run_get(
         // client helper so the daemon renders the value consistently.
         if keys.len() == 1 && format.is_server_side() {
             let key = &keys[0];
+            // Use the path expression result if one is declared for this provider;
+            // otherwise fall back to the caller-supplied path.
+            let computed_path = path_for_key(key, config);
+            let effective_path: Option<&str> = match computed_path {
+                Some(ref inner) => inner.as_deref(),
+                None => path,
+            };
             let client = crate::client::Client::new(socket_path.clone());
             match client
-                .get_formatted_with_flags(key, path, format.server_format(), force, wait)
+                .get_formatted_with_flags(key, effective_path, format.server_format(), force, wait)
                 .await
             {
                 Ok(text) => {
@@ -653,8 +678,13 @@ pub fn run_get(
                     continue;
                 }
                 if let Some(ref mut session) = session_opt {
+                    let key_path: Option<Option<String>> = path_for_key(key, config);
+                    let effective_key_path: Option<&str> = match key_path {
+                        Some(ref computed) => computed.as_deref(),
+                        None => None,
+                    };
                     match session
-                        .get_formatted_with_flags(key, None, wire_fmt, force, wait)
+                        .get_formatted_with_flags(key, effective_key_path, wire_fmt, force, wait)
                         .await
                     {
                         Ok(text) => {
@@ -717,7 +747,15 @@ pub fn run_get(
                 continue;
             }
             if let Some(ref mut session) = session_opt {
-                match session.get_with_flags(key, None, force, wait).await {
+                let key_path: Option<Option<String>> = path_for_key(key, config);
+                let effective_key_path: Option<&str> = match key_path {
+                    Some(ref computed) => computed.as_deref(),
+                    None => None,
+                };
+                match session
+                    .get_with_flags(key, effective_key_path, force, wait)
+                    .await
+                {
                     Ok(response) => {
                         if !response.ok {
                             eprintln!(
