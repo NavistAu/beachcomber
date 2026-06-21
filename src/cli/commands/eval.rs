@@ -42,12 +42,14 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
         }
     }
 
-    // Daemon keys to fetch = plain daemon refs ∪ daemon deps of each virtual ref.
-    let mut daemon_keys: Vec<(String, String)> = Vec::new();
-    let mut seen_daemon: HashSet<(String, String)> = HashSet::new();
+    // Daemon refs to fetch = plain daemon refs ∪ daemon deps of each virtual ref.
+    // Stored as typed Ref variants so dispatch at fetch time needs no sentinel encoding.
+    let mut daemon_refs: Vec<Ref> = Vec::new();
+    let mut seen_field: HashSet<(String, String)> = HashSet::new();
+    let mut seen_provider: HashSet<String> = HashSet::new();
     for (p, f) in &plain_daemon_refs {
-        if seen_daemon.insert((p.clone(), f.clone())) {
-            daemon_keys.push((p.clone(), f.clone()));
+        if seen_field.insert((p.clone(), f.clone())) {
+            daemon_refs.push(Ref::CacheField(p.clone(), f.clone()));
         }
     }
     for (p, f) in &virtual_refs {
@@ -58,21 +60,19 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
                         // env.* — no daemon fetch needed.
                     }
                     Ref::CacheField(dp, df) => {
-                        if seen_daemon.insert((dp.clone(), df.clone())) {
-                            daemon_keys.push((dp, df));
+                        if seen_field.insert((dp.clone(), df.clone())) {
+                            daemon_refs.push(Ref::CacheField(dp, df));
                         }
                     }
                     Ref::CacheProvider(dp) => {
-                        // Whole provider object — represented as (provider, "") sentinel.
-                        let sentinel = (dp.clone(), String::new());
-                        if seen_daemon.insert(sentinel.clone()) {
-                            daemon_keys.push(sentinel);
+                        // Whole provider object fetch.
+                        if seen_provider.insert(dp.clone()) {
+                            daemon_refs.push(Ref::CacheProvider(dp));
                         }
                     }
                     Ref::Resolved(dp, df) => {
-                        if !vf.is_virtual(&dp, &df) && seen_daemon.insert((dp.clone(), df.clone()))
-                        {
-                            daemon_keys.push((dp, df));
+                        if !vf.is_virtual(&dp, &df) && seen_field.insert((dp.clone(), df.clone())) {
+                            daemon_refs.push(Ref::CacheField(dp, df));
                         }
                     }
                 }
@@ -97,7 +97,7 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
 
     // Fetch daemon-backed data only when something actually needs it. A template
     // referencing only env.* and/or pure-env virtual fields never starts the daemon.
-    let daemon_data: HashMap<String, serde_json::Value> = if daemon_keys.is_empty() {
+    let daemon_data: HashMap<String, serde_json::Value> = if daemon_refs.is_empty() {
         HashMap::new()
     } else {
         if let Err(e) = crate::daemon::ensure_daemon(&socket_path) {
@@ -122,12 +122,16 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
                 return Err(ExitCode::from(2));
             }
             let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
-            for (p, f) in &daemon_keys {
-                // Sentinel: empty field means whole-provider fetch (CacheProvider ref).
-                let (key, store_key) = if f.is_empty() {
-                    (p.clone(), p.clone())
-                } else {
-                    (format!("{p}.{f}"), format!("{p}.{f}"))
+            for r in &daemon_refs {
+                // Dispatch directly on the Ref variant — no sentinel encoding needed.
+                let (key, store_key) = match r {
+                    Ref::CacheProvider(p) => (p.clone(), p.clone()),
+                    Ref::CacheField(p, f) => {
+                        let k = format!("{p}.{f}");
+                        (k.clone(), k)
+                    }
+                    // Env and Resolved variants are never added to daemon_refs.
+                    _ => continue,
                 };
                 match session.get(&key, None).await {
                     Ok(resp) => {

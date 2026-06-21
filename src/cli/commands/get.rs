@@ -79,6 +79,14 @@ async fn fetch_daemon_deps(
 /// Used for bare-provider namespace evaluation: collects the daemon deps
 /// needed across ALL virtual fields of the provider so that `evaluate_namespace`
 /// can be called once with a fully-populated `daemon_data` map.
+///
+/// Canon invariant 12: a whole-provider query returns the whole subtree — the
+/// provider's daemon-cached fields AND its virtual fields. To guarantee this,
+/// the whole daemon provider `provider` is always fetched unconditionally and
+/// stored as `daemon_data[provider]`. Virtual expressions may also contribute
+/// additional individual field refs; these are fetched on top. The merge in
+/// `run_get` then combines daemon fields with virtual fields (virtual wins on
+/// key collision).
 async fn fetch_daemon_deps_for_namespace(
     provider: &str,
     vf: &VirtualFields,
@@ -90,7 +98,16 @@ async fn fetch_daemon_deps_for_namespace(
     let Some(session) = session else {
         return dd;
     };
-    // Collect the union of daemon refs across all virtual fields of this provider.
+    // Always fetch the whole daemon provider object (if it exists) so that
+    // daemon-cached fields are available for the merge step. If the provider
+    // has no daemon counterpart (e.g. conda, op), this returns nothing and
+    // the merge is a no-op — no error.
+    if let Ok(resp) = session.get_with_flags(provider, None, force, wait).await
+        && let Some(data) = resp.data
+    {
+        dd.insert(provider.to_string(), data);
+    }
+    // Also collect the union of individual daemon refs across all virtual fields.
     let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for field in vf.fields_for(provider) {
         let expr = vf.expression(provider, &field).unwrap_or("");
@@ -214,9 +231,9 @@ pub fn key_needs_daemon(key: &str, vf: &VirtualFields) -> bool {
             // Daemon-only provider (e.g. `git`, `hostname`): whole-provider daemon query.
             return true;
         }
-        // Virtual-namespace provider: need daemon if any virtual field has daemon refs.
-        // (The daemon may also be needed for the merge step, but we skip that here and
-        // let the merge fail gracefully if the daemon is unavailable.)
+        // Virtual-namespace provider: need daemon if any virtual field has daemon refs,
+        // or unconditionally because fetch_daemon_deps_for_namespace always fetches the
+        // whole provider object (for canon invariant 12 whole-subtree merge).
         return virtual_fields.iter().any(|field| {
             let expr = vf.expression(key, field).unwrap_or("");
             let refs = discover_expression_refs(expr);
@@ -501,9 +518,12 @@ pub fn run_get(
                 let env_vars: HashMap<String, String> = std::env::vars().collect();
                 let ns_result = evaluate_namespace(key, &vf, &env_vars, &daemon_data);
 
-                // Merge daemon provider fields (if a real daemon provider `key` exists):
-                // daemon fields go in first, virtual fields overwrite on collision.
-                // For providers with no daemon counterpart (e.g. conda, op), this is empty.
+                // Merge daemon provider fields with virtual fields (canon invariant 12).
+                // fetch_daemon_deps_for_namespace unconditionally fetched the whole daemon
+                // provider object and stored it as daemon_data[provider]. Daemon fields go
+                // in first; virtual fields overwrite on key collision (virtual wins).
+                // Providers with no daemon counterpart (e.g. conda, op) return nothing from
+                // the whole-provider fetch, so daemon_data[provider] is absent — merge is a no-op.
                 let mut merged = serde_json::Map::new();
                 if let Some(serde_json::Value::Object(daemon_map)) = daemon_data.get(key.as_str()) {
                     for (k, v) in daemon_map {
