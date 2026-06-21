@@ -81,7 +81,7 @@ fn run_get_multikey_server_side_uses_get_formatted_with_flags() {
     // run_get now lives in src/cli/commands/get.rs (moved in Task 2.2).
     let src = std::fs::read_to_string("src/cli/commands/get.rs").unwrap();
     assert!(
-        src.contains("get_formatted_with_flags(key, None, wire_fmt, force, wait)"),
+        src.contains("get_formatted_with_flags(key, effective_key_path, wire_fmt, force, wait)"),
         "run_get's multi-key server-side loop must forward force and wait via \
          get_formatted_with_flags"
     );
