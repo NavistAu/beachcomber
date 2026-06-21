@@ -15,6 +15,7 @@ pub mod python;
 pub mod registry;
 pub mod script;
 pub mod sudo;
+pub mod talos;
 pub mod terraform;
 pub mod uname;
 #[cfg(target_os = "macos")]

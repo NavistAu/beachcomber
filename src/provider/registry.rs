@@ -191,6 +191,9 @@ impl ProviderRegistry {
             .register(Box::new(crate::provider::sudo::SudoProvider))
             .expect("sudo");
         registry
+            .register(Box::new(crate::provider::talos::TalosProvider))
+            .expect("talos");
+        registry
             .register(Box::new(crate::provider::terraform::TerraformProvider))
             .expect("terraform");
         registry
@@ -244,6 +247,7 @@ impl ProviderRegistry {
         add_builtin!("network", crate::provider::network::NetworkProvider);
         add_builtin!("python", crate::provider::python::PythonProvider);
         add_builtin!("sudo", crate::provider::sudo::SudoProvider);
+        add_builtin!("talos", crate::provider::talos::TalosProvider);
         add_builtin!("terraform", crate::provider::terraform::TerraformProvider);
         add_builtin!("uname", crate::provider::uname::UnameProvider);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
