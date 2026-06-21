@@ -4,7 +4,9 @@
 
 use crate::cli::format::render_fmt_template_json;
 use crate::cli::output_format::{OutputFormat, format_sv, value_to_string};
-use crate::cli::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
+use crate::cli::virtual_fields::{
+    EvalContext, Ref, VirtualFields, discover_expression_refs, evaluate_namespace,
+};
 use crate::config::Config;
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -72,6 +74,110 @@ async fn fetch_daemon_deps(
     dd
 }
 
+/// Fetch daemon-backed refs for the union of all virtual fields in a provider namespace.
+///
+/// Used for bare-provider namespace evaluation: collects the daemon deps
+/// needed across ALL virtual fields of the provider so that `evaluate_namespace`
+/// can be called once with a fully-populated `daemon_data` map.
+async fn fetch_daemon_deps_for_namespace(
+    provider: &str,
+    vf: &VirtualFields,
+    session: Option<&mut crate::client::ClientSession>,
+    force: bool,
+    wait: bool,
+) -> HashMap<String, serde_json::Value> {
+    let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
+    let Some(session) = session else {
+        return dd;
+    };
+    // Collect the union of daemon refs across all virtual fields of this provider.
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for field in vf.fields_for(provider) {
+        let expr = vf.expression(provider, &field).unwrap_or("");
+        let refs = discover_expression_refs(expr);
+        for r in refs {
+            match r {
+                Ref::Env(_) => {
+                    // env.* — never contacts the daemon.
+                }
+                Ref::CacheField(p, f) => {
+                    let dep_key = format!("{p}.{f}");
+                    if seen_keys.insert(dep_key.clone())
+                        && let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait).await
+                        && let Some(data) = resp.data
+                    {
+                        dd.insert(dep_key, data);
+                    }
+                }
+                Ref::CacheProvider(p) => {
+                    if seen_keys.insert(p.clone())
+                        && let Ok(resp) = session.get_with_flags(&p, None, force, wait).await
+                        && let Some(data) = resp.data
+                    {
+                        dd.insert(p, data);
+                    }
+                }
+                Ref::Resolved(p, f) => {
+                    if !vf.is_virtual(&p, &f) {
+                        let dep_key = format!("{p}.{f}");
+                        if seen_keys.insert(dep_key.clone())
+                            && let Ok(resp) =
+                                session.get_with_flags(&dep_key, None, force, wait).await
+                            && let Some(data) = resp.data
+                        {
+                            dd.insert(dep_key, data);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    dd
+}
+
+/// Returns true if the key is a bare provider name (no dot) whose provider
+/// has at least one virtual field defined. Such keys are resolved client-side
+/// via namespace evaluation rather than sent to the daemon as whole-provider
+/// queries.
+fn is_virtual_namespace_key(key: &str, vf: &VirtualFields) -> bool {
+    !key.contains('.') && !vf.fields_for(key).is_empty()
+}
+
+/// Format an object JSON value as `key=value` lines (sorted), matching the
+/// server-side text/sh convention for whole-provider object output.
+fn format_object_text(data: &serde_json::Value) -> String {
+    let serde_json::Value::Object(map) = data else {
+        return value_to_string(data);
+    };
+    let mut lines: Vec<String> = map
+        .iter()
+        .flat_map(|(k, v)| {
+            if let serde_json::Value::Object(inner) = v {
+                inner
+                    .iter()
+                    .map(|(ik, iv)| {
+                        let val = match iv {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        format!("{k}.{ik}={val}")
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                let val = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                vec![format!("{k}={val}")]
+            }
+        })
+        .collect();
+    lines.sort();
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
 /// Returns true if a `provider.field` key should be resolved client-side
 /// (virtual field or env.* namespace) rather than forwarded to the daemon.
 fn is_client_side_key(key: &str, vf: &VirtualFields) -> bool {
@@ -86,19 +192,41 @@ fn is_client_side_key(key: &str, vf: &VirtualFields) -> bool {
 /// Returns true if the key requires the daemon to be running.
 ///
 /// env.* keys never need the daemon (canon invariant 15).
-/// Dotless keys (whole-provider queries like `comb get hostname`) always need
-/// the daemon — they are passed through to the daemon as-is.
+/// Dotless keys that match a virtual-namespace provider (one with at least one
+/// virtual field) need the daemon only if any of their virtual field expressions
+/// reference daemon (non-env, non-virtual) fields; if all virtual fields are
+/// pure-env, the daemon is skipped.
+/// Dotless keys for daemon-only providers (no virtual fields) always need the daemon.
 /// Virtual fields need the daemon only if their expression references daemon
 /// (non-env, non-virtual) fields; pure-env virtuals never need the daemon.
 /// Plain `provider.field` keys that are not virtual always need the daemon.
 ///
 /// Bug #4 fix: dotless keys were returning false (no dot → early return false).
-/// They must return true: a bare provider name is a whole-provider daemon query.
+/// They must return true: a bare provider name is a whole-provider daemon query
+/// (unless it is a virtual-namespace provider where all virtual fields are pure-env).
 pub fn key_needs_daemon(key: &str, vf: &VirtualFields) -> bool {
     let Some(dot) = key.find('.') else {
-        // Dotless key: whole-provider daemon query (e.g. `comb get hostname`).
-        // #4: must return true so ensure_daemon is called.
-        return true;
+        // Dotless key: check if it's a virtual-namespace provider.
+        // If it has virtual fields, need daemon only if any field has daemon refs.
+        // If it has no virtual fields, it's a whole-provider daemon query: need daemon.
+        let virtual_fields = vf.fields_for(key);
+        if virtual_fields.is_empty() {
+            // Daemon-only provider (e.g. `git`, `hostname`): whole-provider daemon query.
+            return true;
+        }
+        // Virtual-namespace provider: need daemon if any virtual field has daemon refs.
+        // (The daemon may also be needed for the merge step, but we skip that here and
+        // let the merge fail gracefully if the daemon is unavailable.)
+        return virtual_fields.iter().any(|field| {
+            let expr = vf.expression(key, field).unwrap_or("");
+            let refs = discover_expression_refs(expr);
+            refs.iter().any(|r| match r {
+                Ref::Env(_) => false,
+                Ref::CacheField(_, _) => true,
+                Ref::CacheProvider(_) => true,
+                Ref::Resolved(p, f) => !vf.is_virtual(p, f),
+            })
+        });
     };
     let provider = &key[..dot];
     let field = &key[dot + 1..];
@@ -324,6 +452,107 @@ pub fn run_get(
                         Err(e) => {
                             eprintln!("Error: {e}");
                             return ExitCode::from(2);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 1.4: bare-provider namespace evaluation.
+        //
+        // If the single key is a dotless provider name that has virtual fields,
+        // evaluate all virtual fields client-side, merge any daemon-provider fields
+        // on top (daemon fields lose on key collision), and emit the result.
+        // Providers without virtual fields (e.g. `git`, `hostname`) fall through
+        // to the daemon path below unchanged.
+        if keys.len() == 1 {
+            let key = &keys[0];
+            if is_virtual_namespace_key(key, &vf) {
+                // Fetch daemon deps for all virtual fields of this namespace.
+                let daemon_data = if key_needs_daemon(key, &vf) {
+                    let client = crate::client::Client::new(socket_path.clone());
+                    match client.connect().await {
+                        Ok(mut session) => {
+                            if let Some(p) = path
+                                && let Err(e) = session.set_context(p).await
+                            {
+                                eprintln!("Error: {e}");
+                                return ExitCode::from(2);
+                            }
+                            fetch_daemon_deps_for_namespace(
+                                key,
+                                &vf,
+                                Some(&mut session),
+                                force,
+                                wait,
+                            )
+                            .await
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            return ExitCode::from(2);
+                        }
+                    }
+                } else {
+                    HashMap::new()
+                };
+
+                // Evaluate all virtual fields as a namespace object.
+                let env_vars: HashMap<String, String> = std::env::vars().collect();
+                let ns_result = evaluate_namespace(key, &vf, &env_vars, &daemon_data);
+
+                // Merge daemon provider fields (if a real daemon provider `key` exists):
+                // daemon fields go in first, virtual fields overwrite on collision.
+                // For providers with no daemon counterpart (e.g. conda, op), this is empty.
+                let mut merged = serde_json::Map::new();
+                if let Some(serde_json::Value::Object(daemon_map)) = daemon_data.get(key.as_str()) {
+                    for (k, v) in daemon_map {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                }
+                if let serde_json::Value::Object(ns_map) = ns_result {
+                    for (k, v) in ns_map {
+                        merged.insert(k, v);
+                    }
+                }
+                let data = serde_json::Value::Object(merged);
+
+                // Render per format, matching the existing convention for object output.
+                match &format {
+                    OutputFormat::Text | OutputFormat::Sh => {
+                        print!("{}", format_object_text(&data));
+                        return ExitCode::SUCCESS;
+                    }
+                    OutputFormat::Json => {
+                        println!("{}", serde_json::to_string_pretty(&data).unwrap());
+                        return ExitCode::SUCCESS;
+                    }
+                    OutputFormat::Csv => {
+                        print!("{}", format_sv(&data, ",", false));
+                        return ExitCode::SUCCESS;
+                    }
+                    OutputFormat::Tsv => {
+                        print!("{}", format_sv(&data, "\t", false));
+                        return ExitCode::SUCCESS;
+                    }
+                    OutputFormat::CsvHeader => {
+                        print!("{}", format_sv(&data, ",", true));
+                        return ExitCode::SUCCESS;
+                    }
+                    OutputFormat::TsvHeader => {
+                        print!("{}", format_sv(&data, "\t", true));
+                        return ExitCode::SUCCESS;
+                    }
+                    OutputFormat::Fmt(template) => {
+                        match render_fmt_template_json(template, &data) {
+                            Ok(rendered) => {
+                                print!("{}", rendered);
+                                return ExitCode::SUCCESS;
+                            }
+                            Err(e) => {
+                                eprintln!("Template error: {e}");
+                                return ExitCode::from(2);
+                            }
                         }
                     }
                 }

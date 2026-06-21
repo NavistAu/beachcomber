@@ -84,15 +84,17 @@ fn dotless_key_needs_daemon() {
     );
 }
 
-/// #4 unit: dotless keys that happen to match a virtual provider name also need the daemon.
-/// Virtual fields are keyed as `provider.field`; a bare provider name is still a daemon query.
+/// #4 unit: dotless keys that match a virtual-namespace provider with daemon refs still
+/// need the daemon. terraform.workspace cascades through to terraform.path_workspace (a
+/// daemon field), so the daemon must be available even though the key is handled client-side.
 #[test]
 fn dotless_virtual_provider_name_still_needs_daemon() {
     let vf = VirtualFields::defaults_only();
-    // "terraform" alone is dotless — it's a whole-provider daemon query, not a virtual field.
+    // "terraform" is a virtual-namespace provider (handled client-side), but its
+    // workspace field has a daemon ref (terraform.path_workspace), so needs the daemon.
     assert!(
         key_needs_daemon("terraform", &vf),
-        "bare 'terraform' is dotless — it's a whole-provider daemon query and must need the daemon"
+        "bare 'terraform' has a virtual field with a daemon dep — must need the daemon"
     );
 }
 
@@ -217,4 +219,82 @@ fn virtual_field_env_only_does_not_need_daemon() {
         !key_needs_daemon("aws.profile", &vf),
         "aws.profile is pure env — must not need the daemon"
     );
+}
+
+// ── Step 1.4: bare-provider namespace routing ─────────────────────────────────
+
+/// Step 1.4 unit: `key_needs_daemon` returns false for bare-provider keys whose
+/// virtual fields are all env-only (e.g. `conda`, `op`).
+///
+/// These providers have no daemon counterpart and all their virtual fields read
+/// from environment variables only — the daemon must never be contacted.
+#[test]
+fn bare_virtual_namespace_provider_env_only_does_not_need_daemon() {
+    let vf = VirtualFields::defaults_only();
+    // conda.env = env.CONDA_DEFAULT_ENV — pure env, no daemon dep.
+    assert!(
+        !key_needs_daemon("conda", &vf),
+        "bare 'conda' is a virtual-namespace provider with only env refs — must not need the daemon"
+    );
+    // op: op.signed_in = env.OP_SERVICE_ACCOUNT_TOKEN != "" — pure env.
+    assert!(
+        !key_needs_daemon("op", &vf),
+        "bare 'op' is a virtual-namespace provider with only env refs — must not need the daemon"
+    );
+}
+
+/// Step 1.4 unit: `key_needs_daemon` returns true for bare-provider keys that
+/// have at least one virtual field with a daemon ref (e.g. `terraform`).
+///
+/// terraform.workspace = env.TF_WORKSPACE or terraform.path_workspace
+/// — falls through to a daemon field, so the daemon must be available.
+#[test]
+fn bare_virtual_namespace_provider_with_daemon_ref_needs_daemon() {
+    let vf = VirtualFields::defaults_only();
+    assert!(
+        key_needs_daemon("terraform", &vf),
+        "bare 'terraform' has a virtual field with a daemon dep — must need the daemon"
+    );
+}
+
+/// Step 1.4 e2e: `comb get conda` with `CONDA_DEFAULT_ENV=myenv` and a bogus
+/// socket succeeds and emits the virtual field result without contacting the daemon.
+///
+/// This proves the routing: a bare provider key with virtual fields (conda has
+/// only env refs) is handled client-side, not forwarded to the daemon.
+#[test]
+fn bare_virtual_namespace_provider_env_only_resolves_without_daemon() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let bogus_sock = dir.path().join("nonexistent.sock");
+    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
+    cmd.env("BEACHCOMBER_SOCKET", &bogus_sock)
+        .env("RUST_LOG", "error")
+        .env("CONDA_DEFAULT_ENV", "myenv")
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("cfg"))
+        .args(["get", "conda"]);
+    cmd.assert()
+        .success()
+        .stdout(predicates::str::contains("myenv"));
+}
+
+/// Step 1.4 e2e: `comb get git` with a bogus socket FAILS because `git` has
+/// no virtual fields and remains a daemon-only provider.
+///
+/// This proves the fallthrough: providers without virtual fields are unaffected.
+#[test]
+fn bare_daemon_only_provider_still_routes_to_daemon() {
+    let dir = tempfile::TempDir::new().unwrap();
+    // Use a path-blocker so ensure_daemon fails with a detectable error.
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"not a directory").unwrap();
+    let unstartable_sock = blocker.join("sock");
+    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
+    cmd.env("BEACHCOMBER_SOCKET", &unstartable_sock)
+        .env("RUST_LOG", "error")
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("cfg"))
+        .args(["get", "git"]);
+    // git has no virtual fields → routed to daemon → ensure_daemon fails → exit non-zero.
+    cmd.assert().failure();
 }
