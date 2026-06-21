@@ -36,8 +36,13 @@ pub fn evaluate_path(expr: &str, cwd: &str, env_vars: &HashMap<String, String>) 
     let result = compiled
         .eval(MjValue::from_serialize(serde_json::Value::Object(ctx)))
         .ok()?;
+    // Check the falsy variants before stringifying: minijinja's `none`
+    // stringifies to "none" (not ""), so the empty check alone would miss it.
+    if result.is_undefined() || result.is_none() {
+        return None;
+    }
     let s = result.to_string();
-    if s.is_empty() || result.is_undefined() || result.is_none() {
+    if s.is_empty() {
         return None;
     }
     Some(expand_tilde(&s, env_vars))
