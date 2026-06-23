@@ -73,7 +73,7 @@ Authoritative list of what is currently broken or known-aspirational. `CLAUDE.md
 
 ### Website (beachcomber.sh)
 
-- [ ] Site analytics — Umami + Cloudflare Web Analytics. Design and rollout managed in ~/ws/analytics/ project.
+- [x] Site analytics — Umami + Cloudflare Web Analytics. Design and rollout managed in ~/ws/analytics/ project. — shipped to beachcomber.sh (`28837c77`).
 
 ### External Provider Backends
 
@@ -133,7 +133,7 @@ purposes. this is different to llm.txt which is more for training datasets and m
   dependencies go back to as old a version as makes sense to reduce supply chain attack.
 - [ ] `llms.txt` for the website — machine-readable project summary for LLM consumption.
 - [x] Centralise the version number — **done (branch `feat/xtask-release-version`):** `cargo xtask set-version <X.Y.Z>` reads the current version from `Cargo.toml` and rewrites all 14 touchpoints in one command — `Cargo.toml` ×2, both lockfiles, the 5 SDK manifests, 3 AUR PKGBUILDs, nix flake, `release.yml` rockspec ref, the 8 README deb/rpm URLs, and the Lua rockspec (including its versioned-filename rename). Chose the `cargo xtask` option (std-only, no new vendored deps; the `VERSION`-file option doesn't work because each ecosystem needs a literal in its own manifest, and `cargo-release`/`release-plz` ignore the 9 non-Rust files). Each edit is a **count-guarded, digit-boundary** literal replacement: the run aborts before writing anything if any file's occurrence count drifts from the expected value (catches reformatted manifests), and digit-boundary matching stops a shorter version corrupting a longer one (e.g. `0.6.1` must not touch the vendored `0.6.11` in `Cargo.lock`). `--dry-run` previews the plan; the run finishes with `cargo check` to validate + refresh the lock (`--no-verify` skips). CHANGELOG is deliberately left to humans. Pure logic unit-tested (16 tests). Original analysis retained: **Relationship to runtime version:** as of the daemon-singleton work (2026-04-24), `BEACHCOMBER_VERSION` (emitted by `build.rs`) is the canonical runtime build identity — includes git sha for dev/dirty builds. That's distinct from `CARGO_PKG_VERSION` which this centralisation governs (semantic version for releases); `build.rs` continues to read `CARGO_PKG_VERSION` and append the sha suffix.
-- [ ] Script/Automate the release process so its more defined and robust rather than ad-hoc each time.
+- [x] Script/Automate the release process so its more defined and robust rather than ad-hoc each time. — done: `cargo xtask set-version` centralises the 14-file version bump, and `release.yml` now fires on merge to `main` (version derived from `Cargo.toml`, tags the merge commit, publishes — no manual `git tag`, no PAT). Remaining manual steps are the changelog prose and the develop→main PR review gate, both intentionally human.
 
 ### Test Suite Health
 

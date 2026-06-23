@@ -6,9 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-23
+
+The post-0.6.1 cycle: an **env-cascade** overhaul plus a broad provider-correctness
+sweep. Each environment-aware provider is split into a daemon-side **data provider**
+(pure on-disk/state enumeration, no environment reads) and a client-side **consumer
+namespace** (virtual fields + path/value expressions that fold in the *querying
+shell's* environment) — fixing the long-standing "frozen daemon environment" class
+of bugs where the daemon reported its own launch-time env instead of the caller's.
+Many changes are breaking; pre-1.0, they ship under a minor bump.
+
 ### Added
 
-#### Field resolution model + `cache.*` namespace (env-cascade P2)
+#### Field resolution model + `cache.*` namespace (env cascade)
 
 - **New canon doc `docs/canon/field_resolution.md`.** Defines the client-side field-resolution model: field-type taxonomy (`native` / `external` / `literal` / `virtual` / `env`), the `cache.*` namespace, path expressions, and value expressions. This is now the authoritative spec for how consumers address and resolve provider fields.
 - **`cache.*` value-expression model.** Expressions reference raw cached values as `cache.<provider>.<field>` (the stored value, bypassing any field expression) vs bare `<provider>.<field>` (the resolved field, with expression applied). A cached field's default expression is the identity; no rename is needed when a virtual field overrides a same-named cached value.
@@ -25,19 +35,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **New `talos` provider.** Same shape as `kubecontext`: reads the Talos config file named by `env.TALOSCONFIG or '~/.talos/config'` as a PathScoped source. Fields: `context` (string), `endpoints` (array), `nodes` (array). Watches the resolved file via `Source::watched_files`.
 - **`Source::watched_files`.** New trait method (default: empty) returning the explicit file paths this source needs to watch, given the resolved path. Used by Tier B env-selected-file providers to register per-file watches without relying on pattern-based watch registration.
 
+#### CLI
+
+- **Client-side `env.*` and virtual-field evaluation.** `comb get` / `comb eval` resolve `env.*` references and virtual expressions in the client; a query that references only `env.*` skips the daemon round-trip entirely. Includes a typed evaluator with undeclared-variable discovery and a `basename` filter on the shared minijinja environment.
+- **`comb init --write-config`** materialises the built-in virtual-field defaults into `config.toml` (idempotent; safe to re-run).
+
+#### Daemon
+
+- **`--exit-with-parent`** flag: the daemon self-exits when the process that spawned it dies (e.g. an integration that owns the daemon's lifetime).
+
 ### Changed (breaking, pre-1.0)
 
 - **BREAKING (pre-1.0):** `aws` daemon provider renamed to `aws_profiles`. `aws.config_region` field removed. `comb get aws_profiles` returns the raw profile dump; `comb get aws` evaluates the consumer virtual namespace. Scripts querying `aws.config_region` must be updated.
 - **BREAKING (pre-1.0):** `gcloud` daemon provider renamed to `gcloud_configs`. `gcloud.config_project` field removed. `comb get gcloud_configs` returns the raw config dump; `comb get gcloud` evaluates the consumer virtual namespace. Scripts querying `gcloud.config_project` must be updated.
 - **BREAKING (pre-1.0):** `terraform.path_workspace` renamed back to `terraform.workspace`. The P1 rename was forced by a virtual-field self-reference cycle; the `cache.*` model eliminates the cycle, so the field returns to its natural name.
+- **BREAKING (pre-1.0):** `python.version` renamed to `python.venv_version`; new `python.local_venv_name` field added. The daemon no longer reads `$VIRTUAL_ENV`. Scripts querying `python.version` must update.
+- **BREAKING (pre-1.0): daemon providers no longer read environment variables.** Under the env-cascade model the daemon enumerates on-disk state only; per-shell environment is applied client-side. Removed daemon env reads: `aws` (`$AWS_PROFILE`/`$AWS_REGION`/…), `gcloud` (`$CLOUDSDK_ACTIVE_CONFIG_NAME`), `terraform` (`$TF_WORKSPACE`), `python` (`$VIRTUAL_ENV`). The user-facing `aws.region`, `gcloud.project`, and `terraform.workspace` values are now computed client-side from `env.*` plus the cached data provider, so they finally track the querying shell rather than the daemon's launch environment.
+- **BREAKING (pre-1.0): `conda` and `op` are now client-side virtual fields, not daemon providers.** Both were structurally env-frozen as daemon providers (they read the daemon's process environment, which never reflects the querying shell). They are reborn as virtual fields evaluated in the client: `conda.env` resolves `$CONDA_DEFAULT_ENV`, and `op.signed_in` reflects whether `$OP_SERVICE_ACCOUNT_TOKEN` is set — so both finally track the querying shell. The daemon no longer runs the conda/op providers (no `op whoami` subprocess); `op`'s previous `account` field and live-session validity check are gone.
 
 ### Fixed
 
+- **git is now correct in worktrees and submodules.** A shared `resolve_git_dir` follows `.git`-as-a-file (`gitdir:` pointers), so `git.state` (rebase/merge/cherry-pick progress) and `git.stash` reflect reality in linked worktrees and submodules instead of always reporting "clean"/0. The git executor no longer inherits `$GIT_DIR` / `$GIT_COMMON_DIR` / `$GIT_WORK_TREE`. Refs moved to a read-always mechanism with a split `GitHead` source.
+- **gcloud read a path that doesn't exist.** It read `~/.config/gcloud/properties` (absent on a standard install) and returned empty for essentially everyone; it now follows the `active_config` two-level indirection to the real `configurations/config_<name>/properties`.
+- **kubecontext merges a multi-file `$KUBECONFIG`.** A `:`-joined list is merged (later file wins) instead of reading only the first path, and context-name matching is anchored (no more `prod` matching `prod-east`).
+- **`user.name` is thread-safe.** Replaced `getpwuid` with `getpwuid_r`, removing undefined behaviour under `spawn_blocking`.
+- **direnv reads the allow database directly** instead of shelling out to `direnv status`, so `direnv allow` from any shell is reflected.
+- **sudo** omits the `active` field when the (root-only) timestamp file is unreadable, instead of silently reporting `false`.
+- **asdf** falls back to the global `~/.tool-versions` and emits a flat field schema consistent with the other providers.
+- **network:** removed the hardcoded `en0` interface assumption, added an IPv6 field, and now detects Tailscale (`tailscale0`) as a VPN.
 - **A wedged daemon no longer blackholes the socket.** On startup, when another daemon holds the lock with the same build, the new process now probes the canonical socket before exiting: it exits silently only if that daemon is actually serving. A same-build owner that acquired the lock but never bound the socket (or whose socket was deleted) is superseded after a short grace, so a healthy daemon rebinds instead of clients hitting a permanently dead socket. Startup orphan-reaping (which could kill peer daemons on other socket paths) was removed in favour of this targeted probe.
+
+### Developer / release tooling
+
+- **`cargo xtask set-version X.Y.Z`** rewrites all 14 version touchpoints (both Cargo manifests, both lockfiles, the 5 SDK manifests, 3 AUR PKGBUILDs, the nix flake, the `release.yml` rockspec reference, the 8 README download URLs, and the Lua rockspec including its versioned filename) in one command, with count-guarded digit-boundary replacement that aborts on any drift.
+- **Releases fire on merge to `main`.** `release.yml` now triggers on push to `main`, derives the version from `Cargo.toml`, tags the merge commit, and publishes — no tag-push trigger and no PAT/App token. The manual `git tag` step is gone from the release process.
 
 ### No wire-protocol change
 
-- Env-cascade P2 (env-selected file resolution, Tier B providers) adds **no** wire-protocol change. The existing `path` field on the `Get` request carries the client-resolved file path as the cache coordinate. See `docs/protocol-spec.md`.
+- Env-cascade (env-selected file resolution, Tier B providers) adds **no** wire-protocol change. The existing `path` field on the `Get` request carries the client-resolved file path as the cache coordinate. See `docs/protocol-spec.md`.
 
 ## [0.6.1] - 2026-05-29
 

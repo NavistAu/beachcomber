@@ -14,7 +14,7 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "beachcomber";
-          version = "0.6.1";
+          version = "0.7.0";
 
           src = ../..;
 
