@@ -72,7 +72,12 @@ fn get_username(uid: u32) -> String {
     // between macOS (has pw_change, pw_class, pw_expire) and Linux, so a struct
     // literal would require #[cfg] guards. zeroed() is portable; getpwuid_r fills
     // the fields it uses.
-    let mut buf = vec![0i8; 1024];
+    //
+    // Buffer element type must be `libc::c_char` (not a hardcoded `i8`): C `char`
+    // is signed (`i8`) on x86_64/macOS but unsigned (`u8`) on aarch64-linux, and
+    // `getpwuid_r`'s buffer parameter is `*mut c_char`. Hardcoding `i8` fails to
+    // compile on aarch64-linux (`expected *mut u8, found *mut i8`).
+    let mut buf = vec![0 as libc::c_char; 1024];
     let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
     let mut result: *mut libc::passwd = std::ptr::null_mut();
 
