@@ -73,7 +73,7 @@ beachcomber uses a two-branch model:
 
 - **`develop`** is the default branch and the integration target. Branch your feature/fix work off `develop` and open PRs **back into `develop`**. This is where day-to-day development lands.
 - **`main`** is the release branch. It only advances via a PR from `develop` → `main`, and that PR is the **release gate**: `main` is protected so a PR cannot merge until all CI checks pass (no direct pushes to `main`).
-- **Releases** are cut from `main`: once a `develop` → `main` PR merges, a maintainer tags `vX.Y.Z` on `main`, which triggers the release workflow. Tags are only ever created on `main`. See `docs/releasing.md`.
+- **Releases** are cut from `main`: merging a `develop` → `main` PR *is* the release. `release.yml` triggers on push to `main`, reads the version from `Cargo.toml`, tags `vX.Y.Z` on the merge commit, and publishes. No manual tagging. See `docs/releasing.md`.
 
 CI (`.github/workflows/ci.yml`) runs on pushes to and PRs targeting both `develop` and `main`, so your PR into `develop` is fully checked before it lands.
 

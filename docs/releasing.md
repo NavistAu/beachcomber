@@ -3,8 +3,9 @@
 Step-by-step process for cutting a new beachcomber release.
 
 > **Branch model:** `develop` is the default/integration branch; `main` is the release branch.
-> Releases are prepared on `develop`, promoted to `main` via a PR (the release gate — `main` is
-> protected and requires green CI to merge), and tagged on `main`. Tags are only ever cut on `main`.
+> Releases are prepared on `develop` and promoted to `main` via a PR (the release gate — `main` is
+> protected and requires green CI to merge). **Merging that PR is the release:** `release.yml`
+> triggers on push to `main`, tags `vX.Y.Z` on the merge commit, and publishes. No manual tagging.
 > See `CONTRIBUTING.md` → "Branch Workflow".
 
 ## Prerequisites
@@ -57,19 +58,18 @@ gh pr create --base main --head develop --title "Release vX.Y.Z" --fill
 - SDK tests: C, Go, Lua, Node.js, Python, Ruby
 - Installer validation: npm, PyPI
 
-Do not merge until CI is fully green. Merging the PR is the act of promoting the release to `main`.
+Do not merge until CI is fully green. **Merging the PR is the release** — there is nothing to do by hand afterwards (see step 5).
 
-## 5. Tag and Release (on `main`)
+## 5. Release fires automatically on merge
 
-After the release PR merges, tag the new `main` HEAD. Tags are only ever created on `main`:
+`release.yml` triggers on **push to `main`** (i.e. the merge in step 4). A `gate` job reads the version from `Cargo.toml`, and unless `vX.Y.Z` already exists as a tag, runs the full pipeline — creating the `vX.Y.Z` provenance tag on the merge commit itself (via the default `GITHUB_TOKEN`; no PAT or App token, because the tag is no longer the trigger).
 
-```sh
-git checkout main && git pull
-git tag v0.X.0
-git push origin v0.X.0
-```
+There is **no manual `git tag` step.** Merge the green release PR and walk away.
 
-The `v*` tag triggers `.github/workflows/release.yml` which:
+- **Re-run / recover** (a publish job hiccupped): re-run the failed job from the Actions UI (publishes are idempotent — `skip-existing` / `Already published, skipping`), or re-run the whole workflow via **Actions → Release → Run workflow** with `force: true` to bypass the already-tagged check.
+- **Skip behaviour:** a push to `main` whose `Cargo.toml` version is already tagged is a no-op (the gate short-circuits and every downstream job skips), so a hotfix that doesn't bump the version won't re-publish.
+
+The workflow:
 
 1. Builds binaries for macOS (aarch64, x86_64) and Linux (x86_64 gnu, x86_64 musl)
 2. Packages C SDK tarball

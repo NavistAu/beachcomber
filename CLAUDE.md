@@ -29,7 +29,7 @@ If a section of the code looks like a half-wired state machine or a config key t
 
 - **`develop` is the default branch and the integration target.** All feature/fix work branches off `develop` and merges back into `develop` via PR. Routine commits land on `develop` (or short-lived branches off it). Never commit directly to `main`.
 - **`main` is the release branch.** It only ever advances through a PR from `develop` → `main`. That PR is the **release gate**: branch protection on `main` requires all CI checks green before it can merge (no direct pushes, no force-pushes).
-- **Releasing** = open a `develop` → `main` PR, wait for CI green, merge, then cut the `vX.Y.Z` tag **on `main`**. The tag triggers `release.yml` (build + publish to all registries). Tags are only ever created on `main`. Full steps in `docs/releasing.md`.
+- **Releasing** = bump the version on `develop` (`cargo xtask set-version`), open a `develop` → `main` PR, wait for CI green, and merge. **Merging is the release:** `release.yml` triggers on push to `main`, reads the version from `Cargo.toml`, tags `vX.Y.Z` on the merge commit, and builds + publishes to all registries. No manual tagging. Full steps in `docs/releasing.md`.
 - **CI** (`.github/workflows/ci.yml`) runs on pushes to and PRs targeting both `develop` and `main`.
 - Delete branches and worktrees after merge — keep the branch list to `main` + `develop` plus whatever is actively in flight.
 - `git push` still requires explicit per-instance confirmation (see the global rules); committing to `develop` does not.
@@ -112,7 +112,7 @@ See `docs/provider-development.md`. Short version:
 
 ## Releasing
 
-See `docs/releasing.md` for the full release checklist. Short version: on `develop`, run `cargo xtask set-version X.Y.Z` (bumps all 14 version touchpoints) and update CHANGELOG; open a `develop` → `main` PR (the release gate) and wait for CI green; merge it; then on `main` run `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag triggers the release workflow which builds, publishes to all registries, and updates Homebrew. Tags are only ever cut on `main`.
+See `docs/releasing.md` for the full release checklist. Short version: on `develop`, run `cargo xtask set-version X.Y.Z` (bumps all 14 version touchpoints) and update CHANGELOG; open a `develop` → `main` PR (the release gate) and wait for CI green; merge it. **Merging is the release** — `release.yml` triggers on push to `main`, tags `vX.Y.Z` on the merge commit, and builds + publishes to all registries (incl. Homebrew). No manual tagging.
 
 ## Key Conventions
 
