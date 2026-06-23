@@ -112,7 +112,7 @@ See `docs/provider-development.md`. Short version:
 
 ## Releasing
 
-See `docs/releasing.md` for the full release checklist. Short version: on `develop`, bump all version files and update CHANGELOG; open a `develop` → `main` PR (the release gate) and wait for CI green; merge it; then on `main` run `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag triggers the release workflow which builds, publishes to all registries, and updates Homebrew. Tags are only ever cut on `main`.
+See `docs/releasing.md` for the full release checklist. Short version: on `develop`, run `cargo xtask set-version X.Y.Z` (bumps all 14 version touchpoints) and update CHANGELOG; open a `develop` → `main` PR (the release gate) and wait for CI green; merge it; then on `main` run `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag triggers the release workflow which builds, publishes to all registries, and updates Homebrew. Tags are only ever cut on `main`.
 
 ## Key Conventions
 

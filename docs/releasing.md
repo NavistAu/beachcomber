@@ -15,26 +15,15 @@ Step-by-step process for cutting a new beachcomber release.
 
 ## 1. Version Bump
 
-Update version in **all** of these files:
+One command rewrites every version touchpoint:
 
-| File | Field |
-|---|---|
-| `Cargo.toml` | `version` |
-| `beachcomber-client/Cargo.toml` | `version` |
-| `sdks/node/package.json` | `"version"` |
-| `sdks/python/pyproject.toml` | `version` |
-| `sdks/ruby/libbeachcomber.gemspec` | `s.version` |
-| `sdks/lua/rockspec/libbeachcomber-X.Y.Z-1.rockspec` | `version`, `tag` (rename the file too) |
-| `packaging/aur/beachcomber/PKGBUILD` | `pkgver` |
-| `packaging/aur/beachcomber-bin/PKGBUILD` | `pkgver` |
-| `packaging/aur/libbeachcomber/PKGBUILD` | `pkgver` |
-| `packaging/nix/flake.nix` | `version` |
-| `README.md` | `.deb` and `.rpm` download URLs in install section |
-| `.github/workflows/release.yml` | LuaRocks rockspec filename in `publish-luarocks` job |
+```sh
+cargo xtask set-version X.Y.Z          # preview first with --dry-run
+```
 
-After editing, run `cargo check` to regenerate `Cargo.lock`.
+This updates all 14 files — `Cargo.toml`, `beachcomber-client/Cargo.toml`, both lockfiles, the 5 SDK manifests, the 3 AUR PKGBUILDs, `packaging/nix/flake.nix`, the `release.yml` rockspec reference, the README `.deb`/`.rpm` download URLs, and the Lua rockspec (renaming its versioned filename and updating `version` + `tag`) — then runs `cargo check` to validate the workspace and refresh `Cargo.lock`. Each edit is count-guarded: if any file's occurrence count has drifted (e.g. a manifest was reformatted) the run aborts before writing anything, so re-sync that file and re-run. Use `--dry-run` to preview the plan and `--no-verify` to skip the `cargo check`.
 
-Remove the old Lua rockspec file (`git rm sdks/lua/rockspec/libbeachcomber-OLD-1.rockspec`).
+The CHANGELOG is intentionally **not** touched — write release notes by hand (next step).
 
 ## 2. Changelog
 
