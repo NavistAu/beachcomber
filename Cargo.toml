@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "beachcomber-client", "tests/fixtures/test_provider_lib"]
+members = [".", "beachcomber-client", "tests/fixtures/test_provider_lib", "xtask"]
 
 [package]
 name = "beachcomber"
