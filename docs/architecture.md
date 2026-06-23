@@ -55,7 +55,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/provider/http.rs` | `HttpProvider`: in-process HTTP client for REST API providers; `extract` for JSON path navigation |
 | `src/client.rs` | `Client` (one-shot) and `ClientSession` (persistent) for consumer-side socket communication |
 
-The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`, `sudo`, `op`) follow the same pattern — each implements `Provider` (namespace) declaring one or more `Source` objects.
+The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `talos`, `aws_profiles`, `gcloud_configs`, `terraform`, `direnv`, `python`, `mise`, `asdf`, `sudo`) follow the same pattern — each implements `Provider` (namespace) declaring one or more `Source` objects. `aws_profiles` and `gcloud_configs` are **data providers** whose cached fields are indexed by client-side virtual fields in the `aws` and `gcloud` consumer namespaces (see `docs/canon/field_resolution.md`). `kubecontext` and `talos` are PathScoped sources whose file path is env-selected client-side.
 
 ### Provider→Source layering
 

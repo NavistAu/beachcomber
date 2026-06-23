@@ -3,7 +3,7 @@ use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -29,16 +29,98 @@ fn find_repo_root(start: &Path) -> Option<String> {
     None
 }
 
+/// Resolved git directory locations for a working-tree root.
+///
+/// For a normal checkout `gitdir == commondir == <root>/.git`. For a linked
+/// worktree (`git worktree add`) or a submodule, `<root>/.git` is a *file*
+/// pointing at the real per-worktree gitdir; shared state (refs, packed-refs,
+/// stash reflog) lives under `commondir`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitDirs {
+    /// Per-worktree git dir: holds HEAD, index, MERGE_HEAD, rebase-merge/, …
+    gitdir: PathBuf,
+    /// Shared common dir: holds refs/, packed-refs, logs/refs/stash, objects/.
+    commondir: PathBuf,
+}
+
+/// Resolve the gitdir/commondir for a working-tree root, following the
+/// `.git`-is-a-file indirection used by linked worktrees and submodules.
+/// Returns `None` if `<root>/.git` does not exist.
+fn resolve_git_dir(root: &Path) -> Option<GitDirs> {
+    let dot_git = root.join(".git");
+    // Use `metadata` (follows symlinks) so a `.git` that is a symlink to a
+    // directory correctly reports `is_dir() == true`. A `.git` file (worktree
+    // pointer) still gives `is_dir() == false` because it is a regular file.
+    let meta = std::fs::metadata(&dot_git).ok()?;
+
+    if meta.is_dir() {
+        return Some(GitDirs {
+            gitdir: dot_git.clone(),
+            commondir: dot_git,
+        });
+    }
+
+    // `.git` is a file whose first line is `gitdir: <path>` — absolute for
+    // worktrees, relative for submodules.
+    let contents = std::fs::read_to_string(&dot_git).ok()?;
+    let rel = contents.lines().next()?.strip_prefix("gitdir:")?.trim();
+    let gitdir = resolve_against(root, rel);
+
+    // `<gitdir>/commondir`, if present, points at the shared common dir (usually
+    // relative to the gitdir, e.g. "../.."). Absent for submodules → fall back.
+    let commondir = match std::fs::read_to_string(gitdir.join("commondir")) {
+        Ok(s) => resolve_against(&gitdir, s.trim()),
+        Err(_) => gitdir.clone(),
+    };
+
+    Some(GitDirs { gitdir, commondir })
+}
+
+/// Join `raw` onto `base` unless `raw` is absolute, then normalise via
+/// `canonicalize` (falling back to the lexical join if it cannot be canonicalised).
+fn resolve_against(base: &Path, raw: &str) -> PathBuf {
+    let p = Path::new(raw);
+    let joined = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    };
+    std::fs::canonicalize(&joined).unwrap_or(joined)
+}
+
 // ── SourceMetadata constructors ───────────────────────────────────────────────
 
-fn refs_meta() -> SourceMetadata {
+fn head_meta() -> SourceMetadata {
     SourceMetadata {
-        name: "refs".into(),
+        name: "head".into(),
         fields: vec![
             FieldSchema {
                 name: "branch".into(),
                 field_type: FieldType::String,
             },
+            FieldSchema {
+                name: "detached".into(),
+                field_type: FieldType::Bool,
+            },
+        ],
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![".git".into()],
+            abs_paths: vec![],
+        },
+        keep_alive: KeepAlive::Duration(120),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
+        fsevents_reinstate: true,
+    }
+}
+
+fn refs_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "refs".into(),
+        fields: vec![
             FieldSchema {
                 name: "commit".into(),
                 field_type: FieldType::String,
@@ -58,10 +140,6 @@ fn refs_meta() -> SourceMetadata {
             FieldSchema {
                 name: "upstream".into(),
                 field_type: FieldType::String,
-            },
-            FieldSchema {
-                name: "detached".into(),
-                field_type: FieldType::Bool,
             },
             FieldSchema {
                 name: "state".into(),
@@ -184,6 +262,66 @@ fn status_meta() -> SourceMetadata {
 
 // ── Source impls ──────────────────────────────────────────────────────────────
 
+/// Read-always source: parses `<gitdir>/HEAD` directly, no subprocess.
+/// Returns `branch` (String) and `detached` (Bool) on every request.
+struct GitHead;
+
+impl GitHead {
+    /// Parse the HEAD file of the given gitdir.
+    ///
+    /// Returns (branch, detached):
+    /// - `ref: refs/heads/<name>` → branch=<name>, detached=false
+    /// - 40/64-hex line (detached HEAD) → branch="", detached=true
+    /// - missing/other → branch="", detached=false
+    fn parse_head(dirs: &GitDirs) -> (String, bool) {
+        let head_path = dirs.gitdir.join("HEAD");
+        let Ok(contents) = std::fs::read_to_string(&head_path) else {
+            return (String::new(), false);
+        };
+        let line = contents.trim();
+        if let Some(branch) = line.strip_prefix("ref: refs/heads/") {
+            return (branch.to_string(), false);
+        }
+        // Detached HEAD: 40-char (SHA-1) or 64-char (SHA-256) hex string
+        if (line.len() == 40 || line.len() == 64) && line.chars().all(|c| c.is_ascii_hexdigit()) {
+            return (String::new(), true);
+        }
+        (String::new(), false)
+    }
+}
+
+impl Source for GitHead {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(head_meta)
+    }
+
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        let Some(path) = path else {
+            return SourceResult::new();
+        };
+        // Only emit fields when we can confirm a git repo exists. An empty
+        // SourceResult causes inline_execute_source to skip the cache write,
+        // preserving a cache miss for non-repo paths.
+        let Some(dirs) = resolve_git_dir(Path::new(path)) else {
+            return SourceResult::new();
+        };
+        let (branch, detached) = Self::parse_head(&dirs);
+        let mut result = SourceResult::new();
+        result.insert("branch", Value::String(branch));
+        result.insert("detached", Value::Bool(detached));
+        result
+    }
+
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        walk_to_git(path)
+    }
+
+    fn read_always(&self) -> bool {
+        true
+    }
+}
+
 struct GitRefs {
     executor: Arc<dyn GitExecutor>,
 }
@@ -209,8 +347,12 @@ impl Source for GitRefs {
         let Some(status) = parse_git_status(dir, &*self.executor) else {
             return SourceResult::new();
         };
-        let stash_count = count_stashes(dir);
-        let (state, state_step, state_total) = detect_repo_state(dir);
+        let dirs = resolve_git_dir(dir);
+        let stash_count = dirs.as_ref().map(count_stashes).unwrap_or(0);
+        let (state, state_step, state_total) = dirs
+            .as_ref()
+            .map(detect_repo_state)
+            .unwrap_or_else(|| ("clean".to_string(), 0, 0));
         let (commit, last_commit_ts, commit_summary) = get_head_info(dir, &*self.executor);
         let tag = get_nearest_tag(dir, &*self.executor);
         let (push_ahead, push_behind) = get_push_divergence(dir, &status.branch, &*self.executor);
@@ -226,11 +368,9 @@ impl Source for GitRefs {
         };
 
         let mut result = SourceResult::new();
-        result.insert("branch", Value::String(status.branch.clone()));
         result.insert("ahead", Value::Int(status.ahead));
         result.insert("behind", Value::Int(status.behind));
         result.insert("upstream", Value::String(status.upstream));
-        result.insert("detached", Value::Bool(status.detached));
         result.insert("stash", Value::Int(stash_count));
         result.insert("state", Value::String(state));
         result.insert("state_step", Value::Int(state_step));
@@ -346,13 +486,14 @@ impl Provider for GitProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "git".into(),
-            sources: vec![refs_meta(), diff_meta(), status_meta()],
+            sources: vec![head_meta(), refs_meta(), diff_meta(), status_meta()],
         }
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
         let exec = Self::make_executor();
         vec![
+            Box::new(GitHead),
             Box::new(GitRefs::new(Arc::clone(&exec))),
             Box::new(GitDiff::new(Arc::clone(&exec))),
             Box::new(GitStatus::new(exec)),
@@ -372,11 +513,12 @@ pub fn git_provider_with_executor(executor: Arc<dyn GitExecutor>) -> impl Provid
         fn metadata(&self) -> ProviderMetadata {
             ProviderMetadata {
                 name: "git".into(),
-                sources: vec![refs_meta(), diff_meta(), status_meta()],
+                sources: vec![head_meta(), refs_meta(), diff_meta(), status_meta()],
             }
         }
         fn sources(&self) -> Vec<Box<dyn Source>> {
             vec![
+                Box::new(GitHead),
                 Box::new(GitRefs::new(Arc::clone(&self.executor))),
                 Box::new(GitDiff::new(Arc::clone(&self.executor))),
                 Box::new(GitStatus::new(Arc::clone(&self.executor))),
@@ -391,7 +533,6 @@ pub fn git_provider_with_executor(executor: Arc<dyn GitExecutor>) -> impl Provid
 struct ParsedGitStatus {
     branch: String,
     upstream: String,
-    detached: bool,
     ahead: i64,
     behind: i64,
     staged: i64,
@@ -415,7 +556,6 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut branch = String::new();
     let mut upstream = String::new();
-    let mut detached = false;
     let mut ahead: i64 = 0;
     let mut behind: i64 = 0;
     let mut staged: i64 = 0;
@@ -425,13 +565,10 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
 
     for line in stdout.lines() {
         if line.starts_with("# branch.head ") {
-            let head = line.strip_prefix("# branch.head ").unwrap_or("");
-            if head == "(detached)" {
-                detached = true;
-                branch = head.to_string();
-            } else {
-                branch = head.to_string();
-            }
+            branch = line
+                .strip_prefix("# branch.head ")
+                .unwrap_or("")
+                .to_string();
         } else if line.starts_with("# branch.upstream ") {
             upstream = line
                 .strip_prefix("# branch.upstream ")
@@ -465,7 +602,6 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
     Some(ParsedGitStatus {
         branch,
         upstream,
-        detached,
         ahead,
         behind,
         staged,
@@ -475,16 +611,16 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
     })
 }
 
-fn count_stashes(dir: &Path) -> i64 {
-    let stash_log = dir.join(".git").join("logs").join("refs").join("stash");
+fn count_stashes(dirs: &GitDirs) -> i64 {
+    let stash_log = dirs.commondir.join("logs").join("refs").join("stash");
     std::fs::read_to_string(&stash_log)
         .map(|s| s.lines().count() as i64)
         .unwrap_or(0)
 }
 
 /// Returns (state_name, step, total).
-fn detect_repo_state(dir: &Path) -> (String, i64, i64) {
-    let git_dir = dir.join(".git");
+fn detect_repo_state(dirs: &GitDirs) -> (String, i64, i64) {
+    let git_dir = &dirs.gitdir;
 
     if git_dir.join("MERGE_HEAD").exists() {
         return ("merge".to_string(), 0, 0);
@@ -663,5 +799,66 @@ fn get_git_config(dir: &Path, key: &str, executor: &dyn GitExecutor) -> Option<S
         if val.is_empty() { None } else { Some(val) }
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn resolve_git_dir_plain_repo_uses_dot_git_for_both() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join(".git")).unwrap();
+
+        let dirs = resolve_git_dir(tmp.path()).expect("plain repo resolves");
+        assert_eq!(dirs.gitdir, tmp.path().join(".git"));
+        assert_eq!(dirs.commondir, tmp.path().join(".git"));
+    }
+
+    #[test]
+    fn resolve_git_dir_missing_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        assert!(resolve_git_dir(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn resolve_git_dir_linked_worktree_follows_pointer_and_commondir() {
+        let tmp = TempDir::new().unwrap();
+        let main_git = tmp.path().join("main").join(".git");
+        let wt_gitdir = main_git.join("worktrees").join("wt");
+        fs::create_dir_all(&wt_gitdir).unwrap();
+        // commondir points back to <main>/.git, relative to the worktree gitdir.
+        fs::write(wt_gitdir.join("commondir"), "../..\n").unwrap();
+
+        let wt_root = tmp.path().join("wt");
+        fs::create_dir_all(&wt_root).unwrap();
+        fs::write(
+            wt_root.join(".git"),
+            format!("gitdir: {}\n", wt_gitdir.display()),
+        )
+        .unwrap();
+
+        let dirs = resolve_git_dir(&wt_root).expect("worktree resolves");
+        assert_eq!(dirs.gitdir, fs::canonicalize(&wt_gitdir).unwrap());
+        assert_eq!(dirs.commondir, fs::canonicalize(&main_git).unwrap());
+    }
+
+    #[test]
+    fn resolve_git_dir_relative_pointer_without_commondir_falls_back() {
+        let tmp = TempDir::new().unwrap();
+        // Submodule layout: superproject .git/modules/sub is the gitdir.
+        let sub_gitdir = tmp.path().join(".git").join("modules").join("sub");
+        fs::create_dir_all(&sub_gitdir).unwrap();
+        let sub_root = tmp.path().join("sub");
+        fs::create_dir_all(&sub_root).unwrap();
+        fs::write(sub_root.join(".git"), "gitdir: ../.git/modules/sub\n").unwrap();
+
+        let dirs = resolve_git_dir(&sub_root).expect("submodule resolves");
+        assert_eq!(dirs.gitdir, fs::canonicalize(&sub_gitdir).unwrap());
+        // No commondir file → commondir falls back to gitdir.
+        assert_eq!(dirs.commondir, fs::canonicalize(&sub_gitdir).unwrap());
     }
 }

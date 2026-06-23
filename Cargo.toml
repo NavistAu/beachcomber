@@ -1,9 +1,9 @@
 [workspace]
-members = [".", "beachcomber-client", "tests/fixtures/test_provider_lib"]
+members = [".", "beachcomber-client", "tests/fixtures/test_provider_lib", "xtask"]
 
 [package]
 name = "beachcomber"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 description = "A centralized daemon that caches shell state (git, battery, hostname, etc.) so every consumer reads from one fast cache instead of independently forking shells"
 license = "MIT"
@@ -76,6 +76,10 @@ harness = false
 
 [[bench]]
 name = "throughput"
+harness = false
+
+[[bench]]
+name = "prompt_race"
 harness = false
 
 [profile.dev]

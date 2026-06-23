@@ -2,33 +2,29 @@
 
 Step-by-step process for cutting a new beachcomber release.
 
+> **Branch model:** `develop` is the default/integration branch; `main` is the release branch.
+> Releases are prepared on `develop` and promoted to `main` via a PR (the release gate — `main` is
+> protected and requires green CI to merge). **Merging that PR is the release:** `release.yml`
+> triggers on push to `main`, tags `vX.Y.Z` on the merge commit, and publishes. No manual tagging.
+> See `CONTRIBUTING.md` → "Branch Workflow".
+
 ## Prerequisites
 
-- All feature work merged to `main`
-- No outstanding branches or worktrees (`git worktree list`, `git branch -a`)
+- All feature work for the release merged to `develop`, and `develop` is green
+- No outstanding feature branches or worktrees (`git worktree list`, `git branch -a`)
+- Version bump and changelog (steps 1–3) are done **on `develop`**
 
 ## 1. Version Bump
 
-Update version in **all** of these files:
+One command rewrites every version touchpoint:
 
-| File | Field |
-|---|---|
-| `Cargo.toml` | `version` |
-| `beachcomber-client/Cargo.toml` | `version` |
-| `sdks/node/package.json` | `"version"` |
-| `sdks/python/pyproject.toml` | `version` |
-| `sdks/ruby/libbeachcomber.gemspec` | `s.version` |
-| `sdks/lua/rockspec/libbeachcomber-X.Y.Z-1.rockspec` | `version`, `tag` (rename the file too) |
-| `packaging/aur/beachcomber/PKGBUILD` | `pkgver` |
-| `packaging/aur/beachcomber-bin/PKGBUILD` | `pkgver` |
-| `packaging/aur/libbeachcomber/PKGBUILD` | `pkgver` |
-| `packaging/nix/flake.nix` | `version` |
-| `README.md` | `.deb` and `.rpm` download URLs in install section |
-| `.github/workflows/release.yml` | LuaRocks rockspec filename in `publish-luarocks` job |
+```sh
+cargo xtask set-version X.Y.Z          # preview first with --dry-run
+```
 
-After editing, run `cargo check` to regenerate `Cargo.lock`.
+This updates all 14 files — `Cargo.toml`, `beachcomber-client/Cargo.toml`, both lockfiles, the 5 SDK manifests, the 3 AUR PKGBUILDs, `packaging/nix/flake.nix`, the `release.yml` rockspec reference, the README `.deb`/`.rpm` download URLs, and the Lua rockspec (renaming its versioned filename and updating `version` + `tag`) — then runs `cargo check` to validate the workspace and refresh `Cargo.lock`. Each edit is count-guarded: if any file's occurrence count has drifted (e.g. a manifest was reformatted) the run aborts before writing anything, so re-sync that file and re-run. Use `--dry-run` to preview the plan and `--no-verify` to skip the `cargo check`.
 
-Remove the old Lua rockspec file (`git rm sdks/lua/rockspec/libbeachcomber-OLD-1.rockspec`).
+The CHANGELOG is intentionally **not** touched — write release notes by hand (next step).
 
 ## 2. Changelog
 
@@ -45,9 +41,16 @@ Verify docs reflect the new version's features:
 - `website/docs/reference/cli-commands.md` — new subcommands
 - `website/docs/reference/protocol-reference.md` — new protocol ops
 
-## 4. CI Green
+## 4. Release PR (`develop` → `main`) — the release gate
 
-Commit, push to `main`, and wait for **all CI jobs** to pass:
+Commit steps 1–3 to `develop` and push it. Then open a PR from `develop` into `main`:
+
+```sh
+git push origin develop
+gh pr create --base main --head develop --title "Release vX.Y.Z" --fill
+```
+
+`main` is protected: the PR cannot merge until **all CI jobs** pass:
 
 - Check (macOS + Linux): cargo check, clippy, fmt
 - Test (macOS + Linux): cargo nextest run
@@ -55,16 +58,18 @@ Commit, push to `main`, and wait for **all CI jobs** to pass:
 - SDK tests: C, Go, Lua, Node.js, Python, Ruby
 - Installer validation: npm, PyPI
 
-Do not proceed until CI is fully green.
+Do not merge until CI is fully green. **Merging the PR is the release** — there is nothing to do by hand afterwards (see step 5).
 
-## 5. Tag and Release
+## 5. Release fires automatically on merge
 
-```sh
-git tag v0.X.0
-git push origin v0.X.0
-```
+`release.yml` triggers on **push to `main`** (i.e. the merge in step 4). A `gate` job reads the version from `Cargo.toml`, and unless `vX.Y.Z` already exists as a tag, runs the full pipeline — creating the `vX.Y.Z` provenance tag on the merge commit itself (via the default `GITHUB_TOKEN`; no PAT or App token, because the tag is no longer the trigger).
 
-The `v*` tag triggers `.github/workflows/release.yml` which:
+There is **no manual `git tag` step.** Merge the green release PR and walk away.
+
+- **Re-run / recover** (a publish job hiccupped): re-run the failed job from the Actions UI (publishes are idempotent — `skip-existing` / `Already published, skipping`), or re-run the whole workflow via **Actions → Release → Run workflow** with `force: true` to bypass the already-tagged check.
+- **Skip behaviour:** a push to `main` whose `Cargo.toml` version is already tagged is a no-op (the gate short-circuits and every downstream job skips), so a hotfix that doesn't bump the version won't re-publish.
+
+The workflow:
 
 1. Builds binaries for macOS (aarch64, x86_64) and Linux (x86_64 gnu, x86_64 musl)
 2. Packages C SDK tarball

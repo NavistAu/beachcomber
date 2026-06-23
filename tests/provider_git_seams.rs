@@ -143,6 +143,8 @@ fn refs_outputs_clean() -> Vec<std::io::Result<Output>> {
 
 #[test]
 fn git_refs_clean_repo_produces_correct_branch() {
+    // Note: branch and detached have moved to the head source (read-always).
+    // The refs source now produces commit, ahead, behind, upstream, state, etc.
     let dir = fake_repo();
     let stub = StubGitExecutor::new(refs_outputs_clean());
     let provider = git_provider_with_executor(stub);
@@ -153,8 +155,14 @@ fn git_refs_clean_repo_produces_correct_branch() {
         .unwrap();
     let result = refs_src.execute(Some(dir.path().to_str().unwrap()));
 
-    assert_eq!(result.fields.get("branch").unwrap().as_text(), "main");
-    assert_eq!(result.fields.get("detached").unwrap(), &Value::Bool(false));
+    assert!(
+        !result.fields.contains_key("branch"),
+        "branch moved to head source; must not be present in refs"
+    );
+    assert!(
+        !result.fields.contains_key("detached"),
+        "detached moved to head source; must not be present in refs"
+    );
     assert_eq!(result.fields.get("ahead").unwrap(), &Value::Int(0));
     assert_eq!(result.fields.get("behind").unwrap(), &Value::Int(0));
     assert_eq!(
@@ -174,6 +182,9 @@ fn git_refs_clean_repo_produces_correct_branch() {
 
 #[test]
 fn git_refs_detached_head_sets_detached_true() {
+    // detached is now owned by the head source (reads .git/HEAD directly).
+    // The refs source no longer emits detached. This test verifies refs still
+    // produces push_ahead/push_behind=0 in the detached case.
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![
         success(status_detached()), // status
@@ -189,7 +200,10 @@ fn git_refs_detached_head_sets_detached_true() {
         .unwrap();
     let result = refs_src.execute(Some(dir.path().to_str().unwrap()));
 
-    assert_eq!(result.fields.get("detached").unwrap(), &Value::Bool(true));
+    assert!(
+        !result.fields.contains_key("detached"),
+        "detached moved to head source; must not be present in refs"
+    );
     assert_eq!(result.fields.get("push_ahead").unwrap(), &Value::Int(0));
     assert_eq!(result.fields.get("push_behind").unwrap(), &Value::Int(0));
 }

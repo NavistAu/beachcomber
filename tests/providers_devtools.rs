@@ -1,7 +1,6 @@
 use beachcomber::provider::Provider;
 use beachcomber::provider::SourceScope;
 use beachcomber::provider::asdf::AsdfProvider;
-use beachcomber::provider::conda::CondaProvider;
 use beachcomber::provider::direnv::DirenvProvider;
 use beachcomber::provider::mise::MiseProvider;
 use beachcomber::provider::python::PythonProvider;
@@ -126,8 +125,8 @@ fn python_metadata() {
     assert_eq!(src.scope, SourceScope::PathScoped);
     let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"venv"));
-    assert!(fields.contains(&"venv_name"));
-    assert!(fields.contains(&"version"));
+    assert!(fields.contains(&"local_venv_name"));
+    assert!(fields.contains(&"venv_version"));
 }
 
 #[test]
@@ -144,7 +143,10 @@ fn python_detects_venv() {
     let sources = PythonProvider.sources();
     let result = sources[0].execute(Some(tmp.path().to_str().unwrap()));
     assert_eq!(result.fields.get("venv").unwrap().as_text(), "true");
-    assert_eq!(result.fields.get("venv_name").unwrap().as_text(), ".venv");
+    assert_eq!(
+        result.fields.get("local_venv_name").unwrap().as_text(),
+        ".venv"
+    );
 }
 
 #[test]
@@ -200,21 +202,6 @@ fn python_canonical_path_none_outside_project() {
 fn python_canonical_path_passes_none_through() {
     let sources = PythonProvider.sources();
     assert_eq!(sources[0].canonical_path(None), None);
-}
-
-// --- Conda ---
-
-#[test]
-fn conda_metadata() {
-    let p = CondaProvider;
-    let meta = p.metadata();
-    assert_eq!(meta.name, "conda");
-    assert_eq!(meta.sources.len(), 1);
-    let src = &meta.sources[0];
-    assert_eq!(src.name, "env");
-    assert_eq!(src.scope, SourceScope::Global);
-    let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"env"));
 }
 
 // --- Mise ---
@@ -293,11 +280,22 @@ fn asdf_detects_tool_versions() {
     )
     .unwrap();
 
-    use beachcomber::provider::Value;
     let sources = AsdfProvider.sources();
     let result = sources[0].execute(Some(tmp.path().to_str().unwrap()));
+    // Each tool is a flat top-level field (not nested under "tools" Object).
     assert!(
-        matches!(result.fields.get("tools"), Some(Value::Object(_))),
-        "tools field must be a Value::Object"
+        !result.fields.contains_key("tools"),
+        "tools must not be a nested Object; got keys: {:?}",
+        result.fields.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        result.fields.get("nodejs").unwrap().as_text(),
+        "20.0.0",
+        "nodejs should be a flat field"
+    );
+    assert_eq!(
+        result.fields.get("ruby").unwrap().as_text(),
+        "3.2.0",
+        "ruby should be a flat field"
     );
 }

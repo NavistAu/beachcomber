@@ -107,6 +107,29 @@ impl GitRepoFixture {
         std::fs::create_dir_all(&p).unwrap_or_else(|e| panic!("create_dir_all {rel}: {e}"));
         p
     }
+
+    /// Create a linked worktree checked out on a new branch `branch`, located at
+    /// `<repo>/<name>`. Returns its absolute path. `<name>/.git` will be a *file*.
+    pub fn add_worktree(&self, name: &str, branch: &str) -> PathBuf {
+        git(self.path(), &["worktree", "add", name, "-b", branch]);
+        self.path().join(name)
+    }
+
+    /// Run a git command in an arbitrary directory (e.g. a worktree root).
+    pub fn git_in(&self, dir: &Path, args: &[&str]) {
+        git(dir, args);
+    }
+
+    /// Like `git_in` but does NOT panic on non-zero exit. Use when the command
+    /// is expected to "fail" (e.g. `git merge` that produces a conflict).
+    pub fn git_in_allow_failure(&self, dir: &Path, args: &[&str]) {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("git {:?}: {e}", args));
+        // non-zero exit is intentionally not checked — caller expects it
+    }
 }
 
 // ---------------------------------------------------------------------------

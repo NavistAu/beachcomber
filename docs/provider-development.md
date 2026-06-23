@@ -2,6 +2,8 @@
 
 Step-by-step reference for writing new built-in providers. Built-in providers live in `src/provider/` and are compiled into the daemon. For a lower-effort path using shell scripts, see §6.
 
+For the authoritative model of how consumer queries resolve against providers — field types, the `cache.*` namespace, path expressions, value expressions, and env-driven selection — see **`docs/canon/field_resolution.md`**.
+
 ---
 
 ## 1. The Provider/Source/Field Model
@@ -465,6 +467,99 @@ cargo nextest run -p beachcomber -E 'test(provider::dockercontext)'
 # or, with plain cargo test:
 cargo test -p beachcomber provider::dockercontext
 ```
+
+---
+
+## 2b. Data Providers and Virtual Consumer Namespaces
+
+Some providers serve raw data sets that clients consume through virtual fields. The pattern separates two concerns:
+
+- **Data provider** — a daemon provider that caches all variants of an env-selected source. Its name is descriptive of the data it holds (e.g. `aws_profiles`, `gcloud_configs`). Each field is a variant keyed by name, each value an object of per-variant fields. The daemon caches the whole set regardless of any shell selector.
+- **Consumer namespace** — a set of virtual fields (client-side) that present the user-facing surface (e.g. `aws`, `gcloud`). These reference `cache.<data_provider>[<selector>].<field>` to index the data provider by the active selector.
+
+```
+# data provider: daemon-side, env-blind
+aws_profiles.default  → Object{ region: "us-east-1" }
+aws_profiles.staging  → Object{ region: "us-west-2" }
+
+# consumer namespace: client-side virtual fields
+aws.profile = env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default"
+aws.region  = env.AWS_REGION or env.AWS_DEFAULT_REGION
+              or cache.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT
+                                     or env.AWS_DEFAULT_PROFILE or "default" ].region
+```
+
+`comb get aws_profiles` returns the raw dump. `comb get aws` evaluates the computed consumer fields. The daemon never reads `$AWS_PROFILE`.
+
+See `docs/canon/field_resolution.md` §"Env-driven selection" for the full model.
+
+### The `cache.*` reference convention
+
+Inside value expressions, `cache.<provider>.<field>` addresses the **raw cached value**, bypassing any field expression. This is distinct from `<provider>.<field>`, which evaluates that field's value expression (recursive, cycle-detected).
+
+This matters when a virtual field needs to override a same-named cached value:
+
+```
+# terraform.workspace (virtual field) overrides the cached workspace without a cycle:
+terraform.workspace = env.TF_WORKSPACE or cache.terraform.workspace
+```
+
+`cache.terraform.workspace` is the stored value; `terraform.workspace` is the resolved field. No self-reference, no rename needed.
+
+---
+
+## 2c. Path Expressions
+
+A provider's **cache-key path** is computed client-side by a **path expression** — a Jinja expression over `cwd` and `env.*`.
+
+```toml
+[providers.myproject]
+path = "cwd"                              # path-scoped at the working directory (default for PathScoped)
+path = ""                                 # always global
+path = "env.MYCONFIG or '/etc/myapp'"    # env-selected file; default when unset
+```
+
+- Non-empty result → the query reads the `(provider, result)` slot (path-scoped).
+- Empty/falsy result → the pathless `(provider, None)` global slot.
+- Built-in providers ship compiled-in defaults; config overrides them per provider.
+
+The client resolves the expression and sends the result as the `path` field in the wire request. **The daemon never reads `env` or `cwd`** — it only receives the concrete path coordinate.
+
+---
+
+## 2d. `Source::watched_files` — Env-Selected File Providers (Tier B)
+
+When a source needs to watch a file whose path comes from an env var (e.g. `$KUBECONFIG`), the daemon cannot determine that path at registration time — `cwd`/`env` belong to the calling shell. The solution is `Source::watched_files`:
+
+```rust
+pub trait Source: Send + Sync {
+    // ... other methods ...
+
+    /// Returns explicit file paths to watch for the given resolved path.
+    /// Default: empty — use `patterns` / `abs_paths` in the invalidation strategy instead.
+    fn watched_files(&self, path: Option<&str>) -> Vec<PathBuf> {
+        let _ = path;
+        vec![]
+    }
+}
+```
+
+The scheduler calls `watched_files(resolved_path)` when demand is first registered and uses the result to set up per-file watches. For a `:`-joined list the source splits the path and returns each file. The daemon watches the concrete files; the client resolves the selector to a path and passes it as the cache coordinate.
+
+Example shape (Tier B provider like `kubecontext` or `talos`):
+
+```rust
+fn watched_files(&self, path: Option<&str>) -> Vec<PathBuf> {
+    let Some(p) = path else { return vec![] };
+    // A ':'-joined list — watch each file individually.
+    p.split(':').map(PathBuf::from).collect()
+}
+```
+
+Use `watched_files` when:
+- The file to watch is determined by a per-shell env var (path expression resolves it client-side).
+- A `:`-joined list of files should each be watched.
+- `abs_paths` in the invalidation strategy is not suitable because the path is dynamic per query.
 
 ---
 

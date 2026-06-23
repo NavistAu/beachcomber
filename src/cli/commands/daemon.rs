@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-pub fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
+pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) -> ExitCode {
     let log_path = config.resolve_log_path();
 
     // Ensure log directory exists.
@@ -114,6 +114,12 @@ pub fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
             cancel_clone.cancel();
         });
 
+        // Tie our lifetime to the spawning process when asked (tests). Survives a
+        // SIGKILL of the parent, where Drop-based cleanup in the spawner cannot run.
+        if exit_with_parent {
+            spawn_parent_death_watch(cancel.clone());
+        }
+
         let cancel_for_self_watch = cancel.clone();
         if let Err(e) = crate::singleton::spawn_binary_self_watch(move || {
             cancel_for_self_watch.cancel();
@@ -147,4 +153,28 @@ pub fn run_daemon(socket_path: PathBuf, config: Config) -> ExitCode {
     });
 
     ExitCode::SUCCESS
+}
+
+/// Cancel `cancel` when this daemon's parent process dies, detected via
+/// re-parenting: `getppid()` changes from the value captured at startup (the
+/// kernel re-parents orphans to launchd/init). Backs `--exit-with-parent` so a
+/// test-spawned daemon does not leak when its spawner is SIGKILLed without
+/// running cleanup — the cause of the 48-day orphaned-daemon pile-up that bloated
+/// `fseventsd`. Polls rather than using a signal so it is portable (macOS has no
+/// `PR_SET_PDEATHSIG`).
+fn spawn_parent_death_watch(cancel: tokio_util::sync::CancellationToken) {
+    let initial_ppid = unsafe { libc::getppid() };
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let current_ppid = unsafe { libc::getppid() };
+            if crate::daemon::lifecycle::should_exit_on_reparent(initial_ppid, current_ppid) {
+                tracing::info!(
+                    "parent process exited (ppid {initial_ppid} -> {current_ppid}); shutting down (--exit-with-parent)"
+                );
+                cancel.cancel();
+                break;
+            }
+        }
+    });
 }

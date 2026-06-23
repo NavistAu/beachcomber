@@ -826,6 +826,25 @@ impl Scheduler {
                                                     path, provider, sm.name
                                                 );
                                             }
+                                            // Env-selected file sources declare concrete
+                                            // files to watch via watched_files(); the path
+                                            // may be a ':'-joined list that is not itself a
+                                            // single watchable path. Subscribe each file to
+                                            // THIS instance's lifecycle key.
+                                            if let Some(src) = self.registry.source(&provider, &sm.name) {
+                                                for file in src.watched_files(Some(path_str)) {
+                                                    if let Err(e) = fs_watcher.watch(&file) {
+                                                        warn!("Failed to watch file {:?}: {}", file, e);
+                                                    } else {
+                                                        watch_paths.entry(file).or_default().push(Subscription {
+                                                            provider: provider.clone(),
+                                                            path: path.clone(),
+                                                            source: sm.name.clone(),
+                                                            patterns: Vec::new(),
+                                                        });
+                                                    }
+                                                }
+                                            }
                                         }
                                         // Register absolute-path watches for Global Watch/WatchAndPoll sources.
                                         // Subscriptions key on the source's effective path (None for Global)

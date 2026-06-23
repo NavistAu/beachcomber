@@ -155,20 +155,17 @@ impl ProviderRegistry {
             .expect("asdf");
         registry
             .register(Box::new(crate::provider::aws::AwsProvider))
-            .expect("aws");
+            .expect("aws_profiles");
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         registry
             .register(Box::new(crate::provider::battery::BatteryProvider))
             .expect("battery");
         registry
-            .register(Box::new(crate::provider::conda::CondaProvider))
-            .expect("conda");
-        registry
             .register(Box::new(crate::provider::direnv::DirenvProvider))
             .expect("direnv");
         registry
             .register(Box::new(crate::provider::gcloud::GcloudProvider))
-            .expect("gcloud");
+            .expect("gcloud_configs");
         registry
             .register(Box::new(crate::provider::git::GitProvider))
             .expect("git");
@@ -188,14 +185,14 @@ impl ProviderRegistry {
             .register(Box::new(crate::provider::network::NetworkProvider))
             .expect("network");
         registry
-            .register(Box::new(crate::provider::op::OpProvider))
-            .expect("op");
-        registry
             .register(Box::new(crate::provider::python::PythonProvider))
             .expect("python");
         registry
             .register(Box::new(crate::provider::sudo::SudoProvider))
             .expect("sudo");
+        registry
+            .register(Box::new(crate::provider::talos::TalosProvider))
+            .expect("talos");
         registry
             .register(Box::new(crate::provider::terraform::TerraformProvider))
             .expect("terraform");
@@ -234,12 +231,11 @@ impl ProviderRegistry {
         }
 
         add_builtin!("asdf", crate::provider::asdf::AsdfProvider);
-        add_builtin!("aws", crate::provider::aws::AwsProvider);
+        add_builtin!("aws_profiles", crate::provider::aws::AwsProvider);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         add_builtin!("battery", crate::provider::battery::BatteryProvider);
-        add_builtin!("conda", crate::provider::conda::CondaProvider);
         add_builtin!("direnv", crate::provider::direnv::DirenvProvider);
-        add_builtin!("gcloud", crate::provider::gcloud::GcloudProvider);
+        add_builtin!("gcloud_configs", crate::provider::gcloud::GcloudProvider);
         add_builtin!("git", crate::provider::git::GitProvider);
         add_builtin!("hostname", crate::provider::hostname::HostnameProvider);
         add_builtin!(
@@ -249,9 +245,9 @@ impl ProviderRegistry {
         add_builtin!("load", crate::provider::load::LoadProvider);
         add_builtin!("mise", crate::provider::mise::MiseProvider);
         add_builtin!("network", crate::provider::network::NetworkProvider);
-        add_builtin!("op", crate::provider::op::OpProvider);
         add_builtin!("python", crate::provider::python::PythonProvider);
         add_builtin!("sudo", crate::provider::sudo::SudoProvider);
+        add_builtin!("talos", crate::provider::talos::TalosProvider);
         add_builtin!("terraform", crate::provider::terraform::TerraformProvider);
         add_builtin!("uname", crate::provider::uname::UnameProvider);
         #[cfg(any(target_os = "macos", target_os = "linux"))]

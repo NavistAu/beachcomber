@@ -1,7 +1,6 @@
 pub mod asdf;
 pub mod aws;
 pub mod battery;
-pub mod conda;
 pub mod direnv;
 pub mod gcloud;
 pub mod git;
@@ -12,11 +11,11 @@ pub mod library;
 pub mod load;
 pub mod mise;
 pub mod network;
-pub mod op;
 pub mod python;
 pub mod registry;
 pub mod script;
 pub mod sudo;
+pub mod talos;
 pub mod terraform;
 pub mod uname;
 #[cfg(target_os = "macos")]
@@ -421,6 +420,23 @@ pub trait Source: Send + Sync {
     /// Default: identity. Returns `None` to decline demand.
     fn canonical_path(&self, path: Option<&str>) -> Option<String> {
         path.map(|s| s.to_string())
+    }
+
+    /// Absolute files this PathScoped instance should watch, derived from its
+    /// scope `path`. Default: none. An env-selected file source (kube/talos)
+    /// returns the concrete files encoded in its (possibly ':'-joined) path so
+    /// the scheduler can watch each one even though the path is not a single
+    /// watchable directory. Only consulted for Watch/WatchAndPoll PathScoped sources.
+    fn watched_files(&self, _path: Option<&str>) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
+    /// If true, the request path re-executes this source on every read instead
+    /// of serving cache. Only for sources whose execute is a cheap file/syscall
+    /// read. Expensive sources (subprocess, worktree scan, network) must return
+    /// false and stay event/poll-driven.
+    fn read_always(&self) -> bool {
+        false
     }
 }
 

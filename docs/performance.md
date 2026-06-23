@@ -149,7 +149,7 @@ let content = std::fs::read_to_string(config_dir.join("properties")).ok()?;
 
 **Problem:** `kubecontext.rs` spawned `kubectl config current-context` and `kubectl config view --minify`. kubectl is a Go binary with ~30ms startup time. Two calls = ~60ms.
 
-**Fix:** Read `~/.kube/config` directly. Extract `current-context:` with a line scan, then find the matching context block for its namespace. Respects `KUBECONFIG` env var.
+**Fix:** Read the kubeconfig file directly. Extract `current-context:` with a line scan, then find the matching context block for its namespace. The daemon never reads `$KUBECONFIG`; the CLI resolves the path expression `env.KUBECONFIG or '~/.kube/config'` and passes the resolved path as the cache coordinate (env-cascade P2).
 
 ```rust
 // Before: ~60ms (2 Go process spawns)
@@ -202,7 +202,7 @@ libc::getifaddrs(&mut ifaddrs);
 
 | Tier | Time | Providers | Method |
 |---|---|---|---|
-| **Nanosecond** (< 1µs) | 395ns - 749ns | user, load, hostname, uptime, kubecontext, gcloud, aws, conda | libc calls, file reads, env vars |
+| **Nanosecond** (< 1µs) | 395ns - 749ns | user, load, hostname, uptime, kubecontext, talos, gcloud_configs, aws_profiles | libc calls, file reads, env vars |
 | **Microsecond** (1-100µs) | ~1-50µs | terraform, python, asdf, direnv (no direnv binary) | File existence checks + reads |
 | **Millisecond** (1-10ms) | 2-6ms | network (2ms), git (5.6ms), battery (6ms) | 1 process spawn each |
 | **Slow** (10-50ms) | 10-50ms | mise, direnv (with direnv), script providers | Process spawn (user-defined) |

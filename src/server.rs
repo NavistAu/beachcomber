@@ -235,6 +235,46 @@ async fn handle_watch(
     // Subscribe to notifications
     let mut rx = watchers.subscribe(provider_name.as_str(), effective_path.as_deref());
 
+    // Re-execute any read-always source(s) for the initial snapshot so the
+    // first value is fresh off disk, not stale cache.
+    match &plan.target {
+        crate::query::KeyParse::Field(provider, field) => {
+            let head = field.split('.').next().unwrap_or(field.as_str());
+            if let Some(source_name) = registry.source_for_field(provider, head) {
+                maybe_read_always(
+                    registry,
+                    cache,
+                    provider,
+                    source_name,
+                    effective_path.as_deref(),
+                )
+                .await;
+            }
+        }
+        crate::query::KeyParse::Source(provider, source) => {
+            maybe_read_always(registry, cache, provider, source, effective_path.as_deref()).await;
+        }
+        crate::query::KeyParse::SourceField(provider, source, _field) => {
+            maybe_read_always(registry, cache, provider, source, effective_path.as_deref()).await;
+        }
+        crate::query::KeyParse::Provider(provider) => {
+            if let Some(sources) = registry.provider_sources(provider) {
+                let source_names: Vec<String> = sources
+                    .iter()
+                    .filter(|sm| match sm.scope {
+                        SourceScope::Global => true,
+                        SourceScope::PathScoped => effective_path.is_some(),
+                    })
+                    .map(|sm| sm.name.clone())
+                    .collect();
+                for sn in &source_names {
+                    maybe_read_always(registry, cache, provider, sn, effective_path.as_deref())
+                        .await;
+                }
+            }
+        }
+    }
+
     // Send initial value
     let initial = read_watch_value(cache, &plan.target, effective_path.as_deref());
     if write_watch_line(writer, &initial, &format).await.is_err() {
@@ -333,6 +373,23 @@ async fn inline_execute_source(
         expected_interval_secs,
     );
     true
+}
+
+/// Re-execute a source inline if it is `read_always`, refreshing the cache
+/// before the caller reads from it. Reuses `inline_execute_source`. No-op if
+/// the source is not registered or does not have `read_always() == true`.
+async fn maybe_read_always(
+    registry: &ProviderRegistry,
+    cache: &Cache,
+    provider: &str,
+    source_name: &str,
+    path: Option<&str>,
+) {
+    if let Some(src) = registry.source(provider, source_name)
+        && src.read_always()
+    {
+        inline_execute_source(registry, cache, provider, source_name, path).await;
+    }
 }
 
 // Watch reads only from cache — no inline-execute on cold miss (unlike Get).
@@ -502,12 +559,25 @@ async fn handle_request(
             // Cache lookup with cold-miss inline-execute, routed by key parse form.
             // Canon §"Cold cache miss triggers inline fetch": on cache miss, synchronously
             // execute the relevant source(s), write to cache, then re-read.
+            // Read-always sources are re-executed on every read, not just cold misses.
             let (cache_hit, normal_response) = match &plan.target {
                 KeyParse::Field(provider, field) => {
-                    // First check cache.
+                    // For read-always sources: re-execute before reading, even on a hit.
+                    let head = field.split('.').next().unwrap_or(field.as_str());
+                    if let Some(source_name) = registry.source_for_field(provider, head) {
+                        maybe_read_always(
+                            registry,
+                            cache,
+                            provider,
+                            source_name,
+                            effective_path.as_deref(),
+                        )
+                        .await;
+                    }
+                    // Cold-miss execute for non-read-always sources (read-always already ran above).
                     let mut hit = cache.get_field(provider, effective_path.as_deref(), field);
                     if hit.is_none()
-                        && let Some(source_name) = registry.source_for_field(provider, field)
+                        && let Some(source_name) = registry.source_for_field(provider, head)
                     {
                         let source_name = source_name.to_string();
                         if inline_execute_source(
@@ -531,22 +601,23 @@ async fn handle_request(
                         }
                         None => {
                             // Distinguish nested-path not-found from full miss.
-                            if field.contains('.') {
-                                let head = field.split('.').next().unwrap_or(field.as_str());
-                                if cache
+                            if field.contains('.')
+                                && cache
                                     .get_field(provider, effective_path.as_deref(), head)
                                     .is_some()
-                                {
-                                    return Response::error(format!(
-                                        "unknown field: {provider}.{field}"
-                                    ));
-                                }
+                            {
+                                return Response::error(format!(
+                                    "unknown field: {provider}.{field}"
+                                ));
                             }
                             (false, Response::miss())
                         }
                     }
                 }
                 KeyParse::Source(provider, source) => {
+                    // Re-execute read-always sources before reading.
+                    maybe_read_always(registry, cache, provider, source, effective_path.as_deref())
+                        .await;
                     let mut hit = cache.get_source(provider, effective_path.as_deref(), source);
                     if hit.is_none()
                         && inline_execute_source(
@@ -572,6 +643,9 @@ async fn handle_request(
                     }
                 }
                 KeyParse::SourceField(provider, source, field) => {
+                    // Re-execute read-always sources before reading.
+                    maybe_read_always(registry, cache, provider, source, effective_path.as_deref())
+                        .await;
                     let mut hit = cache.get_source(provider, effective_path.as_deref(), source);
                     if hit.is_none()
                         && inline_execute_source(
@@ -604,7 +678,28 @@ async fn handle_request(
                     }
                 }
                 KeyParse::Provider(provider) => {
-                    // Whole-provider read: warm every applicable source on cold miss.
+                    // Whole-provider read: re-execute read-always sources first,
+                    // then warm all applicable sources on cold miss.
+                    if let Some(sources) = registry.provider_sources(provider) {
+                        let source_names: Vec<String> = sources
+                            .iter()
+                            .filter(|sm| match sm.scope {
+                                SourceScope::Global => true,
+                                SourceScope::PathScoped => effective_path.is_some(),
+                            })
+                            .map(|sm| sm.name.clone())
+                            .collect();
+                        for sn in &source_names {
+                            maybe_read_always(
+                                registry,
+                                cache,
+                                provider,
+                                sn,
+                                effective_path.as_deref(),
+                            )
+                            .await;
+                        }
+                    }
                     let mut hit = cache.get_entry(provider, effective_path.as_deref());
                     if hit.is_none()
                         && let Some(sources) = registry.provider_sources(provider)

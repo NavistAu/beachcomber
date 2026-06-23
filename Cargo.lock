@@ -124,7 +124,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "beachcomber"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "assert_cmd",
  "beachcomber",
@@ -936,7 +936,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libbeachcomber"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "beachcomber",
  "libc",
@@ -2469,6 +2469,10 @@ name = "xdg"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fb433233f2df9344722454bc7e96465c9d03bff9d77c248f9e7523fe79585b5"
+
+[[package]]
+name = "xtask"
+version = "0.0.0"
 
 [[package]]
 name = "yansi"

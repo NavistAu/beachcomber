@@ -2,6 +2,8 @@ use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 pub struct KubecontextProvider;
 
@@ -31,37 +33,36 @@ fn context_source_metadata() -> SourceMetadata {
                 field_type: FieldType::String,
             },
         ],
-        scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
-        keep_alive: KeepAlive::Polls(2),
+        // PathScoped: the instance path is the kubeconfig path (single, or a
+        // ':'-joined list) computed by the CLI from $KUBECONFIG via the provider's
+        // path expression. The daemon never reads $KUBECONFIG. Watch: the scheduler
+        // watches the path's component files via Source::watched_files.
+        scope: SourceScope::PathScoped,
+        invalidation: InvalidationStrategy::Watch {
+            patterns: vec![],
+            abs_paths: vec![],
+        },
+        keep_alive: KeepAlive::Duration(120),
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 30,
         },
-        fsevents_reinstate: false,
+        fsevents_reinstate: true,
     }
 }
 
-struct KubeContext {
-    /// Explicit kubeconfig path override. When `None`, path resolution falls
-    /// back to `$KUBECONFIG` → `~/.kube/config` (the normal runtime path).
-    override_path: Option<std::path::PathBuf>,
+fn path_to_files(path: &str) -> Vec<PathBuf> {
+    path.split(':')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect()
 }
+
+struct KubeContext;
 
 impl KubeContext {
     fn new() -> Self {
-        Self {
-            override_path: None,
-        }
-    }
-
-    /// Construct a `KubeContext` that reads from an explicit path, bypassing
-    /// `$KUBECONFIG` and the `~/.kube/config` fallback. Intended for tests.
-    #[cfg(any(test, feature = "test-helpers"))]
-    pub fn with_kubeconfig_path(path: std::path::PathBuf) -> Self {
-        Self {
-            override_path: Some(path),
-        }
+        Self
     }
 }
 
@@ -72,69 +73,91 @@ impl Source for KubeContext {
         M.get_or_init(context_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
-        let config_path = if let Some(ref p) = self.override_path {
-            p.clone()
-        } else {
-            let Some(p) = kubeconfig_path() else {
-                return SourceResult::new();
-            };
-            p
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        let Some(p) = path else {
+            return SourceResult::new();
         };
-        let Some(content) = std::fs::read_to_string(&config_path).ok() else {
+        let files = path_to_files(p);
+        if files.is_empty() {
+            return SourceResult::new();
+        }
+
+        let (current_context, ns_map) = merge_kubeconfigs(&files);
+        let Some(context) = current_context else {
             return SourceResult::new();
         };
 
-        // Find current-context
-        let Some(context) = content
-            .lines()
-            .find(|l| l.starts_with("current-context:"))
-            .map(|l| {
-                l.strip_prefix("current-context:")
-                    .unwrap_or("")
-                    .trim()
-                    .to_string()
-            })
-            .filter(|s| !s.is_empty())
-        else {
-            return SourceResult::new();
-        };
-
-        // Find namespace for this context
-        let namespace =
-            find_context_namespace(&content, &context).unwrap_or_else(|| "default".to_string());
+        let namespace = ns_map
+            .get(&context)
+            .cloned()
+            .unwrap_or_else(|| "default".to_string());
 
         let mut result = SourceResult::new();
         result.insert("context", Value::String(context));
         result.insert("namespace", Value::String(namespace));
         result
     }
-}
 
-fn kubeconfig_path() -> Option<std::path::PathBuf> {
-    if let Ok(path) = std::env::var("KUBECONFIG") {
-        // KUBECONFIG can be colon-separated, take the first
-        let first = path.split(':').next()?;
-        return Some(std::path::PathBuf::from(first));
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let p = path?;
+        let joined = p
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(|c| {
+                std::fs::canonicalize(c)
+                    .map(|q| q.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| c.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(":");
+        if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        }
     }
-    let home = std::env::var("HOME").ok()?;
-    Some(std::path::PathBuf::from(home).join(".kube").join("config"))
+
+    fn watched_files(&self, path: Option<&str>) -> Vec<PathBuf> {
+        path.map(path_to_files).unwrap_or_default()
+    }
 }
 
-/// Construct the kubecontext source reading from an explicit kubeconfig path.
-/// Intended for seam tests — bypasses `$KUBECONFIG` and `~/.kube/config`.
-#[cfg(any(test, feature = "test-helpers"))]
-pub fn kubecontext_source_with_path(path: std::path::PathBuf) -> Box<dyn Source> {
-    Box::new(KubeContext::with_kubeconfig_path(path))
+/// Merge multiple kubeconfig files.
+/// Returns (last non-empty current-context, map of context-name → namespace).
+/// Later files win on conflict (kubectl merge semantics).
+/// Unreadable / non-existent files are silently skipped.
+fn merge_kubeconfigs(paths: &[PathBuf]) -> (Option<String>, HashMap<String, String>) {
+    let mut current_context: Option<String> = None;
+    let mut ns_map: HashMap<String, String> = HashMap::new();
+
+    for path in paths {
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        // Extract current-context from this file.
+        if let Some(ctx) = content
+            .lines()
+            .find(|l| l.starts_with("current-context:"))
+            .and_then(|l| {
+                l.strip_prefix("current-context:")
+                    .map(|s| s.trim().to_string())
+            })
+            .filter(|s| !s.is_empty())
+        {
+            current_context = Some(ctx);
+        }
+        // Extract all context name→namespace entries from this file.
+        for (name, ns) in extract_context_namespaces(&content) {
+            ns_map.insert(name, ns);
+        }
+    }
+
+    (current_context, ns_map)
 }
 
-fn find_context_namespace(content: &str, context_name: &str) -> Option<String> {
-    // Split the contexts section into per-item blocks and search for the matching name.
-    // Kubeconfig YAML structure:
-    //   contexts:
-    //   - context:
-    //       namespace: my-ns
-    //     name: my-context
+/// Parse all (context-name, namespace) pairs from a kubeconfig file content.
+/// Uses exact name matching (not substring).
+fn extract_context_namespaces(content: &str) -> Vec<(String, String)> {
     let mut in_contexts = false;
     let mut current_block = String::new();
     let mut blocks: Vec<String> = Vec::new();
@@ -165,27 +188,38 @@ fn find_context_namespace(content: &str, context_name: &str) -> Option<String> {
         blocks.push(current_block);
     }
 
-    // Find the block containing our context name
+    let mut out = Vec::new();
     for block in &blocks {
-        if block.contains(&format!("name: {context_name}"))
-            || block.contains(&format!("name: \"{context_name}\""))
-        {
-            // Look for namespace in this block
-            for line in block.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("namespace:") {
-                    let ns = trimmed
-                        .strip_prefix("namespace:")
-                        .unwrap_or("")
-                        .trim()
-                        .trim_matches('"')
-                        .to_string();
-                    if !ns.is_empty() {
-                        return Some(ns);
-                    }
+        // Extract exact name: must be `  name: <value>` with no trailing chars on same key.
+        let name = block.lines().find_map(|line| {
+            let trimmed = line.trim();
+            // Match lines that are exactly `name: <something>` — key must equal "name".
+            if let Some((key, val)) = trimmed.split_once(':')
+                && key.trim() == "name"
+            {
+                let v = val.trim().trim_matches('"').to_string();
+                if !v.is_empty() {
+                    return Some(v);
                 }
             }
-        }
+            None
+        });
+        let Some(name) = name else { continue };
+
+        let namespace = block.lines().find_map(|line| {
+            let trimmed = line.trim();
+            if let Some((key, val)) = trimmed.split_once(':')
+                && key.trim() == "namespace"
+            {
+                let v = val.trim().trim_matches('"').to_string();
+                if !v.is_empty() {
+                    return Some(v);
+                }
+            }
+            None
+        });
+
+        out.push((name, namespace.unwrap_or_else(|| "default".to_string())));
     }
-    None
+    out
 }

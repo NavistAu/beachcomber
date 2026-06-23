@@ -94,6 +94,15 @@ For `Watch` and `WatchAndPoll` Sources, when the Source instance enters Active s
 
 A filesystem event whose path is under any registered watch root and matches any registered pattern (or hits any watched abs_path) triggers refresh of the corresponding Source instance.
 
+### File-path scope and per-instance watched files
+
+A `PathScoped` Source's scope path is usually a directory (e.g. a project root), within which `Watch` patterns are matched. A Source may instead be scoped by a **file path** — or a separator-joined list of file paths — when its value lives in a file the *consumer* selects (the path-phase of env-driven selection; see [`field_resolution.md`](./field_resolution.md)). Such a Source:
+
+- reads (and, for a list, merges) the file(s) named by its scope path in `execute(path)`;
+- declares the absolute files to watch for that instance via `watched_files(path)` (default: none). For a `Watch`/`WatchAndPoll` Source the scheduler registers a watch on each returned file, so the instance is invalidated by changes to its component files even though the scope path is not a single watchable directory.
+
+The cache coordinate is the file-path scope; distinct selections are distinct Source instances sharing the normal `PathScoped` lifecycle and decay. The Source never reads the selector env var — consumer-side resolution supplies the concrete path.
+
 ### Cache entry composition
 
 A cache entry at `(provider, path)` holds the union of all Source instances' Field outputs at that key:
@@ -251,6 +260,14 @@ Source: upower
 
 `level` polls cheap sysfs reads frequently; `upower` polls the expensive subprocess less often. Each Source has its own demand timestamps, decay timeline, and failure backoff.
 
+## Read-always Sources
+
+A Source may be **read-always**: its `execute` is a cheap file or syscall read, so the request path re-executes it on every `get` / `context` / `watch` initial snapshot instead of serving the cached value. The Source declares this by returning `true` from `read_always()` (default: `false`).
+
+Read-always is reserved for Sources whose `execute` cost is comparable to a single file read (e.g. reading `<gitdir>/HEAD`). Expensive Sources — subprocess spawns, worktree scans, network calls — must remain `false` and stay event/poll-driven.
+
+The cache entry for a read-always Source is still written on every re-execution and remains available to the scheduler's poll/watch path. The distinction is only in the request path: instead of returning the cached value, it re-executes first.
+
 ## Invariants
 
 1. Every Field belongs to exactly one Source. Field names are unique within a Provider.
@@ -266,6 +283,8 @@ Source: upower
 11. A Source's refresh produces exactly the Fields the Source declares — no more, no less.
 12. Sources writing to the same cache entry produce disjoint Field sets. A Field-name overlap between Sources of the same Provider is a configuration error.
 13. A consumer query for `provider.field` is demand for the Source that owns `field`. It is not demand for sibling Sources of the same Provider.
+14. A read-always Source is re-executed on every request-path read; its value is never served from cache. Read-always is reserved for Sources whose `execute` is a cheap file/syscall read.
+15. A `PathScoped` Source may be scoped by a file path or separator-joined file list; it reads/merges those file(s) in `execute` and declares the files to watch via `watched_files`. For `Watch`/`WatchAndPoll` Sources the scheduler registers a watch on each declared file. The Source never reads the selector env var.
 
 ## Behaviour assertions
 
@@ -380,9 +399,11 @@ Feature: Source-level invalidation
 - **Status TTL column rendering.** The visual representation of pure-watch sources (e.g., the F-only glyph render with no `D PxK` element) is governed by `docs/status_ttl.md`.
 - **Migration / phasing.** How the codebase moves from monolithic `Provider::execute()` to the per-Source dispatch model is implementation planning, not part of the canonical model.
 - **Failure backoff on watch-registration failure.** This canonical model does not specify automatic retry of failed watch registrations; whether and how the scheduler retries is an implementation concern bounded by the FailbackConfig contract.
+- **Field resolution.** How a consumer query is resolved into a value — the field-type taxonomy, `cache.*`/`env.*`, path expressions, virtual fields, and env-driven selection — is governed by [`field_resolution.md`](./field_resolution.md), not this model.
 
 ## See also
 
+- [`field_resolution.md`](./field_resolution.md) — how cached values, `env.*`, and path expressions resolve into the values consumers query
 - [`cache-lifecycle.md`](./cache-lifecycle.md) — the universal Active/Decay/Evicted state machine that Source instances follow
 - [`singleton.md`](./singleton.md) — daemon-singleton invariants (orthogonal; included here as the third canonical doc for cross-reference)
 - `docs/status_ttl.md` — TTL column rendering, including pure-watch source render

@@ -2,14 +2,56 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Release even if Cargo.toml's version is already tagged"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
+  # Every push to `main` is a release: `main` only advances via the develop->main
+  # release PR (the gate). This workflow reads the version from Cargo.toml and
+  # releases it unless that tag already exists. There is no tag-push trigger, so
+  # no PAT / App token is needed — the provenance tag `vX.Y.Z` is created inside
+  # the run by the `release` job using the default GITHUB_TOKEN (nothing is
+  # *triggered* by it, so the token's recursion suppression does not matter).
+  # Manual re-release: run via workflow_dispatch with `force: true`.
+  gate:
+    name: Release gate
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      version: ${{ steps.decide.outputs.version }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide whether to release
+        id: decide
+        run: |
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "(.*)"/\1/')
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            echo "Forced release of ${TAG}."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists; nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing ${TAG}."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build ${{ matrix.target }}
+    needs: gate
+    if: needs.gate.outputs.release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -55,7 +97,7 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../beachcomber-${{ github.ref_name }}-${{ matrix.target }}.tar.gz comb
+          tar czf ../../../beachcomber-${{ needs.gate.outputs.tag }}-${{ matrix.target }}.tar.gz comb
           cd ../../..
 
       - name: Upload artifact
@@ -66,12 +108,14 @@ jobs:
 
   c-sdk-tarball:
     name: Package C SDK
+    needs: gate
+    if: needs.gate.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Create C SDK tarball
         run: |
-          tar czf beachcomber-c-sdk-${{ github.ref_name }}.tar.gz \
+          tar czf beachcomber-c-sdk-${{ needs.gate.outputs.tag }}.tar.gz \
             -C sdks/c \
             beachcomber.c beachcomber.h json.c json.h Makefile libbeachcomber.pc.in README.md
       - name: Upload artifact
@@ -82,6 +126,8 @@ jobs:
 
   package-csdk:
     name: Package C SDK (${{ matrix.format }})
+    needs: gate
+    if: needs.gate.outputs.release == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -93,7 +139,7 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${{ needs.gate.outputs.version }}" >> "$GITHUB_OUTPUT"
 
       - name: Build deb
         if: matrix.format == 'deb'
@@ -234,7 +280,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build, c-sdk-tarball, package-linux, test-packages, test-csdk-packages]
+    needs: [gate, build, c-sdk-tarball, package-linux, test-packages, test-csdk-packages]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -244,6 +290,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # Triggered on push to main (not a tag), so name the tag explicitly;
+          # the action creates `vX.Y.Z` on this commit with GITHUB_TOKEN.
+          tag_name: ${{ needs.gate.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: |
             beachcomber-*.tar.gz
@@ -356,22 +406,22 @@ jobs:
       - name: Install JSON library
         run: luarocks install dkjson
       - name: Publish
-        run: luarocks upload --skip-pack rockspec/libbeachcomber-0.6.1-1.rockspec --api-key=${{ secrets.LUAROCKS_API_KEY }} || echo "Already published, skipping"
+        run: luarocks upload --skip-pack rockspec/libbeachcomber-0.7.0-1.rockspec --api-key=${{ secrets.LUAROCKS_API_KEY }} || echo "Already published, skipping"
 
   publish-go:
     name: Tag Go module
-    needs: release
+    needs: [gate, release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Create Go module tag
         run: |
-          git tag sdks/go/${{ github.ref_name }} || echo "Tag already exists, skipping"
-          git push origin sdks/go/${{ github.ref_name }} || echo "Tag already pushed, skipping"
+          git tag sdks/go/${{ needs.gate.outputs.tag }} || echo "Tag already exists, skipping"
+          git push origin sdks/go/${{ needs.gate.outputs.tag }} || echo "Tag already pushed, skipping"
 
   publish-homebrew:
     name: Update Homebrew tap
-    needs: release
+    needs: [gate, release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -389,10 +439,9 @@ jobs:
 
       - name: Generate formula
         run: |
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
-          ARM_SHA=$(shasum -a 256 artifacts/beachcomber-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
-          INTEL_SHA=$(shasum -a 256 artifacts/beachcomber-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
+          VERSION="${{ needs.gate.outputs.version }}"
+          ARM_SHA=$(shasum -a 256 artifacts/beachcomber-${{ needs.gate.outputs.tag }}-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
+          INTEL_SHA=$(shasum -a 256 artifacts/beachcomber-${{ needs.gate.outputs.tag }}-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
 
           cat > homebrew-tap/Formula/beachcomber.rb << FORMULA
           class Beachcomber < Formula
@@ -402,10 +451,10 @@ jobs:
             license "MIT"
 
             if Hardware::CPU.arm?
-              url "https://github.com/NavistAu/beachcomber/releases/download/${{ github.ref_name }}/beachcomber-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz"
+              url "https://github.com/NavistAu/beachcomber/releases/download/${{ needs.gate.outputs.tag }}/beachcomber-${{ needs.gate.outputs.tag }}-aarch64-apple-darwin.tar.gz"
               sha256 "${ARM_SHA}"
             else
-              url "https://github.com/NavistAu/beachcomber/releases/download/${{ github.ref_name }}/beachcomber-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz"
+              url "https://github.com/NavistAu/beachcomber/releases/download/${{ needs.gate.outputs.tag }}/beachcomber-${{ needs.gate.outputs.tag }}-x86_64-apple-darwin.tar.gz"
               sha256 "${INTEL_SHA}"
             end
 
@@ -425,12 +474,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/beachcomber.rb
-          git commit -m "beachcomber ${{ github.ref_name }}"
+          git commit -m "beachcomber ${{ needs.gate.outputs.tag }}"
           git push
 
   publish-npm-binary:
     name: Publish beachcomber binary installer to npm
-    needs: release
+    needs: [gate, release]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -448,14 +497,14 @@ jobs:
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-      - name: Set version from tag
-        run: npm version --no-git-tag-version --allow-same-version "${GITHUB_REF_NAME#v}"
+      - name: Set version
+        run: npm version --no-git-tag-version --allow-same-version "${{ needs.gate.outputs.version }}"
       - name: Publish
         run: unset NODE_AUTH_TOKEN && npm publish --access public --provenance || echo "Already published, skipping"
 
   publish-pypi-binary:
     name: Publish beachcomber binary installer to PyPI
-    needs: release
+    needs: [gate, release]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -468,8 +517,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Set version from tag
-        run: sed -i "s/^version = .*/version = \"${GITHUB_REF_NAME#v}\"/" pyproject.toml
+      - name: Set version
+        run: sed -i "s/^version = .*/version = \"${{ needs.gate.outputs.version }}\"/" pyproject.toml
       - name: Build
         run: pip install build && python -m build
       - name: Publish

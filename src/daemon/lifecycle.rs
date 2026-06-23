@@ -55,6 +55,15 @@ pub fn needs_fork(is_running: bool) -> bool {
     !is_running
 }
 
+/// True when an `--exit-with-parent` daemon should shut down because it has been
+/// re-parented: its parent pid changed from the value captured at startup,
+/// meaning the original parent (the process that spawned it) has died and the
+/// kernel re-parented the daemon (to launchd/init). Pure so the watch loop in
+/// `cli::commands::daemon` stays trivial and this rule is unit-tested.
+pub fn should_exit_on_reparent(initial_ppid: i32, current_ppid: i32) -> bool {
+    current_ppid != initial_ppid
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +115,20 @@ mod tests {
         // attempt == max_attempts means we have exhausted the budget.
         let d = next_wait_decision(8, 8, 500);
         assert_eq!(d, WaitDecision::Timeout);
+    }
+
+    // --- should_exit_on_reparent ---
+
+    #[test]
+    fn reparent_unchanged_ppid_keeps_running() {
+        // Parent still alive (ppid unchanged) -> keep running.
+        assert!(!should_exit_on_reparent(4321, 4321));
+    }
+
+    #[test]
+    fn reparent_changed_ppid_triggers_exit() {
+        // Original parent died -> re-parented to launchd (pid 1) -> exit.
+        assert!(should_exit_on_reparent(4321, 1));
     }
 
     #[test]

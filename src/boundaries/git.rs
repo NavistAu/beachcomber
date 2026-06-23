@@ -29,6 +29,13 @@ impl GitExecutor for RealGitExecutor {
 
         std::process::Command::new("git")
             .args(&args)
+            // Resolve the repo purely from `current_dir`, so subprocess results
+            // agree with the daemon's own file-path resolution (resolve_git_dir).
+            // An inherited GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE would point git at
+            // a different repo than the file-read helpers use — a split-brain.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_WORK_TREE")
             .envs(envs)
             .current_dir(dir)
             .output()

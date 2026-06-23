@@ -37,6 +37,11 @@ enum Commands {
         /// Override socket path
         #[arg(long)]
         socket: Option<PathBuf>,
+        /// Exit automatically when the spawning parent process dies. Used by the
+        /// test harness so a daemon never outlives the test that spawned it —
+        /// even when the test process is SIGKILLed (which skips normal cleanup).
+        #[arg(long)]
+        exit_with_parent: bool,
     },
     /// Query one or more cached values.
     ///
@@ -128,7 +133,11 @@ enum Commands {
     },
     /// Detect installed tools and show integration snippets
     #[command(visible_alias = "i")]
-    Init,
+    Init {
+        /// Append built-in virtual field defaults to ~/.config/beachcomber/config.toml
+        #[arg(long)]
+        write_config: bool,
+    },
     /// Run health checks
     #[command(visible_alias = "c")]
     Check {
@@ -181,9 +190,12 @@ fn main() -> ExitCode {
     let config = Config::load();
 
     match cli.command {
-        Commands::Daemon { socket } => {
+        Commands::Daemon {
+            socket,
+            exit_with_parent,
+        } => {
             let socket_path = socket.unwrap_or_else(|| config.resolve_socket_path());
-            run_daemon(socket_path, config)
+            run_daemon(socket_path, config, exit_with_parent)
         }
         Commands::Get {
             keys,
@@ -254,7 +266,7 @@ fn main() -> ExitCode {
         Commands::Eval { template, path } => {
             beachcomber::cli::commands::eval::run_eval(&config, &template, path.as_deref())
         }
-        Commands::Init => run_init(),
+        Commands::Init { write_config } => run_init(write_config),
         Commands::Check { check_cmd } => run_check(&config, check_cmd),
         Commands::Kill { timeout, socket } => {
             let socket_path = socket.unwrap_or_else(|| config.resolve_socket_path());

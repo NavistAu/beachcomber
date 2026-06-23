@@ -28,7 +28,7 @@ fn state_source_metadata() -> SourceMetadata {
         }],
         scope: SourceScope::PathScoped,
         invalidation: InvalidationStrategy::Watch {
-            patterns: vec![".terraform".into()],
+            patterns: vec![".terraform/environment".into()],
             abs_paths: vec![],
         },
         keep_alive: KeepAlive::Duration(120),
@@ -59,11 +59,10 @@ impl Source for TerraformState {
             return SourceResult::new();
         }
 
-        // Read workspace from .terraform/environment
-        let workspace = std::fs::read_to_string(tf_dir.join("environment"))
-            .unwrap_or_else(|_| "default".to_string())
-            .trim()
-            .to_string();
+        // Read from .terraform/environment file only. $TF_WORKSPACE is a
+        // per-shell override resolved client-side in the virtual cascade:
+        //   workspace = "env.TF_WORKSPACE or cache.terraform.workspace"
+        let workspace = read_workspace_file(&tf_dir);
 
         let mut result = SourceResult::new();
         result.insert("workspace", Value::String(workspace));
@@ -74,6 +73,13 @@ impl Source for TerraformState {
         let p = path?;
         find_terraform_root(Path::new(p))
     }
+}
+
+fn read_workspace_file(tf_dir: &Path) -> String {
+    std::fs::read_to_string(tf_dir.join("environment"))
+        .unwrap_or_else(|_| "default".to_string())
+        .trim()
+        .to_string()
 }
 
 fn find_terraform_root(start: &Path) -> Option<String> {

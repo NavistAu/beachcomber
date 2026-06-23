@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Repository automation tasks for beachcomber (release version bumping, etc.)"
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"

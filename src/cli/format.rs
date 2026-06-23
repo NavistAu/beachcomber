@@ -8,9 +8,10 @@ use crate::provider::{ProviderResult, Value as ProvValue};
 ///
 /// Shared by all rendering helpers so the `truncate` filter (and any future
 /// additions) are available in `fmt`, `eval`, and any other template surface.
-pub(crate) fn build_env<'a>() -> Environment<'a> {
+pub fn build_env<'a>() -> Environment<'a> {
     let mut env = Environment::new();
     env.add_filter("truncate", truncate_filter);
+    env.add_filter("basename", basename_filter);
     env
 }
 
@@ -53,8 +54,11 @@ pub fn render_fmt_template_json(
 /// `("git", "branch")`.
 ///
 /// Tag handling:
-/// - `{{ ... }}` — expression tags: scan for the first `ident.ident` after
-///   the opening braces (the existing behaviour).
+/// - `{{ ... }}` — expression tags: scan the entire expression body for all
+///   `ident.ident` occurrences (so cascades like `{{ a.b or c.d }}` discover
+///   every ref). String literals are skipped. For a nested chain `foo.bar.baz`
+///   only `("foo","bar")` is recorded — daemon keys are `provider.field`
+///   (one dot); deeper segments are MiniJinja nested attribute access.
 /// - `{% ... %}` and `{%- ... -%}` — block tags: scan the entire block body
 ///   for all `ident.ident` occurrences. Handles whitespace-control dashes.
 /// - `{# ... #}` — comment tags: skipped entirely; no scanning.
@@ -77,43 +81,75 @@ pub fn find_eval_template_pairs(template: &str) -> Vec<(String, String)> {
     while i + 1 < len {
         if bytes[i] == b'{' {
             match bytes[i + 1] {
-                // Expression tag: {{ ... }}
-                // Scan for the first ident.ident only (existing behaviour).
+                // Expression tag: {{ ... }} or {{- ... -}}
+                // Scan the entire expression body for all ident.ident patterns
+                // (so cascades like `{{ a.b or c.d }}` discover every ref).
                 b'{' => {
                     i += 2;
-                    // Skip whitespace
-                    while i < len && bytes[i].is_ascii_whitespace() {
+                    // Consume optional whitespace-control dash: {{-
+                    if i < len && bytes[i] == b'-' {
                         i += 1;
                     }
-                    // Read first identifier
-                    let start = i;
-                    while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                        i += 1;
+                    // Walk the expression body until closing }} or -}}.
+                    let mut in_string: Option<u8> = None; // Some(b'"') or Some(b'\'')
+                    while i + 1 < len {
+                        // Detect closing: -}} or }}
+                        let closing = (bytes[i] == b'-'
+                            && bytes[i + 1] == b'}'
+                            && i + 2 < len
+                            && bytes[i + 2] == b'}')
+                            || (bytes[i] == b'}' && bytes[i + 1] == b'}');
+                        if closing {
+                            if bytes[i] == b'-' {
+                                i += 3; // -}}
+                            } else {
+                                i += 2; // }}
+                            }
+                            break;
+                        }
+
+                        if let Some(delim) = in_string {
+                            // Inside a string literal
+                            if bytes[i] == b'\\' {
+                                i += 2; // skip escaped byte
+                            } else if bytes[i] == delim {
+                                in_string = None;
+                                i += 1;
+                            } else {
+                                i += 1;
+                            }
+                        } else if bytes[i] == b'"' || bytes[i] == b'\'' {
+                            in_string = Some(bytes[i]);
+                            i += 1;
+                        } else if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+                            // Potential ident.ident — read it.
+                            let start = i;
+                            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                            {
+                                i += 1;
+                            }
+                            if i < len && bytes[i] == b'.' {
+                                let provider = &template[start..i];
+                                i += 1; // consume the dot
+                                let start2 = i;
+                                while i < len
+                                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                                {
+                                    i += 1;
+                                }
+                                let field = &template[start2..i];
+                                if !provider.is_empty() && !field.is_empty() {
+                                    pairs.push((provider.to_string(), field.to_string()));
+                                }
+                                // For a nested chain `foo.bar.baz`: after reading field
+                                // `bar`, `i` sits on the second dot; the loop's else-branch
+                                // steps past it and `baz` is read as a bare ident with no
+                                // trailing dot, so only ("foo","bar") is recorded.
+                            }
+                        } else {
+                            i += 1;
+                        }
                     }
-                    let provider = &template[start..i];
-                    if provider.is_empty() {
-                        continue;
-                    }
-                    // Skip whitespace
-                    while i < len && bytes[i].is_ascii_whitespace() {
-                        i += 1;
-                    }
-                    // Expect a dot
-                    if i >= len || bytes[i] != b'.' {
-                        continue;
-                    }
-                    i += 1;
-                    // Read second identifier
-                    let start2 = i;
-                    while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                        i += 1;
-                    }
-                    let field = &template[start2..i];
-                    if field.is_empty() {
-                        continue;
-                    }
-                    // We have a provider.field — record it (dedup via the caller)
-                    pairs.push((provider.to_string(), field.to_string()));
                 }
 
                 // Block tag: {% ... %} or {%- ... -%}
@@ -236,6 +272,15 @@ pub fn find_eval_template_refs(template: &str) -> HashSet<String> {
 pub fn render_eval_template(template: &str, context: &serde_json::Value) -> Result<String, String> {
     let env = build_env();
     env.render_str(template, context).map_err(|e| e.to_string())
+}
+
+fn basename_filter(value: String) -> String {
+    // Remove trailing slashes, then take the last path component.
+    let trimmed = value.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
 }
 
 fn truncate_filter(value: String, length: u32) -> String {

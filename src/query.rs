@@ -278,11 +278,11 @@ mod tests {
     #[test]
     fn build_field_demands_only_owning_source() {
         let reg = ProviderRegistry::with_defaults();
-        // branch is owned by the refs source.
+        // branch is owned by the head source (split from refs).
         let plan = QueryPlan::build("git.branch", None, &reg);
         match plan.demand {
-            SourceDemand::Sources(v) => assert_eq!(v, vec!["refs".to_string()]),
-            other => panic!("expected Sources([refs]), got {other:?}"),
+            SourceDemand::Sources(v) => assert_eq!(v, vec!["head".to_string()]),
+            other => panic!("expected Sources([head]), got {other:?}"),
         }
     }
 
@@ -325,8 +325,8 @@ mod tests {
         let plan = QueryPlan::build("git.branch:fresh", None, &reg);
         assert_eq!(plan.meta.as_deref(), Some("fresh"));
         match plan.demand {
-            SourceDemand::Sources(v) => assert_eq!(v, vec!["refs".to_string()]),
-            other => panic!("expected Sources([refs]), got {other:?}"),
+            SourceDemand::Sources(v) => assert_eq!(v, vec!["head".to_string()]),
+            other => panic!("expected Sources([head]), got {other:?}"),
         }
     }
 }

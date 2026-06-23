@@ -1079,9 +1079,11 @@ impl Config {
                 None => continue,
             };
             // Skip known provider-level-only sub-table names.
-            if matches!(sub_key.as_str(), "invalidation" | "fields") {
-                // These appear in legacy flat shape; in multi-source they live inside
-                // per-source blocks instead. Skip at provider level.
+            if matches!(sub_key.as_str(), "invalidation" | "fields" | "virtual") {
+                // "invalidation"/"fields" appear in legacy flat shape; in multi-source they
+                // live inside per-source blocks instead. "virtual" holds client-side
+                // virtual-field expressions (canon invariant 7: evaluated CLI-side, never
+                // by the daemon). Skip all three at provider level.
                 continue;
             }
             let block_name = format!("[providers.{prov_name}.{sub_key}]");
@@ -1236,6 +1238,12 @@ impl Config {
                     continue;
                 }
 
+                // Skip the `virtual` sub-table — it holds client-side virtual-field
+                // expressions (canon invariant 7: evaluated CLI-side, never by the daemon).
+                if sub_key == "virtual" {
+                    continue;
+                }
+
                 // sub_key is a potential source name.
                 let sub_table = sub_val.as_table().unwrap();
                 let block_name = format!("[providers.{prov_name}.{sub_key}]");
@@ -1284,6 +1292,50 @@ impl Config {
         }
 
         (warnings, errors)
+    }
+
+    /// Return per-provider path expression overrides from config.
+    ///
+    /// Reads the `path` scalar key from each `[providers.<name>]` section.
+    /// Returns a map of provider_name → path_expression_string.
+    pub fn path_expressions(&self) -> std::collections::HashMap<String, String> {
+        let mut out = std::collections::HashMap::new();
+        for (provider_name, provider_val) in &self.providers {
+            let toml::Value::Table(table) = provider_val else {
+                continue;
+            };
+            if let Some(toml::Value::String(expr)) = table.get("path") {
+                out.insert(provider_name.clone(), expr.clone());
+            }
+        }
+        out
+    }
+
+    /// Return per-provider virtual field expression overrides from config.
+    ///
+    /// Reads the `virtual` sub-table from each `[providers.<name>]` section.
+    /// TOML key `"virtual"` is read as a string literal — legal in Rust even though
+    /// `virtual` is a reserved keyword as a bare identifier.
+    ///
+    /// Returns a map of (provider_name, field_name) → expression_string.
+    /// Source knobs (siblings of `virtual`) are not included — no exclusion list needed.
+    pub fn virtual_fields(&self) -> std::collections::HashMap<(String, String), String> {
+        let mut out = std::collections::HashMap::new();
+        for (provider_name, provider_val) in &self.providers {
+            let toml::Value::Table(table) = provider_val else {
+                continue;
+            };
+            // Read the `virtual` sub-table. "virtual" as a string literal is legal in Rust.
+            let Some(toml::Value::Table(virtual_table)) = table.get("virtual") else {
+                continue;
+            };
+            for (field, val) in virtual_table {
+                if let toml::Value::String(expr) = val {
+                    out.insert((provider_name.clone(), field.clone()), expr.clone());
+                }
+            }
+        }
+        out
     }
 
     pub fn load() -> Self {
