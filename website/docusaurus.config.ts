@@ -52,7 +52,7 @@ const config: Config = {
       tagName: 'script',
       attributes: {
         defer: 'true',
-        src: 'https://stats.beachcomber.sh/s.js',
+        src: 'https://stats.navist.com.au/s.js',
         'data-website-id': 'f1aec07f-0cf7-4ee5-9b69-f1060bc396c4',
         'data-do-not-track': 'true',
         'data-domains': 'beachcomber.sh',
