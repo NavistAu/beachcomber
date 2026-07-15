@@ -141,8 +141,11 @@ cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber \
 
 Socket discovery order (mirrors the daemon's bind path):
 1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
-2. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set)
-3. `/tmp/beachcomber-<uid>/sock`
+2. `/tmp/beachcomber-<uid>/sock` — stable per-user default
+
+No session-scoped environment (`$XDG_RUNTIME_DIR`, `$TMPDIR`) is consulted:
+singleton enforcement is per-socket-path, so a session-scoped path would
+yield one daemon per session instead of one per user.
 
 ### Operations
 

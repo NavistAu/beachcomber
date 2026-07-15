@@ -134,10 +134,11 @@ Close the underlying socket.
 The SDK looks for the daemon socket in this order:
 
 1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
-2. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set)
-3. `/tmp/beachcomber-<uid>/sock`
+2. `/tmp/beachcomber-<uid>/sock` — stable per-user default
 
-This mirrors the daemon's bind path; `$TMPDIR` is not consulted.
+This mirrors the daemon's bind path. No session-scoped environment is
+consulted (`$TMPDIR`, `$XDG_RUNTIME_DIR`): the socket path is per-user, not
+per-session, so one daemon serves all sessions for a given user.
 
 ---
 

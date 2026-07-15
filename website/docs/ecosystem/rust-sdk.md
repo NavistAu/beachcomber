@@ -143,7 +143,6 @@ Clear a virtual provider entry (equivalent to `put` with no data).
 The SDK discovers the daemon socket at:
 
 1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
-2. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set)
-3. `/tmp/beachcomber-<uid>/sock`
+2. `/tmp/beachcomber-<uid>/sock`
 
-This mirrors the daemon's bind path; `$TMPDIR` is not consulted.
+This mirrors the daemon's bind path; no session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell of one user reaches the same daemon.

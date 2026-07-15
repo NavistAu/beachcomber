@@ -451,7 +451,7 @@ async fn all_subjects_reachable_via_introspect() {
 }
 
 /// `comb check daemon` with an unreachable socket exits 2 and prints a FAIL line.
-/// Redirect via XDG_RUNTIME_DIR so `resolve_socket_path` finds a path with no daemon.
+/// Redirect via BEACHCOMBER_SOCKET so `resolve_socket_path` finds a path with no daemon.
 #[test]
 fn check_daemon_unreachable_exits_two() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -469,8 +469,8 @@ fn check_daemon_unreachable_exits_two() {
     }
 
     let output = std::process::Command::new(&exe)
-        // Point XDG_RUNTIME_DIR at a temp dir with no daemon socket inside it.
-        .env("XDG_RUNTIME_DIR", tmp.path())
+        // Point BEACHCOMBER_SOCKET at a temp path with no daemon behind it.
+        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
         .args(["check", "daemon"])
         .output()
         .expect("run comb check daemon");

@@ -24,9 +24,9 @@ All other ops are stateless and can be sent on any connection in any order.
 
 ## Connection lifecycle
 
-1. **Discover socket path** — environment-dependent:
-   - `$XDG_RUNTIME_DIR/beachcomber/sock` if set
-   - `$TMPDIR/beachcomber-<uid>/sock` otherwise
+1. **Discover socket path**:
+   - `$BEACHCOMBER_SOCKET` if set and non-empty
+   - `/tmp/beachcomber-<uid>/sock` otherwise
 2. **Connect** — `AF_UNIX`, `SOCK_STREAM`.
 3. **Handshake (recommended)** — send `Hello`, verify the returned
    `protocol_version` is compatible with what the client was built against.

@@ -307,18 +307,21 @@ static void test_socket_path_beachcomber_socket(void) {
     socket_env_restore(&saved);
 }
 
-static void test_socket_path_xdg(void) {
+static void test_socket_path_xdg_ignored(void) {
     socket_env_snapshot_t saved; socket_env_save(&saved);
 
     unsetenv("BEACHCOMBER_SOCKET");
-    /* XDG resolves unconditionally — no existence probe — matching the daemon. */
+    /* XDG_RUNTIME_DIR is not consulted: singleton enforcement is per-socket-path,
+     * so session-scoped inputs are ignored in favor of the stable per-user path. */
     setenv("XDG_RUNTIME_DIR", "/run/user/1000", 1);
-    setenv("TMPDIR", "/should-not-be-used", 1);
 
     char buf[512];
     char *p = comb_socket_path(buf, sizeof(buf));
     CHECK(p != NULL);
-    CHECK(strcmp(buf, "/run/user/1000/beachcomber/sock") == 0);
+    CHECK(strncmp(buf, "/tmp/beachcomber-", 17) == 0);
+    CHECK(strstr(buf, "/sock") != NULL);
+    /* XDG_RUNTIME_DIR must not leak into the path. */
+    CHECK(strstr(buf, "run/user/1000") == NULL);
 
     socket_env_restore(&saved);
 }
@@ -1422,7 +1425,7 @@ int main(void) {
 
     SUITE("Socket path discovery");
     test_socket_path_beachcomber_socket();
-    test_socket_path_xdg();
+    test_socket_path_xdg_ignored();
     test_socket_path_too_small();
     test_socket_path_slash_tmp();
 

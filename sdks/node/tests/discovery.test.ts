@@ -35,12 +35,13 @@ describe('discoverSocketPath', () => {
     assert.equal(discoverSocketPath(), '/custom/path/comb.sock');
   });
 
-  it('uses XDG_RUNTIME_DIR unconditionally when set', () => {
+  it('ignores XDG_RUNTIME_DIR entirely', () => {
     delete process.env['BEACHCOMBER_SOCKET'];
     process.env['XDG_RUNTIME_DIR'] = '/run/user/1000';
     process.env['TMPDIR'] = '/should-not-be-used';
 
-    assert.equal(discoverSocketPath(), '/run/user/1000/beachcomber/sock');
+    const uid = getUid();
+    assert.equal(discoverSocketPath(), `/tmp/beachcomber-${uid}/sock`);
   });
 
   it('falls back to /tmp when XDG_RUNTIME_DIR is unset', () => {

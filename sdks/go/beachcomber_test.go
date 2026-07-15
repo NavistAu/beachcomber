@@ -346,7 +346,7 @@ func TestSession_Close(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNewClient_AutoDiscovery(t *testing.T) {
-	// Create a real socket so DiscoverSocketPath can find it via XDG.
+	// Create a real socket so DiscoverSocketPath can find it via BEACHCOMBER_SOCKET.
 	dir := t.TempDir()
 	sockDir := filepath.Join(dir, "beachcomber")
 	if err := os.MkdirAll(sockDir, 0o700); err != nil {
@@ -378,7 +378,7 @@ func TestNewClient_AutoDiscovery(t *testing.T) {
 		}
 	}()
 
-	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Setenv("BEACHCOMBER_SOCKET", sockPath)
 
 	c, err := beachcomber.NewClient()
 	if err != nil {

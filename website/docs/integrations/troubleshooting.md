@@ -93,10 +93,9 @@ SDKs and the CLI find the daemon socket in this order:
 
 1. Config file override (if set in `~/.config/beachcomber/config.toml`)
 2. `$BEACHCOMBER_SOCKET` environment variable
-3. `$XDG_RUNTIME_DIR/beachcomber/sock`
-4. `/tmp/beachcomber-<uid>/sock`
+3. `/tmp/beachcomber-<uid>/sock`
 
-Run `comb check daemon` to see the active socket path and daemon status. In neovim, check what the environment resolves to: `:lua print(vim.env.XDG_RUNTIME_DIR)`. (Note: `comb s` shows cache rows, not the socket path.)
+Run `comb check daemon` to see the active socket path and daemon status. In neovim, check for an override: `:lua print(vim.env.BEACHCOMBER_SOCKET)`. (Note: `comb s` shows cache rows, not the socket path.)
 
 ## Nerd Font glyphs not rendering
 

@@ -35,18 +35,35 @@ fn resolve_socket_path_falls_back_to_tmp_not_tmpdir() {
 }
 
 #[test]
-fn resolve_socket_path_uses_xdg_runtime_dir_when_set() {
+fn resolve_socket_path_ignores_session_scoped_env() {
     let cfg = Config::default();
     // temp_env serializes concurrent env mutations via a process-wide mutex and
     // restores both vars to their original values via Drop.
     let path = temp_env::with_vars(
         [
-            ("XDG_RUNTIME_DIR", Some("/run/user/501")),
-            ("TMPDIR", Some("/nowhere")),
+            ("XDG_RUNTIME_DIR", Some("/per/session/runtime")),
+            ("TMPDIR", Some("/per/shell/tmpdir")),
         ],
         || cfg.resolve_socket_path(),
     );
-    assert_eq!(path, PathBuf::from("/run/user/501/beachcomber/sock"));
+
+    let path_str = path.to_string_lossy();
+    assert!(
+        path_str.starts_with("/tmp/beachcomber-"),
+        "expected /tmp/beachcomber-* prefix, got {path_str}"
+    );
+    assert!(
+        path_str.ends_with("/sock"),
+        "expected /sock suffix, got {path_str}"
+    );
+    assert!(
+        !path_str.contains("/per/shell/tmpdir"),
+        "TMPDIR must not influence resolution, got {path_str}"
+    );
+    assert!(
+        !path_str.contains("/per/session/runtime"),
+        "XDG_RUNTIME_DIR must not influence resolution, got {path_str}"
+    );
 }
 
 use beachcomber::singleton::{

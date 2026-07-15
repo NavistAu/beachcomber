@@ -40,14 +40,13 @@ stateDiagram-v2
 
 ### Canonical socket path resolution
 
-Four steps, identical on macOS and Linux:
+Three steps, identical on macOS and Linux:
 
 1. **Config override** — `config.daemon.socket_path` if set.
 2. **`$BEACHCOMBER_SOCKET`** — if set and non-empty (any platform). Lets a user or integration point the daemon (and, identically, every client) at an explicit socket. Clients honor the same variable, so daemon and clients always agree.
-3. **`$XDG_RUNTIME_DIR/beachcomber/sock`** — if the env var is set (any platform).
-4. **`/tmp/beachcomber-<uid>/sock`** — hardcoded `/tmp` fallback. **Does NOT consult `$TMPDIR`.**
+3. **`/tmp/beachcomber-<uid>/sock`** — hardcoded per-user default.
 
-The TMPDIR step was removed because macOS gives every shell session a unique TMPDIR (sandbox/launchd-managed). With the TMPDIR step, two shells produced two socket paths and two daemons — violating singleton.
+Resolution consults no session-scoped environment: not `$TMPDIR` (macOS gives every shell session a unique one, sandbox/launchd-managed) and not `$XDG_RUNTIME_DIR` (sandboxes, containers, and per-session shims remap it). Singleton enforcement is per-socket-path, so any session-scoped input to resolution produces one daemon per session instead of one per user — violating singleton. Environments that want a different placement (e.g. `/run/user/<uid>` on systemd) say so explicitly via `$BEACHCOMBER_SOCKET` or the config override.
 
 ### PID file with `flock`
 
@@ -243,7 +242,7 @@ sequenceDiagram
 
 | Parameter | Scope | Unit | Configurability |
 |---|---|---|---|
-| Canonical socket path | per-user | path | config override → `$BEACHCOMBER_SOCKET` → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock` |
+| Canonical socket path | per-user | path | config override → `$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock` |
 | PID file location | per-user | path | derived: `<socket-parent>/pid` |
 | `BEACHCOMBER_VERSION` (human) | per-build | string | `build.rs` reads `COMB_BUILD_SHA` / `COMB_BUILD_DIRTY` env at compile time |
 | `binary_hash` (build identity) | per-build | hex SHA256 | computed at daemon startup; not configurable |
@@ -392,19 +391,20 @@ Feature: Daemon singleton
     And the PID file at the canonical path no longer exists
     And the flock is released
 
-  Scenario: Canonical socket path ignores TMPDIR
-    Given XDG_RUNTIME_DIR is unset
+  Scenario: Canonical socket path ignores session-scoped environment
+    Given XDG_RUNTIME_DIR is set to "/per/session/runtime"
     And TMPDIR is set to "/per/shell/tmpdir"
     When resolve_socket_path is called with no config override
     Then the result starts with "/tmp/beachcomber-" and ends with "/sock"
     And the result does not contain "/per/shell/tmpdir"
+    And the result does not contain "/per/session/runtime"
 ```
 
 ## Out of scope
 
 - **Multi-user daemons.** Each `<uid>` has its own canonical path. Two users on the same machine each run their own singleton; they do not collide.
 - **Network / TCP daemons.** Singleton enforcement is per-user-per-host via Unix socket. There is no networked variant.
-- **Backwards compatibility with old TMPDIR-derived sockets.** The TMPDIR-step removal is a breaking change for users with running daemons on old paths. Such daemons sit on non-canonical sockets that no client resolves to; they age out on their own (self-supervision on rebuild, or manual kill). No in-place migration of clients with cached socket paths, and no startup reaping.
+- **Backwards compatibility with sockets on non-canonical paths** (e.g. TMPDIR- or XDG_RUNTIME_DIR-derived paths from earlier resolution rules). Daemons on such sockets are unreachable by any client following canonical resolution; they age out on their own (self-supervision on rebuild, or manual kill). No in-place migration of clients with cached socket paths, and no startup reaping.
 - **`daemon.pid` (the older file).** A separate `daemon.pid` is written by `fork_daemon` for the auto-spawn mechanism. It is unrelated to the singleton's `pid` file. Coexists today; possible future cleanup to merge or remove.
 - **In-process drain semantics.** The acceptor loop and connection-handler tasks do not currently honour the cancellation token cleanly — they are abandoned mid-await on shutdown rather than draining gracefully. Pre-existing concern, tracked separately. The singleton design assumes graceful shutdown completes; in practice, in-flight requests may be aborted abruptly. Not a singleton-property violation, but a quality-of-shutdown gap.
 - **Distributed coordination.** Singleton applies to one host. There is no cross-host election.

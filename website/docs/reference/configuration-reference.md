@@ -16,7 +16,6 @@ beachcomber runs with sensible defaults and requires no configuration. The optio
 
 # Override the Unix socket path.
 # Default resolution order: BEACHCOMBER_SOCKET env var →
-#          $XDG_RUNTIME_DIR/beachcomber/sock →
 #          /tmp/beachcomber-<uid>/sock
 # socket_path = "/path/to/socket.sock"
 
@@ -249,7 +248,7 @@ JSON metadata:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `socket_path` | string | (see resolution order) | Unix socket path. Resolution order: this key → `BEACHCOMBER_SOCKET` env var → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock` |
+| `socket_path` | string | (see resolution order) | Unix socket path. Resolution order: this key → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock` |
 | `log_level` | string | `"info"` | Tracing log level |
 | `provider_timeout_secs` | int | `10` | Max seconds for any provider to run |
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |

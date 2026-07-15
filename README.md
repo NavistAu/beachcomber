@@ -357,8 +357,7 @@ The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 **Socket path resolution** — the daemon (and all client commands) resolve the socket path in this order:
 1. `daemon.socket_path` in config, if set
 2. `BEACHCOMBER_SOCKET` environment variable, if set
-3. `$XDG_RUNTIME_DIR/beachcomber/sock`
-4. `/tmp/beachcomber-<uid>/sock`
+3. `/tmp/beachcomber-<uid>/sock` — stable per-user default; no session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell, sandbox, and container of one user reaches the same single daemon
 
 ### `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--null]`
 
@@ -513,8 +512,7 @@ beachcomber runs with sensible defaults and requires no configuration. The optio
 [daemon]
 
 # Override the Unix socket path.
-# Default: $XDG_RUNTIME_DIR/beachcomber/sock
-#          Falls back to: /tmp/beachcomber-<uid>/sock
+# Default: /tmp/beachcomber-<uid>/sock
 socket_path = ""
 
 # Log level for daemon output.
@@ -682,7 +680,7 @@ poll = "86400s"
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `socket_path` | string | `$XDG_RUNTIME_DIR/beachcomber/sock` | Unix socket path |
+| `socket_path` | string | `/tmp/beachcomber-<uid>/sock` | Unix socket path |
 | `log_level` | string | `"info"` | Tracing log level |
 | `provider_timeout_secs` | int | `10` | Max seconds for any provider to run |
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
@@ -1744,11 +1742,10 @@ comb g hostname.short
 
 **Daemon never starts / connection refused**
 
-The daemon socket path depends on `$XDG_RUNTIME_DIR` (Linux) or `/tmp` (macOS). Check that the socket exists:
+The daemon socket lives at `/tmp/beachcomber-<uid>/sock` (unless overridden via config or `BEACHCOMBER_SOCKET`). Check that the socket exists:
 
 ```sh
-ls -la /run/user/$(id -u)/beachcomber/       # Linux
-ls -la /tmp/beachcomber-$(id -u)/            # macOS fallback
+ls -la /tmp/beachcomber-$(id -u)/
 ```
 
 If the socket is missing, run `comb d` in the foreground to see why it failed to start.
@@ -1805,8 +1802,7 @@ beachcomber uses a simple newline-delimited JSON protocol over a Unix socket. An
 Socket path resolution order:
 1. `daemon.socket_path` in config, if set
 2. `BEACHCOMBER_SOCKET` environment variable, if set
-3. `$XDG_RUNTIME_DIR/beachcomber/sock`
-4. `/tmp/beachcomber-<uid>/sock`
+3. `/tmp/beachcomber-<uid>/sock`
 
 Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each response is a JSON object followed by `\n`.
 
