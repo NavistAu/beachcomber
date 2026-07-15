@@ -106,23 +106,28 @@ impl FsWatcher {
 /// failure mode — and the caller must fall back to polling. Probes the
 /// capability, not the environment.
 pub async fn self_test_native_backend(timeout: Duration) -> bool {
-    // Probe dir via std, not tempfile (a dev-dependency). Any writable
-    // location works — this is not socket-path resolution.
-    let dir = std::env::temp_dir().join(format!(".comb-watch-selftest-{}", std::process::id()));
+    // Probe dir via std, not tempfile (a dev-dependency).
+    let base = std::env::temp_dir();
+    self_test_native_backend_at(&base, timeout).await.is_some()
+}
+
+/// Measurement-grade variant: probe event delivery for a watch under `base`,
+/// returning the delivery time, or None on timeout/setup failure.
+pub async fn self_test_native_backend_at(base: &Path, timeout: Duration) -> Option<Duration> {
+    let dir = base.join(format!(".comb-watch-selftest-{}", std::process::id()));
     if std::fs::create_dir_all(&dir).is_err() {
-        return false;
+        return None;
     }
     let delivered = async {
-        let Ok((mut watcher, mut rx)) = FsWatcher::new() else {
-            return false;
-        };
-        if watcher.watch(&dir).is_err() {
-            return false;
-        }
-        if std::fs::write(dir.join("probe"), b"x").is_err() {
-            return false;
-        }
-        matches!(tokio::time::timeout(timeout, rx.recv()).await, Ok(Some(_)))
+        let (mut watcher, mut rx) = FsWatcher::new().ok()?;
+        watcher.watch(&dir).ok()?;
+        std::fs::write(dir.join("probe"), b"x").ok()?;
+        let started = std::time::Instant::now();
+        tokio::time::timeout(timeout, rx.recv())
+            .await
+            .ok()
+            .flatten()
+            .map(|_| started.elapsed())
     }
     .await;
     let _ = std::fs::remove_dir_all(&dir);
