@@ -42,6 +42,12 @@ enum Commands {
         /// even when the test process is SIGKILLed (which skips normal cleanup).
         #[arg(long)]
         exit_with_parent: bool,
+        /// Exempt this daemon from orphan reaping by the canonical daemon.
+        /// For deliberate, supervised daemons on non-canonical sockets (a
+        /// supervisor parents the process to PID 1, which otherwise marks it
+        /// orphaned). The flag only needs to be visible in argv.
+        #[arg(long)]
+        no_reap: bool,
     },
     /// Query one or more cached values.
     ///
@@ -193,6 +199,8 @@ fn main() -> ExitCode {
         Commands::Daemon {
             socket,
             exit_with_parent,
+            // Read by the reaping canonical daemon from our argv, not by us.
+            no_reap: _,
         } => {
             let socket_path = socket.unwrap_or_else(|| config.resolve_socket_path());
             run_daemon(socket_path, config, exit_with_parent)

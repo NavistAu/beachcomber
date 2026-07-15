@@ -45,6 +45,9 @@ pub struct DaemonIntrospect {
     pub in_flight: u64,
     pub active_watchers: u64,
     pub cache_entries: u64,
+    /// "native", "polling", "disabled", or "unknown"; absent from pre-0.8 daemons.
+    #[serde(default)]
+    pub watch_backend: Option<String>,
     #[serde(default)]
     pub verdicts: Vec<Verdict>,
 }

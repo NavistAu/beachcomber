@@ -5,6 +5,7 @@ pub mod git;
 pub mod http;
 pub mod library;
 pub mod proc_snap;
+pub mod proc_table;
 pub mod process;
 pub mod socket;
 pub mod spawn;

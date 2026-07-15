@@ -90,12 +90,15 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
         }
     }
 
-    let (handle, scheduler) = Scheduler::new(
+    let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
         registry.clone(),
         config.clone(),
         watchers.clone(),
     );
+    // Daemon path: probe fs-event delivery before trusting the native backend
+    // (canon singleton.md §"Watch self-test").
+    scheduler.self_test_watch_backend();
     let heartbeat = scheduler.heartbeat();
 
     let scheduler_handle = handle.clone();

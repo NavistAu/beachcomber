@@ -279,6 +279,65 @@ pub fn acquire_or_supersede_with(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Orphan reaping — canonical daemon only. See docs/canon/singleton.md
+// §"Orphan reaping".
+// ---------------------------------------------------------------------------
+
+/// Grace age below which a candidate is never reaped (canon: 60s).
+pub const REAP_GRACE_AGE_SECS: u64 = 60;
+
+/// Run one reap sweep with injected boundaries. For each uid-owned process,
+/// `decide_reap` applies the canon exemption rules; orphans are killed via
+/// `kill` (SIGTERM → 1s grace → SIGKILL in production). Returns reaped pids.
+pub fn reap_sweep_with(
+    table: &dyn crate::boundaries::proc_table::ProcessTable,
+    kill: &dyn Fn(u32) -> std::io::Result<()>,
+    ctx: &policy::ReapContext,
+) -> Vec<u32> {
+    let mut reaped = Vec::new();
+    for candidate in table.list_own() {
+        match policy::decide_reap(&candidate, ctx) {
+            policy::ReapDecision::Reap => {
+                let exe = candidate.argv.first().map(String::as_str).unwrap_or("?");
+                let socket = policy::socket_arg(&candidate.argv).unwrap_or_default();
+                match kill(candidate.pid) {
+                    Ok(()) => {
+                        tracing::info!(
+                            pid = candidate.pid,
+                            exe,
+                            socket = %socket.display(),
+                            "reaped orphan daemon"
+                        );
+                        reaped.push(candidate.pid);
+                    }
+                    Err(e) => {
+                        tracing::warn!(pid = candidate.pid, exe, "failed to reap orphan: {e}");
+                    }
+                }
+            }
+            policy::ReapDecision::Exempt(_) => {}
+        }
+    }
+    reaped
+}
+
+/// Production reap sweep: real process table, `supersede_existing` kill
+/// semantics (SIGTERM, 1s grace, SIGKILL; already-dead is Ok). Called by the
+/// canonical daemon on entering Running and hourly thereafter.
+pub fn reap_sweep(our_socket: &Path) -> Vec<u32> {
+    let ctx = policy::ReapContext {
+        our_pid: std::process::id(),
+        our_socket: our_socket.to_path_buf(),
+        grace_age_secs: REAP_GRACE_AGE_SECS,
+    };
+    reap_sweep_with(
+        &crate::boundaries::proc_table::RealProcessTable,
+        &|pid| supersede_existing(pid, Duration::from_secs(1)),
+        &ctx,
+    )
+}
+
 /// Spawn a thread that watches `current_exe()`. When the binary is modified
 /// (after a 200ms debounce window), calls `on_change` once. The watcher thread
 /// exits after firing (one-shot).
@@ -287,45 +346,86 @@ pub fn acquire_or_supersede_with(
 /// thread itself logs and exits silently on internal failures (like the
 /// notify channel disconnecting).
 pub fn spawn_binary_self_watch<F: FnOnce() + Send + 'static>(on_change: F) -> std::io::Result<()> {
-    use notify::{EventKind, RecursiveMode, Watcher};
-    use std::sync::mpsc;
-    use std::time::{Duration, Instant};
-
     let exe = std::env::current_exe()?;
     // Canonicalize so we match what the fs-watcher reports (resolves /tmp → /private/tmp on macOS).
     let exe = exe.canonicalize().unwrap_or(exe);
+    spawn_binary_self_watch_with(exe, SELF_WATCH_POLL_INTERVAL, true, on_change);
+    Ok(())
+}
+
+/// Self-watch poll interval (canon: 5s). The poll is the guarantee; the
+/// fs-event watch is only the fast path.
+pub const SELF_WATCH_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Parameterised self-watch: `exe` to supervise, `poll_interval`, and whether
+/// to attempt the fs-event fast path (`fs_events: false` is the degraded mode
+/// the mtime poll exists for — sandboxed daemons create FSEvents streams that
+/// never deliver). Tests use this seam directly; production goes through
+/// [`spawn_binary_self_watch`].
+pub fn spawn_binary_self_watch_with<F: FnOnce() + Send + 'static>(
+    exe: PathBuf,
+    poll_interval: Duration,
+    fs_events: bool,
+    on_change: F,
+) {
+    use notify::{EventKind, RecursiveMode, Watcher};
+    use std::sync::mpsc;
 
     std::thread::spawn(move || {
+        let start_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        // Watcher setup failure is a degradation, not a defeat: the poll
+        // below runs regardless (canon §"Self-supervision").
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
-        let mut watcher = match notify::recommended_watcher(tx) {
-            Ok(w) => w,
-            Err(e) => {
-                tracing::error!("failed to create fs watcher for self-watch: {e}");
-                return;
+        let watcher = if fs_events {
+            match (notify::recommended_watcher(tx), exe.parent()) {
+                (Ok(mut w), Some(parent)) => match w.watch(parent, RecursiveMode::NonRecursive) {
+                    Ok(()) => {
+                        tracing::debug!("self-watch: watching {parent:?} for changes to {exe:?}");
+                        Some(w)
+                    }
+                    Err(e) => {
+                        tracing::warn!("self-watch: failed to watch {parent:?}: {e}; poll only");
+                        None
+                    }
+                },
+                (Err(e), _) => {
+                    tracing::warn!("self-watch: failed to create fs watcher: {e}; poll only");
+                    None
+                }
+                (_, None) => {
+                    tracing::warn!("self-watch: current_exe has no parent: {exe:?}; poll only");
+                    None
+                }
             }
+        } else {
+            None
         };
-        let parent = match exe.parent() {
-            Some(p) => p.to_path_buf(),
-            None => {
-                tracing::error!("current_exe has no parent: {exe:?}");
-                return;
-            }
-        };
-        tracing::debug!("self-watch: watching {parent:?} for changes to {exe:?}");
-        if let Err(e) = watcher.watch(&parent, RecursiveMode::NonRecursive) {
-            tracing::error!("failed to watch {parent:?}: {e}");
+
+        if watcher.is_none() {
+            poll_until_changed(&exe, poll_interval, start_unix_ms);
+            tracing::info!("daemon binary changed (mtime poll); initiating graceful shutdown");
+            on_change();
             return;
         }
+        let _watcher = watcher;
 
-        let mut last_event: Option<Instant> = None;
         let debounce = Duration::from_millis(200);
+        let mut last_event: Option<Instant> = None;
+        let mut next_poll = Instant::now() + poll_interval;
 
         loop {
-            let timeout = last_event
-                .map(|t| (t + debounce).saturating_duration_since(Instant::now()))
-                .unwrap_or(Duration::from_secs(60));
+            let now = Instant::now();
+            let debounce_deadline = last_event.map(|t| t + debounce);
+            let wake = match debounce_deadline {
+                Some(d) => d.min(next_poll),
+                None => next_poll,
+            };
 
-            match rx.recv_timeout(timeout) {
+            match rx.recv_timeout(wake.saturating_duration_since(now)) {
                 Ok(Ok(event)) => {
                     tracing::debug!(
                         "self-watch event: kind={:?} paths={:?}",
@@ -350,20 +450,47 @@ pub fn spawn_binary_self_watch<F: FnOnce() + Send + 'static>(on_change: F) -> st
                     tracing::error!("fs-watch error: {e}");
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Some(t) = last_event
-                        && Instant::now() >= t + debounce
+                    if let Some(d) = debounce_deadline
+                        && Instant::now() >= d
                     {
                         tracing::info!("daemon binary changed; initiating graceful shutdown");
                         on_change();
                         return; // one-shot
                     }
+                    if Instant::now() >= next_poll {
+                        next_poll = Instant::now() + poll_interval;
+                        if matches!(binary_newer_than(&exe, start_unix_ms), Ok(true)) {
+                            tracing::info!(
+                                "daemon binary changed (mtime poll); initiating graceful shutdown"
+                            );
+                            on_change();
+                            return; // one-shot
+                        }
+                    }
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // Event channel gone mid-run; the poll carries on alone.
+                    poll_until_changed(&exe, poll_interval, start_unix_ms);
+                    tracing::info!(
+                        "daemon binary changed (mtime poll); initiating graceful shutdown"
+                    );
+                    on_change();
+                    return;
+                }
             }
         }
     });
+}
 
-    Ok(())
+/// Block until `exe`'s mtime is newer than `start_unix_ms`, checking every
+/// `poll_interval`. Stat failures (e.g. deleted binary) are not a change.
+fn poll_until_changed(exe: &Path, poll_interval: Duration, start_unix_ms: u64) {
+    loop {
+        std::thread::sleep(poll_interval);
+        if matches!(binary_newer_than(exe, start_unix_ms), Ok(true)) {
+            return;
+        }
+    }
 }
 
 /// Returns true iff `binary`'s mtime is strictly newer than `process_start_unix_ms`.
