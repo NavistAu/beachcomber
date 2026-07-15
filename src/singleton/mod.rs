@@ -359,8 +359,9 @@ pub const SELF_WATCH_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Parameterised self-watch: `exe` to supervise, `poll_interval`, and whether
 /// to attempt the fs-event fast path (`fs_events: false` is the degraded mode
-/// the mtime poll exists for — sandboxed daemons create FSEvents streams that
-/// never deliver). Tests use this seam directly; production goes through
+/// the mtime poll exists for — a stream created without error that delivers
+/// nothing, as on sandboxed CI hosts or under a degraded fseventsd). Tests
+/// use this seam directly; production goes through
 /// [`spawn_binary_self_watch`].
 pub fn spawn_binary_self_watch_with<F: FnOnce() + Send + 'static>(
     exe: PathBuf,

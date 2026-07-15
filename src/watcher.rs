@@ -61,7 +61,7 @@ impl FsWatcher {
 pub enum WatchBackend {
     /// Kernel-native (FSEvents / inotify) — the self-test confirmed delivery.
     Native,
-    /// Polling fallback — the self-test saw no events (e.g. sandboxed daemon).
+    /// Polling fallback — the self-test saw no events (stream delivers nothing).
     Polling,
 }
 
@@ -74,8 +74,11 @@ impl WatchBackend {
     }
 }
 
-/// Watch self-test timeout (canon: 500ms).
-pub const WATCH_SELF_TEST_TIMEOUT: Duration = Duration::from_millis(500);
+/// Watch self-test timeout (canon: 2s). Healthy-idle delivery is ~10ms, but
+/// hundreds of ms under heavy filesystem load — the timeout must not
+/// misclassify a loaded-but-healthy backend as dead. Concurrent with the
+/// scheduler loop, so it costs no startup latency.
+pub const WATCH_SELF_TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Scan interval for the production polling fallback.
 pub const POLLING_FALLBACK_INTERVAL: Duration = Duration::from_secs(1);
@@ -102,9 +105,9 @@ impl FsWatcher {
 
 /// Canon §"Watch self-test": register a kernel-native watch on a private temp
 /// directory, touch a file inside it, and wait for the event. `false` means
-/// the backend creates streams but delivers nothing — the sandboxed-daemon
-/// failure mode — and the caller must fall back to polling. Probes the
-/// capability, not the environment.
+/// the backend creates streams but delivers nothing (seen on sandboxed CI
+/// hosts and under a degraded `fseventsd`) — the caller must fall back to
+/// polling. Probes the capability, not the environment.
 pub async fn self_test_native_backend(timeout: Duration) -> bool {
     // Probe dir via std, not tempfile (a dev-dependency).
     let base = std::env::temp_dir();
