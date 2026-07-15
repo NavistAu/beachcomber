@@ -255,11 +255,7 @@ fn snapshot_entry(
             // For pure Watch (no poll path) polls don't apply; report 0.
             // For WatchAndPoll, derive K = secs / base_poll_secs so the renderer
             // can produce the {p}s×{k:02} format.
-            let k = if base_poll_secs > 0 {
-                (secs / base_poll_secs) as u32
-            } else {
-                0
-            };
+            let k = secs.checked_div(base_poll_secs).unwrap_or(0) as u32;
             (k, secs * rate_mult)
         }
         KeepAlive::Never => (0, 0),
@@ -666,32 +662,16 @@ impl Scheduler {
     }
 
     pub async fn run(mut self) {
-        // Watch self-test (canon singleton.md §"Watch self-test"): confirm the
-        // kernel-native backend actually delivers events before trusting it.
-        // Sandboxed daemons create FSEvents streams that never deliver — with
-        // an event backend chosen blind, their watch-invalidated entries would
-        // silently never invalidate.
-        let backend = if self.run_watch_self_test
-            && !crate::watcher::self_test_native_backend(crate::watcher::WATCH_SELF_TEST_TIMEOUT)
-                .await
-        {
-            warn!(
-                "watch self-test: no fs events delivered within {:?}; provider watching falls back to polling",
-                crate::watcher::WATCH_SELF_TEST_TIMEOUT
-            );
-            crate::watcher::WatchBackend::Polling
-        } else {
-            crate::watcher::WatchBackend::Native
-        };
-
-        // Set up filesystem watcher on the tested backend.
-        let watcher_result = match backend {
-            crate::watcher::WatchBackend::Native => FsWatcher::new(),
-            crate::watcher::WatchBackend::Polling => {
-                FsWatcher::new_polling_fallback(crate::watcher::POLLING_FALLBACK_INTERVAL)
-            }
-        };
-        let (mut fs_watcher, mut fs_rx) = match watcher_result {
+        // Provider file-watching starts on the kernel-native backend
+        // immediately; the watch self-test (canon singleton.md §"Watch
+        // self-test") runs concurrently rather than gating the loop — kernel
+        // event delivery can take hundreds of ms even when healthy, and the
+        // scheduler must serve demand from its first moment. If the self-test
+        // fails, the loop swaps to the polling backend and re-registers every
+        // watch path (sandboxed daemons create FSEvents streams that never
+        // deliver; chosen blind, their watch-invalidated entries would
+        // silently never invalidate).
+        let (mut fs_watcher, mut fs_rx) = match FsWatcher::new() {
             Ok(pair) => pair,
             Err(e) => {
                 warn!(
@@ -704,7 +684,22 @@ impl Scheduler {
                 return self.run_without_watcher(rx).await;
             }
         };
-        let watch_backend = backend.as_str();
+        let mut watch_backend = crate::watcher::WatchBackend::Native;
+
+        let mut self_test_rx: Option<tokio::sync::oneshot::Receiver<bool>> =
+            if self.run_watch_self_test {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                tokio::spawn(async move {
+                    let ok = crate::watcher::self_test_native_backend(
+                        crate::watcher::WATCH_SELF_TEST_TIMEOUT,
+                    )
+                    .await;
+                    let _ = tx.send(ok);
+                });
+                Some(rx)
+            } else {
+                None
+            };
 
         // Lifecycle registry: replaces the three old maps (demand, backoff, poll_states).
         let mut lifecycle = LifecycleRegistry::new();
@@ -754,8 +749,12 @@ impl Scheduler {
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
-                            let status =
-                                build_status(&lifecycle, &watch_paths, &self.in_flight, watch_backend);
+                            let status = build_status(
+                                &lifecycle,
+                                &watch_paths,
+                                &self.in_flight,
+                                watch_backend.as_str(),
+                            );
                             let _ = reply.send(status);
                         }
                         Some(SchedulerMessage::GetFailureStates { reply }) => {
@@ -946,6 +945,42 @@ impl Scheduler {
                         }
                     }
                     last_activity = Instant::now();
+                }
+
+                // Watch self-test verdict (canon singleton.md §"Watch self-test").
+                // Failure swaps the live watcher for the polling backend and
+                // re-registers every watch path on it.
+                res = async { self_test_rx.as_mut().expect("guarded by is_some").await },
+                    if self_test_rx.is_some() =>
+                {
+                    self_test_rx = None;
+                    // A dropped sender is a harness failure, not evidence of a
+                    // dead backend — stay on native.
+                    if !res.unwrap_or(true) {
+                        warn!(
+                            "watch self-test: no fs events delivered within {:?}; provider watching falls back to polling",
+                            crate::watcher::WATCH_SELF_TEST_TIMEOUT
+                        );
+                        match FsWatcher::new_polling_fallback(
+                            crate::watcher::POLLING_FALLBACK_INTERVAL,
+                        ) {
+                            Ok((mut poll_watcher, poll_rx)) => {
+                                for path in watch_paths.keys() {
+                                    if let Err(e) = poll_watcher.watch(path) {
+                                        warn!("failed to re-register watch on {path:?}: {e}");
+                                    }
+                                }
+                                fs_watcher = poll_watcher;
+                                fs_rx = poll_rx;
+                                watch_backend = crate::watcher::WatchBackend::Polling;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "failed to create polling fallback watcher: {e}; staying on native (events may not deliver)"
+                                );
+                            }
+                        }
+                    }
                 }
 
                 // Periodic GC: remove dead broadcast channel entries.

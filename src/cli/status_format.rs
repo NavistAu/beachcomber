@@ -1104,7 +1104,7 @@ pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, S
         "provider" => rows.sort_by(|a, b| a.provider.cmp(&b.provider)),
         "path" => rows.sort_by(|a, b| a.path.cmp(&b.path)),
         "field" => rows.sort_by(|a, b| a.field.cmp(&b.field)),
-        "value" => rows.sort_by(|a, b| a.value.to_string().cmp(&b.value.to_string())),
+        "value" => rows.sort_by_key(|r| r.value.to_string()),
         "age" => rows.sort_by_key(|r| r.age_ms),
         "stale" => rows.sort_by_key(|r| r.stale),
         // Most-decayed first: Lifecycle{4} < Lifecycle{3} < ... < Lifecycle{0},
