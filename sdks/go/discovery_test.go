@@ -3,7 +3,6 @@ package beachcomber_test
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,15 +21,16 @@ func TestDiscoverSocketPath_BeachcomberSocket(t *testing.T) {
 	}
 }
 
-func TestDiscoverSocketPath_XDG(t *testing.T) {
-	// XDG_RUNTIME_DIR resolves unconditionally (no existence probe), matching
-	// where the daemon binds.
+func TestDiscoverSocketPath_XDGIgnored(t *testing.T) {
+	// XDG_RUNTIME_DIR is session-scoped and is never consulted: resolution
+	// falls straight through to the stable per-user /tmp path.
 	t.Setenv("BEACHCOMBER_SOCKET", "")
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	t.Setenv("TMPDIR", "/should-not-be-used")
 
 	got := beachcomber.DiscoverSocketPath()
-	want := filepath.Join("/run/user/1000", "beachcomber", "sock")
+	uid := os.Getuid()
+	want := fmt.Sprintf("/tmp/beachcomber-%d/sock", uid)
 	if got != want {
 		t.Errorf("expected %q, got %q", want, got)
 	}

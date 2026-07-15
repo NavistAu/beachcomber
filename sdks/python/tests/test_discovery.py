@@ -28,15 +28,15 @@ class TestDiscoverSocketPath:
         monkeypatch.setenv("TMPDIR", "/should-not-be-used")
         assert discover_socket_path() == "/custom/path/comb.sock"
 
-    def test_uses_xdg_runtime_dir_unconditionally(
+    def test_xdg_runtime_dir_is_ignored(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # No existence probe: resolves to the XDG path whether or not the
-        # socket exists yet, matching where the daemon binds.
+        # Session-scoped environment must never influence resolution.
         monkeypatch.delenv("BEACHCOMBER_SOCKET", raising=False)
         monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
         monkeypatch.setenv("TMPDIR", "/should-not-be-used")
-        assert discover_socket_path() == "/run/user/1000/beachcomber/sock"
+        uid = get_uid()
+        assert discover_socket_path() == f"/tmp/beachcomber-{uid}/sock"
 
     def test_falls_back_to_slash_tmp(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("BEACHCOMBER_SOCKET", raising=False)

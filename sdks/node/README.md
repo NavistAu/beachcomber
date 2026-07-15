@@ -120,10 +120,11 @@ All extend `CombError` which extends `Error`.
 The socket path is resolved in this order:
 
 1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
-2. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set)
-3. `/tmp/beachcomber-<uid>/sock`
+2. `/tmp/beachcomber-<uid>/sock`
 
-This mirrors the daemon's bind path; `$TMPDIR` is not consulted. Override with the `socketPath` option.
+This mirrors the daemon's bind path: a single stable path per user, so singleton
+enforcement is per-user rather than per-session. No session-scoped environment
+(`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted. Override with the `socketPath` option.
 
 ## Development
 

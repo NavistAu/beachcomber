@@ -22,17 +22,19 @@ class TestDiscovery < Minitest::Test
     assert_equal '/custom/path/comb.sock', Beachcomber::Discovery.socket_path
   end
 
-  def test_xdg_path_used_unconditionally
-    # No existence probe: resolves to the XDG path whether or not the socket
-    # exists yet, matching where the daemon binds.
+  def test_xdg_runtime_dir_is_ignored
+    # No session-scoped environment influences resolution: XDG_RUNTIME_DIR
+    # is ignored even when set, and the result falls back to the per-user
+    # default, matching where the daemon binds.
     ENV.delete('BEACHCOMBER_SOCKET')
     ENV['XDG_RUNTIME_DIR'] = '/run/user/1000'
     ENV['TMPDIR']          = '/should-not-be-used'
 
-    assert_equal '/run/user/1000/beachcomber/sock', Beachcomber::Discovery.socket_path
+    result = Beachcomber::Discovery.socket_path
+    assert_equal "/tmp/beachcomber-#{Process.uid}/sock", result
   end
 
-  def test_xdg_skipped_when_env_empty
+  def test_xdg_runtime_dir_ignored_when_empty
     ENV.delete('BEACHCOMBER_SOCKET')
     ENV['XDG_RUNTIME_DIR'] = ''
     ENV['TMPDIR']          = '/should-not-be-used'
@@ -41,7 +43,7 @@ class TestDiscovery < Minitest::Test
     assert_equal "/tmp/beachcomber-#{Process.uid}/sock", result
   end
 
-  def test_xdg_skipped_when_env_unset
+  def test_xdg_runtime_dir_ignored_when_unset
     ENV.delete('BEACHCOMBER_SOCKET')
     ENV.delete('XDG_RUNTIME_DIR')
     ENV['TMPDIR'] = '/should-not-be-used'

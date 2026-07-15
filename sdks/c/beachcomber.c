@@ -87,12 +87,14 @@ static comb_result_t *result_error(const char *msg) {
  * Mirrors the daemon's bind-path resolution (Config::resolve_socket_path),
  * minus the config-file step which is daemon-only:
  *   1. $BEACHCOMBER_SOCKET  (if set and non-empty)
- *   2. $XDG_RUNTIME_DIR/beachcomber/sock  (if XDG_RUNTIME_DIR is set)
- *   3. /tmp/beachcomber-<uid>/sock
+ *   2. /tmp/beachcomber-<uid>/sock
  *
- * There is no existence probe and $TMPDIR is not consulted: the result is the
- * single path the daemon binds for the same environment. Non-standard setups
- * point clients at the daemon via BEACHCOMBER_SOCKET.
+ * No session-scoped environment is consulted ($XDG_RUNTIME_DIR, $TMPDIR):
+ * singleton enforcement is per-socket-path, so a session-scoped path would
+ * yield one daemon per session instead of one per user. There is no
+ * existence probe: the result is the single path the daemon binds for the
+ * same environment. Non-standard setups point clients at the daemon via
+ * BEACHCOMBER_SOCKET.
  */
 char *comb_socket_path(char *dst, size_t dst_len) {
     if (!dst || dst_len == 0) return NULL;
@@ -106,15 +108,7 @@ char *comb_socket_path(char *dst, size_t dst_len) {
 
     char candidate[4096];
 
-    /* 2. $XDG_RUNTIME_DIR/beachcomber/sock */
-    const char *xdg = getenv("XDG_RUNTIME_DIR");
-    if (xdg && *xdg) {
-        snprintf(candidate, sizeof(candidate), "%s/beachcomber/sock", xdg);
-        if (!safe_strcpy(dst, dst_len, candidate)) return NULL;
-        return dst;
-    }
-
-    /* 3. /tmp/beachcomber-<uid>/sock */
+    /* 2. /tmp/beachcomber-<uid>/sock */
     uid_t uid = getuid();
     snprintf(candidate, sizeof(candidate),
              "/tmp/beachcomber-%u/sock", (unsigned)uid);

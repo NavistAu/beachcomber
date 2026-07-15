@@ -41,8 +41,8 @@ class DaemonHandle
 
   def start
     env = {
-      'XDG_RUNTIME_DIR' => @tmpdir,
-      'HOME'            => @tmpdir,
+      'BEACHCOMBER_SOCKET' => @socket_path,
+      'HOME'               => @tmpdir,
     }
     @pid = spawn(env, @comb_bin, 'start',
                  '--socket', @socket_path,

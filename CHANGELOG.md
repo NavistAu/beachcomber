@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: `$XDG_RUNTIME_DIR` no longer participates in socket path resolution.** Canonical resolution is now config override → `$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock`, in the daemon and all clients (CLI, `libbeachcomber`, and the C/Go/Lua/Node/Python/Ruby SDKs). Session-scoped environments (sandboxes, containers, per-session `XDG_RUNTIME_DIR` shims) previously resolved distinct socket paths and auto-spawned one daemon per session; singleton enforcement is per-socket-path, so the default must be a stable per-user path (see `docs/canon/singleton.md`). Environments that want a different placement (e.g. `/run/user/<uid>` on systemd) set `$BEACHCOMBER_SOCKET` or the config override. **Migration:** a daemon running on an old XDG-derived socket is unreachable by upgraded clients; the first client invocation spawns a daemon at the stable path, and the old daemon exits on binary replacement (self-supervision) or can be killed manually.
+
 ## [0.7.0] - 2026-06-23
 
 The post-0.6.1 cycle: an **env-cascade** overhaul plus a broad provider-correctness

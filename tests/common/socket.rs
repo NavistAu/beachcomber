@@ -13,10 +13,9 @@ pub struct IsolatedSocket {
 impl IsolatedSocket {
     /// Create an isolated socket at `<tempdir>/beachcomber/sock`.
     ///
-    /// The layout matches the XDG_RUNTIME_DIR convention used by
-    /// `Config::resolve_socket_path`: `$XDG_RUNTIME_DIR/beachcomber/sock`.
-    /// Setting `XDG_RUNTIME_DIR = dir.path()` in a test process points that
-    /// process at exactly this socket.
+    /// Tests point a process at exactly this socket via `BEACHCOMBER_SOCKET`
+    /// (or `--socket`); canonical resolution consults no session-scoped
+    /// environment, so a tempdir path can only reach a process explicitly.
     // Used by multiple integration test binaries via the shared common module.
     #[allow(dead_code)]
     pub fn new() -> Self {

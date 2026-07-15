@@ -97,11 +97,10 @@ comb g hostname.short
 
 **Daemon never starts / connection refused**
 
-The daemon socket path depends on `$XDG_RUNTIME_DIR` when set; without it, the fallback is `/tmp/beachcomber-<uid>/sock`. Check that the socket exists:
+The daemon socket lives at `/tmp/beachcomber-<uid>/sock` (unless overridden via config or `BEACHCOMBER_SOCKET`). Check that the socket exists:
 
 ```sh
-ls -la /run/user/$(id -u)/beachcomber/   # Linux
-ls -la /tmp/beachcomber-$(id -u)/        # fallback (no XDG_RUNTIME_DIR)
+ls -la /tmp/beachcomber-$(id -u)/
 ```
 
 If the socket is missing, run `comb d` in the foreground to see why it failed to start.
