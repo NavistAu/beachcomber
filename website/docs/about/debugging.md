@@ -105,6 +105,20 @@ ls -la /tmp/beachcomber-$(id -u)/
 
 If the socket is missing, run `comb d` in the foreground to see why it failed to start.
 
+**Watch-driven entries never refresh on file changes**
+
+At startup the daemon self-tests whether kernel filesystem events (FSEvents / inotify) actually deliver. When they don't, provider file-watching falls back to a 1s polling scan — correct, just slower. Check which backend is live:
+
+```sh
+comb check daemon     # PASS "watch backend: native fs events", or WARN "polling"
+```
+
+`comb s` also prints a stderr warning when the backend is degraded. A polling fallback usually means the environment suppresses kernel events (some sandboxes and containers) or `fseventsd` is unhealthy on the host.
+
+**Multiple `comb daemon` processes**
+
+At most one daemon per user is intended. The daemon on the default socket reaps orphaned daemons (reparented to PID 1, on sockets no client resolves) at startup and hourly, so strays remove themselves within the hour. Persistent strays usually mean a long-lived old client — a `comb watch` in a tmux status bar or prompt from before an upgrade — is respawning a daemon on an old socket path; restart that client. Deliberate side daemons are exempt while attended (foreground under a shell) or when started with `--no-reap`.
+
 **Provider always returns stale/empty data**
 
 Check whether the provider is in failure-suppress (failure backoff):
