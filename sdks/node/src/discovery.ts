@@ -4,11 +4,12 @@
  * Mirrors the daemon's bind-path resolution (Config::resolve_socket_path),
  * minus the config-file step which is daemon-only. Priority:
  *  1. $BEACHCOMBER_SOCKET  (if set and non-empty)
- *  2. $XDG_RUNTIME_DIR/beachcomber/sock  (if XDG_RUNTIME_DIR is set)
- *  3. /tmp/beachcomber-<uid>/sock
+ *  2. /tmp/beachcomber-<uid>/sock
  *
- * There is no existence probe and $TMPDIR is not consulted: the result is the
- * single path the daemon binds for the same environment. Non-standard setups
+ * There is no existence probe and no session-scoped environment (such as
+ * $TMPDIR or $XDG_RUNTIME_DIR) is consulted: the result is the single stable
+ * per-user path the daemon binds for the same environment, so singleton
+ * enforcement works per-user rather than per-session. Non-standard setups
  * point clients at the daemon via BEACHCOMBER_SOCKET.
  */
 
@@ -35,11 +36,6 @@ export function discoverSocketPath(): string {
   const sock = process.env['BEACHCOMBER_SOCKET'];
   if (sock) {
     return sock;
-  }
-
-  const xdgRuntime = process.env['XDG_RUNTIME_DIR'];
-  if (xdgRuntime) {
-    return path.join(xdgRuntime, 'beachcomber', 'sock');
   }
 
   const uid = getUid();

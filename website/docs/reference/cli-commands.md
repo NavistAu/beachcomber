@@ -264,7 +264,7 @@ Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
 
 Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
 
-Socket path resolution order: `daemon.socket_path` in config → `BEACHCOMBER_SOCKET` env var → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`.
+Socket path resolution order: `daemon.socket_path` in config → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock`.
 
 ```sh
 # Run with debug logging

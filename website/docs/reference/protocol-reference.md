@@ -12,8 +12,7 @@ beachcomber uses a simple newline-delimited JSON protocol over a Unix socket. An
 Socket path resolution order:
 1. `daemon.socket_path` in config, if set
 2. `BEACHCOMBER_SOCKET` env var, if non-empty
-3. `$XDG_RUNTIME_DIR/beachcomber/sock`
-4. `/tmp/beachcomber-<uid>/sock`
+3. `/tmp/beachcomber-<uid>/sock`
 
 Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each response is a JSON object followed by `\n`.
 

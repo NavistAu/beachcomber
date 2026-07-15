@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Orphan reaping.** The canonical daemon (bound socket equals its own env-free resolution) reaps orphaned `comb daemon` processes at startup and hourly: uid-owned daemons reparented to PID 1, on sockets nothing resolves, carrying neither `--exit-with-parent` nor the new `--no-reap` flag, and older than 60s. Live test daemons, attended foreground runs, and flagged supervised daemons are exempt. Closes the leak class where daemons on session-scoped or deleted-worktree sockets accumulated for weeks (`docs/canon/singleton.md` §"Orphan reaping").
+- **`comb daemon --no-reap`** — marks a deliberate, supervised, non-canonical daemon exempt from reaping.
+- **Poll-guaranteed self-supervision.** The daemon's binary self-watch gains a 5s mtime poll alongside the fs-event watch. Sandbox-spawned daemons create FSEvents streams that never deliver events; with an event-only watch they outlived every rebuild indefinitely. The poll bounds staleness at one interval regardless of backend health.
+- **Watch self-test.** At startup the daemon probes whether kernel fs events actually deliver (500ms). If not, provider file-watching falls back to a polling backend (1s scan), and the degradation is surfaced via `comb check daemon` (WARN verdict), `comb status` (stderr warning), and a new `watch_backend` field in the daemon introspect payload.
+
+### Changed
+
+- **BREAKING: `$XDG_RUNTIME_DIR` no longer participates in socket path resolution.** Canonical resolution is now config override → `$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock`, in the daemon and all clients (CLI, `libbeachcomber`, and the C/Go/Lua/Node/Python/Ruby SDKs). Session-scoped environments (sandboxes, containers, per-session `XDG_RUNTIME_DIR` shims) previously resolved distinct socket paths and auto-spawned one daemon per session; singleton enforcement is per-socket-path, so the default must be a stable per-user path (see `docs/canon/singleton.md`). Environments that want a different placement (e.g. `/run/user/<uid>` on systemd) set `$BEACHCOMBER_SOCKET` or the config override. **Migration:** a daemon running on an old XDG-derived socket is unreachable by upgraded clients; the first client invocation spawns a daemon at the stable path, and the old daemon exits on binary replacement (self-supervision) or can be killed manually.
+
 ## [0.7.0] - 2026-06-23
 
 The post-0.6.1 cycle: an **env-cascade** overhaul plus a broad provider-correctness

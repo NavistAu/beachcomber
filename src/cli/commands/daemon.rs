@@ -148,6 +148,33 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
             }
         }
 
+        // Orphan reaping — canonical daemon only (canon §"Orphan reaping").
+        // Canonicality: our bound socket equals our own env-free resolution.
+        // The interval's first tick fires immediately (startup sweep), then
+        // hourly. Sweeps run on the blocking pool: the process walk and the
+        // SIGTERM grace waits are synchronous.
+        if crate::singleton::policy::is_canonical_daemon(&socket_path, &config.resolve_socket_path())
+        {
+            let reap_socket = socket_path.clone();
+            let reap_cancel = cancel.clone();
+            tokio::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+                loop {
+                    tokio::select! {
+                        _ = reap_cancel.cancelled() => break,
+                        _ = interval.tick() => {
+                            let sock = reap_socket.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                crate::singleton::reap_sweep(&sock)
+                            })
+                            .await;
+                        }
+                    }
+                }
+            });
+        }
+
         let handle = crate::daemon::start_in_process_with_cancel(socket_path, config, cancel);
         handle.await.ok();
     });

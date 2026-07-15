@@ -89,6 +89,9 @@ pub struct SchedulerStatus {
     pub lifecycle: Vec<LifecycleInfo>,
     pub poll_timers: Vec<PollTimerInfo>,
     pub demand: Vec<DemandInfo>,
+    /// Provider file-watch backend chosen by the startup self-test:
+    /// "native", "polling", or "disabled" (watcher creation failed).
+    pub watch_backend: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -307,6 +310,7 @@ fn build_status(
     lifecycle: &LifecycleRegistry,
     watch_paths: &HashMap<PathBuf, Vec<Subscription>>,
     in_flight: &std::sync::Mutex<std::collections::HashSet<lifecycle::Key>>,
+    watch_backend: &str,
 ) -> SchedulerStatus {
     let watched: Vec<String> = watch_paths
         .keys()
@@ -375,6 +379,7 @@ fn build_status(
         lifecycle: backoff_info,
         poll_timers: poll_timer_info,
         demand: demand_info,
+        watch_backend: watch_backend.to_string(),
     }
 }
 
@@ -435,6 +440,10 @@ pub struct Scheduler {
     heartbeat: Arc<AtomicU64>,
     /// WatcherRegistry — gc() called periodically to remove dead channel entries.
     watchers: Arc<WatcherRegistry>,
+    /// Whether `run()` probes fs-event delivery before choosing the watch
+    /// backend. Set by the daemon path via `self_test_watch_backend()`;
+    /// defaults to false (assume native) for directly-constructed schedulers.
+    run_watch_self_test: bool,
 }
 
 impl Scheduler {
@@ -457,6 +466,7 @@ impl Scheduler {
             failure_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
             heartbeat,
             watchers,
+            run_watch_self_test: false,
         };
         (handle, scheduler)
     }
@@ -647,9 +657,41 @@ impl Scheduler {
         });
     }
 
+    /// Opt this scheduler into the startup watch self-test (canon singleton.md
+    /// §"Watch self-test"). The daemon path sets this; directly-constructed
+    /// schedulers (tests) default to assuming the native backend, exactly the
+    /// pre-self-test behaviour, and skip the probe and its 500ms worst case.
+    pub fn self_test_watch_backend(&mut self) {
+        self.run_watch_self_test = true;
+    }
+
     pub async fn run(mut self) {
-        // Set up filesystem watcher.
-        let (mut fs_watcher, mut fs_rx) = match FsWatcher::new() {
+        // Watch self-test (canon singleton.md §"Watch self-test"): confirm the
+        // kernel-native backend actually delivers events before trusting it.
+        // Sandboxed daemons create FSEvents streams that never deliver — with
+        // an event backend chosen blind, their watch-invalidated entries would
+        // silently never invalidate.
+        let backend = if self.run_watch_self_test
+            && !crate::watcher::self_test_native_backend(crate::watcher::WATCH_SELF_TEST_TIMEOUT)
+                .await
+        {
+            warn!(
+                "watch self-test: no fs events delivered within {:?}; provider watching falls back to polling",
+                crate::watcher::WATCH_SELF_TEST_TIMEOUT
+            );
+            crate::watcher::WatchBackend::Polling
+        } else {
+            crate::watcher::WatchBackend::Native
+        };
+
+        // Set up filesystem watcher on the tested backend.
+        let watcher_result = match backend {
+            crate::watcher::WatchBackend::Native => FsWatcher::new(),
+            crate::watcher::WatchBackend::Polling => {
+                FsWatcher::new_polling_fallback(crate::watcher::POLLING_FALLBACK_INTERVAL)
+            }
+        };
+        let (mut fs_watcher, mut fs_rx) = match watcher_result {
             Ok(pair) => pair,
             Err(e) => {
                 warn!(
@@ -662,6 +704,7 @@ impl Scheduler {
                 return self.run_without_watcher(rx).await;
             }
         };
+        let watch_backend = backend.as_str();
 
         // Lifecycle registry: replaces the three old maps (demand, backoff, poll_states).
         let mut lifecycle = LifecycleRegistry::new();
@@ -711,7 +754,8 @@ impl Scheduler {
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
-                            let status = build_status(&lifecycle, &watch_paths, &self.in_flight);
+                            let status =
+                                build_status(&lifecycle, &watch_paths, &self.in_flight, watch_backend);
                             let _ = reply.send(status);
                         }
                         Some(SchedulerMessage::GetFailureStates { reply }) => {
@@ -991,7 +1035,12 @@ impl Scheduler {
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
                             let empty_watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
-                            let status = build_status(&lifecycle, &empty_watch_paths, &self.in_flight);
+                            let status = build_status(
+                                &lifecycle,
+                                &empty_watch_paths,
+                                &self.in_flight,
+                                "disabled",
+                            );
                             let _ = reply.send(status);
                         }
                         Some(SchedulerMessage::GetFailureStates { reply }) => {

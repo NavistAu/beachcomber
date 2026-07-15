@@ -89,7 +89,7 @@ Virtual providers created by `put` are data-only entries in the cache — no `ex
 
 TOML at `~/.config/beachcomber/config.toml`. Three sections: `[daemon]`, `[lifecycle]`, `[providers.<name>]`.
 
-Socket path resolution (daemon): config override → `$BEACHCOMBER_SOCKET` → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`. Client SDKs mirror this minus the config-file step (`$BEACHCOMBER_SOCKET` → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`); `$TMPDIR` is not consulted by either.
+Socket path resolution (daemon): config override → `$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock`. Client SDKs mirror this minus the config-file step (`$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock`). No session-scoped environment is consulted (`$TMPDIR`, `$XDG_RUNTIME_DIR`) — see `docs/canon/singleton.md`.
 
 ## SDKs
 

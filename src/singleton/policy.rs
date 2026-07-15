@@ -41,6 +41,101 @@ pub fn is_binary_newer(mtime_unix_ms: u64, process_start_unix_ms: u64) -> bool {
     mtime_unix_ms > process_start_unix_ms
 }
 
+/// Context the reaper carries into each per-candidate decision.
+///
+/// See `docs/canon/singleton.md` §"Orphan reaping".
+pub struct ReapContext {
+    pub our_pid: u32,
+    pub our_socket: std::path::PathBuf,
+    pub grace_age_secs: u64,
+}
+
+/// Per-candidate reap decision. `Exempt` carries the matched rule for logging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReapDecision {
+    Reap,
+    Exempt(&'static str),
+}
+
+/// True when `argv` describes a `comb daemon` invocation (`daemon` or its
+/// visible alias `d`).
+pub fn is_comb_daemon_argv(argv: &[String]) -> bool {
+    let Some(arg0) = argv.first() else {
+        return false;
+    };
+    let bin = std::path::Path::new(arg0)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if bin != "comb" {
+        return false;
+    }
+    matches!(argv.get(1).map(String::as_str), Some("daemon") | Some("d"))
+}
+
+/// Extract the `--socket` value from argv (`--socket <path>` or `--socket=<path>`).
+pub fn socket_arg(argv: &[String]) -> Option<std::path::PathBuf> {
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        if a == "--socket" {
+            return it.next().map(std::path::PathBuf::from);
+        }
+        if let Some(v) = a.strip_prefix("--socket=") {
+            return Some(std::path::PathBuf::from(v));
+        }
+    }
+    None
+}
+
+/// The canon reap rule: uid-owned `comb daemon` processes are orphans unless
+/// an exemption applies. Exemptions, in canon order:
+///
+/// 1. the reaper itself, or a process on the reaper's own socket path
+///    (startup contention — flock and serving probe govern those);
+/// 2. `--exit-with-parent` — self-cleaning test daemons;
+/// 3. `--no-reap` — explicit opt-out for supervised side daemons;
+/// 4. still parented (PPID ≠ 1) — attended foreground runs;
+/// 5. younger than the grace age — never race a daemon mid-startup.
+///
+/// Pure: uid filtering happens in the `ProcessTable` boundary.
+pub fn decide_reap(
+    candidate: &crate::boundaries::proc_table::ProcessInfo,
+    ctx: &ReapContext,
+) -> ReapDecision {
+    if !is_comb_daemon_argv(&candidate.argv) {
+        return ReapDecision::Exempt("not a comb daemon");
+    }
+    if candidate.pid == ctx.our_pid {
+        return ReapDecision::Exempt("self");
+    }
+    if socket_arg(&candidate.argv).is_some_and(|s| s == ctx.our_socket) {
+        return ReapDecision::Exempt("same socket path");
+    }
+    if candidate.argv.iter().any(|a| a == "--exit-with-parent") {
+        return ReapDecision::Exempt("exit-with-parent");
+    }
+    if candidate.argv.iter().any(|a| a == "--no-reap") {
+        return ReapDecision::Exempt("no-reap");
+    }
+    if candidate.ppid != 1 {
+        return ReapDecision::Exempt("attended (parent alive)");
+    }
+    if candidate.age_secs < ctx.grace_age_secs {
+        return ReapDecision::Exempt("younger than grace age");
+    }
+    ReapDecision::Reap
+}
+
+/// True when a daemon bound to `bound_socket` is the canonical daemon: its
+/// bound socket equals its own env-free canonical resolution. Only the
+/// canonical daemon reaps.
+pub fn is_canonical_daemon(
+    bound_socket: &std::path::Path,
+    resolved_canonical: &std::path::Path,
+) -> bool {
+    bound_socket == resolved_canonical
+}
+
 /// Decide whether a pid-file record describes a stale entry that can be reclaimed.
 ///
 /// A record is considered stale (and safe to reclaim) when the process is **not**

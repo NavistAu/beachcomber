@@ -1437,12 +1437,10 @@ impl Config {
             }
         }
 
-        // 3. XDG_RUNTIME_DIR
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            return PathBuf::from(runtime_dir).join("beachcomber").join("sock");
-        }
-
-        // 4. TMPDIR fallback
+        // 3. Stable per-user default. Consults no session-scoped environment
+        // (TMPDIR, XDG_RUNTIME_DIR): singleton enforcement is per-socket-path,
+        // so session-scoped inputs yield one daemon per session, not per user.
+        // See docs/canon/singleton.md §"Canonical socket path resolution".
         let uid = unsafe { libc::getuid() };
         PathBuf::from("/tmp")
             .join(format!("beachcomber-{uid}"))

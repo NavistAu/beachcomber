@@ -13,7 +13,7 @@ fn daemon_fixture_starts_and_exits() {
 
 /// Build a `comb` Command pre-configured with `BEACHCOMBER_SOCKET` pointing
 /// directly at the test daemon's socket path, so `Config::resolve_socket_path()`
-/// resolves to the isolated test socket without overriding `XDG_RUNTIME_DIR`.
+/// resolves to the isolated test socket.
 ///
 /// The current_dir is fixed to "/" so that path-scoped virtual keys written with
 /// `--path /` are found by `get` (which always injects CWD as path context for

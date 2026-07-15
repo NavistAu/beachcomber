@@ -1,5 +1,5 @@
 //! Lint: integration tests must not rely on default socket discovery, which
-//! makes them fail when a real daemon is present at $XDG_RUNTIME_DIR/beachcomber/sock.
+//! makes them fail when a real daemon is present at /tmp/beachcomber-<uid>/sock.
 //! Use `ClientConfig::with_socket_path(tempdir().join("foo.sock"))` instead.
 
 use std::fs;

@@ -993,13 +993,16 @@ async fn handle_request(
             duration_secs,
         } => match subject {
             IntrospectSubject::Daemon => {
-                // Gather in_flight from scheduler status if available.
-                let in_flight_count = if let Some(sched) = scheduler
+                // Gather in_flight + watch backend from scheduler status if available.
+                let (in_flight_count, watch_backend) = if let Some(sched) = scheduler
                     && let Some(sched_status) = sched.get_status().await
                 {
-                    sched_status.in_flight.len() as u64
+                    (
+                        sched_status.in_flight.len() as u64,
+                        sched_status.watch_backend,
+                    )
                 } else {
-                    0
+                    (0, "unknown".to_string())
                 };
                 let active_watchers = watchers.entry_count() as u64;
                 let cache_entries = cache.len() as u64;
@@ -1010,6 +1013,7 @@ async fn handle_request(
                     in_flight_count,
                     active_watchers,
                     cache_entries,
+                    &watch_backend,
                 )
             }
             IntrospectSubject::Providers => handle_introspect_providers(registry, scheduler).await,
@@ -1045,6 +1049,7 @@ fn handle_introspect_daemon(
     in_flight_count: u64,
     active_watchers: u64,
     cache_entries: u64,
+    watch_backend: &str,
 ) -> Response {
     let config_path = crate::config::Config::config_path_if_exists()
         .map(|p| serde_json::Value::String(p.to_string_lossy().into_owned()))
@@ -1066,6 +1071,21 @@ fn handle_introspect_daemon(
         }));
     }
 
+    // Canon singleton.md invariant 12: watch degradation is observable.
+    if watch_backend == "native" {
+        verdicts.push(serde_json::json!({
+            "level": "PASS",
+            "message": "watch backend: native fs events"
+        }));
+    } else {
+        verdicts.push(serde_json::json!({
+            "level": "WARN",
+            "message": format!(
+                "watch backend: {watch_backend} — kernel fs events undelivered (sandboxed?); watch invalidation degraded to polling"
+            )
+        }));
+    }
+
     let data = serde_json::json!({
         "pid": std::process::id(),
         "version": env!("BEACHCOMBER_VERSION"),
@@ -1076,6 +1096,7 @@ fn handle_introspect_daemon(
         "in_flight": in_flight_count,
         "active_watchers": active_watchers,
         "cache_entries": cache_entries,
+        "watch_backend": watch_backend,
         "verdicts": verdicts,
     });
 
