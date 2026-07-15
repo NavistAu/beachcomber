@@ -42,6 +42,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 |---|---|
 | `src/lib.rs` | Module declarations; no logic |
 | `src/daemon.rs` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel`; watchdog task monitors scheduler heartbeat |
+| `src/singleton/` | Singleton enforcement: pid-file flock, build-identity supersession, serving probe, binary self-watch (fs-event + mtime poll), orphan reaping |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
 | `src/scheduler/mod.rs` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; dispatches lifecycle events into `LifecycleRegistry` and applies `TickActions`; heartbeat counter for watchdog liveness detection |
 | `src/scheduler/lifecycle.rs` | `LifecycleRegistry` state machine: Active → Decay1..4 → Evicted. Per-entry poll and decay timers. Canonical behaviour in `docs/cache-lifecycle.md` |
@@ -292,6 +293,10 @@ A `watch` request takes over the connection for the duration of the stream. The 
 **Field-level deduplication for watch**
 
 Watching `git.branch` only emits a line when the branch value itself changes, not on every git provider update. The watch handler records the last emitted value and skips writes when the new value is identical. This prevents spurious output when unrelated git fields (e.g., `ahead`, `dirty`) change.
+
+**Daemon singleton, self-supervision, and orphan reaping**
+
+At most one daemon runs per user. Enforcement is a pid file held under exclusive `flock` next to the socket: a starting daemon that finds the lock held compares build identities (SHA256 of the binary) — a different build supersedes the owner (SIGTERM, then SIGKILL); the same build probes the socket and exits silently if the owner is serving. The running daemon supervises its own binary two ways — an fs-event watch for fast reaction and a 5s mtime poll as the guarantee (fs-event streams can be created successfully and then silently deliver nothing) — and gracefully shuts down when the binary changes, so the next query respawns the new build. At startup the daemon also self-tests kernel event delivery; if events don't arrive, provider file-watching runs on a 1s polling backend instead, surfaced by `comb check daemon`. Finally, the daemon on the default (canonical) socket sweeps for orphaned `comb daemon` processes at startup and hourly, removing daemons that are reparented to PID 1 on sockets no client resolves — dev leftovers from killed test harnesses and deleted worktrees. Attended, self-cleaning (`--exit-with-parent`), and explicitly flagged (`--no-reap`) daemons are exempt. The authoritative spec is `docs/canon/singleton.md` in the repo.
 
 **Broadcast channels for watch subscribers**
 
