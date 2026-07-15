@@ -668,9 +668,9 @@ impl Scheduler {
         // event delivery can take hundreds of ms even when healthy, and the
         // scheduler must serve demand from its first moment. If the self-test
         // fails, the loop swaps to the polling backend and re-registers every
-        // watch path (sandboxed daemons create FSEvents streams that never
-        // deliver; chosen blind, their watch-invalidated entries would
-        // silently never invalidate).
+        // watch path (a stream can be created without error and deliver
+        // nothing — sandboxed CI hosts, degraded fseventsd; chosen blind,
+        // watch-invalidated entries would silently never invalidate).
         let (mut fs_watcher, mut fs_rx) = match FsWatcher::new() {
             Ok(pair) => pair,
             Err(e) => {

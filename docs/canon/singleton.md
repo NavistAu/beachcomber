@@ -86,18 +86,20 @@ The daemon supervises its own binary through two mechanisms; either one triggers
 1. **fs-event watch (fast path).** An fs-watch (via `notify`) on the parent directory of `current_exe()`. Modify/create/remove events touching the binary path are debounced 200ms, then trigger the `CancellationToken`.
 2. **mtime poll (guarantee).** Every 5s, the daemon checks `binary_newer_than(current_exe, our_start_unix_ms)`. One `stat` per interval — effectively free.
 
-The poll exists because fs-event backends can be silently non-functional: a daemon spawned inside a sandbox creates its FSEvents stream without error and then never receives an event. With an event-only watch, such a daemon outlives every rebuild of its binary indefinitely. The poll bounds staleness at one interval regardless of backend health.
+The poll exists because fs-event backends can be silently non-functional or degraded: a stream is created without error and then delivers nothing, or delivers too late to be useful — seen on sandboxed CI hosts and under a degraded or heavily loaded `fseventsd`. With an event-only watch, such a daemon outlives every rebuild of its binary indefinitely. The poll bounds staleness at one interval regardless of backend health.
 
 Immediately after the watch is registered, the daemon performs the same `binary_newer_than` check once against its own start time. If true (binary replaced between exec and watch arming), shutdown begins immediately. Catches the race window before the watch is live.
 
 ### Watch self-test
 
-At startup, the daemon verifies that the kernel fs-event backend delivers events at all: it registers a watch on a private temp directory, touches a file inside it, and waits up to 500ms for the corresponding event.
+At startup, the daemon verifies that the kernel fs-event backend delivers events at all: it registers a watch on a private temp directory, touches a file inside it, and waits up to 2s for the corresponding event. The self-test runs concurrently with the scheduler loop — a failure verdict swaps the live watcher for the polling backend and re-registers every watch path — so the timeout adds no startup latency.
 
 - **Delivered** → provider file-watching uses the kernel-native backend (FSEvents / inotify).
-- **Not delivered** → provider file-watching uses the polling backend for the life of the process. The degradation is logged at startup and surfaced by `comb check daemon` and `comb status`.
+- **Not delivered** → provider file-watching uses the polling backend for the life of the process. The degradation is logged and surfaced by `comb check daemon` and `comb status`.
 
-The test probes the capability, not the environment: detecting "am I sandboxed" is fragile and platform-specific, while "do events arrive" is exactly the property the watch subsystem depends on. Without this, a sandboxed daemon serves watch-invalidated entries that silently never invalidate. The PID file schema is unchanged — watch health is in-process state exposed over the protocol, with no external consumer.
+The 2s timeout sits well above load-degraded delivery: healthy-idle delivery is ~10ms, but hundreds of ms under heavy filesystem load (parallel builds), and the timeout must not misclassify a loaded-but-healthy backend as dead.
+
+The test probes the capability, not the environment: detecting "am I sandboxed" is fragile and platform-specific, while "do events arrive" is exactly the property the watch subsystem depends on. Without this, a daemon whose stream delivers nothing serves watch-invalidated entries that silently never invalidate. The PID file schema is unchanged — watch health is in-process state exposed over the protocol, with no external consumer.
 
 ### Same-build serving probe
 
@@ -317,7 +319,7 @@ sequenceDiagram
 | Client connect retry count | per-SDK | retries | fixed at 3 |
 | Client connect retry backoffs | per-SDK | milliseconds | fixed at 250 / 500 / 1000 |
 | Self-watch poll interval | global | seconds | fixed at 5s |
-| Watch self-test timeout | global | milliseconds | fixed at 500ms |
+| Watch self-test timeout | global | seconds | fixed at 2s |
 | Reap sweep period | global | duration | fixed at 1h (plus once at startup) |
 | Reap grace age | global | seconds | fixed at 60s |
 
@@ -366,7 +368,7 @@ Without the serving probe, the new process would have exited silently on the mat
 
 ### Example 4 — orphaned dev daemons reaped, live ones spared
 
-A test harness was SIGKILLed weeks ago, leaking a daemon on a tempdir socket (spawned by a build predating `--exit-with-parent`); its worktree — including its binary — has since been deleted. It was spawned inside a sandbox, so its fs-event self-supervision never fired; before reaping existed it was immortal. Meanwhile a nextest run is currently executing, and the developer has a foreground `comb d --socket /tmp/debug.sock` open in a shell.
+A test harness was SIGKILLed weeks ago, leaking a daemon on a tempdir socket (spawned by a build predating `--exit-with-parent`); its worktree — including its binary — has since been deleted. Its fs-event stream delivered nothing, so event-only self-supervision never fired; before reaping existed it was immortal. Meanwhile a nextest run is currently executing, and the developer has a foreground `comb d --socket /tmp/debug.sock` open in a shell.
 
 | Candidate | Exemption check | Outcome |
 |---|---|---|
@@ -516,7 +518,7 @@ Feature: Daemon singleton
     Then within 5s + drain time the daemon exits gracefully
 
   Scenario: Watch self-test failure flips provider watching to polling
-    Given a daemon starting where fs events do not deliver within 500ms
+    Given a daemon starting where fs events do not deliver within 2s
     Then provider file-watching uses the polling backend
     And the degradation is reported by comb check daemon
 ```

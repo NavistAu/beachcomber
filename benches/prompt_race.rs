@@ -18,6 +18,11 @@
 //! macOS notes (verified via examples/fswatch_probe.rs):
 //!   * FSEvents does NOT deliver events for `$TMPDIR` (`/var/folders/...`), so
 //!     fixtures live under `$HOME` instead.
+//!     (2026-07-15: did not reproduce against a healthy fseventsd —
+//!     `/var/folders` delivered in ~10ms; the June observation was likely a
+//!     symptom of the degraded fseventsd this branch was investigating. See
+//!     tests/watch_probe_diag.rs. Fixture placement kept as-is: $HOME works
+//!     in both worlds.)
 //!   * FSEvents stream startup can take several seconds, so both benches warm the
 //!     watcher until events actually flow before timing anything.
 //!

@@ -1081,7 +1081,7 @@ fn handle_introspect_daemon(
         verdicts.push(serde_json::json!({
             "level": "WARN",
             "message": format!(
-                "watch backend: {watch_backend} — kernel fs events undelivered (sandboxed?); watch invalidation degraded to polling"
+                "watch backend: {watch_backend} — kernel fs events undelivered; watch invalidation degraded to polling"
             )
         }));
     }

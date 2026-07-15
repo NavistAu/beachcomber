@@ -1,7 +1,7 @@
 //! Integration test: daemon gracefully shuts down when its binary is modified.
 
 /// Canon §"Self-supervision": the mtime poll is the guarantee — it fires even
-/// when the fs-event backend delivers nothing (the sandboxed-daemon failure
+/// when the fs-event backend delivers nothing (the silent-delivery failure
 /// mode that made leaked daemons immortal).
 #[test]
 fn poll_catches_binary_replacement_when_fs_events_are_dead() {
