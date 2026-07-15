@@ -349,3 +349,236 @@ fn probe_until_serving_waits_through_grace_for_late_bind() {
         Duration::from_secs(2)
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Orphan reaping — canon §"Orphan reaping" behaviour assertions
+// ---------------------------------------------------------------------------
+
+use beachcomber::boundaries::proc_table::{ProcessInfo, ProcessTable};
+use beachcomber::singleton::policy::{ReapContext, ReapDecision, decide_reap, is_canonical_daemon};
+
+fn daemon_proc(pid: u32, ppid: u32, age_secs: u64, extra: &[&str]) -> ProcessInfo {
+    let mut argv = vec!["/some/path/comb".to_string(), "daemon".to_string()];
+    argv.extend(extra.iter().map(|s| s.to_string()));
+    ProcessInfo {
+        pid,
+        ppid,
+        argv,
+        age_secs,
+    }
+}
+
+fn reap_ctx() -> ReapContext {
+    ReapContext {
+        our_pid: 100,
+        our_socket: "/tmp/beachcomber-501/sock".into(),
+        grace_age_secs: 60,
+    }
+}
+
+#[test]
+fn orphaned_side_daemon_is_reaped() {
+    let p = daemon_proc(200, 1, 3600, &["--socket", "/tmp/.tmpXYZ/beachcomber/sock"]);
+    assert_eq!(decide_reap(&p, &reap_ctx()), ReapDecision::Reap);
+}
+
+#[test]
+fn exit_with_parent_daemon_is_exempt() {
+    let p = daemon_proc(
+        200,
+        1,
+        3600,
+        &["--exit-with-parent", "--socket", "/tmp/.tmpXYZ/sock"],
+    );
+    assert!(matches!(
+        decide_reap(&p, &reap_ctx()),
+        ReapDecision::Exempt(_)
+    ));
+}
+
+#[test]
+fn no_reap_daemon_is_exempt() {
+    let p = daemon_proc(200, 1, 3600, &["--no-reap", "--socket", "/tmp/side.sock"]);
+    assert!(matches!(
+        decide_reap(&p, &reap_ctx()),
+        ReapDecision::Exempt(_)
+    ));
+}
+
+#[test]
+fn attended_daemon_is_exempt() {
+    // Parent alive (PPID != 1) — a foreground debug run under a shell.
+    let p = daemon_proc(200, 999, 3600, &["--socket", "/tmp/debug.sock"]);
+    assert!(matches!(
+        decide_reap(&p, &reap_ctx()),
+        ReapDecision::Exempt(_)
+    ));
+}
+
+#[test]
+fn young_daemon_is_exempt() {
+    let p = daemon_proc(200, 1, 10, &["--socket", "/tmp/.tmpXYZ/sock"]);
+    assert!(matches!(
+        decide_reap(&p, &reap_ctx()),
+        ReapDecision::Exempt(_)
+    ));
+}
+
+#[test]
+fn reaper_itself_is_exempt() {
+    let p = daemon_proc(100, 1, 3600, &["--socket", "/tmp/elsewhere.sock"]);
+    assert!(matches!(
+        decide_reap(&p, &reap_ctx()),
+        ReapDecision::Exempt(_)
+    ));
+}
+
+#[test]
+fn same_socket_daemon_is_exempt() {
+    // Startup-contention domain: flock + serving probe govern it, not reaping.
+    let p = daemon_proc(200, 1, 3600, &["--socket", "/tmp/beachcomber-501/sock"]);
+    assert!(matches!(
+        decide_reap(&p, &reap_ctx()),
+        ReapDecision::Exempt(_)
+    ));
+
+    let eq_form = daemon_proc(201, 1, 3600, &["--socket=/tmp/beachcomber-501/sock"]);
+    assert!(matches!(
+        decide_reap(&eq_form, &reap_ctx()),
+        ReapDecision::Exempt(_)
+    ));
+}
+
+#[test]
+fn non_daemon_processes_are_ignored() {
+    let vim = ProcessInfo {
+        pid: 200,
+        ppid: 1,
+        argv: vec!["vim".into()],
+        age_secs: 3600,
+    };
+    assert!(matches!(
+        decide_reap(&vim, &reap_ctx()),
+        ReapDecision::Exempt(_)
+    ));
+
+    let comb_get = ProcessInfo {
+        pid: 201,
+        ppid: 1,
+        argv: vec![
+            "/usr/local/bin/comb".into(),
+            "get".into(),
+            "git.branch".into(),
+        ],
+        age_secs: 3600,
+    };
+    assert!(matches!(
+        decide_reap(&comb_get, &reap_ctx()),
+        ReapDecision::Exempt(_)
+    ));
+}
+
+#[test]
+fn d_alias_is_matched() {
+    let p = ProcessInfo {
+        pid: 200,
+        ppid: 1,
+        argv: vec![
+            "comb".into(),
+            "d".into(),
+            "--socket".into(),
+            "/tmp/x.sock".into(),
+        ],
+        age_secs: 3600,
+    };
+    assert_eq!(decide_reap(&p, &reap_ctx()), ReapDecision::Reap);
+}
+
+#[test]
+fn deleted_worktree_exe_is_still_matched() {
+    // Reaping matches on argv, so a binary deleted from disk is still reapable.
+    let p = ProcessInfo {
+        pid: 200,
+        ppid: 1,
+        argv: vec![
+            "/ws/repo/.worktrees/gone/target/debug/comb".into(),
+            "daemon".into(),
+            "--socket".into(),
+            "/tmp/.tmpGone/beachcomber/sock".into(),
+        ],
+        age_secs: 86400 * 21,
+    };
+    assert_eq!(decide_reap(&p, &reap_ctx()), ReapDecision::Reap);
+}
+
+#[test]
+fn canonicality_is_bound_socket_equals_own_resolution() {
+    use std::path::Path;
+    assert!(is_canonical_daemon(
+        Path::new("/tmp/beachcomber-501/sock"),
+        Path::new("/tmp/beachcomber-501/sock")
+    ));
+    assert!(!is_canonical_daemon(
+        Path::new("/tmp/.tmpXYZ/beachcomber/sock"),
+        Path::new("/tmp/beachcomber-501/sock")
+    ));
+}
+
+struct FakeTable(Vec<ProcessInfo>);
+impl ProcessTable for FakeTable {
+    fn list_own(&self) -> Vec<ProcessInfo> {
+        self.0.clone()
+    }
+}
+
+#[test]
+fn reap_sweep_kills_only_orphans() {
+    use std::cell::RefCell;
+
+    let table = FakeTable(vec![
+        daemon_proc(200, 1, 3600, &["--socket", "/tmp/.tmpA/sock"]), // orphan
+        daemon_proc(201, 1, 3600, &["--exit-with-parent"]),          // exempt
+        daemon_proc(202, 999, 3600, &["--socket", "/tmp/dbg.sock"]), // attended
+        daemon_proc(100, 1, 3600, &[]),                              // self
+        daemon_proc(203, 1, 5, &["--socket", "/tmp/.tmpB/sock"]),    // young
+    ]);
+    let killed: RefCell<Vec<u32>> = RefCell::new(Vec::new());
+    let kill = |pid: u32| {
+        killed.borrow_mut().push(pid);
+        Ok(())
+    };
+
+    let reaped = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    assert_eq!(reaped, vec![200]);
+    assert_eq!(*killed.borrow(), vec![200]);
+}
+
+#[test]
+fn reap_sweep_continues_past_kill_failures() {
+    use std::cell::RefCell;
+
+    let table = FakeTable(vec![
+        daemon_proc(200, 1, 3600, &["--socket", "/tmp/.tmpA/sock"]),
+        daemon_proc(300, 1, 3600, &["--socket", "/tmp/.tmpB/sock"]),
+    ]);
+    let attempts: RefCell<Vec<u32>> = RefCell::new(Vec::new());
+    let kill = |pid: u32| {
+        attempts.borrow_mut().push(pid);
+        if pid == 200 {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "nope",
+            ))
+        } else {
+            Ok(())
+        }
+    };
+
+    let reaped = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    assert_eq!(*attempts.borrow(), vec![200, 300], "both orphans attempted");
+    assert_eq!(
+        reaped,
+        vec![300],
+        "only the successful kill is reported reaped"
+    );
+}

@@ -1,5 +1,37 @@
 //! Integration test: daemon gracefully shuts down when its binary is modified.
 
+/// Canon §"Self-supervision": the mtime poll is the guarantee — it fires even
+/// when the fs-event backend delivers nothing (the sandboxed-daemon failure
+/// mode that made leaked daemons immortal).
+#[test]
+fn poll_catches_binary_replacement_when_fs_events_are_dead() {
+    let tmp = tempfile::tempdir().unwrap();
+    let fake_bin = tmp.path().join("comb");
+    std::fs::write(&fake_bin, b"v1").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    beachcomber::singleton::spawn_binary_self_watch_with(
+        fake_bin.clone(),
+        std::time::Duration::from_millis(100),
+        false, // fs events dead — the poll is the only mechanism
+        move || {
+            let _ = tx.send(());
+        },
+    );
+
+    // Bump mtime strictly past the watch's start time, immune to clock granularity.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&fake_bin)
+        .unwrap();
+    f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+        .unwrap();
+
+    rx.recv_timeout(std::time::Duration::from_secs(3))
+        .expect("mtime poll fired on_change");
+}
+
 #[tokio::test]
 #[ignore]
 async fn daemon_shuts_down_when_binary_touched() {

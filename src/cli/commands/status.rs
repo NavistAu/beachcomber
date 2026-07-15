@@ -75,6 +75,27 @@ pub fn run_status(
                     });
                     let out = render_preset(preset, &rows, &opts);
                     print!("{out}");
+
+                    // Canon singleton.md invariant 12: watch degradation is
+                    // observable via `comb status`. Human preset only, and on
+                    // stderr so machine formats stay parseable.
+                    if preset == "human"
+                        && let Ok(resp) = client
+                            .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
+                            .await
+                        && resp.ok
+                        && let Some(backend) = resp
+                            .data
+                            .as_ref()
+                            .and_then(|d| d.get("watch_backend"))
+                            .and_then(|v| v.as_str())
+                        && backend != "native"
+                    {
+                        let glyph = if ascii { "!" } else { "⚠" };
+                        eprintln!(
+                            "{glyph} watch backend: {backend} — kernel fs events undelivered; watch invalidation degraded"
+                        );
+                    }
                     ExitCode::SUCCESS
                 } else {
                     eprintln!("Error: {}", response.error.unwrap_or_default());
