@@ -629,3 +629,133 @@ fn check_daemon_reports_watch_backend() {
     let _ = daemon.kill();
     let _ = daemon.wait();
 }
+
+// --- Reaper health surfacing (canon singleton.md invariant 13) ---
+
+#[tokio::test]
+async fn introspect_daemon_reaper_null_when_not_attached() {
+    // Embedded/test servers never attach reaper health; the field is null.
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
+        .await
+        .expect("request succeeded");
+    assert!(resp.ok);
+    let data = resp.data.expect("payload");
+    assert!(
+        data.get("reaper").expect("reaper key present").is_null(),
+        "reaper must be null when health is not attached"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn introspect_daemon_reaper_confined_surfaces_warn_verdict() {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let health = std::sync::Arc::new(beachcomber::singleton::ReaperHealth::default());
+    health.armed.store(true, Relaxed);
+    health.visibility_ok.store(false, Relaxed); // confined
+    health.kill_denied_total.store(2, Relaxed);
+
+    let handle = beachcomber::daemon::start_in_process_with_reaper(
+        sock.clone(),
+        Config::default(),
+        tokio_util::sync::CancellationToken::new(),
+        Some(health),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let client = Client::new(sock);
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
+        .await
+        .expect("request succeeded");
+    assert!(resp.ok);
+    let data = resp.data.expect("payload");
+
+    let reaper = data.get("reaper").expect("reaper present");
+    assert_eq!(
+        reaper.get("visibility").and_then(|v| v.as_str()),
+        Some("confined")
+    );
+    assert_eq!(reaper.get("armed").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(reaper.get("kill_denied").and_then(|v| v.as_u64()), Some(2));
+
+    let verdicts = data
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .expect("verdicts");
+    assert!(
+        verdicts.iter().any(|v| {
+            v.get("level").and_then(|l| l.as_str()) == Some("WARN")
+                && v.get("message")
+                    .and_then(|m| m.as_str())
+                    .is_some_and(|m| m.contains("reaper visibility degraded"))
+        }),
+        "confined reaper must produce a WARN verdict, got: {verdicts:?}"
+    );
+    assert!(
+        verdicts.iter().any(|v| {
+            v.get("level").and_then(|l| l.as_str()) == Some("WARN")
+                && v.get("message")
+                    .and_then(|m| m.as_str())
+                    .is_some_and(|m| m.contains("denied by the OS"))
+        }),
+        "kill_denied > 0 must produce a WARN verdict, got: {verdicts:?}"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn introspect_daemon_reaper_healthy_surfaces_pass_verdict() {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let health = std::sync::Arc::new(beachcomber::singleton::ReaperHealth::default());
+    health.armed.store(true, Relaxed);
+    health.visibility_ok.store(true, Relaxed);
+
+    let handle = beachcomber::daemon::start_in_process_with_reaper(
+        sock.clone(),
+        Config::default(),
+        tokio_util::sync::CancellationToken::new(),
+        Some(health),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let client = Client::new(sock);
+
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
+        .await
+        .expect("request succeeded");
+    assert!(resp.ok);
+    let data = resp.data.expect("payload");
+
+    let reaper = data.get("reaper").expect("reaper present");
+    assert_eq!(
+        reaper.get("visibility").and_then(|v| v.as_str()),
+        Some("system-wide")
+    );
+    let verdicts = data
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .expect("verdicts");
+    assert!(
+        verdicts.iter().any(|v| {
+            v.get("level").and_then(|l| l.as_str()) == Some("PASS")
+                && v.get("message")
+                    .and_then(|m| m.as_str())
+                    .is_some_and(|m| m.contains("system-wide process visibility"))
+        }),
+        "healthy reaper must produce a PASS verdict, got: {verdicts:?}"
+    );
+
+    handle.abort();
+}

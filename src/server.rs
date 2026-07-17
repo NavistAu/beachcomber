@@ -26,6 +26,9 @@ pub struct Server {
     start_instant: Instant,
     requests_total: Arc<AtomicU64>,
     config: Arc<Config>,
+    /// Reaper health, present only in the daemon path (canon invariant 13).
+    /// None for embedded/test servers — introspect then omits the field.
+    reaper: Option<Arc<crate::singleton::ReaperHealth>>,
 }
 
 impl Server {
@@ -45,6 +48,7 @@ impl Server {
             start_instant: Instant::now(),
             requests_total: Arc::new(AtomicU64::new(0)),
             config: Arc::new(Config::load()),
+            reaper: None,
         }
     }
 
@@ -65,7 +69,14 @@ impl Server {
             start_instant: Instant::now(),
             requests_total: Arc::new(AtomicU64::new(0)),
             config: Arc::new(config),
+            reaper: None,
         }
+    }
+
+    /// Attach reaper health state for introspect surfacing (daemon path only).
+    pub fn with_reaper_health(mut self, health: Arc<crate::singleton::ReaperHealth>) -> Self {
+        self.reaper = Some(health);
+        self
     }
 
     pub async fn run(&self) -> std::io::Result<()> {
@@ -104,6 +115,7 @@ impl Server {
                     let requests_total = Arc::clone(&self.requests_total);
                     let socket_path = self.socket_path.clone();
                     let config = Arc::clone(&self.config);
+                    let reaper = self.reaper.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handle_connection(
                             stream,
@@ -115,6 +127,7 @@ impl Server {
                             requests_total,
                             socket_path,
                             config,
+                            reaper,
                         )
                         .await
                         {
@@ -141,6 +154,7 @@ async fn handle_connection(
     requests_total: Arc<AtomicU64>,
     socket_path: PathBuf,
     config: Arc<Config>,
+    reaper: Option<Arc<crate::singleton::ReaperHealth>>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -186,6 +200,7 @@ async fn handle_connection(
                     &requests_total,
                     &socket_path,
                     &config,
+                    reaper.as_deref(),
                 )
                 .await;
                 let response_bytes = format_response(&request, &response);
@@ -483,6 +498,7 @@ async fn handle_request(
     requests_total: &AtomicU64,
     socket_path: &std::path::Path,
     config: &Config,
+    reaper: Option<&crate::singleton::ReaperHealth>,
 ) -> Response {
     match request {
         Request::Get {
@@ -1014,6 +1030,7 @@ async fn handle_request(
                     active_watchers,
                     cache_entries,
                     &watch_backend,
+                    reaper,
                 )
             }
             IntrospectSubject::Providers => handle_introspect_providers(registry, scheduler).await,
@@ -1042,6 +1059,7 @@ async fn handle_request(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_introspect_daemon(
     socket_path: &std::path::Path,
     start_instant: Instant,
@@ -1050,6 +1068,7 @@ fn handle_introspect_daemon(
     active_watchers: u64,
     cache_entries: u64,
     watch_backend: &str,
+    reaper: Option<&crate::singleton::ReaperHealth>,
 ) -> Response {
     let config_path = crate::config::Config::config_path_if_exists()
         .map(|p| serde_json::Value::String(p.to_string_lossy().into_owned()))
@@ -1086,6 +1105,48 @@ fn handle_introspect_daemon(
         }));
     }
 
+    // Canon singleton.md invariant 13: reaper capability is never silently
+    // degraded. `reaper` is None for embedded/test servers (field omitted).
+    let reaper_json = reaper.map(|health| {
+        use std::sync::atomic::Ordering::Relaxed;
+        let armed = health.armed.load(Relaxed);
+        let visibility_ok = health.visibility_ok.load(Relaxed);
+        let kill_denied = health.kill_denied_total.load(Relaxed);
+
+        if !armed {
+            verdicts.push(serde_json::json!({
+                "level": "PASS",
+                "message": "reaper: not armed (side daemon)"
+            }));
+        } else if visibility_ok {
+            verdicts.push(serde_json::json!({
+                "level": "PASS",
+                "message": "reaper: armed, system-wide process visibility"
+            }));
+        } else {
+            verdicts.push(serde_json::json!({
+                "level": "WARN",
+                "message": "reaper visibility degraded: PID 1 not visible in process enumeration — this daemon runs confined (sandbox-spawned?) and cannot police daemons outside its confinement; restart it from an unconfined shell"
+            }));
+        }
+        if armed && kill_denied > 0 {
+            verdicts.push(serde_json::json!({
+                "level": "WARN",
+                "message": format!(
+                    "reaper: {kill_denied} kill attempt(s) denied by the OS — orphans visible but unsignalable"
+                )
+            }));
+        }
+
+        serde_json::json!({
+            "armed": armed,
+            "visibility": if visibility_ok { "system-wide" } else { "confined" },
+            "sweeps": health.sweeps_total.load(Relaxed),
+            "reaped": health.reaped_total.load(Relaxed),
+            "kill_denied": kill_denied,
+        })
+    });
+
     let data = serde_json::json!({
         "pid": std::process::id(),
         "version": env!("BEACHCOMBER_VERSION"),
@@ -1097,6 +1158,7 @@ fn handle_introspect_daemon(
         "active_watchers": active_watchers,
         "cache_entries": cache_entries,
         "watch_backend": watch_backend,
+        "reaper": reaper_json,
         "verdicts": verdicts,
     });
 

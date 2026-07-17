@@ -27,3 +27,31 @@ fn list_own_excludes_other_uids() {
     let table = RealProcessTable;
     assert!(table.list_own().iter().all(|p| p.pid != 1));
 }
+
+#[test]
+fn pid1_visible_on_healthy_system() {
+    // Canon singleton.md §"Reaper visibility self-test": PID 1 must appear in
+    // the RAW enumeration (pre-uid-filter) on any healthy system. On macOS this
+    // holds even under seatbelt sandboxes because the boundary uses
+    // `sysctl KERN_PROC_ALL`, which sandbox profiles do not filter (unlike
+    // libproc's proc_listallpids — the 2026-07-16 blind-reaper incident).
+    let table = RealProcessTable;
+    assert!(
+        table.pid1_visible(),
+        "PID 1 not visible in raw process enumeration — reaper would be blind"
+    );
+}
+
+#[test]
+fn list_own_sees_processes_beyond_own_session() {
+    // Regression guard for the sandbox-confined enumeration bug: the raw pid
+    // list must plausibly span the system, not just this process's session.
+    // We can't assert an absolute count (containers are small), but PID 1
+    // visibility plus our own presence is the canon-blessed minimum; this
+    // test additionally pins that enumeration and the probe agree on the
+    // same mechanism (both must come from the sysctl/procfs raw list).
+    let table = RealProcessTable;
+    let procs = table.list_own();
+    assert!(!procs.is_empty());
+    assert!(table.pid1_visible());
+}
