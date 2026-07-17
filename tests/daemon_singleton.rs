@@ -524,10 +524,24 @@ fn canonicality_is_bound_socket_equals_own_resolution() {
     ));
 }
 
-struct FakeTable(Vec<ProcessInfo>);
+struct FakeTable {
+    procs: Vec<ProcessInfo>,
+    pid1: bool,
+}
+impl FakeTable {
+    fn new(procs: Vec<ProcessInfo>) -> Self {
+        Self { procs, pid1: true }
+    }
+    fn confined(procs: Vec<ProcessInfo>) -> Self {
+        Self { procs, pid1: false }
+    }
+}
 impl ProcessTable for FakeTable {
     fn list_own(&self) -> Vec<ProcessInfo> {
-        self.0.clone()
+        self.procs.clone()
+    }
+    fn pid1_visible(&self) -> bool {
+        self.pid1
     }
 }
 
@@ -535,7 +549,7 @@ impl ProcessTable for FakeTable {
 fn reap_sweep_kills_only_orphans() {
     use std::cell::RefCell;
 
-    let table = FakeTable(vec![
+    let table = FakeTable::new(vec![
         daemon_proc(200, 1, 3600, &["--socket", "/tmp/.tmpA/sock"]), // orphan
         daemon_proc(201, 1, 3600, &["--exit-with-parent"]),          // exempt
         daemon_proc(202, 999, 3600, &["--socket", "/tmp/dbg.sock"]), // attended
@@ -548,8 +562,8 @@ fn reap_sweep_kills_only_orphans() {
         Ok(())
     };
 
-    let reaped = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
-    assert_eq!(reaped, vec![200]);
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    assert_eq!(report.reaped, vec![200]);
     assert_eq!(*killed.borrow(), vec![200]);
 }
 
@@ -557,7 +571,7 @@ fn reap_sweep_kills_only_orphans() {
 fn reap_sweep_continues_past_kill_failures() {
     use std::cell::RefCell;
 
-    let table = FakeTable(vec![
+    let table = FakeTable::new(vec![
         daemon_proc(200, 1, 3600, &["--socket", "/tmp/.tmpA/sock"]),
         daemon_proc(300, 1, 3600, &["--socket", "/tmp/.tmpB/sock"]),
     ]);
@@ -574,11 +588,128 @@ fn reap_sweep_continues_past_kill_failures() {
         }
     };
 
-    let reaped = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
     assert_eq!(*attempts.borrow(), vec![200, 300], "both orphans attempted");
     assert_eq!(
-        reaped,
+        report.reaped,
         vec![300],
         "only the successful kill is reported reaped"
     );
+}
+
+// --- SweepReport (canon invariant 13: every sweep leaves an accountable trace) ---
+
+#[test]
+fn sweep_report_tallies_rows_candidates_and_exemptions() {
+    let table = FakeTable::new(vec![
+        daemon_proc(200, 1, 3600, &["--socket", "/tmp/.tmpA/sock"]), // reaped
+        daemon_proc(201, 1, 3600, &["--exit-with-parent"]),          // exempt rule 2
+        daemon_proc(202, 999, 3600, &["--socket", "/tmp/dbg.sock"]), // attended (rule 4)
+        daemon_proc(100, 1, 3600, &[]),                              // self (rule 1)
+        daemon_proc(203, 1, 5, &["--socket", "/tmp/.tmpB/sock"]),    // young (rule 5)
+        // A non-daemon row: enumerated but never a candidate.
+        ProcessInfo {
+            pid: 999,
+            ppid: 1,
+            argv: vec!["/bin/zsh".into()],
+            age_secs: 10_000,
+        },
+    ]);
+    let kill = |_pid: u32| Ok(());
+
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    assert_eq!(report.rows_enumerated, 6);
+    assert_eq!(report.candidates, 5, "non-daemon rows are not candidates");
+    assert_eq!(report.reaped, vec![200]);
+    assert!(report.pid1_visible);
+    let tally = |rule: &str| {
+        report
+            .exemptions
+            .iter()
+            .find(|(r, _)| *r == rule)
+            .map(|(_, n)| *n)
+            .unwrap_or(0)
+    };
+    assert_eq!(tally("self"), 1);
+    assert_eq!(tally("exit-with-parent"), 1);
+    assert_eq!(tally("attended (parent alive)"), 1);
+    assert_eq!(tally("younger than grace age"), 1);
+}
+
+#[test]
+fn sweep_report_classifies_denied_and_failed_kills() {
+    let table = FakeTable::new(vec![
+        daemon_proc(200, 1, 3600, &["--socket", "/tmp/.tmpA/sock"]), // EPERM
+        daemon_proc(300, 1, 3600, &["--socket", "/tmp/.tmpB/sock"]), // other error
+        daemon_proc(400, 1, 3600, &["--socket", "/tmp/.tmpC/sock"]), // ok
+    ]);
+    let kill = |pid: u32| match pid {
+        200 => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "sandbox says no",
+        )),
+        300 => Err(std::io::Error::other("boom")),
+        _ => Ok(()),
+    };
+
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    assert_eq!(report.kill_denied, 1, "EPERM counted as denied");
+    assert_eq!(report.kill_failed, 1, "non-EPERM counted as failed");
+    assert_eq!(report.reaped, vec![400]);
+}
+
+#[test]
+fn sweep_report_surfaces_confined_visibility_but_still_reaps() {
+    use std::cell::RefCell;
+
+    let table = FakeTable::confined(vec![daemon_proc(
+        200,
+        1,
+        3600,
+        &["--socket", "/tmp/.tmpA/sock"],
+    )]);
+    let killed: RefCell<Vec<u32>> = RefCell::new(Vec::new());
+    let kill = |pid: u32| {
+        killed.borrow_mut().push(pid);
+        Ok(())
+    };
+
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    assert!(!report.pid1_visible, "confinement reported");
+    assert_eq!(
+        report.reaped,
+        vec![200],
+        "visible orphans still reaped while confined"
+    );
+}
+
+#[test]
+fn reaper_health_record_sweep_accumulates() {
+    use beachcomber::singleton::{ReaperHealth, SweepReport};
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let health = ReaperHealth::default();
+    let report = SweepReport {
+        rows_enumerated: 30,
+        candidates: 3,
+        reaped: vec![200, 300],
+        kill_denied: 1,
+        pid1_visible: true,
+        ..SweepReport::default()
+    };
+    health.record_sweep(&report);
+    health.record_sweep(&report);
+
+    assert_eq!(health.sweeps_total.load(Relaxed), 2);
+    assert_eq!(health.reaped_total.load(Relaxed), 4);
+    assert_eq!(health.kill_denied_total.load(Relaxed), 2);
+    assert!(health.visibility_ok.load(Relaxed));
+
+    // Visibility reflects the LATEST sweep, not history.
+    let confined = SweepReport {
+        pid1_visible: false,
+        ..SweepReport::default()
+    };
+    health.record_sweep(&confined);
+    assert!(!health.visibility_ok.load(Relaxed));
 }

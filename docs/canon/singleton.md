@@ -14,6 +14,7 @@
 | **Side daemon** | A daemon bound to any other socket (explicit `--socket`, or an env/config override differing from the reaper's). Test daemons, foreground debug runs, supervised custom deployments. A side daemon never reaps. |
 | **Orphan** | A uid-owned `comb daemon` process that is not on the reaper's socket path, has been reparented to PID 1, carries neither `--exit-with-parent` nor `--no-reap`, and is older than the reap grace age. Orphans are unreachable dead weight: nothing resolves their socket, and nothing will ever supersede them. |
 | **Reaping** | The canonical daemon terminating orphans (SIGTERM, 1s grace, SIGKILL) — at startup and on an hourly sweep. |
+| **Reaper visibility self-test** | A probe verifying process enumeration plausibly spans the whole system: PID 1 (launchd/init) must appear in the raw enumeration. Failure means the daemon is confined (sandbox, `hidepid`) and can neither see nor police daemons outside its confinement; the degradation is surfaced, never silent. |
 | **Watch self-test** | A startup probe verifying the kernel fs-event backend actually delivers events. Failure flips provider watching to the polling backend. |
 | **PID file** | JSON record at `<socket-parent>/pid` written and held under exclusive `flock` by the running daemon. Released on graceful shutdown. |
 | **Build identity** | A SHA256 of the daemon binary file content, computed at startup. The canonical answer to "is the running daemon the same physical build as the one that just started?" |
@@ -126,11 +127,25 @@ The singleton property is per-user, but enforcement through the flock alone is p
 4. still parented (PPID ≠ 1) — an attended foreground run under a live shell;
 5. younger than 60s — never race a daemon mid-startup.
 
-What remains — orphaned, unattended, unflagged daemons on sockets nothing resolves — receives SIGTERM, 1s grace, then SIGKILL. Each reap is logged with pid, exe, and socket path.
+What remains — orphaned, unattended, unflagged daemons on sockets nothing resolves — receives SIGTERM, 1s grace, then SIGKILL. Each reap is logged with pid, exe, and socket path. Additionally, **every sweep logs a summary** (debug level): rows enumerated, `comb daemon` candidates, exemption tallies by rule, and reaped pids — so a sweep that found nothing eligible is distinguishable from a sweep that could not see anything, without an instrumented build.
 
 The exemptions make deliberate side daemons expressible instead of heuristically guessed: alive parent means attended, `--exit-with-parent` means self-cleaning, `--no-reap` means opted out. A daemon fitting none of these is unreachable dead weight by construction.
 
-**Process enumeration** is a boundary trait (hand-rolled: `libproc` on macOS, `/proc` on Linux; no external dependency). A process whose exe has been deleted from disk remains enumerable and reapable — deleted-worktree daemons are a primary target.
+**Process enumeration** is a boundary trait (hand-rolled: `sysctl KERN_PROC_ALL` on macOS, `/proc` on Linux; no external dependency). On macOS the pid list must come from `sysctl KERN_PROC_ALL`, **not** `libproc`'s `proc_listallpids`: seatbelt sandbox profiles filter the latter to the session's own processes while leaving the sysctl unrestricted — a canonical daemon that happened to be auto-spawned from a sandboxed client shell enumerated 51 of 737 system pids and silently never saw the orphans it existed to reap (2026-07-16 incident). Per-pid detail (`proc_pidinfo`, `KERN_PROCARGS2`) is unaffected. A process whose exe has been deleted from disk remains enumerable and reapable — deleted-worktree daemons are a primary target.
+
+### Reaper visibility self-test
+
+Enumeration mechanisms can be silently confined: a seatbelt profile, a `hidepid` mount, or a future platform quirk can shrink the visible process table without any call failing. A confined reaper sweeps clean logs forever while orphans accumulate — exactly the failure the reaper exists to prevent, made invisible.
+
+The self-test probes the capability, not the environment (same doctrine as the watch self-test): **PID 1 must appear in the raw enumeration**. `launchd`/`init` always exists, is never the daemon's own descendant, and a view filtered to the daemon's session or namespace will not contain it. In a PID namespace (container), PID 1 is the namespace's own init and *is* visible — correctly reporting healthy, since reaping within the namespace is exactly the reaper's jurisdiction there.
+
+- **Evaluated** when the canonical daemon arms the reaper, and again on every sweep (the sweep already enumerates; the check is free).
+- **Visible** → reaper healthy; sweeps proceed normally.
+- **Not visible** → the daemon logs a warning (once at arming, not per sweep) and marks reaper visibility degraded. Sweeps continue — orphans that *are* visible (same-session test leaks) are still reaped. The degradation is surfaced via `comb check daemon`, `comb status`, and introspect `reaper.visibility`.
+
+A degraded verdict also implies the daemon itself is running confined (it was auto-spawned from a sandboxed client), which the operator may want to remedy by restarting it from an unconfined shell; the surfaced state is what makes that decision possible.
+
+**Signal capability** is not probed synthetically (there is no guaranteed-present same-uid foreign target to probe against); instead, reap kill attempts that fail with `EPERM` are counted as `kill_denied` and surfaced through the same introspection — capability observed at point of use.
 
 ### Client connect retry
 
@@ -302,6 +317,7 @@ sequenceDiagram
 10. Only the canonical daemon reaps. A side daemon never signals a process outside its own socket path's contention domain.
 11. A reaped process is never: the reaper, a process on the reaper's socket path, a process with a live parent, a process carrying `--exit-with-parent` or `--no-reap`, or a process younger than the reap grace age.
 12. Provider file-watching is never silently dead: the watch self-test either confirms event delivery or flips to the polling backend, and the degradation is observable via `comb check daemon` and `comb status`.
+13. Reaper capability is never silently degraded: the visibility self-test (PID 1 present in raw enumeration) runs at arming and on every sweep, kill attempts denied by the OS are counted, and both are observable via `comb check daemon`, `comb status`, and introspect `reaper`. Every sweep leaves a log trace (summary at debug; reaps at info; failures at warn).
 
 ## Parameters
 
@@ -322,6 +338,7 @@ sequenceDiagram
 | Watch self-test timeout | global | seconds | fixed at 2s |
 | Reap sweep period | global | duration | fixed at 1h (plus once at startup) |
 | Reap grace age | global | seconds | fixed at 60s |
+| Reaper visibility probe | global | predicate | fixed: PID 1 present in raw enumeration |
 
 Resolution is hardcoded throughout. Singleton enforcement should not be tunable — there is no useful "per-user 5 daemons" config.
 
@@ -511,6 +528,28 @@ Feature: Daemon singleton
     Given a daemon bound to a socket that differs from its own canonical resolution
     When its reap schedule would fire
     Then it enumerates no processes and signals nothing
+
+  Scenario: Confined enumeration is detected and surfaced
+    Given process enumeration whose raw view does not contain PID 1
+    When the canonical daemon arms the reaper or runs a sweep
+    Then reaper visibility is reported degraded via introspect daemon
+    And comb check daemon emits a WARN verdict for the reaper
+    And sweeps still reap orphans that are visible
+
+  Scenario: Healthy enumeration reports system-wide visibility
+    Given process enumeration whose raw view contains PID 1
+    When the canonical daemon runs a sweep
+    Then reaper visibility is reported healthy via introspect daemon
+
+  Scenario: Every sweep leaves a log trace
+    Given the canonical daemon runs a reap sweep
+    Then a summary with enumerated rows, candidate count, exemption tallies, and reaped pids is logged at debug level
+
+  Scenario: OS-denied kills are counted and surfaced
+    Given a reap-eligible orphan whose kill fails with EPERM
+    When the sweep attempts to reap it
+    Then the failure is logged at warn level
+    And the kill_denied counter surfaced via introspect daemon increments
 
   Scenario: Poll catches binary replacement when fs events are dead
     Given a Running daemon whose fs-event watch delivers no events
