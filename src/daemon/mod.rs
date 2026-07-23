@@ -140,6 +140,11 @@ async fn run_daemon_with_cancel(
             if let Err(e) = result {
                 tracing::error!("Server error: {}", e);
             }
+            // Server returned (bind failure or accept-loop error): shut the
+            // scheduler down too, or `scheduler_task.await` below blocks
+            // forever and the process lingers, unkillable by SIGTERM (the
+            // cancel token has no remaining observer once this select ends).
+            scheduler_handle.send(SchedulerMessage::Shutdown).await;
         }
         _ = cancel.cancelled() => {
             info!("Shutdown signal received");
@@ -289,6 +294,11 @@ pub fn ensure_daemon(socket_path: &Path, no_reap: bool) -> std::io::Result<()> {
     ensure_daemon_with(&RealDaemonSpawner, socket_path, no_reap)
 }
 
+/// Maximum usable unix socket path length in bytes, exclusive. `sun_path` is
+/// 104 bytes on macOS (108 on Linux); use the conservative bound on both so
+/// behavior is uniform.
+pub const MAX_SOCKET_PATH_BYTES: usize = 104;
+
 /// Injection-point variant of `ensure_daemon` — accepts any `DaemonSpawner`.
 ///
 /// Useful for tests: pass a `MockDaemonSpawner` to assert fork/wait behaviour
@@ -298,6 +308,20 @@ pub fn ensure_daemon_with(
     socket_path: &Path,
     no_reap: bool,
 ) -> std::io::Result<()> {
+    // Pre-flight: a path the kernel cannot bind (SUN_LEN) would fork a daemon
+    // doomed to fail; surface the real cause here instead of a spawn timeout.
+    if socket_path.as_os_str().len() >= MAX_SOCKET_PATH_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "socket path is {} bytes; unix sockets are limited to {} (SUN_LEN): {}",
+                socket_path.as_os_str().len(),
+                MAX_SOCKET_PATH_BYTES,
+                socket_path.display()
+            ),
+        ));
+    }
+
     if !lifecycle::needs_fork(is_daemon_running(socket_path)) {
         return Ok(());
     }

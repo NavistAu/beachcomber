@@ -450,23 +450,34 @@ async fn all_subjects_reachable_via_introspect() {
     handle.abort();
 }
 
+/// Locate the `comb` binary for real-process e2e tests. Test binaries live in
+/// `target/debug/deps/`; the bin is one level up. Asserts existence — a silent
+/// skip here previously masked these tests never running under nextest.
+fn comb_binary() -> std::path::PathBuf {
+    let mut dir = std::env::current_exe()
+        .expect("current_exe")
+        .parent()
+        .expect("parent dir")
+        .to_path_buf();
+    if dir.ends_with("deps") {
+        dir.pop();
+    }
+    let exe = dir.join("comb");
+    assert!(
+        exe.exists(),
+        "comb binary not found at {} — build layout changed?",
+        exe.display()
+    );
+    exe
+}
+
 /// `comb check daemon` with an unreachable socket exits 2 and prints a FAIL line.
 /// Redirect via BEACHCOMBER_SOCKET so `resolve_socket_path` finds a path with no daemon.
 #[test]
 fn check_daemon_unreachable_exits_two() {
     let tmp = tempfile::TempDir::new().unwrap();
 
-    // Find the `comb` binary next to the test runner.
-    let exe = std::env::current_exe()
-        .expect("current_exe")
-        .parent()
-        .expect("parent dir")
-        .join("comb");
-
-    if !exe.exists() {
-        // Binary not built yet (e.g. running with `cargo test --no-run`). Skip.
-        return;
-    }
+    let exe = comb_binary();
 
     let output = std::process::Command::new(&exe)
         // Point BEACHCOMBER_SOCKET at a temp path with no daemon behind it.
@@ -588,14 +599,7 @@ fn check_daemon_reports_watch_backend() {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("beachcomber").join("sock");
 
-    let exe = std::env::current_exe()
-        .expect("current_exe")
-        .parent()
-        .expect("parent dir")
-        .join("comb");
-    if !exe.exists() {
-        return;
-    }
+    let exe = comb_binary();
 
     let mut daemon = std::process::Command::new(&exe)
         .args(["daemon", "--exit-with-parent", "--socket"])
@@ -769,21 +773,7 @@ async fn env_override_daemon_does_not_arm_reaper() {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("override.sock");
 
-    // Test binaries live in target/debug/deps/; the comb bin is one level up.
-    let mut bin_dir = std::env::current_exe()
-        .expect("current_exe")
-        .parent()
-        .expect("parent dir")
-        .to_path_buf();
-    if bin_dir.ends_with("deps") {
-        bin_dir.pop();
-    }
-    let exe = bin_dir.join("comb");
-    assert!(
-        exe.exists(),
-        "comb binary not found at {} — build layout changed?",
-        exe.display()
-    );
+    let exe = comb_binary();
 
     let mut daemon = std::process::Command::new(&exe)
         .env("BEACHCOMBER_SOCKET", &sock)
@@ -815,4 +805,37 @@ async fn env_override_daemon_does_not_arm_reaper() {
         Some(false),
         "env-override daemon must not arm the reaper; payload: {data}"
     );
+}
+
+/// Regression: a daemon whose bind fails (here: socket path over SUN_LEN) must
+/// EXIT, not linger. Previously `scheduler_task.await` blocked forever after a
+/// server error and the process ignored SIGTERM (roadmap 2026-07-23 finding).
+#[test]
+fn daemon_exits_when_bind_fails() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    // Build a path comfortably past the 104-byte unix-socket limit.
+    let long = "x".repeat(120);
+    let sock = tmp.path().join(long).join("sock");
+
+    let exe = comb_binary();
+    let mut daemon = std::process::Command::new(&exe)
+        .args(["daemon", "--socket"])
+        .arg(&sock)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match daemon.try_wait().expect("try_wait") {
+            Some(_) => break, // exited — the regression is fixed
+            None if std::time::Instant::now() > deadline => {
+                let _ = daemon.kill();
+                let _ = daemon.wait();
+                panic!("daemon lingered past 10s after bind failure");
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    }
 }
