@@ -308,6 +308,9 @@ pub struct SweepReport {
     /// Reaper visibility self-test at this sweep: PID 1 present in the raw
     /// enumeration (canon §"Reaper visibility self-test").
     pub pid1_visible: bool,
+    /// Reaped orphans whose corpse files (socket + pid files) were removed
+    /// (canon §"Corpse cleanup", invariant 14).
+    pub corpses_unlinked: u32,
 }
 
 impl SweepReport {
@@ -359,6 +362,7 @@ impl ReaperHealth {
 pub fn reap_sweep_with(
     table: &dyn crate::boundaries::proc_table::ProcessTable,
     kill: &dyn Fn(u32) -> std::io::Result<()>,
+    cleanup: &dyn Fn(&Path) -> bool,
     ctx: &policy::ReapContext,
 ) -> SweepReport {
     let mut report = SweepReport {
@@ -382,6 +386,12 @@ pub fn reap_sweep_with(
                             "reaped orphan daemon"
                         );
                         report.reaped.push(candidate.pid);
+                        // Corpse cleanup (canon §"Corpse cleanup"): remove the
+                        // dead orphan's socket + pid files so existence-probing
+                        // clients cannot re-latch onto the path.
+                        if !socket.as_os_str().is_empty() && cleanup(&socket) {
+                            report.corpses_unlinked += 1;
+                        }
                     }
                     Err(e) => {
                         if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -409,15 +419,50 @@ pub fn reap_sweep_with(
         kill_denied = report.kill_denied,
         kill_failed = report.kill_failed,
         pid1_visible = report.pid1_visible,
+        corpses_unlinked = report.corpses_unlinked,
         "reap sweep summary"
     );
 
     report
 }
 
+/// Remove a reaped orphan's corpse files: the socket itself and the sibling
+/// `pid` / `daemon.pid` files. Probes first and NEVER unlinks a serving
+/// socket — a racing respawn that re-bound the path between kill and cleanup
+/// keeps its socket (canon §"Corpse cleanup", invariant 14). Returns true if
+/// anything was removed.
+pub fn cleanup_orphan_corpse(
+    probe: &dyn crate::boundaries::socket::SocketProbe,
+    socket: &Path,
+) -> bool {
+    if probe.is_serving(socket) {
+        tracing::info!(socket = %socket.display(), "corpse cleanup skipped: socket is serving again");
+        return false;
+    }
+    let mut removed = false;
+    for path in [
+        socket.to_path_buf(),
+        socket.with_file_name("pid"),
+        socket.with_file_name("daemon.pid"),
+    ] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed = true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "corpse cleanup failed: {e}");
+            }
+        }
+    }
+    if removed {
+        tracing::info!(socket = %socket.display(), "removed reaped orphan's corpse files");
+    }
+    removed
+}
+
 /// Production reap sweep: real process table, `supersede_existing` kill
-/// semantics (SIGTERM, 1s grace, SIGKILL; already-dead is Ok). Called by the
-/// canonical daemon on entering Running and hourly thereafter.
+/// semantics (SIGTERM, 1s grace, SIGKILL; already-dead is Ok), corpse cleanup
+/// with a real serving probe. Called by the reaping daemon on entering
+/// Running and hourly thereafter.
 pub fn reap_sweep(our_socket: &Path) -> SweepReport {
     let ctx = policy::ReapContext {
         our_pid: std::process::id(),
@@ -427,6 +472,7 @@ pub fn reap_sweep(our_socket: &Path) -> SweepReport {
     reap_sweep_with(
         &crate::boundaries::proc_table::RealProcessTable,
         &|pid| supersede_existing(pid, Duration::from_secs(1)),
+        &|socket| cleanup_orphan_corpse(&crate::boundaries::socket::RealSocketProbe, socket),
         &ctx,
     )
 }

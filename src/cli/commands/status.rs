@@ -21,9 +21,10 @@ pub fn run_status(
     color_arg: &str,
     ascii: bool,
 ) -> ExitCode {
-    let socket_path = config.resolve_socket_path();
+    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
+    let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
-    if let Err(e) = crate::daemon::ensure_daemon(&socket_path) {
+    if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
         eprintln!("Failed to start daemon: {e}");
         return ExitCode::from(2);
     }

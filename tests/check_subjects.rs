@@ -759,3 +759,60 @@ async fn introspect_daemon_reaper_healthy_surfaces_pass_verdict() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn env_override_daemon_does_not_arm_reaper() {
+    // Canon singleton.md §"Who reaps": reaper resolution ignores
+    // $BEACHCOMBER_SOCKET, so a daemon bound via the env override is a side
+    // daemon — introspect must report reaper.armed == false. This is the
+    // fratricide guard: two daemons of one uid never both hold the reaper role.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("override.sock");
+
+    // Test binaries live in target/debug/deps/; the comb bin is one level up.
+    let mut bin_dir = std::env::current_exe()
+        .expect("current_exe")
+        .parent()
+        .expect("parent dir")
+        .to_path_buf();
+    if bin_dir.ends_with("deps") {
+        bin_dir.pop();
+    }
+    let exe = bin_dir.join("comb");
+    assert!(
+        exe.exists(),
+        "comb binary not found at {} — build layout changed?",
+        exe.display()
+    );
+
+    let mut daemon = std::process::Command::new(&exe)
+        .env("BEACHCOMBER_SOCKET", &sock)
+        .args(["daemon", "--exit-with-parent", "--socket"])
+        .arg(&sock)
+        .spawn()
+        .expect("spawn daemon");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !sock.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(sock.exists(), "daemon never bound socket");
+
+    let client = Client::new(sock.clone());
+    let resp = client
+        .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
+        .await
+        .expect("introspect request");
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+
+    assert!(resp.ok, "introspect failed: {:?}", resp.error);
+    let data = resp.data.expect("payload");
+    let armed = data.pointer("/reaper/armed").and_then(|v| v.as_bool());
+    assert_eq!(
+        armed,
+        Some(false),
+        "env-override daemon must not arm the reaper; payload: {data}"
+    );
+}

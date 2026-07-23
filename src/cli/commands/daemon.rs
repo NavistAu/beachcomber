@@ -148,15 +148,20 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
             }
         }
 
-        // Orphan reaping — canonical daemon only (canon §"Orphan reaping").
-        // Canonicality: our bound socket equals our own env-free resolution.
-        // The interval's first tick fires immediately (startup sweep), then
+        // Orphan reaping — reaping daemon only (canon §"Who reaps"). The
+        // reaper role is decided against the ENV-FREE resolution (config →
+        // default, ignoring --socket and $BEACHCOMBER_SOCKET): env is
+        // per-process, and honoring it here lets two daemons of one uid each
+        // self-assess "canonical" and reap each other (fratricide). The
+        // interval's first tick fires immediately (startup sweep), then
         // hourly. Sweeps run on the blocking pool: the process walk and the
         // SIGTERM grace waits are synchronous. Reaper health is surfaced via
         // introspect/status/check (canon invariant 13).
         let reaper_health = std::sync::Arc::new(crate::singleton::ReaperHealth::default());
-        if crate::singleton::policy::is_canonical_daemon(&socket_path, &config.resolve_socket_path())
-        {
+        if crate::singleton::policy::is_canonical_daemon(
+            &socket_path,
+            &config.resolve_reaper_socket_path(),
+        ) {
             use std::sync::atomic::Ordering::Relaxed;
             reaper_health.armed.store(true, Relaxed);
 
