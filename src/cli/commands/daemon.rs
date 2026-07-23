@@ -152,11 +152,31 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
         // Canonicality: our bound socket equals our own env-free resolution.
         // The interval's first tick fires immediately (startup sweep), then
         // hourly. Sweeps run on the blocking pool: the process walk and the
-        // SIGTERM grace waits are synchronous.
+        // SIGTERM grace waits are synchronous. Reaper health is surfaced via
+        // introspect/status/check (canon invariant 13).
+        let reaper_health = std::sync::Arc::new(crate::singleton::ReaperHealth::default());
         if crate::singleton::policy::is_canonical_daemon(&socket_path, &config.resolve_socket_path())
         {
+            use std::sync::atomic::Ordering::Relaxed;
+            reaper_health.armed.store(true, Relaxed);
+
+            // Visibility self-test at arming (canon §"Reaper visibility
+            // self-test") — warn once here, not per sweep.
+            {
+                use crate::boundaries::proc_table::{ProcessTable, RealProcessTable};
+                let visible = RealProcessTable.pid1_visible();
+                reaper_health.visibility_ok.store(visible, Relaxed);
+                if !visible {
+                    tracing::warn!(
+                        "reaper visibility degraded: PID 1 not visible in process enumeration — \
+                         this daemon runs confined and cannot police daemons outside its confinement"
+                    );
+                }
+            }
+
             let reap_socket = socket_path.clone();
             let reap_cancel = cancel.clone();
+            let reap_health = reaper_health.clone();
             tokio::spawn(async move {
                 let mut interval =
                     tokio::time::interval(std::time::Duration::from_secs(60 * 60));
@@ -165,17 +185,25 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
                         _ = reap_cancel.cancelled() => break,
                         _ = interval.tick() => {
                             let sock = reap_socket.clone();
-                            let _ = tokio::task::spawn_blocking(move || {
+                            if let Ok(report) = tokio::task::spawn_blocking(move || {
                                 crate::singleton::reap_sweep(&sock)
                             })
-                            .await;
+                            .await
+                            {
+                                reap_health.record_sweep(&report);
+                            }
                         }
                     }
                 }
             });
         }
 
-        let handle = crate::daemon::start_in_process_with_cancel(socket_path, config, cancel);
+        let handle = crate::daemon::start_in_process_with_reaper(
+            socket_path,
+            config,
+            cancel,
+            Some(reaper_health),
+        );
         handle.await.ok();
     });
 

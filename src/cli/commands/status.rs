@@ -76,25 +76,47 @@ pub fn run_status(
                     let out = render_preset(preset, &rows, &opts);
                     print!("{out}");
 
-                    // Canon singleton.md invariant 12: watch degradation is
-                    // observable via `comb status`. Human preset only, and on
-                    // stderr so machine formats stay parseable.
+                    // Canon singleton.md invariants 12 + 13: watch and reaper
+                    // degradation are observable via `comb status`. Human
+                    // preset only, and on stderr so machine formats stay
+                    // parseable.
                     if preset == "human"
                         && let Ok(resp) = client
                             .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
                             .await
                         && resp.ok
-                        && let Some(backend) = resp
-                            .data
-                            .as_ref()
-                            .and_then(|d| d.get("watch_backend"))
-                            .and_then(|v| v.as_str())
-                        && backend != "native"
+                        && let Some(data) = resp.data.as_ref()
                     {
                         let glyph = if ascii { "!" } else { "⚠" };
-                        eprintln!(
-                            "{glyph} watch backend: {backend} — kernel fs events undelivered; watch invalidation degraded"
-                        );
+                        if let Some(backend) = data.get("watch_backend").and_then(|v| v.as_str())
+                            && backend != "native"
+                        {
+                            eprintln!(
+                                "{glyph} watch backend: {backend} — kernel fs events undelivered; watch invalidation degraded"
+                            );
+                        }
+                        if let Some(reaper) = data.get("reaper").filter(|r| !r.is_null()) {
+                            let armed = reaper
+                                .get("armed")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let confined = reaper.get("visibility").and_then(|v| v.as_str())
+                                == Some("confined");
+                            let denied = reaper
+                                .get("kill_denied")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            if armed && confined {
+                                eprintln!(
+                                    "{glyph} reaper visibility degraded: daemon runs confined — orphan daemons outside its view are not policed"
+                                );
+                            }
+                            if armed && denied > 0 {
+                                eprintln!(
+                                    "{glyph} reaper: {denied} kill attempt(s) denied by the OS"
+                                );
+                            }
+                        }
                     }
                     ExitCode::SUCCESS
                 } else {

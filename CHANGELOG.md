@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **`comb daemon --no-reap`** — marks a deliberate, supervised, non-canonical daemon exempt from reaping.
 - **Poll-guaranteed self-supervision.** The daemon's binary self-watch gains a 5s mtime poll alongside the fs-event watch. An fs-event stream can be created without error and then deliver nothing (sandboxed CI hosts, a degraded `fseventsd`); with an event-only watch such daemons outlived every rebuild indefinitely. The poll bounds staleness at one interval regardless of backend health.
 - **Watch self-test.** At startup the daemon probes whether kernel fs events actually deliver (2s timeout, concurrent with the scheduler loop — no startup latency). If not, provider file-watching falls back to a polling backend (1s scan), and the degradation is surfaced via `comb check daemon` (WARN verdict), `comb status` (stderr warning), and a new `watch_backend` field in the daemon introspect payload.
+- **Reaper visibility self-test.** The canonical daemon probes whether its process enumeration plausibly spans the system (PID 1 present in the raw listing) at reaper arming and on every sweep. A confined view (e.g. a daemon auto-spawned from a sandboxed client shell inherits the sandbox's process-visibility limits) is surfaced via `comb check daemon` (WARN verdict), `comb status` (stderr warning), and a new `reaper` object in the daemon introspect payload (`armed`, `visibility`, `sweeps`, `reaped`, `kill_denied`); sweeps continue reaping whatever is visible. Reap kills denied by the OS (EPERM) are counted and surfaced the same way (`docs/canon/singleton.md` §"Reaper visibility self-test", invariant 13).
+- **Per-sweep reap summary log.** Every reap sweep logs a debug-level summary — rows enumerated, candidates, exemption tallies by rule, reaped pids, denied/failed kills — so a sweep that found nothing eligible is distinguishable from one that could not see anything.
+
+### Fixed
+
+- **Sandbox-blind orphan reaping (macOS).** The reaper's pid list now comes from `sysctl KERN_PROC_ALL` instead of libproc's `proc_listallpids`, which seatbelt sandbox profiles silently filter to the session's own processes (observed: 51 of 737 pids). A canonical daemon that happened to be respawned from a sandboxed client shell could never see — and therefore never reaped — orphan daemons from other sessions; the 2026-07-16 investigation found one such orphan surviving 19 hours across ~19 sweeps with clean logs.
 
 ### Changed
 

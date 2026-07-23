@@ -46,12 +46,28 @@ pub fn start_in_process_with_cancel(
     config: Config,
     cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
+    start_in_process_with_reaper(socket_path, config, cancel, None)
+}
+
+/// Daemon-path variant: also attaches reaper health for introspect surfacing
+/// (canon singleton.md invariant 13).
+pub fn start_in_process_with_reaper(
+    socket_path: PathBuf,
+    config: Config,
+    cancel: CancellationToken,
+    reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        run_daemon_with_cancel(socket_path, config, cancel).await;
+        run_daemon_with_cancel(socket_path, config, cancel, reaper).await;
     })
 }
 
-async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: CancellationToken) {
+async fn run_daemon_with_cancel(
+    socket_path: PathBuf,
+    config: Config,
+    cancel: CancellationToken,
+    reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
+) {
     // Load env file before anything else — providers need these vars
     let env_count = config.load_env_file();
     if env_count > 0 {
@@ -107,7 +123,7 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
     // Start watchdog if configured.
     let watchdog_task = spawn_watchdog(&config, heartbeat, cancel.clone());
 
-    let server = Server::new_with_config(
+    let mut server = Server::new_with_config(
         socket_path,
         cache,
         registry,
@@ -115,6 +131,9 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
         watchers,
         config.clone(),
     );
+    if let Some(health) = reaper {
+        server = server.with_reaper_health(health);
+    }
 
     tokio::select! {
         result = server.run() => {

@@ -287,18 +287,90 @@ pub fn acquire_or_supersede_with(
 /// Grace age below which a candidate is never reaped (canon: 60s).
 pub const REAP_GRACE_AGE_SECS: u64 = 60;
 
+/// Outcome of one reap sweep. Feeds the canon-mandated per-sweep summary log
+/// and the reaper health counters (canon singleton.md invariant 13): a sweep
+/// that found nothing eligible must be distinguishable from a sweep that
+/// could not see anything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SweepReport {
+    /// Uid-owned rows the process table returned.
+    pub rows_enumerated: usize,
+    /// Rows matching `comb daemon` argv (exemption rules apply to these).
+    pub candidates: usize,
+    /// Exemption tallies by matched rule, insertion-ordered.
+    pub exemptions: Vec<(&'static str, usize)>,
+    /// Pids successfully reaped.
+    pub reaped: Vec<u32>,
+    /// Kill attempts denied by the OS (EPERM — degraded signal capability).
+    pub kill_denied: u32,
+    /// Kill attempts failing for any other reason.
+    pub kill_failed: u32,
+    /// Reaper visibility self-test at this sweep: PID 1 present in the raw
+    /// enumeration (canon §"Reaper visibility self-test").
+    pub pid1_visible: bool,
+}
+
+impl SweepReport {
+    fn tally(&mut self, rule: &'static str) {
+        match self.exemptions.iter_mut().find(|(r, _)| *r == rule) {
+            Some((_, n)) => *n += 1,
+            None => self.exemptions.push((rule, 1)),
+        }
+    }
+}
+
+/// Shared reaper health state — written by the canonical daemon's reap loop,
+/// read by the server's introspect handler. Backs canon singleton.md
+/// invariant 13 ("reaper capability is never silently degraded"): the
+/// visibility self-test verdict and OS-denied kill counts are observable via
+/// `comb check daemon`, `comb status`, and introspect `reaper`.
+#[derive(Debug, Default)]
+pub struct ReaperHealth {
+    /// True once the reap loop is armed (canonical daemon only). Side daemons
+    /// and embedded/test servers never arm; their introspect reports reflect that.
+    pub armed: std::sync::atomic::AtomicBool,
+    /// Most recent visibility self-test verdict (PID 1 present in raw
+    /// enumeration). Only meaningful once `armed`.
+    pub visibility_ok: std::sync::atomic::AtomicBool,
+    pub sweeps_total: std::sync::atomic::AtomicU64,
+    pub reaped_total: std::sync::atomic::AtomicU64,
+    /// Reap kills denied by the OS (EPERM) — degraded signal capability.
+    pub kill_denied_total: std::sync::atomic::AtomicU64,
+}
+
+impl ReaperHealth {
+    /// Fold one sweep's outcome into the counters.
+    pub fn record_sweep(&self, report: &SweepReport) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.sweeps_total.fetch_add(1, Relaxed);
+        self.reaped_total
+            .fetch_add(report.reaped.len() as u64, Relaxed);
+        self.kill_denied_total
+            .fetch_add(u64::from(report.kill_denied), Relaxed);
+        self.visibility_ok.store(report.pid1_visible, Relaxed);
+    }
+}
+
 /// Run one reap sweep with injected boundaries. For each uid-owned process,
 /// `decide_reap` applies the canon exemption rules; orphans are killed via
-/// `kill` (SIGTERM → 1s grace → SIGKILL in production). Returns reaped pids.
+/// `kill` (SIGTERM → 1s grace → SIGKILL in production). Evaluates the
+/// visibility self-test and logs the canon-mandated per-sweep summary at
+/// debug level. Returns the full report.
 pub fn reap_sweep_with(
     table: &dyn crate::boundaries::proc_table::ProcessTable,
     kill: &dyn Fn(u32) -> std::io::Result<()>,
     ctx: &policy::ReapContext,
-) -> Vec<u32> {
-    let mut reaped = Vec::new();
+) -> SweepReport {
+    let mut report = SweepReport {
+        pid1_visible: table.pid1_visible(),
+        ..SweepReport::default()
+    };
+
     for candidate in table.list_own() {
+        report.rows_enumerated += 1;
         match policy::decide_reap(&candidate, ctx) {
             policy::ReapDecision::Reap => {
+                report.candidates += 1;
                 let exe = candidate.argv.first().map(String::as_str).unwrap_or("?");
                 let socket = policy::socket_arg(&candidate.argv).unwrap_or_default();
                 match kill(candidate.pid) {
@@ -309,23 +381,44 @@ pub fn reap_sweep_with(
                             socket = %socket.display(),
                             "reaped orphan daemon"
                         );
-                        reaped.push(candidate.pid);
+                        report.reaped.push(candidate.pid);
                     }
                     Err(e) => {
+                        if e.kind() == std::io::ErrorKind::PermissionDenied {
+                            report.kill_denied += 1;
+                        } else {
+                            report.kill_failed += 1;
+                        }
                         tracing::warn!(pid = candidate.pid, exe, "failed to reap orphan: {e}");
                     }
                 }
             }
-            policy::ReapDecision::Exempt(_) => {}
+            policy::ReapDecision::Exempt("not a comb daemon") => {}
+            policy::ReapDecision::Exempt(rule) => {
+                report.candidates += 1;
+                report.tally(rule);
+            }
         }
     }
-    reaped
+
+    tracing::debug!(
+        rows = report.rows_enumerated,
+        candidates = report.candidates,
+        exemptions = ?report.exemptions,
+        reaped = ?report.reaped,
+        kill_denied = report.kill_denied,
+        kill_failed = report.kill_failed,
+        pid1_visible = report.pid1_visible,
+        "reap sweep summary"
+    );
+
+    report
 }
 
 /// Production reap sweep: real process table, `supersede_existing` kill
 /// semantics (SIGTERM, 1s grace, SIGKILL; already-dead is Ok). Called by the
 /// canonical daemon on entering Running and hourly thereafter.
-pub fn reap_sweep(our_socket: &Path) -> Vec<u32> {
+pub fn reap_sweep(our_socket: &Path) -> SweepReport {
     let ctx = policy::ReapContext {
         our_pid: std::process::id(),
         our_socket: our_socket.to_path_buf(),
