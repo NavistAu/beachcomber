@@ -55,6 +55,15 @@ const SOURCE_KNOB_KEYS: &[&str] = &[
     "poll_secs",
 ];
 
+/// Which resolution step supplied a socket path
+/// (canon singleton.md §"Canonical socket path resolution").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketPathSource {
+    ConfigOverride,
+    EnvVar,
+    Default,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
@@ -1424,16 +1433,23 @@ impl Config {
     }
 
     pub fn resolve_socket_path(&self) -> PathBuf {
+        self.resolve_socket_path_with_source().0
+    }
+
+    /// Full canonical resolution, also reporting which step supplied the path.
+    /// Auto-spawn uses the source to flag `$BEACHCOMBER_SOCKET`-derived daemons
+    /// `--no-reap` (canon singleton.md §"Env-override spawns are flagged").
+    pub fn resolve_socket_path_with_source(&self) -> (PathBuf, SocketPathSource) {
         // 1. Config-file override (highest priority)
         if let Some(ref path) = self.daemon.socket_path {
-            return PathBuf::from(path);
+            return (PathBuf::from(path), SocketPathSource::ConfigOverride);
         }
 
         // 2. BEACHCOMBER_SOCKET env var
         if let Some(env_path) = std::env::var_os("BEACHCOMBER_SOCKET") {
             let p = std::path::PathBuf::from(env_path);
             if !p.as_os_str().is_empty() {
-                return p;
+                return (p, SocketPathSource::EnvVar);
             }
         }
 
@@ -1441,6 +1457,22 @@ impl Config {
         // (TMPDIR, XDG_RUNTIME_DIR): singleton enforcement is per-socket-path,
         // so session-scoped inputs yield one daemon per session, not per user.
         // See docs/canon/singleton.md §"Canonical socket path resolution".
+        (Self::default_socket_path(), SocketPathSource::Default)
+    }
+
+    /// Env-free resolution backing the reaper role (canon singleton.md §"Who
+    /// reaps"): config override → per-user default. `$BEACHCOMBER_SOCKET` is
+    /// deliberately excluded — it is per-process, and honoring it here would
+    /// let two daemons of one uid each self-assess "canonical" and reap each
+    /// other (fratricide).
+    pub fn resolve_reaper_socket_path(&self) -> PathBuf {
+        if let Some(ref path) = self.daemon.socket_path {
+            return PathBuf::from(path);
+        }
+        Self::default_socket_path()
+    }
+
+    fn default_socket_path() -> PathBuf {
         let uid = unsafe { libc::getuid() };
         PathBuf::from("/tmp")
             .join(format!("beachcomber-{uid}"))

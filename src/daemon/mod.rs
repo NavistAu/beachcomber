@@ -208,7 +208,9 @@ fn spawn_watchdog(
 // ---------------------------------------------------------------------------
 
 /// Fork a daemon process. Called by `RealDaemonSpawner::fork_daemon`.
-pub fn fork_daemon(binary_path: &str, socket_path: &Path) -> std::io::Result<()> {
+/// `no_reap` appends `--no-reap` for `$BEACHCOMBER_SOCKET`-derived spawns
+/// (canon singleton.md §"Env-override spawns are flagged").
+pub fn fork_daemon(binary_path: &str, socket_path: &Path, no_reap: bool) -> std::io::Result<()> {
     use std::process::Command;
 
     let pid_path = pid_path_for_socket(socket_path);
@@ -232,10 +234,14 @@ pub fn fork_daemon(binary_path: &str, socket_path: &Path) -> std::io::Result<()>
             std::fs::File::open("/dev/null").unwrap()
         });
 
-    let child = Command::new(binary_path)
-        .arg("daemon")
+    let mut cmd = Command::new(binary_path);
+    cmd.arg("daemon")
         .arg("--socket")
-        .arg(socket_path.as_os_str())
+        .arg(socket_path.as_os_str());
+    if no_reap {
+        cmd.arg("--no-reap");
+    }
+    let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::from(log_file))
@@ -274,24 +280,31 @@ pub fn wait_for_daemon(socket_path: &Path, max_attempts: u32) -> bool {
 
 /// Ensure the daemon is running at `socket_path`.
 ///
-/// If not running, forks it and waits up to 8 attempts for the socket to appear.
-/// This is the backwards-compatible entry point; it uses `RealDaemonSpawner`.
-pub fn ensure_daemon(socket_path: &Path) -> std::io::Result<()> {
-    ensure_daemon_with(&RealDaemonSpawner, socket_path)
+/// If not running, forks it and waits up to 8 attempts for the socket to
+/// appear. `no_reap` must be true when `socket_path` was resolved from
+/// `$BEACHCOMBER_SOCKET` (`SocketPathSource::EnvVar`) so the forked daemon is
+/// flagged exempt from reaping (canon singleton.md §"Env-override spawns are
+/// flagged").
+pub fn ensure_daemon(socket_path: &Path, no_reap: bool) -> std::io::Result<()> {
+    ensure_daemon_with(&RealDaemonSpawner, socket_path, no_reap)
 }
 
 /// Injection-point variant of `ensure_daemon` — accepts any `DaemonSpawner`.
 ///
 /// Useful for tests: pass a `MockDaemonSpawner` to assert fork/wait behaviour
 /// without touching the filesystem.
-pub fn ensure_daemon_with(spawner: &dyn DaemonSpawner, socket_path: &Path) -> std::io::Result<()> {
+pub fn ensure_daemon_with(
+    spawner: &dyn DaemonSpawner,
+    socket_path: &Path,
+    no_reap: bool,
+) -> std::io::Result<()> {
     if !lifecycle::needs_fork(is_daemon_running(socket_path)) {
         return Ok(());
     }
 
     let binary = std::env::current_exe()?.to_string_lossy().to_string();
 
-    spawner.fork_daemon(&binary, socket_path)?;
+    spawner.fork_daemon(&binary, socket_path, no_reap)?;
 
     if !spawner.wait_for_socket(socket_path, 8) {
         return Err(std::io::Error::new(

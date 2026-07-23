@@ -18,7 +18,8 @@ use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 
 pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
-    let socket_path = config.resolve_socket_path();
+    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
+    let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
     let vf = VirtualFields::with_config_overrides(config.virtual_fields());
 
     // Discover every (provider, field) ref in the template (all tags, all refs).
@@ -100,7 +101,7 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
     let daemon_data: HashMap<String, serde_json::Value> = if daemon_refs.is_empty() {
         HashMap::new()
     } else {
-        if let Err(e) = crate::daemon::ensure_daemon(&socket_path) {
+        if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
             eprintln!("Failed to start daemon: {e}");
             return ExitCode::from(2);
         }

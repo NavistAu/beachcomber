@@ -562,7 +562,7 @@ fn reap_sweep_kills_only_orphans() {
         Ok(())
     };
 
-    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &|_| false, &reap_ctx());
     assert_eq!(report.reaped, vec![200]);
     assert_eq!(*killed.borrow(), vec![200]);
 }
@@ -588,7 +588,7 @@ fn reap_sweep_continues_past_kill_failures() {
         }
     };
 
-    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &|_| false, &reap_ctx());
     assert_eq!(*attempts.borrow(), vec![200, 300], "both orphans attempted");
     assert_eq!(
         report.reaped,
@@ -617,7 +617,7 @@ fn sweep_report_tallies_rows_candidates_and_exemptions() {
     ]);
     let kill = |_pid: u32| Ok(());
 
-    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &|_| false, &reap_ctx());
     assert_eq!(report.rows_enumerated, 6);
     assert_eq!(report.candidates, 5, "non-daemon rows are not candidates");
     assert_eq!(report.reaped, vec![200]);
@@ -652,7 +652,7 @@ fn sweep_report_classifies_denied_and_failed_kills() {
         _ => Ok(()),
     };
 
-    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &|_| false, &reap_ctx());
     assert_eq!(report.kill_denied, 1, "EPERM counted as denied");
     assert_eq!(report.kill_failed, 1, "non-EPERM counted as failed");
     assert_eq!(report.reaped, vec![400]);
@@ -674,7 +674,7 @@ fn sweep_report_surfaces_confined_visibility_but_still_reaps() {
         Ok(())
     };
 
-    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &reap_ctx());
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &|_| false, &reap_ctx());
     assert!(!report.pid1_visible, "confinement reported");
     assert_eq!(
         report.reaped,
@@ -712,4 +712,149 @@ fn reaper_health_record_sweep_accumulates() {
     };
     health.record_sweep(&confined);
     assert!(!health.visibility_ok.load(Relaxed));
+}
+
+// --- Corpse cleanup (canon §"Corpse cleanup", invariant 14) ---
+
+#[test]
+fn reap_sweep_calls_cleanup_with_orphan_socket_and_counts() {
+    use std::cell::RefCell;
+
+    let table = FakeTable::new(vec![daemon_proc(
+        200,
+        1,
+        3600,
+        &["--socket", "/tmp/.tmpA/sock"],
+    )]);
+    let kill = |_pid: u32| Ok(());
+    let cleaned: RefCell<Vec<std::path::PathBuf>> = RefCell::new(Vec::new());
+    let cleanup = |socket: &std::path::Path| {
+        cleaned.borrow_mut().push(socket.to_path_buf());
+        true
+    };
+
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &cleanup, &reap_ctx());
+    assert_eq!(
+        *cleaned.borrow(),
+        vec![std::path::PathBuf::from("/tmp/.tmpA/sock")],
+        "cleanup runs against the reaped orphan's socket"
+    );
+    assert_eq!(report.corpses_unlinked, 1);
+}
+
+#[test]
+fn reap_sweep_skips_cleanup_when_kill_fails() {
+    use std::cell::RefCell;
+
+    let table = FakeTable::new(vec![daemon_proc(
+        200,
+        1,
+        3600,
+        &["--socket", "/tmp/.tmpA/sock"],
+    )]);
+    let kill = |_pid: u32| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "no",
+        ))
+    };
+    let cleanup_called = RefCell::new(false);
+    let cleanup = |_: &std::path::Path| {
+        *cleanup_called.borrow_mut() = true;
+        true
+    };
+
+    let report = beachcomber::singleton::reap_sweep_with(&table, &kill, &cleanup, &reap_ctx());
+    assert!(
+        !*cleanup_called.borrow(),
+        "no cleanup for a process that was not killed"
+    );
+    assert_eq!(report.corpses_unlinked, 0);
+}
+
+struct FakeProbe(bool);
+impl beachcomber::boundaries::socket::SocketProbe for FakeProbe {
+    fn is_serving(&self, _socket: &std::path::Path) -> bool {
+        self.0
+    }
+}
+
+#[test]
+fn cleanup_orphan_corpse_removes_socket_and_pid_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("sock");
+    std::fs::write(&sock, b"").unwrap();
+    std::fs::write(tmp.path().join("pid"), b"{}").unwrap();
+    std::fs::write(tmp.path().join("daemon.pid"), b"123").unwrap();
+
+    let removed = beachcomber::singleton::cleanup_orphan_corpse(&FakeProbe(false), &sock);
+    assert!(removed);
+    assert!(!sock.exists(), "socket corpse removed");
+    assert!(!tmp.path().join("pid").exists(), "pid file removed");
+    assert!(
+        !tmp.path().join("daemon.pid").exists(),
+        "daemon.pid removed"
+    );
+}
+
+#[test]
+fn cleanup_orphan_corpse_never_unlinks_serving_socket() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("sock");
+    std::fs::write(&sock, b"").unwrap();
+    std::fs::write(tmp.path().join("pid"), b"{}").unwrap();
+
+    let removed = beachcomber::singleton::cleanup_orphan_corpse(&FakeProbe(true), &sock);
+    assert!(!removed);
+    assert!(sock.exists(), "serving socket must be left in place");
+    assert!(tmp.path().join("pid").exists(), "pid file left in place");
+}
+
+// --- Reaper-role resolution ignores $BEACHCOMBER_SOCKET (canon §"Who reaps") ---
+
+#[test]
+fn reaper_resolution_ignores_beachcomber_socket_env() {
+    let cfg = Config::default();
+    let path = temp_env::with_vars(
+        [("BEACHCOMBER_SOCKET", Some("/custom/override/sock"))],
+        || cfg.resolve_reaper_socket_path(),
+    );
+    let s = path.to_string_lossy();
+    assert!(
+        s.starts_with("/tmp/beachcomber-") && s.ends_with("/sock"),
+        "reaper resolution must ignore env override, got {s}"
+    );
+}
+
+#[test]
+fn reaper_resolution_honors_config_override() {
+    let mut cfg = Config::default();
+    cfg.daemon.socket_path = Some("/etc/comb/sock".into());
+    assert_eq!(
+        cfg.resolve_reaper_socket_path(),
+        PathBuf::from("/etc/comb/sock")
+    );
+}
+
+#[test]
+fn resolve_socket_path_reports_source() {
+    use beachcomber::config::SocketPathSource;
+
+    let mut cfg = Config::default();
+    cfg.daemon.socket_path = Some("/etc/comb/sock".into());
+    assert_eq!(
+        cfg.resolve_socket_path_with_source().1,
+        SocketPathSource::ConfigOverride
+    );
+
+    let cfg = Config::default();
+    let (_, source) = temp_env::with_vars([("BEACHCOMBER_SOCKET", Some("/custom/sock"))], || {
+        cfg.resolve_socket_path_with_source()
+    });
+    assert_eq!(source, SocketPathSource::EnvVar);
+
+    let (_, source) = temp_env::with_vars([("BEACHCOMBER_SOCKET", None::<&str>)], || {
+        cfg.resolve_socket_path_with_source()
+    });
+    assert_eq!(source, SocketPathSource::Default);
 }

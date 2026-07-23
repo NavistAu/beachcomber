@@ -380,7 +380,8 @@ pub fn run_get(
     force: bool,
     wait: bool,
 ) -> ExitCode {
-    let socket_path = config.resolve_socket_path();
+    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
+    let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
     // Build the virtual field registry once, config overrides win over built-in defaults.
     let vf = VirtualFields::with_config_overrides(config.virtual_fields());
@@ -402,7 +403,9 @@ pub fn run_get(
     if !is_single_virtual_with_daemon_refs {
         // Original path: ensure_daemon upfront if any key needs it.
         let any_needs_daemon = keys.iter().any(|k| key_needs_daemon(k, &vf));
-        if any_needs_daemon && let Err(e) = crate::daemon::ensure_daemon(&socket_path) {
+        if any_needs_daemon
+            && let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap)
+        {
             eprintln!("Failed to start daemon: {e}");
             return ExitCode::from(2);
         }
@@ -445,7 +448,7 @@ pub fn run_get(
                     }
 
                     // Env term was empty — now we need the daemon. Ensure it's running.
-                    if let Err(e) = crate::daemon::ensure_daemon(&socket_path) {
+                    if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
                         eprintln!("Failed to start daemon: {e}");
                         return ExitCode::from(2);
                     }
