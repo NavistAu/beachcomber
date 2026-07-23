@@ -10,8 +10,9 @@
 |---|---|
 | **Singleton** | The invariant that at most one beachcomber daemon process runs per `<uid>` at any time, with brief transition windows during supersession explicitly excluded. |
 | **Canonical socket path** | The Unix socket path a client connects to and a starting daemon binds. Resolution is identical across macOS and Linux given identical env state. |
-| **Canonical daemon** | A daemon whose bound socket equals its own resolution of the canonical socket path, computed ignoring any `--socket` override. Canonicality is a property of the socket path, not the binary: every process can compute it for itself, and because resolution consults no session-scoped environment, all processes of one uid (under one config) agree on it. |
-| **Side daemon** | A daemon bound to any other socket (explicit `--socket`, or an env/config override differing from the reaper's). Test daemons, foreground debug runs, supervised custom deployments. A side daemon never reaps. |
+| **Canonical daemon** | A daemon whose bound socket equals its own resolution of the canonical socket path, computed ignoring any `--socket` override. This is the daemon clients reach under that environment. |
+| **Reaping daemon** | The daemon whose bound socket equals the **env-free** resolution (config override → `/tmp/beachcomber-<uid>/sock`, ignoring both `--socket` and `$BEACHCOMBER_SOCKET`). Only it reaps. The distinction matters because `$BEACHCOMBER_SOCKET` is per-process: two daemons under divergent env would each self-assess "canonical" and reap each other (see §"Orphan reaping"). The config-file override stays in the reaper resolution — it is per-user-stable, so all processes of one uid agree on it. |
+| **Side daemon** | A daemon bound to any other socket (explicit `--socket`, or an env override differing from the env-free resolution). Test daemons, foreground debug runs, supervised custom deployments. A side daemon never reaps. |
 | **Orphan** | A uid-owned `comb daemon` process that is not on the reaper's socket path, has been reparented to PID 1, carries neither `--exit-with-parent` nor `--no-reap`, and is older than the reap grace age. Orphans are unreachable dead weight: nothing resolves their socket, and nothing will ever supersede them. |
 | **Reaping** | The canonical daemon terminating orphans (SIGTERM, 1s grace, SIGKILL) — at startup and on an hourly sweep. |
 | **Reaper visibility self-test** | A probe verifying process enumeration plausibly spans the whole system: PID 1 (launchd/init) must appear in the raw enumeration. Failure means the daemon is confined (sandbox, `hidepid`) and can neither see nor police daemons outside its confinement; the degradation is surfaced, never silent. |
@@ -115,7 +116,11 @@ The grace window preserves the concurrent-start race (Example 2): the losing pro
 
 The singleton property is per-user, but enforcement through the flock alone is per-socket-path: a daemon on a socket nothing resolves to is invisible to startup contention and lives forever by default. Orphans arise from dev flows — test harnesses SIGKILLed before their daemons (predating `--exit-with-parent`), worktree builds whose binaries were deleted, sandbox-spawned daemons whose event-driven self-supervision never fired. The canonical daemon closes this gap by reaping.
 
-**Who reaps.** Only the canonical daemon. Every daemon determines this for itself at startup: it resolves the canonical socket path (config → `$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock`, ignoring its `--socket` CLI override) and compares it to the socket it actually bound. Equal → canonical; it reaps. Different → side daemon; it never signals any process outside its own socket path's contention domain.
+**Who reaps.** Only the reaping daemon. Every daemon determines this for itself at startup: it resolves the **env-free** canonical socket path (config override → `/tmp/beachcomber-<uid>/sock`, ignoring both its `--socket` CLI override **and** `$BEACHCOMBER_SOCKET`) and compares it to the socket it actually bound. Equal → it reaps. Different → side daemon; it never signals any process outside its own socket path's contention domain.
+
+`$BEACHCOMBER_SOCKET` is excluded because it is per-process: a daemon auto-spawned under the override resolves *itself* as canonical while the default-path daemon does too, and each would classify the other as an unflagged PPID-1 orphan — mutual reaping on alternating sweeps (fratricide). With env excluded, at most one daemon per uid (under one config) can ever hold the reaper role. The corollary is accepted and documented: an environment where *every* client is pointed at an override socket runs no reaper at all.
+
+**Env-override spawns are flagged.** When auto-spawn (`ensure_daemon` in the CLI, `auto_start` in `libbeachcomber`) resolves the socket path from `$BEACHCOMBER_SOCKET`, it appends `--no-reap` to the daemon it forks. A deliberate override daemon thereby expresses its supervised status without user action, and the reaping daemon's exemption rule 3 spares it. Spawns resolving from config or the default are not flagged.
 
 **When.** Once on entering Running, then hourly.
 
@@ -127,7 +132,9 @@ The singleton property is per-user, but enforcement through the flock alone is p
 4. still parented (PPID ≠ 1) — an attended foreground run under a live shell;
 5. younger than 60s — never race a daemon mid-startup.
 
-What remains — orphaned, unattended, unflagged daemons on sockets nothing resolves — receives SIGTERM, 1s grace, then SIGKILL. Each reap is logged with pid, exe, and socket path. Additionally, **every sweep logs a summary** (debug level): rows enumerated, `comb daemon` candidates, exemption tallies by rule, and reaped pids — so a sweep that found nothing eligible is distinguishable from a sweep that could not see anything, without an instrumented build.
+What remains — orphaned, unattended, unflagged daemons on sockets nothing resolves — receives SIGTERM, 1s grace, then SIGKILL. Each reap is logged with pid, exe, and socket path.
+
+**Corpse cleanup.** After a reaped orphan's death, its socket file and sibling pid files (`pid`, `daemon.pid`) are removed. A corpse socket is a trap: clients with existence-probing discovery (pre-0.6.1 resolution rules) latch onto the dead path and respawn a daemon there on the next query — the mechanism that kept one orphan path continuously resurrected for four months. Cleanup probes the socket first and **never unlinks a serving socket**: if a racing respawn bound the path between kill and cleanup, the live daemon keeps its socket (and is itself subject to the next sweep's rules). Additionally, **every sweep logs a summary** (debug level): rows enumerated, `comb daemon` candidates, exemption tallies by rule, and reaped pids — so a sweep that found nothing eligible is distinguishable from a sweep that could not see anything, without an instrumented build.
 
 The exemptions make deliberate side daemons expressible instead of heuristically guessed: alive parent means attended, `--exit-with-parent` means self-cleaning, `--no-reap` means opted out. A daemon fitting none of these is unreachable dead weight by construction.
 
@@ -314,10 +321,11 @@ sequenceDiagram
 7. The daemon's binary on disk being modified causes the daemon to shut down — within `200ms (debounce) + drain time` when the fs-event watch is live, and within `5s (poll interval) + drain time` regardless of fs-event backend health. Next client invocation respawns from the new binary.
 8. Clients tolerate up to ~1.75s of socket-unavailable through retry. Connection errors surfacing past that point indicate genuine daemon-down conditions.
 9. Connect retry only fires on initial `connect()` failure. Mid-request socket errors propagate immediately to the caller.
-10. Only the canonical daemon reaps. A side daemon never signals a process outside its own socket path's contention domain.
-11. A reaped process is never: the reaper, a process on the reaper's socket path, a process with a live parent, a process carrying `--exit-with-parent` or `--no-reap`, or a process younger than the reap grace age.
+10. Only the reaping daemon (bound socket == env-free resolution: config → default, ignoring `--socket` and `$BEACHCOMBER_SOCKET`) reaps. A side daemon never signals a process outside its own socket path's contention domain. Two daemons of one uid never reap each other.
+11. A reaped process is never: the reaper, a process on the reaper's socket path, a process with a live parent, a process carrying `--exit-with-parent` or `--no-reap`, or a process younger than the reap grace age. Auto-spawn appends `--no-reap` whenever the spawn path was resolved from `$BEACHCOMBER_SOCKET`.
 12. Provider file-watching is never silently dead: the watch self-test either confirms event delivery or flips to the polling backend, and the degradation is observable via `comb check daemon` and `comb status`.
 13. Reaper capability is never silently degraded: the visibility self-test (PID 1 present in raw enumeration) runs at arming and on every sweep, kill attempts denied by the OS are counted, and both are observable via `comb check daemon`, `comb status`, and introspect `reaper`. Every sweep leaves a log trace (summary at debug; reaps at info; failures at warn).
+14. Reaping leaves no corpse: after a reaped orphan's confirmed death, its socket and pid files are removed — unless the socket is serving again, which is never unlinked.
 
 ## Parameters
 
@@ -525,9 +533,37 @@ Feature: Daemon singleton
     Then the daemon is not signalled
 
   Scenario: Side daemon never reaps
-    Given a daemon bound to a socket that differs from its own canonical resolution
+    Given a daemon bound to a socket that differs from its own env-free canonical resolution
     When its reap schedule would fire
     Then it enumerates no processes and signals nothing
+
+  Scenario: Env-override daemon does not claim the reaper role
+    Given BEACHCOMBER_SOCKET is set to "/custom/sock"
+    And a daemon is bound to "/custom/sock"
+    When the daemon evaluates the reaper role
+    Then it is a side daemon and never reaps
+    Because reaper resolution ignores BEACHCOMBER_SOCKET
+
+  Scenario: Auto-spawn flags env-override daemons no-reap
+    Given BEACHCOMBER_SOCKET is set to "/custom/sock"
+    When ensure_daemon or libbeachcomber auto-start forks a daemon
+    Then the forked argv contains --no-reap
+    And the reaping daemon's sweep exempts it (rule 3)
+
+  Scenario: Auto-spawn does not flag default-path daemons
+    Given BEACHCOMBER_SOCKET is unset and no config override exists
+    When ensure_daemon forks a daemon at the default path
+    Then the forked argv does not contain --no-reap
+
+  Scenario: Reap removes the orphan's corpse files
+    Given a reap-eligible orphan with a socket file and sibling pid files
+    When the sweep reaps it and death is confirmed
+    Then the orphan's socket file and pid files no longer exist
+
+  Scenario: A serving socket is never unlinked by corpse cleanup
+    Given a reaped orphan's socket path was re-bound by a new daemon before cleanup
+    When corpse cleanup probes the socket
+    Then the socket file is left in place
 
   Scenario: Confined enumeration is detected and surfaced
     Given process enumeration whose raw view does not contain PID 1

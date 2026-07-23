@@ -1081,17 +1081,32 @@ fn start_daemon(socket_path: &Path) -> Result<(), CombError> {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    Command::new(&comb)
-        .arg("daemon")
+    let mut cmd = Command::new(&comb);
+    cmd.arg("daemon")
         .arg("--socket")
-        .arg(socket_path.as_os_str())
-        .stdin(std::process::Stdio::null())
+        .arg(socket_path.as_os_str());
+    // A spawn whose path came from $BEACHCOMBER_SOCKET is a deliberate
+    // override daemon: flag it --no-reap so the reaping daemon spares it
+    // (canon singleton.md §"Env-override spawns are flagged").
+    if socket_path_is_env_override(socket_path) {
+        cmd.arg("--no-reap");
+    }
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(CombError::ConnectionFailed)?;
 
     Ok(())
+}
+
+/// True when `socket_path` matches the value of `$BEACHCOMBER_SOCKET` — i.e.
+/// the path being spawned at was supplied by the env override rather than the
+/// per-user default.
+fn socket_path_is_env_override(socket_path: &Path) -> bool {
+    std::env::var_os("BEACHCOMBER_SOCKET")
+        .filter(|v| !v.is_empty())
+        .is_some_and(|v| Path::new(&v) == socket_path)
 }
 
 fn which_comb() -> Option<PathBuf> {
