@@ -1070,9 +1070,26 @@ pub fn socket_path() -> PathBuf {
         .join("sock")
 }
 
+/// Maximum usable unix socket path length in bytes, exclusive (`sun_path` is
+/// 104 bytes on macOS, 108 on Linux; conservative bound used on both).
+const MAX_SOCKET_PATH_BYTES: usize = 104;
+
 /// Attempt to start the comb daemon via socket activation.
 fn start_daemon(socket_path: &Path) -> Result<(), CombError> {
     use std::process::Command;
+
+    // Pre-flight: a path the kernel cannot bind (SUN_LEN) would fork a daemon
+    // doomed to fail; surface the real cause instead of a spawn timeout.
+    if socket_path.as_os_str().len() >= MAX_SOCKET_PATH_BYTES {
+        return Err(CombError::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "socket path is {} bytes; unix sockets are limited to {} (SUN_LEN)",
+                socket_path.as_os_str().len(),
+                MAX_SOCKET_PATH_BYTES
+            ),
+        )));
+    }
 
     // Find comb binary
     let comb = which_comb().ok_or(CombError::DaemonNotRunning)?;

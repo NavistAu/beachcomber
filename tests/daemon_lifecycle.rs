@@ -196,3 +196,19 @@ fn ensure_daemon_threads_no_reap_flag_to_fork() {
         "no_reap=true must reach fork_daemon"
     );
 }
+
+/// Pre-flight SUN_LEN guard: a socket path the kernel cannot bind is rejected
+/// before forking a doomed daemon.
+#[test]
+fn ensure_daemon_rejects_overlong_socket_path_without_forking() {
+    let long = format!("/tmp/{}/sock", "x".repeat(120));
+    let (spawner, fork_called, _wait) = RecordingSpawner::new(true);
+
+    let result = ensure_daemon_with(&spawner, Path::new(&long), false);
+    let err = result.expect_err("overlong path must be rejected");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        !fork_called.load(Ordering::SeqCst),
+        "must not fork a daemon doomed to fail bind"
+    );
+}
