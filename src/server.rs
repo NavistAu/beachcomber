@@ -889,24 +889,8 @@ async fn handle_request(
             };
 
             // Convert JSON object fields to provider Value map.
-            let mut fields: HashMap<String, crate::provider::Value> = HashMap::new();
-            for (field_key, field_val) in obj {
-                let value = match field_val {
-                    serde_json::Value::String(s) => crate::provider::Value::String(s.clone()),
-                    serde_json::Value::Bool(b) => crate::provider::Value::Bool(*b),
-                    serde_json::Value::Number(n) => {
-                        if let Some(i) = n.as_i64() {
-                            crate::provider::Value::Int(i)
-                        } else if let Some(f) = n.as_f64() {
-                            crate::provider::Value::Float(f)
-                        } else {
-                            crate::provider::Value::String(n.to_string())
-                        }
-                    }
-                    other => crate::provider::Value::String(other.to_string()),
-                };
-                fields.insert(field_key.clone(), value);
-            }
+            let fields: HashMap<String, crate::provider::Value> =
+                crate::provider::SourceResult::from_json_object(obj).fields;
 
             // Parse optional TTL.
             let interval_secs = ttl

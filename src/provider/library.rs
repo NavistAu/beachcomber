@@ -3,7 +3,7 @@ use crate::config::{ExternalSourceConfig, ScriptProviderConfig};
 use crate::provider::script::build_source_meta_from_external;
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope,
 };
 use std::sync::{Arc, OnceLock};
 use tracing::{debug, warn};
@@ -527,23 +527,5 @@ fn parse_json_result(json_str: &str) -> Option<SourceResult> {
     let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
     let obj = parsed.as_object()?;
 
-    let mut result = SourceResult::new();
-    for (key, val) in obj {
-        let value = match val {
-            serde_json::Value::String(s) => Value::String(s.clone()),
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Value::Int(i)
-                } else if let Some(f) = n.as_f64() {
-                    Value::Float(f)
-                } else {
-                    Value::String(n.to_string())
-                }
-            }
-            serde_json::Value::Bool(b) => Value::Bool(*b),
-            other => Value::String(other.to_string()),
-        };
-        result.insert(key.clone(), value);
-    }
-    Some(result)
+    Some(SourceResult::from_json_object(obj))
 }

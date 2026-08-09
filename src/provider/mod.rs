@@ -42,7 +42,66 @@ pub enum Value {
     Object(HashMap<String, Value>),
 }
 
+/// Maximum nesting depth preserved when converting JSON into [`Value`].
+///
+/// Beyond this, a subtree is stored as its JSON text rather than dropped, so no
+/// data is lost — it just stops being addressable by path. The bound exists
+/// because provider output is untrusted input and recursion is unbounded
+/// otherwise.
+pub const MAX_JSON_DEPTH: usize = 10;
+
 impl Value {
+    /// The single conversion from `serde_json::Value` into a provider [`Value`].
+    ///
+    /// Every ingestion path — `put`, script, http, library — goes through this.
+    /// Do not pattern-match `serde_json::Value` to build a `Value` anywhere else;
+    /// four copies of that match previously existed and all four failed to
+    /// recurse, so nested objects were silently stringified despite
+    /// `docs/canon/field_resolution.md` invariant 12 promising depth-independent
+    /// addressing.
+    ///
+    /// Objects become [`Value::Object`]. Arrays become [`Value::Object`] keyed by
+    /// decimal index, matching how array segments are already addressed by path
+    /// elsewhere. Null becomes an empty string. Depth is capped at
+    /// [`MAX_JSON_DEPTH`].
+    pub fn from_json(value: &serde_json::Value) -> Value {
+        Self::from_json_at(value, 0)
+    }
+
+    fn from_json_at(value: &serde_json::Value, depth: usize) -> Value {
+        match value {
+            serde_json::Value::String(s) => Value::String(s.clone()),
+            serde_json::Value::Bool(b) => Value::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Int(i)
+                } else if let Some(f) = n.as_f64() {
+                    Value::Float(f)
+                } else {
+                    Value::String(n.to_string())
+                }
+            }
+            serde_json::Value::Null => Value::String(String::new()),
+            serde_json::Value::Object(_) | serde_json::Value::Array(_)
+                if depth >= MAX_JSON_DEPTH =>
+            {
+                Value::String(value.to_string())
+            }
+            serde_json::Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), Self::from_json_at(v, depth + 1)))
+                    .collect(),
+            ),
+            serde_json::Value::Array(items) => Value::Object(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| (i.to_string(), Self::from_json_at(v, depth + 1)))
+                    .collect(),
+            ),
+        }
+    }
+
     pub fn as_text(&self) -> String {
         match self {
             Value::String(s) => s.clone(),
@@ -300,6 +359,19 @@ impl SourceResult {
     }
     pub fn insert(&mut self, key: impl Into<String>, value: Value) {
         self.fields.insert(key.into(), value);
+    }
+
+    /// Build a result from a JSON object's top-level keys, converting each value
+    /// through [`Value::from_json`].
+    ///
+    /// This is the shared body of every "provider emitted a JSON object" path.
+    /// Use it rather than looping and converting at each call site.
+    pub fn from_json_object(map: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let mut result = Self::new();
+        for (key, val) in map {
+            result.insert(key.clone(), Value::from_json(val));
+        }
+        result
     }
 }
 

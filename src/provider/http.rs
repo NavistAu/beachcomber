@@ -311,46 +311,18 @@ fn extract_json_path(json: &serde_json::Value, path: &str) -> serde_json::Value 
 }
 
 fn json_to_source_result(value: &serde_json::Value) -> Option<SourceResult> {
-    let mut result = SourceResult::new();
-
-    match value {
-        serde_json::Value::Object(map) => {
-            for (key, val) in map {
-                let v = match val {
-                    serde_json::Value::String(s) => Value::String(s.clone()),
-                    serde_json::Value::Number(n) => {
-                        if let Some(i) = n.as_i64() {
-                            Value::Int(i)
-                        } else if let Some(f) = n.as_f64() {
-                            Value::Float(f)
-                        } else {
-                            Value::String(n.to_string())
-                        }
-                    }
-                    serde_json::Value::Bool(b) => Value::Bool(*b),
-                    other => Value::String(other.to_string()),
-                };
-                result.insert(key.clone(), v);
-            }
-        }
-        serde_json::Value::String(s) => {
-            result.insert("value", Value::String(s.clone()));
-        }
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                result.insert("value", Value::Int(i));
-            } else if let Some(f) = n.as_f64() {
-                result.insert("value", Value::Float(f));
-            }
-        }
-        serde_json::Value::Bool(b) => {
-            result.insert("value", Value::Bool(*b));
-        }
+    // Only the outer dispatch is http-specific: an object's keys become fields,
+    // anything else becomes a single `value` field, and null yields no result.
+    // The value conversion itself is Value::from_json for every branch.
+    let result = match value {
+        serde_json::Value::Object(map) => SourceResult::from_json_object(map),
         serde_json::Value::Null => return None,
-        serde_json::Value::Array(_) => {
-            result.insert("value", Value::String(value.to_string()));
+        scalar_or_array => {
+            let mut r = SourceResult::new();
+            r.insert("value", Value::from_json(scalar_or_array));
+            r
         }
-    }
+    };
 
     if result.fields.is_empty() {
         return None;
