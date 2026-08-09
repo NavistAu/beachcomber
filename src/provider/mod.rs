@@ -120,6 +120,34 @@ impl Value {
     }
 }
 
+/// The single dotted-path walk over a provider's field map.
+///
+/// Every caller that resolves `provider.field.sub…` against a `HashMap<String,
+/// Value>` goes through this — `ProviderResult::get_path`, the cache's
+/// `get_field`, and the server's source-field lookup. Three copies of this walk
+/// previously existed with different depth behaviour.
+///
+/// Tries `path` as a literal field name first, so a provider declaring a field
+/// with a dot in its name still resolves. Otherwise splits on the first `.` and
+/// walks into nested [`Value::Object`]s for as many segments as the path has.
+///
+/// Returns `None` if a segment is absent, or if the walk lands on a non-Object
+/// before the path is consumed.
+pub fn lookup_path<'a>(fields: &'a HashMap<String, Value>, path: &str) -> Option<&'a Value> {
+    if let Some(v) = fields.get(path) {
+        return Some(v);
+    }
+    let (head, rest) = path.split_once('.')?;
+    let mut current = fields.get(head)?;
+    for segment in rest.split('.') {
+        match current {
+            Value::Object(map) => current = map.get(segment)?,
+            _ => return None,
+        }
+    }
+    Some(current)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderResult {
     pub fields: HashMap<String, Value>,
@@ -149,20 +177,7 @@ impl ProviderResult {
     /// `Value::Object({"rust": "1.94.0", "cargo-nextest": "0.9.133"})`,
     /// `get_path("project.rust")` returns `Some(Value::String("1.94.0"))`.
     pub fn get_path(&self, path: &str) -> Option<&Value> {
-        if let Some(v) = self.fields.get(path) {
-            return Some(v);
-        }
-        let (head, rest) = path.split_once('.')?;
-        let mut current = self.fields.get(head)?;
-        for segment in rest.split('.') {
-            match current {
-                Value::Object(map) => {
-                    current = map.get(segment)?;
-                }
-                _ => return None,
-            }
-        }
-        Some(current)
+        lookup_path(&self.fields, path)
     }
 
     pub fn to_json(&self) -> serde_json::Value {

@@ -1,0 +1,21 @@
+{
+  "name": "get_nested_path_walks_into_subtree",
+  "description": "A dotted path addresses a node below the field level, per field_resolution.md invariant 12.",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "fixture_deep",
+        "data": {
+          "widget": { "inner": { "leaf": "found" } }
+        }
+      }
+    }
+  ],
+  "test": { "op": "get", "args": { "key": "fixture_deep.widget.inner.leaf" } },
+  "expect": {
+    "status": "hit",
+    "data_type": "string",
+    "data_equals": "found"
+  }
+}

@@ -676,20 +676,22 @@ async fn handle_request(
                         hit = cache.get_source(provider, effective_path.as_deref(), source);
                     }
                     match hit {
-                        Some(src_entry) => match src_entry.fields.get(field.as_str()) {
-                            Some(value) => {
-                                let age_ms = src_entry.age_ms();
-                                let stale = src_entry.is_stale();
-                                let data =
-                                    serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-                                (true, Response::ok(data, age_ms, stale))
+                        Some(src_entry) => {
+                            match crate::provider::lookup_path(&src_entry.fields, field.as_str()) {
+                                Some(value) => {
+                                    let age_ms = src_entry.age_ms();
+                                    let stale = src_entry.is_stale();
+                                    let data = serde_json::to_value(value)
+                                        .unwrap_or(serde_json::Value::Null);
+                                    (true, Response::ok(data, age_ms, stale))
+                                }
+                                None => {
+                                    return Response::error(format!(
+                                        "unknown field: {provider}.{source}.{field}"
+                                    ));
+                                }
                             }
-                            None => {
-                                return Response::error(format!(
-                                    "unknown field: {provider}.{source}.{field}"
-                                ));
-                            }
-                        },
+                        }
                         None => (false, Response::miss()),
                     }
                 }

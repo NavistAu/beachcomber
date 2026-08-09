@@ -47,6 +47,9 @@ pub enum KeyParse {
 pub fn parse_key(key: &str, registry: &ProviderRegistry) -> KeyParse {
     let parts: Vec<&str> = key.split('.').collect();
     match parts.as_slice() {
+        // `split` always yields at least one element, so this is unreachable in
+        // practice; kept because the match is otherwise non-exhaustive.
+        [] => KeyParse::Provider(String::new()),
         [p] => KeyParse::Provider(p.to_string()),
         [p, x] => {
             if registry.source(p, x).is_some() {
@@ -55,16 +58,21 @@ pub fn parse_key(key: &str, registry: &ProviderRegistry) -> KeyParse {
                 KeyParse::Field(p.to_string(), x.to_string())
             }
         }
-        [p, s, f] => {
+        [p, s, rest @ ..] => {
+            // Three or more segments. `rest` is at least one segment, and may be
+            // a nested sub-path of arbitrary depth — `provider.field.a.b.c` is a
+            // legitimate address once a field's value is a nested Object
+            // (field_resolution.md invariant 12). Both branches carry the whole
+            // remainder as a dotted path; `provider::lookup_path` walks it.
+            let sub_path = rest.join(".");
             if registry.source(p, s).is_some() {
-                KeyParse::SourceField(p.to_string(), s.to_string(), f.to_string())
+                KeyParse::SourceField(p.to_string(), s.to_string(), sub_path)
             } else {
-                // s is a field name whose value is an Object; f is a sub-key.
-                // Encode the nested path as "s.f" in the Field variant.
-                KeyParse::Field(p.to_string(), format!("{s}.{f}"))
+                // s is a field name whose value is an Object; rest addresses
+                // within it.
+                KeyParse::Field(p.to_string(), format!("{s}.{sub_path}"))
             }
         }
-        _ => KeyParse::Provider(key.to_string()),
     }
 }
 
