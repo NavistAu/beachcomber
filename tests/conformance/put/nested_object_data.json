@@ -1,0 +1,22 @@
+{
+  "name": "put_nested_object_data_preserves_depth",
+  "description": "Put with a nested object payload stores the subtree as structure, not as stringified JSON.",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "fixture_nested",
+        "data": {
+          "flat": "top",
+          "widget": { "kind": "renderable", "min_width": 8 }
+        }
+      }
+    }
+  ],
+  "test": { "op": "get", "args": { "key": "fixture_nested.widget" } },
+  "expect": {
+    "status": "hit",
+    "data_type": "object",
+    "data_field_equals": { "field": "kind", "value": "renderable" }
+  }
+}

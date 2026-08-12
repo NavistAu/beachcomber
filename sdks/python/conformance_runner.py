@@ -99,7 +99,7 @@ class DaemonProcess:
 
         with open(self._log_path, "wb") as log:
             self._proc = subprocess.Popen(
-                [self._comb_bin, "daemon", "--config", self._config_path],
+                [self._comb_bin, "daemon", "--socket", self.socket_path],
                 stdout=log,
                 stderr=log,
                 env=env,
