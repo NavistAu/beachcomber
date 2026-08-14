@@ -1613,10 +1613,14 @@ fn format_data(format: &Format, response: &Response) -> String {
                             }
                         })
                         .collect();
-                    lines.sort();
-                    let mut out = lines.join("\n");
-                    out.push_str("\n\n");
-                    out
+                    if lines.is_empty() {
+                        "\n".to_string()
+                    } else {
+                        lines.sort();
+                        let mut out = lines.join("\n");
+                        out.push_str("\n\n");
+                        out
+                    }
                 }
                 Some(serde_json::Value::Null) | None => "\n".to_string(),
                 Some(other) => format!("{other}\n\n"),
@@ -1658,10 +1662,14 @@ fn format_data(format: &Format, response: &Response) -> String {
                             }
                         })
                         .collect();
-                    lines.sort();
-                    let mut out = lines.join("\n");
-                    out.push_str("\n\n");
-                    out
+                    if lines.is_empty() {
+                        "\n".to_string()
+                    } else {
+                        lines.sort();
+                        let mut out = lines.join("\n");
+                        out.push_str("\n\n");
+                        out
+                    }
                 }
                 Some(serde_json::Value::Null) | None => "\n".to_string(),
                 Some(other) => format!("{other}\n\n"),

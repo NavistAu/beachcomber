@@ -592,3 +592,84 @@ async fn text_format_object_field_emits_subkey_equals_value_lines() {
 
     handle.abort();
 }
+
+/// Format::Text on an empty-object field (e.g. `put(key, {})`) must terminate
+/// with a single blank line, matching the Null branch: zero content lines,
+/// one terminator. If the Object branch ever forgets an `is_empty` guard, it
+/// emits an extra stray "\n" that a one-shot connection swallows silently but
+/// a persistent session leaves unread — desyncing the framing of whatever
+/// request comes next on that same connection. This test exercises exactly
+/// that: two requests over one connection, asserting the *second* response
+/// is unaffected by the first.
+#[tokio::test]
+async fn text_format_empty_object_does_not_desync_persistent_session() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+
+    // Reproduces `put(key, {})`: an empty-fields virtual entry.
+    cache.put_source("emptytest", None, "virtual", HashMap::new(), None);
+    registry.register_virtual("emptytest");
+
+    // A second, unrelated entry with real data, to detect desync on the next read.
+    let mut fields = HashMap::new();
+    fields.insert("val".to_string(), Value::String("marker".to_string()));
+    cache.put_source("secondtest", None, "virtual", fields, None);
+    registry.register_virtual("secondtest");
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    // First request on the persistent connection: get the empty object as text.
+    let request = r#"{"op": "get", "key": "emptytest", "format": "text"}"#;
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut first_lines = String::new();
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await.unwrap();
+        if n == 0 || line == "\n" {
+            break;
+        }
+        first_lines.push_str(&line);
+    }
+    assert_eq!(
+        first_lines, "",
+        "empty object should emit zero content lines, got: {first_lines:?}"
+    );
+
+    // Second request on the SAME connection and the SAME reader — reusing
+    // `reader` (rather than extracting the inner stream) matters: a stray
+    // unread byte lives in the BufReader's internal buffer, and pulling out
+    // the inner stream via `into_inner()` would discard it, silently
+    // "fixing" the desync the test exists to catch. BufReader forwards
+    // writes straight through to the inner stream, so writing on `reader`
+    // is equivalent to writing on `stream` directly.
+    let request = r#"{"op": "get", "key": "secondtest.val", "format": "text"}"#;
+    reader
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+
+    let mut second_lines = String::new();
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await.unwrap();
+        if n == 0 || line == "\n" {
+            break;
+        }
+        second_lines.push_str(&line);
+    }
+    assert_eq!(
+        second_lines, "marker\n",
+        "second response on the same session must not be desynced by a stray \
+         byte left over from the first, got: {second_lines:?}"
+    );
+
+    handle.abort();
+}
