@@ -64,8 +64,10 @@ long-lived process.
 
 ### Consequences
 
-* Good, because resolution, protocol and type mapping exist once, so cross-SDK
-  drift becomes structurally impossible rather than fixture-policed.
+* Good, because resolution, protocol framing and protocol→JSON mapping exist
+  once, so drift in those cannot happen. JSON→language-native mapping remains
+  per-binding and still needs fixtures; the divergence surface narrows to one
+  layer rather than disappearing.
 * Good, because claude-scanline links the client directly and gets resolution
   in-process with no per-render subprocess.
 * Good, because the daemon continues never to see a caller's environment or cwd.
