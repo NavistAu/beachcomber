@@ -20,11 +20,11 @@ async fn setup() -> (TempDir, std::path::PathBuf) {
     (tmp, sock)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn client_hello_returns_protocol_version() {
     let (_tmp, sock) = setup().await;
     let client = Client::new(sock);
-    let response = client.hello().await.expect("hello should succeed");
+    let response = client.hello().expect("hello should succeed");
     assert!(response.ok, "hello response ok=true, got {response:?}");
     let data = response.data.expect("hello response must have data");
     assert_eq!(
@@ -38,12 +38,12 @@ async fn client_hello_returns_protocol_version() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn session_hello_works_on_persistent_connection() {
     let (_tmp, sock) = setup().await;
     let client = Client::new(sock);
-    let mut session = client.connect().await.expect("connect");
-    let response = session.hello().await.expect("session.hello should succeed");
+    let mut session = client.connect().expect("connect");
+    let response = session.hello().expect("session.hello should succeed");
     assert!(response.ok);
     assert!(response.data.is_some());
 }

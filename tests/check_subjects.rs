@@ -15,7 +15,7 @@ async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<(
     (tmp, client, handle)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_daemon_returns_expected_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
@@ -24,7 +24,6 @@ async fn introspect_daemon_returns_expected_fields() {
             "op": "introspect",
             "subject": "daemon"
         }))
-        .await
         .expect("request succeeded");
 
     assert!(resp.ok, "error: {:?}", resp.error);
@@ -92,13 +91,12 @@ async fn introspect_daemon_returns_expected_fields() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_providers_lists_catalog_with_scope_and_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "providers"}))
-        .await
         .expect("providers introspect");
     assert!(resp.ok, "error: {:?}", resp.error);
     let data = resp.data.expect("payload present");
@@ -144,13 +142,12 @@ async fn introspect_providers_lists_catalog_with_scope_and_fields() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_config_reports_path_and_parse_status() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "config"}))
-        .await
         .unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
@@ -169,13 +166,12 @@ async fn introspect_config_reports_path_and_parse_status() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_cache_reports_totals_and_stale_ratio() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "cache"}))
-        .await
         .unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
@@ -193,13 +189,12 @@ async fn introspect_cache_reports_totals_and_stale_ratio() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_lifecycle_returns_list_and_verdicts() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "lifecycle"}))
-        .await
         .unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
@@ -230,13 +225,12 @@ async fn introspect_lifecycle_returns_list_and_verdicts() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_watches_returns_paths_and_verdicts() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "watches"}))
-        .await
         .unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
@@ -267,13 +261,12 @@ async fn introspect_watches_returns_paths_and_verdicts() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_timers_returns_timers_and_verdicts() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "timers"}))
-        .await
         .unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
@@ -304,13 +297,12 @@ async fn introspect_timers_returns_timers_and_verdicts() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_demand_returns_active_keys() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "demand"}))
-        .await
         .unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
@@ -342,7 +334,7 @@ async fn introspect_demand_returns_active_keys() {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_procs_returns_sample_structure() {
     let (_tmp, client, handle) = setup_daemon().await;
 
@@ -352,7 +344,6 @@ async fn introspect_procs_returns_sample_structure() {
             "subject": "procs",
             "duration_secs": 1
         }))
-        .await
         .expect("introspect procs request");
 
     // procs may fail in sandboxed environments; accept either ok or a recognisable error.
@@ -414,7 +405,7 @@ async fn introspect_procs_returns_sample_structure() {
 
 /// All eight fast subjects (excluding procs which requires elevated permissions)
 /// can be queried via the introspect op without error, and each returns verdicts.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn all_subjects_reachable_via_introspect() {
     let (_tmp, client, handle) = setup_daemon().await;
 
@@ -432,7 +423,6 @@ async fn all_subjects_reachable_via_introspect() {
     for subject in subjects {
         let resp = client
             .send_raw(serde_json::json!({"op": "introspect", "subject": subject}))
-            .await
             .unwrap_or_else(|e| panic!("introspect {subject} failed: {e}"));
         assert!(
             resp.ok,
@@ -503,13 +493,12 @@ fn check_daemon_unreachable_exits_two() {
 }
 
 /// Daemon introspect payload contains at least one PASS verdict.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn daemon_introspect_has_pass_verdict() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
-        .await
         .expect("daemon introspect");
 
     assert!(resp.ok, "error: {:?}", resp.error);
@@ -528,13 +517,12 @@ async fn daemon_introspect_has_pass_verdict() {
 }
 
 /// Providers introspect lists at least one provider with all required fields.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn providers_introspect_has_entries_with_required_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "providers"}))
-        .await
         .expect("providers introspect");
 
     assert!(resp.ok, "error: {:?}", resp.error);
@@ -569,13 +557,12 @@ async fn providers_introspect_has_entries_with_required_fields() {
 }
 
 /// Cache stale_ratio is in the valid range [0.0, 1.0].
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn cache_introspect_stale_ratio_coherent() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "cache"}))
-        .await
         .expect("cache introspect");
 
     assert!(resp.ok, "error: {:?}", resp.error);
@@ -636,14 +623,13 @@ fn check_daemon_reports_watch_backend() {
 
 // --- Reaper health surfacing (canon singleton.md invariant 13) ---
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_daemon_reaper_null_when_not_attached() {
     // Embedded/test servers never attach reaper health; the field is null.
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
-        .await
         .expect("request succeeded");
     assert!(resp.ok);
     let data = resp.data.expect("payload");
@@ -655,7 +641,7 @@ async fn introspect_daemon_reaper_null_when_not_attached() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_daemon_reaper_confined_surfaces_warn_verdict() {
     use std::sync::atomic::Ordering::Relaxed;
 
@@ -677,7 +663,6 @@ async fn introspect_daemon_reaper_confined_surfaces_warn_verdict() {
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
-        .await
         .expect("request succeeded");
     assert!(resp.ok);
     let data = resp.data.expect("payload");
@@ -716,7 +701,7 @@ async fn introspect_daemon_reaper_confined_surfaces_warn_verdict() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn introspect_daemon_reaper_healthy_surfaces_pass_verdict() {
     use std::sync::atomic::Ordering::Relaxed;
 
@@ -737,7 +722,6 @@ async fn introspect_daemon_reaper_healthy_surfaces_pass_verdict() {
 
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
-        .await
         .expect("request succeeded");
     assert!(resp.ok);
     let data = resp.data.expect("payload");
@@ -764,7 +748,7 @@ async fn introspect_daemon_reaper_healthy_surfaces_pass_verdict() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn env_override_daemon_does_not_arm_reaper() {
     // Canon singleton.md §"Who reaps": reaper resolution ignores
     // $BEACHCOMBER_SOCKET, so a daemon bound via the env override is a side
@@ -791,7 +775,6 @@ async fn env_override_daemon_does_not_arm_reaper() {
     let client = Client::new(sock.clone());
     let resp = client
         .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
-        .await
         .expect("introspect request");
 
     let _ = daemon.kill();

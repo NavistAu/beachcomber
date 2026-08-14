@@ -105,14 +105,10 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
             eprintln!("Failed to start daemon: {e}");
             return ExitCode::from(2);
         }
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create tokio runtime");
         let socket_path = socket_path.clone();
-        match rt.block_on(async move {
+        match (|| {
             let client = crate::client::Client::new(socket_path);
-            let mut session = match client.connect().await {
+            let mut session = match client.connect() {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -120,7 +116,7 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
                 }
             };
             if let Some(p) = path
-                && let Err(e) = session.set_context(p).await
+                && let Err(e) = session.set_context(p)
             {
                 eprintln!("Error: {e}");
                 return Err(ExitCode::from(2));
@@ -137,7 +133,7 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
                     // Env and Resolved variants are never added to daemon_refs.
                     _ => continue,
                 };
-                match session.get(&key, None).await {
+                match session.get(&key, None) {
                     Ok(resp) => {
                         if let Some(data) = resp.data {
                             dd.insert(store_key, data);
@@ -150,7 +146,7 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
                 }
             }
             Ok(dd)
-        }) {
+        })() {
             Ok(dd) => dd,
             Err(code) => return code,
         }

@@ -80,7 +80,7 @@ fn bench_concurrent_throughput(c: &mut Criterion) {
                                 let client = Client::new(sock);
                                 // Each client does 10 gets.
                                 for _ in 0..10 {
-                                    if let Ok(resp) = client.get("hostname.name", None).await
+                                    if let Ok(resp) = client.get("hostname.name", None)
                                         && resp.ok
                                     {
                                         counter.fetch_add(1, Ordering::Relaxed);

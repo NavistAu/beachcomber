@@ -14,19 +14,18 @@ async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<(
 
 /// put --null clears a cache entry but the virtual provider registration survives,
 /// so a subsequent put under the same key still works.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn put_null_clears_entry_but_keeps_provider() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     // 1. Store a value.
     let resp = client
         .put("nulltest", serde_json::json!({"v": 42}), None, None)
-        .await
         .unwrap();
     assert!(resp.ok, "initial put failed: {:?}", resp.error);
 
     // 2. Verify get returns the value.
-    let resp = client.get("nulltest.v", None).await.unwrap();
+    let resp = client.get("nulltest.v", None).unwrap();
     assert!(resp.ok);
     assert_eq!(
         resp.data.unwrap(),
@@ -35,11 +34,11 @@ async fn put_null_clears_entry_but_keeps_provider() {
     );
 
     // 3. put --null: send a Put request with data=null to clear the cache entry.
-    let resp = client.put_null("nulltest", None, None).await.unwrap();
+    let resp = client.put_null("nulltest", None, None).unwrap();
     assert!(resp.ok, "put_null failed: {:?}", resp.error);
 
     // 4. get should now return miss (no data).
-    let resp = client.get("nulltest.v", None).await.unwrap();
+    let resp = client.get("nulltest.v", None).unwrap();
     assert!(resp.ok, "get after null returned error: {:?}", resp.error);
     assert!(
         resp.data.is_none(),
@@ -50,11 +49,10 @@ async fn put_null_clears_entry_but_keeps_provider() {
     // 5. A subsequent put under the same key still works (registry survives).
     let resp = client
         .put("nulltest", serde_json::json!({"v": 99}), None, None)
-        .await
         .unwrap();
     assert!(resp.ok, "second put failed: {:?}", resp.error);
 
-    let resp = client.get("nulltest.v", None).await.unwrap();
+    let resp = client.get("nulltest.v", None).unwrap();
     assert!(resp.ok);
     assert_eq!(
         resp.data.unwrap(),

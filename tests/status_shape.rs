@@ -519,14 +519,13 @@ async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<(
     (tmp, client, handle)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn status_returns_rows_per_field() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     // Warm up a global provider so at least something is in cache.
     let _ = client
         .send_raw(serde_json::json!({"op": "get", "key": "hostname"}))
-        .await
         .expect("get hostname");
 
     // Give the cache a moment to settle.
@@ -534,7 +533,6 @@ async fn status_returns_rows_per_field() {
 
     let resp = client
         .send_raw(serde_json::json!({"op": "status"}))
-        .await
         .expect("status");
 
     assert!(resp.ok, "status should succeed, error: {:?}", resp.error);
@@ -921,7 +919,7 @@ fn cache_row_new_fields_serde_round_trip() {
     assert!(v.get("decay").is_none(), "old decay field is gone");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn lifecycle_snapshots_message_returns_per_entry_data() {
     use beachcomber::cache::Cache;
     use beachcomber::provider::registry::ProviderRegistry;
@@ -964,7 +962,7 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
     let _ = task.await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn failure_states_message_returns_provider_map() {
     use beachcomber::cache::Cache;
     use beachcomber::provider::registry::ProviderRegistry;
@@ -996,13 +994,12 @@ async fn failure_states_message_returns_provider_map() {
 }
 
 /// Status on a fresh daemon with an empty cache returns an empty array, not an error.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn status_empty_cache_returns_empty_array() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "status"}))
-        .await
         .expect("status");
 
     assert!(
@@ -1018,7 +1015,7 @@ async fn status_empty_cache_returns_empty_array() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn status_response_lifecycle_row_carries_kind_and_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
@@ -1033,7 +1030,6 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     let repo_path = repo.path_str();
     let _ = client
         .send_raw(serde_json::json!({"op": "get", "key": "git", "path": repo_path}))
-        .await
         .expect("get git");
 
     // Give the scheduler time to populate lifecycle state.
@@ -1041,7 +1037,6 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
 
     let resp = client
         .send_raw(serde_json::json!({"op": "status"}))
-        .await
         .expect("status");
     assert!(resp.ok, "status failed: {:?}", resp.error);
     let rows: Vec<CacheRow> =
@@ -1107,7 +1102,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn status_response_once_row_has_kind_once() {
     let (_tmp, client, handle) = setup_daemon().await;
 
@@ -1115,14 +1110,12 @@ async fn status_response_once_row_has_kind_once() {
     // of the old "Once" semantics. It enters the lifecycle map immediately on demand.
     let _ = client
         .send_raw(serde_json::json!({"op": "get", "key": "hostname.short"}))
-        .await
         .expect("get hostname.short");
 
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "status"}))
-        .await
         .expect("status");
     assert!(resp.ok, "status failed: {:?}", resp.error);
     let rows: Vec<CacheRow> =
@@ -1158,21 +1151,19 @@ async fn status_response_once_row_has_kind_once() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn status_response_virtual_row_has_kind_virtual() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     // Store a virtual entry via put.
     let _ = client
         .send_raw(serde_json::json!({"op": "put", "key": "custom", "data": {"color": "blue"}}))
-        .await
         .expect("put custom");
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let resp = client
         .send_raw(serde_json::json!({"op": "status"}))
-        .await
         .expect("status");
     assert!(resp.ok, "status failed: {:?}", resp.error);
     let rows: Vec<CacheRow> =

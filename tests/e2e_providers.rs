@@ -3,7 +3,7 @@ use beachcomber::config::Config;
 use beachcomber::daemon;
 use tempfile::TempDir;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn e2e_all_builtin_providers_registered() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -14,21 +14,21 @@ async fn e2e_all_builtin_providers_registered() {
 
     let client = Client::new(sock);
 
-    let hostname = client.get("hostname", None).await.unwrap();
+    let hostname = client.get("hostname", None).unwrap();
     assert!(
         hostname.ok && hostname.data.is_some(),
         "hostname should be cached"
     );
 
-    let user = client.get("user", None).await.unwrap();
+    let user = client.get("user", None).unwrap();
     assert!(user.ok && user.data.is_some(), "user should be cached");
 
-    let load_refresh = client.refresh("load", None).await.unwrap();
+    let load_refresh = client.refresh("load", None).unwrap();
     assert!(load_refresh.ok, "load refresh should succeed");
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let load = client.get("load", None).await.unwrap();
+    let load = client.get("load", None).unwrap();
     assert!(
         load.ok && load.data.is_some(),
         "load should have data after refresh"
@@ -37,7 +37,7 @@ async fn e2e_all_builtin_providers_registered() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn e2e_script_provider_from_config() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -62,12 +62,12 @@ async fn e2e_script_provider_from_config() {
 
     let client = Client::new(sock);
 
-    let refresh = client.refresh("test_echo", None).await.unwrap();
+    let refresh = client.refresh("test_echo", None).unwrap();
     assert!(refresh.ok, "Refresh script provider should succeed");
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let result = client.get("test_echo.greeting", None).await.unwrap();
+    let result = client.get("test_echo.greeting", None).unwrap();
     assert!(result.ok, "Should get script provider result");
     assert_eq!(result.data.unwrap(), serde_json::json!("hello"));
 

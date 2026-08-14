@@ -36,17 +36,17 @@ async fn fetch_keys(
 ) -> Vec<beachcomber::protocol::Response> {
     let mut results = Vec::new();
     for key in keys {
-        let resp = session.get(key, None).await.unwrap();
+        let resp = session.get(key, None).unwrap();
         results.push(resp);
     }
     results
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_variadic_both_keys_succeed() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let mut session = client.connect().await.unwrap();
+    let mut session = client.connect().unwrap();
 
     let responses = fetch_keys(&mut session, &["hostname.value", "user.value"]).await;
 
@@ -57,15 +57,15 @@ async fn get_variadic_both_keys_succeed() {
     assert_eq!(responses[1].data.as_ref().unwrap(), "alice");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_variadic_partial_failure_still_emits_successful_key() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let mut session = client.connect().await.unwrap();
+    let mut session = client.connect().unwrap();
 
     // "hostname.value" exists; "nonexistent.field" does not.
-    let resp_good = session.get("hostname.value", None).await.unwrap();
-    let resp_bad = session.get("nonexistent.field", None).await.unwrap();
+    let resp_good = session.get("hostname.value", None).unwrap();
+    let resp_bad = session.get("nonexistent.field", None).unwrap();
 
     assert!(resp_good.ok);
     assert_eq!(resp_good.data.as_ref().unwrap(), "myhost");
@@ -82,29 +82,29 @@ async fn get_variadic_partial_failure_still_emits_successful_key() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_variadic_single_key_is_unchanged() {
     // Single-key on a session must behave identically to Client::get.
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock.clone());
 
-    let direct = client.get("hostname.value", None).await.unwrap();
+    let direct = client.get("hostname.value", None).unwrap();
     assert!(direct.ok);
     assert_eq!(direct.data.as_ref().unwrap(), "myhost");
 
     let client2 = Client::new(sock);
-    let mut session = client2.connect().await.unwrap();
-    let via_session = session.get("hostname.value", None).await.unwrap();
+    let mut session = client2.connect().unwrap();
+    let via_session = session.get("hostname.value", None).unwrap();
     assert!(via_session.ok);
     assert_eq!(via_session.data.as_ref().unwrap(), "myhost");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_variadic_json_format_produces_array() {
     // Verify that multiple-key JSON aggregation produces a valid JSON array.
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let mut session = client.connect().await.unwrap();
+    let mut session = client.connect().unwrap();
 
     let responses = fetch_keys(&mut session, &["hostname.value", "user.value"]).await;
 

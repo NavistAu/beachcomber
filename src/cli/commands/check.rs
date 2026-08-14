@@ -70,19 +70,11 @@ pub fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode 
         Some(CheckCommands::Procs { duration }) => (vec!["procs"], Some(*duration)),
     };
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to create tokio runtime");
-    let worst = rt.block_on(run_check_subjects(config, &subjects, procs_duration));
+    let worst = run_check_subjects(config, &subjects, procs_duration);
     ExitCode::from(worst)
 }
 
-pub async fn run_check_subjects(
-    config: &Config,
-    subjects: &[&str],
-    procs_duration: Option<u64>,
-) -> u8 {
+pub fn run_check_subjects(config: &Config, subjects: &[&str], procs_duration: Option<u64>) -> u8 {
     let socket_path = config.resolve_socket_path();
     let client = crate::client::Client::new(socket_path);
     let mut worst = 0u8;
@@ -95,7 +87,7 @@ pub async fn run_check_subjects(
             req["duration_secs"] = serde_json::json!(d);
         }
 
-        match client.send_raw(req).await {
+        match client.send_raw(req) {
             Ok(resp) if resp.ok => {
                 let payload = resp
                     .data

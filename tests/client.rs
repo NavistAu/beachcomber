@@ -35,52 +35,52 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
     (tmp, sock)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn client_get_full_provider() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let response = client.get("hostname", None).await.unwrap();
+    let response = client.get("hostname", None).unwrap();
     assert!(response.ok);
     let data = response.data.unwrap();
     assert_eq!(data["name"], "testhost.local");
     assert_eq!(data["short"], "testhost");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn client_get_single_field() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let response = client.get("hostname.short", None).await.unwrap();
+    let response = client.get("hostname.short", None).unwrap();
     assert!(response.ok);
     assert_eq!(response.data.unwrap(), serde_json::json!("testhost"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn client_get_text_format() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let text = client.get_text("hostname.name", None).await.unwrap();
+    let text = client.get_text("hostname.name", None).unwrap();
     assert_eq!(text, "testhost.local");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn client_get_unknown_provider() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let response = client.get("nonexistent", None).await.unwrap();
+    let response = client.get("nonexistent", None).unwrap();
     assert!(!response.ok);
     assert!(response.error.unwrap().contains("unknown provider"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn client_refresh() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
-    let response = client.refresh("hostname", None).await.unwrap();
+    let response = client.refresh("hostname", None).unwrap();
     assert!(response.ok);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn client_put_and_get() {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
@@ -92,11 +92,10 @@ async fn client_put_and_get() {
 
     let resp = client
         .put("testapp", serde_json::json!({"status": "ok"}), None, None)
-        .await
         .unwrap();
     assert!(resp.ok);
 
-    let resp = client.get("testapp.status", None).await.unwrap();
+    let resp = client.get("testapp.status", None).unwrap();
     assert!(resp.ok);
     assert_eq!(resp.data.unwrap(), "ok");
 
