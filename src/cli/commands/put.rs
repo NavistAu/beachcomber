@@ -31,7 +31,10 @@ pub fn run_put(
         return ExitCode::from(2);
     }
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create tokio runtime");
     rt.block_on(async {
         let client = crate::client::Client::new(socket_path);
 

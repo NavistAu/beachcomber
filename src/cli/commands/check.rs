@@ -70,7 +70,10 @@ pub fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode 
         Some(CheckCommands::Procs { duration }) => (vec!["procs"], Some(*duration)),
     };
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create tokio runtime");
     let worst = rt.block_on(run_check_subjects(config, &subjects, procs_duration));
     ExitCode::from(worst)
 }

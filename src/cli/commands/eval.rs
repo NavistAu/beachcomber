@@ -105,7 +105,10 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
             eprintln!("Failed to start daemon: {e}");
             return ExitCode::from(2);
         }
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime");
         let socket_path = socket_path.clone();
         match rt.block_on(async move {
             let client = crate::client::Client::new(socket_path);
