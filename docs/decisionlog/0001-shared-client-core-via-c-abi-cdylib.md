@@ -120,6 +120,3 @@ long-lived process.
 `ResolveLive` and the `live.*` namespace, deferred through the env-cascade
 plans, are unrelated. They cover live uncached reads at a coordinate the daemon
 has not cached, not expression evaluation.
-
-Implementation is specified separately; the first migration step — moving the
-evaluator into the client crate — is independently valuable and reversible.
