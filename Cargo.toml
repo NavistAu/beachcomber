@@ -40,6 +40,7 @@ minijinja = { version = "2", default-features = false, features = ["builtins", "
 terminal_size = "0.3"
 thiserror = "2.0.18"
 sha2 = "0.11.0"
+libbeachcomber = { path = "beachcomber-client" }
 
 [features]
 test-helpers = []
