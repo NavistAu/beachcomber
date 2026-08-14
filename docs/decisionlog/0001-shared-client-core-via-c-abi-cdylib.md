@@ -111,8 +111,7 @@ long-lived process.
 
 ### Move the evaluator into the client as an rlib only
 
-* Good, because it is nearly a file move and unblocks claude-scanline
-  immediately.
+* Good, because it unblocks claude-scanline without touching any binding.
 * Bad, because it solves the problem for Rust and leaves the other five SDKs
   where they are, relocating the duplication rather than removing it.
 
