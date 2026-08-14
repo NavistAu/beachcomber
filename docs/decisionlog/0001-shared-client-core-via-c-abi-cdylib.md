@@ -116,11 +116,6 @@ long-lived process.
 
 ## More Information
 
-`docs/canon/field_resolution.md` describes resolution as client-side. That
-records the current design and is not itself an argument for retaining it; the
-drivers above stand on their own, and the canon would be updated to match
-whichever model was chosen.
-
 `ResolveLive` and the `live.*` namespace, deferred through the env-cascade
 plans, are unrelated. They cover live uncached reads at a coordinate the daemon
 has not cached, not expression evaluation.
