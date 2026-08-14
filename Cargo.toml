@@ -1,6 +1,9 @@
 [workspace]
 members = [".", "beachcomber-client", "tests/fixtures/test_provider_lib", "xtask"]
 
+[workspace.dependencies]
+minijinja = { version = "2", default-features = false, features = ["builtins", "serde"] }
+
 [package]
 name = "beachcomber"
 version = "0.7.0"
@@ -36,7 +39,7 @@ notify = "8"
 tokio-util = "0.7"
 ureq = "3"
 libloading = "0.9.0"
-minijinja = { version = "2", default-features = false, features = ["builtins", "serde"] }
+minijinja = { workspace = true }
 terminal_size = "0.3"
 thiserror = "2.0.18"
 sha2 = "0.11.0"

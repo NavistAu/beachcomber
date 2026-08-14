@@ -468,7 +468,7 @@ pub fn discover_expression_refs(expr: &str) -> Vec<Ref> {
 /// Registers the same filters as `build_env()` (truncate, basename) and
 /// sets lenient undefined behavior so missing refs are falsy, not errors.
 pub(crate) fn build_expression_env<'a>() -> Environment<'a> {
-    use crate::cli::format::build_env;
+    use libbeachcomber::filters::build_env;
     let mut env = build_env();
     env.set_undefined_behavior(UndefinedBehavior::Lenient);
     env

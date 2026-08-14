@@ -1,7 +1,7 @@
 //! Tests for the client-side virtual field evaluator (src/cli/virtual_fields.rs),
 //! the env.* resolver, the basename filter, and related format helpers.
 
-use beachcomber::cli::format::build_env;
+use libbeachcomber::filters::build_env;
 
 // ── basename filter ──────────────────────────────────────────────────────────
 
