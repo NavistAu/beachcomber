@@ -494,6 +494,17 @@ impl Client {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line)?;
+        let resp: serde_json::Value =
+            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !ok {
+            let error = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            return Err(CombError::ServerError(error));
+        }
         Ok(())
     }
 
@@ -553,10 +564,20 @@ impl Client {
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
         stream.write_all(msg.as_bytes())?;
 
-        // Read response but don't care about content
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line)?;
+        let resp: serde_json::Value =
+            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !ok {
+            let error = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            return Err(CombError::ServerError(error));
+        }
         Ok(())
     }
 
@@ -768,6 +789,17 @@ impl Session {
 
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
+        let resp: serde_json::Value =
+            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !ok {
+            let error = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            return Err(CombError::ServerError(error));
+        }
         Ok(())
     }
 
@@ -782,6 +814,17 @@ impl Session {
 
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
+        let resp: serde_json::Value =
+            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !ok {
+            let error = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            return Err(CombError::ServerError(error));
+        }
         Ok(())
     }
 
@@ -834,6 +877,17 @@ impl Session {
 
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
+        let resp: serde_json::Value =
+            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !ok {
+            let error = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            return Err(CombError::ServerError(error));
+        }
         Ok(())
     }
 
