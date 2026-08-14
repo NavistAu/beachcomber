@@ -86,6 +86,10 @@ harness = false
 name = "prompt_race"
 harness = false
 
+[[bench]]
+name = "cli"
+harness = false
+
 [profile.dev]
 # macOS: skip dsymutil during link (keep debug info in .o files). Faster link.
 split-debuginfo = "unpacked"
