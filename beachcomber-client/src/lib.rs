@@ -16,6 +16,8 @@
 //! ```
 
 pub mod filters;
+pub mod path_expr;
+pub mod virtual_fields;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

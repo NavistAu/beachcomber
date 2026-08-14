@@ -1,7 +1,7 @@
 //! Path expressions: compute a query's cache-key path from a client-side jinja
 //! expression over `cwd` and `env.*`. Empty/falsy result ⇒ global (no path).
 
-use crate::cli::virtual_fields::build_expression_env;
+use crate::virtual_fields::build_expression_env;
 use minijinja::value::Value as MjValue;
 use std::collections::HashMap;
 
