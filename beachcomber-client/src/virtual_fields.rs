@@ -5,8 +5,10 @@
 //! `Expression::undeclared_variables(true)` to enumerate all `provider.field`
 //! and `env.*` refs in the expression — no byte-level scanning.
 //!
-//! Built-in default virtual fields are compiled into the CLI; no config file
-//! is required. Config may override or extend them.
+//! Built-in default virtual fields are compiled into `libbeachcomber`; no
+//! config file is required. Config may override or extend them. Any binary
+//! that links this crate gets them — the `comb` CLI today, and a statusline
+//! renderer plus C ABI / language SDK bindings in later phases.
 //!
 //! RUST NOTE: `virtual` is a reserved keyword in Rust. This module is named
 //! `virtual_fields`. The TOML key "virtual" is read as a string literal
@@ -19,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 // ── Built-in default virtual fields (expression form) ────────────────────────
 
-/// Built-in virtual field definitions, compiled into the CLI.
+/// Built-in virtual field definitions, compiled into `libbeachcomber`.
 /// Format: (provider, field, expression).
 /// Config overrides win over these defaults.
 const BUILTIN_DEFAULTS: &[(&str, &str, &str)] = &[
