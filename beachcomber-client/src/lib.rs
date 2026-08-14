@@ -493,6 +493,57 @@ impl Client {
         self.send_recv(&mut stream, &request)
     }
 
+    /// Query a single key, rendered by the daemon as plain text.
+    /// Shorthand for `get_formatted(key, path, "text")`.
+    pub fn get_text(&self, key: &str, path: Option<&str>) -> Result<String, CombError> {
+        self.get_formatted(key, path, "text")
+    }
+
+    /// Query a single key, rendered server-side into `format` (e.g. `"text"`, `"sh"`).
+    pub fn get_formatted(
+        &self,
+        key: &str,
+        path: Option<&str>,
+        format: &str,
+    ) -> Result<String, CombError> {
+        self.get_formatted_with_flags(key, path, format, false, false)
+    }
+
+    /// Query a single key with optional flags, rendered server-side into `format`.
+    ///
+    /// This speaks a second wire sub-protocol distinct from the JSON-per-line
+    /// framing used elsewhere: the daemon writes the rendered text followed
+    /// by a blank-line terminator, and a response that failed is a line
+    /// prefixed `error: ` in place of the rendered text.
+    pub fn get_formatted_with_flags(
+        &self,
+        key: &str,
+        path: Option<&str>,
+        format: &str,
+        force: bool,
+        wait: bool,
+    ) -> Result<String, CombError> {
+        let socket_path = self.find_or_start_socket()?;
+        let mut stream = self.connect(&socket_path)?;
+
+        let mut request = serde_json::json!({ "op": "get", "key": key, "format": format });
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        if force {
+            request["force"] = serde_json::json!(true);
+        }
+        if wait {
+            request["wait"] = serde_json::json!(true);
+        }
+
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        stream.write_all(msg.as_bytes())?;
+
+        let mut reader = BufReader::new(stream);
+        read_formatted_response(&mut reader)
+    }
+
     /// Clear the cached entry for a virtual provider key without dropping the registry entry.
     /// A subsequent `put` under the same key still works.
     pub fn put_null(&self, key: &str, path: Option<&str>) -> Result<(), CombError> {
@@ -810,6 +861,55 @@ impl Session {
         parse_response(&line)
     }
 
+    /// Query a single key on this persistent connection, rendered by the
+    /// daemon as plain text. Shorthand for `get_formatted(key, path, "text")`.
+    pub fn get_text(&mut self, key: &str, path: Option<&str>) -> Result<String, CombError> {
+        self.get_formatted(key, path, "text")
+    }
+
+    /// Query a single key on this persistent connection, rendered
+    /// server-side into `format` (e.g. `"text"`, `"sh"`).
+    pub fn get_formatted(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        format: &str,
+    ) -> Result<String, CombError> {
+        self.get_formatted_with_flags(key, path, format, false, false)
+    }
+
+    /// Query a key with optional flags on this persistent connection,
+    /// rendered server-side into `format`.
+    ///
+    /// This speaks a second wire sub-protocol distinct from the JSON-per-line
+    /// framing used elsewhere: the daemon writes the rendered text followed
+    /// by a blank-line terminator, and a response that failed is a line
+    /// prefixed `error: ` in place of the rendered text.
+    pub fn get_formatted_with_flags(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        format: &str,
+        force: bool,
+        wait: bool,
+    ) -> Result<String, CombError> {
+        let mut request = serde_json::json!({ "op": "get", "key": key, "format": format });
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        if force {
+            request["force"] = serde_json::json!(true);
+        }
+        if wait {
+            request["wait"] = serde_json::json!(true);
+        }
+
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        self.reader.get_mut().write_all(msg.as_bytes())?;
+
+        read_formatted_response(&mut self.reader)
+    }
+
     /// Set connection context so subsequent queries don't need explicit paths.
     pub fn set_context(&mut self, path: &str) -> Result<(), CombError> {
         let request = serde_json::json!({ "op": "context", "path": path });
@@ -962,6 +1062,46 @@ impl Session {
 }
 
 // --- Internal helpers ---
+
+/// Read a server-formatted (`text` / `sh`) response off `reader`.
+///
+/// This is a second wire sub-protocol, distinct from the one-JSON-line
+/// framing `parse_response` et al. handle: the daemon writes zero or more
+/// content lines followed by a blank line (`"\n"` alone) as terminator, with
+/// no length prefix — so a response is only complete once that blank line
+/// (or connection close) is seen. A failed request is signaled by its very
+/// first line being prefixed `error: ` instead of carrying rendered data;
+/// that prefix is only meaningful on the first line, since legitimate
+/// rendered content on later lines is free to contain the same text.
+///
+/// On an error, the rest of the response (up to its terminator) is still
+/// drained before returning, so a persistent `Session` connection is left
+/// at a clean frame boundary for the next request.
+fn read_formatted_response(reader: &mut BufReader<UnixStream>) -> Result<String, CombError> {
+    let mut result = String::new();
+    let mut error: Option<String> = None;
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 || line == "\n" {
+            break;
+        }
+        if error.is_none()
+            && result.is_empty()
+            && let Some(msg) = line.trim_end_matches('\n').strip_prefix("error:")
+        {
+            error = Some(msg.trim_start().to_string());
+            continue;
+        }
+        if error.is_none() {
+            result.push_str(&line);
+        }
+    }
+    match error {
+        Some(msg) => Err(CombError::ServerError(msg)),
+        None => Ok(result.trim_end_matches('\n').to_string()),
+    }
+}
 
 fn parse_response(line: &str) -> Result<CombResult, CombError> {
     let resp: serde_json::Value =
