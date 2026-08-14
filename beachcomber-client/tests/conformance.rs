@@ -216,7 +216,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor) -> CanonicalResponse {
         "watch" => {
             let key = descriptor.args["key"].as_str().unwrap_or("");
             let path = descriptor.args["path"].as_str();
-            match client.watch(key, path) {
+            match client.watch(key, path, None) {
                 Ok(mut stream) => match stream.next_event() {
                     Ok(Some(ev)) => {
                         let data = ev.data.as_ref().map(|d| d.as_value().clone());
