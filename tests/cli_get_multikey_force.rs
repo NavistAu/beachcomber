@@ -32,7 +32,7 @@ async fn setup_seeded() -> (TempDir, std::path::PathBuf) {
     (tmp, sock)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_get_formatted_with_flags_exists_and_forwards_force() {
     // The method must exist on Session (Task 1) and force=true must evict
     // a non-stale seeded entry, returning the live provider value.
@@ -50,7 +50,7 @@ async fn session_get_formatted_with_flags_exists_and_forwards_force() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_get_formatted_with_flags_forwards_wait() {
     // Calling get_formatted_with_flags with wait=true on a fresh entry must
     // not error. This locks in that wait is an accepted parameter; the

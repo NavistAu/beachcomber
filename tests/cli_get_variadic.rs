@@ -42,7 +42,7 @@ async fn fetch_keys(
     results
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_variadic_both_keys_succeed() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
@@ -57,7 +57,7 @@ async fn get_variadic_both_keys_succeed() {
     assert_eq!(responses[1].data.as_ref().unwrap(), "alice");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_variadic_partial_failure_still_emits_successful_key() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
@@ -82,7 +82,7 @@ async fn get_variadic_partial_failure_still_emits_successful_key() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_variadic_single_key_is_unchanged() {
     // Single-key on a session must behave identically to Client::get.
     let (_tmp, sock) = setup_server().await;
@@ -99,7 +99,7 @@ async fn get_variadic_single_key_is_unchanged() {
     assert_eq!(via_session.data.as_ref().unwrap(), "myhost");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_variadic_json_format_produces_array() {
     // Verify that multiple-key JSON aggregation produces a valid JSON array.
     let (_tmp, sock) = setup_server().await;

@@ -6,7 +6,9 @@ use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
 use common::git::GitRepoFixture;
+use common::poll::poll_until_eq;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
 
 async fn setup_daemon() -> (
@@ -39,7 +41,7 @@ async fn setup_daemon() -> (
     (tmp, sock, handle)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_git_provider() {
     let repo = GitRepoFixture::new();
     let (_tmp, sock, _handle) = setup_daemon().await;
@@ -56,7 +58,7 @@ async fn refresh_git_provider() {
     assert!(branch.is_string(), "Branch should be a string");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_detects_dirty_state_via_refresh() {
     let repo = GitRepoFixture::new();
     let (_tmp, sock, _handle) = setup_daemon().await;
@@ -65,13 +67,12 @@ async fn git_detects_dirty_state_via_refresh() {
 
     // First refresh: clean state
     client.refresh("git", Some(repo_path)).unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-    let resp = client.get("git.dirty", Some(repo_path)).unwrap();
-    assert_eq!(
-        resp.data.unwrap(),
-        serde_json::json!(false),
-        "Should be clean"
+    poll_until_eq(
+        "git.dirty after refresh (clean repo)",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        || client.get("git.dirty", Some(repo_path)).unwrap().data,
+        Some(serde_json::json!(false)),
     );
 
     // Create a dirty file
@@ -79,17 +80,16 @@ async fn git_detects_dirty_state_via_refresh() {
 
     // Refresh again
     client.refresh("git", Some(repo_path)).unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-    let resp = client.get("git.dirty", Some(repo_path)).unwrap();
-    assert_eq!(
-        resp.data.unwrap(),
-        serde_json::json!(true),
-        "Should be dirty"
+    poll_until_eq(
+        "git.dirty after refresh (dirty repo)",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        || client.get("git.dirty", Some(repo_path)).unwrap().data,
+        Some(serde_json::json!(true)),
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_returns_miss_for_non_repo() {
     let tmp = TempDir::new().unwrap();
     let (_daemon_tmp, sock, _handle) = setup_daemon().await;

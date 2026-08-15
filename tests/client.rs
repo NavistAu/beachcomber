@@ -35,7 +35,7 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
     (tmp, sock)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_get_full_provider() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
@@ -46,7 +46,7 @@ async fn client_get_full_provider() {
     assert_eq!(data["short"], "testhost");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_get_single_field() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
@@ -55,7 +55,7 @@ async fn client_get_single_field() {
     assert_eq!(response.data.unwrap(), serde_json::json!("testhost"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_get_text_format() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
@@ -63,7 +63,7 @@ async fn client_get_text_format() {
     assert_eq!(text, "testhost.local");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_get_unknown_provider() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
@@ -72,7 +72,7 @@ async fn client_get_unknown_provider() {
     assert!(response.error.unwrap().contains("unknown provider"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_refresh() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);
@@ -80,7 +80,7 @@ async fn client_refresh() {
     assert!(response.ok);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_put_and_get() {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");

@@ -46,7 +46,7 @@ async fn setup_stale() -> (TempDir, std::path::PathBuf) {
     (tmp, sock)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn single_key_text_wait_true_re_executes_stale_entry() {
     // run_get's single-key server-side path (format=text, keys.len()==1) must
     // forward wait=true. If it does, the stale seeded value is evicted and the
@@ -64,7 +64,7 @@ async fn single_key_text_wait_true_re_executes_stale_entry() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_key_client_side_wait_true_re_executes_stale_entry() {
     // run_get's multi-key client-side path (e.g. format=json) calls
     // session.get_with_flags per key. It must forward wait=true.

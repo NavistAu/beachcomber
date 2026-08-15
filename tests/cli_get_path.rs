@@ -69,7 +69,7 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
 }
 
 /// Path context set via set_context reaches the correct cache entry.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn path_context_resolves_git_branch() {
     if !common::git::has_git() {
         eprintln!("skipping: git not available");
@@ -87,7 +87,7 @@ async fn path_context_resolves_git_branch() {
 }
 
 /// Global providers (hostname) work regardless of path context.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn global_provider_ignores_path_context() {
     if !common::git::has_git() {
         eprintln!("skipping: git not available");
@@ -106,7 +106,7 @@ async fn global_provider_ignores_path_context() {
 }
 
 /// Querying multiple keys in one session shares the same path context.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multiple_keys_share_path_context() {
     if !common::git::has_git() {
         eprintln!("skipping: git not available");
@@ -129,7 +129,7 @@ async fn multiple_keys_share_path_context() {
 }
 
 /// Without set_context, a path-scoped key is still queried (may return not-found).
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn no_context_path_scoped_query_returns_response() {
     if !common::git::has_git() {
         eprintln!("skipping: git not available");
@@ -146,7 +146,7 @@ async fn no_context_path_scoped_query_returns_response() {
 }
 
 /// Passing explicit path to get() (not via set_context) also works.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_path_in_get_resolves_correctly() {
     if !common::git::has_git() {
         eprintln!("skipping: git not available");
@@ -168,7 +168,7 @@ async fn explicit_path_in_get_resolves_correctly() {
 
 /// Canonical-path dedup: querying git from a subdir of the repo resolves to
 /// the repo root, hitting the same cache entry seeded at the root.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subdir_query_resolves_to_repo_root() {
     if !common::git::has_git() {
         eprintln!("skipping: git not available");

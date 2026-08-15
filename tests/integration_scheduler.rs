@@ -27,7 +27,7 @@ async fn setup_with_scheduler() -> (TempDir, std::path::PathBuf) {
     (tmp, sock)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_goes_through_scheduler() {
     let (_tmp, sock) = setup_with_scheduler().await;
     let client = Client::new(sock);
@@ -42,7 +42,7 @@ async fn refresh_goes_through_scheduler() {
     assert!(response.data.is_some());
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn once_providers_available_via_scheduler() {
     let (_tmp, sock) = setup_with_scheduler().await;
     let client = Client::new(sock);

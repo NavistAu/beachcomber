@@ -3,7 +3,7 @@ use beachcomber::config::Config;
 use beachcomber::daemon;
 use tempfile::TempDir;
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_get_hostname_via_daemon() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -25,7 +25,7 @@ async fn e2e_get_hostname_via_daemon() {
     handle.abort();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_get_hostname_single_field() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -46,7 +46,7 @@ async fn e2e_get_hostname_single_field() {
     handle.abort();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_get_hostname_text_format() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -63,7 +63,7 @@ async fn e2e_get_hostname_text_format() {
     handle.abort();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_get_user() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -82,7 +82,7 @@ async fn e2e_get_user() {
     handle.abort();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_refresh_and_get() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -106,7 +106,7 @@ async fn e2e_refresh_and_get() {
     handle.abort();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_unknown_provider() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -122,6 +122,14 @@ async fn e2e_unknown_provider() {
     handle.abort();
 }
 
+// Exception to the worker_threads = 2 pinning used elsewhere in this file:
+// this test spawns 10 concurrent tasks that each block on the sync `Client`,
+// plus the in-process daemon task itself needs a thread to run on. With only
+// 2 worker threads, once both are occupied by blocking client calls the
+// daemon task can never get scheduled to service them — a real deadlock
+// (observed as a 30s test timeout), not mere slowness. Leave this on the
+// ambient (num_cpus) thread count, which comfortably covers the 10 clients
+// + daemon and matches how this test ran before the worker_threads pinning.
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_multiple_concurrent_clients() {
     let tmp = TempDir::new().unwrap();
@@ -158,7 +166,7 @@ async fn e2e_multiple_concurrent_clients() {
     handle.abort();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_introspect_includes_pid_and_version() {
     // pid and version moved from Request::Status to Request::Introspect{daemon}.
     let tmp = TempDir::new().unwrap();

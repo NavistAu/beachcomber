@@ -11,6 +11,7 @@ use beachcomber::cli::status_format::{
     RenderOpts, render_csv, render_preset, render_sh_env, render_tsv, row_context,
 };
 use common::git::GitRepoFixture;
+use common::poll::poll_until;
 
 fn sample_rows() -> Vec<CacheRow> {
     vec![
@@ -519,7 +520,7 @@ async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<(
     (tmp, client, handle)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_returns_rows_per_field() {
     let (_tmp, client, handle) = setup_daemon().await;
 
@@ -919,7 +920,7 @@ fn cache_row_new_fields_serde_round_trip() {
     assert!(v.get("decay").is_none(), "old decay field is gone");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lifecycle_snapshots_message_returns_per_entry_data() {
     use beachcomber::cache::Cache;
     use beachcomber::provider::registry::ProviderRegistry;
@@ -962,7 +963,7 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
     let _ = task.await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failure_states_message_returns_provider_map() {
     use beachcomber::cache::Cache;
     use beachcomber::provider::registry::ProviderRegistry;
@@ -994,7 +995,7 @@ async fn failure_states_message_returns_provider_map() {
 }
 
 /// Status on a fresh daemon with an empty cache returns an empty array, not an error.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_empty_cache_returns_empty_array() {
     let (_tmp, client, handle) = setup_daemon().await;
 
@@ -1015,7 +1016,7 @@ async fn status_empty_cache_returns_empty_array() {
     handle.abort();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_response_lifecycle_row_carries_kind_and_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
@@ -1032,15 +1033,30 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
         .send_raw(serde_json::json!({"op": "get", "key": "git", "path": repo_path}))
         .expect("get git");
 
-    // Give the scheduler time to populate lifecycle state.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-    let resp = client
-        .send_raw(serde_json::json!({"op": "status"}))
-        .expect("status");
-    assert!(resp.ok, "status failed: {:?}", resp.error);
-    let rows: Vec<CacheRow> =
-        serde_json::from_value(resp.data.expect("data present")).expect("rows deserialize");
+    // Poll until the scheduler has populated lifecycle state for both git
+    // sources (refs + diff) rather than sleeping a fixed duration and hoping.
+    let rows = poll_until(
+        "status rows for git after get",
+        "rows containing provider=git source=refs and provider=git source=diff",
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        || {
+            let resp = client
+                .send_raw(serde_json::json!({"op": "status"}))
+                .expect("status");
+            assert!(resp.ok, "status failed: {:?}", resp.error);
+            let rows: Vec<CacheRow> =
+                serde_json::from_value(resp.data.expect("data present")).expect("rows deserialize");
+            rows
+        },
+        |rows: &Vec<CacheRow>| {
+            rows.iter()
+                .any(|r| r.provider == "git" && r.source == "refs")
+                && rows
+                    .iter()
+                    .any(|r| r.provider == "git" && r.source == "diff")
+        },
+    );
 
     // Pick a git row from the `refs` source (fsevent strategy → watches_files=true).
     // After Phase 1 each row carries its source's strategy individually, so the diff
@@ -1102,7 +1118,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     handle.abort();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_response_once_row_has_kind_once() {
     let (_tmp, client, handle) = setup_daemon().await;
 
@@ -1151,7 +1167,7 @@ async fn status_response_once_row_has_kind_once() {
     handle.abort();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_response_virtual_row_has_kind_virtual() {
     let (_tmp, client, handle) = setup_daemon().await;
 

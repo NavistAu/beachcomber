@@ -3,7 +3,7 @@ use beachcomber::config::Config;
 use beachcomber::daemon;
 use tempfile::TempDir;
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_all_builtin_providers_registered() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -37,7 +37,7 @@ async fn e2e_all_builtin_providers_registered() {
     handle.abort();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_script_provider_from_config() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");

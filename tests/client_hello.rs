@@ -20,7 +20,7 @@ async fn setup() -> (TempDir, std::path::PathBuf) {
     (tmp, sock)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_hello_returns_protocol_version() {
     let (_tmp, sock) = setup().await;
     let client = Client::new(sock);
@@ -38,7 +38,7 @@ async fn client_hello_returns_protocol_version() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_hello_works_on_persistent_connection() {
     let (_tmp, sock) = setup().await;
     let client = Client::new(sock);
