@@ -115,7 +115,7 @@ fn release_targets(old: &str) -> Vec<Target> {
         rename: false,
     };
     vec![
-        t("Cargo.toml", 1),
+        t("Cargo.toml", 2),
         t("Cargo.lock", 2),
         t("beachcomber-client/Cargo.toml", 1),
         t("sdks/node/package.json", 1),
@@ -417,9 +417,9 @@ mod tests {
             by_path("sdks/lua/rockspec/libbeachcomber-0.6.1-1.rockspec"),
             2
         );
-        assert_eq!(by_path("Cargo.toml"), 1);
+        assert_eq!(by_path("Cargo.toml"), 2);
         // Total occurrences the tool will rewrite across the tree.
         let total: usize = t.iter().map(|x| x.expected).sum();
-        assert_eq!(total, 24);
+        assert_eq!(total, 25);
     }
 }
