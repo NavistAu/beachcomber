@@ -1017,10 +1017,18 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
 
     // Poll until the scheduler has populated lifecycle state for both git
     // sources (refs + diff) rather than sleeping a fixed duration and hoping.
+    //
+    // The deadline must absorb a daemon-side stall: the scheduler registers
+    // fs watches synchronously in its demand arm, and kernel FSEvents
+    // registration has been measured at 1-3s PER CALL on a loaded host —
+    // once per git source for the same path, >6s total — during which every
+    // pending response (including this test's status polls) sits undelivered.
+    // See roadmap "Known Core Issues" (watch registration blocks the
+    // scheduler loop). 5s sat inside that stall window and flaked.
     let rows = poll_until(
         "status rows for git after get",
         "rows containing provider=git source=refs and provider=git source=diff",
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(20),
         std::time::Duration::from_millis(20),
         || client.status().expect("status"),
         |rows: &Vec<CacheRow>| {
