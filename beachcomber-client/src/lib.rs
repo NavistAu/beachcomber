@@ -19,6 +19,12 @@ pub mod filters;
 pub mod path_expr;
 pub mod virtual_fields;
 
+/// This crate's build identity, derived by `build.rs` from `CARGO_PKG_VERSION`
+/// plus git sha/dirty state. Shares its derivation with the root crate's
+/// `BEACHCOMBER_VERSION` (see `build-common/version.rs`) so the two always
+/// report the same string.
+pub const VERSION: &str = env!("BEACHCOMBER_VERSION");
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
