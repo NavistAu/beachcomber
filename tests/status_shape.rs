@@ -525,19 +525,13 @@ async fn status_returns_rows_per_field() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     // Warm up a global provider so at least something is in cache.
-    let _ = client
-        .send_raw(serde_json::json!({"op": "get", "key": "hostname"}))
-        .expect("get hostname");
+    let _ = client.get("hostname", None).expect("get hostname");
 
     // Give the cache a moment to settle.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "status"}))
-        .expect("status");
-
-    assert!(resp.ok, "status should succeed, error: {:?}", resp.error);
-    let data = resp.data.expect("status data present");
+    let status_rows = client.status().expect("status");
+    let data = serde_json::to_value(&status_rows).expect("rows serialize");
     let rows = data.as_array().expect("status response is an array");
 
     for row in rows {
@@ -999,18 +993,8 @@ async fn failure_states_message_returns_provider_map() {
 async fn status_empty_cache_returns_empty_array() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "status"}))
-        .expect("status");
-
-    assert!(
-        resp.ok,
-        "status should succeed on empty cache: {:?}",
-        resp.error
-    );
-    let data = resp.data.expect("status data present");
-    let rows = data.as_array().expect("status response is an array");
-    // May be empty — that's fine. Just verify it's a valid array.
+    let rows = client.status().expect("status");
+    // May be empty — that's fine. Just verify the call succeeds.
     let _ = rows.len();
 
     handle.abort();
@@ -1029,9 +1013,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     // which would leave the diff source absent from the status output.
     let repo = GitRepoFixture::new();
     let repo_path = repo.path_str();
-    let _ = client
-        .send_raw(serde_json::json!({"op": "get", "key": "git", "path": repo_path}))
-        .expect("get git");
+    let _ = client.get("git", Some(repo_path)).expect("get git");
 
     // Poll until the scheduler has populated lifecycle state for both git
     // sources (refs + diff) rather than sleeping a fixed duration and hoping.
@@ -1040,15 +1022,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
         "rows containing provider=git source=refs and provider=git source=diff",
         std::time::Duration::from_secs(5),
         std::time::Duration::from_millis(20),
-        || {
-            let resp = client
-                .send_raw(serde_json::json!({"op": "status"}))
-                .expect("status");
-            assert!(resp.ok, "status failed: {:?}", resp.error);
-            let rows: Vec<CacheRow> =
-                serde_json::from_value(resp.data.expect("data present")).expect("rows deserialize");
-            rows
-        },
+        || client.status().expect("status"),
         |rows: &Vec<CacheRow>| {
             rows.iter()
                 .any(|r| r.provider == "git" && r.source == "refs")
@@ -1125,17 +1099,12 @@ async fn status_response_once_row_has_kind_once() {
     // hostname is a Watch-only global provider with KeepAlive::Never — the equivalent
     // of the old "Once" semantics. It enters the lifecycle map immediately on demand.
     let _ = client
-        .send_raw(serde_json::json!({"op": "get", "key": "hostname.short"}))
+        .get("hostname.short", None)
         .expect("get hostname.short");
 
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "status"}))
-        .expect("status");
-    assert!(resp.ok, "status failed: {:?}", resp.error);
-    let rows: Vec<CacheRow> =
-        serde_json::from_value(resp.data.expect("data present")).expect("rows deserialize");
+    let rows = client.status().expect("status");
 
     let row = rows
         .iter()
@@ -1173,17 +1142,12 @@ async fn status_response_virtual_row_has_kind_virtual() {
 
     // Store a virtual entry via put.
     let _ = client
-        .send_raw(serde_json::json!({"op": "put", "key": "custom", "data": {"color": "blue"}}))
+        .put("custom", serde_json::json!({"color": "blue"}), None, None)
         .expect("put custom");
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "status"}))
-        .expect("status");
-    assert!(resp.ok, "status failed: {:?}", resp.error);
-    let rows: Vec<CacheRow> =
-        serde_json::from_value(resp.data.expect("data present")).expect("rows deserialize");
+    let rows = client.status().expect("status");
 
     let row = rows
         .iter()

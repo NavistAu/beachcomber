@@ -80,14 +80,13 @@ pub fn run_check_subjects(config: &Config, subjects: &[&str], procs_duration: Op
     let mut worst = 0u8;
 
     for &subject in subjects {
-        let mut req = serde_json::json!({"op": "introspect", "subject": subject});
-        if subject == "procs"
-            && let Some(d) = procs_duration
-        {
-            req["duration_secs"] = serde_json::json!(d);
-        }
+        let duration = if subject == "procs" {
+            procs_duration
+        } else {
+            None
+        };
 
-        match client.send_raw(req) {
+        match client.introspect(subject, duration) {
             Ok(resp) if resp.ok => {
                 let payload = resp
                     .data

@@ -20,10 +20,7 @@ async fn introspect_daemon_returns_expected_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({
-            "op": "introspect",
-            "subject": "daemon"
-        }))
+        .introspect("daemon", None)
         .expect("request succeeded");
 
     assert!(resp.ok, "error: {:?}", resp.error);
@@ -96,7 +93,7 @@ async fn introspect_providers_lists_catalog_with_scope_and_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "providers"}))
+        .introspect("providers", None)
         .expect("providers introspect");
     assert!(resp.ok, "error: {:?}", resp.error);
     let data = resp.data.expect("payload present");
@@ -146,9 +143,7 @@ async fn introspect_providers_lists_catalog_with_scope_and_fields() {
 async fn introspect_config_reports_path_and_parse_status() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "config"}))
-        .unwrap();
+    let resp = client.introspect("config", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(d.get("path").is_some(), "path key present (may be null)");
@@ -170,9 +165,7 @@ async fn introspect_config_reports_path_and_parse_status() {
 async fn introspect_cache_reports_totals_and_stale_ratio() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "cache"}))
-        .unwrap();
+    let resp = client.introspect("cache", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(d.get("total_entries").and_then(|v| v.as_u64()).is_some());
@@ -193,9 +186,7 @@ async fn introspect_cache_reports_totals_and_stale_ratio() {
 async fn introspect_lifecycle_returns_list_and_verdicts() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "lifecycle"}))
-        .unwrap();
+    let resp = client.introspect("lifecycle", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(
@@ -229,9 +220,7 @@ async fn introspect_lifecycle_returns_list_and_verdicts() {
 async fn introspect_watches_returns_paths_and_verdicts() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "watches"}))
-        .unwrap();
+    let resp = client.introspect("watches", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(
@@ -265,9 +254,7 @@ async fn introspect_watches_returns_paths_and_verdicts() {
 async fn introspect_timers_returns_timers_and_verdicts() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "timers"}))
-        .unwrap();
+    let resp = client.introspect("timers", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(
@@ -301,9 +288,7 @@ async fn introspect_timers_returns_timers_and_verdicts() {
 async fn introspect_demand_returns_active_keys() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "demand"}))
-        .unwrap();
+    let resp = client.introspect("demand", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(
@@ -339,11 +324,7 @@ async fn introspect_procs_returns_sample_structure() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({
-            "op": "introspect",
-            "subject": "procs",
-            "duration_secs": 1
-        }))
+        .introspect("procs", Some(1))
         .expect("introspect procs request");
 
     // procs may fail in sandboxed environments; accept either ok or a recognisable error.
@@ -422,7 +403,7 @@ async fn all_subjects_reachable_via_introspect() {
 
     for subject in subjects {
         let resp = client
-            .send_raw(serde_json::json!({"op": "introspect", "subject": subject}))
+            .introspect(subject, None)
             .unwrap_or_else(|e| panic!("introspect {subject} failed: {e}"));
         assert!(
             resp.ok,
@@ -498,7 +479,7 @@ async fn daemon_introspect_has_pass_verdict() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
+        .introspect("daemon", None)
         .expect("daemon introspect");
 
     assert!(resp.ok, "error: {:?}", resp.error);
@@ -522,7 +503,7 @@ async fn providers_introspect_has_entries_with_required_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "providers"}))
+        .introspect("providers", None)
         .expect("providers introspect");
 
     assert!(resp.ok, "error: {:?}", resp.error);
@@ -561,9 +542,7 @@ async fn providers_introspect_has_entries_with_required_fields() {
 async fn cache_introspect_stale_ratio_coherent() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "cache"}))
-        .expect("cache introspect");
+    let resp = client.introspect("cache", None).expect("cache introspect");
 
     assert!(resp.ok, "error: {:?}", resp.error);
     let data = resp.data.unwrap();
@@ -629,7 +608,7 @@ async fn introspect_daemon_reaper_null_when_not_attached() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
+        .introspect("daemon", None)
         .expect("request succeeded");
     assert!(resp.ok);
     let data = resp.data.expect("payload");
@@ -662,7 +641,7 @@ async fn introspect_daemon_reaper_confined_surfaces_warn_verdict() {
     let client = Client::new(sock);
 
     let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
+        .introspect("daemon", None)
         .expect("request succeeded");
     assert!(resp.ok);
     let data = resp.data.expect("payload");
@@ -721,7 +700,7 @@ async fn introspect_daemon_reaper_healthy_surfaces_pass_verdict() {
     let client = Client::new(sock);
 
     let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
+        .introspect("daemon", None)
         .expect("request succeeded");
     assert!(resp.ok);
     let data = resp.data.expect("payload");
@@ -774,7 +753,7 @@ async fn env_override_daemon_does_not_arm_reaper() {
 
     let client = Client::new(sock.clone());
     let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
+        .introspect("daemon", None)
         .expect("introspect request");
 
     let _ = daemon.kill();

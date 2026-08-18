@@ -179,6 +179,8 @@ pub struct CacheRow {
     pub keep_alive_polls: Option<u32>,
     /// Phase 2.7: whether FSEvents will reinstate watching after a miss.
     pub fsevents_reinstate: Option<bool>,
+    /// Number of polls that have fired in the current lifecycle step.
+    pub polls_elapsed: Option<u32>,
     /// Phase 2.7: failure state if the provider has been failing.
     pub failure: Option<FailureSnapshot>,
     /// Phase 5: source name within the provider that owns this field.
@@ -213,6 +215,9 @@ impl CacheRow {
             .get("keep_alive_polls")
             .and_then(|x| x.as_u64().map(|n| n as u32));
         let fsevents_reinstate = v.get("fsevents_reinstate").and_then(|x| x.as_bool());
+        let polls_elapsed = v
+            .get("polls_elapsed")
+            .and_then(|x| x.as_u64().map(|n| n as u32));
         let failure = v
             .get("failure")
             .and_then(|x| serde_json::from_value(x.clone()).ok());
@@ -231,6 +236,7 @@ impl CacheRow {
             poll_interval_secs,
             keep_alive_polls,
             fsevents_reinstate,
+            polls_elapsed,
             failure,
             source,
         })
@@ -258,7 +264,24 @@ pub struct DaemonHealth {
     pub in_flight: u64,
     pub active_watchers: u64,
     pub cache_entries: u64,
+    /// "native", "polling", "disabled", or "unknown"; absent from pre-0.8 daemons.
+    pub watch_backend: Option<String>,
+    /// Reaper capability snapshot (canon `singleton.md` invariant 13).
+    /// `None` when reaper health isn't attached (embedded/test servers).
+    pub reaper: Option<ReaperStatus>,
     pub verdicts: Vec<Verdict>,
+}
+
+/// Reaper capability snapshot embedded in `introspect{daemon}`.
+/// Mirrors the `reaper_json` shape built by `server.rs`.
+#[derive(Debug, Clone)]
+pub struct ReaperStatus {
+    pub armed: bool,
+    /// "system-wide" or "confined".
+    pub visibility: String,
+    pub sweeps: u64,
+    pub reaped: u64,
+    pub kill_denied: u64,
 }
 
 /// Introspect subjects. See `docs/protocol-spec.md` for shape details.
@@ -1224,6 +1247,24 @@ fn parse_daemon_health(data: &serde_json::Value) -> Result<DaemonHealth, CombErr
         .get("cache_entries")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let watch_backend = data
+        .get("watch_backend")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let reaper = data
+        .get("reaper")
+        .filter(|r| !r.is_null())
+        .map(|r| ReaperStatus {
+            armed: r.get("armed").and_then(|v| v.as_bool()).unwrap_or(false),
+            visibility: r
+                .get("visibility")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            sweeps: r.get("sweeps").and_then(|v| v.as_u64()).unwrap_or(0),
+            reaped: r.get("reaped").and_then(|v| v.as_u64()).unwrap_or(0),
+            kill_denied: r.get("kill_denied").and_then(|v| v.as_u64()).unwrap_or(0),
+        });
     let verdicts = data
         .get("verdicts")
         .and_then(|v| v.as_array())
@@ -1247,6 +1288,8 @@ fn parse_daemon_health(data: &serde_json::Value) -> Result<DaemonHealth, CombErr
         in_flight,
         active_watchers,
         cache_entries,
+        watch_backend,
+        reaper,
         verdicts,
     })
 }
