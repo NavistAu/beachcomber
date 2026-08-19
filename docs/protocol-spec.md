@@ -109,7 +109,6 @@ Read a cached value.
   "op": "get",
   "key": "git.branch",
   "path": "/absolute/or/relative/path",
-  "format": "json",
   "force": false,
   "wait": false
 }
@@ -117,8 +116,6 @@ Read a cached value.
 
 - `key` (string, required) — `provider` or `provider.field`. See "Keys" below.
 - `path` (string, optional) — directory context for path-scoped providers.
-- `format` (enum, optional, default `json`) — `json` returns structured data;
-  `text` returns a rendered plain-text form; `sh` returns shell-export form.
 - `force` (bool, optional, default false) — evict the cache entry before
   executing, guaranteeing a fresh value.
 - `wait` (bool, optional, default false) — if the entry is stale, wait for
@@ -266,7 +263,7 @@ changes, and continue until the client disconnects.
 
 **Request:**
 ```json
-{"op": "watch", "key": "git.branch", "path": "/repo", "format": "json"}
+{"op": "watch", "key": "git.branch", "path": "/repo"}
 ```
 
 **Response (initial + per-event):**
@@ -333,6 +330,32 @@ Phase 3+ work.
 This mirrors the policy in `docs/versioning.md`. The `Hello` handshake
 exists so clients can detect incompatibility at connection time rather
 than at first-op failure.
+
+## Wire-level text/sh format retirement — breaking change
+
+`Get` and `Watch` no longer accept a `format` field. The daemon now always
+responds (and streams `Watch` frames) as JSON — the server-rendered
+`text`/`sh` sub-protocol described in earlier revisions of this document is
+gone. Rendering a value as plain text or as a shell-export line is now a
+client-side concern: it happens after the JSON response is parsed, not on
+the wire. `comb get -f text`/`-f sh` and `comb watch -f text`/`-f sh` still
+work — the CLI renders locally from the JSON response — only the wire
+contract changed.
+
+This was a breaking change (semantics, not framing): a request that still
+sets `"format": "text"` or `"format": "sh"` is not rejected — `Get`/`Watch`
+requests have never rejected unrecognised fields — it is simply ignored,
+and the caller gets a normal JSON response instead of the rendered text/sh
+form it may have expected. Clients that depended on server-side rendering
+must render locally after this change.
+
+The removed sub-protocol was also unsound: a stored value that began with
+`error:` was indistinguishable on the wire from a genuine failure (both
+rendered as a bare `error: ...` line), and a value containing a blank line
+(`"\n\n"`) collided with the sub-protocol's own frame terminator, desyncing
+any request issued afterward on the same persistent connection. JSON framing
+has neither failure mode: errors are carried by `ok:false`, and values are
+escaped strings.
 
 ## Env-cascade P2 — no wire change
 

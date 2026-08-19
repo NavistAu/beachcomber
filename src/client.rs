@@ -304,7 +304,8 @@ impl ClientSession {
             .map_err(comb_error_to_io)
     }
 
-    /// Send a watch request. Call read_watch_line() in a loop to receive updates.
+    /// Send a watch request. Call read_watch_event() in a loop to receive
+    /// updates.
     ///
     /// `libbeachcomber::Session` deliberately has no `watch`: the daemon
     /// puts a watched connection into permanent streaming mode, so no
@@ -321,24 +322,42 @@ impl ClientSession {
     /// socket, not a correctness gap -- but it couldn't be closed without
     /// adding watch-on-`Session` support to `libbeachcomber`, which is out
     /// of scope for this task.
-    pub fn watch(
-        &mut self,
-        key: &str,
-        path: Option<&str>,
-        format: Option<&str>,
-    ) -> std::io::Result<()> {
+    ///
+    /// The daemon streams JSON frames only (Task 1.8 retired server-side
+    /// `text`/`sh` rendering for watch), so this always requests the
+    /// default JSON framing; callers render non-JSON output formats locally
+    /// from each event's `data`.
+    pub fn watch(&mut self, key: &str, path: Option<&str>) -> std::io::Result<()> {
         let stream = build_client(&self.socket_path)
-            .watch(key, path, format)
+            .watch(key, path, None)
             .map_err(comb_error_to_io)?;
         self.watch_stream = Some(stream);
         Ok(())
     }
 
-    /// Read the next watch update line. Returns None on EOF.
-    pub fn read_watch_line(&mut self) -> std::io::Result<Option<String>> {
-        match &mut self.watch_stream {
-            Some(stream) => stream.next_line().map_err(comb_error_to_io),
-            None => Err(std::io::Error::other("read_watch_line called before watch")),
+    /// Read the next watch event, JSON-decoded. Returns `Ok(None)` on EOF.
+    ///
+    /// A daemon-level rejection (`ok: false`) is returned as
+    /// `Ok(Some(Response::error(..)))`, matching this adapter's usual
+    /// `to_response` convention -- only a genuine transport failure becomes
+    /// `Err`. Callers render `response.data` locally for non-JSON output
+    /// formats (Task 1.8: the daemon streams JSON frames only).
+    pub fn read_watch_event(&mut self) -> std::io::Result<Option<Response>> {
+        let stream = self
+            .watch_stream
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("read_watch_event called before watch"))?;
+        match stream.next_event() {
+            Ok(Some(ev)) => Ok(Some(Response {
+                ok: true,
+                data: ev.data.map(|d| d.as_value().clone()),
+                age_ms: Some(ev.age_ms as u128),
+                stale: Some(ev.stale),
+                error: None,
+            })),
+            Ok(None) => Ok(None),
+            Err(CombError::ServerError(msg)) => Ok(Some(Response::error(msg))),
+            Err(e) => Err(comb_error_to_io(e)),
         }
     }
 }
