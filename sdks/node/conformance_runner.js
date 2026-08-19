@@ -18,17 +18,17 @@
 
 'use strict';
 
-const fs = require('fs');
-const net = require('net');
-const path = require('path');
-const os = require('os');
-const { spawnSync, spawn } = require('child_process');
+import fs from 'fs';
+import net from 'net';
+import path from 'path';
+import os from 'os';
+import { spawnSync, spawn } from 'child_process';
 
 // ---------------------------------------------------------------------------
 // Path setup — import the SDK from compiled dist/ or via tsx if available.
 // ---------------------------------------------------------------------------
 
-const SDK_DIR = __dirname;
+const SDK_DIR = path.dirname(new URL(import.meta.url).pathname);
 const REPO_ROOT = path.resolve(SDK_DIR, '..', '..');
 const CONFORMANCE_DIR = path.join(REPO_ROOT, 'tests', 'conformance');
 const DIST_CLIENT = path.join(SDK_DIR, 'dist', 'client.js');
@@ -111,7 +111,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beachcomber-conform-'));
     const sockPath = path.join(tmpDir, 'comb.sock');
 
-    const proc = spawn(COMB_BIN, ['--socket', sockPath], {
+    const proc = spawn(COMB_BIN, ['daemon', '--socket', sockPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, COMB_SOCKET: sockPath },
     });
