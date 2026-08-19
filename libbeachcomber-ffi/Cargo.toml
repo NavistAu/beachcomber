@@ -10,8 +10,13 @@ categories = ["command-line-utilities", "development-tools"]
 
 [lib]
 name = "beachcomber"
-crate-type = ["cdylib"]
+# cdylib is the shipped artifact; rlib lets this crate's own integration
+# tests link against it directly (a cdylib alone carries no Rust metadata
+# for `rustc` to consume as an `extern crate`).
+crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [dependencies]
 libbeachcomber = { path = "../libbeachcomber" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

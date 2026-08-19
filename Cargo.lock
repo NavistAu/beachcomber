@@ -953,6 +953,8 @@ name = "libbeachcomber-ffi"
 version = "0.7.0"
 dependencies = [
  "libbeachcomber",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
