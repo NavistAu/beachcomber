@@ -1,0 +1,13 @@
+{
+  "name": "mapping_integer_exceeds_32_bits",
+  "description": "put stores 2^32 (4294967296), which overflows a 32-bit int but is exactly representable as an IEEE-754 double (well under 2^53) and as a 64-bit integer. Every binding's native numeric type must round-trip it exactly — a binding that narrows to int32 anywhere in its stack would corrupt this value.",
+  "setup": [
+    { "op": "put", "args": { "key": "mapfix_int", "data": { "v": 4294967296 } } }
+  ],
+  "test": { "op": "get", "args": { "key": "mapfix_int.v" } },
+  "expect": {
+    "status": "hit",
+    "data_type": "number",
+    "data_equals": 4294967296
+  }
+}

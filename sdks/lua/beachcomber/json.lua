@@ -7,6 +7,24 @@
 
 local M = {}
 
+-- A plain empty Lua table cannot record whether it came from JSON `{}` or
+-- `[]` — both decode to a table with no keys, and Lua has no separate empty
+-- vector/map runtime types the way Python (dict{} vs list[]) or Go
+-- (map[string]interface{}{} vs []interface{}{}) do. decode_object tags an
+-- empty result with this sentinel metatable so a consumer that needs to
+-- recover the JSON type (e.g. the conformance runner's data_type check) can
+-- via M.is_empty_object(); a non-empty table stays distinguishable by shape
+-- (sequential integer keys from 1) without any tagging. Encoding does not
+-- need to consult this — encode_table already defaults an empty table to a
+-- JSON object (its is_array check requires count > 0), matching this tag.
+local EMPTY_OBJECT_MT = {}
+
+--- True when `t` is an empty table that was decoded from a JSON object
+-- (`{}`), as opposed to a plain empty table or one decoded from `[]`.
+function M.is_empty_object(t)
+  return type(t) == 'table' and getmetatable(t) == EMPTY_OBJECT_MT
+end
+
 -- ── Decoder ──────────────────────────────────────────────────────────────────
 
 local function decode_error(s, pos, msg)
@@ -133,6 +151,7 @@ local function decode_object(s, pos)
   local obj = {}
   pos = skip_ws(s, pos)
   if s:sub(pos, pos) == '}' then
+    setmetatable(obj, EMPTY_OBJECT_MT)
     return obj, pos + 1
   end
   while true do

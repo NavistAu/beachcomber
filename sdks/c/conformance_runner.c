@@ -237,24 +237,42 @@ static char *serialise_node(const json_node_t *node) {
             return strdup(buf);
         }
         case JSON_FLOAT: {
+            /* %g alone drops the fractional part for a whole-number float
+             * (42.0 -> "42"), which would re-enter the daemon as an integer
+             * literal and silently change its JSON_INT/JSON_FLOAT type (see
+             * src/provider/mod.rs Value::from_json_at, which keys off
+             * exactly that textual distinction). Force a decimal point back
+             * in when %g produced neither one nor an exponent, so a
+             * round-tripped whole-number float stays a float on the wire. */
             char buf[64];
             snprintf(buf, sizeof(buf), "%g", node->val.floating);
+            if (!strpbrk(buf, ".eEnN")) { /* no '.', exponent, inf, or nan */
+                strncat(buf, ".0", sizeof(buf) - strlen(buf) - 1);
+            }
             return strdup(buf);
         }
         case JSON_STRING: {
-            /* Re-escape for JSON */
-            size_t len = strlen(node->val.string);
-            char *buf = (char *)malloc(len * 2 + 3);
+            /* Re-escape for JSON, byte-for-byte over str_len rather than
+             * NUL-terminated iteration: a JSON \u0000 escape decodes to a
+             * literal NUL byte mid-string (see json_node_t.str_len), and a
+             * strlen()/`for (;*p;)` walk would silently truncate the value
+             * there before it ever reaches bc_put. JSON also requires every
+             * control character (including NUL) to be escaped, so emit
+             * \u00XX for anything below 0x20 that doesn't have a named
+             * escape. */
+            size_t len = node->str_len;
+            char *buf = (char *)malloc(len * 6 + 3);
             if (!buf) return NULL;
             size_t i = 0;
             buf[i++] = '"';
-            for (const char *p = node->val.string; *p; p++) {
-                unsigned char c = (unsigned char)*p;
+            for (size_t j = 0; j < len; j++) {
+                unsigned char c = (unsigned char)node->val.string[j];
                 if (c == '"')       { buf[i++] = '\\'; buf[i++] = '"'; }
                 else if (c == '\\') { buf[i++] = '\\'; buf[i++] = '\\'; }
                 else if (c == '\n') { buf[i++] = '\\'; buf[i++] = 'n'; }
                 else if (c == '\r') { buf[i++] = '\\'; buf[i++] = 'r'; }
                 else if (c == '\t') { buf[i++] = '\\'; buf[i++] = 't'; }
+                else if (c < 0x20)  { i += (size_t)sprintf(buf + i, "\\u%04x", c); }
                 else                { buf[i++] = (char)c; }
             }
             buf[i++] = '"';
@@ -343,7 +361,14 @@ static int nodes_equal(const json_node_t *a, const json_node_t *b) {
         case JSON_BOOL:   return a->val.boolean == b->val.boolean;
         case JSON_INT:    return a->val.integer == b->val.integer;
         case JSON_FLOAT:  return a->val.floating == b->val.floating;
-        case JSON_STRING: return strcmp(a->val.string, b->val.string) == 0;
+        case JSON_STRING:
+            /* memcmp, not strcmp: a unicode escape for codepoint U+0000
+             * decodes to a literal NUL byte mid-buffer, which strcmp would
+             * stop comparing at -- two strings differing only after that
+             * byte would wrongly compare equal. str_len is the true
+             * decoded length (see json_node_t.str_len). */
+            return a->str_len == b->str_len &&
+                   memcmp(a->val.string, b->val.string, a->str_len) == 0;
         case JSON_ARRAY:
         case JSON_OBJECT: {
             if (a->n_children != b->n_children) return 0;

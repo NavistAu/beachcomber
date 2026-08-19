@@ -216,7 +216,13 @@ local function data_type_of(data)
   if t == "number" then return "number" end
   if t == "boolean" then return "bool" end
   if t == "table" then
-    if data[1] ~= nil or next(data) == nil then return "array" end
+    -- An empty table is ambiguous (Lua has no separate empty-object vs
+    -- empty-array runtime type) unless the decoder tagged it — see
+    -- beachcomber.json.is_empty_object().
+    if next(data) == nil then
+      return json.is_empty_object(data) and "object" or "array"
+    end
+    if data[1] ~= nil then return "array" end
     return "object"
   end
   return t

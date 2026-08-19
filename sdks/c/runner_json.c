@@ -97,6 +97,11 @@ const char *json_as_str(const json_node_t *node) {
     return node->val.string;
 }
 
+size_t json_as_str_len(const json_node_t *node) {
+    if (!node || node->type != JSON_STRING) return 0;
+    return node->str_len;
+}
+
 int64_t json_as_int(const json_node_t *node, int *ok) {
     if (ok) *ok = 0;
     if (!node) return 0;
@@ -201,8 +206,11 @@ static int parse_unicode_escape(parser_t *p, char *buf) {
 /*
  * Parse a JSON string value (the quotes are consumed here).
  * Returns a malloc'd NUL-terminated string, or NULL on error.
+ * If `out_len` is non-NULL, writes the decoded byte length (which can differ
+ * from strlen() of the result if the string contains an embedded NUL, e.g.
+ * from a unicode escape for codepoint U+0000).
  */
-static char *parse_string_raw(parser_t *p) {
+static char *parse_string_raw(parser_t *p, size_t *out_len) {
     if (peek(p) != '"') return NULL;
     next_char(p); /* consume opening quote */
 
@@ -268,15 +276,18 @@ static char *parse_string_raw(parser_t *p) {
 #undef APPEND_N
 
     buf[len] = '\0';
+    if (out_len) *out_len = len;
     return buf;
 }
 
 static json_node_t *parse_string_node(parser_t *p) {
-    char *s = parse_string_raw(p);
+    size_t len = 0;
+    char *s = parse_string_raw(p, &len);
     if (!s) return NULL;
     json_node_t *n = node_alloc(JSON_STRING);
     if (!n) { free(s); return NULL; }
     n->val.string = s;
+    n->str_len = len;
     return n;
 }
 
@@ -360,7 +371,7 @@ static json_node_t *parse_object(parser_t *p) {
         if (peek(p) != '"') { json_free(obj); return NULL; }
 
         /* Parse key */
-        char *key = parse_string_raw(p);
+        char *key = parse_string_raw(p, NULL);
         if (!key) { json_free(obj); return NULL; }
 
         skip_ws(p);

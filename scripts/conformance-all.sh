@@ -20,7 +20,28 @@ if ! cargo build --bin comb; then
     exit 1
 fi
 
+echo
+echo "==> Building libbeachcomber (cdylib)"
+if ! cargo build -p libbeachcomber-ffi; then
+    echo "!!! libbeachcomber-ffi build failed"
+    exit 1
+fi
+
 export COMB_BIN="$ROOT/target/debug/comb"
+
+# Every binding now loads libbeachcomber.{so,dylib} over FFI rather than
+# speaking the wire protocol itself (Phase 4 of the client-ABI plan) —
+# without this, library discovery falls through to "../lib/ relative to
+# comb" and then the platform search path, which won't find a debug build
+# that hasn't been packaged anywhere.
+case "$(uname -s)" in
+    Darwin) export BEACHCOMBER_LIB="$ROOT/target/debug/libbeachcomber.dylib" ;;
+    *)      export BEACHCOMBER_LIB="$ROOT/target/debug/libbeachcomber.so" ;;
+esac
+if [ ! -f "$BEACHCOMBER_LIB" ]; then
+    echo "!!! expected library not found: $BEACHCOMBER_LIB"
+    exit 1
+fi
 
 status=0
 
@@ -42,6 +63,13 @@ ruby "$ROOT/sdks/ruby/conformance_runner.rb" || status=1
 
 echo
 echo "==> Lua SDK conformance"
+# Known failing fixture as of Task 4.7: mapping/null_value_becomes_empty_string.json.
+# Lua tables cannot hold an explicit nil value at a key (t[k] = nil is
+# indistinguishable from t[k] never having been set), so a JSON null nested
+# inside an object/array collapses to "key absent" on decode — see
+# beachcomber.json's decode_object/decode_array. This is a real, pre-existing
+# SDK gap (not a fixture bug) that needs a null-sentinel design before it can
+# be fixed; left failing here deliberately rather than silenced.
 lua "$ROOT/sdks/lua/conformance_runner.lua" || status=1
 
 echo

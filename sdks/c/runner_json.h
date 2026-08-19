@@ -65,6 +65,15 @@ typedef struct json_node {
         char       *string;    /* JSON_STRING: NUL-terminated */
     } val;
 
+    /* Byte length of val.string, excluding the terminator -- set only
+     * for JSON_STRING. A unicode escape for codepoint U+0000 decodes to
+     * a literal NUL byte in the middle of val.string, which a
+     * NUL-terminated C string can still hold, but strlen()/strcmp() go
+     * blind past it. Comparisons that need to be correct for such a
+     * value (see nodes_equal()) must use this length with memcmp()
+     * instead. */
+    size_t str_len;
+
     /* First child (for JSON_OBJECT / JSON_ARRAY). */
     struct json_node *children;
     /* Count of direct children. */
@@ -102,6 +111,12 @@ const char *json_as_str  (const json_node_t *node);
 int64_t     json_as_int  (const json_node_t *node, int *ok);
 double      json_as_float(const json_node_t *node, int *ok);
 int         json_as_bool (const json_node_t *node, int *ok);
+
+/* Byte length of a JSON_STRING node's value, excluding the terminator. 0 for
+ * any other type (including an empty string, so callers comparing values
+ * must not use this alone to detect type mismatch). See json_node_t.str_len
+ * for why this exists. */
+size_t json_as_str_len(const json_node_t *node);
 
 /* Return the JSON type name as a C string (for error messages). */
 const char *json_type_name(json_type_t type);

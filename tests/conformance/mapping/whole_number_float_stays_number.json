@@ -1,0 +1,13 @@
+{
+  "name": "mapping_whole_number_float_stays_number",
+  "description": "put stores 42.0. The daemon's provider Value keys off the JSON text's own shape (a literal decimal point marks it Float, not the numeric value being fractional) — src/provider/mod.rs Value::from_json_at calls serde_json::Number::as_i64() first, which returns None for any number parsed from text containing '.', so 42.0 becomes Value::Float and round-trips over the wire as \"42.0\", never silently promoted to an integer literal. Every binding must decode it as a number equal to 42.",
+  "setup": [
+    { "op": "put", "args": { "key": "mapfix_float", "data": { "v": 42.0 } } }
+  ],
+  "test": { "op": "get", "args": { "key": "mapfix_float.v" } },
+  "expect": {
+    "status": "hit",
+    "data_type": "number",
+    "data_equals": 42.0
+  }
+}
