@@ -30,7 +30,20 @@ Quick start::
 """
 
 from .client import Client, Session, WatchStream
-from .exceptions import CombError, DaemonNotRunning, ProtocolError, ServerError
+from .exceptions import (
+    BadFlagsError,
+    BusyError,
+    CombError,
+    ConnectionFailedError,
+    DaemonNotRunning,
+    LibraryDiscoveryError,
+    LibrarySymbolError,
+    PanicError,
+    ProtocolError,
+    ServerError,
+    TimeoutError,
+    VersionSkewError,
+)
 from .result import CombResult
 from .types import (
     CacheRow,
@@ -49,8 +62,16 @@ __all__ = [
     "CombResult",
     "CombError",
     "DaemonNotRunning",
+    "ConnectionFailedError",
     "ProtocolError",
     "ServerError",
+    "TimeoutError",
+    "BusyError",
+    "BadFlagsError",
+    "PanicError",
+    "VersionSkewError",
+    "LibraryDiscoveryError",
+    "LibrarySymbolError",
     "CacheRow",
     "DaemonHealth",
     "HelloInfo",

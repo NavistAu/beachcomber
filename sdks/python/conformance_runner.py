@@ -142,12 +142,30 @@ class DaemonProcess:
 # ---------------------------------------------------------------------------
 
 
-def _run_op(client: Client, op: str, args: dict[str, Any]) -> Any:
+def _run_op(
+    client: Client,
+    op: str,
+    args: dict[str, Any],
+    resolve_ctx: Optional[dict[str, Any]] = None,
+) -> Any:
     """Run a single op against the client.
 
     Returns the raw response data (or None for ops that return nothing),
     or raises CombError / ServerError on failure.
+
+    `resolve_ctx` (only consulted for the `resolve` op) carries the
+    fixture's `virtual`/`env`/`cwd` blocks — see
+    tests/conformance/README.md.
     """
+    if op == "resolve":
+        assert resolve_ctx is not None
+        key = args.get("key", "")
+        return client.resolve(
+            key,
+            cwd=resolve_ctx["cwd"],
+            env=resolve_ctx["env"] or None,
+            overrides=resolve_ctx["virtual"] or None,
+        )
     if op == "get":
         return client.get(**args)
     if op == "refresh":
@@ -184,7 +202,17 @@ def _run_op(client: Client, op: str, args: dict[str, Any]) -> Any:
 
 # Ops this runner's binding can execute. A fixture using any op outside this
 # set must be skipped, not failed — the binding doesn't implement it yet.
-_SUPPORTED_OPS = {"hello", "get", "refresh", "put", "status", "context", "watch", "introspect"}
+_SUPPORTED_OPS = {
+    "hello",
+    "get",
+    "refresh",
+    "put",
+    "status",
+    "context",
+    "watch",
+    "introspect",
+    "resolve",
+}
 
 
 def _unsupported_op(fixture: dict[str, Any]) -> Optional[str]:
@@ -366,39 +394,46 @@ def run_fixture(fixture_path: pathlib.Path, client: Client) -> tuple[str, str]:
     if unsupported is not None:
         return "skip", f"unsupported op {unsupported!r}"
 
-    # Run setup ops (ignore their results; failures are fatal for the fixture).
-    for setup_op in fixture.get("setup", []):
-        op = setup_op["op"]
-        args = setup_op.get("args", {})
+    with tempfile.TemporaryDirectory(prefix="bcconf_cwd_") as default_cwd:
+        resolve_ctx = {
+            "virtual": fixture.get("virtual", {}),
+            "env": fixture.get("env", {}),
+            "cwd": fixture.get("cwd", default_cwd),
+        }
+
+        # Run setup ops (ignore their results; failures are fatal for the fixture).
+        for setup_op in fixture.get("setup", []):
+            op = setup_op["op"]
+            args = setup_op.get("args", {})
+            try:
+                _run_op(client, op, args, resolve_ctx)
+            except Exception as exc:
+                return "fail", f"setup op {op!r} failed: {exc}"
+
+        # Run the test op.
+        test = fixture["test"]
+        op = test["op"]
+        args = test.get("args", {})
+        expect = fixture.get("expect", {})
+
+        result = None
+        error: Optional[str] = None
+
         try:
-            _run_op(client, op, args)
+            result = _run_op(client, op, args, resolve_ctx)
+        except ServerError as exc:
+            error = exc.message
+        except CombError as exc:
+            error = str(exc)
         except Exception as exc:
-            return "fail", f"setup op {op!r} failed: {exc}"
+            return "fail", f"unexpected exception running {op!r}: {type(exc).__name__}: {exc}"
 
-    # Run the test op.
-    test = fixture["test"]
-    op = test["op"]
-    args = test.get("args", {})
-    expect = fixture.get("expect", {})
+        failures = _check_expect(expect, result, error, name)
+        if failures:
+            msg = "; ".join(failures)
+            return "fail", f"{name}: FAIL — {msg}"
 
-    result = None
-    error: Optional[str] = None
-
-    try:
-        result = _run_op(client, op, args)
-    except ServerError as exc:
-        error = exc.message
-    except CombError as exc:
-        error = str(exc)
-    except Exception as exc:
-        return "fail", f"unexpected exception running {op!r}: {type(exc).__name__}: {exc}"
-
-    failures = _check_expect(expect, result, error, name)
-    if failures:
-        msg = "; ".join(failures)
-        return "fail", f"{name}: FAIL — {msg}"
-
-    return "pass", f"{name}: ok"
+        return "pass", f"{name}: ok"
 
 
 # ---------------------------------------------------------------------------
@@ -428,37 +463,43 @@ def main() -> int:
     print(f"Found {len(fixtures)} fixture(s) in {_CONFORMANCE_DIR}")
     print(f"Using daemon: {comb_bin}\n")
 
-    daemon = DaemonProcess(comb_bin)
-    try:
-        daemon.start()
-    except RuntimeError as exc:
-        print(f"ERROR: Failed to start daemon: {exc}", file=sys.stderr)
-        return 1
-
-    client = daemon.make_client()
-
     passed = 0
     failed = 0
     skipped = 0
     errors: list[str] = []
 
-    try:
-        for fixture_path in fixtures:
-            rel = fixture_path.relative_to(_CONFORMANCE_DIR)
+    # A fresh daemon per fixture, per tests/conformance/README.md's
+    # isolation guarantee ("Each fixture runs against a fresh daemon
+    # instance") — a shared daemon would leak cache state (e.g. `put`s from
+    # one fixture's `setup` visible to the next fixture's `resolve` cache
+    # refs) across fixtures that happen to reuse a key.
+    for fixture_path in fixtures:
+        rel = fixture_path.relative_to(_CONFORMANCE_DIR)
+
+        daemon = DaemonProcess(comb_bin)
+        try:
+            daemon.start()
+        except RuntimeError as exc:
+            print(f"ERROR: Failed to start daemon for {rel}: {exc}", file=sys.stderr)
+            return 1
+
+        try:
+            client = daemon.make_client()
             status, msg = run_fixture(fixture_path, client)
-            if status == "skip":
-                print(f"  SKIP {rel}: {msg}")
-                skipped += 1
-                continue
-            status_label = "PASS" if status == "pass" else "FAIL"
-            print(f"  [{status_label}] {rel}: {msg.split(': ', 1)[-1]}")
-            if status == "pass":
-                passed += 1
-            else:
-                failed += 1
-                errors.append(str(rel) + ": " + msg)
-    finally:
-        daemon.stop()
+        finally:
+            daemon.stop()
+
+        if status == "skip":
+            print(f"  SKIP {rel}: {msg}")
+            skipped += 1
+            continue
+        status_label = "PASS" if status == "pass" else "FAIL"
+        print(f"  [{status_label}] {rel}: {msg.split(': ', 1)[-1]}")
+        if status == "pass":
+            passed += 1
+        else:
+            failed += 1
+            errors.append(str(rel) + ": " + msg)
 
     print(f"\n{passed + failed + skipped} fixtures: {passed} passed, {failed} failed, {skipped} skipped")
 
