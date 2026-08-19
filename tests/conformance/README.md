@@ -43,15 +43,53 @@ conformance run in the same commit.
 | `setup` | no | array of op descriptors to run first (ignored for expectations) |
 | `test` | yes | the op descriptor whose response is asserted |
 | `expect` | yes | assertions — see below |
+| `virtual` | no | object mapping a field key (`"provider.field"`) or a bare provider name to an expression string. Feeds the client-side resolver for `resolve` fixtures — see below. Defaults to empty. |
+| `env` | no | object mapping env var name to string value. Feeds the client-side resolver's `env.*` refs for `resolve` fixtures. Defaults to empty. |
+| `cwd` | no | string. Feeds the client-side resolver's `cwd` for path-expression `resolve` fixtures. Defaults to the runner's per-fixture temp directory. |
 
 ### Op descriptor
 
 ```json
-{ "op": "<hello|get|refresh|context|put|status|watch|introspect>", "args": {...} }
+{ "op": "<hello|get|refresh|context|put|status|watch|introspect|resolve>", "args": {...} }
 ```
 
 `args` matches the wire request body for that op (minus `op` itself). See
 `docs/protocol-spec.md` for each op's request schema.
+
+### The `resolve` op
+
+`resolve` is not a wire op — it never reaches the daemon. It exercises
+client-side field resolution: virtual field expressions and path expressions,
+both evaluated in-process against the fixture's `virtual`, `env`, and `cwd`.
+`args.key` is the only argument:
+
+- `"provider.field"` (contains a `.`) — evaluate that virtual field. The
+  fixture's `virtual` entry for the same `"provider.field"` key (if any)
+  overrides the built-in expression; otherwise the built-in default (if one
+  exists) is used. Refs of the form `cache.P.F` / `cache.P` inside the
+  expression are fetched live from the daemon — seed them with `setup` `put`
+  ops first. `env.X` refs come from the fixture's `env` map, not the
+  ambient process environment.
+- `"provider"` (no `.`) — evaluate that provider's path expression. The
+  fixture's `virtual` entry keyed by the bare provider name (if any)
+  overrides the built-in path expression; `cwd` and `env` come from the
+  fixture. A falsy/undefined result is a `miss` (`ok=true`, data absent),
+  matching the "no per-path variant" contract.
+
+A `resolve` fixture typically seeds cache values via `setup` `put` ops,
+declares `virtual`, supplies `env`/`cwd` as needed, and asserts the resolved
+value and its `data_type`.
+
+Resolution is client-side (see `docs/canon/` for the field-resolution model),
+so this is deliberately **not** wired through a daemon config file — the
+fixture's `virtual`/`env`/`cwd` feed the resolver call directly (for the C
+ABI this is `overrides_json` / `env_json` / `cwd`).
+
+**Not every runner supports `resolve` yet.** Only the Rust reference runner
+(`beachcomber-client/tests/conformance.rs`) does. A runner whose binding
+doesn't implement resolution must **skip** `resolve` fixtures and report them
+as skipped, never as passed — a silent skip that reads as a pass is worse
+than no fixture. Other runners gain `resolve` support in Phase 4.
 
 ### Expectation kinds
 
@@ -100,7 +138,9 @@ tests/conformance/
 │   └── *.json
 ├── watch/
 │   └── *.json
-└── introspect/
+├── introspect/
+│   └── *.json
+└── resolve/
     └── *.json
 ```
 

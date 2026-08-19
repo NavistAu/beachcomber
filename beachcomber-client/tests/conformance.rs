@@ -7,8 +7,11 @@
 mod common;
 use common::daemon::DaemonGuard;
 
+use libbeachcomber::path_expr::{evaluate_path, path_expression_for};
+use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
 use libbeachcomber::{Client, ClientConfig, CombResult, IntrospectResponse, IntrospectSubject};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -21,6 +24,21 @@ struct Fixture {
     test: OpDescriptor,
     expect: Value,
     source_path: PathBuf,
+    /// `resolve` op context, parsed from the fixture's top-level `virtual`/`env`/`cwd`.
+    /// `virtual` entries keyed "provider.field" become field expression overrides;
+    /// entries keyed by a bare provider name become path expression overrides.
+    field_overrides: Vec<((String, String), String)>,
+    path_overrides: HashMap<String, String>,
+    env_vars: HashMap<String, String>,
+    cwd: Option<String>,
+}
+
+/// Per-fixture context a `resolve` op is evaluated against.
+struct ResolveCtx<'a> {
+    field_overrides: &'a [((String, String), String)],
+    path_overrides: &'a HashMap<String, String>,
+    env_vars: &'a HashMap<String, String>,
+    cwd: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +74,7 @@ fn load_fixtures() -> Vec<Fixture> {
             }
             let text = fs::read_to_string(&path).expect("read fixture");
             let v: Value = serde_json::from_str(&text).expect("parse fixture");
+            let (field_overrides, path_overrides) = parse_virtual(&v["virtual"]);
             out.push(Fixture {
                 name: v["name"].as_str().unwrap().to_string(),
                 description: v["description"].as_str().unwrap().to_string(),
@@ -63,10 +82,46 @@ fn load_fixtures() -> Vec<Fixture> {
                 test: parse_op(&v["test"]).expect("test op required"),
                 expect: v["expect"].clone(),
                 source_path: path,
+                field_overrides,
+                path_overrides,
+                env_vars: parse_str_map(&v["env"]),
+                cwd: v["cwd"].as_str().map(|s| s.to_string()),
             });
         }
     }
     out
+}
+
+/// Split the fixture's `virtual` object into field-expression overrides
+/// (keyed "provider.field") and path-expression overrides (keyed by a bare
+/// provider name — no `.`).
+fn parse_virtual(v: &Value) -> (Vec<((String, String), String)>, HashMap<String, String>) {
+    let mut field_overrides = Vec::new();
+    let mut path_overrides = HashMap::new();
+    if let Some(obj) = v.as_object() {
+        for (key, expr) in obj {
+            let expr = expr.as_str().unwrap_or("").to_string();
+            match key.split_once('.') {
+                Some((provider, field)) => {
+                    field_overrides.push(((provider.to_string(), field.to_string()), expr));
+                }
+                None => {
+                    path_overrides.insert(key.clone(), expr);
+                }
+            }
+        }
+    }
+    (field_overrides, path_overrides)
+}
+
+fn parse_str_map(v: &Value) -> HashMap<String, String> {
+    v.as_object()
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn parse_ops(v: &Value) -> Vec<OpDescriptor> {
@@ -92,7 +147,7 @@ struct CanonicalResponse {
     error: Option<String>,
 }
 
-fn run_op(client: &Client, descriptor: &OpDescriptor) -> CanonicalResponse {
+fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> CanonicalResponse {
     match descriptor.op.as_str() {
         "hello" => match client.hello() {
             Ok(info) => CanonicalResponse {
@@ -288,6 +343,83 @@ fn run_op(client: &Client, descriptor: &OpDescriptor) -> CanonicalResponse {
                 Err(e) => error_response(e),
             }
         }
+        "resolve" => {
+            let key = descriptor.args["key"].as_str().unwrap_or("");
+            match key.split_once('.') {
+                Some((provider, field)) => {
+                    let vf = VirtualFields::with_config_overrides(
+                        resolve.field_overrides.iter().cloned(),
+                    );
+                    match vf.expression(provider, field) {
+                        Some(expr) => {
+                            let expr = expr.to_string();
+                            // Fetch live daemon data for cache.* refs in the expression —
+                            // the fixture's `setup` `put` ops seed these.
+                            let mut daemon_data: HashMap<String, Value> = HashMap::new();
+                            for r in discover_expression_refs(&expr) {
+                                match r {
+                                    Ref::CacheField(p, f) => {
+                                        if let Ok(CombResult::Hit { data, .. }) =
+                                            client.get(&format!("{p}.{f}"), None)
+                                        {
+                                            daemon_data.insert(
+                                                format!("{p}.{f}"),
+                                                data.as_value().clone(),
+                                            );
+                                        }
+                                    }
+                                    Ref::CacheProvider(p) => {
+                                        if let Ok(CombResult::Hit { data, .. }) =
+                                            client.get(&p, None)
+                                        {
+                                            daemon_data.insert(p, data.as_value().clone());
+                                        }
+                                    }
+                                    Ref::Env(_) | Ref::Resolved(_, _) => {}
+                                }
+                            }
+                            let ctx = EvalContext {
+                                env_vars: resolve.env_vars,
+                                daemon_data: &daemon_data,
+                            };
+                            match vf.evaluate(provider, field, &ctx, &mut HashSet::new()) {
+                                Ok(v) => CanonicalResponse {
+                                    ok: true,
+                                    data: Some(v),
+                                    data_as_text: None,
+                                    age_ms: None,
+                                    stale: None,
+                                    error: None,
+                                },
+                                Err(e) => err_resp(e),
+                            }
+                        }
+                        None => err_resp(format!("{provider}.{field} is not a virtual field")),
+                    }
+                }
+                None => match path_expression_for(key, resolve.path_overrides) {
+                    Some(expr) => match evaluate_path(&expr, resolve.cwd, resolve.env_vars) {
+                        Some(s) => CanonicalResponse {
+                            ok: true,
+                            data: Some(Value::String(s)),
+                            data_as_text: None,
+                            age_ms: None,
+                            stale: None,
+                            error: None,
+                        },
+                        None => CanonicalResponse {
+                            ok: true,
+                            data: None,
+                            data_as_text: None,
+                            age_ms: None,
+                            stale: None,
+                            error: None,
+                        },
+                    },
+                    None => err_resp(format!("{key} declares no path expression")),
+                },
+            }
+        }
         other => panic!("unknown op in fixture: {other}"),
     }
 }
@@ -300,6 +432,17 @@ fn error_response(e: libbeachcomber::CombError) -> CanonicalResponse {
         age_ms: None,
         stale: None,
         error: Some(e.to_string()),
+    }
+}
+
+fn err_resp(msg: String) -> CanonicalResponse {
+    CanonicalResponse {
+        ok: false,
+        data: None,
+        data_as_text: None,
+        age_ms: None,
+        stale: None,
+        error: Some(msg),
     }
 }
 
@@ -466,12 +609,27 @@ fn conformance_suite() {
         let guard = DaemonGuard::spawn();
         let client = client_for(&guard.path);
 
+        // Default cwd for `resolve` fixtures that don't declare one: this
+        // fixture's own temp directory (unique per DaemonGuard::spawn()).
+        let default_cwd = guard
+            .path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let cwd = fixture.cwd.clone().unwrap_or(default_cwd);
+        let resolve_ctx = ResolveCtx {
+            field_overrides: &fixture.field_overrides,
+            path_overrides: &fixture.path_overrides,
+            env_vars: &fixture.env_vars,
+            cwd: &cwd,
+        };
+
         // Run setup ops, ignoring their responses.
         for setup_op in &fixture.setup {
-            let _ = run_op(&client, setup_op);
+            let _ = run_op(&client, setup_op, &resolve_ctx);
         }
 
-        let resp = run_op(&client, &fixture.test);
+        let resp = run_op(&client, &fixture.test, &resolve_ctx);
         if let Err(reason) = check_expect(fixture, &resp) {
             failures.push(format!(
                 "[{}] {}\n  path: {}\n  {}",

@@ -1,0 +1,8 @@
+{
+  "name": "resolve_truncate_filter",
+  "description": "The truncate filter shortens an env-sourced value and appends the ellipsis marker.",
+  "virtual": { "filters.truncated": "env.LONGVAR | truncate(5)" },
+  "env": { "LONGVAR": "abcdefghij" },
+  "test": { "op": "resolve", "args": { "key": "filters.truncated" } },
+  "expect": { "status": "hit", "data_type": "string", "data_equals": "abcde..." }
+}

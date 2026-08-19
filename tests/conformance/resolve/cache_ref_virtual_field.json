@@ -1,0 +1,10 @@
+{
+  "name": "resolve_cache_ref_virtual_field",
+  "description": "A virtual field expression referencing cache.P.F resolves to that cached value.",
+  "virtual": { "widget.label": "cache.widgetdata.label" },
+  "setup": [
+    { "op": "put", "args": { "key": "widgetdata", "data": { "label": "hello-value" } } }
+  ],
+  "test": { "op": "resolve", "args": { "key": "widget.label" } },
+  "expect": { "status": "hit", "data_type": "string", "data_equals": "hello-value" }
+}
