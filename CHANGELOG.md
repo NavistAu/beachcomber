@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **`libbeachcomber` C ABI (`libbeachcomber.{so,dylib}`).** The shared Rust client (protocol, JSON mapping, client-side field resolution) is now exposed as a C-ABI cdylib built by the new `libbeachcomber-ffi` crate and shipped beside `comb` in every release artifact (tarball, deb, rpm, Homebrew), with a cbindgen-generated `beachcomber.h` kept fresh by a CI check. 18 `bc_*` entry points cover lifecycle, all ops, client-side resolution (`bc_resolve`/`bc_eval` with caller-supplied cwd/env), sessions (busy-guarded), and watch (cancellable, five machine-readable outcomes). Every call returns a JSON envelope; panics are caught at the boundary.
+- **All six SDKs are now bindings over the shared library.** Python (`ctypes`), Ruby (`fiddle`), Go (`purego`, vendored), Lua (LuaJIT `ffi`; PUC Lua via a declared subprocess tier), Node (`koffi` optional peer dependency with a subprocess tier), and C (collapsed onto the generated header). Bindings discover the library via `$BEACHCOMBER_LIB` → `../lib` beside the resolved `comb` → the platform linker path, check all symbols at load, expose the daemon's error `kind` machine-readably, and report their transport where more than one exists. The SDKs gain client-side resolution for the first time.
+- **Version-skew detection.** The shared client compares its build identity against the daemon's on first connection per client/session; a mismatch is surfaced to callers and named (both versions) in subsequent errors, without failing ops.
+- **Cross-binding conformance: resolution + typed-mapping fixture groups.** The fixture format gains a `resolve` op with `virtual`/`env`/`cwd` inputs, plus mapping fixtures pinning the ambiguous JSON conversions (64-bit ints, whole-number floats, null, empty-vs-absent, depth boundary, embedded NUL). All six SDK conformance runners now run in CI against a built `comb`, enforce every documented expectation kind, fail loudly on unknown ones, and skip-not-pass what they don't implement. `scripts/conformance-all.sh` runs the whole gate locally.
+
+### Fixed
+
+- **`refresh`/`put_null`/`set_context` swallowed daemon rejections** in the CLI client path, returning success on `ok:false`.
+- **Conformance runners for Ruby, Node, Lua, and C could not run at all** (wrong daemon subcommand, ESM/CommonJS mismatch, `/tmp` chmod EPERM against the singleton lock, socket-file readiness probe); the C runner also read fixtures from the wrong checkout in git worktrees and truncated its own test payloads (whole-number floats, embedded NULs). The Go and C runners treated `age_ms=0` as absent.
+- **The Lua SDK misclassified empty JSON objects as arrays** after decode.
+
+### Changed
+
+- **BREAKING (wire): the server-rendered `text`/`sh` sub-protocol is removed.** `get` and `watch` no longer accept a `format` field; the daemon always answers NDJSON, and text/sh rendering happens client-side. The old sub-protocol could not represent values beginning `error:` (indistinguishable from failures) or containing blank lines (frame desync). A stale client sending `format` gets a normal JSON response. `comb get`/`comb watch -f text|sh` are unchanged for users — rendering moved, output didn't.
+- **The hand-written C SDK protocol implementation is deleted** (`beachcomber.c`, `json.c`) — the C SDK is now the generated ABI header plus build glue.
+- **`beachcomber-client/` is renamed `libbeachcomber/`**, matching its package name.
+
+### Known gaps
+
+- The Lua SDK cannot represent a JSON `null` nested inside an object (Lua `nil` semantics); tracked in the roadmap with a fix shape, reported as a named known-defect skip by its conformance runner.
+- Node without `koffi` and PUC Lua run a reduced subprocess tier (documented per binding; `transport()` reports which tier is active).
+
+### Added
+
 - **Orphan reaping.** The canonical daemon (bound socket equals its own env-free resolution) reaps orphaned `comb daemon` processes at startup and hourly: uid-owned daemons reparented to PID 1, on sockets nothing resolves, carrying neither `--exit-with-parent` nor the new `--no-reap` flag, and older than 60s. Live test daemons, attended foreground runs, and flagged supervised daemons are exempt. Closes the leak class where daemons on session-scoped or deleted-worktree sockets accumulated for weeks (`docs/canon/singleton.md` §"Orphan reaping").
 - **`comb daemon --no-reap`** — marks a deliberate, supervised, non-canonical daemon exempt from reaping.
 - **Poll-guaranteed self-supervision.** The daemon's binary self-watch gains a 5s mtime poll alongside the fs-event watch. An fs-event stream can be created without error and then deliver nothing (sandboxed CI hosts, a degraded `fseventsd`); with an event-only watch such daemons outlived every rebuild indefinitely. The poll bounds staleness at one interval regardless of backend health.
