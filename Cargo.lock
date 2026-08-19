@@ -952,9 +952,12 @@ dependencies = [
 name = "libbeachcomber-ffi"
 version = "0.7.0"
 dependencies = [
+ "beachcomber",
  "libbeachcomber",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
