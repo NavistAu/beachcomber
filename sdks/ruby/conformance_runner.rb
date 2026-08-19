@@ -86,6 +86,15 @@ class ConformanceRunner
   # this set must be skipped, not failed — the binding doesn't implement it.
   SUPPORTED_OPS = %w[hello get refresh put status context watch introspect resolve].freeze
 
+  # Every expectation kind documented in tests/conformance/README.md. A
+  # fixture using a key outside this set fails loudly rather than being
+  # silently ignored — the whole point of this runner is to catch a fixture
+  # asserting something the harness doesn't actually check.
+  KNOWN_EXPECT_KEYS = %w[
+    status data_type data_equals data_as_text data_contains_field
+    data_field_equals age_ms_present stale error_contains
+  ].freeze
+
   def initialize(comb_bin)
     @comb_bin = comb_bin
     @passed   = 0
@@ -117,6 +126,12 @@ class ConformanceRunner
     if (op = unsupported_op(fixture))
       @skipped += 1
       puts "SKIP  #{name}: unsupported op #{op.inspect}"
+      return
+    end
+    if (unknown = (fixture['expect'].keys - KNOWN_EXPECT_KEYS)) && !unknown.empty?
+      @failed += 1
+      @errors << "#{name}: fixture uses unknown expectation key(s) #{unknown.inspect} — the runner has no check for them"
+      puts "FAIL  #{name}"
       return
     end
 
@@ -198,6 +213,18 @@ class ConformanceRunner
     end
     if (field = expect['data_contains_field'])
       check_data_contains_field(name, field, result, op)
+    end
+    if expect.key?('data_field_equals')
+      check_data_field_equals(name, expect['data_field_equals'], result, op)
+    end
+    if expect.key?('data_as_text')
+      check_data_as_text(name, expect['data_as_text'], result, op)
+    end
+    if expect.key?('age_ms_present')
+      check_age_ms_present(name, expect['age_ms_present'], result, op)
+    end
+    if expect.key?('stale')
+      check_stale(name, expect['stale'], result, op)
     end
 
     if @errors.any? { |e| e.start_with?(name) }
@@ -321,6 +348,75 @@ class ConformanceRunner
     data = extract_data(result, op)
     unless data.is_a?(Hash) && data.key?(field)
       @errors << "#{name}: data_contains_field #{field.inspect} not present in #{data.inspect}"
+    end
+  end
+
+  # { "field": "<name>", "value": <json> } — data.field deep-equals value.
+  def check_data_field_equals(name, spec, result, op)
+    data = extract_data(result, op)
+    field = spec['field']
+    expected = spec['value']
+    unless data.is_a?(Hash) && data.key?(field) && data[field] == expected
+      actual = data.is_a?(Hash) ? data[field] : data
+      @errors << "#{name}: data_field_equals failed for #{field.inspect}: expected #{expected.inspect}, got #{actual.inspect}"
+    end
+  end
+
+  # Mirrors the Rust reference runner's CachedData::as_text(): string ->
+  # itself, number/bool -> to_s, null -> absent (compared as ""), object/array
+  # -> compact JSON text.
+  def as_text(data)
+    case data
+    when String then data
+    when Integer, Float, TrueClass, FalseClass then data.to_s
+    when NilClass then nil
+    else JSON.generate(data)
+    end
+  end
+
+  def check_data_as_text(name, expected, result, op)
+    data = extract_data(result, op)
+    actual = as_text(data) || ''
+    unless actual == expected
+      @errors << "#{name}: data_as_text expected #{expected.inspect}, got #{actual.inspect}"
+    end
+  end
+
+  # age_ms is present exactly when the response is a cache hit (get) or a
+  # delivered watch event — mirroring the reference runner's
+  # CanonicalResponse, where every other op leaves age_ms as None. Ruby's
+  # Result#age_ms is never nil (it defaults a missing wire value to 0), so
+  # presence can't be read off the accessor directly — it has to be derived
+  # from the op/result shape the same way the reference does.
+  def check_age_ms_present(name, expected, result, op)
+    actual =
+      case op
+      when 'get'
+        result.respond_to?(:hit?) ? result.hit? : false
+      when 'watch'
+        result.is_a?(Beachcomber::WatchEvent)
+      else
+        false
+      end
+    unless actual == expected
+      @errors << "#{name}: age_ms_present expected #{expected.inspect}, got #{actual.inspect}"
+    end
+  end
+
+  # stale is only meaningful alongside a get hit or a delivered watch event —
+  # same reasoning as check_age_ms_present.
+  def check_stale(name, expected, result, op)
+    actual =
+      case op
+      when 'get'
+        result.respond_to?(:hit?) && result.hit? ? result.stale? : nil
+      when 'watch'
+        result.is_a?(Beachcomber::WatchEvent) ? result.stale : nil
+      else
+        nil
+      end
+    unless actual == expected
+      @errors << "#{name}: stale expected #{expected.inspect}, got #{actual.inspect}"
     end
   end
 

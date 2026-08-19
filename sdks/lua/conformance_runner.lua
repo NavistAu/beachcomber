@@ -234,8 +234,24 @@ local function deep_equal(a, b)
   return true
 end
 
+-- Every expectation kind documented in tests/conformance/README.md. A
+-- fixture using a key outside this set fails loudly rather than being
+-- silently ignored — the whole point of this runner is to catch a fixture
+-- asserting something the harness doesn't actually check.
+local KNOWN_EXPECT_KEYS = {
+  status = true, data_type = true, data_equals = true, data_as_text = true,
+  data_contains_field = true, data_field_equals = true, age_ms_present = true,
+  stale = true, error_contains = true,
+}
+
 --- @return true, or false, reason_string
 local function check_expect(resp, expect)
+  for k in pairs(expect) do
+    if not KNOWN_EXPECT_KEYS[k] then
+      return false, "fixture uses unknown expectation key: " .. tostring(k) .. " — the runner has no check for it"
+    end
+  end
+
   local status = expect.status
   if status == "ok" then
     if not resp.ok then

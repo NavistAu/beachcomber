@@ -591,11 +591,36 @@ static const char *stringify_scalar(const json_node_t *n, char *buf, size_t buf_
     }
 }
 
+/* Every expectation kind documented in tests/conformance/README.md. A
+ * fixture using a key outside this set fails loudly rather than being
+ * silently ignored — the whole point of this runner is to catch a fixture
+ * asserting something the harness doesn't actually check. */
+static int is_known_expect_key(const char *key) {
+    static const char *known[] = {
+        "status", "data_type", "data_equals", "data_as_text",
+        "data_contains_field", "data_field_equals", "age_ms_present",
+        "stale", "error_contains",
+    };
+    for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
+        if (strcmp(key, known[i]) == 0) return 1;
+    }
+    return 0;
+}
+
 static int check_expect(const char *name, const json_node_t *expect,
                         const char *op_str, char *envelope_json) {
     if (!expect) {
         report_pass(name);
         return 1;
+    }
+
+    if (expect->type == JSON_OBJECT) {
+        for (json_node_t *c = expect->children; c; c = c->next) {
+            if (c->key && !is_known_expect_key(c->key)) {
+                report_fail(name, "fixture uses unknown expectation key \"%s\" — the runner has no check for it", c->key);
+                return 0;
+            }
+        }
     }
 
     if (!envelope_json) {

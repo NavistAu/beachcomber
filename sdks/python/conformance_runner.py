@@ -200,6 +200,15 @@ def _run_op(
     raise ValueError(f"unknown op: {op!r}")
 
 
+# Every expectation kind documented in tests/conformance/README.md. A
+# fixture using a key outside this set fails loudly rather than being
+# silently ignored — the whole point of this runner is to catch a fixture
+# asserting something the harness doesn't actually check.
+_KNOWN_EXPECT_KEYS = {
+    "status", "data_type", "data_equals", "data_as_text", "data_contains_field",
+    "data_field_equals", "age_ms_present", "stale", "error_contains",
+}
+
 # Ops this runner's binding can execute. A fixture using any op outside this
 # set must be skipped, not failed — the binding doesn't implement it yet.
 _SUPPORTED_OPS = {
@@ -299,11 +308,31 @@ def _check_expect(
                     f"expected data to contain field {field!r} but data was {actual_data!r}"
                 )
 
+        # data_field_equals check: {"field": "...", "value": <json>}.
+        if "data_field_equals" in expect:
+            spec = expect["data_field_equals"]
+            field = spec.get("field")
+            expected_val = spec.get("value")
+            actual_data = _extract_data(result)
+            if not isinstance(actual_data, dict) or actual_data.get(field) != expected_val:
+                actual_val = actual_data.get(field) if isinstance(actual_data, dict) else actual_data
+                failures.append(
+                    f"data_field_equals failed for {field!r}: expected {expected_val!r}, got {actual_val!r}"
+                )
+
         # age_ms_present check.
         if expect.get("age_ms_present"):
             age = _extract_age_ms(result)
             if age is None:
                 failures.append("expected age_ms to be present but it was None/missing")
+
+        # stale check.
+        if "stale" in expect:
+            actual_stale = _extract_stale(result)
+            if actual_stale != expect["stale"]:
+                failures.append(
+                    f"expected stale={expect['stale']!r} but got {actual_stale!r}"
+                )
 
     elif status == "error":
         if error is None:
@@ -359,6 +388,17 @@ def _extract_age_ms(result: Any) -> Optional[int]:
     return None
 
 
+def _extract_stale(result: Any) -> Optional[bool]:
+    from libbeachcomber.result import CombResult
+    from libbeachcomber.types import WatchEvent
+
+    if isinstance(result, CombResult):
+        return result.stale
+    if isinstance(result, WatchEvent):
+        return result.stale
+    return None
+
+
 def _check_data_type(data: Any, expected_type: str) -> bool:
     if expected_type == "object":
         return isinstance(data, dict)
@@ -393,6 +433,10 @@ def run_fixture(fixture_path: pathlib.Path, client: Client) -> tuple[str, str]:
     unsupported = _unsupported_op(fixture)
     if unsupported is not None:
         return "skip", f"unsupported op {unsupported!r}"
+
+    unknown_keys = set(fixture.get("expect", {})) - _KNOWN_EXPECT_KEYS
+    if unknown_keys:
+        return "fail", f"{name}: fixture uses unknown expectation key(s) {sorted(unknown_keys)!r} — the runner has no check for them"
 
     with tempfile.TemporaryDirectory(prefix="bcconf_cwd_") as default_cwd:
         resolve_ctx = {

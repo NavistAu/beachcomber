@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -173,8 +174,15 @@ func loadFixtures(dir string) ([]fixture, error) {
 		if err != nil {
 			return err
 		}
+		// DisallowUnknownFields catches a fixture using an expectation key
+		// this runner doesn't check for (e.g. a typo, or a documented kind
+		// added to tests/conformance/README.md that expectBlock hasn't
+		// grown a field for yet) — it fails loudly at load time instead of
+		// silently skipping the assertion.
 		var f fixture
-		if err := json.Unmarshal(data, &f); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&f); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
 		f.path = path

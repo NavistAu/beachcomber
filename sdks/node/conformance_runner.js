@@ -339,9 +339,24 @@ if (!fs.existsSync(DIST_CLIENT)) {
     return JSON.stringify(a) === JSON.stringify(b);
   }
 
+  // Every expectation kind documented in tests/conformance/README.md. A
+  // fixture using a key outside this set fails loudly rather than being
+  // silently ignored — the whole point of this runner is to catch a
+  // fixture asserting something the harness doesn't actually check.
+  const KNOWN_EXPECT_KEYS = new Set([
+    'status', 'data_type', 'data_equals', 'data_as_text', 'data_contains_field',
+    'data_field_equals', 'age_ms_present', 'stale', 'error_contains',
+  ]);
+
   function checkExpect(fixture, resp) {
     const expect = fixture.expect;
     const failures = [];
+
+    const unknown = Object.keys(expect).filter((k) => !KNOWN_EXPECT_KEYS.has(k));
+    if (unknown.length > 0) {
+      failures.push(`fixture uses unknown expectation key(s) ${JSON.stringify(unknown)} — the runner has no check for them`);
+      return failures;
+    }
 
     // status
     if (expect.status) {
