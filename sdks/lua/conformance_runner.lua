@@ -95,9 +95,18 @@ if not COMB_BIN or COMB_BIN == "" then
   die("COMB_BIN environment variable is not set.\nExample: COMB_BIN=/path/to/comb lua sdks/lua/conformance_runner.lua")
 end
 
--- Use a temp socket path to avoid conflicting with a running daemon.
-local tmpdir      = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
-local socket_path = tmpdir .. "/beachcomber_conformance_" .. tostring(os.time()) .. ".sock"
+-- Use a private temp directory for the socket, like every other runner.
+-- A socket placed directly in the shared /tmp root fails to start: the
+-- daemon's singleton lock hardens the pid file's parent directory to mode
+-- 0700 (src/singleton/mod.rs), and /tmp itself is root-owned, so that chmod
+-- is rejected with EPERM before the daemon ever binds.
+local base_tmpdir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
+local mkdtemp_pipe = io.popen("mktemp -d " .. base_tmpdir .. "/beachcomber-conformance-XXXXXX", "r")
+if not mkdtemp_pipe then die("Failed to create temp directory") end
+local tmpdir = mkdtemp_pipe:read("*l")
+mkdtemp_pipe:close()
+if not tmpdir or tmpdir == "" then die("mktemp -d failed under " .. base_tmpdir) end
+local socket_path = tmpdir .. "/sock"
 
 log("Starting daemon: " .. COMB_BIN)
 log("Socket: " .. socket_path)
@@ -117,12 +126,14 @@ pid_pipe:close()
 log("Daemon PID: " .. tostring(daemon_pid))
 
 -- Poll until the socket file appears (max 5s).
+-- io.open() cannot be used here: fopen() on a Unix domain socket special
+-- file fails (ENXIO) even once the daemon is listening, so that check never
+-- succeeds. `test -S` asks the filesystem what kind of node is there instead
+-- of trying to open it as a stream.
 local deadline = os.time() + 5
 local daemon_ready = false
 while os.time() < deadline do
-  local f = io.open(socket_path, "r")
-  if f then
-    f:close()
+  if os.execute("test -S " .. socket_path) then
     daemon_ready = true
     break
   end
@@ -394,7 +405,7 @@ end
 
 log("Stopping daemon (PID " .. tostring(daemon_pid) .. ")")
 os.execute("kill " .. tostring(daemon_pid) .. " 2>/dev/null")
-os.remove(socket_path)
+os.execute("rm -rf " .. tmpdir .. " 2>/dev/null")
 
 -- ── Summary ───────────────────────────────────────────────────────────────────
 
