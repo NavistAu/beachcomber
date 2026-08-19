@@ -31,11 +31,14 @@ async fn setup_stale() -> (TempDir, std::path::PathBuf) {
     fields.insert("short".to_string(), Value::String("stale".to_string()));
     cache.put_source("hostname", None, "main", fields, Some(0));
 
-    // Advance mock clock by 2s so elapsed().as_secs() > 0 — avoids a real 1.1s wall wait.
-    // Resume before starting the server so the socket-bind sleep runs on real time.
-    tokio::time::pause();
-    tokio::time::advance(std::time::Duration::from_secs(2)).await;
-    tokio::time::resume();
+    // Wait for elapsed().as_secs() > 0 on the seeded entry. This used to be a
+    // mocked-clock pause()/advance()/resume() to skip the real wall wait, but
+    // `Client` calls below are synchronous (blocking) now: this test's runtime
+    // must be multi-threaded so the server task (spawned onto it just below)
+    // keeps running while the test thread blocks on a socket read, and
+    // `tokio::time::pause` only works on the (single-threaded) current_thread
+    // runtime. So this is a real sleep now, not a mocked one.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     tokio::spawn(async move { server.run().await });
@@ -43,7 +46,7 @@ async fn setup_stale() -> (TempDir, std::path::PathBuf) {
     (tmp, sock)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn single_key_text_wait_true_re_executes_stale_entry() {
     // run_get's single-key server-side path (format=text, keys.len()==1) must
     // forward wait=true. If it does, the stale seeded value is evicted and the
@@ -53,7 +56,6 @@ async fn single_key_text_wait_true_re_executes_stale_entry() {
 
     let text = client
         .get_formatted_with_flags("hostname.name", None, "text", false, true)
-        .await
         .unwrap();
 
     assert!(
@@ -62,17 +64,16 @@ async fn single_key_text_wait_true_re_executes_stale_entry() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_key_client_side_wait_true_re_executes_stale_entry() {
     // run_get's multi-key client-side path (e.g. format=json) calls
     // session.get_with_flags per key. It must forward wait=true.
     let (_tmp, sock) = setup_stale().await;
     let client = Client::new(sock);
-    let mut session = client.connect().await.unwrap();
+    let mut session = client.connect().unwrap();
 
     let response = session
         .get_with_flags("hostname.name", None, false, true)
-        .await
         .unwrap();
 
     assert!(response.ok);

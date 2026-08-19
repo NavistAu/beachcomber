@@ -1,18 +1,32 @@
 //! `cargo xtask` — repository automation for beachcomber.
 //!
-//! Currently one task: `set-version`, which bumps the project version across
-//! every manifest, lockfile, package recipe, and README download URL in a single
-//! command. Each target file is edited by a count-guarded literal replacement of
-//! the current version string; if any file's occurrence count does not match the
-//! expected count the whole run aborts before writing anything, so a drifting
-//! file format surfaces as a loud error rather than a silent miss.
+//! Two tasks:
+//!
+//! - `set-version`, which bumps the project version across every manifest,
+//!   lockfile, package recipe, and README download URL in a single command.
+//!   Each target file is edited by a count-guarded literal replacement of
+//!   the current version string; if any file's occurrence count does not
+//!   match the expected count the whole run aborts before writing anything,
+//!   so a drifting file format surfaces as a loud error rather than a
+//!   silent miss.
+//! - `gen-header`, which regenerates `libbeachcomber-ffi/include/beachcomber.h`
+//!   from that crate's `extern "C"` surface by shelling out to the `cbindgen`
+//!   CLI. `cbindgen` is deliberately not a build-dependency (this project
+//!   builds offline from `vendor/`, and vendoring cbindgen's own dependency
+//!   tree would slow every build for a header only CI and contributors who
+//!   touch the FFI surface need); install it with
+//!   `cargo install cbindgen --locked` to run this locally.
 //!
 //! Usage:
 //!   cargo xtask set-version <X.Y.Z> [--dry-run] [--no-verify]
+//!   cargo xtask gen-header [--check]
 //!
 //! `--dry-run` reports the plan without touching the tree. `--no-verify` skips
 //! the post-edit `cargo check`. The CHANGELOG is intentionally NOT touched —
-//! release notes are written by hand.
+//! release notes are written by hand. `gen-header --check` runs cbindgen's
+//! own `--verify` mode: it fails without writing anything if regenerating
+//! would change the committed header, which is what CI's freshness check
+//! runs.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -115,9 +129,9 @@ fn release_targets(old: &str) -> Vec<Target> {
         rename: false,
     };
     vec![
-        t("Cargo.toml", 1),
+        t("Cargo.toml", 2),
         t("Cargo.lock", 2),
-        t("beachcomber-client/Cargo.toml", 1),
+        t("libbeachcomber/Cargo.toml", 1),
         t("sdks/node/package.json", 1),
         t("sdks/node/package-lock.json", 2),
         t("sdks/python/pyproject.toml", 1),
@@ -164,10 +178,12 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut positional = Vec::new();
     let mut dry_run = false;
     let mut no_verify = false;
+    let mut check = false;
     for a in args {
         match a.as_str() {
             "--dry-run" => dry_run = true,
             "--no-verify" => no_verify = true,
+            "--check" => check = true,
             s if s.starts_with("--") => return Err(format!("unknown flag: {s}")),
             s => positional.push(s.to_string()),
         }
@@ -180,14 +196,54 @@ fn run(args: &[String]) -> Result<(), String> {
                 .ok_or("set-version requires a <X.Y.Z> argument")?;
             set_version(new, dry_run, no_verify)
         }
+        Some("gen-header") => gen_header(check),
         Some(other) => Err(format!(
-            "unknown task: {other}\n\nUsage: cargo xtask set-version <X.Y.Z> [--dry-run] [--no-verify]"
+            "unknown task: {other}\n\nUsage:\n  cargo xtask set-version <X.Y.Z> [--dry-run] [--no-verify]\n  cargo xtask gen-header [--check]"
         )),
         None => Err(
-            "no task given\n\nUsage: cargo xtask set-version <X.Y.Z> [--dry-run] [--no-verify]"
+            "no task given\n\nUsage:\n  cargo xtask set-version <X.Y.Z> [--dry-run] [--no-verify]\n  cargo xtask gen-header [--check]"
                 .into(),
         ),
     }
+}
+
+/// Regenerates `libbeachcomber-ffi/include/beachcomber.h` via the `cbindgen`
+/// CLI (must be installed separately — see the module doc). `--check` uses
+/// cbindgen's own `--verify` mode: it compares the freshly generated header
+/// against the committed one and fails without writing anything if they
+/// differ, which is what CI's freshness check runs.
+fn gen_header(check: bool) -> Result<(), String> {
+    let root = repo_root();
+    let crate_dir = root.join("libbeachcomber-ffi");
+    let config = crate_dir.join("cbindgen.toml");
+    let output = crate_dir.join("include/beachcomber.h");
+
+    let mut cmd = std::process::Command::new("cbindgen");
+    cmd.arg("--crate")
+        .arg("libbeachcomber-ffi")
+        .arg("--config")
+        .arg(&config)
+        .arg("--output")
+        .arg(&output);
+    if check {
+        cmd.arg("--verify");
+    }
+    cmd.arg(&crate_dir);
+
+    let status = cmd.status().map_err(|e| {
+        format!("running cbindgen (install with `cargo install cbindgen --locked`): {e}")
+    })?;
+    if !status.success() {
+        return Err(if check {
+            "generated header does not match the committed libbeachcomber-ffi/include/beachcomber.h -- run `cargo xtask gen-header` and commit the result".into()
+        } else {
+            "cbindgen failed".into()
+        });
+    }
+    if !check {
+        println!("Wrote {}", output.display());
+    }
+    Ok(())
 }
 
 fn set_version(new: &str, dry_run: bool, no_verify: bool) -> Result<(), String> {
@@ -374,7 +430,7 @@ mod tests {
         for expected in [
             "Cargo.toml",
             "Cargo.lock",
-            "beachcomber-client/Cargo.toml",
+            "libbeachcomber/Cargo.toml",
             "sdks/node/package.json",
             "sdks/node/package-lock.json",
             "sdks/python/pyproject.toml",
@@ -417,9 +473,9 @@ mod tests {
             by_path("sdks/lua/rockspec/libbeachcomber-0.6.1-1.rockspec"),
             2
         );
-        assert_eq!(by_path("Cargo.toml"), 1);
+        assert_eq!(by_path("Cargo.toml"), 2);
         // Total occurrences the tool will rewrite across the tree.
         let total: usize = t.iter().map(|x| x.expected).sum();
-        assert_eq!(total, 24);
+        assert_eq!(total, 25);
     }
 }

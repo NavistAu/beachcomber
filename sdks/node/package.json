@@ -44,8 +44,17 @@
     "dist/**/*.d.ts",
     "dist/**/*.d.ts.map"
   ],
+  "peerDependencies": {
+    "koffi": "^2.9.0 || ^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "koffi": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "koffi": "^3.1.5",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   }

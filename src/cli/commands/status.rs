@@ -55,80 +55,63 @@ pub fn run_status(
         ascii,
     };
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    rt.block_on(async {
-        let client = crate::client::Client::new(socket_path);
-        match client.send_raw(serde_json::json!({"op": "status"})).await {
-            Ok(response) => {
-                if response.ok {
-                    let rows: Vec<crate::cache::CacheRow> = response
-                        .data
-                        .as_ref()
-                        .and_then(|d| serde_json::from_value(d.clone()).ok())
-                        .unwrap_or_default();
-                    let rows = apply_filters(rows, filters).unwrap_or_else(|e| {
-                        eprintln!("filter error: {e}");
-                        std::process::exit(2);
-                    });
-                    let rows = apply_sort(rows, sort_col).unwrap_or_else(|e| {
-                        eprintln!("sort error: {e}");
-                        std::process::exit(2);
-                    });
-                    let out = render_preset(preset, &rows, &opts);
-                    print!("{out}");
+    let client = crate::client::Client::new(socket_path);
+    match client.status() {
+        Ok(rows) => {
+            let rows = apply_filters(rows, filters).unwrap_or_else(|e| {
+                eprintln!("filter error: {e}");
+                std::process::exit(2);
+            });
+            let rows = apply_sort(rows, sort_col).unwrap_or_else(|e| {
+                eprintln!("sort error: {e}");
+                std::process::exit(2);
+            });
+            let out = render_preset(preset, &rows, &opts);
+            print!("{out}");
 
-                    // Canon singleton.md invariants 12 + 13: watch and reaper
-                    // degradation are observable via `comb status`. Human
-                    // preset only, and on stderr so machine formats stay
-                    // parseable.
-                    if preset == "human"
-                        && let Ok(resp) = client
-                            .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
-                            .await
-                        && resp.ok
-                        && let Some(data) = resp.data.as_ref()
-                    {
-                        let glyph = if ascii { "!" } else { "⚠" };
-                        if let Some(backend) = data.get("watch_backend").and_then(|v| v.as_str())
-                            && backend != "native"
-                        {
-                            eprintln!(
-                                "{glyph} watch backend: {backend} — kernel fs events undelivered; watch invalidation degraded"
-                            );
-                        }
-                        if let Some(reaper) = data.get("reaper").filter(|r| !r.is_null()) {
-                            let armed = reaper
-                                .get("armed")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            let confined = reaper.get("visibility").and_then(|v| v.as_str())
-                                == Some("confined");
-                            let denied = reaper
-                                .get("kill_denied")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            if armed && confined {
-                                eprintln!(
-                                    "{glyph} reaper visibility degraded: daemon runs confined — orphan daemons outside its view are not policed"
-                                );
-                            }
-                            if armed && denied > 0 {
-                                eprintln!(
-                                    "{glyph} reaper: {denied} kill attempt(s) denied by the OS"
-                                );
-                            }
-                        }
+            // Canon singleton.md invariants 12 + 13: watch and reaper
+            // degradation are observable via `comb status`. Human
+            // preset only, and on stderr so machine formats stay
+            // parseable.
+            if preset == "human"
+                && let Ok(resp) = client.introspect("daemon", None)
+                && resp.ok
+                && let Some(data) = resp.data.as_ref()
+            {
+                let glyph = if ascii { "!" } else { "⚠" };
+                if let Some(backend) = data.get("watch_backend").and_then(|v| v.as_str())
+                    && backend != "native"
+                {
+                    eprintln!(
+                        "{glyph} watch backend: {backend} — kernel fs events undelivered; watch invalidation degraded"
+                    );
+                }
+                if let Some(reaper) = data.get("reaper").filter(|r| !r.is_null()) {
+                    let armed = reaper
+                        .get("armed")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let confined =
+                        reaper.get("visibility").and_then(|v| v.as_str()) == Some("confined");
+                    let denied = reaper
+                        .get("kill_denied")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if armed && confined {
+                        eprintln!(
+                            "{glyph} reaper visibility degraded: daemon runs confined — orphan daemons outside its view are not policed"
+                        );
                     }
-                    ExitCode::SUCCESS
-                } else {
-                    eprintln!("Error: {}", response.error.unwrap_or_default());
-                    ExitCode::from(2)
+                    if armed && denied > 0 {
+                        eprintln!("{glyph} reaper: {denied} kill attempt(s) denied by the OS");
+                    }
                 }
             }
-            Err(e) => {
-                eprintln!("Error: {e}");
-                ExitCode::from(2)
-            }
+            ExitCode::SUCCESS
         }
-    })
+        Err(e) => {
+            eprintln!("Error: {e}");
+            ExitCode::from(2)
+        }
+    }
 }

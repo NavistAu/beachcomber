@@ -22,7 +22,7 @@ One command rewrites every version touchpoint:
 cargo xtask set-version X.Y.Z          # preview first with --dry-run
 ```
 
-This updates all 14 files — `Cargo.toml`, `beachcomber-client/Cargo.toml`, both lockfiles, the 5 SDK manifests, the 3 AUR PKGBUILDs, `packaging/nix/flake.nix`, the `release.yml` rockspec reference, the README `.deb`/`.rpm` download URLs, and the Lua rockspec (renaming its versioned filename and updating `version` + `tag`) — then runs `cargo check` to validate the workspace and refresh `Cargo.lock`. Each edit is count-guarded: if any file's occurrence count has drifted (e.g. a manifest was reformatted) the run aborts before writing anything, so re-sync that file and re-run. Use `--dry-run` to preview the plan and `--no-verify` to skip the `cargo check`.
+This updates all 14 files — `Cargo.toml`, `libbeachcomber/Cargo.toml`, both lockfiles, the 5 SDK manifests, the 3 AUR PKGBUILDs, `packaging/nix/flake.nix`, the `release.yml` rockspec reference, the README `.deb`/`.rpm` download URLs, and the Lua rockspec (renaming its versioned filename and updating `version` + `tag`) — then runs `cargo check` to validate the workspace and refresh `Cargo.lock`. Each edit is count-guarded: if any file's occurrence count has drifted (e.g. a manifest was reformatted) the run aborts before writing anything, so re-sync that file and re-run. Use `--dry-run` to preview the plan and `--no-verify` to skip the `cargo check`.
 
 The CHANGELOG is intentionally **not** touched — write release notes by hand (next step).
 

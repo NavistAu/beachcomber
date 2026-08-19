@@ -1,5 +1,11 @@
 """Client and Session classes for the beachcomber daemon.
 
+Transport: ``ctypes`` calls into the ``libbeachcomber`` C ABI (see
+:mod:`._native`). Socket connection, retry, auto-start and wire-protocol
+framing are all the native library's job now — this module only builds
+request arguments, decodes typed results, and manages native handle
+lifetimes.
+
 Typical usage::
 
     from beachcomber import Client
@@ -19,24 +25,12 @@ For multiple queries on one connection use a session::
 
 from __future__ import annotations
 
-import socket
-import time
+import json
 from contextlib import contextmanager
 from typing import Any, Generator, Optional
 
-from .discovery import discover_socket_path
-from .exceptions import DaemonNotRunning, ProtocolError
-from .protocol import (
-    build_context_request,
-    build_get_request,
-    build_hello_request,
-    build_introspect_request,
-    build_put_request,
-    build_refresh_request,
-    build_status_request,
-    build_watch_request,
-    decode_response,
-)
+from . import _native
+from .exceptions import CombError
 from .result import CombResult
 from .types import (
     CacheRow,
@@ -48,107 +42,30 @@ from .types import (
     WatchEvent,
 )
 
-# Default socket timeout in seconds (matches Rust client: 100 ms).
+# Default socket timeout in seconds (matches the native client's own default).
 _DEFAULT_TIMEOUT: float = 0.1
 
 
-_RETRY_BACKOFFS: list[float] = [0.250, 0.500, 1.000]
+def _opt_json(value: Optional[Any]) -> Optional[str]:
+    """Serialise a nullable dict/value argument to JSON, or leave it None."""
+    if value is None:
+        return None
+    return json.dumps(value)
 
 
-def _connect_with_retry(socket_path: str) -> socket.socket:
-    """Connect to a Unix socket with 3 retries (250ms/500ms/1s exponential).
-
-    Retries on ConnectionRefusedError and FileNotFoundError only — other
-    errors surface immediately.  Intended to cover the brief restart window
-    when the old daemon has shut down and the new one hasn't bound yet.
-
-    Returns:
-        Connected (blocking, no timeout set) :class:`socket.socket`.
-
-    Raises:
-        ConnectionRefusedError or FileNotFoundError: After all retries
-            are exhausted.
-    """
-    last_exc: Exception | None = None
-    for backoff in _RETRY_BACKOFFS:
-        try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.connect(socket_path)
-            return s
-        except (ConnectionRefusedError, FileNotFoundError) as e:
-            last_exc = e
-            time.sleep(backoff)
-    # Final attempt after all backoffs.
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(socket_path)  # raises if still failing
-    return s
+def _result_from_get_payload(payload: Optional[dict]) -> CombResult:
+    """Build a :class:`CombResult` from a decoded ``bc_get``/``bc_session_get`` payload."""
+    if not isinstance(payload, dict):
+        return CombResult(ok=True, data=None, age_ms=0, stale=False)
+    return CombResult(
+        ok=True,
+        data=payload.get("data"),
+        age_ms=int(payload.get("age_ms") or 0),
+        stale=bool(payload.get("stale") or False),
+    )
 
 
-def _connect(socket_path: str, timeout: float) -> socket.socket:
-    """Open a Unix domain socket connection to the daemon.
-
-    Args:
-        socket_path: Absolute path to the Unix domain socket.
-        timeout: Read/write timeout in seconds.
-
-    Returns:
-        Connected :class:`socket.socket`.
-
-    Raises:
-        DaemonNotRunning: If the connection is refused or the socket does
-            not exist.
-    """
-    try:
-        sock = _connect_with_retry(socket_path)
-        sock.settimeout(timeout)
-        return sock
-    except (ConnectionRefusedError, FileNotFoundError, OSError) as exc:
-        raise DaemonNotRunning(socket_path) from exc
-
-
-def _send_recv(sock: socket.socket, request: bytes) -> dict[str, Any]:
-    """Send a request and read one response line.
-
-    Args:
-        sock: Connected socket.
-        request: Encoded request bytes (must include trailing newline).
-
-    Returns:
-        Parsed response dict (``ok`` has already been verified to be
-        ``True``).
-
-    Raises:
-        ProtocolError: On I/O or parse failure.
-        ServerError: If the daemon returns ``ok: false``.
-    """
-    try:
-        sock.sendall(request)
-    except OSError as exc:
-        raise ProtocolError(f"failed to send request: {exc}") from exc
-
-    # Read until newline using a file-like wrapper.
-    reader = sock.makefile("r", encoding="utf-8")
-    try:
-        line = reader.readline()
-    except OSError as exc:
-        raise ProtocolError(f"failed to read response: {exc}") from exc
-    finally:
-        reader.detach()  # Do not close the underlying socket.
-
-    return decode_response(line)
-
-
-def _result_from_response(resp: dict[str, Any]) -> CombResult:
-    """Build a :class:`CombResult` from a parsed ``get`` response dict."""
-    data = resp.get("data")
-    age_ms = int(resp.get("age_ms", 0) or 0)
-    stale = bool(resp.get("stale", False))
-    return CombResult(ok=True, data=data, age_ms=age_ms, stale=stale)
-
-
-def _parse_hello(resp: dict[str, Any]) -> HelloInfo:
-    """Build a :class:`HelloInfo` from a parsed ``hello`` response dict."""
-    data = resp.get("data", {})
+def _parse_hello(data: Optional[dict]) -> HelloInfo:
     if not isinstance(data, dict):
         data = {}
     return HelloInfo(
@@ -157,13 +74,11 @@ def _parse_hello(resp: dict[str, Any]) -> HelloInfo:
     )
 
 
-def _parse_cache_rows(resp: dict[str, Any]) -> list[CacheRow]:
-    """Build a list of :class:`CacheRow` from a parsed ``status`` response dict."""
-    arr = resp.get("data", [])
-    if not isinstance(arr, list):
-        raise ProtocolError("status data is not an array")
+def _parse_cache_rows(data: Any) -> list[CacheRow]:
+    if not isinstance(data, list):
+        return []
     out = []
-    for row in arr:
+    for row in data:
         if not isinstance(row, dict):
             continue
         out.append(
@@ -185,17 +100,11 @@ def _parse_cache_rows(resp: dict[str, Any]) -> list[CacheRow]:
     return out
 
 
-def _parse_daemon_health(data: dict[str, Any]) -> DaemonHealth:
-    """Build a :class:`DaemonHealth` from a daemon data dict."""
+def _parse_daemon_health(data: dict) -> DaemonHealth:
     verdicts = []
     for v in data.get("verdicts", []) or []:
         if isinstance(v, dict):
-            verdicts.append(
-                Verdict(
-                    level=str(v.get("level", "")),
-                    message=str(v.get("message", "")),
-                )
-            )
+            verdicts.append(Verdict(level=str(v.get("level", "")), message=str(v.get("message", ""))))
     return DaemonHealth(
         pid=int(data.get("pid", 0) or 0),
         version=str(data.get("version", "")),
@@ -210,33 +119,36 @@ def _parse_daemon_health(data: dict[str, Any]) -> DaemonHealth:
     )
 
 
-def _parse_introspect(
-    subject: IntrospectSubject, resp: dict[str, Any]
-) -> IntrospectResponse:
-    """Build an :class:`IntrospectResponse` from a parsed ``introspect`` response dict."""
-    data = resp.get("data", {})
+def _parse_introspect(subject: IntrospectSubject, data: Any) -> IntrospectResponse:
     if subject == IntrospectSubject.DAEMON and isinstance(data, dict):
-        return IntrospectResponse(
-            subject=subject, daemon=_parse_daemon_health(data), other=None
-        )
+        return IntrospectResponse(subject=subject, daemon=_parse_daemon_health(data), other=None)
     return IntrospectResponse(subject=subject, daemon=None, other=data)
+
+
+def _build_options_json(
+    socket_path: Optional[str], timeout: float, autostart: Optional[bool]
+) -> Optional[str]:
+    options: dict = {}
+    if socket_path is not None:
+        options["socket_path"] = socket_path
+    options["timeout_ms"] = int(round(timeout * 1000))
+    if autostart is not None:
+        options["autostart"] = autostart
+    return json.dumps(options)
 
 
 class WatchStream:
     """Iterator over watch events. Yields :class:`~beachcomber.types.WatchEvent` instances.
 
-    Create via :meth:`Client.watch` rather than directly. The underlying
-    connection is held open for the lifetime of the stream; release it via
-    :meth:`close` or by using the stream as a context manager.
-
-    Args:
-        sock: Already-connected :class:`socket.socket` with a ``watch``
-            request already sent.
+    Create via :meth:`Client.watch` rather than directly. Wraps a native
+    ``BcWatch`` handle; release it via :meth:`close` or by using the stream
+    as a context manager.
     """
 
-    def __init__(self, sock: socket.socket) -> None:
-        self._sock = sock
-        self._reader = sock.makefile("r", encoding="utf-8")
+    def __init__(self, ptr: int) -> None:
+        self._ptr = None
+        self._lib = _native.get_lib()
+        self._ptr = ptr
 
     def __iter__(self) -> "WatchStream":
         return self
@@ -247,30 +159,40 @@ class WatchStream:
             raise StopIteration
         return event
 
-    def next_event(self) -> Optional[WatchEvent]:
+    def next_event(self, timeout_ms: int = -1) -> Optional[WatchEvent]:
         """Read the next event from the stream.
 
+        Args:
+            timeout_ms: ``-1`` blocks indefinitely (the default, matching
+                this method's historical no-argument behaviour), ``0``
+                polls without blocking, ``>0`` waits that long.
+
         Returns:
-            :class:`~beachcomber.types.WatchEvent` or ``None`` if the
-            connection was closed by the daemon.
+            :class:`~beachcomber.types.WatchEvent` on the ``event``
+            outcome; ``None`` on ``timeout``, ``eof``, or ``cancelled``.
         """
-        # Ensure the read blocks even if a timeout was set on the socket.
-        self._sock.settimeout(None)
-        line = self._reader.readline()
-        if not line:
+        if self._ptr is None:
             return None
-        resp = decode_response(line)
-        data = resp.get("data")
+        env = self._lib.call_watch_next(self._ptr, timeout_ms)
+        if env.get("outcome") != "event":
+            return None
+        data = env.get("data") or {}
         return WatchEvent(
-            data=data,
-            age_ms=int(resp.get("age_ms", 0) or 0),
-            stale=bool(resp.get("stale", False)),
+            data=data.get("data"),
+            age_ms=int(data.get("age_ms") or 0),
+            stale=bool(data.get("stale") or False),
         )
 
+    def cancel(self) -> None:
+        """Unblock a pending or future :meth:`next_event` call from another thread."""
+        if self._ptr is not None:
+            self._lib.call_void("bc_watch_cancel", self._ptr)
+
     def close(self) -> None:
-        """Close the underlying connection."""
-        self._reader.detach()
-        self._sock.close()
+        """Free the underlying native watch handle."""
+        if self._ptr is not None:
+            self._lib.call_void("bc_watch_free", self._ptr)
+            self._ptr = None
 
     def __enter__(self) -> "WatchStream":
         return self
@@ -278,34 +200,44 @@ class WatchStream:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
+    def __del__(self) -> None:
+        self.close()
+
 
 class Client:
-    """One-shot client for the beachcomber daemon.
-
-    Each method opens a new socket connection, sends one request, reads
-    the response, then closes the connection. This is simple and safe
-    for occasional queries.
-
-    For repeated queries (e.g. populating a shell prompt) prefer
-    :meth:`session` which reuses the connection.
+    """Client for the beachcomber daemon, backed by the native C ABI.
 
     Args:
         socket_path: Explicit path to the daemon socket. If ``None`` the
-            path is auto-discovered via
-            :func:`~beachcomber.discovery.discover_socket_path`.
+            native library auto-discovers it (``$BEACHCOMBER_SOCKET``, then
+            its per-user default).
         timeout: Socket read/write timeout in seconds. Default ``0.1``.
+        autostart: Whether to attempt starting the daemon if it isn't
+            running. ``None`` leaves the native library's own default.
     """
 
     def __init__(
         self,
         socket_path: Optional[str] = None,
         timeout: float = _DEFAULT_TIMEOUT,
+        autostart: Optional[bool] = None,
     ) -> None:
-        self._socket_path = socket_path
-        self._timeout = timeout
+        self._ptr = None
+        self._lib = _native.get_lib()
+        options_json = _build_options_json(socket_path, timeout, autostart)
+        ptr = self._lib.call_ptr("bc_client_new", options_json.encode())
+        if not ptr:
+            raise CombError("bc_client_new returned NULL")
+        self._ptr = ptr
 
-    def _resolve_path(self) -> str:
-        return self._socket_path or discover_socket_path()
+    def close(self) -> None:
+        """Free the underlying native client handle."""
+        if self._ptr is not None:
+            self._lib.call_void("bc_client_free", self._ptr)
+            self._ptr = None
+
+    def __del__(self) -> None:
+        self.close()
 
     def get(self, key: str, path: Optional[str] = None) -> CombResult:
         """Read a cached value from the daemon.
@@ -322,155 +254,10 @@ class Client:
             ``True`` when a cached value exists.
 
         Raises:
-            DaemonNotRunning: If the socket cannot be reached.
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
+            CombError: subclass matching the failure kind (see
+                :mod:`beachcomber.exceptions`).
         """
-        sock = _connect(self._resolve_path(), self._timeout)
-        try:
-            resp = _send_recv(sock, build_get_request(key, path))
-        finally:
-            sock.close()
-        return _result_from_response(resp)
-
-    def refresh(self, key: str, path: Optional[str] = None) -> None:
-        """Trigger recomputation of a provider.
-
-        The daemon will recompute the value in the background. This is
-        fire-and-forget — the method returns once the daemon acknowledges
-        the refresh.
-
-        Args:
-            key: Provider key to recompute.
-            path: Working-directory path for per-directory providers.
-
-        Raises:
-            DaemonNotRunning: If the socket cannot be reached.
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
-        """
-        sock = _connect(self._resolve_path(), self._timeout)
-        try:
-            _send_recv(sock, build_refresh_request(key, path))
-        finally:
-            sock.close()
-
-    def status(self) -> list[CacheRow]:
-        """Return cache rows from the daemon.
-
-        Returns:
-            List of :class:`~beachcomber.types.CacheRow` dataclasses.
-
-        Raises:
-            DaemonNotRunning: If the socket cannot be reached.
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
-        """
-        sock = _connect(self._resolve_path(), self._timeout)
-        try:
-            resp = _send_recv(sock, build_status_request())
-        finally:
-            sock.close()
-        return _parse_cache_rows(resp)
-
-    def hello(self) -> HelloInfo:
-        """Ask the daemon for protocol and build versions.
-
-        Returns:
-            :class:`~beachcomber.types.HelloInfo` with protocol and daemon
-            version strings.
-
-        Raises:
-            DaemonNotRunning: If the socket cannot be reached.
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
-        """
-        sock = _connect(self._resolve_path(), self._timeout)
-        try:
-            resp = _send_recv(sock, build_hello_request())
-        finally:
-            sock.close()
-        return _parse_hello(resp)
-
-    def put(
-        self,
-        key: str,
-        data: Optional[Any] = None,
-        ttl: Optional[str] = None,
-        path: Optional[str] = None,
-    ) -> None:
-        """Store data into a virtual provider. ``data=None`` clears the entry.
-
-        Args:
-            key: Virtual provider key to set.
-            data: Data payload. ``None`` clears the entry.
-            ttl: Optional time-to-live string (e.g. ``"60s"``).
-            path: Optional path for per-directory virtual entries.
-
-        Raises:
-            DaemonNotRunning: If the socket cannot be reached.
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
-        """
-        sock = _connect(self._resolve_path(), self._timeout)
-        try:
-            _send_recv(sock, build_put_request(key, data, ttl, path))
-        finally:
-            sock.close()
-
-    def introspect(
-        self,
-        subject: IntrospectSubject,
-        duration_secs: Optional[int] = None,
-    ) -> IntrospectResponse:
-        """Run a diagnostic introspect query.
-
-        Args:
-            subject: Which subsystem to inspect.
-            duration_secs: Optional sampling duration for metrics-style subjects.
-
-        Returns:
-            :class:`~beachcomber.types.IntrospectResponse`. When
-            ``subject`` is :attr:`~beachcomber.types.IntrospectSubject.DAEMON`
-            the ``daemon`` field is a typed :class:`~beachcomber.types.DaemonHealth`;
-            for all other subjects ``other`` holds the raw data.
-
-        Raises:
-            DaemonNotRunning: If the socket cannot be reached.
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
-        """
-        sock = _connect(self._resolve_path(), self._timeout)
-        try:
-            resp = _send_recv(
-                sock, build_introspect_request(subject.value, duration_secs)
-            )
-        finally:
-            sock.close()
-        return _parse_introspect(subject, resp)
-
-    def watch(self, key: str, path: Optional[str] = None) -> WatchStream:
-        """Subscribe to a key and receive live updates.
-
-        Returns a :class:`WatchStream` iterator that yields
-        :class:`~beachcomber.types.WatchEvent` instances. The underlying
-        connection is held open for the lifetime of the stream; release it
-        via :meth:`WatchStream.close` or by using the stream as a context
-        manager.
-
-        Args:
-            key: Provider key to watch.
-            path: Optional working-directory path.
-
-        Returns:
-            :class:`WatchStream` iterator.
-
-        Raises:
-            DaemonNotRunning: If the socket cannot be reached.
-        """
-        sock = _connect(self._resolve_path(), self._timeout)
-        sock.sendall(build_watch_request(key, path))
-        return WatchStream(sock)
+        return self.get_with_flags(key, path)
 
     def get_with_flags(
         self,
@@ -481,134 +268,40 @@ class Client:
     ) -> CombResult:
         """Read a cached value with optional force/wait flags.
 
-        Args:
-            key: Provider key.
-            path: Optional working-directory path.
-            force: Bypass cache and force recomputation.
-            wait: Block until a fresh value is available.
-
-        Returns:
-            :class:`~beachcomber.result.CombResult`.
-
         Raises:
-            DaemonNotRunning: If the socket cannot be reached.
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
+            CombError: subclass matching the failure kind.
         """
-        sock = _connect(self._resolve_path(), self._timeout)
-        try:
-            resp = _send_recv(
-                sock, build_get_request(key, path, force=force, wait=wait)
-            )
-        finally:
-            sock.close()
-        return _result_from_response(resp)
-
-    @contextmanager
-    def session(self) -> Generator[Session, None, None]:
-        """Open a persistent connection as a context manager.
-
-        Yields a :class:`Session` that reuses a single socket for all
-        operations within the ``with`` block.
-
-        Example::
-
-            with client.session() as session:
-                session.set_context("/my/repo")
-                result = session.get("git.branch")
-
-        Raises:
-            DaemonNotRunning: If the socket cannot be reached.
-        """
-        sock = _connect(self._resolve_path(), self._timeout)
-        session = Session(sock)
-        try:
-            yield session
-        finally:
-            sock.close()
-
-
-class Session:
-    """Persistent connection to the beachcomber daemon.
-
-    Reuses a single Unix domain socket across multiple operations.
-    Create via :meth:`Client.session` rather than directly.
-
-    Args:
-        sock: Already-connected :class:`socket.socket`.
-    """
-
-    def __init__(self, sock: socket.socket) -> None:
-        self._sock = sock
-
-    def set_context(self, path: str) -> None:
-        """Set the default working-directory path for this connection.
-
-        After calling this, :meth:`get` and :meth:`refresh` calls do not
-        need an explicit ``path`` argument.
-
-        Args:
-            path: Absolute path to set as the session context.
-
-        Raises:
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
-        """
-        _send_recv(self._sock, build_context_request(path))
-
-    def get(self, key: str, path: Optional[str] = None) -> CombResult:
-        """Read a cached value using the persistent connection.
-
-        Args:
-            key: Provider key (``"git.branch"``, ``"git"``, etc.).
-            path: Optional path override. If omitted and
-                :meth:`set_context` has been called, the session context
-                is used by the daemon.
-
-        Returns:
-            :class:`~beachcomber.result.CombResult`.
-
-        Raises:
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
-        """
-        resp = _send_recv(self._sock, build_get_request(key, path))
-        return _result_from_response(resp)
+        flags = (_native.BC_GET_FORCE if force else 0) | (_native.BC_GET_WAIT if wait else 0)
+        payload = self._lib.call(
+            "bc_get", self._ptr, key.encode(), path.encode() if path is not None else None, flags
+        )
+        return _result_from_get_payload(payload)
 
     def refresh(self, key: str, path: Optional[str] = None) -> None:
-        """Trigger recomputation via the persistent connection.
-
-        Args:
-            key: Provider key to recompute.
-            path: Optional path override.
+        """Trigger recomputation of a provider.
 
         Raises:
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
+            CombError: subclass matching the failure kind.
         """
-        _send_recv(self._sock, build_refresh_request(key, path))
+        self._lib.call("bc_refresh", self._ptr, key.encode(), path.encode() if path is not None else None)
 
     def status(self) -> list[CacheRow]:
-        """Return cache rows via the persistent connection.
-
-        Returns:
-            List of :class:`~beachcomber.types.CacheRow` dataclasses.
-        """
-        resp = _send_recv(self._sock, build_status_request())
-        return _parse_cache_rows(resp)
-
-    def hello(self) -> HelloInfo:
-        """Ask the daemon for protocol and build versions via the persistent connection.
-
-        Returns:
-            :class:`~beachcomber.types.HelloInfo`.
+        """Return cache rows from the daemon.
 
         Raises:
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
+            CombError: subclass matching the failure kind.
         """
-        resp = _send_recv(self._sock, build_hello_request())
-        return _parse_hello(resp)
+        data = self._lib.call("bc_status", self._ptr)
+        return _parse_cache_rows(data)
+
+    def hello(self) -> HelloInfo:
+        """Ask the daemon for protocol and build versions.
+
+        Raises:
+            CombError: subclass matching the failure kind.
+        """
+        data = self._lib.call("bc_hello", self._ptr)
+        return _parse_hello(data)
 
     def put(
         self,
@@ -617,42 +310,200 @@ class Session:
         ttl: Optional[str] = None,
         path: Optional[str] = None,
     ) -> None:
-        """Store data into a virtual provider via the persistent connection.
-
-        Args:
-            key: Virtual provider key to set.
-            data: Data payload. ``None`` clears the entry.
-            ttl: Optional time-to-live string (e.g. ``"60s"``).
-            path: Optional path for per-directory virtual entries.
+        """Store data into a virtual provider. ``data=None`` clears the entry.
 
         Raises:
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
+            CombError: subclass matching the failure kind.
         """
-        _send_recv(self._sock, build_put_request(key, data, ttl, path))
+        self._lib.call(
+            "bc_put",
+            self._ptr,
+            key.encode(),
+            json.dumps(data).encode(),
+            ttl.encode() if ttl is not None else None,
+            path.encode() if path is not None else None,
+        )
 
     def introspect(
         self,
         subject: IntrospectSubject,
         duration_secs: Optional[int] = None,
     ) -> IntrospectResponse:
-        """Run a diagnostic introspect query via the persistent connection.
-
-        Args:
-            subject: Which subsystem to inspect.
-            duration_secs: Optional sampling duration for metrics-style subjects.
-
-        Returns:
-            :class:`~beachcomber.types.IntrospectResponse`.
+        """Run a diagnostic introspect query.
 
         Raises:
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
+            CombError: subclass matching the failure kind.
         """
-        resp = _send_recv(
-            self._sock, build_introspect_request(subject.value, duration_secs)
+        options_json = (
+            json.dumps({"duration_secs": duration_secs}) if duration_secs is not None else None
         )
-        return _parse_introspect(subject, resp)
+        data = self._lib.call(
+            "bc_introspect",
+            self._ptr,
+            subject.value.encode(),
+            options_json.encode() if options_json else None,
+        )
+        return _parse_introspect(subject, data)
+
+    def resolve(
+        self,
+        key: str,
+        cwd: str,
+        env: Optional[dict] = None,
+        overrides: Optional[dict] = None,
+    ) -> CombResult:
+        """Resolve a virtual field (``"provider.field"``) or a path expression
+        (a bare provider name) client-side, exactly as ``comb get``'s
+        resolution layer does.
+
+        Args:
+            key: ``"provider.field"`` for a field expression, or a bare
+                provider name for a path expression.
+            cwd: Working directory the resolver evaluates against. Required
+                — this library never reads the process's own working
+                directory on the caller's behalf.
+            env: Overrides for ``env.*`` refs in the expression. ``None``
+                means none supplied (every ``env.*`` ref misses).
+            overrides: Maps a field key (``"provider.field"``) or bare
+                provider name to an expression string, overriding the
+                built-in default for that key.
+
+        Returns:
+            :class:`~beachcomber.result.CombResult` — ``age_ms``/``stale``
+            are not meaningful for resolution and are always ``0``/``False``.
+
+        Raises:
+            CombError: subclass matching the failure kind.
+        """
+        env_json = _opt_json(env)
+        overrides_json = _opt_json(overrides)
+        value = self._lib.call(
+            "bc_resolve",
+            self._ptr,
+            key.encode(),
+            cwd.encode(),
+            env_json.encode() if env_json is not None else None,
+            overrides_json.encode() if overrides_json is not None else None,
+        )
+        return CombResult(ok=True, data=value, age_ms=0, stale=False)
+
+    def eval(
+        self,
+        template_str: str,
+        cwd: str,
+        env: Optional[dict] = None,
+        overrides: Optional[dict] = None,
+    ) -> Any:
+        """Evaluate an arbitrary expression string — the same evaluator
+        :meth:`resolve` uses for a declared virtual field, but for a raw
+        expression that need not be registered anywhere.
+
+        Args:
+            template_str: The expression to evaluate.
+            cwd: Required, matching :meth:`resolve`'s ``cwd`` semantics.
+            env: Overrides for ``env.*`` refs.
+            overrides: Field-expression overrides, same shape as
+                :meth:`resolve`'s.
+
+        Raises:
+            CombError: subclass matching the failure kind.
+        """
+        env_json = _opt_json(env)
+        overrides_json = _opt_json(overrides)
+        return self._lib.call(
+            "bc_eval",
+            self._ptr,
+            template_str.encode(),
+            cwd.encode(),
+            env_json.encode() if env_json is not None else None,
+            overrides_json.encode() if overrides_json is not None else None,
+        )
+
+    def watch(self, key: str, path: Optional[str] = None) -> WatchStream:
+        """Subscribe to a key and receive live updates.
+
+        Returns a :class:`WatchStream` iterator that yields
+        :class:`~beachcomber.types.WatchEvent` instances. Release it via
+        :meth:`WatchStream.close` or by using the stream as a context
+        manager.
+
+        Raises:
+            CombError: subclass matching the failure kind.
+        """
+        ptr = self._lib.call_ptr(
+            "bc_watch_open", self._ptr, key.encode(), path.encode() if path is not None else None
+        )
+        if not ptr:
+            raise CombError("bc_watch_open returned NULL")
+        return WatchStream(ptr)
+
+    @contextmanager
+    def session(self) -> Generator["Session", None, None]:
+        """Open a persistent connection as a context manager.
+
+        Example::
+
+            with client.session() as session:
+                session.set_context("/my/repo")
+                result = session.get("git.branch")
+
+        Raises:
+            CombError: subclass matching the failure kind.
+        """
+        session = Session(self)
+        try:
+            yield session
+        finally:
+            session.close()
+
+
+class Session:
+    """Persistent connection to the beachcomber daemon.
+
+    Wraps a native ``BcSession`` handle for ``get``/``put``/``set_context``
+    — the only ops the ABI exposes at session granularity. ``refresh``,
+    ``status``, ``hello`` and ``introspect`` have no session-level ABI
+    equivalent, so they delegate to the owning :class:`Client` on a fresh
+    one-shot native connection; they are kept here for API compatibility,
+    not because they reuse this session's socket.
+
+    Create via :meth:`Client.session` rather than directly.
+    """
+
+    def __init__(self, client: Client) -> None:
+        self._ptr = None
+        self._client = client
+        self._lib = client._lib
+        ptr = self._lib.call_ptr("bc_session_open", client._ptr)
+        if not ptr:
+            raise CombError("bc_session_open returned NULL")
+        self._ptr = ptr
+
+    def close(self) -> None:
+        """Close and free the underlying native session handle."""
+        if self._ptr is not None:
+            self._lib.call_void("bc_session_close", self._ptr)
+            self._ptr = None
+
+    def __del__(self) -> None:
+        self.close()
+
+    def set_context(self, path: str) -> None:
+        """Set the default working-directory path for this connection.
+
+        Raises:
+            CombError: subclass matching the failure kind (e.g.
+                :class:`~beachcomber.exceptions.BusyError` on concurrent use).
+        """
+        self._lib.call("bc_session_set_context", self._ptr, path.encode())
+
+    def get(self, key: str, path: Optional[str] = None) -> CombResult:
+        """Read a cached value using the persistent connection.
+
+        Raises:
+            CombError: subclass matching the failure kind.
+        """
+        return self.get_with_flags(key, path)
 
     def get_with_flags(
         self,
@@ -663,20 +514,66 @@ class Session:
     ) -> CombResult:
         """Read a cached value with optional force/wait flags via the persistent connection.
 
-        Args:
-            key: Provider key.
-            path: Optional working-directory path.
-            force: Bypass cache and force recomputation.
-            wait: Block until a fresh value is available.
+        Raises:
+            CombError: subclass matching the failure kind.
+        """
+        flags = (_native.BC_GET_FORCE if force else 0) | (_native.BC_GET_WAIT if wait else 0)
+        payload = self._lib.call(
+            "bc_session_get",
+            self._ptr,
+            key.encode(),
+            path.encode() if path is not None else None,
+            flags,
+        )
+        return _result_from_get_payload(payload)
 
-        Returns:
-            :class:`~beachcomber.result.CombResult`.
+    def put(
+        self,
+        key: str,
+        data: Optional[Any] = None,
+        ttl: Optional[str] = None,
+        path: Optional[str] = None,
+    ) -> None:
+        """Store data into a virtual provider via the persistent connection.
 
         Raises:
-            ServerError: If the daemon returns an error response.
-            ProtocolError: On I/O or JSON parse failure.
+            CombError: subclass matching the failure kind.
         """
-        resp = _send_recv(
-            self._sock, build_get_request(key, path, force=force, wait=wait)
+        self._lib.call(
+            "bc_session_put",
+            self._ptr,
+            key.encode(),
+            json.dumps(data).encode(),
+            ttl.encode() if ttl is not None else None,
+            path.encode() if path is not None else None,
         )
-        return _result_from_response(resp)
+
+    def refresh(self, key: str, path: Optional[str] = None) -> None:
+        """Trigger recomputation. No session-level ABI equivalent exists;
+        runs on a fresh one-shot native connection via the owning client.
+        """
+        self._client.refresh(key, path)
+
+    def status(self) -> list[CacheRow]:
+        """Return cache rows. No session-level ABI equivalent exists; runs
+        on a fresh one-shot native connection via the owning client.
+        """
+        return self._client.status()
+
+    def hello(self) -> HelloInfo:
+        """Ask the daemon for versions. No session-level ABI equivalent
+        exists; runs on a fresh one-shot native connection via the owning
+        client.
+        """
+        return self._client.hello()
+
+    def introspect(
+        self,
+        subject: IntrospectSubject,
+        duration_secs: Optional[int] = None,
+    ) -> IntrospectResponse:
+        """Run a diagnostic introspect query. No session-level ABI
+        equivalent exists; runs on a fresh one-shot native connection via
+        the owning client.
+        """
+        return self._client.introspect(subject, duration_secs=duration_secs)

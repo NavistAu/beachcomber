@@ -59,16 +59,21 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
+            lib_ext: dylib
           - target: x86_64-apple-darwin
             os: macos-latest
+            lib_ext: dylib
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            lib_ext: so
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             musl: true
+            lib_ext: so
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
+            lib_ext: so
     steps:
       - uses: actions/checkout@v4
 
@@ -94,10 +99,18 @@ jobs:
         if: matrix.cross
         run: cross build --release --target ${{ matrix.target }}
 
+      - name: Build cdylib (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }} -p libbeachcomber-ffi
+
+      - name: Build cdylib (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} -p libbeachcomber-ffi
+
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../beachcomber-${{ needs.gate.outputs.tag }}-${{ matrix.target }}.tar.gz comb
+          tar czf ../../../beachcomber-${{ needs.gate.outputs.tag }}-${{ matrix.target }}.tar.gz comb libbeachcomber.${{ matrix.lib_ext }}
           cd ../../..
 
       - name: Upload artifact
@@ -117,7 +130,7 @@ jobs:
         run: |
           tar czf beachcomber-c-sdk-${{ needs.gate.outputs.tag }}.tar.gz \
             -C sdks/c \
-            beachcomber.c beachcomber.h json.c json.h Makefile libbeachcomber.pc.in README.md
+            beachcomber.h Makefile libbeachcomber.pc.in README.md
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -460,6 +473,7 @@ jobs:
 
             def install
               bin.install "comb"
+              lib.install "libbeachcomber.dylib"
             end
 
             test do

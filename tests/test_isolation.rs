@@ -12,11 +12,11 @@ fn no_test_uses_default_socket_discovery() {
         "tests/test_isolation.rs",
         "tests/conformance/socket_default_discovery.rs",
         // socket_path_returns_something is a compile/return-value check, no I/O.
-        "beachcomber-client/tests/client_test.rs",
+        "libbeachcomber/tests/client_test.rs",
     ];
 
     let tests_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let client_tests_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("beachcomber-client/tests");
+    let client_tests_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("libbeachcomber/tests");
 
     let mut offenders = Vec::new();
     for entry in walkdir::WalkDir::new(&tests_root)
@@ -149,16 +149,16 @@ fn extract_function_bodies(source: &str) -> Vec<(String, String)> {
 fn no_with_config_without_socket_path() {
     // Any file in this list is entirely skipped for the with_config check.
     //
-    // `beachcomber-client/tests/client_test.rs` contains a deliberate
+    // `libbeachcomber/tests/client_test.rs` contains a deliberate
     // no-I/O compile check (`client_with_config`) that constructs a client
     // without a socket path because it never calls any network method.
     let allow_list = [
         "tests/test_isolation.rs",
-        "beachcomber-client/tests/client_test.rs",
+        "libbeachcomber/tests/client_test.rs",
     ];
 
     let tests_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let client_tests_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("beachcomber-client/tests");
+    let client_tests_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("libbeachcomber/tests");
 
     let mut offenders = Vec::new();
 

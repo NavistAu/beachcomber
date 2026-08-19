@@ -1,16 +1,13 @@
-use beachcomber::protocol::{Format, Request, Response};
+use beachcomber::protocol::{Request, Response};
 
 #[test]
 fn parse_get_request_with_path() {
     let json = r#"{"op": "get", "key": "git.branch", "path": "/home/user/project"}"#;
     let req: Request = serde_json::from_str(json).unwrap();
     match req {
-        Request::Get {
-            key, path, format, ..
-        } => {
+        Request::Get { key, path, .. } => {
             assert_eq!(key, "git.branch");
             assert_eq!(path.as_deref(), Some("/home/user/project"));
-            assert_eq!(format, Format::Json, "Default format should be Json");
         }
         _ => panic!("Expected Get request"),
     }
@@ -29,13 +26,18 @@ fn parse_get_request_global() {
     }
 }
 
+/// Task 1.8 retired the wire-level `format` field from `Get`/`Watch`. A
+/// stale client that still sends one is not rejected — unrecognised fields
+/// on these requests have never been an error — the field is simply
+/// ignored and the request behaves exactly like one that omitted it.
 #[test]
-fn parse_get_request_text_format() {
+fn parse_get_request_with_stale_format_field_is_ignored() {
     let json = r#"{"op": "get", "key": "git.branch", "path": "/project", "format": "text"}"#;
     let req: Request = serde_json::from_str(json).unwrap();
     match req {
-        Request::Get { format, .. } => {
-            assert_eq!(format, Format::Text);
+        Request::Get { key, path, .. } => {
+            assert_eq!(key, "git.branch");
+            assert_eq!(path.as_deref(), Some("/project"));
         }
         _ => panic!("Expected Get request"),
     }
@@ -163,46 +165,24 @@ fn parse_watch_request() {
     let json = r#"{"op":"watch","key":"git.branch","path":"/home/user/project"}"#;
     let req: Request = serde_json::from_str(json).unwrap();
     match req {
-        Request::Watch { key, path, format } => {
+        Request::Watch { key, path } => {
             assert_eq!(key, "git.branch");
             assert_eq!(path.as_deref(), Some("/home/user/project"));
-            assert_eq!(format, Format::Json);
         }
         _ => panic!("Expected Watch request"),
     }
 }
 
+/// Task 1.8 retired the wire-level `format` field from `Get`/`Watch`. A
+/// stale client that still sends one is not rejected — the field is simply
+/// ignored and the request behaves exactly like one that omitted it.
 #[test]
-fn parse_watch_request_text_format() {
+fn parse_watch_request_with_stale_format_field_is_ignored() {
     let json = r#"{"op":"watch","key":"git.branch","format":"text"}"#;
     let req: Request = serde_json::from_str(json).unwrap();
     match req {
-        Request::Watch { format, .. } => {
-            assert_eq!(format, Format::Text);
-        }
-        _ => panic!("Expected Watch request"),
-    }
-}
-
-#[test]
-fn parse_get_request_sh_format() {
-    let json = r#"{"op":"get","key":"git","format":"sh"}"#;
-    let req: Request = serde_json::from_str(json).unwrap();
-    match req {
-        Request::Get { format, .. } => {
-            assert_eq!(format, Format::Sh);
-        }
-        _ => panic!("Expected Get request"),
-    }
-}
-
-#[test]
-fn parse_watch_request_sh_format() {
-    let json = r#"{"op":"watch","key":"git.branch","format":"sh"}"#;
-    let req: Request = serde_json::from_str(json).unwrap();
-    match req {
-        Request::Watch { format, .. } => {
-            assert_eq!(format, Format::Sh);
+        Request::Watch { key, .. } => {
+            assert_eq!(key, "git.branch");
         }
         _ => panic!("Expected Watch request"),
     }

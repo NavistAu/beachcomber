@@ -1,0 +1,11 @@
+{
+  "name": "mapping_absent_key_is_miss",
+  "description": "The counterpart to mapping_empty_object_is_present: a field that was never put at all is a miss (ok=true, data absent), not an empty value of any kind. Same provider shape as the empty-object fixture, queried for a sibling field that was never stored.",
+  "setup": [
+    { "op": "put", "args": { "key": "mapfix_shape2", "data": { "sibling": "x" } } }
+  ],
+  "test": { "op": "get", "args": { "key": "mapfix_shape2.neverput" } },
+  "expect": {
+    "status": "miss"
+  }
+}

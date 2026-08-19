@@ -4,7 +4,7 @@ libdir=${prefix}/lib
 includedir=${prefix}/include
 
 Name: libbeachcomber
-Description: C client library for the beachcomber daemon
+Description: C ABI (bc_*) for the beachcomber daemon client, shared with every other SDK binding
 Version: @VERSION@
 Cflags: -I${includedir}
 Libs: -L${libdir} -lbeachcomber

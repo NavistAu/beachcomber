@@ -142,12 +142,30 @@ class DaemonProcess:
 # ---------------------------------------------------------------------------
 
 
-def _run_op(client: Client, op: str, args: dict[str, Any]) -> Any:
+def _run_op(
+    client: Client,
+    op: str,
+    args: dict[str, Any],
+    resolve_ctx: Optional[dict[str, Any]] = None,
+) -> Any:
     """Run a single op against the client.
 
     Returns the raw response data (or None for ops that return nothing),
     or raises CombError / ServerError on failure.
+
+    `resolve_ctx` (only consulted for the `resolve` op) carries the
+    fixture's `virtual`/`env`/`cwd` blocks — see
+    tests/conformance/README.md.
     """
+    if op == "resolve":
+        assert resolve_ctx is not None
+        key = args.get("key", "")
+        return client.resolve(
+            key,
+            cwd=resolve_ctx["cwd"],
+            env=resolve_ctx["env"] or None,
+            overrides=resolve_ctx["virtual"] or None,
+        )
     if op == "get":
         return client.get(**args)
     if op == "refresh":
@@ -180,6 +198,40 @@ def _run_op(client: Client, op: str, args: dict[str, Any]) -> Any:
         duration_secs = args.get("duration_secs")
         return client.introspect(subject, duration_secs=duration_secs)
     raise ValueError(f"unknown op: {op!r}")
+
+
+# Every expectation kind documented in tests/conformance/README.md. A
+# fixture using a key outside this set fails loudly rather than being
+# silently ignored — the whole point of this runner is to catch a fixture
+# asserting something the harness doesn't actually check.
+_KNOWN_EXPECT_KEYS = {
+    "status", "data_type", "data_equals", "data_as_text", "data_contains_field",
+    "data_field_equals", "age_ms_present", "stale", "error_contains",
+}
+
+# Ops this runner's binding can execute. A fixture using any op outside this
+# set must be skipped, not failed — the binding doesn't implement it yet.
+_SUPPORTED_OPS = {
+    "hello",
+    "get",
+    "refresh",
+    "put",
+    "status",
+    "context",
+    "watch",
+    "introspect",
+    "resolve",
+}
+
+
+def _unsupported_op(fixture: dict[str, Any]) -> Optional[str]:
+    """Return the first op in the fixture that this runner can't execute, or None."""
+    ops = [s.get("op") for s in fixture.get("setup", [])]
+    ops.append(fixture["test"]["op"])
+    for op in ops:
+        if op not in _SUPPORTED_OPS:
+            return op
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -256,11 +308,31 @@ def _check_expect(
                     f"expected data to contain field {field!r} but data was {actual_data!r}"
                 )
 
+        # data_field_equals check: {"field": "...", "value": <json>}.
+        if "data_field_equals" in expect:
+            spec = expect["data_field_equals"]
+            field = spec.get("field")
+            expected_val = spec.get("value")
+            actual_data = _extract_data(result)
+            if not isinstance(actual_data, dict) or actual_data.get(field) != expected_val:
+                actual_val = actual_data.get(field) if isinstance(actual_data, dict) else actual_data
+                failures.append(
+                    f"data_field_equals failed for {field!r}: expected {expected_val!r}, got {actual_val!r}"
+                )
+
         # age_ms_present check.
         if expect.get("age_ms_present"):
             age = _extract_age_ms(result)
             if age is None:
                 failures.append("expected age_ms to be present but it was None/missing")
+
+        # stale check.
+        if "stale" in expect:
+            actual_stale = _extract_stale(result)
+            if actual_stale != expect["stale"]:
+                failures.append(
+                    f"expected stale={expect['stale']!r} but got {actual_stale!r}"
+                )
 
     elif status == "error":
         if error is None:
@@ -316,6 +388,17 @@ def _extract_age_ms(result: Any) -> Optional[int]:
     return None
 
 
+def _extract_stale(result: Any) -> Optional[bool]:
+    from libbeachcomber.result import CombResult
+    from libbeachcomber.types import WatchEvent
+
+    if isinstance(result, CombResult):
+        return result.stale
+    if isinstance(result, WatchEvent):
+        return result.stale
+    return None
+
+
 def _check_data_type(data: Any, expected_type: str) -> bool:
     if expected_type == "object":
         return isinstance(data, dict)
@@ -337,49 +420,64 @@ def _check_data_type(data: Any, expected_type: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def run_fixture(fixture_path: pathlib.Path, client: Client) -> tuple[bool, str]:
+def run_fixture(fixture_path: pathlib.Path, client: Client) -> tuple[str, str]:
     """Run a single fixture against the given client.
 
-    Returns (passed, message).
+    Returns (status, message) where status is "pass", "fail", or "skip".
     """
     with open(fixture_path) as f:
         fixture = json.load(f)
 
     name = fixture.get("name", fixture_path.stem)
 
-    # Run setup ops (ignore their results; failures are fatal for the fixture).
-    for setup_op in fixture.get("setup", []):
-        op = setup_op["op"]
-        args = setup_op.get("args", {})
+    unsupported = _unsupported_op(fixture)
+    if unsupported is not None:
+        return "skip", f"unsupported op {unsupported!r}"
+
+    unknown_keys = set(fixture.get("expect", {})) - _KNOWN_EXPECT_KEYS
+    if unknown_keys:
+        return "fail", f"{name}: fixture uses unknown expectation key(s) {sorted(unknown_keys)!r} — the runner has no check for them"
+
+    with tempfile.TemporaryDirectory(prefix="bcconf_cwd_") as default_cwd:
+        resolve_ctx = {
+            "virtual": fixture.get("virtual", {}),
+            "env": fixture.get("env", {}),
+            "cwd": fixture.get("cwd", default_cwd),
+        }
+
+        # Run setup ops (ignore their results; failures are fatal for the fixture).
+        for setup_op in fixture.get("setup", []):
+            op = setup_op["op"]
+            args = setup_op.get("args", {})
+            try:
+                _run_op(client, op, args, resolve_ctx)
+            except Exception as exc:
+                return "fail", f"setup op {op!r} failed: {exc}"
+
+        # Run the test op.
+        test = fixture["test"]
+        op = test["op"]
+        args = test.get("args", {})
+        expect = fixture.get("expect", {})
+
+        result = None
+        error: Optional[str] = None
+
         try:
-            _run_op(client, op, args)
+            result = _run_op(client, op, args, resolve_ctx)
+        except ServerError as exc:
+            error = exc.message
+        except CombError as exc:
+            error = str(exc)
         except Exception as exc:
-            return False, f"setup op {op!r} failed: {exc}"
+            return "fail", f"unexpected exception running {op!r}: {type(exc).__name__}: {exc}"
 
-    # Run the test op.
-    test = fixture["test"]
-    op = test["op"]
-    args = test.get("args", {})
-    expect = fixture.get("expect", {})
+        failures = _check_expect(expect, result, error, name)
+        if failures:
+            msg = "; ".join(failures)
+            return "fail", f"{name}: FAIL — {msg}"
 
-    result = None
-    error: Optional[str] = None
-
-    try:
-        result = _run_op(client, op, args)
-    except ServerError as exc:
-        error = exc.message
-    except CombError as exc:
-        error = str(exc)
-    except Exception as exc:
-        return False, f"unexpected exception running {op!r}: {type(exc).__name__}: {exc}"
-
-    failures = _check_expect(expect, result, error, name)
-    if failures:
-        msg = "; ".join(failures)
-        return False, f"{name}: FAIL — {msg}"
-
-    return True, f"{name}: ok"
+        return "pass", f"{name}: ok"
 
 
 # ---------------------------------------------------------------------------
@@ -409,34 +507,45 @@ def main() -> int:
     print(f"Found {len(fixtures)} fixture(s) in {_CONFORMANCE_DIR}")
     print(f"Using daemon: {comb_bin}\n")
 
-    daemon = DaemonProcess(comb_bin)
-    try:
-        daemon.start()
-    except RuntimeError as exc:
-        print(f"ERROR: Failed to start daemon: {exc}", file=sys.stderr)
-        return 1
-
-    client = daemon.make_client()
-
     passed = 0
     failed = 0
+    skipped = 0
     errors: list[str] = []
 
-    try:
-        for fixture_path in fixtures:
-            rel = fixture_path.relative_to(_CONFORMANCE_DIR)
-            ok, msg = run_fixture(fixture_path, client)
-            status_label = "PASS" if ok else "FAIL"
-            print(f"  [{status_label}] {rel}: {msg.split(': ', 1)[-1]}")
-            if ok:
-                passed += 1
-            else:
-                failed += 1
-                errors.append(str(rel) + ": " + msg)
-    finally:
-        daemon.stop()
+    # A fresh daemon per fixture, per tests/conformance/README.md's
+    # isolation guarantee ("Each fixture runs against a fresh daemon
+    # instance") — a shared daemon would leak cache state (e.g. `put`s from
+    # one fixture's `setup` visible to the next fixture's `resolve` cache
+    # refs) across fixtures that happen to reuse a key.
+    for fixture_path in fixtures:
+        rel = fixture_path.relative_to(_CONFORMANCE_DIR)
 
-    print(f"\n{passed + failed} fixtures: {passed} passed, {failed} failed")
+        daemon = DaemonProcess(comb_bin)
+        try:
+            daemon.start()
+        except RuntimeError as exc:
+            print(f"ERROR: Failed to start daemon for {rel}: {exc}", file=sys.stderr)
+            return 1
+
+        try:
+            client = daemon.make_client()
+            status, msg = run_fixture(fixture_path, client)
+        finally:
+            daemon.stop()
+
+        if status == "skip":
+            print(f"  SKIP {rel}: {msg}")
+            skipped += 1
+            continue
+        status_label = "PASS" if status == "pass" else "FAIL"
+        print(f"  [{status_label}] {rel}: {msg.split(': ', 1)[-1]}")
+        if status == "pass":
+            passed += 1
+        else:
+            failed += 1
+            errors.append(str(rel) + ": " + msg)
+
+    print(f"\n{passed + failed + skipped} fixtures: {passed} passed, {failed} failed, {skipped} skipped")
 
     if errors:
         print("\nFailures:")

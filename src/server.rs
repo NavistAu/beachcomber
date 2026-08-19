@@ -1,6 +1,6 @@
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
+use crate::protocol::{self, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::{InvalidationStrategy, SourceScope};
 use crate::query::{KeyParse, resolve_path};
@@ -170,13 +170,12 @@ async fn handle_connection(
         }
 
         match serde_json::from_str::<Request>(trimmed) {
-            Ok(Request::Watch { key, path, format }) => {
+            Ok(Request::Watch { key, path }) => {
                 requests_total.fetch_add(1, Ordering::Relaxed);
                 // Watch takes over the connection — enter streaming mode
                 handle_watch(
                     key,
                     path,
-                    format,
                     &context_path,
                     &cache,
                     &registry,
@@ -203,7 +202,8 @@ async fn handle_connection(
                     reaper.as_deref(),
                 )
                 .await;
-                let response_bytes = format_response(&request, &response);
+                let mut response_bytes = serde_json::to_string(&response).unwrap();
+                response_bytes.push('\n');
                 writer.write_all(response_bytes.as_bytes()).await?;
             }
             Err(e) => {
@@ -223,7 +223,6 @@ async fn handle_connection(
 async fn handle_watch(
     key: String,
     path: Option<String>,
-    format: Format,
     context_path: &Option<String>,
     cache: &Cache,
     registry: &ProviderRegistry,
@@ -292,7 +291,7 @@ async fn handle_watch(
 
     // Send initial value
     let initial = read_watch_value(cache, &plan.target, effective_path.as_deref());
-    if write_watch_line(writer, &initial, &format).await.is_err() {
+    if write_watch_line(writer, &initial).await.is_err() {
         return;
     }
 
@@ -321,7 +320,7 @@ async fn handle_watch(
                 }
                 last_data = response.data.clone();
 
-                if write_watch_line(writer, &response, &format).await.is_err() {
+                if write_watch_line(writer, &response).await.is_err() {
                     break; // Client disconnected
                 }
             }
@@ -330,7 +329,7 @@ async fn handle_watch(
                 let response = read_watch_value(cache, &plan.target, effective_path.as_deref());
                 if response.data != last_data {
                     last_data = response.data.clone();
-                    if write_watch_line(writer, &response, &format).await.is_err() {
+                    if write_watch_line(writer, &response).await.is_err() {
                         break;
                     }
                 }
@@ -480,9 +479,9 @@ fn read_watch_value(cache: &Cache, target: &KeyParse, path: Option<&str>) -> Res
 async fn write_watch_line(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
     response: &Response,
-    format: &Format,
 ) -> Result<(), std::io::Error> {
-    let line = format_data(format, response);
+    let mut line = serde_json::to_string(response).unwrap();
+    line.push('\n');
     writer.write_all(line.as_bytes()).await
 }
 
@@ -1561,117 +1560,6 @@ fn handle_introspect_procs(duration_secs: Option<u64>) -> Response {
             )
         }
         Err(e) => Response::error(format!("procs snapshot failed: {e}")),
-    }
-}
-
-fn format_response(request: &Request, response: &Response) -> String {
-    let format = match request {
-        Request::Get { format, .. } => format,
-        _ => &Format::Json,
-    };
-
-    format_data(format, response)
-}
-
-fn format_data(format: &Format, response: &Response) -> String {
-    match format {
-        Format::Text => {
-            if !response.ok {
-                return format!(
-                    "error: {}\n\n",
-                    response.error.as_deref().unwrap_or("unknown")
-                );
-            }
-            match &response.data {
-                Some(serde_json::Value::String(s)) => format!("{s}\n\n"),
-                Some(serde_json::Value::Number(n)) => format!("{n}\n\n"),
-                Some(serde_json::Value::Bool(b)) => format!("{b}\n\n"),
-                Some(serde_json::Value::Object(map)) => {
-                    // Emit `subkey=value` lines, sorted. Nested objects flatten
-                    // as `outer.inner=value`. Matches
-                    // docs/superpowers/specs/2026-04-21-code-review-fixes-design.md C9.
-                    let mut lines: Vec<String> = map
-                        .iter()
-                        .flat_map(|(k, v)| {
-                            if let serde_json::Value::Object(inner) = v {
-                                inner
-                                    .iter()
-                                    .map(|(ik, iv)| {
-                                        let val = match iv {
-                                            serde_json::Value::String(s) => s.clone(),
-                                            other => other.to_string(),
-                                        };
-                                        format!("{k}.{ik}={val}")
-                                    })
-                                    .collect::<Vec<_>>()
-                            } else {
-                                let val = match v {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    other => other.to_string(),
-                                };
-                                vec![format!("{k}={val}")]
-                            }
-                        })
-                        .collect();
-                    lines.sort();
-                    let mut out = lines.join("\n");
-                    out.push_str("\n\n");
-                    out
-                }
-                Some(serde_json::Value::Null) | None => "\n".to_string(),
-                Some(other) => format!("{other}\n\n"),
-            }
-        }
-        Format::Sh => {
-            if !response.ok {
-                return format!(
-                    "error: {}\n\n",
-                    response.error.as_deref().unwrap_or("unknown")
-                );
-            }
-            match &response.data {
-                Some(serde_json::Value::String(s)) => format!("{s}\n\n"),
-                Some(serde_json::Value::Number(n)) => format!("{n}\n\n"),
-                Some(serde_json::Value::Bool(b)) => format!("{b}\n\n"),
-                Some(serde_json::Value::Object(map)) => {
-                    let mut lines: Vec<String> = map
-                        .iter()
-                        .flat_map(|(k, v)| {
-                            if let serde_json::Value::Object(inner) = v {
-                                // Nested object: flatten as outer.inner=value
-                                inner
-                                    .iter()
-                                    .map(|(ik, iv)| {
-                                        let val = match iv {
-                                            serde_json::Value::String(s) => s.clone(),
-                                            other => other.to_string(),
-                                        };
-                                        format!("{k}.{ik}={val}")
-                                    })
-                                    .collect::<Vec<_>>()
-                            } else {
-                                let val = match v {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    other => other.to_string(),
-                                };
-                                vec![format!("{k}={val}")]
-                            }
-                        })
-                        .collect();
-                    lines.sort();
-                    let mut out = lines.join("\n");
-                    out.push_str("\n\n");
-                    out
-                }
-                Some(serde_json::Value::Null) | None => "\n".to_string(),
-                Some(other) => format!("{other}\n\n"),
-            }
-        }
-        Format::Json => {
-            let mut out = serde_json::to_string(response).unwrap();
-            out.push('\n');
-            out
-        }
     }
 }
 

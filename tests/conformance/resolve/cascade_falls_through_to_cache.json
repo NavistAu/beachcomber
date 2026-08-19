@@ -1,0 +1,10 @@
+{
+  "name": "resolve_cascade_falls_through_to_cache",
+  "description": "env.X or cache.P.F cascade falls through to the cache term when env is absent.",
+  "virtual": { "myapp.workspace": "env.MYAPP_ENV or cache.myappcache.workspace" },
+  "setup": [
+    { "op": "put", "args": { "key": "myappcache", "data": { "workspace": "cache-env" } } }
+  ],
+  "test": { "op": "resolve", "args": { "key": "myapp.workspace" } },
+  "expect": { "status": "hit", "data_type": "string", "data_equals": "cache-env" }
+}

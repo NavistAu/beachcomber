@@ -132,6 +132,7 @@ dependencies = [
  "criterion",
  "ctor",
  "dashmap",
+ "libbeachcomber",
  "libc",
  "libloading",
  "minijinja",
@@ -940,6 +941,19 @@ version = "0.7.0"
 dependencies = [
  "beachcomber",
  "libc",
+ "minijinja",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "libbeachcomber-ffi"
+version = "0.7.0"
+dependencies = [
+ "beachcomber",
+ "libbeachcomber",
  "serde",
  "serde_json",
  "tempfile",

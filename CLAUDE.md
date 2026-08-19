@@ -21,7 +21,7 @@ If a section of the code looks like a half-wired state machine or a config key t
 
 - **Project:** beachcomber — a daemon that caches shell environment state
 - **Binary:** `comb` (not `beachcomber`)
-- **Crate:** `beachcomber` (workspace root) + `beachcomber-client` (client library)
+- **Crate:** `beachcomber` (workspace root) + `libbeachcomber` (client library)
 - **Rust version:** pinned in `mise.toml` — use `mise install` to get it
 - **Platform:** macOS and Linux
 
@@ -95,7 +95,7 @@ Socket path resolution (daemon): config override → `$BEACHCOMBER_SOCKET` → `
 
 Client SDKs live in `sdks/` — one directory per language (C, Go, Lua, Node.js, Python, Ruby). Each is self-contained with its own test suite. All are stdlib-only (no external dependencies).
 
-The Rust client SDK is `beachcomber-client/` (workspace member).
+The Rust client SDK is `libbeachcomber/` (workspace member).
 
 ## Dependencies
 

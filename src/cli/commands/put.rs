@@ -31,54 +31,51 @@ pub fn run_put(
         return ExitCode::from(2);
     }
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    rt.block_on(async {
-        let client = crate::client::Client::new(socket_path);
+    let client = crate::client::Client::new(socket_path);
 
-        if null {
-            match client.put_null(key, ttl, path).await {
-                Ok(response) => {
-                    if response.ok {
-                        ExitCode::SUCCESS
-                    } else {
-                        eprintln!("Error: {}", response.error.unwrap_or_default());
-                        ExitCode::from(2)
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error: {e}");
+    if null {
+        match client.put_null(key, ttl, path) {
+            Ok(response) => {
+                if response.ok {
+                    ExitCode::SUCCESS
+                } else {
+                    eprintln!("Error: {}", response.error.unwrap_or_default());
                     ExitCode::from(2)
                 }
             }
-        } else {
-            let data_str = data_str.unwrap();
-            let data: serde_json::Value = match serde_json::from_str(data_str) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("Invalid JSON: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-
-            if !data.is_object() {
-                eprintln!("put data must be a JSON object");
-                return ExitCode::from(2);
-            }
-
-            match client.put(key, data, ttl, path).await {
-                Ok(response) => {
-                    if response.ok {
-                        ExitCode::SUCCESS
-                    } else {
-                        eprintln!("Error: {}", response.error.unwrap_or_default());
-                        ExitCode::from(2)
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    ExitCode::from(2)
-                }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                ExitCode::from(2)
             }
         }
-    })
+    } else {
+        let data_str = data_str.unwrap();
+        let data: serde_json::Value = match serde_json::from_str(data_str) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("Invalid JSON: {e}");
+                return ExitCode::from(2);
+            }
+        };
+
+        if !data.is_object() {
+            eprintln!("put data must be a JSON object");
+            return ExitCode::from(2);
+        }
+
+        match client.put(key, data, ttl, path) {
+            Ok(response) => {
+                if response.ok {
+                    ExitCode::SUCCESS
+                } else {
+                    eprintln!("Error: {}", response.error.unwrap_or_default());
+                    ExitCode::from(2)
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                ExitCode::from(2)
+            }
+        }
+    }
 }

@@ -1,4 +1,7 @@
---- Tests for beachcomber.discovery.
+--- Tests for beachcomber.discovery: `comb`-on-PATH lookup and the ffi
+--- transport's library-candidate ordering (the seven-point common
+--- contract's discovery order: $BEACHCOMBER_LIB, then ../lib/ relative to
+--- the resolved comb, then the platform default search path).
 
 return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
   local discovery = require("beachcomber.discovery")
@@ -16,69 +19,100 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     if not ok then error(err, 0) end
   end
 
-  suite("discovery.get_uid")
+  -- Stub io.open so find_comb_on_path() succeeds for a specific PATH.
+  local function with_comb_on_path(dir, fn)
+    with_env("PATH", dir, function()
+      local saved = io.open
+      io.open = function(path, mode)
+        if path == dir .. "/comb" then
+          return { close = function() end }
+        end
+        return saved(path, mode)
+      end
+      local ok, err = pcall(fn)
+      io.open = saved
+      if not ok then error(err, 0) end
+    end)
+  end
 
-  test("returns a positive integer", function()
-    local uid, err = discovery.get_uid()
-    assert_not_nil(uid, "uid should not be nil: " .. tostring(err))
-    assert_true(type(uid) == "number", "uid should be a number")
-    assert_true(uid >= 0, "uid should be >= 0")
-    assert_eq(uid, math.floor(uid), "uid should be an integer")
-  end)
+  suite("discovery.find_comb_on_path")
 
-  suite("discovery.discover_socket_path")
-
-  test("returns a string path", function()
-    local path, err = discovery.discover_socket_path()
-    assert_not_nil(path, "path should not be nil: " .. tostring(err))
-    assert_eq(type(path), "string")
-    assert_true(#path > 0, "path should not be empty")
-  end)
-
-  test("fallback path contains uid", function()
-    local uid, uid_err = discovery.get_uid()
-    assert_not_nil(uid, tostring(uid_err))
-
-    local path, path_err = discovery.discover_socket_path()
-    assert_not_nil(path, tostring(path_err))
-
-    -- The path must end with /sock
-    assert_true(path:sub(-5) == "/sock", "path should end with /sock: " .. path)
-
-    -- The path must contain beachcomber
-    assert_true(path:find("beachcomber", 1, true) ~= nil, "path should contain 'beachcomber': " .. path)
-  end)
-
-  test("XDG_RUNTIME_DIR is ignored", function()
-    with_env("XDG_RUNTIME_DIR", "/run/user/1000", function()
-      local uid, uid_err = discovery.get_uid()
-      assert_not_nil(uid, tostring(uid_err))
-
-      local path, err = discovery.discover_socket_path()
-      assert_not_nil(path, "path should not be nil: " .. tostring(err))
-      assert_eq(path, "/tmp/beachcomber-" .. uid .. "/sock")
+  test("returns nil when PATH has no comb", function()
+    with_env("PATH", "/definitely/not/here:/also/not/here", function()
+      local found = discovery.find_comb_on_path()
+      assert_nil(found)
     end)
   end)
 
-  test("BEACHCOMBER_SOCKET still takes priority over XDG_RUNTIME_DIR", function()
-    with_env("XDG_RUNTIME_DIR", "/run/user/1000", function()
-      with_env("BEACHCOMBER_SOCKET", "/custom/sock", function()
-        local path, err = discovery.discover_socket_path()
-        assert_not_nil(path, "path should not be nil: " .. tostring(err))
-        assert_eq(path, "/custom/sock")
+  test("finds comb on PATH", function()
+    with_comb_on_path("/fake/bin", function()
+      local found = discovery.find_comb_on_path()
+      assert_eq(found, "/fake/bin/comb")
+    end)
+  end)
+
+  suite("discovery.platform_lib_filename")
+
+  test("OSX maps to .dylib", function()
+    assert_eq(discovery.platform_lib_filename("OSX"), "libbeachcomber.dylib")
+  end)
+
+  test("Linux maps to .so", function()
+    assert_eq(discovery.platform_lib_filename("Linux"), "libbeachcomber.so")
+  end)
+
+  test("Windows maps to .dll", function()
+    assert_eq(discovery.platform_lib_filename("Windows"), "beachcomber.dll")
+  end)
+
+  suite("discovery.library_candidates")
+
+  test("BEACHCOMBER_LIB is tried first when set", function()
+    with_env("BEACHCOMBER_LIB", "/custom/libbeachcomber.dylib", function()
+      with_env("PATH", "/nowhere", function()
+        local candidates = discovery.library_candidates("OSX")
+        assert_eq(candidates[1], "/custom/libbeachcomber.dylib")
       end)
     end)
   end)
 
-  test("path ends with /sock", function()
-    local path = discovery.discover_socket_path()
-    assert_not_nil(path)
-    assert_eq(path:sub(-5), "/sock")
+  test("BEACHCOMBER_LIB is skipped (not tried) when unset", function()
+    with_env("BEACHCOMBER_LIB", nil, function()
+      with_comb_on_path("/fake/bin", function()
+        local candidates = discovery.library_candidates("OSX")
+        assert_eq(candidates[1], "/fake/bin/../lib/libbeachcomber.dylib")
+      end)
+    end)
   end)
 
-  test("path is absolute", function()
-    local path = discovery.discover_socket_path()
-    assert_not_nil(path)
-    assert_eq(path:sub(1, 1), "/", "path should be absolute: " .. tostring(path))
+  test("../lib/ relative to resolved comb comes before the platform default", function()
+    with_env("BEACHCOMBER_LIB", nil, function()
+      with_comb_on_path("/opt/homebrew/bin", function()
+        local candidates = discovery.library_candidates("OSX")
+        assert_eq(candidates[1], "/opt/homebrew/bin/../lib/libbeachcomber.dylib")
+        assert_eq(candidates[2], "libbeachcomber.dylib")
+      end)
+    end)
+  end)
+
+  test("platform default (bare library name) is always the last candidate", function()
+    with_env("BEACHCOMBER_LIB", "/x/libbeachcomber.dylib", function()
+      with_comb_on_path("/fake/bin", function()
+        local candidates = discovery.library_candidates("OSX")
+        assert_eq(candidates[#candidates], "libbeachcomber.dylib")
+        assert_eq(#candidates, 3)
+      end)
+    end)
+  end)
+
+  test("full order: env, then ../lib/, then platform default", function()
+    with_env("BEACHCOMBER_LIB", "/x/libbeachcomber.dylib", function()
+      with_comb_on_path("/opt/homebrew/bin", function()
+        local candidates = discovery.library_candidates("OSX")
+        assert_eq(candidates[1], "/x/libbeachcomber.dylib")
+        assert_eq(candidates[2], "/opt/homebrew/bin/../lib/libbeachcomber.dylib")
+        assert_eq(candidates[3], "libbeachcomber.dylib")
+      end)
+    end)
   end)
 end

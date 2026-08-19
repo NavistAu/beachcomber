@@ -2,7 +2,7 @@
 //!
 //! Write-first (failing), then implement in src/cli/virtual_fields.rs.
 
-use beachcomber::cli::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
+use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
@@ -256,7 +256,7 @@ fn fields_for_returns_empty_for_daemon_only_provider() {
 
 #[test]
 fn evaluate_namespace_returns_all_virtual_fields_as_object() {
-    use beachcomber::cli::virtual_fields::evaluate_namespace;
+    use libbeachcomber::virtual_fields::evaluate_namespace;
 
     let vf = VirtualFields::defaults_only();
     let env: HashMap<String, String> = [("TF_WORKSPACE".to_string(), "ns-test".to_string())]
@@ -277,7 +277,7 @@ fn evaluate_namespace_returns_all_virtual_fields_as_object() {
 
 #[test]
 fn evaluate_namespace_all_virtual_fields_present() {
-    use beachcomber::cli::virtual_fields::evaluate_namespace;
+    use libbeachcomber::virtual_fields::evaluate_namespace;
 
     let vf = VirtualFields::defaults_only();
     let env: HashMap<String, String> = HashMap::new();

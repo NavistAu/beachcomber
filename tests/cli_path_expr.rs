@@ -1,4 +1,4 @@
-use beachcomber::cli::path_expr::evaluate_path;
+use libbeachcomber::path_expr::evaluate_path;
 use std::collections::HashMap;
 
 fn env(p: &[(&str, &str)]) -> HashMap<String, String> {

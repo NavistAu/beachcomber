@@ -23,6 +23,7 @@ export interface CacheRow {
   kind?: RowKind;
   pollIntervalSecs?: number;
   keepAlivePolls?: number;
+  pollsElapsed?: number;
   fseventsReinstate?: boolean;
   failure?: { consecutive_failures: number; suppressed_until_unix_ms?: number };
   /** Owning source name within the provider; undefined when not present on the wire. */
@@ -32,6 +33,14 @@ export interface CacheRow {
 export interface Verdict {
   level: string;
   message: string;
+}
+
+export interface ReaperStatus {
+  armed: boolean;
+  visibility: string;
+  sweeps: number;
+  reaped: number;
+  killDenied: number;
 }
 
 export interface DaemonHealth {
@@ -44,6 +53,8 @@ export interface DaemonHealth {
   inFlight: number;
   activeWatchers: number;
   cacheEntries: number;
+  watchBackend?: string;
+  reaper?: ReaperStatus;
   verdicts: Verdict[];
 }
 

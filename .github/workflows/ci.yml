@@ -39,6 +39,21 @@ jobs:
       - name: Format
         run: cargo fmt -- --check
 
+  header-freshness:
+    name: FFI header freshness
+    needs: rust-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cbindgen
+        run: cargo install cbindgen --locked
+      - name: Verify libbeachcomber-ffi/include/beachcomber.h is up to date
+        run: cargo xtask gen-header --check
+
   check-linux:
     name: Check (Linux)
     needs: rust-version
@@ -142,12 +157,20 @@ jobs:
 
   test-python:
     name: Test Python SDK
+    needs: rust-version
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: sdks/python
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build comb
+        working-directory: ${{ github.workspace }}
+        run: cargo build --bin comb
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -155,15 +178,25 @@ jobs:
         run: pip install pytest
       - name: Run tests
         run: pytest -v
+      - name: Run conformance suite
+        run: COMB_BIN=${{ github.workspace }}/target/debug/comb python3 conformance_runner.py
 
   test-node:
     name: Test Node.js SDK
+    needs: rust-version
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: sdks/node
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build comb
+        working-directory: ${{ github.workspace }}
+        run: cargo build --bin comb
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -173,43 +206,73 @@ jobs:
         run: npm run build
       - name: Run tests
         run: npm test
+      - name: Run conformance suite
+        run: COMB_BIN=${{ github.workspace }}/target/debug/comb node conformance_runner.js
 
   test-go:
     name: Test Go SDK
+    needs: rust-version
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: sdks/go
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build comb
+        working-directory: ${{ github.workspace }}
+        run: cargo build --bin comb
       - uses: actions/setup-go@v5
         with:
           go-version: '1.21'
       - name: Run tests
         run: go test -v ./...
+      - name: Run conformance suite
+        run: COMB_BIN=${{ github.workspace }}/target/debug/comb go run ./cmd/conformance
 
   test-ruby:
     name: Test Ruby SDK
+    needs: rust-version
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: sdks/ruby
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build comb
+        working-directory: ${{ github.workspace }}
+        run: cargo build --bin comb
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
       - name: Run tests
         run: rake test
+      - name: Run conformance suite
+        run: COMB_BIN=${{ github.workspace }}/target/debug/comb ruby conformance_runner.rb
 
   test-lua:
     name: Test Lua SDK
+    needs: rust-version
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: sdks/lua
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build comb
+        working-directory: ${{ github.workspace }}
+        run: cargo build --bin comb
       - uses: leafo/gh-actions-lua@v10
         with:
           luaVersion: '5.4'
@@ -218,17 +281,31 @@ jobs:
         run: luarocks install luasocket
       - name: Run tests
         run: lua test/test_runner.lua
+      - name: Run conformance suite
+        run: COMB_BIN=${{ github.workspace }}/target/debug/comb lua conformance_runner.lua
 
   test-c:
     name: Test C SDK
+    needs: rust-version
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: sdks/c
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build comb
+        working-directory: ${{ github.workspace }}
+        run: cargo build --bin comb
       - name: Build and test
         run: make test
+      - name: Build conformance runner
+        run: make conformance
+      - name: Run conformance suite
+        run: COMB_BIN=${{ github.workspace }}/target/debug/comb ./conformance_runner
 
   validate-npm-installer:
     name: Validate npm installer

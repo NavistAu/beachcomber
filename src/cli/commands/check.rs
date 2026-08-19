@@ -70,29 +70,23 @@ pub fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode 
         Some(CheckCommands::Procs { duration }) => (vec!["procs"], Some(*duration)),
     };
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    let worst = rt.block_on(run_check_subjects(config, &subjects, procs_duration));
+    let worst = run_check_subjects(config, &subjects, procs_duration);
     ExitCode::from(worst)
 }
 
-pub async fn run_check_subjects(
-    config: &Config,
-    subjects: &[&str],
-    procs_duration: Option<u64>,
-) -> u8 {
+pub fn run_check_subjects(config: &Config, subjects: &[&str], procs_duration: Option<u64>) -> u8 {
     let socket_path = config.resolve_socket_path();
     let client = crate::client::Client::new(socket_path);
     let mut worst = 0u8;
 
     for &subject in subjects {
-        let mut req = serde_json::json!({"op": "introspect", "subject": subject});
-        if subject == "procs"
-            && let Some(d) = procs_duration
-        {
-            req["duration_secs"] = serde_json::json!(d);
-        }
+        let duration = if subject == "procs" {
+            procs_duration
+        } else {
+            None
+        };
 
-        match client.send_raw(req).await {
+        match client.introspect(subject, duration) {
             Ok(resp) if resp.ok => {
                 let payload = resp
                     .data

@@ -1,190 +1,150 @@
-"""Shared pytest fixtures including a mock beachcomber daemon server."""
+"""Shared pytest fixtures: a real ``comb`` daemon for integration tests.
+
+The Python SDK is now a ``ctypes`` binding over the native
+``libbeachcomber`` C ABI (see ``libbeachcomber/_native.py``) rather than a
+hand-rolled NDJSON socket client, so there is no longer a meaningful
+wire-level mock to test against: the wire protocol is entirely the native
+library's concern. Integration tests here drive the real binding against a
+real daemon, the same way ``conformance_runner.py`` does.
+
+Requires ``COMB_BIN`` (or ``comb`` on ``$PATH``) and ``BEACHCOMBER_LIB`` (or
+a discoverable ``libbeachcomber.{so,dylib}``); tests needing the daemon are
+skipped if a binary can't be found, and the whole session errors loudly if
+the daemon fails to start once a binary *is* found.
+"""
 
 from __future__ import annotations
 
-import json
 import os
+import pathlib
+import shutil
+import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
-from typing import Any, Callable, Dict, List, Optional
+import time
+from typing import Optional
 
 import pytest
 
 # Hard-kill the entire test process if the suite takes longer than 30 seconds.
 # This mirrors the nextest `global-timeout` for the Rust suite.
 _SUITE_TIMEOUT_S = 30
-_watchdog = threading.Timer(_SUITE_TIMEOUT_S, lambda: (
-    sys.stderr.write(f"\n[TIMEOUT] Test suite exceeded {_SUITE_TIMEOUT_S}s — aborting.\n"),
-    os._exit(1),
-))
+_watchdog = threading.Timer(
+    _SUITE_TIMEOUT_S,
+    lambda: (
+        sys.stderr.write(f"\n[TIMEOUT] Test suite exceeded {_SUITE_TIMEOUT_S}s — aborting.\n"),
+        os._exit(1),
+    ),
+)
 _watchdog.daemon = True
 _watchdog.start()
 
+_SDK_DIR = pathlib.Path(__file__).parent.parent
+_REPO_ROOT = _SDK_DIR.parent.parent
 
-class MockDaemon:
-    """In-process Unix socket server that mimics the beachcomber daemon.
+# Make a locally built dylib discoverable without requiring the caller to
+# set BEACHCOMBER_LIB themselves — but never override an explicit setting.
+if "BEACHCOMBER_LIB" not in os.environ:
+    if sys.platform == "darwin":
+        _default_lib = _REPO_ROOT / "target" / "debug" / "libbeachcomber.dylib"
+    else:
+        _default_lib = _REPO_ROOT / "target" / "debug" / "libbeachcomber.so"
+    if _default_lib.is_file():
+        os.environ["BEACHCOMBER_LIB"] = str(_default_lib)
 
-    Accepts newline-delimited JSON requests and dispatches them to
-    per-op handlers registered via :meth:`on`.  A default handler for
-    each op can be set, or individual responses can be queued.
 
-    The server runs in a background thread and is stopped when
-    :meth:`stop` is called (or when used as a context manager).
+def _find_comb_bin() -> Optional[str]:
+    env = os.environ.get("COMB_BIN")
+    if env and os.path.isfile(env) and os.access(env, os.X_OK):
+        return env
+    default = _REPO_ROOT / "target" / "debug" / "comb"
+    if default.is_file() and os.access(default, os.X_OK):
+        return str(default)
+    return shutil.which("comb")
 
-    Attributes:
-        socket_path: Path to the Unix domain socket.
-        received: List of all parsed request dicts received so far.
-    """
 
-    def __init__(self) -> None:
-        self._tmpdir = tempfile.mkdtemp()
-        self.socket_path = os.path.join(self._tmpdir, "test.sock")
-        self.received: List[Dict[str, Any]] = []
-        self._handlers: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {}
-        self._default_handler: Callable[[Dict[str, Any]], Dict[str, Any]] = (
-            lambda req: {"ok": False, "error": f"no handler for op '{req.get('op')}'"}
-        )
-        self._server_sock: Optional[socket.socket] = None
-        self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
+def _wait_for_socket(sock_path: str, timeout: float = 8.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if os.path.exists(sock_path):
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(0.1)
+                s.connect(sock_path)
+                s.close()
+                return True
+            except OSError:
+                pass
+        time.sleep(0.05)
+    return False
 
-    # --- Handler registration ---
 
-    def on(
-        self, op: str, handler: Callable[[Dict[str, Any]], Dict[str, Any]]
-    ) -> "MockDaemon":
-        """Register a response handler for a given op.
+class DaemonProcess:
+    """Manages a ``comb daemon`` subprocess for the test session."""
 
-        Args:
-            op: Operation name (``"get"``, ``"refresh"``, etc.).
-            handler: Callable that receives the parsed request dict and
-                returns a response dict.
+    def __init__(self, comb_bin: str) -> None:
+        self._comb_bin = comb_bin
+        self._tmpdir = tempfile.mkdtemp(prefix="bcpytest_")
+        self.socket_path = os.path.join(self._tmpdir, "comb.sock")
+        self._proc: Optional[subprocess.Popen] = None
 
-        Returns:
-            ``self`` for chaining.
-        """
-        self._handlers[op] = handler
-        return self
-
-    def respond(self, op: str, response: Dict[str, Any]) -> "MockDaemon":
-        """Register a static response for a given op.
-
-        Args:
-            op: Operation name.
-            response: Response dict to always return for this op.
-
-        Returns:
-            ``self`` for chaining.
-        """
-        self._handlers[op] = lambda _req: response
-        return self
-
-    # --- Lifecycle ---
-
-    def start(self) -> "MockDaemon":
-        """Bind the socket and start the server thread."""
-        self._server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._server_sock.bind(self.socket_path)
-        self._server_sock.listen(5)
-        self._server_sock.settimeout(0.1)
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-        self._thread.start()
-        return self
+    def start(self) -> None:
+        env = os.environ.copy()
+        env["XDG_CONFIG_HOME"] = self._tmpdir
+        log_path = os.path.join(self._tmpdir, "daemon.log")
+        with open(log_path, "wb") as log:
+            self._proc = subprocess.Popen(
+                [self._comb_bin, "daemon", "--socket", self.socket_path],
+                stdout=log,
+                stderr=log,
+                env=env,
+            )
+        if not _wait_for_socket(self.socket_path):
+            self.stop()
+            tail = ""
+            try:
+                tail = pathlib.Path(log_path).read_text()[-2000:]
+            except OSError:
+                pass
+            raise RuntimeError(f"daemon did not start within 8s\nLog tail:\n{tail}")
 
     def stop(self) -> None:
-        """Signal the server thread to stop and wait for it."""
-        self._stop_event.set()
-        if self._server_sock:
+        if self._proc is not None:
             try:
-                self._server_sock.close()
-            except OSError:
-                pass
-        if self._thread:
-            self._thread.join(timeout=2.0)
-
-    def __enter__(self) -> "MockDaemon":
-        return self.start()
-
-    def __exit__(self, *_: Any) -> None:
-        self.stop()
-
-    # --- Internal server loop ---
-
-    def _serve(self) -> None:
-        assert self._server_sock is not None
-        while not self._stop_event.is_set():
-            try:
-                conn, _ = self._server_sock.accept()
-            except OSError:
-                break
-            t = threading.Thread(target=self._handle_conn, args=(conn,), daemon=True)
-            t.start()
-
-    def _handle_conn(self, conn: socket.socket) -> None:
-        reader = conn.makefile("r", encoding="utf-8")
-        writer = conn.makefile("w", encoding="utf-8")
-        try:
-            for line in reader:
-                line = line.strip()
-                if not line:
-                    continue
+                self._proc.send_signal(signal.SIGTERM)
+                self._proc.wait(timeout=3.0)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
                 try:
-                    req = json.loads(line)
-                except json.JSONDecodeError:
-                    resp = {"ok": False, "error": "invalid JSON"}
-                    writer.write(json.dumps(resp) + "\n")
-                    writer.flush()
-                    continue
+                    self._proc.kill()
+                except ProcessLookupError:
+                    pass
+            self._proc = None
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-                self.received.append(req)
-                op = req.get("op", "")
-                handler = self._handlers.get(op, self._default_handler)
-                try:
-                    resp = handler(req)
-                except Exception as exc:  # pragma: no cover
-                    resp = {"ok": False, "error": str(exc)}
 
-                writer.write(json.dumps(resp) + "\n")
-                writer.flush()
-        except OSError:
-            pass
-        finally:
-            try:
-                reader.close()
-            except OSError:
-                pass
-            try:
-                writer.close()
-            except OSError:
-                pass
-            conn.close()
+@pytest.fixture(scope="session")
+def comb_bin() -> str:
+    bin_path = _find_comb_bin()
+    if not bin_path:
+        pytest.skip("COMB_BIN not set and 'comb' not found on $PATH / target/debug")
+    return bin_path
+
+
+@pytest.fixture(scope="session")
+def daemon(comb_bin: str):
+    proc = DaemonProcess(comb_bin)
+    proc.start()
+    yield proc
+    proc.stop()
 
 
 @pytest.fixture()
-def mock_daemon() -> Any:
-    """Yield a started :class:`MockDaemon` and stop it after the test."""
-    with MockDaemon() as daemon:
-        yield daemon
+def client(daemon: DaemonProcess):
+    from libbeachcomber import Client
 
-
-@pytest.fixture()
-def git_daemon(mock_daemon: MockDaemon) -> MockDaemon:
-    """MockDaemon pre-configured with a git provider."""
-    mock_daemon.respond(
-        "get",
-        {
-            "ok": True,
-            "data": {"branch": "main", "dirty": False},
-            "age_ms": 42,
-            "stale": False,
-        },
-    )
-    mock_daemon.respond("refresh", {"ok": True})
-    mock_daemon.respond("context", {"ok": True})
-    mock_daemon.respond(
-        "status",
-        {"ok": True, "data": {"cache_entries": 3, "scheduler": "running"}},
-    )
-    return mock_daemon
+    c = Client(socket_path=daemon.socket_path, timeout=5.0)
+    yield c
+    c.close()
