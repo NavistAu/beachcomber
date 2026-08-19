@@ -115,7 +115,11 @@ libbeachcomber.pc: libbeachcomber.pc.in
 install: libbeachcomber.pc
 	$(INSTALL) -d $(DESTDIR)$(INCDIR)
 	$(INSTALL) -d $(DESTDIR)$(PKGCONFIGDIR)
-	$(INSTALL) -m 644 beachcomber.h $(DESTDIR)$(INCDIR)/beachcomber.h
+	# Installed from $(BC_INCLUDE_DIR), not the local beachcomber.h: this
+	# directory's own copy is a repo-relative passthrough (see
+	# beachcomber.h's header comment) that only resolves inside a checkout.
+	# An installed header must be self-contained.
+	$(INSTALL) -m 644 $(BC_INCLUDE_DIR)/beachcomber.h $(DESTDIR)$(INCDIR)/beachcomber.h
 	$(INSTALL) -m 644 libbeachcomber.pc $(DESTDIR)$(PKGCONFIGDIR)/libbeachcomber.pc
 
 # ---------------------------------------------------------------------------
