@@ -1,10 +1,21 @@
 /*
- * conformance_runner.c — Protocol conformance runner for the beachcomber C SDK
+ * conformance_runner.c — Protocol conformance runner for the beachcomber C
+ * binding.
  *
- * Loads fixture JSON files from tests/conformance (relative path resolved from
- * CONFORMANCE_DIR env var or the default relative location), spawns the
- * daemon binary (COMB_BIN env var or argv[1]), drives ops through the C API,
- * and validates expect blocks.
+ * This binding links directly against libbeachcomber's C ABI (bc_* in
+ * beachcomber.h) — there is no hand-written socket/protocol layer in this
+ * directory to drive instead (see Phase 5 of
+ * docs/superpowers/plans/2026-08-15-client-abi-and-sdk-refactor.md). Every
+ * bc_* call returns a caller-owned JSON envelope string
+ * (`{"ok":true,"data":...}` / `{"ok":false,"error":{"kind":...,"message":...}}`);
+ * this runner parses those envelopes with runner_json.[ch], a parser scoped
+ * to this file alone and not shipped as part of the SDK (see
+ * runner_json.h for why).
+ *
+ * Loads fixture JSON files from tests/conformance (relative path resolved
+ * from CONFORMANCE_DIR env var or the default relative location), spawns
+ * the daemon binary (COMB_BIN env var or argv[1]), drives ops through the
+ * ABI, and validates expect blocks directly against the returned envelope.
  *
  * Usage:
  *   COMB_BIN=/path/to/comb ./conformance_runner [conformance_dir]
@@ -17,6 +28,9 @@
  *     "description": "...",
  *     "setup": [ { "op": "put", "args": {...} } ],
  *     "test":  { "op": "get",  "args": {...} },
+ *     "virtual": { "provider.field": "expr" },   // resolve fixtures only
+ *     "env": { "VAR": "value" },                 // resolve fixtures only
+ *     "cwd": "/some/path",                       // resolve fixtures only
  *     "expect": {
  *       "status": "hit"|"miss"|"ok"|"error",
  *       "data_type": "string"|"number"|"bool"|"object"|"array"|"null",
@@ -34,12 +48,13 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "beachcomber.h"
-#include "json.h"
+#include "runner_json.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
@@ -51,11 +66,13 @@
  * Limits and constants
  * ---------------------------------------------------------------------- */
 
-#define MAX_FIXTURES   256
-#define MAX_FIXTURE_SZ (128 * 1024)
-#define SOCK_PATH_MAX  256
-#define STARTUP_RETRIES 30
+#define MAX_FIXTURES     256
+#define MAX_FIXTURE_SZ   (128 * 1024)
+#define SOCK_PATH_MAX    256
+#define STARTUP_RETRIES  30
 #define STARTUP_SLEEP_US 100000  /* 100 ms */
+#define CLIENT_TIMEOUT_MS 5000   /* socket read/write timeout per op */
+#define WATCH_TIMEOUT_MS  3000   /* bc_watch_next budget for the initial event */
 
 /* -------------------------------------------------------------------------
  * Minimal test framework
@@ -85,13 +102,15 @@ static void report_skip(const char *name, const char *op) {
     g_skip++;
 }
 
-/* Ops this runner's binding can execute. A fixture using any op outside
- * this set must be skipped, not failed — the binding doesn't implement it
- * yet (e.g. "resolve", which is client-side resolution with no C ABI). */
+/* Every op the fixture format defines is implemented directly over the ABI
+ * (bc_resolve gives us "resolve" — the one op earlier phases of this
+ * refactor had no binding for). Kept as an explicit allow-list, rather than
+ * assuming, so a future op the ABI doesn't yet cover skips loudly instead
+ * of crashing into a NULL. */
 static int op_supported(const char *op) {
     static const char *supported[] = {
         "hello", "get", "refresh", "put", "status", "context", "watch",
-        "introspect", NULL
+        "introspect", "resolve", NULL
     };
     for (int i = 0; supported[i]; i++) {
         if (strcmp(op, supported[i]) == 0) return 1;
@@ -196,116 +215,13 @@ static int collect_fixtures(const char *dir,
 }
 
 /* -------------------------------------------------------------------------
- * Daemon lifecycle
- * ---------------------------------------------------------------------- */
-
-typedef struct {
-    pid_t pid;
-    char  sock_path[SOCK_PATH_MAX];
-} daemon_proc_t;
-
-static daemon_proc_t spawn_daemon(const char *bin, const char *sock_path) {
-    daemon_proc_t dp;
-    dp.pid = -1;
-    dp.sock_path[0] = '\0';
-
-    /* Remove any stale socket */
-    unlink(sock_path);
-
-    /* Flush before fork(): stdio buffers unflushed output copied into the
-     * child are re-flushed when it later calls freopen() on stdout/stderr,
-     * duplicating every banner line printed so far into the log once per
-     * fixture. */
-    fflush(NULL);
-
-    pid_t pid = fork();
-    if (pid < 0) return dp;
-
-    if (pid == 0) {
-        /* Child: exec the daemon with the temp socket path */
-        /* Suppress daemon output */
-        freopen("/dev/null", "w", stdout);
-        freopen("/dev/null", "w", stderr);
-
-        char sock_arg[SOCK_PATH_MAX + 16];
-        snprintf(sock_arg, sizeof(sock_arg), "--socket=%s", sock_path);
-        execl(bin, bin, "daemon", sock_arg, NULL);
-        /* exec failed */
-        _exit(127);
-    }
-
-    /* Parent: wait for the socket to appear and be connectable */
-    dp.pid = pid;
-    snprintf(dp.sock_path, sizeof(dp.sock_path), "%s", sock_path);
-
-    for (int i = 0; i < STARTUP_RETRIES; i++) {
-        usleep(STARTUP_SLEEP_US);
-        comb_client_t *c = comb_connect_path(sock_path);
-        if (c) {
-            comb_disconnect(c);
-            return dp;
-        }
-        /* Check if child died already */
-        int wstatus = 0;
-        pid_t wp = waitpid(pid, &wstatus, WNOHANG);
-        if (wp == pid) {
-            dp.pid = -1;
-            return dp;
-        }
-    }
-
-    /* Timed out */
-    kill(pid, SIGTERM);
-    waitpid(pid, NULL, 0);
-    dp.pid = -1;
-    return dp;
-}
-
-static void stop_daemon(daemon_proc_t *dp) {
-    if (dp->pid <= 0) return;
-    kill(dp->pid, SIGTERM);
-    waitpid(dp->pid, NULL, 0);
-    unlink(dp->sock_path);
-    dp->pid = -1;
-}
-
-/* Deep equality check on two json_node_t trees. */
-static int nodes_equal(const json_node_t *a, const json_node_t *b) {
-    if (!a || !b) return a == b;
-    if (a->type != b->type) return 0;
-    switch (a->type) {
-        case JSON_NULL:   return 1;
-        case JSON_BOOL:   return a->val.boolean == b->val.boolean;
-        case JSON_INT:    return a->val.integer == b->val.integer;
-        case JSON_FLOAT:  return a->val.floating == b->val.floating;
-        case JSON_STRING: return strcmp(a->val.string, b->val.string) == 0;
-        case JSON_ARRAY:
-        case JSON_OBJECT: {
-            if (a->n_children != b->n_children) return 0;
-            json_node_t *ac = a->children;
-            json_node_t *bc = b->children;
-            while (ac && bc) {
-                if (a->type == JSON_OBJECT) {
-                    if (!ac->key || !bc->key) return 0;
-                    if (strcmp(ac->key, bc->key) != 0) return 0;
-                }
-                if (!nodes_equal(ac, bc)) return 0;
-                ac = ac->next;
-                bc = bc->next;
-            }
-            return ac == NULL && bc == NULL;
-        }
-    }
-    return 0;
-}
-
-/* -------------------------------------------------------------------------
- * Op driver: run a single op descriptor, return comb_result_t
+ * JSON re-serialisation (fixture args -> bc_* JSON string arguments)
  * ---------------------------------------------------------------------- */
 
 /*
- * data_json_from_node: serialise a json_node_t to a malloc'd JSON string.
- * Only handles the shapes we expect in put args (objects and scalars).
+ * serialise_node: serialise a parsed json_node_t back into a malloc'd JSON
+ * string. Used to turn fixture "data" (put), "env" and "virtual" (resolve)
+ * blocks into the JSON text bc_put / bc_resolve expect.
  */
 static char *serialise_node(const json_node_t *node) {
     if (!node) return NULL;
@@ -417,228 +333,377 @@ static char *serialise_node(const json_node_t *node) {
     return NULL;
 }
 
-/* Run one op descriptor against an open client connection. Returns the
- * result (caller frees). Returns NULL if the op is not recognised. */
-static comb_result_t *run_op(comb_client_t *c, const json_node_t *op_node) {
+/* Deep equality check on two json_node_t trees (used for data_equals /
+ * data_field_equals). */
+static int nodes_equal(const json_node_t *a, const json_node_t *b) {
+    if (!a || !b) return a == b;
+    if (a->type != b->type) return 0;
+    switch (a->type) {
+        case JSON_NULL:   return 1;
+        case JSON_BOOL:   return a->val.boolean == b->val.boolean;
+        case JSON_INT:    return a->val.integer == b->val.integer;
+        case JSON_FLOAT:  return a->val.floating == b->val.floating;
+        case JSON_STRING: return strcmp(a->val.string, b->val.string) == 0;
+        case JSON_ARRAY:
+        case JSON_OBJECT: {
+            if (a->n_children != b->n_children) return 0;
+            json_node_t *ac = a->children;
+            json_node_t *bc = b->children;
+            while (ac && bc) {
+                if (a->type == JSON_OBJECT) {
+                    if (!ac->key || !bc->key) return 0;
+                    if (strcmp(ac->key, bc->key) != 0) return 0;
+                }
+                if (!nodes_equal(ac, bc)) return 0;
+                ac = ac->next;
+                bc = bc->next;
+            }
+            return ac == NULL && bc == NULL;
+        }
+    }
+    return 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Envelope helpers
+ * ---------------------------------------------------------------------- */
+
+/* Returns 1 if a bc_* envelope string's top-level "ok" is true, 0 otherwise
+ * (including on a NULL or unparseable envelope). */
+static int envelope_ok(const char *json) {
+    if (!json) return 0;
+    json_node_t *root = json_parse(json);
+    if (!root) return 0;
+    json_node_t *ok = json_get(root, "ok");
+    int result = ok && ok->type == JSON_BOOL && ok->val.boolean;
+    json_free(root);
+    return result;
+}
+
+/* -------------------------------------------------------------------------
+ * Daemon lifecycle
+ * ---------------------------------------------------------------------- */
+
+typedef struct {
+    pid_t pid;
+    char  sock_path[SOCK_PATH_MAX];
+} daemon_proc_t;
+
+/* Builds a bc_client_new() options_json for `sock_path`. autostart is always
+ * false: this runner owns daemon lifecycle explicitly (see spawn_daemon /
+ * stop_daemon) and must not race the library's own auto-spawn. */
+static void build_options_json(char *buf, size_t buf_len,
+                                const char *sock_path, uint64_t timeout_ms) {
+    snprintf(buf, buf_len,
+             "{\"socket_path\":\"%s\",\"autostart\":false,\"timeout_ms\":%llu}",
+             sock_path, (unsigned long long)timeout_ms);
+}
+
+static daemon_proc_t spawn_daemon(const char *bin, const char *sock_path) {
+    daemon_proc_t dp;
+    dp.pid = -1;
+    dp.sock_path[0] = '\0';
+
+    /* Remove any stale socket */
+    unlink(sock_path);
+
+    /* Flush before fork(): stdio buffers unflushed output copied into the
+     * child are re-flushed when it later calls freopen() on stdout/stderr,
+     * duplicating every banner line printed so far into the log once per
+     * fixture. */
+    fflush(NULL);
+
+    pid_t pid = fork();
+    if (pid < 0) return dp;
+
+    if (pid == 0) {
+        /* Child: exec the daemon with the temp socket path */
+        /* Suppress daemon output */
+        freopen("/dev/null", "w", stdout);
+        freopen("/dev/null", "w", stderr);
+
+        char sock_arg[SOCK_PATH_MAX + 16];
+        snprintf(sock_arg, sizeof(sock_arg), "--socket=%s", sock_path);
+        execl(bin, bin, "daemon", sock_arg, NULL);
+        /* exec failed */
+        _exit(127);
+    }
+
+    /* Parent: wait for the socket to appear and answer a hello. */
+    dp.pid = pid;
+    snprintf(dp.sock_path, sizeof(dp.sock_path), "%s", sock_path);
+
+    for (int i = 0; i < STARTUP_RETRIES; i++) {
+        usleep(STARTUP_SLEEP_US);
+
+        char opts[SOCK_PATH_MAX + 64];
+        build_options_json(opts, sizeof(opts), sock_path, 1000);
+        BcClient *probe = bc_client_new(opts);
+        char *resp = bc_hello(probe);
+        int ready = envelope_ok(resp);
+        bc_string_free(resp);
+        bc_client_free(probe);
+        if (ready) return dp;
+
+        /* Check if child died already */
+        int wstatus = 0;
+        pid_t wp = waitpid(pid, &wstatus, WNOHANG);
+        if (wp == pid) {
+            dp.pid = -1;
+            return dp;
+        }
+    }
+
+    /* Timed out */
+    kill(pid, SIGTERM);
+    waitpid(pid, NULL, 0);
+    dp.pid = -1;
+    return dp;
+}
+
+static void stop_daemon(daemon_proc_t *dp) {
+    if (dp->pid <= 0) return;
+    kill(dp->pid, SIGTERM);
+    waitpid(dp->pid, NULL, 0);
+    unlink(dp->sock_path);
+    dp->pid = -1;
+}
+
+/* -------------------------------------------------------------------------
+ * Op driver: run a single op descriptor over the ABI, return the raw
+ * envelope string (caller frees with bc_string_free). Every bc_ and
+ * bc_session_ call already returns exactly this shape, so this function is
+ * a dispatch table, not a translation layer.
+ * ---------------------------------------------------------------------- */
+
+/*
+ * default_cwd: the directory `resolve` fixtures get when they don't declare
+ * their own "cwd" — this run's shared per-run temp directory (real,
+ * existing, but otherwise inert; path-expression fixtures that care about a
+ * specific cwd always declare one explicitly).
+ */
+static char *run_op(BcClient *client, BcSession *session,
+                     const json_node_t *op_node, const json_node_t *fixture_root,
+                     const char *default_cwd) {
     if (!op_node) return NULL;
 
-    json_node_t *op_field = json_get(op_node, "op");
-    const char  *op_str   = json_as_str(op_field);
+    const char *op_str = json_as_str(json_get(op_node, "op"));
     if (!op_str) return NULL;
 
     json_node_t *args = json_get(op_node, "args");
 
-    const char *key  = NULL;
-    const char *path = NULL;
-    if (args) {
-        key  = json_as_str(json_get(args, "key"));
-        path = json_as_str(json_get(args, "path"));
+    const char *key  = args ? json_as_str(json_get(args, "key"))  : NULL;
+    const char *path = args ? json_as_str(json_get(args, "path")) : NULL;
+
+    if (strcmp(op_str, "hello") == 0) {
+        return bc_hello(client);
     }
 
     if (strcmp(op_str, "get") == 0) {
-        return comb_get(c, key ? key : "", path);
+        uint32_t flags = 0;
+        json_node_t *force = args ? json_get(args, "force") : NULL;
+        json_node_t *wait  = args ? json_get(args, "wait")  : NULL;
+        if (force && force->type == JSON_BOOL && force->val.boolean) flags |= BC_GET_FORCE;
+        if (wait  && wait->type  == JSON_BOOL && wait->val.boolean)  flags |= BC_GET_WAIT;
+        return bc_session_get(session, key ? key : "", path, flags);
     }
 
     if (strcmp(op_str, "refresh") == 0) {
-        int rc = comb_refresh(c, key ? key : "", path);
-        /* Wrap in a synthetic result for uniform handling */
-        char synth[64];
-        snprintf(synth, sizeof(synth), "{\"ok\":%s}",
-                 rc == 0 ? "true" : "false");
-        return NULL; /* refresh returns int — caller checks separately */
+        return bc_refresh(client, key ? key : "", path);
     }
 
     if (strcmp(op_str, "context") == 0) {
-        comb_set_context(c, path ? path : "");
-        return NULL;
+        return bc_session_set_context(session, path ? path : "");
     }
-
-    /* "hello" is handled directly in run_fixture(), like "status": comb_hello()
-     * fills a typed struct through an out-param rather than returning a
-     * comb_result_t, so it cannot flow through this function's uniform
-     * return type. This case is unreachable in practice. */
 
     if (strcmp(op_str, "put") == 0) {
-        char *data_json = NULL;
-        if (args) {
-            json_node_t *data_node = json_get(args, "data");
-            if (data_node) data_json = serialise_node(data_node);
-        }
-        int rc = comb_put(c, key ? key : "", data_json, NULL, path);
+        json_node_t *data_node = args ? json_get(args, "data") : NULL;
+        char *data_json = data_node ? serialise_node(data_node) : strdup("null");
+        char *result = bc_session_put(session, key ? key : "", data_json, NULL, path);
         free(data_json);
-        /* This branch is unreachable in practice — run_fixture special-cases
-         * "put" and never calls run_op() for it (see is_put below) — but it
-         * must still compile. On success, produce a real ok comb_result_t
-         * via a legitimate typed call; comb_status() cannot fill this role,
-         * since it returns typed rows through out-params, not a
-         * comb_result_t. */
-        if (rc == 0) {
-            return comb_introspect(c, COMB_INTROSPECT_DAEMON, 0);
-        }
-        return NULL;
+        return result;
     }
 
-    if (strcmp(op_str, "watch") == 0) {
-        comb_watch_handle_t *wh = comb_watch(c, key ? key : "", path);
-        if (!wh) return NULL;
-        comb_watch_event_t ev;
-        memset(&ev, 0, sizeof(ev));
-        int ret = comb_watch_next(wh, &ev, 2000);
-        comb_watch_free(wh);
-        if (ret != 1) return NULL;
-        /* Synthesise a result from the watch event */
-        /* We can't construct comb_result_t from outside; use a get instead
-         * to get the same value (the fixture puts the key first via setup).
-         * The watch fixture expects status:hit with the seeded value. */
-        return comb_get(c, key ? key : "", path);
+    if (strcmp(op_str, "status") == 0) {
+        return bc_status(client);
     }
 
     if (strcmp(op_str, "introspect") == 0) {
-        const char *subj = NULL;
-        uint64_t dur = 0;
+        const char *subject = args ? json_as_str(json_get(args, "subject")) : NULL;
+        char opts[64];
+        const char *opts_ptr = NULL;
         if (args) {
-            subj = json_as_str(json_get(args, "subject"));
             json_node_t *d = json_get(args, "duration_secs");
-            if (d) {
-                int ok2 = 0;
-                int64_t v = json_as_int(d, &ok2);
-                if (ok2 && v > 0) dur = (uint64_t)v;
+            int ok2 = 0;
+            int64_t v = d ? json_as_int(d, &ok2) : 0;
+            if (ok2 && v > 0) {
+                snprintf(opts, sizeof(opts), "{\"duration_secs\":%lld}", (long long)v);
+                opts_ptr = opts;
             }
         }
-        comb_introspect_subject_t s = COMB_INTROSPECT_DAEMON;
-        if (subj) {
-            if      (strcmp(subj, "providers") == 0) s = COMB_INTROSPECT_PROVIDERS;
-            else if (strcmp(subj, "config")    == 0) s = COMB_INTROSPECT_CONFIG;
-            else if (strcmp(subj, "cache")     == 0) s = COMB_INTROSPECT_CACHE;
-            else if (strcmp(subj, "lifecycle") == 0) s = COMB_INTROSPECT_LIFECYCLE;
-            else if (strcmp(subj, "watches")   == 0) s = COMB_INTROSPECT_WATCHES;
-            else if (strcmp(subj, "timers")    == 0) s = COMB_INTROSPECT_TIMERS;
-            else if (strcmp(subj, "demand")    == 0) s = COMB_INTROSPECT_DEMAND;
-            else if (strcmp(subj, "procs")     == 0) s = COMB_INTROSPECT_PROCS;
-        }
-        return comb_introspect(c, s, dur);
+        return bc_introspect(client, subject ? subject : "daemon", opts_ptr);
+    }
+
+    if (strcmp(op_str, "watch") == 0) {
+        BcWatch *w = bc_watch_open(client, key ? key : "", path);
+        char *result = bc_watch_next(w, WATCH_TIMEOUT_MS);
+        bc_watch_free(w);
+        return result;
+    }
+
+    if (strcmp(op_str, "resolve") == 0) {
+        /* cwd / env / virtual are fixture-level fields, not op args — see
+         * tests/conformance/README.md's "resolve" section. */
+        const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
+        if (!cwd) cwd = default_cwd;
+
+        json_node_t *env_node = json_get(fixture_root, "env");
+        char *env_json = (env_node && env_node->type == JSON_OBJECT)
+                              ? serialise_node(env_node)
+                              : NULL;
+
+        json_node_t *virtual_node = json_get(fixture_root, "virtual");
+        char *overrides_json = (virtual_node && virtual_node->type == JSON_OBJECT)
+                                    ? serialise_node(virtual_node)
+                                    : NULL;
+
+        char *result = bc_resolve(client, key ? key : "", cwd, env_json, overrides_json);
+        free(env_json);
+        free(overrides_json);
+        return result;
     }
 
     return NULL;
 }
 
 /* -------------------------------------------------------------------------
- * Expectation checker
+ * Expectation checker — reads the bc_* envelope string directly.
  * ---------------------------------------------------------------------- */
 
+static const char *stringify_scalar(const json_node_t *n, char *buf, size_t buf_len) {
+    if (!n) return NULL;
+    switch (n->type) {
+        case JSON_STRING: return n->val.string;
+        case JSON_INT:    snprintf(buf, buf_len, "%lld", (long long)n->val.integer); return buf;
+        case JSON_FLOAT:  snprintf(buf, buf_len, "%g", n->val.floating); return buf;
+        case JSON_BOOL:   return n->val.boolean ? "true" : "false";
+        default:          return NULL;
+    }
+}
+
 static int check_expect(const char *name, const json_node_t *expect,
-                        comb_result_t *result,
-                        const char *op_str,
-                        comb_client_t *c,
-                        json_node_t *args) {
-    (void)c;
-    (void)args;
+                        const char *op_str, char *envelope_json) {
     if (!expect) {
         report_pass(name);
         return 1;
     }
 
-    /* status */
+    if (!envelope_json) {
+        report_fail(name, "op produced no response");
+        return 0;
+    }
+
+    json_node_t *root = json_parse(envelope_json);
+    if (!root) {
+        report_fail(name, "unparseable envelope: %s", envelope_json);
+        return 0;
+    }
+
+    json_node_t *ok_node = json_get(root, "ok");
+    int ok = ok_node && ok_node->type == JSON_BOOL && ok_node->val.boolean;
+
     const char *status = json_as_str(json_get(expect, "status"));
-    if (status) {
-        if (strcmp(status, "ok") == 0 || strcmp(status, "hit") == 0 ||
-            strcmp(status, "miss") == 0) {
-            /* For put/refresh ops that return NULL result, synthesise ok */
-            if (!result) {
-                /* put success was already verified by rc==0 before reaching here.
-                 * We treat NULL result from put as ok. */
-                if (strcmp(op_str, "put") == 0 ||
-                    strcmp(op_str, "refresh") == 0 ||
-                    strcmp(op_str, "context") == 0) {
-                    /* Check passes — no result to examine further */
-                    report_pass(name);
-                    return 1;
-                }
-                report_fail(name, "expected status=%s but result is NULL", status);
-                return 0;
-            }
-            if (!comb_result_ok(result)) {
-                report_fail(name, "expected status=%s but ok=false (error: %s)",
-                            status, comb_result_error(result));
-                return 0;
-            }
-            if (strcmp(status, "hit") == 0 && !comb_result_is_hit(result)) {
-                report_fail(name, "expected status=hit but is_hit=0");
-                return 0;
-            }
-            if (strcmp(status, "miss") == 0 && comb_result_is_hit(result)) {
-                report_fail(name, "expected status=miss but is_hit=1");
-                return 0;
-            }
-        } else if (strcmp(status, "error") == 0) {
-            if (result && comb_result_ok(result)) {
-                report_fail(name, "expected status=error but ok=true");
-                return 0;
-            }
-        }
-    }
 
-    if (!result) {
-        /* No further checks possible */
-        report_pass(name);
-        return 1;
-    }
-
-    /* error_contains */
-    const char *err_contains = json_as_str(json_get(expect, "error_contains"));
-    if (err_contains) {
-        const char *err = comb_result_error(result);
-        if (!err || strstr(err, err_contains) == NULL) {
-            report_fail(name, "expected error containing \"%s\", got: \"%s\"",
-                        err_contains, err ? err : "(null)");
+    if (status && strcmp(status, "error") == 0) {
+        if (ok) {
+            report_fail(name, "expected status=error but ok=true");
+            json_free(root);
             return 0;
         }
+        const char *ec = json_as_str(json_get(expect, "error_contains"));
+        if (ec) {
+            json_node_t *err = json_get(root, "error");
+            const char *msg = err ? json_as_str(json_get(err, "message")) : NULL;
+            if (!msg || strstr(msg, ec) == NULL) {
+                report_fail(name, "expected error containing \"%s\", got: \"%s\"",
+                            ec, msg ? msg : "(null)");
+                json_free(root);
+                return 0;
+            }
+        }
+        report_pass(name);
+        json_free(root);
+        return 1;
     }
 
-    /* data checks only valid on ok results */
-    if (!comb_result_ok(result)) {
-        report_pass(name);
-        return 1;
+    if (!ok) {
+        json_node_t *err = json_get(root, "error");
+        const char *msg = err ? json_as_str(json_get(err, "message")) : NULL;
+        report_fail(name, "expected ok=true but ok=false (error: %s)",
+                    msg ? msg : "(none)");
+        json_free(root);
+        return 0;
+    }
+
+    /* Only "get" and "watch" (event outcome) wrap their payload as
+     * {"data":{"data":<value>,"age_ms":...,"stale":...}}; every other op's
+     * envelope "data" field IS the value. */
+    json_node_t *data = json_get(root, "data");
+    json_node_t *value = data;
+    json_node_t *age_node = NULL;
+    json_node_t *stale_node = NULL;
+    int is_nested = strcmp(op_str, "get") == 0 || strcmp(op_str, "watch") == 0;
+    if (is_nested && data && data->type == JSON_OBJECT) {
+        value = json_get(data, "data");
+        age_node = json_get(data, "age_ms");
+        stale_node = json_get(data, "stale");
+    }
+
+    int is_null = !value || value->type == JSON_NULL;
+
+    if (status) {
+        if (strcmp(status, "hit") == 0 && is_null) {
+            report_fail(name, "expected status=hit but data is null/absent");
+            json_free(root);
+            return 0;
+        }
+        if (strcmp(status, "miss") == 0 && !is_null) {
+            report_fail(name, "expected status=miss but data is present");
+            json_free(root);
+            return 0;
+        }
+        /* "ok" asserts only ok=true, already checked above. */
     }
 
     /* data_type */
     const char *data_type = json_as_str(json_get(expect, "data_type"));
     if (data_type) {
-        /* We access the raw JSON tree via comb_result_raw_json and re-parse
-         * to inspect the data node type. */
-        const char *raw = comb_result_raw_json(result);
-        json_node_t *root = raw ? json_parse(raw) : NULL;
-        json_node_t *data = root ? json_get(root, "data") : NULL;
-        int ok = 0;
-        if (data && data->type != JSON_NULL) {
-            if      (strcmp(data_type, "string") == 0)  ok = data->type == JSON_STRING;
-            else if (strcmp(data_type, "number") == 0)  ok = data->type == JSON_INT ||
-                                                              data->type == JSON_FLOAT;
-            else if (strcmp(data_type, "bool")   == 0)  ok = data->type == JSON_BOOL;
-            else if (strcmp(data_type, "object") == 0)  ok = data->type == JSON_OBJECT;
-            else if (strcmp(data_type, "array")  == 0)  ok = data->type == JSON_ARRAY;
-            else if (strcmp(data_type, "null")   == 0)  ok = data->type == JSON_NULL;
+        int type_ok = 0;
+        if (!is_null) {
+            if      (strcmp(data_type, "string") == 0) type_ok = value->type == JSON_STRING;
+            else if (strcmp(data_type, "number") == 0) type_ok = value->type == JSON_INT ||
+                                                                   value->type == JSON_FLOAT;
+            else if (strcmp(data_type, "bool")   == 0) type_ok = value->type == JSON_BOOL;
+            else if (strcmp(data_type, "object") == 0) type_ok = value->type == JSON_OBJECT;
+            else if (strcmp(data_type, "array")  == 0) type_ok = value->type == JSON_ARRAY;
+            else if (strcmp(data_type, "null")   == 0) type_ok = value->type == JSON_NULL;
         } else if (strcmp(data_type, "null") == 0) {
-            ok = 1; /* absent data = null */
+            type_ok = 1;
         }
-        if (!ok) {
+        if (!type_ok) {
             report_fail(name, "data_type mismatch: expected %s", data_type);
             json_free(root);
             return 0;
         }
-        json_free(root);
     }
 
     /* data_contains_field */
     const char *dcf = json_as_str(json_get(expect, "data_contains_field"));
     if (dcf) {
-        const char *raw = comb_result_raw_json(result);
-        json_node_t *root = raw ? json_parse(raw) : NULL;
-        json_node_t *data = root ? json_get(root, "data") : NULL;
-        int ok = data && data->type == JSON_OBJECT && json_get(data, dcf) != NULL;
-        json_free(root);
-        if (!ok) {
+        int has = value && value->type == JSON_OBJECT && json_get(value, dcf) != NULL;
+        if (!has) {
             report_fail(name, "data_contains_field: field \"%s\" absent", dcf);
+            json_free(root);
             return 0;
         }
     }
@@ -646,10 +711,12 @@ static int check_expect(const char *name, const json_node_t *expect,
     /* data_as_text */
     const char *dat = json_as_str(json_get(expect, "data_as_text"));
     if (dat) {
-        const char *got = comb_result_get_str(result, NULL);
+        char buf[64];
+        const char *got = stringify_scalar(value, buf, sizeof(buf));
         if (!got || strcmp(got, dat) != 0) {
             report_fail(name, "data_as_text: expected \"%s\", got \"%s\"",
                         dat, got ? got : "(null)");
+            json_free(root);
             return 0;
         }
     }
@@ -657,13 +724,9 @@ static int check_expect(const char *name, const json_node_t *expect,
     /* data_equals */
     json_node_t *de = json_get(expect, "data_equals");
     if (de) {
-        const char *raw = comb_result_raw_json(result);
-        json_node_t *root = raw ? json_parse(raw) : NULL;
-        json_node_t *data = root ? json_get(root, "data") : NULL;
-        int ok = data && nodes_equal(data, de);
-        json_free(root);
-        if (!ok) {
+        if (!nodes_equal(value, de)) {
             report_fail(name, "data_equals mismatch");
+            json_free(root);
             return 0;
         }
     }
@@ -674,53 +737,48 @@ static int check_expect(const char *name, const json_node_t *expect,
         const char *fname = json_as_str(json_get(dfe, "field"));
         json_node_t *fval = json_get(dfe, "value");
         if (fname && fval) {
-            const char *raw = comb_result_raw_json(result);
-            json_node_t *root = raw ? json_parse(raw) : NULL;
-            json_node_t *data = root ? json_get(root, "data") : NULL;
-            json_node_t *field = data ? json_get(data, fname) : NULL;
-            int ok = field && nodes_equal(field, fval);
-            json_free(root);
-            if (!ok) {
-                report_fail(name, "data_field_equals: field \"%s\" mismatch",
-                            fname);
+            json_node_t *field = value ? json_get(value, fname) : NULL;
+            if (!field || !nodes_equal(field, fval)) {
+                report_fail(name, "data_field_equals: field \"%s\" mismatch", fname);
+                json_free(root);
                 return 0;
             }
         }
     }
 
-    /* age_ms_present. comb_result_age_ms() cannot distinguish "field absent"
-     * from "field present with value 0" (see beachcomber.h) — a fresh cache
-     * entry legitimately has age_ms=0, and `> 0` misreads that as absent.
-     * Check presence directly against the raw response JSON instead. */
+    /* age_ms_present. A fresh hit legitimately has age_ms=0, so this checks
+     * key presence (age_node != NULL) rather than a truthy/nonzero value —
+     * combresult_to_json emits "age_ms" on both Hit and Miss. */
     json_node_t *amp = json_get(expect, "age_ms_present");
     if (amp && amp->type == JSON_BOOL) {
         int want = amp->val.boolean;
-        const char *raw = comb_result_raw_json(result);
-        json_node_t *aroot = raw ? json_parse(raw) : NULL;
-        int got = aroot && json_get(aroot, "age_ms") != NULL;
-        json_free(aroot);
+        int got = age_node != NULL;
         if (want && !got) {
             report_fail(name, "age_ms_present: expected age_ms to be present");
+            json_free(root);
             return 0;
         }
         if (!want && got) {
             report_fail(name, "age_ms_present: expected age_ms to be absent");
+            json_free(root);
             return 0;
         }
     }
 
     /* stale */
-    json_node_t *stale_node = json_get(expect, "stale");
-    if (stale_node && stale_node->type == JSON_BOOL) {
-        int want = stale_node->val.boolean;
-        int got  = comb_result_stale(result);
+    json_node_t *stale_expect = json_get(expect, "stale");
+    if (stale_expect && stale_expect->type == JSON_BOOL) {
+        int want = stale_expect->val.boolean;
+        int got = stale_node && stale_node->type == JSON_BOOL && stale_node->val.boolean;
         if (want != got) {
             report_fail(name, "stale: expected %d, got %d", want, got);
+            json_free(root);
             return 0;
         }
     }
 
     report_pass(name);
+    json_free(root);
     return 1;
 }
 
@@ -772,160 +830,32 @@ static int run_fixture(const char *fixture_path,
         return 1;
     }
 
-    comb_client_t *c = comb_connect_path(sock_path);
-    if (!c) {
-        fprintf(stderr, "  SKIP  %s: failed to connect to daemon\n", name);
-        stop_daemon(&dp);
-        json_free(root);
-        return 1;
-    }
+    char opts[SOCK_PATH_MAX + 64];
+    build_options_json(opts, sizeof(opts), sock_path, CLIENT_TIMEOUT_MS);
+    BcClient *client = bc_client_new(opts);
+    BcSession *session = bc_session_open(client);
 
-    /* Run setup ops */
+    /* Setup ops run on the same session as the test op, matching the
+     * fixture format's "setup ops happen on the same connection as the
+     * test op" contract (needed for "context" to be observable). */
     json_node_t *setup_arr = json_get(root, "setup");
     if (setup_arr && setup_arr->type == JSON_ARRAY) {
-        json_node_t *item = setup_arr->children;
-        while (item) {
-            const char *sop = json_as_str(json_get(item, "op"));
-            json_node_t *sargs = json_get(item, "args");
-            if (sop && strcmp(sop, "put") == 0) {
-                const char *skey  = sargs ? json_as_str(json_get(sargs, "key"))  : NULL;
-                const char *spath = sargs ? json_as_str(json_get(sargs, "path")) : NULL;
-                json_node_t *data_node = sargs ? json_get(sargs, "data") : NULL;
-                char *dj = data_node ? serialise_node(data_node) : NULL;
-                comb_put(c, skey ? skey : "", dj, NULL, spath);
-                free(dj);
-            }
-            item = item->next;
+        for (json_node_t *item = setup_arr->children; item; item = item->next) {
+            char *r = run_op(client, session, item, root, sock_dir);
+            bc_string_free(r);
         }
     }
 
-    /* Run test op */
     json_node_t *test_node = json_get(root, "test");
-    const char *op_str = test_node ? json_as_str(json_get(test_node, "op")) : NULL;
-    json_node_t *test_args = test_node ? json_get(test_node, "args") : NULL;
+    const char *op_str = test_node ? json_as_str(json_get(test_node, "op")) : "";
+    char *result = run_op(client, session, test_node, root, sock_dir);
 
-    /* For put ops, we need to track success via rc, not comb_result_t.
-     * We do a specialised flow for put. */
-    comb_result_t *result = NULL;
-    int put_rc = 0;
-    int is_put = op_str && strcmp(op_str, "put") == 0;
-    int is_refresh = op_str && strcmp(op_str, "refresh") == 0;
-    int is_context = op_str && strcmp(op_str, "context") == 0;
-    /* comb_status() returns typed rows through out-params, not a
-     * comb_result_t, so it cannot flow through run_op()/check_expect() like
-     * the other ops. Handled directly, alongside put/refresh/context. */
-    int is_status = op_str && strcmp(op_str, "status") == 0;
-    comb_cache_row_t *status_rows = NULL;
-    size_t status_n = 0;
-    /* comb_hello() likewise fills a typed struct through an out-param. */
-    int is_hello = op_str && strcmp(op_str, "hello") == 0;
-    comb_hello_info_t hello_info;
-    memset(&hello_info, 0, sizeof(hello_info));
-
-    if (is_put) {
-        const char *key  = test_args ? json_as_str(json_get(test_args, "key"))  : NULL;
-        const char *path = test_args ? json_as_str(json_get(test_args, "path")) : NULL;
-        json_node_t *data_node = test_args ? json_get(test_args, "data") : NULL;
-        char *dj = data_node ? serialise_node(data_node) : NULL;
-        put_rc = comb_put(c, key ? key : "", dj, NULL, path);
-        free(dj);
-    } else if (is_refresh) {
-        const char *key  = test_args ? json_as_str(json_get(test_args, "key"))  : NULL;
-        const char *path = test_args ? json_as_str(json_get(test_args, "path")) : NULL;
-        comb_refresh(c, key ? key : "", path);
-        put_rc = 0; /* treat as success */
-    } else if (is_context) {
-        const char *path = test_args ? json_as_str(json_get(test_args, "path")) : NULL;
-        comb_set_context(c, path ? path : "");
-        put_rc = 0;
-    } else if (is_status) {
-        put_rc = comb_status(c, &status_rows, &status_n);
-    } else if (is_hello) {
-        put_rc = comb_hello(c, &hello_info);
-    } else {
-        result = run_op(c, test_node);
-    }
-
-    /* Check expectations */
     json_node_t *expect = json_get(root, "expect");
-    int passed;
+    int passed = check_expect(name, expect, op_str, result);
 
-    if (is_hello) {
-        const char *status = json_as_str(expect ? json_get(expect, "status") : NULL);
-        const char *dcf = json_as_str(expect ? json_get(expect, "data_contains_field") : NULL);
-        if (status && strcmp(status, "error") == 0) {
-            passed = put_rc != 0;
-            if (!passed) report_fail(name, "expected hello to fail but it succeeded");
-            else report_pass(name);
-        } else if (put_rc != 0) {
-            report_fail(name, "hello returned error (rc=%d)", put_rc);
-            passed = 0;
-        } else if (dcf && strcmp(dcf, "protocol_version") != 0 &&
-                   strcmp(dcf, "daemon_version") != 0) {
-            report_fail(name, "data_contains_field: field \"%s\" absent", dcf);
-            passed = 0;
-        } else {
-            report_pass(name);
-            passed = 1;
-        }
-    } else if (is_status) {
-        const char *status = json_as_str(expect ? json_get(expect, "status") : NULL);
-        const char *data_type = json_as_str(expect ? json_get(expect, "data_type") : NULL);
-        if (status && strcmp(status, "error") == 0) {
-            passed = put_rc != 0;
-            if (!passed) report_fail(name, "expected status op to fail but it succeeded");
-            else report_pass(name);
-        } else if (put_rc != 0) {
-            report_fail(name, "status op returned error (rc=%d)", put_rc);
-            passed = 0;
-        } else if (data_type && strcmp(data_type, "array") != 0) {
-            report_fail(name, "data_type mismatch: status data is always array, expected %s",
-                        data_type);
-            passed = 0;
-        } else {
-            report_pass(name);
-            passed = 1;
-        }
-    } else if (is_put || is_refresh || is_context) {
-        /* For these ops check status:ok / status:error against rc */
-        const char *status = json_as_str(expect ? json_get(expect, "status") : NULL);
-        const char *ec     = json_as_str(expect ? json_get(expect, "error_contains") : NULL);
-        if (status && strcmp(status, "error") == 0) {
-            /* We expect failure but put doesn't return error detail.
-             * For conformance, if the fixture expects error, run a get on the
-             * key to verify it's not present, or re-issue put with introspect
-             * to get the error text back. Since comb_put discards the error
-             * message, we re-issue a raw get to verify miss. */
-            /* Re-issue via status — check put returned non-zero */
-            if (put_rc == 0) {
-                report_fail(name, "expected put to fail but it succeeded");
-                passed = 0;
-            } else if (ec) {
-                /* We can't retrieve the error text from comb_put, so we note
-                 * the substring check is skipped but the op failed correctly */
-                report_pass(name);
-                passed = 1;
-            } else {
-                report_pass(name);
-                passed = 1;
-            }
-        } else {
-            if (put_rc != 0) {
-                report_fail(name, "op %s returned error (rc=%d)", op_str, put_rc);
-                passed = 0;
-            } else {
-                report_pass(name);
-                passed = 1;
-            }
-        }
-    } else {
-        passed = check_expect(name, expect, result, op_str ? op_str : "", c,
-                              test_args);
-    }
-
-    comb_result_free(result);
-    comb_free_cache_rows(status_rows, status_n);
-    comb_disconnect(c);
+    bc_string_free(result);
+    bc_session_close(session);
+    bc_client_free(client);
     stop_daemon(&dp);
     json_free(root);
 
@@ -978,7 +908,8 @@ int main(int argc, char *argv[]) {
 
     printf("Conformance runner\n");
     printf("  Fixtures: %s\n", conf_dir);
-    printf("  Daemon:   %s\n\n", comb_bin);
+    printf("  Daemon:   %s\n", comb_bin);
+    printf("  Library:  %s\n\n", bc_version());
 
     /* Collect fixture paths */
     fixture_path_t fixtures[MAX_FIXTURES];

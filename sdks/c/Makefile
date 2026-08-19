@@ -1,132 +1,121 @@
-# Makefile for libbeachcomber C SDK
+# Makefile for the beachcomber C SDK
+#
+# This SDK is a direct binding over libbeachcomber's C ABI (see
+# beachcomber.h): there is no protocol code of its own to build anymore
+# (Phase 5 of docs/superpowers/plans/2026-08-15-client-abi-and-sdk-refactor.md
+# deleted the old beachcomber.c / json.c / json.h). Building anything here
+# means linking against libbeachcomber.{dylib,so}, produced by
+# `cargo build -p libbeachcomber-ffi` from the workspace root.
 #
 # Targets:
-#   make          — build shared + static libraries
-#   make test     — build and run the test suite
-#   make install  — install headers and libraries to $(PREFIX)
-#   make clean    — remove build artefacts
+#   make               — builds the conformance runner (alias for `conformance`)
+#   make conformance   — builds sdks/c/conformance_runner
+#   make test          — builds and runs the conformance runner (there is no
+#                        separate unit-test binary post-collapse: the ABI
+#                        itself is exercised by libbeachcomber-ffi's own
+#                        Rust tests, and this binding has no logic left to
+#                        unit-test independently of those)
+#   make install       — installs the header and libbeachcomber.pc to $(PREFIX)
+#   make clean         — removes build artefacts
 
 # ---------------------------------------------------------------------------
 # Toolchain
 # ---------------------------------------------------------------------------
 
 CC      ?= cc
-AR      ?= ar
 INSTALL ?= install
 
 CFLAGS  ?= -O2
 CFLAGS  += -Wall -Wextra -Wpedantic -std=c99
 CFLAGS  += -D_POSIX_C_SOURCE=200809L
 
-VERSION ?= 0.3.1
+# No separate ABI version — the shared library, this binding, and `comb`
+# itself all carry the workspace version (see Task 3.1 of the plan above).
+VERSION ?= 0.7.0
 
 # ---------------------------------------------------------------------------
-# Platform detection
+# libbeachcomber (the cdylib) — same locations libbeachcomber.pc(.in)
+# describes for an installed copy, defaulted here to the in-repo dev build
+# so `make conformance` works straight out of a workspace checkout with no
+# install step. Override BC_LIB_DIR / BC_INCLUDE_DIR to build against an
+# installed library instead (matching PREFIX below).
 # ---------------------------------------------------------------------------
+
+BC_LIB_DIR     ?= ../../target/debug
+BC_INCLUDE_DIR ?= ../../libbeachcomber-ffi/include
 
 UNAME := $(shell uname -s)
-
 ifeq ($(UNAME), Darwin)
-    SHARED_LIB  := libbeachcomber.dylib
-    SHARED_FLAGS := -dynamiclib -install_name @rpath/$(SHARED_LIB)
+    BC_LIB := $(BC_LIB_DIR)/libbeachcomber.dylib
 else
-    SHARED_LIB  := libbeachcomber.so
-    SHARED_FLAGS := -shared -Wl,-soname,$(SHARED_LIB)
-    # Position-independent code required for shared libs on Linux
-    CFLAGS      += -fPIC
+    BC_LIB := $(BC_LIB_DIR)/libbeachcomber.so
 endif
 
-STATIC_LIB := libbeachcomber.a
+# -rpath points the linked binary straight at the in-repo build output, so
+# the conformance runner resolves the cdylib without needing an install
+# step or DYLD_LIBRARY_PATH/LD_LIBRARY_PATH set at run time.
+BC_LDFLAGS := -L$(BC_LIB_DIR) -lbeachcomber -Wl,-rpath,$(abspath $(BC_LIB_DIR))
 
 # ---------------------------------------------------------------------------
 # Sources
 # ---------------------------------------------------------------------------
 
-LIB_SRCS := beachcomber.c json.c
-LIB_OBJS := $(LIB_SRCS:.c=.o)
-
-TEST_SRC := test_beachcomber.c
-TEST_BIN := test_beachcomber
-
-CONFORM_SRC := conformance_runner.c
+# runner_json.[ch] is scoped to the conformance runner alone — see
+# runner_json.h. It is not part of the SDK: beachcomber.h declares only the
+# bc_* ABI, which returns raw JSON envelope strings for the caller's own
+# JSON library.
+CONFORM_SRC := conformance_runner.c runner_json.c
 CONFORM_BIN := conformance_runner
 
 # ---------------------------------------------------------------------------
-# Default target: both libraries
+# Default target
 # ---------------------------------------------------------------------------
 
 .PHONY: all
-all: $(SHARED_LIB) $(STATIC_LIB)
+all: conformance
 
 # ---------------------------------------------------------------------------
-# Shared library
+# libbeachcomber — build it if it isn't already there. Does not attempt to
+# track staleness against Rust sources beyond that; `cargo build` after
+# editing the FFI crate before re-running `make` if you've changed it.
 # ---------------------------------------------------------------------------
 
-$(SHARED_LIB): $(LIB_OBJS)
-	$(CC) $(SHARED_FLAGS) -o $@ $^
-
-# ---------------------------------------------------------------------------
-# Static library
-# ---------------------------------------------------------------------------
-
-$(STATIC_LIB): $(LIB_OBJS)
-	$(AR) rcs $@ $^
-
-# ---------------------------------------------------------------------------
-# Object files
-# ---------------------------------------------------------------------------
-
-%.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-# Explicit dependencies
-beachcomber.o: beachcomber.c beachcomber.h json.h
-json.o:        json.c json.h
-
-# ---------------------------------------------------------------------------
-# Test binary
-# ---------------------------------------------------------------------------
-
-# Tests link the library sources directly to avoid needing the shared lib
-# in the dynamic linker search path during development.
-$(TEST_BIN): $(TEST_SRC) $(LIB_SRCS) beachcomber.h json.h
-	$(CC) $(CFLAGS) -o $@ $(TEST_SRC) $(LIB_SRCS) -lpthread
-
-.PHONY: test
-test: $(TEST_BIN)
-	./$(TEST_BIN)
+$(BC_LIB):
+	cd ../.. && cargo build -p libbeachcomber-ffi
 
 # ---------------------------------------------------------------------------
 # Conformance runner
 # ---------------------------------------------------------------------------
 
-$(CONFORM_BIN): $(CONFORM_SRC) $(LIB_SRCS) beachcomber.h json.h
-	$(CC) $(CFLAGS) -o $@ $(CONFORM_SRC) $(LIB_SRCS)
+$(CONFORM_BIN): $(CONFORM_SRC) beachcomber.h runner_json.h $(BC_LIB)
+	$(CC) $(CFLAGS) -I. -o $@ $(CONFORM_SRC) $(BC_LDFLAGS)
 
 .PHONY: conformance
 conformance: $(CONFORM_BIN)
 
+.PHONY: test
+test: conformance
+	TMPDIR=$${TMPDIR:-/tmp} COMB_BIN=$${COMB_BIN:-../../target/debug/comb} ./$(CONFORM_BIN)
+
 # ---------------------------------------------------------------------------
-# Install
+# Install — header + pkg-config file only. The library itself ships
+# alongside `comb` via the project's release packaging (Task 3.10 of the
+# plan above), not from this SDK directory.
 # ---------------------------------------------------------------------------
 
-PREFIX      ?= /usr/local
-INCDIR      := $(PREFIX)/include
-LIBDIR      := $(PREFIX)/lib
+PREFIX       ?= /usr/local
+INCDIR       := $(PREFIX)/include
+LIBDIR       := $(PREFIX)/lib
 PKGCONFIGDIR := $(LIBDIR)/pkgconfig
 
 libbeachcomber.pc: libbeachcomber.pc.in
 	sed -e 's|@PREFIX@|$(PREFIX)|g' -e 's|@VERSION@|$(VERSION)|g' $< > $@
 
 .PHONY: install
-install: all libbeachcomber.pc
+install: libbeachcomber.pc
 	$(INSTALL) -d $(DESTDIR)$(INCDIR)
-	$(INSTALL) -d $(DESTDIR)$(LIBDIR)
 	$(INSTALL) -d $(DESTDIR)$(PKGCONFIGDIR)
 	$(INSTALL) -m 644 beachcomber.h $(DESTDIR)$(INCDIR)/beachcomber.h
-	$(INSTALL) -m 644 json.h $(DESTDIR)$(INCDIR)/json.h
-	$(INSTALL) -m 755 $(SHARED_LIB) $(DESTDIR)$(LIBDIR)/$(SHARED_LIB)
-	$(INSTALL) -m 644 $(STATIC_LIB) $(DESTDIR)$(LIBDIR)/$(STATIC_LIB)
 	$(INSTALL) -m 644 libbeachcomber.pc $(DESTDIR)$(PKGCONFIGDIR)/libbeachcomber.pc
 
 # ---------------------------------------------------------------------------
@@ -135,4 +124,4 @@ install: all libbeachcomber.pc
 
 .PHONY: clean
 clean:
-	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(TEST_BIN) $(CONFORM_BIN) libbeachcomber.pc
+	rm -f $(CONFORM_BIN) libbeachcomber.pc
