@@ -105,6 +105,44 @@ fn err_json(err: &FfiError) -> String {
     .to_string()
 }
 
+/// A `bc_watch_next` result. Unlike every other op, a watch poll has more
+/// than one non-error outcome a binding must tell apart without string
+/// matching — an event arrived, the wait elapsed, the daemon closed the
+/// stream, or [`bc_watch_cancel`] was called — so each is a distinct,
+/// machine-readable envelope shape rather than folding into the ordinary
+/// `data` field. The fifth outcome, `error`, is the existing `ok: false`
+/// envelope: it was already machine-readable via `error.kind` and needs no
+/// new shape.
+///
+/// [`bc_watch_cancel`]: crate::bc_watch_cancel
+pub enum WatchOutcome {
+    /// `{"ok": true, "outcome": "event", "data": <event>}`
+    Event(serde_json::Value),
+    /// `{"ok": true, "outcome": "timeout"}`
+    Timeout,
+    /// `{"ok": true, "outcome": "eof"}`
+    Eof,
+    /// `{"ok": true, "outcome": "cancelled"}`
+    Cancelled,
+}
+
+fn watch_outcome_json(outcome: WatchOutcome) -> String {
+    match outcome {
+        WatchOutcome::Event(data) => json!({ "ok": true, "outcome": "event", "data": data }),
+        WatchOutcome::Timeout => json!({ "ok": true, "outcome": "timeout" }),
+        WatchOutcome::Eof => json!({ "ok": true, "outcome": "eof" }),
+        WatchOutcome::Cancelled => json!({ "ok": true, "outcome": "cancelled" }),
+    }
+    .to_string()
+}
+
+fn into_c_string(body: String) -> *mut c_char {
+    // `body` is our own serialized JSON; it cannot contain an interior NUL.
+    CString::new(body)
+        .expect("serialized JSON envelope must not contain a NUL byte")
+        .into_raw()
+}
+
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
@@ -130,10 +168,23 @@ where
         Ok(Err(err)) => err_json(&err),
         Err(payload) => err_json(&FfiError::new(ErrorKind::Panic, panic_message(&*payload))),
     };
-    // `body` is our own serialized JSON; it cannot contain an interior NUL.
-    CString::new(body)
-        .expect("serialized JSON envelope must not contain a NUL byte")
-        .into_raw()
+    into_c_string(body)
+}
+
+/// Like [`call_ffi`], but for `bc_watch_next`'s five-outcome envelope (see
+/// [`WatchOutcome`]) rather than the ordinary `{"ok":true,"data":...}`
+/// shape. Panics inside `f` are caught the same way; the returned pointer
+/// is always non-null and must be freed with [`bc_string_free`].
+pub fn call_watch_next<F>(f: F) -> *mut c_char
+where
+    F: FnOnce() -> Result<WatchOutcome, FfiError> + UnwindSafe,
+{
+    let body = match panic::catch_unwind(f) {
+        Ok(Ok(outcome)) => watch_outcome_json(outcome),
+        Ok(Err(err)) => err_json(&err),
+        Err(payload) => err_json(&FfiError::new(ErrorKind::Panic, panic_message(&*payload))),
+    };
+    into_c_string(body)
 }
 
 /// Frees a string returned by any `bc_*` function that documents its result

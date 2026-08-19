@@ -402,6 +402,15 @@ impl WatchStream {
         if n == 0 {
             return Ok(None);
         }
+        Self::parse_line(&line).map(Some)
+    }
+
+    /// Parse one NDJSON watch-event line into a [`WatchEvent`]. Factored out
+    /// of [`Self::next_event`] so a caller driving its own read loop (e.g.
+    /// a cancellable/timeout-aware poll loop, which cannot use
+    /// `next_event` directly — see [`Self::read_line_buffered`]) can reuse
+    /// the same parsing rather than duplicating it.
+    pub fn parse_line(line: &str) -> Result<WatchEvent, CombError> {
         let resp: serde_json::Value =
             serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
         let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -419,11 +428,29 @@ impl WatchStream {
         };
         let age_ms = resp.get("age_ms").and_then(|v| v.as_u64()).unwrap_or(0);
         let stale = resp.get("stale").and_then(|v| v.as_bool()).unwrap_or(false);
-        Ok(Some(WatchEvent {
+        Ok(WatchEvent {
             data,
             age_ms,
             stale,
-        }))
+        })
+    }
+
+    /// Sets the underlying socket's read timeout. `None` blocks
+    /// indefinitely. Lets a caller drive its own bounded-wait / cancellable
+    /// read loop on top of this stream (see [`Self::read_line_buffered`]).
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.reader.get_ref().set_read_timeout(timeout)
+    }
+
+    /// Reads one line into `buf`, appending to whatever's already there.
+    /// Unlike [`Self::next_event`], which discards its buffer on error, a
+    /// timeout here (an `Err` whose `kind()` is `WouldBlock` or `TimedOut`)
+    /// leaves any bytes already read from a partially-arrived line in
+    /// `buf`: the caller can retry with the same `buf` to resume mid-line
+    /// on the next call rather than losing them. Returns `Ok(0)` on
+    /// connection close with no partial line pending.
+    pub fn read_line_buffered(&mut self, buf: &mut String) -> std::io::Result<usize> {
+        self.reader.read_line(buf)
     }
 }
 
