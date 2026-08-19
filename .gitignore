@@ -40,6 +40,7 @@ sdks/c/*.o
 sdks/c/*.a
 sdks/c/*.so
 sdks/c/*.dylib
+sdks/c/conformance_runner
 
 # Nix
 flake.lock
