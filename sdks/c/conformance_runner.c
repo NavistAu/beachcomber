@@ -176,6 +176,12 @@ static daemon_proc_t spawn_daemon(const char *bin, const char *sock_path) {
     /* Remove any stale socket */
     unlink(sock_path);
 
+    /* Flush before fork(): stdio buffers unflushed output copied into the
+     * child are re-flushed when it later calls freopen() on stdout/stderr,
+     * duplicating every banner line printed so far into the log once per
+     * fixture. */
+    fflush(NULL);
+
     pid_t pid = fork();
     if (pid < 0) return dp;
 
@@ -187,7 +193,7 @@ static daemon_proc_t spawn_daemon(const char *bin, const char *sock_path) {
 
         char sock_arg[SOCK_PATH_MAX + 16];
         snprintf(sock_arg, sizeof(sock_arg), "--socket=%s", sock_path);
-        execl(bin, bin, sock_arg, NULL);
+        execl(bin, bin, "daemon", sock_arg, NULL);
         /* exec failed */
         _exit(127);
     }
@@ -411,25 +417,10 @@ static comb_result_t *run_op(comb_client_t *c, const json_node_t *op_node) {
         return NULL;
     }
 
-    if (strcmp(op_str, "hello") == 0) {
-        comb_hello_info_t info;
-        memset(&info, 0, sizeof(info));
-        int rc = comb_hello(c, &info);
-        if (rc != 0) return NULL;
-        /* Wrap into a synthetic comb_result_t via a fake get round-trip
-         * — we can't construct one directly. Instead return a raw-json
-         * result by using a minimal trick: do_request is private, so we
-         * send a hello request and parse the response directly. Since
-         * comb_hello doesn't return a comb_result_t we re-issue via
-         * comb_introspect on daemon (close enough to test hello fields).
-         * For conformance we just verify ok=true + field presence via the
-         * comb_hello typed accessor path already tested. We synthesise a
-         * dummy ok result so the expect block can check status:ok. */
-        /* Re-issue hello as a get with known stub — not ideal but the
-         * conformance fixture only checks status:ok and data_contains_field.
-         * We issue a second hello via introspect (closest raw result). */
-        return comb_introspect(c, COMB_INTROSPECT_DAEMON, 0);
-    }
+    /* "hello" is handled directly in run_fixture(), like "status": comb_hello()
+     * fills a typed struct through an out-param rather than returning a
+     * comb_result_t, so it cannot flow through this function's uniform
+     * return type. This case is unreachable in practice. */
 
     if (strcmp(op_str, "put") == 0) {
         char *data_json = NULL;
@@ -439,36 +430,16 @@ static comb_result_t *run_op(comb_client_t *c, const json_node_t *op_node) {
         }
         int rc = comb_put(c, key ? key : "", data_json, NULL, path);
         free(data_json);
-        /* Synthesise result */
+        /* This branch is unreachable in practice — run_fixture special-cases
+         * "put" and never calls run_op() for it (see is_put below) — but it
+         * must still compile. On success, produce a real ok comb_result_t
+         * via a legitimate typed call; comb_status() cannot fill this role,
+         * since it returns typed rows through out-params, not a
+         * comb_result_t. */
         if (rc == 0) {
-            /* Return a simple ok-true result via a get-miss to produce a
-             * real result object. Simpler: craft via status */
-            comb_result_t *r = comb_status(c);
-            /* We need status:ok result — reuse status if it succeeds */
-            if (comb_result_ok(r)) {
-                comb_result_free(r);
-                /* Return a minimal ok-result using comb_hello path */
-                r = comb_introspect(c, COMB_INTROSPECT_DAEMON, 0);
-                /* Actually the expect for put is just status:ok. Since
-                 * comb_put returns 0, we emit ok=true by returning a
-                 * status result. Mark as pass. */
-                return r;
-            }
-            return r;
-        } else {
-            /* put failed — return error result */
-            /* We can't construct a comb_result_t directly; re-issue to get
-             * an error result back. Use a put with bad data to get error. */
-            comb_result_free(NULL);
-            /* Build a minimal error result by re-attempting the put */
-            /* Since we don't have a comb_result_t factory, we have to
-             * return NULL and let the caller treat it as error. */
-            return NULL;
+            return comb_introspect(c, COMB_INTROSPECT_DAEMON, 0);
         }
-    }
-
-    if (strcmp(op_str, "status") == 0) {
-        return comb_status(c);
+        return NULL;
     }
 
     if (strcmp(op_str, "watch") == 0) {
@@ -717,7 +688,8 @@ static int check_expect(const char *name, const json_node_t *expect,
 
 static int run_fixture(const char *fixture_path,
                        const char *comb_bin,
-                       int fixture_index) {
+                       int fixture_index,
+                       const char *sock_dir) {
     char *src = read_file(fixture_path);
     if (!src) {
         fprintf(stderr, "  SKIP  %s: cannot read file\n", fixture_path);
@@ -734,10 +706,14 @@ static int run_fixture(const char *fixture_path,
     const char *name = json_as_str(json_get(root, "name"));
     if (!name) name = fixture_path;
 
-    /* Spawn a fresh daemon for this fixture */
+    /* Spawn a fresh daemon for this fixture. The socket lives under a
+     * private per-run directory (sock_dir), not bare /tmp: the daemon's
+     * singleton lock hardens the pid file's parent directory to mode 0700
+     * on every start (src/singleton/mod.rs), and /tmp itself is root-owned,
+     * so that chmod is rejected with EPERM before the daemon ever binds. */
     char sock_path[SOCK_PATH_MAX];
     snprintf(sock_path, sizeof(sock_path),
-             "/tmp/comb_conform_%d_%d.sock", (int)getpid(), fixture_index);
+             "%s/comb_conform_%d.sock", sock_dir, fixture_index);
 
     daemon_proc_t dp = spawn_daemon(comb_bin, sock_path);
     if (dp.pid < 0) {
@@ -786,6 +762,16 @@ static int run_fixture(const char *fixture_path,
     int is_put = op_str && strcmp(op_str, "put") == 0;
     int is_refresh = op_str && strcmp(op_str, "refresh") == 0;
     int is_context = op_str && strcmp(op_str, "context") == 0;
+    /* comb_status() returns typed rows through out-params, not a
+     * comb_result_t, so it cannot flow through run_op()/check_expect() like
+     * the other ops. Handled directly, alongside put/refresh/context. */
+    int is_status = op_str && strcmp(op_str, "status") == 0;
+    comb_cache_row_t *status_rows = NULL;
+    size_t status_n = 0;
+    /* comb_hello() likewise fills a typed struct through an out-param. */
+    int is_hello = op_str && strcmp(op_str, "hello") == 0;
+    comb_hello_info_t hello_info;
+    memset(&hello_info, 0, sizeof(hello_info));
 
     if (is_put) {
         const char *key  = test_args ? json_as_str(json_get(test_args, "key"))  : NULL;
@@ -803,6 +789,10 @@ static int run_fixture(const char *fixture_path,
         const char *path = test_args ? json_as_str(json_get(test_args, "path")) : NULL;
         comb_set_context(c, path ? path : "");
         put_rc = 0;
+    } else if (is_status) {
+        put_rc = comb_status(c, &status_rows, &status_n);
+    } else if (is_hello) {
+        put_rc = comb_hello(c, &hello_info);
     } else {
         result = run_op(c, test_node);
     }
@@ -811,7 +801,43 @@ static int run_fixture(const char *fixture_path,
     json_node_t *expect = json_get(root, "expect");
     int passed;
 
-    if (is_put || is_refresh || is_context) {
+    if (is_hello) {
+        const char *status = json_as_str(expect ? json_get(expect, "status") : NULL);
+        const char *dcf = json_as_str(expect ? json_get(expect, "data_contains_field") : NULL);
+        if (status && strcmp(status, "error") == 0) {
+            passed = put_rc != 0;
+            if (!passed) report_fail(name, "expected hello to fail but it succeeded");
+            else report_pass(name);
+        } else if (put_rc != 0) {
+            report_fail(name, "hello returned error (rc=%d)", put_rc);
+            passed = 0;
+        } else if (dcf && strcmp(dcf, "protocol_version") != 0 &&
+                   strcmp(dcf, "daemon_version") != 0) {
+            report_fail(name, "data_contains_field: field \"%s\" absent", dcf);
+            passed = 0;
+        } else {
+            report_pass(name);
+            passed = 1;
+        }
+    } else if (is_status) {
+        const char *status = json_as_str(expect ? json_get(expect, "status") : NULL);
+        const char *data_type = json_as_str(expect ? json_get(expect, "data_type") : NULL);
+        if (status && strcmp(status, "error") == 0) {
+            passed = put_rc != 0;
+            if (!passed) report_fail(name, "expected status op to fail but it succeeded");
+            else report_pass(name);
+        } else if (put_rc != 0) {
+            report_fail(name, "status op returned error (rc=%d)", put_rc);
+            passed = 0;
+        } else if (data_type && strcmp(data_type, "array") != 0) {
+            report_fail(name, "data_type mismatch: status data is always array, expected %s",
+                        data_type);
+            passed = 0;
+        } else {
+            report_pass(name);
+            passed = 1;
+        }
+    } else if (is_put || is_refresh || is_context) {
         /* For these ops check status:ok / status:error against rc */
         const char *status = json_as_str(expect ? json_get(expect, "status") : NULL);
         const char *ec     = json_as_str(expect ? json_get(expect, "error_contains") : NULL);
@@ -849,6 +875,7 @@ static int run_fixture(const char *fixture_path,
     }
 
     comb_result_free(result);
+    comb_free_cache_rows(status_rows, status_n);
     comb_disconnect(c);
     stop_daemon(&dp);
     json_free(root);
@@ -862,15 +889,32 @@ static int run_fixture(const char *fixture_path,
 
 int main(int argc, char *argv[]) {
     /* Locate conformance fixtures directory */
+    char conf_dir_buf[SOCK_PATH_MAX];
     const char *conf_dir = NULL;
     if (argc > 1) {
         conf_dir = argv[1];
     } else {
         conf_dir = getenv("CONFORMANCE_DIR");
         if (!conf_dir) {
-            /* Default: relative to the binary location — go up 3 levels from
-             * sdks/c/ to the repo root, then into tests/conformance/ */
-            conf_dir = "../../tests/conformance";
+            /* Default: relative to the *binary's* location (sdks/c/ -> repo
+             * root -> tests/conformance/), not the caller's cwd. The two
+             * differ whenever this is invoked from outside sdks/c/ — e.g.
+             * `sdks/c/conformance_runner` from the repo root, exactly how
+             * this runner is normally invoked — and in a git worktree,
+             * cwd-relative "../../" silently lands in the wrong checkout's
+             * tests/conformance/ instead of failing loudly. */
+            char argv0_copy[SOCK_PATH_MAX];
+            snprintf(argv0_copy, sizeof(argv0_copy), "%s", argv[0]);
+            char *slash = strrchr(argv0_copy, '/');
+            if (slash) {
+                *slash = '\0';
+                snprintf(conf_dir_buf, sizeof(conf_dir_buf),
+                         "%s/../../tests/conformance", argv0_copy);
+            } else {
+                snprintf(conf_dir_buf, sizeof(conf_dir_buf),
+                         "../../tests/conformance");
+            }
+            conf_dir = conf_dir_buf;
         }
     }
 
@@ -897,9 +941,23 @@ int main(int argc, char *argv[]) {
 
     printf("Found %d fixtures\n\n", n);
 
-    for (int i = 0; i < n; i++) {
-        run_fixture(fixtures[i].path, comb_bin, i);
+    const char *base_tmpdir = getenv("TMPDIR");
+    if (!base_tmpdir || base_tmpdir[0] == '\0') base_tmpdir = "/tmp";
+    char sock_dir[SOCK_PATH_MAX];
+    snprintf(sock_dir, sizeof(sock_dir), "%s/beachcomber-conformance-%d",
+             base_tmpdir, (int)getpid());
+    if (mkdir(sock_dir, 0700) != 0) {
+        fprintf(stderr, "mkdir %s failed: %s\n", sock_dir, strerror(errno));
+        return 2;
     }
+
+    for (int i = 0; i < n; i++) {
+        run_fixture(fixtures[i].path, comb_bin, i, sock_dir);
+    }
+
+    char rm_cmd[SOCK_PATH_MAX + 8];
+    snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", sock_dir);
+    system(rm_cmd);
 
     printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
