@@ -108,14 +108,19 @@ strip = true
 [package.metadata.deb]
 maintainer = "NavistAu <github@navistau.io>"
 copyright = "2026, NavistAu"
-extended-description = "A centralized daemon that caches shell state (git, battery, network, etc.) so every consumer reads from one fast cache instead of independently forking shells."
+extended-description = "A centralized daemon that caches shell state (git, battery, network, etc.) so every consumer reads from one fast cache instead of independently forking shells. Includes libbeachcomber, the C ABI client library, linked against glibc (this package does not carry a musl build)."
 section = "utils"
 priority = "optional"
 assets = [
     ["target/release/comb", "usr/bin/", "755"],
+    ["target/release/libbeachcomber.so", "usr/lib/", "644"],
+    ["libbeachcomber-ffi/include/beachcomber.h", "usr/include/", "644"],
 ]
 
 [package.metadata.generate-rpm]
+summary = "A centralized daemon that caches shell state, plus libbeachcomber (glibc build; no musl build in this package)"
 assets = [
     { source = "target/release/comb", dest = "/usr/bin/comb", mode = "0755" },
+    { source = "target/release/libbeachcomber.so", dest = "/usr/lib/libbeachcomber.so", mode = "0644" },
+    { source = "libbeachcomber-ffi/include/beachcomber.h", dest = "/usr/include/beachcomber.h", mode = "0644" },
 ]
