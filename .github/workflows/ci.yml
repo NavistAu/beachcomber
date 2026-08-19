@@ -39,6 +39,21 @@ jobs:
       - name: Format
         run: cargo fmt -- --check
 
+  header-freshness:
+    name: FFI header freshness
+    needs: rust-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.rust-version.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cbindgen
+        run: cargo install cbindgen --locked
+      - name: Verify libbeachcomber-ffi/include/beachcomber.h is up to date
+        run: cargo xtask gen-header --check
+
   check-linux:
     name: Check (Linux)
     needs: rust-version
