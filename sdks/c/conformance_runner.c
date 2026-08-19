@@ -688,11 +688,17 @@ static int check_expect(const char *name, const json_node_t *expect,
         }
     }
 
-    /* age_ms_present */
+    /* age_ms_present. comb_result_age_ms() cannot distinguish "field absent"
+     * from "field present with value 0" (see beachcomber.h) — a fresh cache
+     * entry legitimately has age_ms=0, and `> 0` misreads that as absent.
+     * Check presence directly against the raw response JSON instead. */
     json_node_t *amp = json_get(expect, "age_ms_present");
     if (amp && amp->type == JSON_BOOL) {
         int want = amp->val.boolean;
-        int got  = comb_result_age_ms(result) > 0;
+        const char *raw = comb_result_raw_json(result);
+        json_node_t *aroot = raw ? json_parse(raw) : NULL;
+        int got = aroot && json_get(aroot, "age_ms") != NULL;
+        json_free(aroot);
         if (want && !got) {
             report_fail(name, "age_ms_present: expected age_ms to be present");
             return 0;
