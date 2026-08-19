@@ -272,7 +272,7 @@ func runFixture(f fixture, combBin string) (bool, string) {
 type opResult struct {
 	data     interface{}
 	ageMs    uint64
-	ageMsSet bool // true when daemon sent age_ms (non-zero or explicitly 0 is ambiguous — use >0)
+	ageMsSet bool // true when the daemon response contained an age_ms key (checked in the raw JSON; the value 0 is a real age)
 	stale    bool
 }
 
@@ -420,9 +420,15 @@ func resultFromSDK(r *beachcomber.Result) *opResult {
 		data:  r.Data,
 		stale: r.Stale,
 	}
-	if r.AgeMs > 0 {
-		or.ageMs = r.AgeMs
-		or.ageMsSet = true
+	// Presence must come from the wire, not the value: age_ms=0 is a real
+	// age (put-then-get within the same millisecond), so AgeMs > 0 misreads
+	// it as absent. Probe the raw JSON for the key instead.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(r.RawJSON(), &probe); err == nil {
+		if _, ok := probe["age_ms"]; ok {
+			or.ageMs = r.AgeMs
+			or.ageMsSet = true
+		}
 	}
 	return or
 }
