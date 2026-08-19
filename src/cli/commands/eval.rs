@@ -12,8 +12,8 @@
 //! A template that needs no daemon-backed data never starts/contacts the daemon.
 
 use crate::cli::format::{find_eval_template_pairs, render_eval_template};
-use crate::cli::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
 use crate::config::Config;
+use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 

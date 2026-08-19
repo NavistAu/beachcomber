@@ -4,10 +4,10 @@
 
 use crate::cli::format::render_fmt_template_json;
 use crate::cli::output_format::{OutputFormat, format_sv, value_to_string};
-use crate::cli::virtual_fields::{
+use crate::config::Config;
+use libbeachcomber::virtual_fields::{
     EvalContext, Ref, VirtualFields, discover_expression_refs, evaluate_namespace,
 };
-use crate::config::Config;
 use std::collections::HashMap;
 use std::process::ExitCode;
 
@@ -20,13 +20,14 @@ use std::process::ExitCode;
 /// - `None` — no path expression for this provider → keep existing path logic.
 fn path_for_key(key: &str, config: &Config) -> Option<Option<String>> {
     let provider = key.split('.').next().unwrap_or("");
-    let expr = crate::cli::path_expr::path_expression_for(provider, &config.path_expressions())?;
+    let expr =
+        libbeachcomber::path_expr::path_expression_for(provider, &config.path_expressions())?;
     let cwd = std::env::current_dir()
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
     let env: HashMap<String, String> = std::env::vars().collect();
-    Some(crate::cli::path_expr::evaluate_path(&expr, &cwd, &env))
+    Some(libbeachcomber::path_expr::evaluate_path(&expr, &cwd, &env))
 }
 
 /// Fetch the daemon-backed refs a virtual field's expression needs.
