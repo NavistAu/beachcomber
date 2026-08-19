@@ -3,7 +3,7 @@
 //! `libbeachcomber`.
 
 use std::ffi::{CStr, CString, c_char};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 pub mod envelope;
@@ -613,5 +613,152 @@ pub unsafe extern "C" fn bc_eval(
         };
         vf.evaluate_expression(template_str, &ctx, &mut HashSet::new())
             .map_err(|e| FfiError::new(ErrorKind::ServerError, e))
+    })
+}
+
+// ── Sessions (Task 3.6) ─────────────────────────────────────────────────
+
+/// Opaque handle to a persistent connection for multiple queries.
+///
+/// The connection is guarded by an internal mutex: a caller that finds it
+/// already locked gets a `kind: "busy"` envelope immediately rather than
+/// blocking or interleaving its request with another caller's on the same
+/// socket. `state` also carries a deferred construction error, the same
+/// pattern [`BcClient`] uses — [`bc_session_open`] never returns NULL for a
+/// reason short of allocation failure.
+pub struct BcSession {
+    state: Mutex<Result<libbeachcomber::Session, FfiError>>,
+}
+
+/// Locks `session`'s mutex, translating an already-held lock into a `busy`
+/// envelope rather than blocking. A poisoned mutex (a previous call panicked
+/// while holding it) is recovered rather than treated as busy: the panic
+/// that poisoned it was already turned into its own envelope by [`call_ffi`]
+/// on that earlier call, so the session's `Result` is still a valid value to
+/// read here.
+///
+/// # Safety
+/// `session` must be a valid, non-null pointer previously returned by
+/// [`bc_session_open`], not yet closed.
+unsafe fn session_lock<'a>(
+    session: *mut BcSession,
+) -> Result<std::sync::MutexGuard<'a, Result<libbeachcomber::Session, FfiError>>, FfiError> {
+    let handle = unsafe { &*session };
+    match handle.state.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(std::sync::TryLockError::WouldBlock) => Err(FfiError::new(
+            ErrorKind::Busy,
+            "session handle is in use by another caller",
+        )),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+    }
+}
+
+/// Opens a persistent session on `client`'s connection. Never returns NULL:
+/// a `client` whose own construction failed, or a daemon that is
+/// unreachable when the underlying connection is attempted, is recorded on
+/// the handle and surfaced on the session's first operation instead.
+///
+/// # Safety
+/// `client` must be a valid, non-null pointer previously returned by
+/// [`bc_client_new`], not yet freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bc_session_open(client: *mut BcClient) -> *mut BcSession {
+    let state = (|| {
+        let c = unsafe { client_ref(client) }?;
+        c.session().map_err(FfiError::from)
+    })();
+    Box::into_raw(Box::new(BcSession {
+        state: Mutex::new(state),
+    }))
+}
+
+/// Closes and frees a session handle. Null-safe.
+///
+/// # Safety
+/// `session` must be either NULL or a pointer previously returned by
+/// [`bc_session_open`], not yet closed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bc_session_close(session: *mut BcSession) {
+    if session.is_null() {
+        return;
+    }
+    drop(unsafe { Box::from_raw(session) });
+}
+
+/// Query a single key on this session's persistent connection. `flags` is
+/// the same [`BC_GET_FORCE`] / [`BC_GET_WAIT`] bitmask [`bc_get`] takes.
+///
+/// # Safety
+/// `session` must be a valid pointer from [`bc_session_open`]; `key` must
+/// be non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bc_session_get(
+    session: *mut BcSession,
+    key: *const c_char,
+    path: *const c_char,
+    flags: u32,
+) -> *mut c_char {
+    call_ffi(move || {
+        check_get_flags(flags)?;
+        let key = unsafe { required_str(key, "key") }?;
+        let path = unsafe { optional_str(path) }?;
+        let mut guard = unsafe { session_lock(session) }?;
+        let sess = guard.as_mut().map_err(|e| e.clone())?;
+        let force = flags & BC_GET_FORCE != 0;
+        let wait = flags & BC_GET_WAIT != 0;
+        let result = sess.get_with_flags(key, path, force, wait)?;
+        Ok(combresult_to_json(result))
+    })
+}
+
+/// Store data into a virtual provider on this session's persistent
+/// connection. `json_data` must parse as JSON; `ttl` and `path` are
+/// nullable.
+///
+/// # Safety
+/// `session` must be a valid pointer from [`bc_session_open`]; `key` and
+/// `json_data` must be non-null and NUL-terminated; `ttl` and `path` must be
+/// NULL or NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bc_session_put(
+    session: *mut BcSession,
+    key: *const c_char,
+    json_data: *const c_char,
+    ttl: *const c_char,
+    path: *const c_char,
+) -> *mut c_char {
+    call_ffi(move || {
+        let key = unsafe { required_str(key, "key") }?;
+        let json_data = unsafe { required_str(json_data, "json_data") }?;
+        let data: serde_json::Value = serde_json::from_str(json_data).map_err(|e| {
+            FfiError::new(ErrorKind::ParseError, format!("malformed json_data: {e}"))
+        })?;
+        let ttl = unsafe { optional_str(ttl) }?;
+        let path = unsafe { optional_str(path) }?;
+        let mut guard = unsafe { session_lock(session) }?;
+        let sess = guard.as_mut().map_err(|e| e.clone())?;
+        sess.put(key, data, ttl, path)?;
+        Ok(serde_json::Value::Null)
+    })
+}
+
+/// Sets connection context on this session so subsequent queries don't need
+/// an explicit `path`.
+///
+/// # Safety
+/// `session` must be a valid pointer from [`bc_session_open`]; `path` must
+/// be non-null and NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bc_session_set_context(
+    session: *mut BcSession,
+    path: *const c_char,
+) -> *mut c_char {
+    call_ffi(move || {
+        let path = unsafe { required_str(path, "path") }?;
+        let mut guard = unsafe { session_lock(session) }?;
+        let sess = guard.as_mut().map_err(|e| e.clone())?;
+        sess.set_context(path)?;
+        Ok(serde_json::Value::Null)
     })
 }
