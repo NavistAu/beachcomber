@@ -130,7 +130,7 @@ jobs:
         run: |
           tar czf beachcomber-c-sdk-${{ needs.gate.outputs.tag }}.tar.gz \
             -C sdks/c \
-            beachcomber.c beachcomber.h json.c json.h Makefile libbeachcomber.pc.in README.md
+            beachcomber.h Makefile libbeachcomber.pc.in README.md
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
