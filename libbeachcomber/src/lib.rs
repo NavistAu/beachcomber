@@ -29,6 +29,7 @@ pub const VERSION: &str = env!("BEACHCOMBER_VERSION");
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Connect to a Unix socket with 3 retries (250ms / 500ms / 1s exponential backoff).
@@ -147,6 +148,52 @@ impl CombData {
 pub struct HelloInfo {
     pub protocol_version: String,
     pub daemon_version: String,
+}
+
+/// Reported when this client's build identity differs from the daemon's,
+/// discovered via `hello` on the connection's first use. Not fatal — a
+/// running older daemon is a normal state mid-upgrade — but callers can
+/// check for it, and it is named in any op error on that connection
+/// afterward (see `CombError::ServerError`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionSkew {
+    /// This client's build identity (`VERSION`).
+    pub ours: String,
+    /// The daemon's reported `daemon_version`.
+    pub theirs: String,
+}
+
+impl std::fmt::Display for VersionSkew {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "client is {}, daemon is {}", self.ours, self.theirs)
+    }
+}
+
+/// Compare a `hello` response against this build's identity.
+fn detect_skew(hello: &HelloInfo) -> Option<VersionSkew> {
+    if hello.daemon_version == VERSION {
+        None
+    } else {
+        Some(VersionSkew {
+            ours: VERSION.to_string(),
+            theirs: hello.daemon_version.clone(),
+        })
+    }
+}
+
+/// Send a `hello` request on `stream` and compare the daemon's reported
+/// version against this build's. Used once per connection, at the point
+/// each connection is established, so the check costs one extra
+/// request/response round trip rather than one per op.
+fn probe_version_skew(stream: &mut UnixStream) -> Result<Option<VersionSkew>, CombError> {
+    let request = serde_json::json!({ "op": "hello" });
+    let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+    stream.write_all(msg.as_bytes())?;
+
+    let mut line = String::new();
+    BufReader::new(&mut *stream).read_line(&mut line)?;
+    let hello = parse_hello_response(&line)?;
+    Ok(detect_skew(&hello))
 }
 
 /// Discriminator used by the status formatter to choose rendering strategy.
@@ -443,6 +490,10 @@ impl Default for ClientConfig {
 pub struct Client {
     config: ClientConfig,
     socket_path_override: Option<PathBuf>,
+    /// Version skew, if any, discovered via `hello` on this client's first
+    /// connection. Checked once — later connections reuse this rather than
+    /// probing again, so it is never a per-op cost.
+    version_skew: OnceLock<Option<VersionSkew>>,
 }
 
 impl Client {
@@ -451,6 +502,7 @@ impl Client {
         Self {
             config: ClientConfig::default(),
             socket_path_override: None,
+            version_skew: OnceLock::new(),
         }
     }
 
@@ -459,6 +511,30 @@ impl Client {
         Self {
             config,
             socket_path_override: None,
+            version_skew: OnceLock::new(),
+        }
+    }
+
+    /// Version skew detected against the daemon, if any. `None` before the
+    /// first connection is made, or once made, if the versions matched.
+    pub fn version_skew(&self) -> Option<VersionSkew> {
+        self.version_skew.get().cloned().flatten()
+    }
+
+    fn skew_ref(&self) -> Option<&VersionSkew> {
+        self.version_skew.get().and_then(|s| s.as_ref())
+    }
+
+    /// Probe `stream` for version skew if not already known, via a
+    /// trailing `hello` exchange *after* the caller's own request/response
+    /// on the connection — never before it. Checked once per `Client`, not
+    /// per op. Probe failures are swallowed (skew stays unknown) so a
+    /// connection that only ever answers the caller's own request is
+    /// unaffected.
+    fn probe_skew_after(&self, stream: &mut UnixStream) {
+        if self.version_skew.get().is_none() {
+            let skew = probe_version_skew(stream).unwrap_or(None);
+            let _ = self.version_skew.set(skew);
         }
     }
 
@@ -564,17 +640,8 @@ impl Client {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line)?;
-        let resp: serde_json::Value =
-            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !ok {
-            let error = resp
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error")
-                .to_string();
-            return Err(CombError::ServerError(error));
-        }
+        self.probe_skew_after(reader.get_mut());
+        check_ok(&line, self.skew_ref())?;
         Ok(())
     }
 
@@ -607,17 +674,8 @@ impl Client {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line)?;
-        let resp: serde_json::Value =
-            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !ok {
-            let error = resp
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error")
-                .to_string();
-            return Err(CombError::ServerError(error));
-        }
+        self.probe_skew_after(reader.get_mut());
+        check_ok(&line, self.skew_ref())?;
         Ok(())
     }
 
@@ -637,17 +695,8 @@ impl Client {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line)?;
-        let resp: serde_json::Value =
-            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !ok {
-            let error = resp
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error")
-                .to_string();
-            return Err(CombError::ServerError(error));
-        }
+        self.probe_skew_after(reader.get_mut());
+        check_ok(&line, self.skew_ref())?;
         Ok(())
     }
 
@@ -661,7 +710,8 @@ impl Client {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line)?;
-        parse_cache_rows(&line)
+        self.probe_skew_after(reader.get_mut());
+        parse_cache_rows(&line, self.skew_ref())
     }
 
     /// Run an introspect query. `duration_secs` is only consulted by the
@@ -685,7 +735,8 @@ impl Client {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line)?;
-        parse_introspect(subject, &line)
+        self.probe_skew_after(reader.get_mut());
+        parse_introspect(subject, &line, self.skew_ref())
     }
 
     /// Subscribe to changes on a key. Returns a stream that blocks on
@@ -721,7 +772,11 @@ impl Client {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line)?;
-        parse_hello_response(&line)
+        let info = parse_hello_response(&line)?;
+        if self.version_skew.get().is_none() {
+            let _ = self.version_skew.set(detect_skew(&info));
+        }
+        Ok(info)
     }
 
     /// Open a persistent session for multiple queries on one connection.
@@ -789,8 +844,9 @@ impl Client {
                 CombError::IoError(e)
             }
         })?;
+        self.probe_skew_after(reader.get_mut());
 
-        parse_response(&line)
+        parse_response(&line, self.skew_ref())
     }
 }
 
@@ -806,13 +862,39 @@ impl Default for Client {
 /// multiple values in sequence (one connection vs. N connections).
 pub struct Session {
     reader: BufReader<UnixStream>,
+    /// Whether a version-skew probe has run yet on this connection.
+    skew_checked: bool,
+    /// Version skew, if any, discovered via a trailing `hello` exchange
+    /// after this session's first op. Checked once per connection, not
+    /// per op.
+    version_skew: Option<VersionSkew>,
 }
 
 impl Session {
     fn new(stream: UnixStream) -> Self {
         Self {
             reader: BufReader::new(stream),
+            skew_checked: false,
+            version_skew: None,
         }
+    }
+
+    /// Version skew detected against the daemon on this session's
+    /// connection, if any. `None` before the first op, or once probed, if
+    /// the versions matched.
+    pub fn version_skew(&self) -> Option<&VersionSkew> {
+        self.version_skew.as_ref()
+    }
+
+    /// Probe for version skew after the caller's own request/response, if
+    /// not already known this connection. Never sent before the caller's
+    /// own request — see `Client::probe_skew_after` for why.
+    fn probe_skew_after(&mut self) {
+        if self.skew_checked {
+            return;
+        }
+        self.skew_checked = true;
+        self.version_skew = probe_version_skew(self.reader.get_mut()).unwrap_or(None);
     }
 
     /// Query a single key on this persistent connection.
@@ -847,8 +929,9 @@ impl Session {
 
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
+        self.probe_skew_after();
 
-        parse_response(&line)
+        parse_response(&line, self.version_skew.as_ref())
     }
 
     /// Query a single key on this persistent connection, rendered by the
@@ -900,17 +983,8 @@ impl Session {
 
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
-        let resp: serde_json::Value =
-            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !ok {
-            let error = resp
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error")
-                .to_string();
-            return Err(CombError::ServerError(error));
-        }
+        self.probe_skew_after();
+        check_ok(&line, self.version_skew.as_ref())?;
         Ok(())
     }
 
@@ -925,17 +999,8 @@ impl Session {
 
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
-        let resp: serde_json::Value =
-            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !ok {
-            let error = resp
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error")
-                .to_string();
-            return Err(CombError::ServerError(error));
-        }
+        self.probe_skew_after();
+        check_ok(&line, self.version_skew.as_ref())?;
         Ok(())
     }
 
@@ -963,17 +1028,8 @@ impl Session {
 
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
-        let resp: serde_json::Value =
-            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !ok {
-            let error = resp
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error")
-                .to_string();
-            return Err(CombError::ServerError(error));
-        }
+        self.probe_skew_after();
+        check_ok(&line, self.version_skew.as_ref())?;
         Ok(())
     }
 
@@ -988,17 +1044,8 @@ impl Session {
 
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
-        let resp: serde_json::Value =
-            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !ok {
-            let error = resp
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error")
-                .to_string();
-            return Err(CombError::ServerError(error));
-        }
+        self.probe_skew_after();
+        check_ok(&line, self.version_skew.as_ref())?;
         Ok(())
     }
 
@@ -1009,7 +1056,8 @@ impl Session {
         self.reader.get_mut().write_all(msg.as_bytes())?;
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
-        parse_cache_rows(&line)
+        self.probe_skew_after();
+        parse_cache_rows(&line, self.version_skew.as_ref())
     }
 
     pub fn introspect(
@@ -1028,7 +1076,8 @@ impl Session {
         self.reader.get_mut().write_all(msg.as_bytes())?;
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
-        parse_introspect(subject, &line)
+        self.probe_skew_after();
+        parse_introspect(subject, &line, self.version_skew.as_ref())
     }
 
     /// Ask the daemon for its protocol and build versions.
@@ -1039,26 +1088,41 @@ impl Session {
 
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
-        parse_hello_response(&line)
+        let info = parse_hello_response(&line)?;
+        if !self.skew_checked {
+            self.skew_checked = true;
+            self.version_skew = detect_skew(&info);
+        }
+        Ok(info)
     }
 }
 
 // --- Internal helpers ---
 
-fn parse_response(line: &str) -> Result<CombResult, CombError> {
+/// Parse a response line's `{"ok": ...}` envelope, returning the raw JSON
+/// value on success. On `ok:false`, returns `ServerError` with the
+/// daemon's message — appended with `skew`, if known, so a failure on a
+/// connection with detected version skew names both versions.
+fn check_ok(line: &str, skew: Option<&VersionSkew>) -> Result<serde_json::Value, CombError> {
     let resp: serde_json::Value =
         serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-
     let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-
     if !ok {
-        let error = resp
+        let mut error = resp
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown error")
             .to_string();
+        if let Some(s) = skew {
+            error = format!("{error} ({s})");
+        }
         return Err(CombError::ServerError(error));
     }
+    Ok(resp)
+}
+
+fn parse_response(line: &str, skew: Option<&VersionSkew>) -> Result<CombResult, CombError> {
+    let resp = check_ok(line, skew)?;
 
     match resp.get("data") {
         Some(serde_json::Value::Null) | None => Ok(CombResult::Miss),
@@ -1080,18 +1144,8 @@ fn parse_response(line: &str) -> Result<CombResult, CombError> {
     }
 }
 
-fn parse_cache_rows(line: &str) -> Result<Vec<CacheRow>, CombError> {
-    let resp: serde_json::Value =
-        serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !ok {
-        let error = resp
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error")
-            .to_string();
-        return Err(CombError::ServerError(error));
-    }
+fn parse_cache_rows(line: &str, skew: Option<&VersionSkew>) -> Result<Vec<CacheRow>, CombError> {
+    let resp = check_ok(line, skew)?;
     let arr = resp
         .get("data")
         .and_then(|v| v.as_array())
@@ -1216,18 +1270,9 @@ fn parse_daemon_health(data: &serde_json::Value) -> Result<DaemonHealth, CombErr
 fn parse_introspect(
     subject: IntrospectSubject,
     line: &str,
+    skew: Option<&VersionSkew>,
 ) -> Result<IntrospectResponse, CombError> {
-    let resp: serde_json::Value =
-        serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !ok {
-        let error = resp
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error")
-            .to_string();
-        return Err(CombError::ServerError(error));
-    }
+    let resp = check_ok(line, skew)?;
     let data = resp.get("data").cloned().unwrap_or(serde_json::Value::Null);
     match subject {
         IntrospectSubject::Daemon => Ok(IntrospectResponse::Daemon(parse_daemon_health(&data)?)),
