@@ -68,6 +68,11 @@ if (!fs.existsSync(DIST_CLIENT)) {
           setup: Array.isArray(v.setup) ? v.setup : [],
           test: v.test,
           expect: v.expect,
+          // `resolve`-op context: field/path expression overrides, env vars,
+          // and cwd, all client-side (see tests/conformance/README.md).
+          virtual: v.virtual && typeof v.virtual === 'object' ? v.virtual : {},
+          env: v.env && typeof v.env === 'object' ? v.env : {},
+          cwd: typeof v.cwd === 'string' ? v.cwd : null,
           sourcePath: filePath,
         });
       }
@@ -161,11 +166,23 @@ if (!fs.existsSync(DIST_CLIENT)) {
     return null;
   }
 
-  async function runOp(client, descriptor) {
+  async function runOp(client, descriptor, resolveCtx) {
     const { op, args } = descriptor;
 
     try {
       switch (op) {
+        case 'resolve': {
+          const key = args.key || '';
+          const data = await client.resolve(key, {
+            cwd: resolveCtx.cwd,
+            env: resolveCtx.env,
+            overrides: resolveCtx.virtual,
+          });
+          if (data === null || data === undefined) {
+            return makeOk();
+          }
+          return makeOk({ data, dataAsText: valueAsText(data) });
+        }
         case 'hello': {
           const info = await client.hello();
           const data = {
@@ -293,7 +310,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
   // Ops this runner's binding can execute. A fixture using any op outside
   // this set must be skipped, not failed — the binding doesn't implement it.
   const SUPPORTED_OPS = new Set([
-    'hello', 'get', 'refresh', 'put', 'status', 'context', 'watch', 'introspect',
+    'hello', 'get', 'refresh', 'put', 'status', 'context', 'watch', 'introspect', 'resolve',
   ]);
 
   function unsupportedOp(fixture) {
@@ -440,6 +457,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
     const failures = [];
     let passed = 0;
     let skipped = 0;
+    let transportUsed = null;
 
     for (const fixture of fixtures) {
       const skipOp = unsupportedOp(fixture);
@@ -452,14 +470,24 @@ if (!fs.existsSync(DIST_CLIENT)) {
       try {
         daemon = await spawnDaemon();
         const client = new Client({ socketPath: daemon.sockPath, timeoutMs: 5000 });
+        if (transportUsed === null) {
+          transportUsed = client.transport();
+        }
+        // `resolve` is client-side: cwd defaults to this fixture's private
+        // temp dir (matching the Rust reference runner) when not declared.
+        const resolveCtx = {
+          virtual: fixture.virtual,
+          env: fixture.env,
+          cwd: fixture.cwd ?? daemon.tmpDir,
+        };
 
         // Run setup ops, ignore their responses.
         for (const setupOp of fixture.setup) {
-          await runOp(client, setupOp);
+          await runOp(client, setupOp, resolveCtx);
         }
 
         // Run the test op and check expectations.
-        const resp = await runOp(client, fixture.test);
+        const resp = await runOp(client, fixture.test, resolveCtx);
         const expectFailures = checkExpect(fixture, resp);
 
         if (expectFailures.length > 0) {
@@ -491,6 +519,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
     }
 
     console.log(`\nResults: ${passed}/${fixtures.length} passed, ${skipped} skipped.`);
+    console.log(`Transport: ${transportUsed}`);
 
     if (failures.length > 0) {
       console.error(`\n${failures.length} conformance failure(s):`);

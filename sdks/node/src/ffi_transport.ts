@@ -11,7 +11,7 @@
 
 import { createRequire } from 'module';
 import { libraryCandidates } from './discovery.js';
-import { LibraryDiscoveryError, MissingSymbolError } from './errors.js';
+import { errorFromEnvelope, LibraryDiscoveryError, MissingSymbolError } from './errors.js';
 import type { Envelope, WatchNextResult, WatchOutcome } from './envelope.js';
 import type { NewClientOptions, Transport } from './transport.js';
 
@@ -59,12 +59,12 @@ interface Bound {
   fns: Record<string, (...args: unknown[]) => unknown>;
 }
 
-function loadLibrary(): { lib: import('koffi').IKoffiLib; version: string } {
+function loadLibrary(): { lib: import('koffi').LibraryHandle; version: string } {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const koffi = require('koffi');
   const candidates = libraryCandidates();
   const tried: string[] = [];
-  let lib: import('koffi').IKoffiLib | undefined;
+  let lib: import('koffi').LibraryHandle | undefined;
 
   for (const candidate of candidates) {
     try {
@@ -93,7 +93,7 @@ function loadLibrary(): { lib: import('koffi').IKoffiLib; version: string } {
   return { lib, version };
 }
 
-function bindSymbols(lib: import('koffi').IKoffiLib, koffi: typeof import('koffi'), version: string): Bound['fns'] {
+function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('koffi'), version: string): Bound['fns'] {
   const BcClient = koffi.pointer('BcClient', koffi.opaque());
   const BcSession = koffi.pointer('BcSession', koffi.opaque());
   const BcWatch = koffi.pointer('BcWatch', koffi.opaque());
@@ -108,8 +108,9 @@ function bindSymbols(lib: import('koffi').IKoffiLib, koffi: typeof import('koffi
   }
   const BcString = koffi.disposable('BcString', 'str', bcStringFreeRaw);
 
+  type Spec = string | import('koffi').TypeObject;
   const fns: Record<string, (...args: unknown[]) => unknown> = {};
-  const sig: Record<(typeof OP_SYMBOLS)[number], [unknown, unknown[]]> = {
+  const sig: Record<(typeof OP_SYMBOLS)[number], [Spec, Spec[]]> = {
     bc_client_new: [BcClient, ['str']],
     bc_client_free: ['void', [BcClient]],
     bc_get: [BcString, [BcClient, 'str', 'str', 'uint32']],
@@ -167,14 +168,10 @@ function parseWatchNext(raw: unknown): WatchNextResult {
     | { ok: true; outcome: WatchOutcome; data?: unknown }
     | { ok: false; error: { kind: string; message: string } };
   if (!v.ok) {
-    // Reuse the ordinary envelope error path via a synthetic throw point in the caller.
-    return { outcome: 'eof', ...{ __error: v.error } } as unknown as WatchNextResult & {
-      __error: { kind: string; message: string };
-    };
+    throw errorFromEnvelope(v.error);
   }
-  const event = v as { ok: true; outcome: WatchOutcome; data?: unknown };
-  if (event.outcome === 'event') {
-    const d = event.data as { data?: unknown; age_ms?: number | null; stale?: boolean | null } | undefined;
+  if (v.outcome === 'event') {
+    const d = v.data as { data?: unknown; age_ms?: number | null; stale?: boolean | null } | undefined;
     return {
       outcome: 'event',
       data: d?.data ?? null,
@@ -182,7 +179,7 @@ function parseWatchNext(raw: unknown): WatchNextResult {
       stale: d?.stale ?? null,
     };
   }
-  return { outcome: event.outcome };
+  return { outcome: v.outcome };
 }
 
 export function createFfiTransport(): Transport {
@@ -294,14 +291,7 @@ export function createFfiTransport(): Transport {
     },
     async watchNext(watch, timeoutMs) {
       const raw = await callAsync(fns.bc_watch_next, watch, timeoutMs);
-      const result = parseWatchNext(raw) as WatchNextResult & {
-        __error?: { kind: string; message: string };
-      };
-      if (result.__error) {
-        // Route through the same envelope-error path everything else uses.
-        parseEnvelope(JSON.stringify({ ok: false, error: result.__error }));
-      }
-      return result;
+      return parseWatchNext(raw);
     },
     watchCancel(watch) {
       fns.bc_watch_cancel(watch);

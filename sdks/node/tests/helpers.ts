@@ -1,100 +1,122 @@
 /**
- * Mock Unix socket server for integration tests.
+ * Real `comb` daemon helper for integration tests.
+ *
+ * The Node SDK is a binding over the native C ABI (FFI via `koffi`, or the
+ * `comb` subprocess fallback) rather than a hand-rolled NDJSON socket
+ * client, so there is no longer a meaningful wire-level mock to test
+ * against — the wire protocol is entirely the native library's concern.
+ * Tests here drive the real binding against a real daemon, the same way
+ * `conformance_runner.js` does. Mirrors `sdks/python/tests/conftest.py`.
+ *
+ * Requires `COMB_BIN` (or `comb` on `$PATH`, or a `target/debug/comb`
+ * built at the repo root) and `BEACHCOMBER_LIB` (or a discoverable
+ * `libbeachcomber.{so,dylib}`, including `target/debug/` at the repo
+ * root). Tests needing the daemon should skip via `daemonAvailable()`
+ * when neither is found.
  */
 
-import * as net from 'net';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
-import * as path from 'path';
+import * as net from 'net';
 import * as os from 'os';
+import * as path from 'path';
 
-export interface MockRequest {
-  raw: string;
-  parsed: Record<string, unknown>;
+const SDK_DIR = path.dirname(new URL(import.meta.url).pathname);
+const REPO_ROOT = path.resolve(SDK_DIR, '..', '..', '..');
+
+function defaultLibPath(): string {
+  const name = process.platform === 'darwin' ? 'libbeachcomber.dylib' : 'libbeachcomber.so';
+  return path.join(REPO_ROOT, 'target', 'debug', name);
 }
 
-export type RequestHandler = (req: MockRequest) => Record<string, unknown>;
+// Make a locally built dylib/comb discoverable without requiring the caller
+// to set BEACHCOMBER_LIB/COMB_BIN themselves — but never override an
+// explicit setting.
+if (!process.env['BEACHCOMBER_LIB'] && fs.existsSync(defaultLibPath())) {
+  process.env['BEACHCOMBER_LIB'] = defaultLibPath();
+}
 
-/**
- * A simple mock TCP/Unix server that handles newline-delimited JSON requests.
- *
- * Usage:
- *   const server = await MockServer.start();
- *   server.handle((req) => ({ ok: true, data: 'hello' }));
- *   // ... run tests ...
- *   await server.stop();
- */
-export class MockServer {
-  private readonly server: net.Server;
-  public readonly socketPath: string;
-  private handler: RequestHandler = () => ({ ok: true });
-
-  private constructor(server: net.Server, socketPath: string) {
-    this.server = server;
-    this.socketPath = socketPath;
+function findCombBin(): string | undefined {
+  if (process.env['COMB_BIN']) return process.env['COMB_BIN'];
+  const local = path.join(REPO_ROOT, 'target', 'debug', 'comb');
+  if (fs.existsSync(local)) return local;
+  const pathEnv = process.env['PATH'] ?? '';
+  for (const dir of pathEnv.split(path.delimiter)) {
+    const candidate = path.join(dir, 'comb');
+    if (fs.existsSync(candidate)) return candidate;
   }
+  return undefined;
+}
 
-  static async start(): Promise<MockServer> {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'beachcomber-test-'));
-    const socketPath = path.join(dir, 'sock');
+const COMB_BIN = findCombBin();
 
-    const server = net.createServer((socket) => {
-      let buffer = '';
+/** True when a `comb` binary was found and daemon-backed tests can run. */
+export function daemonAvailable(): boolean {
+  return COMB_BIN !== undefined;
+}
 
-      socket.on('data', (chunk: Buffer) => {
-        buffer += chunk.toString('utf8');
-        while (true) {
-          const newline = buffer.indexOf('\n');
-          if (newline === -1) break;
-          const line = buffer.slice(0, newline);
-          buffer = buffer.slice(newline + 1);
-          if (line.trim() === '') continue;
-
-          let parsed: Record<string, unknown>;
-          try {
-            parsed = JSON.parse(line) as Record<string, unknown>;
-          } catch {
-            socket.write(JSON.stringify({ ok: false, error: 'invalid json' }) + '\n');
-            continue;
-          }
-
-          const mock = server as unknown as { _handler: RequestHandler };
-          const response = mock._handler({ raw: line, parsed });
-          socket.write(JSON.stringify(response) + '\n');
-        }
+function waitForSocket(sockPath: string, timeoutMs = 5000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve) => {
+    function attempt(): void {
+      if (Date.now() > deadline) {
+        resolve(false);
+        return;
+      }
+      const s = new net.Socket();
+      s.setTimeout(100);
+      s.connect(sockPath, () => {
+        s.destroy();
+        resolve(true);
       });
-
-      socket.on('error', () => {
-        // swallow errors in test server
+      s.on('error', () => setTimeout(attempt, 50));
+      s.on('timeout', () => {
+        s.destroy();
+        setTimeout(attempt, 50);
       });
-    });
-
-    (server as unknown as { _handler: RequestHandler })._handler = () => ({ ok: true });
-
-    await new Promise<void>((resolve, reject) => {
-      server.listen(socketPath, resolve);
-      server.on('error', reject);
-    });
-
-    return new MockServer(server, socketPath);
-  }
-
-  /**
-   * Set the handler for incoming requests.  Subsequent requests will use the
-   * last handler that was set.
-   */
-  handle(fn: RequestHandler): void {
-    (this.server as unknown as { _handler: RequestHandler })._handler = fn;
-  }
-
-  async stop(): Promise<void> {
-    await new Promise<void>((resolve) => {
-      this.server.close(() => resolve());
-    });
-    try {
-      fs.unlinkSync(this.socketPath);
-      fs.rmdirSync(path.dirname(this.socketPath));
-    } catch {
-      // best-effort cleanup
     }
+    attempt();
+  });
+}
+
+export interface TestDaemon {
+  sockPath: string;
+  stop(): void;
+}
+
+/** Spawn a fresh `comb daemon` on a private temp socket. */
+export async function spawnDaemon(): Promise<TestDaemon> {
+  if (!COMB_BIN) {
+    throw new Error('comb binary not found — call daemonAvailable() first');
   }
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beachcomber-node-test-'));
+  const sockPath = path.join(tmpDir, 'comb.sock');
+
+  const proc = spawn(COMB_BIN, ['daemon', '--socket', sockPath], {
+    stdio: ['ignore', 'ignore', 'ignore'],
+    env: { ...process.env },
+  });
+
+  const ready = await waitForSocket(sockPath, 5000);
+  if (!ready) {
+    proc.kill('SIGKILL');
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    throw new Error(`daemon did not start within 5s (COMB_BIN=${COMB_BIN})`);
+  }
+
+  return {
+    sockPath,
+    stop(): void {
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        // best-effort
+      }
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // best-effort
+      }
+    },
+  };
 }
