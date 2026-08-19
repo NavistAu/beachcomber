@@ -25,7 +25,7 @@
 // crate rebuild that implies) on every invocation. `git_dir()` resolves the
 // real directory in both cases; paths that still don't resolve are simply
 // not watched rather than watched-and-missing. Callers may live below the
-// repo root (e.g. `beachcomber-client/`), so `git_dir()` walks up from
+// repo root (e.g. `libbeachcomber/`), so `git_dir()` walks up from
 // `CARGO_MANIFEST_DIR` until it finds a `.git` entry.
 //
 // Binary identity for singleton enforcement is a SEPARATE concern handled at

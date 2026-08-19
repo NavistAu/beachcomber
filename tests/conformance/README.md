@@ -86,7 +86,7 @@ fixture's `virtual`/`env`/`cwd` feed the resolver call directly (for the C
 ABI this is `overrides_json` / `env_json` / `cwd`).
 
 **Not every runner supports `resolve` yet.** Only the Rust reference runner
-(`beachcomber-client/tests/conformance.rs`) does. A runner whose binding
+(`libbeachcomber/tests/conformance.rs`) does. A runner whose binding
 doesn't implement resolution must **skip** `resolve` fixtures and report them
 as skipped, never as passed — a silent skip that reads as a pass is worse
 than no fixture. Other runners gain `resolve` support in Phase 4.
@@ -159,5 +159,5 @@ Each SDK ships a conformance runner that:
 SDK's typed `DaemonHealth.pid` accessor, not by reparsing the raw JSON.
 This is what catches typed-shape drift.
 
-The Rust runner at `beachcomber-client/tests/conformance.rs` is the reference
+The Rust runner at `libbeachcomber/tests/conformance.rs` is the reference
 implementation; other SDK runners mirror its structure.

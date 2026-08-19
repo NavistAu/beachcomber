@@ -117,7 +117,7 @@ fn release_targets(old: &str) -> Vec<Target> {
     vec![
         t("Cargo.toml", 2),
         t("Cargo.lock", 2),
-        t("beachcomber-client/Cargo.toml", 1),
+        t("libbeachcomber/Cargo.toml", 1),
         t("sdks/node/package.json", 1),
         t("sdks/node/package-lock.json", 2),
         t("sdks/python/pyproject.toml", 1),
@@ -374,7 +374,7 @@ mod tests {
         for expected in [
             "Cargo.toml",
             "Cargo.lock",
-            "beachcomber-client/Cargo.toml",
+            "libbeachcomber/Cargo.toml",
             "sdks/node/package.json",
             "sdks/node/package-lock.json",
             "sdks/python/pyproject.toml",

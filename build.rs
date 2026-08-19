@@ -1,7 +1,7 @@
 //! Emits BEACHCOMBER_VERSION env var for compile-time version string injection.
 //!
 //! Derivation logic lives in `build-common/version.rs`, shared (via `include!`)
-//! with `beachcomber-client/build.rs` so the two crates can never disagree on
+//! with `libbeachcomber/build.rs` so the two crates can never disagree on
 //! the version string. See that file for the full rationale.
 
 include!("build-common/version.rs");

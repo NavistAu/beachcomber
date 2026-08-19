@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "beachcomber-client", "tests/fixtures/test_provider_lib", "xtask"]
+members = [".", "libbeachcomber", "tests/fixtures/test_provider_lib", "xtask"]
 
 [workspace.dependencies]
 minijinja = { version = "2", default-features = false, features = ["builtins", "serde"] }
@@ -43,7 +43,7 @@ minijinja = { workspace = true }
 terminal_size = "0.3"
 thiserror = "2.0.18"
 sha2 = "0.11.0"
-libbeachcomber = { path = "beachcomber-client", version = "0.7.0" }
+libbeachcomber = { path = "libbeachcomber", version = "0.7.0" }
 
 [features]
 test-helpers = []

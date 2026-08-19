@@ -1301,7 +1301,7 @@ Every SDK wraps the Unix socket protocol with typed APIs, socket discovery, time
 
 | SDK | Location | Notes |
 |---|---|---|
-| **Rust** (`beachcomber-client`) | `beachcomber-client/` | Sync, no tokio dependency |
+| **Rust** (`beachcomber-client`) | `libbeachcomber/` | Sync, no tokio dependency |
 | **C** (`libbeachcomber`) | `sdks/c/` | Shared + static lib, embedded JSON parser |
 | **Python** (`beachcomber`) | `sdks/python/` | Dataclasses, sync client + session |
 | **Node.js** (`beachcomber`) | `sdks/node/` | TypeScript, async API |

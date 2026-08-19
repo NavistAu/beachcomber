@@ -1,4 +1,4 @@
-// Option A: copied from beachcomber-client/tests/common/socket.rs.
+// Option A: copied from libbeachcomber/tests/common/socket.rs.
 // Both crates need an IsolatedSocket in their integration-test scope; duplicating the
 // 12-line struct is simpler than bridging crate test boundaries with #[path = "..."].
 use std::path::PathBuf;
