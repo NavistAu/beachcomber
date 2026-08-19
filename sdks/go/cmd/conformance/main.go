@@ -51,12 +51,15 @@ type expectBlock struct {
 }
 
 type fixture struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Setup       []opDescriptor `json:"setup"`
-	Test        opDescriptor   `json:"test"`
-	Expect      expectBlock    `json:"expect"`
-	path        string         // source file path (not in JSON)
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Setup       []opDescriptor    `json:"setup"`
+	Test        opDescriptor      `json:"test"`
+	Expect      expectBlock       `json:"expect"`
+	Virtual     map[string]string `json:"virtual"` // resolve fixtures: field/provider key -> expression override
+	Env         map[string]string `json:"env"`     // resolve fixtures: env.* refs
+	Cwd         string            `json:"cwd"`     // resolve fixtures: cwd for path expressions; defaults to the per-fixture temp dir
+	path        string            // source file path (not in JSON)
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +122,7 @@ func main() {
 var supportedOps = map[string]bool{
 	"hello": true, "get": true, "refresh": true, "put": true,
 	"status": true, "context": true, "watch": true, "introspect": true,
+	"resolve": true,
 }
 
 // unsupportedOp returns the first op in f (setup or test) this runner can't
@@ -264,7 +268,7 @@ func runFixture(f fixture, combBin string) (bool, string) {
 	}
 
 	// Run the test op and collect the result.
-	result, watchEvent, serverErr := runTestOp(client, f.Test)
+	result, watchEvent, serverErr := runTestOp(client, f, tmpDir)
 	return checkExpect(f.Expect, result, watchEvent, serverErr)
 }
 
@@ -308,12 +312,28 @@ func runOp(c *beachcomber.Client, op opDescriptor, _ *opResult, _ *expectBlock) 
 	return nil
 }
 
-// runTestOp executes the test op and returns:
+// runTestOp executes fixture's test op and returns:
 //   - result (*opResult) when the op returns data
 //   - watchEvent (*beachcomber.WatchEvent) for watch ops
 //   - serverErr (error) when the daemon returns an error
-func runTestOp(c *beachcomber.Client, op opDescriptor) (*opResult, *beachcomber.WatchEvent, error) {
+//
+// tmpDir is the fixture's per-run temp directory, used as the default cwd
+// for resolve fixtures that don't declare their own.
+func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *beachcomber.WatchEvent, error) {
+	op := f.Test
 	switch op.Op {
+	case "resolve":
+		key, _ := op.Args["key"].(string)
+		cwd := f.Cwd
+		if cwd == "" {
+			cwd = tmpDir
+		}
+		r, err := c.Resolve(key, cwd, f.Env, f.Virtual)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &opResult{data: r.Data}, nil, nil
+
 	case "hello":
 		info, err := c.Hello()
 		if err != nil {

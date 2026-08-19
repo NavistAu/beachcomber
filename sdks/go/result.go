@@ -2,17 +2,23 @@ package beachcomber
 
 import "encoding/json"
 
-// Result wraps a successful daemon response. When OK is false the Error field
-// contains the daemon-supplied message. Data holds the decoded payload; its
-// concrete type is whatever encoding/json unmarshals into (map, slice, scalar).
+// Result wraps a successful library response. Data holds the decoded
+// payload; its concrete type is whatever encoding/json unmarshals into (map,
+// slice, scalar). Construction always succeeds — an ok:false envelope
+// becomes a *ServerError instead of a Result, so every Result you hold
+// represents success.
 type Result struct {
 	OK    bool
 	Data  interface{}
 	AgeMs uint64
 	Stale bool
-	Error string
 
-	// raw preserves the original JSON for callers that need it.
+	// raw preserves the JSON payload actually parsed (the get-result's
+	// {"data":...,"age_ms":...,"stale":...} shape, or the resolved value
+	// for Resolve/Eval) for callers that need it. Unlike the pre-ABI SDK
+	// this is not a full wire response line — the library returns the
+	// envelope's data field only, with "ok" already stripped by the
+	// binding.
 	raw []byte
 }
 
@@ -26,7 +32,8 @@ func (r *Result) IsMiss() bool {
 	return r.OK && r.Data == nil
 }
 
-// RawJSON returns the original JSON bytes received from the daemon.
+// RawJSON returns the JSON payload backing this Result (see the raw field's
+// doc comment for exactly what that covers).
 func (r *Result) RawJSON() []byte {
 	return r.raw
 }
@@ -111,22 +118,59 @@ func (r *Result) getFloat(field string) (float64, bool) {
 	return f, ok
 }
 
-// response is the internal wire type used for JSON unmarshalling.
-type response struct {
-	OK    bool            `json:"ok"`
+// ---------------------------------------------------------------------------
+// Parse helpers — decode an envelope's already-unwrapped "data" field into
+// typed results. See combresult_to_json / cache_row_to_json / etc. in
+// libbeachcomber-ffi/src/lib.rs for the wire shapes these mirror.
+// ---------------------------------------------------------------------------
+
+// getResultWire is bc_get / bc_session_get's data shape: the CombResult
+// discriminated by whether age_ms/stale are present (Hit) or null (Miss).
+type getResultWire struct {
 	Data  json.RawMessage `json:"data"`
-	AgeMs uint64          `json:"age_ms"`
-	Stale bool            `json:"stale"`
-	Error string          `json:"error"`
+	AgeMs *uint64         `json:"age_ms"`
+	Stale *bool           `json:"stale"`
 }
 
-// ---------------------------------------------------------------------------
-// Parse helpers for typed responses
-// ---------------------------------------------------------------------------
+func resultFromGetData(raw json.RawMessage) (*Result, error) {
+	var w getResultWire
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return nil, &ProtocolError{msg: "malformed get result: " + err.Error()}
+	}
+	r := &Result{OK: true, raw: raw}
+	if w.AgeMs != nil {
+		r.AgeMs = *w.AgeMs
+	}
+	if w.Stale != nil {
+		r.Stale = *w.Stale
+	}
+	if len(w.Data) > 0 && string(w.Data) != "null" {
+		var d interface{}
+		if err := json.Unmarshal(w.Data, &d); err != nil {
+			return nil, &ProtocolError{msg: "malformed get data: " + err.Error()}
+		}
+		r.Data = d
+	}
+	return r, nil
+}
 
-func parseHelloFromResult(r *Result) (*HelloInfo, error) {
-	m, ok := r.Data.(map[string]interface{})
-	if !ok {
+// resultFromScalarData decodes a bare JSON value (Resolve/Eval's data field
+// — no age_ms/stale wrapper) into a Result.
+func resultFromScalarData(raw json.RawMessage) (*Result, error) {
+	r := &Result{OK: true, raw: raw}
+	if len(raw) > 0 && string(raw) != "null" {
+		var d interface{}
+		if err := json.Unmarshal(raw, &d); err != nil {
+			return nil, &ProtocolError{msg: "malformed data: " + err.Error()}
+		}
+		r.Data = d
+	}
+	return r, nil
+}
+
+func parseHelloFromData(raw json.RawMessage) (*HelloInfo, error) {
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, &ProtocolError{msg: "hello data is not an object"}
 	}
 	pv, _ := m["protocol_version"].(string)
@@ -137,17 +181,13 @@ func parseHelloFromResult(r *Result) (*HelloInfo, error) {
 	return &HelloInfo{ProtocolVersion: pv, DaemonVersion: dv}, nil
 }
 
-func parseCacheRowsFromResult(r *Result) ([]CacheRow, error) {
-	arr, ok := r.Data.([]interface{})
-	if !ok {
+func parseCacheRowsFromData(raw json.RawMessage) ([]CacheRow, error) {
+	var arr []map[string]interface{}
+	if err := json.Unmarshal(raw, &arr); err != nil {
 		return nil, &ProtocolError{msg: "status data is not an array"}
 	}
 	rows := make([]CacheRow, 0, len(arr))
-	for _, v := range arr {
-		m, ok := v.(map[string]interface{})
-		if !ok {
-			continue
-		}
+	for _, m := range arr {
 		row := CacheRow{}
 		if s, ok := m["provider"].(string); ok {
 			row.Provider = s
@@ -179,6 +219,10 @@ func parseCacheRowsFromResult(r *Result) ([]CacheRow, error) {
 		if b, ok := m["fsevents_reinstate"].(bool); ok {
 			row.FseventsReinstate = &b
 		}
+		if p, ok := m["polls_elapsed"].(float64); ok {
+			pInt := uint64(p)
+			row.PollsElapsed = &pInt
+		}
 		if f, ok := m["failure"].(map[string]interface{}); ok {
 			row.Failure = f
 		}
@@ -190,84 +234,107 @@ func parseCacheRowsFromResult(r *Result) ([]CacheRow, error) {
 	return rows, nil
 }
 
-func parseIntrospectFromResult(subject IntrospectSubject, r *Result) (*IntrospectResponse, error) {
+func parseIntrospectFromData(subject IntrospectSubject, raw json.RawMessage) (*IntrospectResponse, error) {
 	resp := &IntrospectResponse{Subject: subject}
-	if subject == SubjectDaemon {
-		m, ok := r.Data.(map[string]interface{})
-		if !ok {
-			return nil, &ProtocolError{msg: "daemon introspect data is not an object"}
-		}
-		h := &DaemonHealth{}
-		if f, ok := m["pid"].(float64); ok {
-			h.PID = int64(f)
-		}
-		if s, ok := m["version"].(string); ok {
-			h.Version = s
-		}
-		if f, ok := m["uptime_secs"].(float64); ok {
-			h.UptimeSecs = uint64(f)
-		}
-		if s, ok := m["socket_path"].(string); ok {
-			h.SocketPath = s
-		}
-		if s, ok := m["config_path"].(string); ok {
-			h.ConfigPath = s
-		}
-		if f, ok := m["requests_total"].(float64); ok {
-			h.RequestsTotal = uint64(f)
-		}
-		if f, ok := m["in_flight"].(float64); ok {
-			h.InFlight = uint64(f)
-		}
-		if f, ok := m["active_watchers"].(float64); ok {
-			h.ActiveWatchers = uint64(f)
-		}
-		if f, ok := m["cache_entries"].(float64); ok {
-			h.CacheEntries = uint64(f)
-		}
-		if arr, ok := m["verdicts"].([]interface{}); ok {
-			for _, v := range arr {
-				vm, ok := v.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				lv, _ := vm["level"].(string)
-				mv, _ := vm["message"].(string)
-				h.Verdicts = append(h.Verdicts, Verdict{Level: lv, Message: mv})
+	if subject != SubjectDaemon {
+		var v interface{}
+		if len(raw) > 0 && string(raw) != "null" {
+			if err := json.Unmarshal(raw, &v); err != nil {
+				return nil, &ProtocolError{msg: "malformed introspect data: " + err.Error()}
 			}
 		}
-		resp.Daemon = h
+		resp.Other = v
 		return resp, nil
 	}
-	resp.Other = r.Data
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, &ProtocolError{msg: "daemon introspect data is not an object"}
+	}
+	h := &DaemonHealth{}
+	if f, ok := m["pid"].(float64); ok {
+		h.PID = int64(f)
+	}
+	if s, ok := m["version"].(string); ok {
+		h.Version = s
+	}
+	if f, ok := m["uptime_secs"].(float64); ok {
+		h.UptimeSecs = uint64(f)
+	}
+	if s, ok := m["socket_path"].(string); ok {
+		h.SocketPath = s
+	}
+	if s, ok := m["config_path"].(string); ok {
+		h.ConfigPath = s
+	}
+	if f, ok := m["requests_total"].(float64); ok {
+		h.RequestsTotal = uint64(f)
+	}
+	if f, ok := m["in_flight"].(float64); ok {
+		h.InFlight = uint64(f)
+	}
+	if f, ok := m["active_watchers"].(float64); ok {
+		h.ActiveWatchers = uint64(f)
+	}
+	if f, ok := m["cache_entries"].(float64); ok {
+		h.CacheEntries = uint64(f)
+	}
+	if s, ok := m["watch_backend"].(string); ok {
+		h.WatchBackend = s
+	}
+	if rm, ok := m["reaper"].(map[string]interface{}); ok {
+		ri := &ReaperInfo{}
+		if b, ok := rm["armed"].(bool); ok {
+			ri.Armed = b
+		}
+		if s, ok := rm["visibility"].(string); ok {
+			ri.Visibility = s
+		}
+		if f, ok := rm["sweeps"].(float64); ok {
+			ri.Sweeps = uint64(f)
+		}
+		if f, ok := rm["reaped"].(float64); ok {
+			ri.Reaped = uint64(f)
+		}
+		if f, ok := rm["kill_denied"].(float64); ok {
+			ri.KillDenied = uint64(f)
+		}
+		h.Reaper = ri
+	}
+	if arr, ok := m["verdicts"].([]interface{}); ok {
+		for _, v := range arr {
+			vm, ok := v.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			lv, _ := vm["level"].(string)
+			mv, _ := vm["message"].(string)
+			h.Verdicts = append(h.Verdicts, Verdict{Level: lv, Message: mv})
+		}
+	}
+	resp.Daemon = h
 	return resp, nil
 }
 
-func parseResponse(raw []byte) (*Result, error) {
-	var resp response
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, &ProtocolError{msg: "malformed JSON: " + err.Error()}
-	}
+// watchEventWire mirrors watch_event_to_json in libbeachcomber-ffi/src/lib.rs.
+type watchEventWire struct {
+	Data  json.RawMessage `json:"data"`
+	AgeMs uint64          `json:"age_ms"`
+	Stale bool            `json:"stale"`
+}
 
-	result := &Result{
-		OK:    resp.OK,
-		AgeMs: resp.AgeMs,
-		Stale: resp.Stale,
-		Error: resp.Error,
-		raw:   raw,
+func watchEventFromData(raw json.RawMessage) (*WatchEvent, error) {
+	var w watchEventWire
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return nil, &ProtocolError{msg: "malformed watch event: " + err.Error()}
 	}
-
-	if len(resp.Data) > 0 && string(resp.Data) != "null" {
-		var data interface{}
-		if err := json.Unmarshal(resp.Data, &data); err != nil {
-			return nil, &ProtocolError{msg: "malformed data field: " + err.Error()}
+	ev := &WatchEvent{AgeMs: w.AgeMs, Stale: w.Stale}
+	if len(w.Data) > 0 && string(w.Data) != "null" {
+		var d interface{}
+		if err := json.Unmarshal(w.Data, &d); err != nil {
+			return nil, &ProtocolError{msg: "malformed watch event data: " + err.Error()}
 		}
-		result.Data = data
+		ev.Data = d
 	}
-
-	if !result.OK {
-		return nil, &ServerError{Message: result.Error}
-	}
-
-	return result, nil
+	return ev, nil
 }

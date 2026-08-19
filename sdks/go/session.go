@@ -1,13 +1,17 @@
 package beachcomber
 
 import (
-	"bufio"
-	"net"
+	"encoding/json"
+	"runtime"
+
+	"github.com/ebitengine/purego"
 )
 
-// Session holds a persistent connection to the daemon. It is not safe for
-// concurrent use; create one session per goroutine (or protect access with a
-// mutex).
+// Session holds a handle to a persistent daemon connection (bc_session_open).
+// It is not safe for concurrent use from multiple goroutines: the underlying
+// library guards it with a mutex and returns a "busy" *ServerError to a
+// concurrent caller rather than blocking or interleaving requests — create
+// one Session per goroutine instead.
 //
 // A session is obtained via [Client.Session]:
 //
@@ -15,106 +19,97 @@ import (
 //	if err != nil { … }
 //	defer sess.Close()
 type Session struct {
-	conn    net.Conn
-	scanner *bufio.Scanner
+	// client backs Refresh/Hello/Introspect/Status: the ABI exposes only
+	// bc_session_get/put/set_context on a session's persistent connection
+	// (libbeachcomber-ffi/include/beachcomber.h), so those four fall back
+	// to a fresh connection via the parent Client, exactly as if called
+	// directly on it. Results are identical; only the "reuses this
+	// session's connection" performance property doesn't hold for them.
+	client *Client
+	lib    *nativeLib
+	handle uintptr // BcSession*
 }
 
 // Get reads a cached value. path="" omits the path field.
 func (s *Session) Get(key string, path string) (*Result, error) {
-	req := map[string]interface{}{"op": "get", "key": key}
-	if path != "" {
-		req["path"] = path
-	}
-	return s.roundtrip(req)
-}
-
-// Refresh forces the daemon to recompute the given provider/key.
-func (s *Session) Refresh(key string, path string) error {
-	req := map[string]interface{}{"op": "refresh", "key": key}
-	if path != "" {
-		req["path"] = path
-	}
-	_, err := s.roundtrip(req)
-	return err
-}
-
-// SetContext sends a "context" message, which sets the default path for all
-// subsequent queries on this connection. This avoids repeating the path in
-// every Get/Refresh call.
-func (s *Session) SetContext(path string) error {
-	_, err := s.roundtrip(map[string]interface{}{"op": "context", "path": path})
-	return err
+	return s.GetWithFlags(key, path, false, false)
 }
 
 // GetWithFlags is like Get but supports force and wait flags.
 func (s *Session) GetWithFlags(key, path string, force, wait bool) (*Result, error) {
-	req := map[string]interface{}{"op": "get", "key": key}
-	if path != "" {
-		req["path"] = path
-	}
-	if force {
-		req["force"] = true
-	}
-	if wait {
-		req["wait"] = true
-	}
-	return s.roundtrip(req)
-}
-
-// Hello returns the daemon's protocol and build versions.
-func (s *Session) Hello() (*HelloInfo, error) {
-	result, err := s.roundtrip(map[string]interface{}{"op": "hello"})
+	keyBuf, pathBuf := cBytes(key), optBytes(path)
+	data, err := s.lib.call(s.lib.bcSessionGet, s.handle, ptrOf(keyBuf), ptrOf(pathBuf), uintptr(getFlags(force, wait)))
+	runtime.KeepAlive(keyBuf)
+	runtime.KeepAlive(pathBuf)
 	if err != nil {
 		return nil, err
 	}
-	return parseHelloFromResult(result)
+	return resultFromGetData(data)
 }
 
-// Put stores data into a virtual provider. data should be a JSON object.
-// ttl and path are optional; pass "" to omit them.
-func (s *Session) Put(key string, data interface{}, ttl, path string) error {
-	req := map[string]interface{}{"op": "put", "key": key, "data": data}
-	if ttl != "" {
-		req["ttl"] = ttl
-	}
-	if path != "" {
-		req["path"] = path
-	}
-	_, err := s.roundtrip(req)
+// Refresh forces the daemon to recompute the given provider/key. See the
+// Session doc comment: this uses a fresh connection, not this session's.
+func (s *Session) Refresh(key string, path string) error {
+	return s.client.Refresh(key, path)
+}
+
+// SetContext sends a "context" message, which sets the default path for all
+// subsequent queries on this connection. This avoids repeating the path in
+// every Get call.
+func (s *Session) SetContext(path string) error {
+	pathBuf := cBytes(path)
+	_, err := s.lib.call(s.lib.bcSessionSetContext, s.handle, ptrOf(pathBuf))
+	runtime.KeepAlive(pathBuf)
 	return err
 }
 
-// Introspect runs a diagnostic query. durationSecs is only consulted for
-// SubjectProcs; pass 0 otherwise.
+// Hello returns the daemon's protocol and build versions. See the Session
+// doc comment: this uses a fresh connection, not this session's.
+func (s *Session) Hello() (*HelloInfo, error) {
+	return s.client.Hello()
+}
+
+// Put stores data into a virtual provider on this session's persistent
+// connection. data should be a JSON object. ttl and path are optional; pass
+// "" to omit them.
+func (s *Session) Put(key string, data interface{}, ttl, path string) error {
+	dataJSON, err := json.Marshal(data)
+	if err != nil {
+		return &ProtocolError{msg: "marshal put data: " + err.Error()}
+	}
+	keyBuf, dataBuf, ttlBuf, pathBuf := cBytes(key), cBytes(string(dataJSON)), optBytes(ttl), optBytes(path)
+	_, err = s.lib.call(s.lib.bcSessionPut, s.handle, ptrOf(keyBuf), ptrOf(dataBuf), ptrOf(ttlBuf), ptrOf(pathBuf))
+	runtime.KeepAlive(keyBuf)
+	runtime.KeepAlive(dataBuf)
+	runtime.KeepAlive(ttlBuf)
+	runtime.KeepAlive(pathBuf)
+	return err
+}
+
+// Introspect runs a diagnostic query. See the Session doc comment: this uses
+// a fresh connection, not this session's.
 func (s *Session) Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error) {
-	req := map[string]interface{}{"op": "introspect", "subject": string(subject)}
-	if durationSecs > 0 {
-		req["duration_secs"] = durationSecs
-	}
-	result, err := s.roundtrip(req)
-	if err != nil {
-		return nil, err
-	}
-	return parseIntrospectFromResult(subject, result)
+	return s.client.Introspect(subject, durationSecs)
 }
 
-// Status returns cache rows from the daemon.
+// Status returns cache rows from the daemon. See the Session doc comment:
+// this uses a fresh connection, not this session's.
 func (s *Session) Status() ([]CacheRow, error) {
-	result, err := s.roundtrip(map[string]interface{}{"op": "status"})
-	if err != nil {
-		return nil, err
-	}
-	return parseCacheRowsFromResult(result)
+	return s.client.Status()
 }
 
-// Close closes the underlying connection.
+// Close closes and frees the underlying session handle.
 func (s *Session) Close() error {
-	return s.conn.Close()
+	if s.handle != 0 {
+		purego.SyscallN(s.lib.bcSessionClose, s.handle)
+		s.handle = 0
+		runtime.SetFinalizer(s, nil)
+	}
+	return nil
 }
 
-func (s *Session) roundtrip(req map[string]interface{}) (*Result, error) {
-	if err := writeJSON(s.conn, req); err != nil {
-		return nil, err
+func (s *Session) finalize() {
+	if s.handle != 0 {
+		purego.SyscallN(s.lib.bcSessionClose, s.handle)
 	}
-	return readResponse(s.scanner)
 }
