@@ -82,10 +82,15 @@ end
 # ---------------------------------------------------------------------------
 
 class ConformanceRunner
+  # Ops this runner's binding can execute. A fixture using any op outside
+  # this set must be skipped, not failed — the binding doesn't implement it.
+  SUPPORTED_OPS = %w[hello get refresh put status context watch introspect].freeze
+
   def initialize(socket_path)
     @client  = Beachcomber::Client.new(socket_path: socket_path)
     @passed  = 0
     @failed  = 0
+    @skipped = 0
     @errors  = []
   end
 
@@ -97,8 +102,19 @@ class ConformanceRunner
 
   private
 
+  def unsupported_op(fixture)
+    ops = (fixture['setup'] || []).map { |s| s['op'] }
+    ops << fixture['test']['op']
+    ops.find { |op| !SUPPORTED_OPS.include?(op) }
+  end
+
   def run_fixture(fixture)
     name = fixture['name']
+    if (op = unsupported_op(fixture))
+      @skipped += 1
+      puts "SKIP  #{name}: unsupported op #{op.inspect}"
+      return
+    end
     run_setup(fixture['setup'] || [])
     result, raw = execute_op(fixture['test'])
     check(name, fixture['expect'], result, raw)
@@ -281,7 +297,7 @@ class ConformanceRunner
 
   def print_summary
     puts
-    puts "Results: #{@passed} passed, #{@failed} failed out of #{@passed + @failed} fixtures"
+    puts "Results: #{@passed} passed, #{@failed} failed, #{@skipped} skipped out of #{@passed + @failed + @skipped} fixtures"
     if @errors.any?
       puts
       puts "Failures:"

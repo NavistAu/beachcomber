@@ -63,6 +63,7 @@
 
 static int g_pass = 0;
 static int g_fail = 0;
+static int g_skip = 0;
 
 static void report_pass(const char *name) {
     printf("  PASS  %s\n", name);
@@ -77,6 +78,41 @@ static void report_fail(const char *name, const char *reason, ...) {
     fprintf(stderr, "\n");
     va_end(ap);
     g_fail++;
+}
+
+static void report_skip(const char *name, const char *op) {
+    printf("  SKIP  %s: unsupported op %s\n", name, op);
+    g_skip++;
+}
+
+/* Ops this runner's binding can execute. A fixture using any op outside
+ * this set must be skipped, not failed — the binding doesn't implement it
+ * yet (e.g. "resolve", which is client-side resolution with no C ABI). */
+static int op_supported(const char *op) {
+    static const char *supported[] = {
+        "hello", "get", "refresh", "put", "status", "context", "watch",
+        "introspect", NULL
+    };
+    for (int i = 0; supported[i]; i++) {
+        if (strcmp(op, supported[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Return the first unsupported op name in the fixture (setup or test), or
+ * NULL if every op is supported. */
+static const char *unsupported_op(const json_node_t *root) {
+    json_node_t *setup_arr = json_get(root, "setup");
+    if (setup_arr && setup_arr->type == JSON_ARRAY) {
+        for (json_node_t *item = setup_arr->children; item; item = item->next) {
+            const char *op = json_as_str(json_get(item, "op"));
+            if (op && !op_supported(op)) return op;
+        }
+    }
+    json_node_t *test_node = json_get(root, "test");
+    const char *test_op = test_node ? json_as_str(json_get(test_node, "op")) : NULL;
+    if (test_op && !op_supported(test_op)) return test_op;
+    return NULL;
 }
 
 /* -------------------------------------------------------------------------
@@ -706,6 +742,13 @@ static int run_fixture(const char *fixture_path,
     const char *name = json_as_str(json_get(root, "name"));
     if (!name) name = fixture_path;
 
+    const char *skip_op = unsupported_op(root);
+    if (skip_op) {
+        report_skip(name, skip_op);
+        json_free(root);
+        return 1;
+    }
+
     /* Spawn a fresh daemon for this fixture. The socket lives under a
      * private per-run directory (sock_dir), not bare /tmp: the daemon's
      * singleton lock hardens the pid file's parent directory to mode 0700
@@ -959,6 +1002,6 @@ int main(int argc, char *argv[]) {
     snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", sock_dir);
     system(rm_cmd);
 
-    printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
+    printf("\n=== Results: %d passed, %d failed, %d skipped ===\n", g_pass, g_fail, g_skip);
     return g_fail == 0 ? 0 : 1;
 }

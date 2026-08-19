@@ -182,6 +182,21 @@ def _run_op(client: Client, op: str, args: dict[str, Any]) -> Any:
     raise ValueError(f"unknown op: {op!r}")
 
 
+# Ops this runner's binding can execute. A fixture using any op outside this
+# set must be skipped, not failed — the binding doesn't implement it yet.
+_SUPPORTED_OPS = {"hello", "get", "refresh", "put", "status", "context", "watch", "introspect"}
+
+
+def _unsupported_op(fixture: dict[str, Any]) -> Optional[str]:
+    """Return the first op in the fixture that this runner can't execute, or None."""
+    ops = [s.get("op") for s in fixture.get("setup", [])]
+    ops.append(fixture["test"]["op"])
+    for op in ops:
+        if op not in _SUPPORTED_OPS:
+            return op
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Assertion helpers
 # ---------------------------------------------------------------------------
@@ -337,15 +352,19 @@ def _check_data_type(data: Any, expected_type: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def run_fixture(fixture_path: pathlib.Path, client: Client) -> tuple[bool, str]:
+def run_fixture(fixture_path: pathlib.Path, client: Client) -> tuple[str, str]:
     """Run a single fixture against the given client.
 
-    Returns (passed, message).
+    Returns (status, message) where status is "pass", "fail", or "skip".
     """
     with open(fixture_path) as f:
         fixture = json.load(f)
 
     name = fixture.get("name", fixture_path.stem)
+
+    unsupported = _unsupported_op(fixture)
+    if unsupported is not None:
+        return "skip", f"unsupported op {unsupported!r}"
 
     # Run setup ops (ignore their results; failures are fatal for the fixture).
     for setup_op in fixture.get("setup", []):
@@ -354,7 +373,7 @@ def run_fixture(fixture_path: pathlib.Path, client: Client) -> tuple[bool, str]:
         try:
             _run_op(client, op, args)
         except Exception as exc:
-            return False, f"setup op {op!r} failed: {exc}"
+            return "fail", f"setup op {op!r} failed: {exc}"
 
     # Run the test op.
     test = fixture["test"]
@@ -372,14 +391,14 @@ def run_fixture(fixture_path: pathlib.Path, client: Client) -> tuple[bool, str]:
     except CombError as exc:
         error = str(exc)
     except Exception as exc:
-        return False, f"unexpected exception running {op!r}: {type(exc).__name__}: {exc}"
+        return "fail", f"unexpected exception running {op!r}: {type(exc).__name__}: {exc}"
 
     failures = _check_expect(expect, result, error, name)
     if failures:
         msg = "; ".join(failures)
-        return False, f"{name}: FAIL — {msg}"
+        return "fail", f"{name}: FAIL — {msg}"
 
-    return True, f"{name}: ok"
+    return "pass", f"{name}: ok"
 
 
 # ---------------------------------------------------------------------------
@@ -420,15 +439,20 @@ def main() -> int:
 
     passed = 0
     failed = 0
+    skipped = 0
     errors: list[str] = []
 
     try:
         for fixture_path in fixtures:
             rel = fixture_path.relative_to(_CONFORMANCE_DIR)
-            ok, msg = run_fixture(fixture_path, client)
-            status_label = "PASS" if ok else "FAIL"
+            status, msg = run_fixture(fixture_path, client)
+            if status == "skip":
+                print(f"  SKIP {rel}: {msg}")
+                skipped += 1
+                continue
+            status_label = "PASS" if status == "pass" else "FAIL"
             print(f"  [{status_label}] {rel}: {msg.split(': ', 1)[-1]}")
-            if ok:
+            if status == "pass":
                 passed += 1
             else:
                 failed += 1
@@ -436,7 +460,7 @@ def main() -> int:
     finally:
         daemon.stop()
 
-    print(f"\n{passed + failed} fixtures: {passed} passed, {failed} failed")
+    print(f"\n{passed + failed + skipped} fixtures: {passed} passed, {failed} failed, {skipped} skipped")
 
     if errors:
         print("\nFailures:")

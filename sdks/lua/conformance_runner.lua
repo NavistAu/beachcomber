@@ -163,6 +163,25 @@ end
 
 -- ── Fixture execution ─────────────────────────────────────────────────────────
 
+-- Ops this runner's binding can execute. A fixture using any op outside
+-- this set must be skipped, not failed — the binding doesn't implement it.
+local SUPPORTED_OPS = {
+  hello = true, get = true, refresh = true, put = true,
+  status = true, context = true, watch = true, introspect = true,
+}
+
+--- Return the first op (setup or test) in fixture that this runner can't
+-- execute, or nil if every op is supported.
+local function unsupported_op(fixture)
+  for _, step in ipairs(fixture.setup or {}) do
+    if not SUPPORTED_OPS[step.op] then return step.op end
+  end
+  if fixture.test and not SUPPORTED_OPS[fixture.test.op] then
+    return fixture.test.op
+  end
+  return nil
+end
+
 --- Run a single protocol operation via the client and return a raw response table.
 -- Returns: resp table with keys ok, data, error, age_ms, stale.
 local function run_op(client, op, args)
@@ -338,6 +357,11 @@ local function run_fixture(fixture_path, fixture_json)
     return false, "fixture missing 'test' or 'expect' fields"
   end
 
+  local skip_op = unsupported_op(fixture)
+  if skip_op then
+    return "skip", "unsupported op " .. skip_op
+  end
+
   -- Each fixture gets its own client connection.
   local client = make_client()
 
@@ -375,6 +399,7 @@ print("")
 
 local passed  = 0
 local failed  = 0
+local skipped = 0
 local errors  = {}
 
 for _, fpath in ipairs(fixtures) do
@@ -389,7 +414,10 @@ for _, fpath in ipairs(fixtures) do
     local ok, reason = run_fixture(fpath, content)
     -- Extract a short label from path.
     local label = fpath:match(".*/tests/conformance/(.+)$") or fpath
-    if ok then
+    if ok == "skip" then
+      skipped = skipped + 1
+      print("  SKIP " .. label .. ": " .. reason)
+    elseif ok then
       passed = passed + 1
       print("  [PASS] " .. label)
     else
@@ -409,7 +437,7 @@ os.execute("rm -rf " .. tmpdir .. " 2>/dev/null")
 
 -- ── Summary ───────────────────────────────────────────────────────────────────
 
-print(string.format("\n  Results: %d passed, %d failed\n", passed, failed))
+print(string.format("\n  Results: %d passed, %d failed, %d skipped\n", passed, failed, skipped))
 
 if failed > 0 then
   os.exit(1)

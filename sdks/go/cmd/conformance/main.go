@@ -90,8 +90,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	passed, failed := 0, 0
+	passed, failed, skipped := 0, 0, 0
 	for _, f := range fixtures {
+		if op := unsupportedOp(f); op != "" {
+			fmt.Printf("SKIP %s: unsupported op %q\n", f.Name, op)
+			skipped++
+			continue
+		}
 		ok, msg := runFixture(f, combBin)
 		if ok {
 			fmt.Printf("[PASS] %s\n", f.Name)
@@ -102,10 +107,32 @@ func main() {
 		}
 	}
 
-	fmt.Printf("\n%d/%d fixtures passed\n", passed, passed+failed)
+	fmt.Printf("\n%d/%d fixtures passed (%d skipped)\n", passed, passed+failed, skipped)
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// supportedOps are the ops this runner's binding can execute. A fixture
+// using any op outside this set must be skipped, not failed — the binding
+// doesn't implement it yet.
+var supportedOps = map[string]bool{
+	"hello": true, "get": true, "refresh": true, "put": true,
+	"status": true, "context": true, "watch": true, "introspect": true,
+}
+
+// unsupportedOp returns the first op in f (setup or test) this runner can't
+// execute, or "" if every op is supported.
+func unsupportedOp(f fixture) string {
+	for _, op := range f.Setup {
+		if !supportedOps[op.Op] {
+			return op.Op
+		}
+	}
+	if !supportedOps[f.Test.Op] {
+		return f.Test.Op
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------

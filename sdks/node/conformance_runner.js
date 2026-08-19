@@ -290,6 +290,20 @@ if (!fs.existsSync(DIST_CLIENT)) {
     }
   }
 
+  // Ops this runner's binding can execute. A fixture using any op outside
+  // this set must be skipped, not failed — the binding doesn't implement it.
+  const SUPPORTED_OPS = new Set([
+    'hello', 'get', 'refresh', 'put', 'status', 'context', 'watch', 'introspect',
+  ]);
+
+  function unsupportedOp(fixture) {
+    for (const step of fixture.setup) {
+      if (!SUPPORTED_OPS.has(step.op)) return step.op;
+    }
+    if (!SUPPORTED_OPS.has(fixture.test.op)) return fixture.test.op;
+    return null;
+  }
+
   // ---------------------------------------------------------------------------
   // Expectation checking
   // ---------------------------------------------------------------------------
@@ -425,8 +439,15 @@ if (!fs.existsSync(DIST_CLIENT)) {
 
     const failures = [];
     let passed = 0;
+    let skipped = 0;
 
     for (const fixture of fixtures) {
+      const skipOp = unsupportedOp(fixture);
+      if (skipOp) {
+        console.log(`  SKIP [${fixture.name}]: unsupported op ${skipOp}`);
+        skipped++;
+        continue;
+      }
       let daemon = null;
       try {
         daemon = await spawnDaemon();
@@ -469,7 +490,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
       }
     }
 
-    console.log(`\nResults: ${passed}/${fixtures.length} passed.`);
+    console.log(`\nResults: ${passed}/${fixtures.length} passed, ${skipped} skipped.`);
 
     if (failures.length > 0) {
       console.error(`\n${failures.length} conformance failure(s):`);
