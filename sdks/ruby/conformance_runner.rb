@@ -44,7 +44,7 @@ class DaemonHandle
       'BEACHCOMBER_SOCKET' => @socket_path,
       'HOME'               => @tmpdir,
     }
-    @pid = spawn(env, @comb_bin, 'start',
+    @pid = spawn(env, @comb_bin, 'daemon',
                  '--socket', @socket_path,
                  out: File::NULL,
                  err: File::NULL)
