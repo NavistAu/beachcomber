@@ -9,7 +9,10 @@ use std::time::Duration;
 pub mod envelope;
 
 use envelope::{ErrorKind, FfiError, call_ffi};
+use libbeachcomber::path_expr::{evaluate_path, path_expression_for};
+use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
 use libbeachcomber::{CacheRow, CombResult, DaemonHealth, IntrospectResponse, IntrospectSubject};
+use std::collections::{HashMap, HashSet};
 
 /// Opaque client handle returned by [`bc_client_new`].
 ///
@@ -410,5 +413,205 @@ pub unsafe extern "C" fn bc_hello(client: *mut BcClient) -> *mut c_char {
             "protocol_version": info.protocol_version,
             "daemon_version": info.daemon_version,
         }))
+    })
+}
+
+// ── Resolution (Task 3.5) ──────────────────────────────────────────────
+
+/// Parses a nullable `env_json` argument. `None` (NULL) means "no env
+/// supplied" — every `env.*` reference then resolves to `""`, matching the
+/// evaluator's own miss semantics on an empty map. Values must be strings.
+fn parse_env_json(json: Option<&str>) -> Result<HashMap<String, String>, FfiError> {
+    match json {
+        None => Ok(HashMap::new()),
+        Some(s) => serde_json::from_str(s)
+            .map_err(|e| FfiError::new(ErrorKind::ParseError, format!("malformed env_json: {e}"))),
+    }
+}
+
+/// Field-expression overrides, keyed `(provider, field)`.
+type FieldOverrides = Vec<((String, String), String)>;
+
+/// Parses a nullable `overrides_json` argument into field-expression
+/// overrides (keyed `"provider.field"`) and path-expression overrides
+/// (keyed by a bare provider name) — the same split the conformance
+/// runner's fixture `virtual` block uses. `None` (NULL) means "no
+/// overrides" — [`VirtualFields::with_config_overrides`] still applies the
+/// built-in defaults underneath an empty override list.
+fn parse_overrides_json(
+    json: Option<&str>,
+) -> Result<(FieldOverrides, HashMap<String, String>), FfiError> {
+    let Some(s) = json else {
+        return Ok((Vec::new(), HashMap::new()));
+    };
+    let v: serde_json::Value = serde_json::from_str(s).map_err(|e| {
+        FfiError::new(
+            ErrorKind::ParseError,
+            format!("malformed overrides_json: {e}"),
+        )
+    })?;
+    let obj = v.as_object().ok_or_else(|| {
+        FfiError::new(
+            ErrorKind::ParseError,
+            "overrides_json must be a JSON object",
+        )
+    })?;
+    let mut field_overrides = Vec::new();
+    let mut path_overrides = HashMap::new();
+    for (key, expr) in obj {
+        let expr = expr.as_str().ok_or_else(|| {
+            FfiError::new(
+                ErrorKind::ParseError,
+                format!("overrides_json[{key}] must be a string expression"),
+            )
+        })?;
+        match key.split_once('.') {
+            Some((provider, field)) => {
+                field_overrides.push(((provider.to_string(), field.to_string()), expr.to_string()));
+            }
+            None => {
+                path_overrides.insert(key.clone(), expr.to_string());
+            }
+        }
+    }
+    Ok((field_overrides, path_overrides))
+}
+
+/// Fetches `cache.*` refs an expression makes, via the client, into a
+/// daemon-data map an [`EvalContext`] can borrow. Mirrors the conformance
+/// runner's `resolve` arm (`libbeachcomber/tests/conformance.rs`): each ref
+/// is looked up without a path context, matching what that reference
+/// implementation does. A fetch failure just leaves the ref absent from the
+/// map — [`VirtualFields::evaluate_expression`] treats a missing cache ref
+/// as a miss, not an error.
+fn fetch_cache_refs(
+    client: &libbeachcomber::Client,
+    expr: &str,
+) -> HashMap<String, serde_json::Value> {
+    let mut daemon_data = HashMap::new();
+    for r in discover_expression_refs(expr) {
+        match r {
+            Ref::CacheField(p, f) => {
+                if let Ok(CombResult::Hit { data, .. }) = client.get(&format!("{p}.{f}"), None) {
+                    daemon_data.insert(format!("{p}.{f}"), data.as_value().clone());
+                }
+            }
+            Ref::CacheProvider(p) => {
+                if let Ok(CombResult::Hit { data, .. }) = client.get(&p, None) {
+                    daemon_data.insert(p, data.as_value().clone());
+                }
+            }
+            Ref::Env(_) | Ref::Resolved(_, _) => {}
+        }
+    }
+    daemon_data
+}
+
+/// Resolve a virtual field (`key` = `"provider.field"`) or a path
+/// expression (`key` = a bare provider name) — client-side, exactly as
+/// `comb get`'s resolution layer does.
+///
+/// `cwd` is required: NULL returns an error envelope rather than falling
+/// back to the process's own working directory — this library must never
+/// read ambient state on the caller's behalf. `env_json` and
+/// `overrides_json` are nullable, meaning "none supplied".
+///
+/// # Safety
+/// `client` must be a valid pointer from [`bc_client_new`]; `key` and `cwd`
+/// must be non-null and NUL-terminated; `env_json` and `overrides_json` must
+/// be NULL or NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bc_resolve(
+    client: *mut BcClient,
+    key: *const c_char,
+    cwd: *const c_char,
+    env_json: *const c_char,
+    overrides_json: *const c_char,
+) -> *mut c_char {
+    call_ffi(move || {
+        let c = unsafe { client_ref(client) }?;
+        let key = unsafe { required_str(key, "key") }?;
+        let cwd = unsafe { required_str(cwd, "cwd") }?;
+        let env_json = unsafe { optional_str(env_json) }?;
+        let overrides_json = unsafe { optional_str(overrides_json) }?;
+        let env_vars = parse_env_json(env_json)?;
+        let (field_overrides, path_overrides) = parse_overrides_json(overrides_json)?;
+        let vf = VirtualFields::with_config_overrides(field_overrides);
+
+        match key.split_once('.') {
+            Some((provider, field)) => {
+                let expr = vf
+                    .expression(provider, field)
+                    .ok_or_else(|| {
+                        FfiError::new(
+                            ErrorKind::ParseError,
+                            format!("{provider}.{field} is not a virtual field"),
+                        )
+                    })?
+                    .to_string();
+                let daemon_data = fetch_cache_refs(c, &expr);
+                let ctx = EvalContext {
+                    env_vars: &env_vars,
+                    daemon_data: &daemon_data,
+                };
+                let v = vf
+                    .evaluate(provider, field, &ctx, &mut HashSet::new())
+                    .map_err(|e| FfiError::new(ErrorKind::ServerError, e))?;
+                Ok(v)
+            }
+            None => match path_expression_for(key, &path_overrides) {
+                Some(expr) => match evaluate_path(&expr, cwd, &env_vars) {
+                    Some(s) => Ok(serde_json::Value::String(s)),
+                    None => Ok(serde_json::Value::Null),
+                },
+                None => Err(FfiError::new(
+                    ErrorKind::ParseError,
+                    format!("{key} has no declared path expression"),
+                )),
+            },
+        }
+    })
+}
+
+/// Evaluate an arbitrary expression string — the same evaluator
+/// `bc_resolve` uses for a declared virtual field, but for a raw expression
+/// that need not be registered anywhere. Refs are discovered and `cache.*`
+/// refs fetched the same way `bc_resolve` does.
+///
+/// `cwd` is required, matching `bc_resolve`'s signature (see there for
+/// why); `env.*` and `cache.*` refs in `template_str` are the only inputs
+/// currently threaded into the expression — a bare `cwd` reference in a
+/// field expression is reserved for a later task and not evaluated by
+/// `evaluate_expression` today.
+///
+/// # Safety
+/// `client` must be a valid pointer from [`bc_client_new`]; `template_str`
+/// and `cwd` must be non-null and NUL-terminated; `env_json` and
+/// `overrides_json` must be NULL or NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bc_eval(
+    client: *mut BcClient,
+    template_str: *const c_char,
+    cwd: *const c_char,
+    env_json: *const c_char,
+    overrides_json: *const c_char,
+) -> *mut c_char {
+    call_ffi(move || {
+        let c = unsafe { client_ref(client) }?;
+        let template_str = unsafe { required_str(template_str, "template_str") }?;
+        let _cwd = unsafe { required_str(cwd, "cwd") }?;
+        let env_json = unsafe { optional_str(env_json) }?;
+        let overrides_json = unsafe { optional_str(overrides_json) }?;
+        let env_vars = parse_env_json(env_json)?;
+        let (field_overrides, _path_overrides) = parse_overrides_json(overrides_json)?;
+        let vf = VirtualFields::with_config_overrides(field_overrides);
+
+        let daemon_data = fetch_cache_refs(c, template_str);
+        let ctx = EvalContext {
+            env_vars: &env_vars,
+            daemon_data: &daemon_data,
+        };
+        vf.evaluate_expression(template_str, &ctx, &mut HashSet::new())
+            .map_err(|e| FfiError::new(ErrorKind::ServerError, e))
     })
 }
