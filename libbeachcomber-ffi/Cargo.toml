@@ -1,0 +1,17 @@
+[package]
+name = "libbeachcomber-ffi"
+version.workspace = true
+edition = "2024"
+description = "C ABI for the beachcomber (comb) client library"
+license = "MIT"
+repository = "https://github.com/NavistAu/beachcomber"
+keywords = ["shell", "prompt", "git", "daemon", "client"]
+categories = ["command-line-utilities", "development-tools"]
+
+[lib]
+name = "beachcomber"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+libbeachcomber = { path = "../libbeachcomber" }

@@ -949,6 +949,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "libbeachcomber-ffi"
+version = "0.7.0"
+dependencies = [
+ "libbeachcomber",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.185"
 source = "registry+https://github.com/rust-lang/crates.io-index"

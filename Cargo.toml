@@ -1,5 +1,8 @@
 [workspace]
-members = [".", "libbeachcomber", "tests/fixtures/test_provider_lib", "xtask"]
+members = [".", "libbeachcomber", "libbeachcomber-ffi", "tests/fixtures/test_provider_lib", "xtask"]
+
+[workspace.package]
+version = "0.7.0"
 
 [workspace.dependencies]
 minijinja = { version = "2", default-features = false, features = ["builtins", "serde"] }
