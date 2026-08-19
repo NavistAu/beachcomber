@@ -348,22 +348,6 @@ pub struct WatchStream {
 }
 
 impl WatchStream {
-    /// Read the next raw line from the stream without JSON-decoding it.
-    ///
-    /// Use this instead of [`next_event`](Self::next_event) when the watch
-    /// was opened with a server-side format (`text` / `sh`): the daemon
-    /// emits plain-text lines rather than `WatchEvent` JSON, so those lines
-    /// cannot be parsed by `next_event`. Returns `Ok(None)` on connection
-    /// close. The returned line retains its trailing newline.
-    pub fn next_line(&mut self) -> Result<Option<String>, CombError> {
-        let mut line = String::new();
-        let n = self.reader.read_line(&mut line)?;
-        if n == 0 {
-            return Ok(None);
-        }
-        Ok(Some(line))
-    }
-
     /// Read the next watch event. Returns Ok(None) on connection close.
     pub fn next_event(&mut self) -> Result<Option<WatchEvent>, CombError> {
         let mut line = String::new();
@@ -708,28 +692,15 @@ impl Client {
     /// `next_event` until the daemon emits a change (or the connection
     /// closes). The first event is always the current value.
     ///
-    /// `format`, when `Some`, drives server-side rendering (`"text"` /
-    /// `"sh"`): the daemon emits plain-text lines instead of JSON, and
-    /// callers must read them with [`WatchStream::next_line`] instead of
-    /// `next_event`. `None` keeps the default JSON framing.
-    ///
     /// Watch is NOT available on Session because the daemon puts the
     /// connection into streaming mode once a watch is issued — no other
     /// ops can share that connection afterward.
-    pub fn watch(
-        &self,
-        key: &str,
-        path: Option<&str>,
-        format: Option<&str>,
-    ) -> Result<WatchStream, CombError> {
+    pub fn watch(&self, key: &str, path: Option<&str>) -> Result<WatchStream, CombError> {
         let socket_path = self.find_or_start_socket()?;
         let mut stream = self.connect(&socket_path)?;
         let mut request = serde_json::json!({ "op": "watch", "key": key });
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
-        }
-        if let Some(f) = format {
-            request["format"] = serde_json::json!(f);
         }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
         stream.write_all(msg.as_bytes())?;

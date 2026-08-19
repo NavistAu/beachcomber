@@ -4,15 +4,6 @@ use serde::{Deserialize, Serialize};
 /// See `docs/protocol-spec.md` for what counts as additive vs breaking.
 pub const PROTOCOL_VERSION: &str = "1.0";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Format {
-    #[default]
-    Json,
-    Text,
-    Sh,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum Request {
@@ -20,8 +11,6 @@ pub enum Request {
         key: String,
         #[serde(default)]
         path: Option<String>,
-        #[serde(default)]
-        format: Format,
         #[serde(default)]
         force: bool,
         #[serde(default)]
@@ -49,8 +38,6 @@ pub enum Request {
         key: String,
         #[serde(default)]
         path: Option<String>,
-        #[serde(default)]
-        format: Format,
     },
     Introspect {
         subject: IntrospectSubject,

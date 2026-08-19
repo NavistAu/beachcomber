@@ -329,7 +329,7 @@ impl ClientSession {
     /// from each event's `data`.
     pub fn watch(&mut self, key: &str, path: Option<&str>) -> std::io::Result<()> {
         let stream = build_client(&self.socket_path)
-            .watch(key, path, None)
+            .watch(key, path)
             .map_err(comb_error_to_io)?;
         self.watch_stream = Some(stream);
         Ok(())

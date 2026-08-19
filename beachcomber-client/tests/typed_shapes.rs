@@ -96,7 +96,7 @@ fn watch_receives_initial_event() {
         .put("phase3_watch", serde_json::json!({"x": 1}), None, None)
         .expect("put");
 
-    let mut stream = client.watch("phase3_watch.x", None, None).expect("watch");
+    let mut stream = client.watch("phase3_watch.x", None).expect("watch");
     let event = stream
         .next_event()
         .expect("watch event")

@@ -110,38 +110,6 @@ async fn server_handles_get_single_field() {
 }
 
 #[tokio::test]
-async fn server_handles_get_text_format() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-
-    let mut fields = HashMap::new();
-    fields.insert(
-        "name".to_string(),
-        Value::String("testhost.local".to_string()),
-    );
-    cache.put_source("hostname", None, "main", fields, Some(60));
-
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let request = r#"{"op": "get", "key": "hostname.name", "format": "text"}"#;
-    stream
-        .write_all(format!("{request}\n").as_bytes())
-        .await
-        .unwrap();
-
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.unwrap();
-
-    // Text format for single field: raw value followed by newline
-    assert_eq!(line.trim(), "testhost.local");
-
-    handle.abort();
-}
-
-#[tokio::test]
 async fn server_handles_cache_miss_with_sync_execution() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
@@ -296,95 +264,6 @@ async fn server_handles_refresh() {
 }
 
 #[tokio::test]
-async fn server_handles_get_sh_format() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-
-    let mut fields = HashMap::new();
-    fields.insert(
-        "name".to_string(),
-        Value::String("testhost.local".to_string()),
-    );
-    fields.insert("short".to_string(), Value::String("testhost".to_string()));
-    cache.put_source("hostname", None, "main", fields, Some(60));
-
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let request = r#"{"op": "get", "key": "hostname", "format": "sh"}"#;
-    stream
-        .write_all(format!("{request}\n").as_bytes())
-        .await
-        .unwrap();
-
-    let mut reader = BufReader::new(stream);
-    let mut lines = String::new();
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await.unwrap();
-        if n == 0 || line == "\n" {
-            break;
-        }
-        lines.push_str(&line);
-    }
-
-    // Sh format for objects: sorted key=value pairs
-    assert!(lines.contains("name=testhost.local"));
-    assert!(lines.contains("short=testhost"));
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn server_text_format_object_emits_key_value_lines() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-
-    let mut fields = HashMap::new();
-    fields.insert(
-        "name".to_string(),
-        Value::String("testhost.local".to_string()),
-    );
-    fields.insert("short".to_string(), Value::String("testhost".to_string()));
-    cache.put_source("hostname", None, "main", fields, Some(60));
-
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let request = r#"{"op": "get", "key": "hostname", "format": "text"}"#;
-    stream
-        .write_all(format!("{request}\n").as_bytes())
-        .await
-        .unwrap();
-
-    let mut reader = BufReader::new(stream);
-    let mut lines = String::new();
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await.unwrap();
-        if n == 0 || line == "\n" {
-            break;
-        }
-        lines.push_str(&line);
-    }
-
-    // Text format for objects: `subkey=value` sorted, one per line.
-    // Matches the sh format and the 2026-04-21 code-review-fixes design (C9).
-    assert!(
-        lines.contains("name=testhost.local"),
-        "expected 'name=testhost.local' in output, got: {lines:?}"
-    );
-    assert!(
-        lines.contains("short=testhost"),
-        "expected 'short=testhost' in output, got: {lines:?}"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test]
 async fn daemon_introspect_includes_uptime_and_request_counters() {
     // uptime_secs, active_watchers, requests_total moved from Request::Status to
     // Request::Introspect{daemon} in T27.
@@ -476,24 +355,19 @@ async fn nested_key_walks_into_object_field() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let request = r#"{"op":"get","key":"myproj.project.rust","format":"text"}"#;
+    let request = r#"{"op":"get","key":"myproj.project.rust"}"#;
     stream
         .write_all(format!("{request}\n").as_bytes())
         .await
         .unwrap();
 
     let mut reader = BufReader::new(stream);
-    let mut buf = String::new();
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await.unwrap();
-        if n == 0 || line == "\n" {
-            break;
-        }
-        buf.push_str(&line);
-    }
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
 
-    assert_eq!(buf.trim(), "1.94.0");
+    let response: Response = serde_json::from_str(&line).unwrap();
+    assert!(response.ok);
+    assert_eq!(response.data.unwrap(), serde_json::json!("1.94.0"));
 
     handle.abort();
 }
@@ -515,7 +389,7 @@ async fn nested_key_missing_subkey_errors() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let request = r#"{"op":"get","key":"myproj.project.nonesuch","format":"json"}"#;
+    let request = r#"{"op":"get","key":"myproj.project.nonesuch"}"#;
     stream
         .write_all(format!("{request}\n").as_bytes())
         .await
@@ -532,143 +406,6 @@ async fn nested_key_missing_subkey_errors() {
             .unwrap()
             .contains("unknown field: myproj.project.nonesuch"),
         "got: {line}"
-    );
-
-    handle.abort();
-}
-
-/// Format::Text on an Object-valued field emits `subkey=value` lines sorted
-/// alphabetically by subkey. Applies to all object-valued provider fields
-/// (e.g. mise.project, asdf.tools). Matches the spec at
-/// docs/superpowers/specs/2026-04-21-code-review-fixes-design.md C9.
-#[tokio::test]
-async fn text_format_object_field_emits_subkey_equals_value_lines() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-
-    // Store a provider result with a single Object-valued field ("tools").
-    // The Object maps tool names to version strings, mirroring mise.project / asdf.tools.
-    let mut tools_map = std::collections::HashMap::new();
-    tools_map.insert("node".to_string(), Value::String("20.11.0".to_string()));
-    tools_map.insert("python".to_string(), Value::String("3.12.1".to_string()));
-    let mut fields = HashMap::new();
-    fields.insert("tools".to_string(), Value::Object(tools_map));
-    cache.put_source("devenv", None, "virtual", fields, None);
-    // Register as virtual so the server's provider-existence guard accepts the name.
-    registry.register_virtual("devenv");
-
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-    // Request the Object-valued field directly with format=text.
-    let request = r#"{"op": "get", "key": "devenv.tools", "format": "text"}"#;
-    stream
-        .write_all(format!("{request}\n").as_bytes())
-        .await
-        .unwrap();
-
-    let mut reader = BufReader::new(stream);
-    let mut lines_buf = String::new();
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await.unwrap();
-        if n == 0 || line == "\n" {
-            break;
-        }
-        lines_buf.push_str(&line);
-    }
-
-    let trimmed = lines_buf.trim();
-    let output_lines: Vec<&str> = trimmed.split('\n').collect();
-    assert_eq!(
-        output_lines.len(),
-        2,
-        "Object with two entries should emit exactly two lines, got: {trimmed:?}"
-    );
-    // node < python alphabetically, so node's line comes first.
-    assert_eq!(output_lines[0], "node=20.11.0");
-    assert_eq!(output_lines[1], "python=3.12.1");
-
-    handle.abort();
-}
-
-/// Format::Text on an empty-object field (e.g. `put(key, {})`) must terminate
-/// with a single blank line, matching the Null branch: zero content lines,
-/// one terminator. If the Object branch ever forgets an `is_empty` guard, it
-/// emits an extra stray "\n" that a one-shot connection swallows silently but
-/// a persistent session leaves unread — desyncing the framing of whatever
-/// request comes next on that same connection. This test exercises exactly
-/// that: two requests over one connection, asserting the *second* response
-/// is unaffected by the first.
-#[tokio::test]
-async fn text_format_empty_object_does_not_desync_persistent_session() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-
-    // Reproduces `put(key, {})`: an empty-fields virtual entry.
-    cache.put_source("emptytest", None, "virtual", HashMap::new(), None);
-    registry.register_virtual("emptytest");
-
-    // A second, unrelated entry with real data, to detect desync on the next read.
-    let mut fields = HashMap::new();
-    fields.insert("val".to_string(), Value::String("marker".to_string()));
-    cache.put_source("secondtest", None, "virtual", fields, None);
-    registry.register_virtual("secondtest");
-
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-
-    // First request on the persistent connection: get the empty object as text.
-    let request = r#"{"op": "get", "key": "emptytest", "format": "text"}"#;
-    stream
-        .write_all(format!("{request}\n").as_bytes())
-        .await
-        .unwrap();
-
-    let mut reader = BufReader::new(stream);
-    let mut first_lines = String::new();
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await.unwrap();
-        if n == 0 || line == "\n" {
-            break;
-        }
-        first_lines.push_str(&line);
-    }
-    assert_eq!(
-        first_lines, "",
-        "empty object should emit zero content lines, got: {first_lines:?}"
-    );
-
-    // Second request on the SAME connection and the SAME reader — reusing
-    // `reader` (rather than extracting the inner stream) matters: a stray
-    // unread byte lives in the BufReader's internal buffer, and pulling out
-    // the inner stream via `into_inner()` would discard it, silently
-    // "fixing" the desync the test exists to catch. BufReader forwards
-    // writes straight through to the inner stream, so writing on `reader`
-    // is equivalent to writing on `stream` directly.
-    let request = r#"{"op": "get", "key": "secondtest.val", "format": "text"}"#;
-    reader
-        .write_all(format!("{request}\n").as_bytes())
-        .await
-        .unwrap();
-
-    let mut second_lines = String::new();
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await.unwrap();
-        if n == 0 || line == "\n" {
-            break;
-        }
-        second_lines.push_str(&line);
-    }
-    assert_eq!(
-        second_lines, "marker\n",
-        "second response on the same session must not be desynced by a stray \
-         byte left over from the first, got: {second_lines:?}"
     );
 
     handle.abort();
