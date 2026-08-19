@@ -1,36 +1,15 @@
---- Tests for the new Phase 10 Client methods:
--- hello, get_with_flags, put, put_null, introspect, status, watch.
---
--- All tests use a mock handle to avoid requiring a live daemon or luasocket.
+--- Tests for Client:hello/put/put_null/introspect/resolve/eval/watch, and
+--- for the unsupported-capability path (a backend that omits an optional
+--- method) — against a mock backend, matching test_client.lua's pattern.
 
 return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
   local client_mod  = require("beachcomber.client")
-  local WatchStream = require("beachcomber.watch_stream")
   local Client      = client_mod.Client
-  local Result      = client_mod.Result
-  local json        = require("beachcomber.json")
 
-  -- ── Mock handle helper ────────────────────────────────────────────────────
-
-  local function make_mock_handle(responses)
-    local idx  = 0
-    local sent = {}
-    return {
-      _sent = sent,
-      send_line = function(_, line)
-        sent[#sent + 1] = line
-        return true
-      end,
-      recv_line = function(_)
-        idx = idx + 1
-        local resp = responses[idx]
-        if not resp then
-          return nil, "mock handle: no more responses"
-        end
-        return resp
-      end,
-      close = function(_) end,
-    }
+  local function make_backend(overrides)
+    local backend = { name = function(_) return "mock" end }
+    for k, v in pairs(overrides or {}) do backend[k] = v end
+    return backend
   end
 
   -- ── hello ─────────────────────────────────────────────────────────────────
@@ -38,204 +17,79 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   suite("Client:hello")
 
   test("hello returns protocol_version and daemon_version", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = { protocol_version = "1", daemon_version = "0.9.0" } }),
+    local backend = make_backend({
+      hello = function() return { ok = true, data = { protocol_version = "1", daemon_version = "0.9.0" } } end,
     })
-    local c = Client.new(handle)
-    local info, err = c:hello()
+    local info, err = Client.new(backend):hello()
     assert_nil(err)
-    assert_not_nil(info)
     assert_eq(info.protocol_version, "1")
     assert_eq(info.daemon_version, "0.9.0")
   end)
 
-  test("hello sends correct op", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = { protocol_version = "1", daemon_version = "0.9.0" } }),
-    })
-    local c = Client.new(handle)
-    c:hello()
-    local req = json.decode(handle._sent[1])
-    assert_eq(req.op, "hello")
-  end)
-
   test("hello defaults empty strings when data missing", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
-    })
-    local c = Client.new(handle)
-    local info, err = c:hello()
+    local backend = make_backend({ hello = function() return { ok = true } end })
+    local info, err = Client.new(backend):hello()
     assert_nil(err)
-    assert_not_nil(info)
     assert_eq(info.protocol_version, "")
     assert_eq(info.daemon_version, "")
   end)
 
-  test("hello returns nil+error on server error", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = false, error = "not implemented" }),
+  test("hello returns nil+Error on backend error", function()
+    local backend = make_backend({
+      hello = function() return { ok = false, error = { kind = "server_error", message = "not implemented" } } end,
     })
-    local c = Client.new(handle)
-    local info, err = c:hello()
+    local info, err = Client.new(backend):hello()
     assert_nil(info)
     assert_not_nil(err)
   end)
 
-  -- ── get_with_flags ────────────────────────────────────────────────────────
-
-  suite("Client:get_with_flags")
-
-  test("get_with_flags returns Result", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = "main", age_ms = 10, stale = false }),
-    })
-    local c = Client.new(handle)
-    local r, err = c:get_with_flags("git.branch", "/repo", false, false)
-    assert_nil(err)
-    assert_not_nil(r)
-    assert_true(r:is_hit())
-    assert_eq(r.data, "main")
+  test("hello returns Error.unsupported when the backend omits it", function()
+    local backend = make_backend({})
+    local info, err = Client.new(backend):hello()
+    assert_nil(info)
+    assert_eq(err.kind, "unsupported")
+    assert_true(tostring(err):find("mock", 1, true) ~= nil, "unsupported error should name the transport")
   end)
 
-  test("get_with_flags propagates force=true", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
-    })
-    local c = Client.new(handle)
-    c:get_with_flags("git.branch", nil, true, nil)
-    local req = json.decode(handle._sent[1])
-    assert_eq(req.op, "get")
-    assert_eq(req.force, true)
-    assert_nil(req.wait)
-  end)
-
-  test("get_with_flags propagates wait=true", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
-    })
-    local c = Client.new(handle)
-    c:get_with_flags("git.branch", nil, nil, true)
-    local req = json.decode(handle._sent[1])
-    assert_eq(req.wait, true)
-    assert_nil(req.force)
-  end)
-
-  test("get_with_flags omits flags when false/nil", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
-    })
-    local c = Client.new(handle)
-    c:get_with_flags("git.branch", nil, false, false)
-    local req = json.decode(handle._sent[1])
-    assert_nil(req.force)
-    assert_nil(req.wait)
-  end)
-
-  test("get_with_flags includes path when provided", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
-    })
-    local c = Client.new(handle)
-    c:get_with_flags("git.branch", "/mypath", nil, nil)
-    local req = json.decode(handle._sent[1])
-    assert_eq(req.path, "/mypath")
-  end)
-
-  test("get_with_flags returns nil, error on ok=false", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = false, error = "provider error" }),
-    })
-    local c = Client.new(handle)
-    local r, err = c:get_with_flags("bad.key", nil, nil, nil)
-    assert_nil(r)
-    assert_eq(err, "provider error")
-  end)
-
-  -- ── put ───────────────────────────────────────────────────────────────────
+  -- ── put / put_null ────────────────────────────────────────────────────────
 
   suite("Client:put")
 
-  test("put sends correct op and key", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
+  test("put forwards key, data, ttl, path", function()
+    local seen
+    local backend = make_backend({
+      put = function(_, key, data, ttl, path) seen = { key = key, data = data, ttl = ttl, path = path }; return { ok = true } end,
     })
-    local c = Client.new(handle)
-    local ok, err = c:put("mykey", { x = 1 })
+    local ok, err = Client.new(backend):put("mykey", { color = "blue" }, "60s", "/p")
     assert_nil(err)
     assert_true(ok)
-    local req = json.decode(handle._sent[1])
-    assert_eq(req.op, "put")
-    assert_eq(req.key, "mykey")
+    assert_eq(seen.key, "mykey")
+    assert_eq(seen.data.color, "blue")
+    assert_eq(seen.ttl, "60s")
+    assert_eq(seen.path, "/p")
   end)
 
-  test("put sends data payload", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
+  test("put returns false+Error on backend error", function()
+    local backend = make_backend({
+      put = function() return { ok = false, error = { kind = "server_error", message = "must be a JSON object" } } end,
     })
-    local c = Client.new(handle)
-    c:put("mykey", { color = "blue" })
-    local req = json.decode(handle._sent[1])
-    assert_not_nil(req.data)
-    assert_eq(req.data.color, "blue")
-  end)
-
-  test("put with ttl includes ttl field", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
-    })
-    local c = Client.new(handle)
-    c:put("mykey", { v = 1 }, 60)
-    local req = json.decode(handle._sent[1])
-    assert_eq(req.ttl, 60)
-  end)
-
-  test("put with path includes path field", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
-    })
-    local c = Client.new(handle)
-    c:put("mykey", { v = 1 }, nil, "/mypath")
-    local req = json.decode(handle._sent[1])
-    assert_eq(req.path, "/mypath")
-  end)
-
-  test("put returns false+error on server error", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = false, error = "must be a JSON object" }),
-    })
-    local c = Client.new(handle)
-    local ok, err = c:put("mykey", "not-an-object")
+    local ok, err = Client.new(backend):put("mykey", "not-an-object")
     assert_eq(ok, false)
-    assert_not_nil(err)
-    assert_true(err:find("object", 1, true) ~= nil)
+    assert_true(tostring(err):find("object", 1, true) ~= nil)
   end)
-
-  -- ── put_null ──────────────────────────────────────────────────────────────
 
   suite("Client:put_null")
 
-  test("put_null sends put op without data field", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
+  test("put_null forwards key and path", function()
+    local seen
+    local backend = make_backend({
+      put_null = function(_, key, path) seen = { key = key, path = path }; return { ok = true } end,
     })
-    local c = Client.new(handle)
-    local ok, err = c:put_null("mykey")
+    local ok, err = Client.new(backend):put_null("mykey", "/somepath")
     assert_nil(err)
     assert_true(ok)
-    local req = json.decode(handle._sent[1])
-    assert_eq(req.op, "put")
-    assert_eq(req.key, "mykey")
-    assert_nil(req.data)
-  end)
-
-  test("put_null passes path when provided", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
-    })
-    local c = Client.new(handle)
-    c:put_null("mykey", "/somepath")
-    local req = json.decode(handle._sent[1])
-    assert_eq(req.path, "/somepath")
+    assert_eq(seen.key, "mykey")
+    assert_eq(seen.path, "/somepath")
   end)
 
   -- ── introspect ────────────────────────────────────────────────────────────
@@ -243,294 +97,166 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   suite("Client:introspect")
 
   test("introspect daemon returns typed daemon shape", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = { pid = 1234, version = "0.9.0", uptime_secs = 100 } }),
+    local backend = make_backend({
+      introspect = function(_, subject) return { ok = true, data = { pid = 1234, version = "0.9.0" } } end,
     })
-    local c = Client.new(handle)
-    local result, err = c:introspect("daemon")
+    local result, err = Client.new(backend):introspect("daemon")
     assert_nil(err)
-    assert_not_nil(result)
     assert_eq(result.subject, "daemon")
-    assert_not_nil(result.daemon)
     assert_eq(result.daemon.pid, 1234)
     assert_nil(result.other)
   end)
 
   test("introspect non-daemon subject returns other", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = { entries = 5 } }),
+    local backend = make_backend({
+      introspect = function() return { ok = true, data = { entries = 5 } } end,
     })
-    local c = Client.new(handle)
-    local result, err = c:introspect("cache")
+    local result, err = Client.new(backend):introspect("cache")
     assert_nil(err)
-    assert_not_nil(result)
     assert_eq(result.subject, "cache")
     assert_nil(result.daemon)
-    assert_not_nil(result.other)
     assert_eq(result.other.entries, 5)
   end)
 
-  test("introspect sends correct op and subject", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = {} }),
+  test("introspect forwards subject and duration_secs", function()
+    local seen
+    local backend = make_backend({
+      introspect = function(_, subject, duration_secs) seen = { subject = subject, duration_secs = duration_secs }; return { ok = true, data = {} } end,
     })
-    local c = Client.new(handle)
-    c:introspect("providers")
-    local req = json.decode(handle._sent[1])
-    assert_eq(req.op, "introspect")
-    assert_eq(req.subject, "providers")
+    Client.new(backend):introspect("timers", 30)
+    assert_eq(seen.subject, "timers")
+    assert_eq(seen.duration_secs, 30)
   end)
 
-  test("introspect with duration_secs sends duration_secs", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = {} }),
-    })
-    local c = Client.new(handle)
-    c:introspect("timers", 30)
-    local req = json.decode(handle._sent[1])
-    assert_eq(req.duration_secs, 30)
-  end)
-
-  test("introspect returns nil+error on server error", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = false, error = "unknown subject" }),
-    })
-    local c = Client.new(handle)
-    local result, err = c:introspect("bad_subject")
+  test("introspect returns Error.unsupported when the backend omits it", function()
+    local result, err = Client.new(make_backend({})):introspect("daemon")
     assert_nil(result)
-    assert_not_nil(err)
+    assert_eq(err.kind, "unsupported")
   end)
 
-  -- ── status ───────────────────────────────────────────────────────────────
+  -- ── resolve / eval ────────────────────────────────────────────────────────
 
-  suite("Client:status")
+  suite("Client:resolve")
 
-  test("status returns array of rows", function()
-    local rows = {
-      { key = "git.branch", age_ms = 100 },
-      { key = "git.dirty",  age_ms = 200 },
-    }
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = rows }),
+  test("resolve forwards key, cwd, env, virtual overrides", function()
+    local seen
+    local backend = make_backend({
+      resolve = function(_, key, cwd, env, overrides)
+        seen = { key = key, cwd = cwd, env = env, overrides = overrides }
+        return { ok = true, data = "baz" }
+      end,
     })
-    local c = Client.new(handle)
-    local result, err = c:status()
+    local value, err = Client.new(backend):resolve("filters.based", {
+      cwd = "/tmp", env = { PYVAR = "/foo/bar/baz" }, virtual = { ["filters.based"] = "env.PYVAR | basename" },
+    })
     assert_nil(err)
-    assert_not_nil(result)
-    assert_eq(#result, 2)
-    assert_eq(result[1].key, "git.branch")
-    assert_eq(result[2].age_ms, 200)
+    assert_eq(value, "baz")
+    assert_eq(seen.key, "filters.based")
+    assert_eq(seen.cwd, "/tmp")
+    assert_eq(seen.env.PYVAR, "/foo/bar/baz")
+    assert_eq(seen.overrides["filters.based"], "env.PYVAR | basename")
   end)
 
-  test("status returns empty array when no data", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true }),
+  test("resolve defaults cwd to the context path", function()
+    local seen_cwd
+    local backend = make_backend({
+      resolve = function(_, key, cwd) seen_cwd = cwd; return { ok = true, data = nil } end,
     })
-    local c = Client.new(handle)
-    local result, err = c:status()
-    assert_nil(err)
-    assert_not_nil(result)
-    assert_eq(#result, 0)
+    local c = Client.new(backend)
+    c:set_context("/ctx")
+    c:resolve("myproject")
+    assert_eq(seen_cwd, "/ctx")
   end)
 
-  test("status returns nil+error on server error", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = false, error = "internal error" }),
-    })
-    local c = Client.new(handle)
-    local result, err = c:status()
-    assert_nil(result)
-    assert_not_nil(err)
+  test("resolve returns Error.unsupported when the backend omits it", function()
+    local value, err = Client.new(make_backend({})):resolve("x.y")
+    assert_nil(value)
+    assert_eq(err.kind, "unsupported")
   end)
 
-  test("status row exposes lifecycle fields as raw table fields", function()
-    local rows = {
-      {
-        provider          = "git",
-        kind              = { kind = "lifecycle", decay = 0, watches_files = true },
-        poll_interval_secs = 5,
-        keep_alive_polls  = 3,
-        fsevents_reinstate = false,
-      },
-    }
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = rows }),
+  suite("Client:eval")
+
+  test("eval forwards template, cwd, env, overrides", function()
+    local seen
+    local backend = make_backend({
+      eval = function(_, template, cwd, env, overrides)
+        seen = { template = template, cwd = cwd }
+        return { ok = true, data = "rendered" }
+      end,
     })
-    local c = Client.new(handle)
-    local result, err = c:status()
-    assert_nil(err)
-    assert_not_nil(result)
-    local git
-    for _, r in ipairs(result) do
-      if r.provider == "git" then git = r; break end
-    end
-    assert_not_nil(git)
-    assert_not_nil(git.kind)
-    assert_eq(git.kind.kind, "lifecycle")
-    assert_true(git.poll_interval_secs > 0)
-    assert_true(git.keep_alive_polls > 0)
+    local value = Client.new(backend):eval("{{ git.branch }}", { cwd = "/repo" })
+    assert_eq(value, "rendered")
+    assert_eq(seen.template, "{{ git.branch }}")
+    assert_eq(seen.cwd, "/repo")
   end)
 
   -- ── watch / WatchStream ───────────────────────────────────────────────────
 
   suite("Client:watch and WatchStream")
 
-  test("watch sends correct op and returns WatchStream", function()
-    local ws_handle = make_mock_handle({
-      json.encode({ ok = true, data = 42, age_ms = 5 }),
+  test("watch opens via the backend and returns a WatchStream", function()
+    local opened_with
+    local watch_handle = {
+      next_event = function(_, timeout_ms) return { data = 42, age_ms = 5, stale = false }, nil, "event" end,
+      cancel = function(_) end,
+      close = function(_) end,
+    }
+    local backend = make_backend({
+      watch_open = function(_, key, path) opened_with = { key = key, path = path }; return watch_handle end,
     })
-    -- Factory returns a fresh mock handle for the dedicated watch connection.
-    local factory_called = false
-    local factory = function()
-      factory_called = true
-      return ws_handle
-    end
-    local main_handle = make_mock_handle({})
-    local c = Client.new(main_handle, factory)
-    local stream, err = c:watch("fixture.count", "/repo")
+    local stream, err = Client.new(backend):watch("fixture.count", "/repo")
     assert_nil(err)
     assert_not_nil(stream)
-    assert_true(factory_called)
-    -- The watch request was sent on the dedicated handle.
-    local req = json.decode(ws_handle._sent[1])
-    assert_eq(req.op, "watch")
-    assert_eq(req.key, "fixture.count")
-    assert_eq(req.path, "/repo")
+    assert_eq(opened_with.key, "fixture.count")
+    assert_eq(opened_with.path, "/repo")
+
+    local ev = stream:next_event()
+    assert_eq(ev.data, 42)
+    assert_eq(ev.age_ms, 5)
   end)
 
-  test("WatchStream:next_event returns event table", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = 7, age_ms = 12, stale = false }),
-    })
-    local stream = WatchStream.new(handle)
-    local ev, err = stream:next_event()
-    assert_nil(err)
-    assert_not_nil(ev)
-    assert_eq(ev.data, 7)
-    assert_eq(ev.age_ms, 12)
-    assert_eq(ev.stale, false)
-  end)
-
-  test("WatchStream:next_event returns nil on server error", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = false, error = "watch closed" }),
-    })
-    local stream = WatchStream.new(handle)
+  test("WatchStream:next_event returns nil, Error on outcome=error", function()
+    local Error = require("beachcomber.error")
+    local watch_handle = {
+      next_event = function() return nil, Error.new("server_error", "watch closed"), "error" end,
+    }
+    local backend = make_backend({ watch_open = function() return watch_handle end })
+    local stream = Client.new(backend):watch("k")
     local ev, err = stream:next_event()
     assert_nil(ev)
     assert_not_nil(err)
   end)
 
-  test("WatchStream:next_event returns nil after close", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = 1, age_ms = 1 }),
-    })
-    local stream = WatchStream.new(handle)
-    stream:close()
-    local ev, _ = stream:next_event()
+  test("WatchStream:next_event returns nil (no error) on outcome=eof", function()
+    local watch_handle = { next_event = function() return nil, nil, "eof" end }
+    local backend = make_backend({ watch_open = function() return watch_handle end })
+    local stream = Client.new(backend):watch("k")
+    local ev, err = stream:next_event()
     assert_nil(ev)
+    assert_nil(err)
   end)
 
-  test("WatchStream:each iterates events", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = 1, age_ms = 1 }),
-      json.encode({ ok = true, data = 2, age_ms = 2 }),
-      -- no more responses -> nil from recv_line -> iteration ends
-    })
-    local stream = WatchStream.new(handle)
+  test("WatchStream:each iterates events until eof", function()
+    local calls = 0
+    local watch_handle = {
+      next_event = function()
+        calls = calls + 1
+        if calls <= 2 then return { data = calls }, nil, "event" end
+        return nil, nil, "eof"
+      end,
+    }
+    local backend = make_backend({ watch_open = function() return watch_handle end })
+    local stream = Client.new(backend):watch("k")
     local collected = {}
-    for ev in stream:each() do
-      collected[#collected + 1] = ev.data
-    end
+    for ev in stream:each() do collected[#collected + 1] = ev.data end
     assert_eq(#collected, 2)
     assert_eq(collected[1], 1)
     assert_eq(collected[2], 2)
   end)
 
-  test("WatchStream stale defaults to false", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = "x", age_ms = 0 }),
-    })
-    local stream = WatchStream.new(handle)
-    local ev = stream:next_event()
-    assert_not_nil(ev)
-    assert_eq(ev.stale, false)
-  end)
-
-  test("WatchStream stale propagates true", function()
-    local handle = make_mock_handle({
-      json.encode({ ok = true, data = "x", age_ms = 9999, stale = true }),
-    })
-    local stream = WatchStream.new(handle)
-    local ev = stream:next_event()
-    assert_not_nil(ev)
-    assert_true(ev.stale)
-  end)
-
-  -- ── socket_cli fallback rejects unsupported ops ───────────────────────────
-
-  suite("socket_cli: unsupported ops return ok=false")
-
-  -- Stub io.open so find_comb() succeeds.
-  local function with_comb_on_path(fn)
-    local saved = io.open
-    io.open = function(path, mode)
-      if path:match("/comb$") then
-        return { close = function() end }
-      end
-      return saved(path, mode)
-    end
-    local ok, err = pcall(fn)
-    io.open = saved
-    if not ok then error(err, 0) end
-  end
-
-  local function reload_socket_cli()
-    package.loaded["beachcomber.socket_cli"] = nil
-    return require("beachcomber.socket_cli")
-  end
-
-  local function cli_response_for(op, extra)
-    local req = { op = op }
-    if extra then
-      for k, v in pairs(extra) do req[k] = v end
-    end
-    local resp_line
-    with_comb_on_path(function()
-      local socket_cli = reload_socket_cli()
-      local handle = socket_cli.connect()
-      handle:send_line(json.encode(req) .. "\n")
-      resp_line = handle:recv_line()
-    end)
-    return json.decode(resp_line)
-  end
-
-  test("hello returns ok=false with clear error", function()
-    local resp = cli_response_for("hello")
-    assert_eq(resp.ok, false)
-    assert_not_nil(resp.error)
-    assert_true(resp.error:find("hello", 1, true) ~= nil or
-                resp.error:find("not supported", 1, true) ~= nil)
-  end)
-
-  test("put returns ok=false with clear error", function()
-    local resp = cli_response_for("put", { key = "x", data = { v = 1 } })
-    assert_eq(resp.ok, false)
-    assert_not_nil(resp.error)
-    assert_true(resp.error:find("not supported", 1, true) ~= nil)
-  end)
-
-  test("introspect returns ok=false with clear error", function()
-    local resp = cli_response_for("introspect", { subject = "daemon" })
-    assert_eq(resp.ok, false)
-    assert_not_nil(resp.error)
-    assert_true(resp.error:find("not supported", 1, true) ~= nil)
-  end)
-
-  test("watch returns ok=false with clear error", function()
-    local resp = cli_response_for("watch", { key = "git.branch" })
-    assert_eq(resp.ok, false)
-    assert_not_nil(resp.error)
-    assert_true(resp.error:find("not supported", 1, true) ~= nil)
+  test("watch returns Error.unsupported when the backend omits watch_open", function()
+    local stream, err = Client.new(make_backend({})):watch("k")
+    assert_nil(stream)
+    assert_eq(err.kind, "unsupported")
   end)
 end

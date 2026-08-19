@@ -9,10 +9,12 @@ source = {
 description = {
   summary  = "Lua client SDK for the beachcomber daemon",
   detailed = [[
-    Client library for the beachcomber Unix-socket daemon.
-    Provides synchronous get/refresh/list/status operations with automatic
-    backend detection: vim.uv inside Neovim, luasocket everywhere else.
-    Ships a minimal JSON encoder/decoder — no external JSON dependency.
+    Client library for the beachcomber daemon, binding libbeachcomber's C
+    ABI. LuaJIT calls the cdylib directly via `ffi` (~0.3ms/call); PUC Lua
+    falls back to shelling out to `comb` (~5ms/call, the sanctioned
+    fallback for interpreters with no ffi). Client:transport() reports
+    which one is active. Ships a minimal JSON encoder/decoder — no
+    external dependency either way.
   ]],
   homepage = "https://github.com/NavistAu/beachcomber",
   license  = "MIT",
@@ -20,18 +22,19 @@ description = {
 
 dependencies = {
   "lua >= 5.1",
-  -- luasocket is optional: only required outside Neovim
-  -- "luasocket >= 3.0",
 }
 
 build = {
   type    = "builtin",
   modules = {
-    ["libbeachcomber"]                  = "beachcomber/init.lua",
-    ["libbeachcomber.client"]           = "beachcomber/client.lua",
-    ["libbeachcomber.discovery"]        = "beachcomber/discovery.lua",
-    ["libbeachcomber.json"]             = "beachcomber/json.lua",
-    ["libbeachcomber.socket_luasocket"] = "beachcomber/socket_luasocket.lua",
-    ["libbeachcomber.socket_vim"]       = "beachcomber/socket_vim.lua",
+    ["libbeachcomber"]                     = "beachcomber/init.lua",
+    ["libbeachcomber.client"]              = "beachcomber/client.lua",
+    ["libbeachcomber.discovery"]           = "beachcomber/discovery.lua",
+    ["libbeachcomber.error"]               = "beachcomber/error.lua",
+    ["libbeachcomber.ffi"]                 = "beachcomber/ffi.lua",
+    ["libbeachcomber.ffi_backend"]         = "beachcomber/ffi_backend.lua",
+    ["libbeachcomber.subprocess_backend"]  = "beachcomber/subprocess_backend.lua",
+    ["libbeachcomber.json"]                = "beachcomber/json.lua",
+    ["libbeachcomber.watch_stream"]        = "beachcomber/watch_stream.lua",
   },
 }
