@@ -12,6 +12,18 @@ Thread.new do
   exit!(1)
 end
 
+# The binding loads libbeachcomber via $BEACHCOMBER_LIB / ../lib/ relative to
+# `comb` on $PATH / the platform default search path (see
+# Beachcomber::FFI). Default to the workspace's own debug build so `rake
+# test` works out of the box after `cargo build -p libbeachcomber-ffi`,
+# without overriding an explicit caller-provided value.
+unless ENV['BEACHCOMBER_LIB'] && !ENV['BEACHCOMBER_LIB'].empty?
+  repo_root   = File.expand_path('../../..', __dir__)
+  default_lib = File.join(repo_root, 'target', 'debug',
+                           RbConfig::CONFIG['host_os'] =~ /darwin/i ? 'libbeachcomber.dylib' : 'libbeachcomber.so')
+  ENV['BEACHCOMBER_LIB'] = default_lib if File.exist?(default_lib)
+end
+
 $LOAD_PATH.unshift File.expand_path('../lib', __dir__)
 require 'beachcomber'
 
@@ -59,9 +71,30 @@ class MockServer
     end
   end
 
+  # The shared client probes the daemon for version skew via a trailing
+  # `hello` exchange immediately after a connection's first request/response
+  # (Client: once per Client instance; Session: once per connection) — see
+  # `probe_skew_after` in libbeachcomber/src/lib.rs. It is not part of what
+  # any test is exercising, so it is answered here transparently: neither
+  # recorded in #requests nor allowed to consume a queued response meant for
+  # the caller's own next op.
   def handle(conn)
+    request_index = 0
+    first_op = nil
+    probe_handled = false
+
     conn.each_line do |line|
       req = JSON.parse(line.chomp)
+      request_index += 1
+
+      if request_index == 1
+        first_op = req['op']
+      elsif request_index == 2 && !probe_handled && first_op != 'hello' && req['op'] == 'hello'
+        probe_handled = true
+        conn.write(%({"ok":true,"data":{"protocol_version":"1","daemon_version":"0.0.0-mock"}}\n))
+        next
+      end
+
       @mutex.synchronize { @requests << req }
 
       resp = @queue.pop(true) rescue '{"ok":true}'
