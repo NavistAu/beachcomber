@@ -28,14 +28,14 @@ dependencies = {
 build = {
   type    = "builtin",
   modules = {
-    ["libbeachcomber"]                     = "beachcomber/init.lua",
-    ["libbeachcomber.client"]              = "beachcomber/client.lua",
-    ["libbeachcomber.discovery"]           = "beachcomber/discovery.lua",
-    ["libbeachcomber.error"]               = "beachcomber/error.lua",
-    ["libbeachcomber.ffi"]                 = "beachcomber/ffi.lua",
-    ["libbeachcomber.ffi_backend"]         = "beachcomber/ffi_backend.lua",
-    ["libbeachcomber.subprocess_backend"]  = "beachcomber/subprocess_backend.lua",
-    ["libbeachcomber.json"]                = "beachcomber/json.lua",
-    ["libbeachcomber.watch_stream"]        = "beachcomber/watch_stream.lua",
+    ["beachcomber"]                     = "beachcomber/init.lua",
+    ["beachcomber.client"]              = "beachcomber/client.lua",
+    ["beachcomber.discovery"]           = "beachcomber/discovery.lua",
+    ["beachcomber.error"]               = "beachcomber/error.lua",
+    ["beachcomber.ffi"]                 = "beachcomber/ffi.lua",
+    ["beachcomber.ffi_backend"]         = "beachcomber/ffi_backend.lua",
+    ["beachcomber.subprocess_backend"]  = "beachcomber/subprocess_backend.lua",
+    ["beachcomber.json"]                = "beachcomber/json.lua",
+    ["beachcomber.watch_stream"]        = "beachcomber/watch_stream.lua",
   },
 }

@@ -19,14 +19,14 @@ the SDK falls back to shelling out to `comb` (~5ms per call, against
 ## Installation
 
 ```sh
-npm install beachcomber
+npm install libbeachcomber
 npm install koffi   # optional — direct FFI; omit to use the comb subprocess fallback
 ```
 
 ## Quick Start
 
 ```typescript
-import { Client } from 'beachcomber';
+import { Client } from 'libbeachcomber';
 
 const client = new Client();
 console.log(client.transport()); // "ffi" or "subprocess"
