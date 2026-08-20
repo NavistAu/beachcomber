@@ -1,9 +1,9 @@
-//! # beachcomber-client
+//! # libbeachcomber
 //!
 //! A lightweight, synchronous client for the beachcomber (`comb`) shell state daemon.
 //!
 //! ```rust,no_run
-//! use beachcomber_client::{Client, CombResult};
+//! use libbeachcomber::{Client, CombResult};
 //!
 //! let client = Client::new();
 //! match client.get("git.branch", Some("/path/to/repo")) {
@@ -845,7 +845,7 @@ impl Client {
         Err(CombError::DaemonNotRunning)
     }
 
-    fn connect(&self, path: &PathBuf) -> Result<UnixStream, CombError> {
+    fn connect(&self, path: &Path) -> Result<UnixStream, CombError> {
         let stream = connect_with_retry(path).map_err(CombError::ConnectionFailed)?;
         stream.set_read_timeout(Some(self.config.timeout))?;
         stream.set_write_timeout(Some(self.config.timeout))?;
