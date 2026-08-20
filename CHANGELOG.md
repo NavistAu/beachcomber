@@ -4,34 +4,19 @@ All notable changes to beachcomber will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-08-20
+
+The client-unification cycle: the shared Rust client core is exposed as a C ABI,
+all six SDKs are rebuilt as thin bindings over it, and the singleton hardening
+work (orphan reaping, poll-guaranteed self-supervision, watch and reaper
+self-tests) ships alongside.
 
 ### Added
 
-- **`libbeachcomber` C ABI (`libbeachcomber.{so,dylib}`).** The shared Rust client (protocol, JSON mapping, client-side field resolution) is now exposed as a C-ABI cdylib built by the new `libbeachcomber-ffi` crate and shipped beside `comb` in every release artifact (tarball, deb, rpm, Homebrew), with a cbindgen-generated `beachcomber.h` kept fresh by a CI check. 18 `bc_*` entry points cover lifecycle, all ops, client-side resolution (`bc_resolve`/`bc_eval` with caller-supplied cwd/env), sessions (busy-guarded), and watch (cancellable, five machine-readable outcomes). Every call returns a JSON envelope; panics are caught at the boundary.
+- **`libbeachcomber` C ABI (`libbeachcomber.{so,dylib}`).** The shared Rust client (protocol, JSON mapping, client-side field resolution) is now exposed as a C-ABI cdylib built by the new `libbeachcomber-ffi` crate and shipped beside `comb` in every release artifact (tarball, deb, rpm, Homebrew), with a cbindgen-generated `beachcomber.h` kept fresh by a CI check. 22 `bc_*` entry points cover lifecycle, all ops, client-side resolution (`bc_resolve`/`bc_eval` with caller-supplied cwd/env), sessions (busy-guarded), and watch (cancellable, five machine-readable outcomes). Every call returns a JSON envelope; panics are caught at the boundary.
 - **All six SDKs are now bindings over the shared library.** Python (`ctypes`), Ruby (`fiddle`), Go (`purego`, vendored), Lua (LuaJIT `ffi`; PUC Lua via a declared subprocess tier), Node (`koffi` optional peer dependency with a subprocess tier), and C (collapsed onto the generated header). Bindings discover the library via `$BEACHCOMBER_LIB` → `../lib` beside the resolved `comb` → the platform linker path, check all symbols at load, expose the daemon's error `kind` machine-readably, and report their transport where more than one exists. The SDKs gain client-side resolution for the first time.
 - **Version-skew detection.** The shared client compares its build identity against the daemon's on first connection per client/session; a mismatch is surfaced to callers and named (both versions) in subsequent errors, without failing ops.
 - **Cross-binding conformance: resolution + typed-mapping fixture groups.** The fixture format gains a `resolve` op with `virtual`/`env`/`cwd` inputs, plus mapping fixtures pinning the ambiguous JSON conversions (64-bit ints, whole-number floats, null, empty-vs-absent, depth boundary, embedded NUL). All six SDK conformance runners now run in CI against a built `comb`, enforce every documented expectation kind, fail loudly on unknown ones, and skip-not-pass what they don't implement. `scripts/conformance-all.sh` runs the whole gate locally.
-
-### Fixed
-
-- **`refresh`/`put_null`/`set_context` swallowed daemon rejections** in the CLI client path, returning success on `ok:false`.
-- **Conformance runners for Ruby, Node, Lua, and C could not run at all** (wrong daemon subcommand, ESM/CommonJS mismatch, `/tmp` chmod EPERM against the singleton lock, socket-file readiness probe); the C runner also read fixtures from the wrong checkout in git worktrees and truncated its own test payloads (whole-number floats, embedded NULs). The Go and C runners treated `age_ms=0` as absent.
-- **The Lua SDK misclassified empty JSON objects as arrays** after decode.
-
-### Changed
-
-- **BREAKING (wire): the server-rendered `text`/`sh` sub-protocol is removed.** `get` and `watch` no longer accept a `format` field; the daemon always answers NDJSON, and text/sh rendering happens client-side. The old sub-protocol could not represent values beginning `error:` (indistinguishable from failures) or containing blank lines (frame desync). A stale client sending `format` gets a normal JSON response. `comb get`/`comb watch -f text|sh` are unchanged for users — rendering moved, output didn't.
-- **The hand-written C SDK protocol implementation is deleted** (`beachcomber.c`, `json.c`) — the C SDK is now the generated ABI header plus build glue.
-- **`beachcomber-client/` is renamed `libbeachcomber/`**, matching its package name.
-
-### Known gaps
-
-- The Lua SDK cannot represent a JSON `null` nested inside an object (Lua `nil` semantics); tracked in the roadmap with a fix shape, reported as a named known-defect skip by its conformance runner.
-- Node without `koffi` and PUC Lua run a reduced subprocess tier (documented per binding; `transport()` reports which tier is active).
-
-### Added
-
 - **Orphan reaping.** The canonical daemon (bound socket equals its own env-free resolution) reaps orphaned `comb daemon` processes at startup and hourly: uid-owned daemons reparented to PID 1, on sockets nothing resolves, carrying neither `--exit-with-parent` nor the new `--no-reap` flag, and older than 60s. Live test daemons, attended foreground runs, and flagged supervised daemons are exempt. Closes the leak class where daemons on session-scoped or deleted-worktree sockets accumulated for weeks (`docs/canon/singleton.md` §"Orphan reaping").
 - **`comb daemon --no-reap`** — marks a deliberate, supervised, non-canonical daemon exempt from reaping.
 - **Poll-guaranteed self-supervision.** The daemon's binary self-watch gains a 5s mtime poll alongside the fs-event watch. An fs-event stream can be created without error and then deliver nothing (sandboxed CI hosts, a degraded `fseventsd`); with an event-only watch such daemons outlived every rebuild indefinitely. The poll bounds staleness at one interval regardless of backend health.
@@ -41,14 +26,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`refresh`/`put_null`/`set_context` swallowed daemon rejections** in the CLI client path, returning success on `ok:false`.
+- **Conformance runners for Ruby, Node, Lua, and C could not run at all** (wrong daemon subcommand, ESM/CommonJS mismatch, `/tmp` chmod EPERM against the singleton lock, socket-file readiness probe); the C runner also read fixtures from the wrong checkout in git worktrees and truncated its own test payloads (whole-number floats, embedded NULs). The Go and C runners treated `age_ms=0` as absent.
+- **The Lua SDK misclassified empty JSON objects as arrays** after decode.
 - **Failed-bind daemon lingered alive and ignored SIGTERM.** A daemon whose socket bind failed (e.g. path over the 104-byte `SUN_LEN` limit) logged the error but then blocked forever awaiting a scheduler that was never told to shut down, with no remaining observer for the signal handler's cancel token — only SIGKILL removed it. The server-error path now shuts the scheduler down and the process exits. `ensure_daemon` and `libbeachcomber` auto-start additionally reject over-long socket paths up front with the real cause instead of forking a doomed daemon and reporting a spawn timeout.
 - **Reap fratricide under `$BEACHCOMBER_SOCKET`.** The reaper role is now decided against the env-free resolution (config override → `/tmp/beachcomber-<uid>/sock`), ignoring `$BEACHCOMBER_SOCKET`. Previously a daemon auto-spawned under the env override resolved *itself* as canonical — as did the default-path daemon — and each classified the other as an unflagged orphan: mutual reaping on alternating sweeps. Auto-spawn (`ensure_daemon` in the CLI, `auto_start` in `libbeachcomber`) now also appends `--no-reap` when the spawn path was resolved from `$BEACHCOMBER_SOCKET`, so deliberate override daemons are spared without user action (`docs/canon/singleton.md` §"Who reaps", invariants 10/11). Corollary: an environment where every client uses an override socket runs no reaper.
 - **Reaped orphans left corpse socket files.** After a reaped orphan's confirmed death its socket and sibling pid files (`pid`, `daemon.pid`) are now removed. A corpse socket re-latched old existence-probing clients (`libbeachcomber` ≤0.1.1) into respawning a daemon on the dead path — the mechanism that kept one orphan path continuously resurrected for four months. Cleanup probes first and never unlinks a socket that is serving again (`docs/canon/singleton.md` §"Corpse cleanup", invariant 14). Sweep summaries and the `SweepReport` gain a `corpses_unlinked` count.
 - **Sandbox-blind orphan reaping (macOS).** The reaper's pid list now comes from `sysctl KERN_PROC_ALL` instead of libproc's `proc_listallpids`, which seatbelt sandbox profiles silently filter to the session's own processes (observed: 51 of 737 pids). A canonical daemon that happened to be respawned from a sandboxed client shell could never see — and therefore never reaped — orphan daemons from other sessions; the 2026-07-16 investigation found one such orphan surviving 19 hours across ~19 sweeps with clean logs.
+- **Orphan reaping was blind on Linux.** The `/proc` stat parse read the state field as the ppid, so every row failed to parse and the uid-owned process listing was always empty — the reaper enumerated nothing, and both `boundaries_proc_table` smoke tests failed on Linux CI. The parse now indexes the correct field.
+- **The published Lua rock could not load its own submodules.** The rockspec installed modules under a `libbeachcomber.*` namespace while the code requires `beachcomber.*`; the module keys now match the code (the LuaRocks package name is unchanged). The 0.7.0 rock has the same defect.
 
 ### Changed
 
+- **BREAKING (wire): the server-rendered `text`/`sh` sub-protocol is removed.** `get` and `watch` no longer accept a `format` field; the daemon always answers NDJSON, and text/sh rendering happens client-side. The old sub-protocol could not represent values beginning `error:` (indistinguishable from failures) or containing blank lines (frame desync). A stale client sending `format` gets a normal JSON response. `comb get`/`comb watch -f text|sh` are unchanged for users — rendering moved, output didn't.
+- **The hand-written C SDK protocol implementation is deleted** (`beachcomber.c`, `json.c`) — the C SDK is now the generated ABI header plus build glue.
+- **`beachcomber-client/` is renamed `libbeachcomber/`**, matching its package name.
 - **BREAKING: `$XDG_RUNTIME_DIR` no longer participates in socket path resolution.** Canonical resolution is now config override → `$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock`, in the daemon and all clients (CLI, `libbeachcomber`, and the C/Go/Lua/Node/Python/Ruby SDKs). Session-scoped environments (sandboxes, containers, per-session `XDG_RUNTIME_DIR` shims) previously resolved distinct socket paths and auto-spawned one daemon per session; singleton enforcement is per-socket-path, so the default must be a stable per-user path (see `docs/canon/singleton.md`). Environments that want a different placement (e.g. `/run/user/<uid>` on systemd) set `$BEACHCOMBER_SOCKET` or the config override. **Migration:** a daemon running on an old XDG-derived socket is unreachable by upgraded clients; the first client invocation spawns a daemon at the stable path, and the old daemon exits on binary replacement (self-supervision) or can be killed manually.
+
+### Known gaps
+
+- The Lua SDK cannot represent a JSON `null` nested inside an object (Lua `nil` semantics); tracked in the roadmap with a fix shape, reported as a named known-defect skip by its conformance runner.
+- Node without `koffi` and PUC Lua run a reduced subprocess tier (documented per binding; `transport()` reports which tier is active).
 
 ## [0.7.0] - 2026-06-23
 

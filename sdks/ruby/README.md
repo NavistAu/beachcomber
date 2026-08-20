@@ -10,7 +10,7 @@ Copy the `lib/` directory into your project or install as a gem:
 
 ```sh
 gem build libbeachcomber.gemspec
-gem install libbeachcomber-0.7.0.gem
+gem install libbeachcomber-0.8.0.gem
 ```
 
 ## Quick start
