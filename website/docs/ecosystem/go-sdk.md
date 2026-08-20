@@ -4,7 +4,7 @@ sidebar_position: 5
 
 # Go SDK
 
-Go client for the beachcomber shell-state daemon. Communicates over a Unix domain socket using newline-delimited JSON. Idiomatic Go with standard error returns and no external dependencies.
+Go client for the beachcomber shell-state daemon. A binding over the shared `libbeachcomber` C ABI, using [`purego`](https://github.com/ebitengine/purego) (vendored) for pure-Go dynamic library loading — no cgo, no wire-protocol code in this SDK. Idiomatic Go with standard error returns.
 
 ## Requirements
 

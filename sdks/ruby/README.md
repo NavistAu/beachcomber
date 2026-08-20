@@ -1,16 +1,16 @@
 # beachcomber Ruby SDK
 
-Ruby client for the [beachcomber](https://github.com/NavistAu/beachcomber) daemon. Communicates over a Unix domain socket using newline-delimited JSON.
+Ruby client for the [beachcomber](https://github.com/NavistAu/beachcomber) daemon. Binds via `fiddle` to the shared C library (`libbeachcomber.{so,dylib}`).
 
-**No external dependencies** — stdlib only (`socket`, `json`, `etc`). Ruby 3.0+.
+**No external dependencies** — stdlib only (`fiddle`, `json`, `etc`, `rbconfig`). Ruby 3.0+.
 
 ## Installation
 
 Copy the `lib/` directory into your project or install as a gem:
 
 ```sh
-gem build beachcomber.gemspec
-gem install beachcomber-0.1.0.gem
+gem build libbeachcomber.gemspec
+gem install libbeachcomber-0.7.0.gem
 ```
 
 ## Quick start

@@ -4,7 +4,7 @@ sidebar_position: 4
 
 # Node.js SDK
 
-Node.js/TypeScript client for the beachcomber shell state daemon. No external runtime dependencies — pure Node.js stdlib (`net`, `fs`, `os`, `path`). Published on [npm](https://www.npmjs.com/package/libbeachcomber).
+Node.js/TypeScript client for the beachcomber shell state daemon. A binding over the shared `libbeachcomber` C ABI, not a hand-rolled wire-protocol client: `koffi` (an optional peer dependency) gives direct FFI access to the native library when installed; without it, the SDK falls back to shelling out to `comb` (~5ms per call vs ~0.3ms via FFI). Published on [npm](https://www.npmjs.com/package/libbeachcomber).
 
 ## Requirements
 

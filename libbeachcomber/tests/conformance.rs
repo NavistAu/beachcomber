@@ -1,5 +1,5 @@
 // Conformance runner — drives tests/conformance/**/*.json against
-// beachcomber_client. See tests/conformance/README.md for fixture shape.
+// libbeachcomber. See tests/conformance/README.md for fixture shape.
 //
 // Each fixture spawns its own daemon for isolation. A fixture that
 // breaks any `expect` rule fails a Rust test bearing the fixture's `name`.

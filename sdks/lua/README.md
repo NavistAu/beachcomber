@@ -59,7 +59,7 @@ Either way: no external Lua dependency. The JSON encoder/decoder
 ### LuaRocks
 
 ```sh
-luarocks install --local beachcomber
+luarocks install --local libbeachcomber
 ```
 
 ### Manual (Neovim)

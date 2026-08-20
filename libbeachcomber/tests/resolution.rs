@@ -1,4 +1,4 @@
-//! Task 1.6: prove in-process resolution works through beachcomber-client's
+//! Task 1.6: prove in-process resolution works through libbeachcomber's
 //! PUBLIC API only — no daemon, no ambient `std::env`, no ambient cwd.
 //!
 //! Every `env`/`cwd` input below is data the test constructs itself and hands

@@ -2,27 +2,27 @@
 sidebar_position: 2
 ---
 
-# Rust SDK (`beachcomber-client`)
+# Rust SDK (`libbeachcomber`)
 
-The `beachcomber-client` crate provides a typed, synchronous Rust API with no tokio dependency. Published on [crates.io](https://crates.io/crates/beachcomber-client).
+The `libbeachcomber` crate provides a typed, synchronous Rust API with no tokio dependency. Published on [crates.io](https://crates.io/crates/libbeachcomber).
 
 ## Installation
 
 ```toml
 [dependencies]
-beachcomber-client = "0.1"
+libbeachcomber = "0.8"
 ```
 
 Or with cargo-add:
 
 ```sh
-cargo add beachcomber-client
+cargo add libbeachcomber
 ```
 
 ## Quick start
 
 ```rust
-use beachcomber_client::{Client, CombResult};
+use libbeachcomber::{Client, CombResult};
 
 let client = Client::new(); // auto-discovers socket, starts daemon if needed
 

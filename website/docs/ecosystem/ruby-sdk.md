@@ -4,7 +4,7 @@ sidebar_position: 7
 
 # Ruby SDK
 
-Ruby client for the beachcomber daemon. Communicates over a Unix domain socket using newline-delimited JSON. No external dependencies — stdlib only (`socket`, `json`, `etc`). Ruby 3.0+. Published on [RubyGems](https://rubygems.org/gems/libbeachcomber).
+Ruby client for the beachcomber daemon. Binds via `fiddle` to the shared C library (`libbeachcomber.{so,dylib}`) — no external dependencies, stdlib only (`fiddle`, `json`, `etc`, `rbconfig`). Ruby 3.0+. Published on [RubyGems](https://rubygems.org/gems/libbeachcomber).
 
 ## Installation
 

@@ -56,7 +56,7 @@ All versions before 1.0.0 are pre-release. Minor versions may include breaking c
 
 Each SDK follows its own language ecosystem versioning. SDK versions are independent of the daemon version, but SDK releases will document which daemon protocol version they target.
 
-### Rust Library Crate (`beachcomber-client`)
+### Rust Library Crate (`libbeachcomber`)
 
 Standard Rust API compatibility rules apply. Public API changes follow [the Cargo SemVer reference](https://doc.rust-lang.org/cargo/reference/semver.html).
 

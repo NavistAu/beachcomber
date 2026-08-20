@@ -21,7 +21,7 @@ If a section of the code looks like a half-wired state machine or a config key t
 
 - **Project:** beachcomber — a daemon that caches shell environment state
 - **Binary:** `comb` (not `beachcomber`)
-- **Crate:** `beachcomber` (workspace root) + `libbeachcomber` (client library)
+- **Crate:** `beachcomber` (workspace root) + `libbeachcomber` (client library) + `libbeachcomber-ffi` (C-ABI cdylib for the SDKs)
 - **Rust version:** pinned in `mise.toml` — use `mise install` to get it
 - **Platform:** macOS and Linux
 
@@ -93,7 +93,7 @@ Socket path resolution (daemon): config override → `$BEACHCOMBER_SOCKET` → `
 
 ## SDKs
 
-Client SDKs live in `sdks/` — one directory per language (C, Go, Lua, Node.js, Python, Ruby). Each is self-contained with its own test suite. All are stdlib-only (no external dependencies).
+Client SDKs live in `sdks/` — one directory per language (C, Go, Lua, Node.js, Python, Ruby). Each is self-contained with its own test suite. Each SDK binds the shared `libbeachcomber` C ABI (ctypes/fiddle/purego/LuaJIT-ffi/koffi). Python, Ruby, and C are stdlib-only. Go vendors `purego`. Node.js takes `koffi` as an optional peer dependency. Node and PUC-Lua (no `ffi`) have subprocess fallback tiers.
 
 The Rust client SDK is `libbeachcomber/` (workspace member).
 

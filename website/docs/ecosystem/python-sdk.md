@@ -9,7 +9,7 @@ Python client for the beachcomber (`comb`) shell-state daemon. Published on [PyP
 ## Requirements
 
 - Python 3.9+
-- No external dependencies (stdlib only)
+- No external dependencies (stdlib `ctypes` binds directly to the shared `libbeachcomber` C ABI — no subprocess, no wire-protocol code in this SDK)
 - A running `comb` daemon
 
 ## Installation
