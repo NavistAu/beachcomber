@@ -275,10 +275,12 @@ mod imp {
                 }
                 let stat = std::fs::read_to_string(e.path().join("stat")).ok()?;
                 // Fields after the comm, which is parenthesised and may contain
-                // spaces: split on the LAST ')' and index from there.
+                // spaces: split on the LAST ')' and index from there. The slice
+                // starts at field 3 overall (state), so overall field N is
+                // index N - 3.
                 let after_comm = &stat[stat.rfind(')')? + 2..];
                 let fields: Vec<&str> = after_comm.split_whitespace().collect();
-                let ppid: u32 = fields.first()?.parse().ok()?; // field 4 overall
+                let ppid: u32 = fields.get(1)?.parse().ok()?; // field 4 overall
                 let starttime_ticks: u64 = fields.get(19)?.parse().ok()?; // field 22 overall
                 let started_unix = boot_unix_secs + starttime_ticks / ticks_per_sec;
 
