@@ -129,8 +129,11 @@ fn release_targets(old: &str) -> Vec<Target> {
         rename: false,
     };
     vec![
-        t("Cargo.toml", 2),
-        t("Cargo.lock", 2),
+        // Root manifest: [workspace.package] version, [package] version, and
+        // the libbeachcomber path-dep pin. The lockfile carries beachcomber,
+        // libbeachcomber, and libbeachcomber-ffi (workspace-inherited).
+        t("Cargo.toml", 3),
+        t("Cargo.lock", 3),
         t("libbeachcomber/Cargo.toml", 1),
         t("sdks/node/package.json", 1),
         t("sdks/node/package-lock.json", 2),
@@ -467,15 +470,15 @@ mod tests {
         let t = release_targets("0.6.1");
         let by_path = |p: &str| t.iter().find(|x| x.path == p).unwrap().expected;
         assert_eq!(by_path("README.md"), 8);
-        assert_eq!(by_path("Cargo.lock"), 2);
+        assert_eq!(by_path("Cargo.lock"), 3);
         assert_eq!(by_path("sdks/node/package-lock.json"), 2);
         assert_eq!(
             by_path("sdks/lua/rockspec/libbeachcomber-0.6.1-1.rockspec"),
             2
         );
-        assert_eq!(by_path("Cargo.toml"), 2);
+        assert_eq!(by_path("Cargo.toml"), 3);
         // Total occurrences the tool will rewrite across the tree.
         let total: usize = t.iter().map(|x| x.expected).sum();
-        assert_eq!(total, 25);
+        assert_eq!(total, 27);
     }
 }
