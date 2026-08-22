@@ -849,21 +849,22 @@ impl Scheduler {
                                             let patterns = crate::provider::watch_patterns(
                                                 &sm.invalidation,
                                             );
-                                            if let Err(e) = fs_watcher.watch(&watch_path) {
-                                                warn!(
-                                                    "Failed to watch {:?}: {}",
-                                                    watch_path, e
-                                                );
-                                            } else {
-                                                watch_paths
-                                                    .entry(watch_path)
-                                                    .or_default()
-                                                    .push(Subscription {
-                                                        provider: provider.clone(),
-                                                        path: path.clone(),
-                                                        source: sm.name.clone(),
-                                                        patterns,
-                                                    });
+                                            let sub = Subscription {
+                                                provider: provider.clone(),
+                                                path: path.clone(),
+                                                source: sm.name.clone(),
+                                                patterns,
+                                            };
+                                            let (returned_watcher, registered) =
+                                                register_path_watch(
+                                                    fs_watcher,
+                                                    &mut watch_paths,
+                                                    watch_path.clone(),
+                                                    sub,
+                                                )
+                                                .await;
+                                            fs_watcher = returned_watcher;
+                                            if registered {
                                                 debug!(
                                                     "Demand: watching path {:?} for provider={} source={}",
                                                     path, provider, sm.name
@@ -876,16 +877,21 @@ impl Scheduler {
                                             // THIS instance's lifecycle key.
                                             if let Some(src) = self.registry.source(&provider, &sm.name) {
                                                 for file in src.watched_files(Some(path_str)) {
-                                                    if let Err(e) = fs_watcher.watch(&file) {
-                                                        warn!("Failed to watch file {:?}: {}", file, e);
-                                                    } else {
-                                                        watch_paths.entry(file).or_default().push(Subscription {
-                                                            provider: provider.clone(),
-                                                            path: path.clone(),
-                                                            source: sm.name.clone(),
-                                                            patterns: Vec::new(),
-                                                        });
-                                                    }
+                                                    let sub = Subscription {
+                                                        provider: provider.clone(),
+                                                        path: path.clone(),
+                                                        source: sm.name.clone(),
+                                                        patterns: Vec::new(),
+                                                    };
+                                                    let (returned_watcher, _) =
+                                                        register_path_watch(
+                                                            fs_watcher,
+                                                            &mut watch_paths,
+                                                            file,
+                                                            sub,
+                                                        )
+                                                        .await;
+                                                    fs_watcher = returned_watcher;
                                                 }
                                             }
                                         }
@@ -897,22 +903,20 @@ impl Scheduler {
                                                 crate::provider::watch_abs_paths(&sm.invalidation);
                                             for abs_path_str in &abs_paths {
                                                 let abs_path = PathBuf::from(abs_path_str);
-                                                if let Err(e) = fs_watcher.watch(&abs_path) {
-                                                    warn!(
-                                                        "Failed to watch abs_path {:?}: {}",
-                                                        abs_path, e
-                                                    );
-                                                } else {
-                                                    watch_paths
-                                                        .entry(abs_path)
-                                                        .or_default()
-                                                        .push(Subscription {
-                                                            provider: provider.clone(),
-                                                            path: None,
-                                                            source: sm.name.clone(),
-                                                            patterns: Vec::new(),
-                                                        });
-                                                }
+                                                let sub = Subscription {
+                                                    provider: provider.clone(),
+                                                    path: None,
+                                                    source: sm.name.clone(),
+                                                    patterns: Vec::new(),
+                                                };
+                                                let (returned_watcher, _) = register_path_watch(
+                                                    fs_watcher,
+                                                    &mut watch_paths,
+                                                    abs_path,
+                                                    sub,
+                                                )
+                                                .await;
+                                                fs_watcher = returned_watcher;
                                             }
                                         }
                                     }
@@ -1219,6 +1223,66 @@ impl Scheduler {
     }
 }
 
+/// Register a fs watch on `path` for `sub`, deduplicating the underlying
+/// kernel registration against already-tracked paths: multiple Sources
+/// subscribing to the same path (e.g. git's `refs` and `status` sources at
+/// the same repo root) share one kernel `watch()` call, keyed off
+/// `watch_paths` — the same map that already governs unwatch-on-last-drop
+/// in `drop_watches_for_key`, so registration and cleanup share one source
+/// of truth for "is this path currently watched".
+///
+/// When a kernel call is actually needed (first subscriber for `path`), it
+/// runs on the blocking thread pool via `spawn_blocking`: kernel FSEvents
+/// registration has been measured at 1-3s per call on a loaded host, and
+/// running it inline on the scheduler's async task blocks the worker thread
+/// it shares with other tasks (e.g. connection tasks writing already-computed
+/// responses) for that whole duration. `fs_watcher` is moved in and handed
+/// back so the caller's loop keeps ownership across the await point.
+///
+/// Gap semantics: between the moment this call is issued and the moment the
+/// kernel registration completes, no fs events for `path` are observed (the
+/// OS is not yet watching it) — the same gap that existed before this fix's
+/// spawn_blocking off-load, just no longer accompanied by a blocked
+/// scheduler task. A demand signal that arrives for a Source whose
+/// registration is still in flight is not lost: `on_demand` already
+/// recorded the lifecycle transition synchronously, and the scheduler's
+/// message loop processes one `QueryActivity` at a time, so no second
+/// registration attempt races this one for the same path.
+///
+/// Returns the `FsWatcher` plus whether the subscription was recorded —
+/// false only when a fresh kernel registration was required and failed.
+async fn register_path_watch(
+    fs_watcher: FsWatcher,
+    watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
+    path: PathBuf,
+    sub: Subscription,
+) -> (FsWatcher, bool) {
+    if let Some(subs) = watch_paths.get_mut(&path) {
+        subs.push(sub);
+        return (fs_watcher, true);
+    }
+
+    let path_for_call = path.clone();
+    let (fs_watcher, result) = tokio::task::spawn_blocking(move || {
+        let mut fs_watcher = fs_watcher;
+        let result = fs_watcher.watch(&path_for_call);
+        (fs_watcher, result)
+    })
+    .await
+    .expect("watch registration task panicked");
+
+    match result {
+        Ok(()) => {
+            watch_paths.insert(path, vec![sub]);
+            (fs_watcher, true)
+        }
+        Err(e) => {
+            warn!("Failed to watch {:?}: {}", path, e);
+            (fs_watcher, false)
+        }
+    }
+}
+
 /// Resolve affected lifecycle keys from a set of changed paths using watch_paths + patterns.
 fn resolve_keys_from_paths(
     changed_paths: &[PathBuf],
@@ -1265,6 +1329,53 @@ fn drop_watches_for_key(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    /// Pinning test for the watch-registration dedup fix: when multiple
+    /// Sources subscribe to the same path (e.g. git's `refs` and `status`
+    /// sources at the same repo root), the underlying kernel `watch()` call
+    /// must happen exactly once — not once per subscribing Source. Kernel
+    /// FSEvents registration costs 1-3s per call on a loaded host; calling
+    /// it redundantly once per source is what caused the scheduler-loop
+    /// stall this fix addresses.
+    #[tokio::test]
+    async fn register_path_watch_dedupes_kernel_registration_for_shared_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let (fs_watcher, _rx) =
+            crate::watcher::FsWatcher::new_polling(Duration::from_millis(50)).unwrap();
+        let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
+
+        let sub_refs = Subscription {
+            provider: "git".to_string(),
+            path: Some(dir.display().to_string()),
+            source: "refs".to_string(),
+            patterns: vec![".git".to_string()],
+        };
+        let sub_status = Subscription {
+            provider: "git".to_string(),
+            path: Some(dir.display().to_string()),
+            source: "status".to_string(),
+            patterns: vec![".git/index".to_string()],
+        };
+
+        let (fs_watcher, ok_a) =
+            register_path_watch(fs_watcher, &mut watch_paths, dir.clone(), sub_refs).await;
+        assert!(ok_a, "first subscriber's registration should succeed");
+        let (fs_watcher, ok_b) =
+            register_path_watch(fs_watcher, &mut watch_paths, dir.clone(), sub_status).await;
+        assert!(ok_b, "second subscriber's registration should succeed");
+
+        assert_eq!(
+            fs_watcher.watch_call_count(),
+            1,
+            "kernel watch() must be called once per path, not once per subscribing source"
+        );
+        assert_eq!(
+            watch_paths.get(&dir).unwrap().len(),
+            2,
+            "both subscriptions are recorded despite the single kernel registration"
+        );
+    }
 
     #[test]
     fn event_matches_pattern_component_equality() {

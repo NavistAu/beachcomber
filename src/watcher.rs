@@ -1,11 +1,18 @@
 use notify::{Config, Event, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 pub struct FsWatcher {
     watcher: Box<dyn Watcher + Send>,
+    /// Count of underlying kernel `watch()` registrations made by this
+    /// instance. Diagnostic/test seam for the scheduler's path-level
+    /// registration dedup (canon `provider_source.md` — the kernel watch
+    /// call need only happen once per path, not once per subscribing
+    /// Source).
+    watch_calls: AtomicUsize,
 }
 
 impl FsWatcher {
@@ -15,6 +22,7 @@ impl FsWatcher {
         Ok((
             Self {
                 watcher: Box::new(watcher),
+                watch_calls: AtomicUsize::new(0),
             },
             rx,
         ))
@@ -39,6 +47,7 @@ impl FsWatcher {
         Ok((
             Self {
                 watcher: Box::new(watcher),
+                watch_calls: AtomicUsize::new(0),
             },
             rx,
         ))
@@ -46,12 +55,19 @@ impl FsWatcher {
 
     pub fn watch(&mut self, path: &Path) -> notify::Result<()> {
         debug!("Watching: {:?}", path);
+        self.watch_calls.fetch_add(1, Ordering::Relaxed);
         self.watcher.watch(path, RecursiveMode::Recursive)
     }
 
     pub fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
         debug!("Unwatching: {:?}", path);
         self.watcher.unwatch(path)
+    }
+
+    /// Number of underlying kernel `watch()` registrations made so far.
+    /// Diagnostic/test seam — see the field doc on `watch_calls`.
+    pub fn watch_call_count(&self) -> usize {
+        self.watch_calls.load(Ordering::Relaxed)
     }
 }
 
@@ -97,6 +113,7 @@ impl FsWatcher {
         Ok((
             Self {
                 watcher: Box::new(watcher),
+                watch_calls: AtomicUsize::new(0),
             },
             rx,
         ))
