@@ -103,3 +103,76 @@ fn config_file_that_never_appears_never_restarts() {
         "no config file ever appeared; daemon must not restart"
     );
 }
+
+// ── conf.d coverage ──────────────────────────────────────────────────────
+
+#[test]
+fn conf_d_file_change_triggers_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    std::fs::write(&cfg, "[daemon]\n").unwrap();
+    let conf_d = tmp.path().join("conf.d");
+    std::fs::create_dir(&conf_d).unwrap();
+    let drop_in = conf_d.join("01-drop-in.toml");
+    std::fs::write(&drop_in, "[daemon]\nlog_level = \"debug\"\n").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    spawn_config_self_watch_with(cfg, Duration::from_millis(100), false, move || {
+        let _ = tx.send(());
+    });
+
+    std::thread::sleep(Duration::from_millis(50));
+    std::fs::write(&drop_in, "[daemon]\nlog_level = \"trace\"\n").unwrap();
+    touch_future(&drop_in);
+
+    rx.recv_timeout(Duration::from_secs(3))
+        .expect("conf.d drop-in change should trigger restart");
+}
+
+#[test]
+fn conf_d_invalid_edit_does_not_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    std::fs::write(&cfg, "[daemon]\n").unwrap();
+    let conf_d = tmp.path().join("conf.d");
+    std::fs::create_dir(&conf_d).unwrap();
+    let drop_in = conf_d.join("01-drop-in.toml");
+    std::fs::write(&drop_in, "[daemon]\nlog_level = \"debug\"\n").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    spawn_config_self_watch_with(cfg, Duration::from_millis(100), false, move || {
+        let _ = tx.send(());
+    });
+
+    std::thread::sleep(Duration::from_millis(50));
+    std::fs::write(&drop_in, "this is not [ valid toml").unwrap();
+    touch_future(&drop_in);
+
+    let result = rx.recv_timeout(Duration::from_millis(800));
+    assert!(
+        result.is_err(),
+        "daemon must not restart when a conf.d drop-in fails to parse"
+    );
+}
+
+#[test]
+fn new_file_appearing_in_conf_d_triggers_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    std::fs::write(&cfg, "[daemon]\n").unwrap();
+    let conf_d = tmp.path().join("conf.d");
+    std::fs::create_dir(&conf_d).unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    spawn_config_self_watch_with(cfg, Duration::from_millis(100), false, move || {
+        let _ = tx.send(());
+    });
+
+    std::thread::sleep(Duration::from_millis(50));
+    let new_file = conf_d.join("02-new.toml");
+    std::fs::write(&new_file, "[daemon]\nlog_level = \"warn\"\n").unwrap();
+    touch_future(&new_file);
+
+    rx.recv_timeout(Duration::from_secs(3))
+        .expect("a new conf.d file should trigger restart (file-count delta)");
+}

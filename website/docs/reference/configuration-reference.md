@@ -242,6 +242,38 @@ JSON metadata:
 }
 ```
 
+### Composition / conf.d
+
+Config can be split across multiple files using the `conf.d` convention —
+no `include =` directive needed. Any `*.toml` file placed in
+`~/.config/beachcomber/conf.d/` is composed onto `config.toml` automatically:
+
+```
+~/.config/beachcomber/
+├── config.toml
+└── conf.d/
+    ├── 10-scanline.toml
+    └── 20-overrides.toml
+```
+
+Composition rules:
+
+- Files in `conf.d/` are merged in **lexical filename order** (a numeric
+  prefix like `10-`, `20-` is a common way to control that order).
+- Each file is **deep-merged** onto the accumulated config: tables merge key
+  by key (a drop-in overriding one key of `[providers.x]` doesn't clobber the
+  rest of that block), while scalars and arrays are **last-wins** (the last
+  file to set a given key or array wins outright — arrays are replaced, not
+  concatenated).
+- `config.toml` itself is optional; `conf.d/*.toml` files compose fine with
+  no main file present.
+- A `conf.d` file that fails to parse is **skipped** (with a warning naming
+  the file) rather than blocking daemon startup — the rest of the composed
+  set still loads.
+- Changes to `config.toml` or any `conf.d/*.toml` file are picked up by the
+  daemon's config self-watch the same way: the daemon only restarts once the
+  *whole* composed set parses cleanly.
+
 ## Config field summary
 
 **`[daemon]` section:**
