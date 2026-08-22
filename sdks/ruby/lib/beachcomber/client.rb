@@ -224,11 +224,14 @@ module Beachcomber
     #   discovery applies when nil.
     # @param timeout [Numeric, nil] socket read/write timeout in seconds
     #   (default 0.1 / 100ms, matching the library's own default).
-    # @param autostart [Boolean] attempt to start the daemon if it isn't
-    #   running. Default false, matching this binding's pre-ABI behaviour;
-    #   pass true to opt into the library's autostart capability.
-    def initialize(socket_path: nil, timeout: DEFAULT_TIMEOUT, autostart: false)
-      options = { autostart: autostart }
+    # @param autostart [Boolean, nil] attempt to start the daemon if it isn't
+    #   running. When nil (the default) the shared library's default applies
+    #   (autostart on); pass false to disable. The library only autostarts
+    #   when the socket path is auto-discovered — never for an explicit
+    #   socket_path.
+    def initialize(socket_path: nil, timeout: DEFAULT_TIMEOUT, autostart: nil)
+      options = {}
+      options[:autostart] = autostart unless autostart.nil?
       options[:socket_path] = socket_path if socket_path
       options[:timeout_ms] = (timeout * 1000).round if timeout
 

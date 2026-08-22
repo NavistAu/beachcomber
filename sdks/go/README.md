@@ -16,11 +16,12 @@ callbacks into Go), so a cgo binding was never needed.
 ## Requirements
 
 - Go 1.21+
-- A running `comb` daemon — unlike some sibling SDKs, this one does **not**
-  autostart the daemon: `NewClient`/`NewClientWithPath` always pass
-  `autostart: false` to the C ABI, so a client whose daemon isn't already
-  running fails its first call with `ErrDaemonNotRunning` rather than
-  spawning one
+- A `comb` daemon — one is autostarted on demand when none is running
+  (the shared library's default; disable with
+  `NewClient(beachcomber.WithAutostart(false))`). Autostart applies only
+  to `NewClient`'s auto-discovered socket path: the library never
+  autostarts for an explicit path, so `NewClientWithPath` fails its
+  first call with `ErrDaemonNotRunning` when nothing serves that socket
 - `libbeachcomber.{so,dylib}` discoverable — see "Library discovery" below
 
 ## Installation

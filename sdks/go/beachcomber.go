@@ -190,36 +190,51 @@ type Client struct {
 	loadErr error   // set when the library failed to load; deferred to the first op
 }
 
+// Option customises client construction.
+type Option func(opts map[string]interface{})
+
+// WithAutostart sets whether the client forks a daemon when none is serving
+// the socket. When the option is omitted the shared library's default
+// applies (autostart on). Autostart only fires when the socket path is
+// auto-discovered ([NewClient]): the shared library never autostarts for an
+// explicit socket path, so this option is a no-op under [NewClientWithPath].
+func WithAutostart(enabled bool) Option {
+	return func(opts map[string]interface{}) { opts["autostart"] = enabled }
+}
+
 // NewClient returns a Client that auto-discovers the daemon socket path (the
 // resolution libbeachcomber itself performs — see docs/canon/singleton.md).
 // Unlike [NewClientWithPath] this may fail immediately: locating and
 // validating libbeachcomber happens here, and a broken install (missing
 // library, missing symbol) is reported now rather than deferred.
-func NewClient() (*Client, error) {
+func NewClient(options ...Option) (*Client, error) {
 	l, err := getLib()
 	if err != nil {
 		return nil, err
 	}
-	return newClientWithLib(l, "")
+	return newClientWithLib(l, "", options...)
 }
 
 // NewClientWithPath returns a Client that uses an explicit socket path.
 // Mirrors libbeachcomber's own BcClient construction contract: this never
 // fails from the caller's point of view. A library discovery/validation
 // failure is recorded and surfaced on the Client's first operation instead.
-func NewClientWithPath(socketPath string) *Client {
+func NewClientWithPath(socketPath string, options ...Option) *Client {
 	l, err := getLib()
 	if err != nil {
 		return &Client{loadErr: err}
 	}
-	c, _ := newClientWithLib(l, socketPath)
+	c, _ := newClientWithLib(l, socketPath, options...)
 	return c
 }
 
-func newClientWithLib(l *nativeLib, socketPath string) (*Client, error) {
-	opts := map[string]interface{}{"autostart": false}
+func newClientWithLib(l *nativeLib, socketPath string, options ...Option) (*Client, error) {
+	opts := map[string]interface{}{}
 	if socketPath != "" {
 		opts["socket_path"] = socketPath
+	}
+	for _, o := range options {
+		o(opts)
 	}
 	optsJSON, _ := json.Marshal(opts)
 	optsBuf := cBytes(string(optsJSON))
