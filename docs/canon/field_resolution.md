@@ -8,7 +8,7 @@
 
 | Term | Meaning |
 |---|---|
-| **Consumer query** | A request for `provider.field` (e.g. `aws.region`) issued by a shell through the CLI. |
+| **Consumer query** | A request for `provider.field` (e.g. `aws.region`). |
 | **Resolution** | Producing a typed value for a consumer query, client-side, from the cache + `env.*` + `cwd`. |
 | **Cache** | The daemon's store of values, keyed by `(provider, path, name)`. |
 | **Cached value** | A value held in the cache. Addressed in expressions as `cache.<provider>.<field>`, read at the resolved path. |
@@ -175,11 +175,11 @@ A resolved value keeps its natural type. `--format json` emits bool / number / s
 10. Value-phase env selection — the selector designates a value within a slot — publishes the whole set as a data provider keyed by variant; the client indexes it by the selector value; the daemon never reads the selector.
 11. Path-phase env selection — the selector designates a slot — resolves the selector to a path client-side; the daemon receives only that path as the cache coordinate, never the selector env var. Producing and watching the value at the path is the Source's concern (`provider_source.md`).
 12. A query may address any node of the value tree: a leaf resolves to a scalar, an interior node (a field whose value is an object, or a bare provider/namespace) to its subtree as an object. A consumer namespace's subtree is its evaluated virtual fields; a cached provider's, its cached fields. Addressing is independent of whether a node is cached or computed.
-13. Built-in value and path expressions are compiled into the CLI; configuration overrides them per provider/field.
+13. Built-in value and path expressions are built into the client; configuration overrides them per provider/field.
 
 ## Parameters
 
-This document defines no tunable runtime parameters. Per-field value expressions and per-provider path expressions are **configuration**, governed by the user-facing config documentation; their built-in defaults are compiled into the CLI.
+This document defines no tunable runtime parameters. Per-field value expressions and per-provider path expressions are **configuration**, governed by the user-facing config documentation; their built-in defaults are built into the client.
 
 ## Worked examples
 
@@ -325,7 +325,7 @@ Feature: Field resolution
 - **Cache state machine** — Active / Decay / Evicted: see [`cache-lifecycle.md`](./cache-lifecycle.md).
 - **Wire protocol / NDJSON encoding** — request/response shapes are protocol documentation, not this model.
 - **User-facing config file syntax** — how `[providers.<name>]`, `path`, and value-expression keys are written is governed by the user-facing config documentation.
-- **SDK behaviour** — SDKs are cache/socket clients; env-aware values are obtained by calling the `comb` CLI.
+- **SDK behaviour** — SDK API shapes and surfaces are SDK documentation, not this model. The resolution model itself binds every consumer, CLI and SDKs alike.
 
 ## See also
 

@@ -653,8 +653,8 @@ impl Scheduler {
         });
     }
 
-    /// Opt this scheduler into the startup watch self-test (canon singleton.md
-    /// §"Watch self-test"). The daemon path sets this; directly-constructed
+    /// Opt this scheduler into the startup watch self-test (canon
+    /// provider_source.md §"Watch backend health"). The daemon path sets this; directly-constructed
     /// schedulers (tests) default to assuming the native backend, exactly the
     /// pre-self-test behaviour, and skip the probe and its 500ms worst case.
     pub fn self_test_watch_backend(&mut self) {
@@ -663,8 +663,8 @@ impl Scheduler {
 
     pub async fn run(mut self) {
         // Provider file-watching starts on the kernel-native backend
-        // immediately; the watch self-test (canon singleton.md §"Watch
-        // self-test") runs concurrently rather than gating the loop — kernel
+        // immediately; the watch self-test (canon provider_source.md §"Watch
+        // backend health") runs concurrently rather than gating the loop — kernel
         // event delivery can take hundreds of ms even when healthy, and the
         // scheduler must serve demand from its first moment. If the self-test
         // fails, the loop swaps to the polling backend and re-registers every
@@ -951,7 +951,7 @@ impl Scheduler {
                     last_activity = Instant::now();
                 }
 
-                // Watch self-test verdict (canon singleton.md §"Watch self-test").
+                // Watch self-test verdict (canon provider_source.md §"Watch backend health").
                 // Failure swaps the live watcher for the polling backend and
                 // re-registers every watch path on it.
                 res = async { self_test_rx.as_mut().expect("guarded by is_some").await },

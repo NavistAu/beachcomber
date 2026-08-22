@@ -72,7 +72,7 @@ impl FsWatcher {
 }
 
 /// Which backend serves provider file-watching, decided once at daemon startup
-/// by the watch self-test (canon `singleton.md` §"Watch self-test").
+/// by the watch self-test (canon `provider_source.md` §"Watch backend health").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchBackend {
     /// Kernel-native (FSEvents / inotify) — the self-test confirmed delivery.

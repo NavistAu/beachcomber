@@ -2,7 +2,7 @@
 
 **Status:** canonical. Describes how at most one beachcomber daemon runs per user at any time, how startup detects existing instances, how a rebuilt binary triggers automatic restart, how the canonical daemon reaps orphaned daemons, and how clients tolerate the brief restart window. Tests must match this document; disagreements mean the code is wrong.
 
-**Scope:** the daemon-lifetime singleton property — startup contention, version-mismatch supersession, same-build serving-probe supersession, self-triggered restart on binary change, orphan reaping, watch self-test, client-side connect retry. Out-of-scope items at the end.
+**Scope:** the daemon-lifetime singleton property — startup contention, version-mismatch supersession, same-build serving-probe supersession, self-triggered restart on binary change, orphan reaping, client-side connect retry. Out-of-scope items at the end.
 
 ## Glossary
 
@@ -16,14 +16,11 @@
 | **Orphan** | A uid-owned `comb daemon` process that is not on the reaper's socket path, has been reparented to PID 1, carries neither `--exit-with-parent` nor `--no-reap`, and is older than the reap grace age. Orphans are unreachable dead weight: nothing resolves their socket, and nothing will ever supersede them. |
 | **Reaping** | The canonical daemon terminating orphans (SIGTERM, 1s grace, SIGKILL) — at startup and on an hourly sweep. |
 | **Reaper visibility self-test** | A probe verifying process enumeration plausibly spans the whole system: PID 1 (launchd/init) must appear in the raw enumeration. Failure means the daemon is confined (sandbox, `hidepid`) and can neither see nor police daemons outside its confinement; the degradation is surfaced, never silent. |
-| **Watch self-test** | A startup probe verifying the kernel fs-event backend actually delivers events. Failure flips provider watching to the polling backend. |
 | **PID file** | JSON record at `<socket-parent>/pid` written and held under exclusive `flock` by the running daemon. Released on graceful shutdown. |
 | **Build identity** | A SHA256 of the daemon binary file content, computed at startup. The canonical answer to "is the running daemon the same physical build as the one that just started?" |
 | **Human version** | A user-facing build label (e.g., `0.5.1` or `0.5.1+sha.abc12345.dirty`) emitted into the binary at compile time. Stored alongside build identity in the PID file but **not** used for singleton decisions. |
 | **Supersession** | The act of a starting daemon killing an existing daemon with a different build identity, then taking the lock itself. |
 | **Serving probe** | A fast `connect()` to the canonical socket used during same-build contention to decide whether the existing owner is actually serving. A serving owner is left alone; a non-serving owner (wedged between flock and bind, or with a deleted socket) is superseded after a short grace. |
-| **Self-supervision** | The running daemon watches its own binary file and its resolved config file — an fs-event watch as the fast path, and a guaranteed mtime poll as the backstop. On binary change, or on a config change that parses as valid, it gracefully shuts down so the next client invocation respawns it; a config change that fails to parse is logged and ignored, never restarted into. |
-| **Connect retry** | Each client (CLI + every SDK) retries a failed `connect()` three times with 250ms / 500ms / 1s backoff before surfacing the error. Covers the daemon-restart window. |
 
 ## Core model
 
@@ -92,17 +89,6 @@ The poll exists because fs-event backends can be silently non-functional or degr
 
 Immediately after the watch is registered, the daemon performs the same `binary_newer_than` check once against its own start time. If true (binary replaced between exec and watch arming), shutdown begins immediately. Catches the race window before the watch is live.
 
-### Watch self-test
-
-At startup, the daemon verifies that the kernel fs-event backend delivers events at all: it registers a watch on a private temp directory, touches a file inside it, and waits up to 2s for the corresponding event. The self-test runs concurrently with the scheduler loop — a failure verdict swaps the live watcher for the polling backend and re-registers every watch path — so the timeout adds no startup latency.
-
-- **Delivered** → provider file-watching uses the kernel-native backend (FSEvents / inotify).
-- **Not delivered** → provider file-watching uses the polling backend for the life of the process. The degradation is logged and surfaced by `comb check daemon` and `comb status`.
-
-The 2s timeout sits well above load-degraded delivery: healthy-idle delivery is ~10ms, but hundreds of ms under heavy filesystem load (parallel builds), and the timeout must not misclassify a loaded-but-healthy backend as dead.
-
-The test probes the capability, not the environment: detecting "am I sandboxed" is fragile and platform-specific, while "do events arrive" is exactly the property the watch subsystem depends on. Without this, a daemon whose stream delivers nothing serves watch-invalidated entries that silently never invalidate. The PID file schema is unchanged — watch health is in-process state exposed over the protocol, with no external consumer.
-
 ### Same-build serving probe
 
 When flock contention reveals an existing owner with the **same** `binary_hash`, the new daemon does not blindly exit. It probes the canonical socket with a fast `connect()`:
@@ -120,7 +106,7 @@ The singleton property is per-user, but enforcement through the flock alone is p
 
 `$BEACHCOMBER_SOCKET` is excluded because it is per-process: a daemon auto-spawned under the override resolves *itself* as canonical while the default-path daemon does too, and each would classify the other as an unflagged PPID-1 orphan — mutual reaping on alternating sweeps (fratricide). With env excluded, at most one daemon per uid (under one config) can ever hold the reaper role. The corollary is accepted and documented: an environment where *every* client is pointed at an override socket runs no reaper at all.
 
-**Env-override spawns are flagged.** When auto-spawn (`ensure_daemon` in the CLI, `auto_start` in `libbeachcomber`) resolves the socket path from `$BEACHCOMBER_SOCKET`, it appends `--no-reap` to the daemon it forks. A deliberate override daemon thereby expresses its supervised status without user action, and the reaping daemon's exemption rule 3 spares it. Spawns resolving from config or the default are not flagged.
+**Env-override spawns are flagged.** When auto-spawn (`ensure_daemon` in the CLI, `auto_start` in `libbeachcomber`) resolves the socket path from `$BEACHCOMBER_SOCKET`, it appends `--no-reap` to the daemon it forks. A deliberate override daemon thereby expresses its supervised status without user action, and the reaping daemon's exemption rule 3 spares it. Spawns resolving from config or the default are not flagged. Auto-spawn applies only when the socket path came from canonical resolution (config override, `$BEACHCOMBER_SOCKET`, or the default): a client handed an explicit per-client socket path never spawns a daemon there, and surfaces `DaemonNotRunning` when nothing serves it.
 
 **When.** Once on entering Running, then hourly.
 
@@ -144,7 +130,7 @@ The exemptions make deliberate side daemons expressible instead of heuristically
 
 Enumeration mechanisms can be silently confined: a seatbelt profile, a `hidepid` mount, or a future platform quirk can shrink the visible process table without any call failing. A confined reaper sweeps clean logs forever while orphans accumulate — exactly the failure the reaper exists to prevent, made invisible.
 
-The self-test probes the capability, not the environment (same doctrine as the watch self-test): **PID 1 must appear in the raw enumeration**. `launchd`/`init` always exists, is never the daemon's own descendant, and a view filtered to the daemon's session or namespace will not contain it. In a PID namespace (container), PID 1 is the namespace's own init and *is* visible — correctly reporting healthy, since reaping within the namespace is exactly the reaper's jurisdiction there.
+The self-test probes the capability, not the environment (same doctrine as the watch self-test in `provider_source.md`): **PID 1 must appear in the raw enumeration**. `launchd`/`init` always exists, is never the daemon's own descendant, and a view filtered to the daemon's session or namespace will not contain it. In a PID namespace (container), PID 1 is the namespace's own init and *is* visible — correctly reporting healthy, since reaping within the namespace is exactly the reaper's jurisdiction there.
 
 - **Evaluated** when the canonical daemon arms the reaper, and again on every sweep (the sweep already enumerates; the check is free).
 - **Visible** → reaper healthy; sweeps proceed normally.
@@ -156,7 +142,7 @@ A degraded verdict also implies the daemon itself is running confined (it was au
 
 ### Client connect retry
 
-Every client (CLI + Python/Go/Node/Ruby/C/Lua SDKs + `beachcomber-client`) retries `connect()` three times with backoffs `250ms / 500ms / 1000ms` (total worst-case ~1.75s) on `ECONNREFUSED` or `ENOENT`. Other errors surface immediately. Once a connection is established, mid-request errors are NOT retried.
+Every client rides through the brief no-daemon window during restart/supersession. A `connect()` that fails because nothing is serving the socket (`ECONNREFUSED`, `ENOENT`) is retried briefly with a bounded total wait — retry count and backoffs are Parameters, not contract. Any other connect error surfaces immediately. Once a connection is established, mid-request errors are NOT retried — there are no hidden replay semantics.
 
 ## Sequence diagrams
 
@@ -323,9 +309,8 @@ sequenceDiagram
 9. Connect retry only fires on initial `connect()` failure. Mid-request socket errors propagate immediately to the caller.
 10. Only the reaping daemon (bound socket == env-free resolution: config → default, ignoring `--socket` and `$BEACHCOMBER_SOCKET`) reaps. A side daemon never signals a process outside its own socket path's contention domain. Two daemons of one uid never reap each other.
 11. A reaped process is never: the reaper, a process on the reaper's socket path, a process with a live parent, a process carrying `--exit-with-parent` or `--no-reap`, or a process younger than the reap grace age. Auto-spawn appends `--no-reap` whenever the spawn path was resolved from `$BEACHCOMBER_SOCKET`.
-12. Provider file-watching is never silently dead: the watch self-test either confirms event delivery or flips to the polling backend, and the degradation is observable via `comb check daemon` and `comb status`.
-13. Reaper capability is never silently degraded: the visibility self-test (PID 1 present in raw enumeration) runs at arming and on every sweep, kill attempts denied by the OS are counted, and both are observable via `comb check daemon`, `comb status`, and introspect `reaper`. Every sweep leaves a log trace (summary at debug; reaps at info; failures at warn).
-14. Reaping leaves no corpse: after a reaped orphan's confirmed death, its socket and pid files are removed — unless the socket is serving again, which is never unlinked.
+12. Reaper capability is never silently degraded: the visibility self-test (PID 1 present in raw enumeration) runs at arming and on every sweep, kill attempts denied by the OS are counted, and both are observable via `comb check daemon`, `comb status`, and introspect `reaper`. Every sweep leaves a log trace (summary at debug; reaps at info; failures at warn).
+13. Reaping leaves no corpse: after a reaped orphan's confirmed death, its socket and pid files are removed — unless the socket is serving again, which is never unlinked.
 
 ## Parameters
 
@@ -340,10 +325,9 @@ sequenceDiagram
 | Acquire-after-supersession retry deadline | global | seconds | fixed at 2s |
 | Same-build serving-probe grace | global | seconds | fixed at 2s |
 | fs-watch debounce | global | milliseconds | fixed at 200ms |
-| Client connect retry count | per-SDK | retries | fixed at 3 |
-| Client connect retry backoffs | per-SDK | milliseconds | fixed at 250 / 500 / 1000 |
+| Client connect retry count | all clients | retries | fixed at 3 |
+| Client connect retry backoffs | all clients | milliseconds | fixed at 250 / 500 / 1000 |
 | Self-watch poll interval | global | seconds | fixed at 5s |
-| Watch self-test timeout | global | seconds | fixed at 2s |
 | Reap sweep period | global | duration | fixed at 1h (plus once at startup) |
 | Reap grace age | global | seconds | fixed at 60s |
 | Reaper visibility probe | global | predicate | fixed: PID 1 present in raw enumeration |
@@ -592,10 +576,6 @@ Feature: Daemon singleton
     When the binary at current_exe is replaced
     Then within 5s + drain time the daemon exits gracefully
 
-  Scenario: Watch self-test failure flips provider watching to polling
-    Given a daemon starting where fs events do not deliver within 2s
-    Then provider file-watching uses the polling backend
-    And the degradation is reported by comb check daemon
 ```
 
 ## Out of scope

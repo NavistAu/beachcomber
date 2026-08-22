@@ -270,9 +270,11 @@ Composition rules:
 - A `conf.d` file that fails to parse is **skipped** (with a warning naming
   the file) rather than blocking daemon startup — the rest of the composed
   set still loads.
-- Changes to `config.toml` or any `conf.d/*.toml` file are picked up by the
-  daemon's config self-watch the same way: the daemon only restarts once the
-  *whole* composed set parses cleanly.
+- Config changes take effect via **automatic daemon restart** — no manual
+  restart, no in-place reload. Changes to `config.toml` or any `conf.d/*.toml`
+  file (including files added or removed) trigger the daemon's config
+  self-watch, which restarts only once the *whole* composed set parses
+  cleanly; an edit that doesn't parse is ignored with a logged warning.
 
 ## Config field summary
 

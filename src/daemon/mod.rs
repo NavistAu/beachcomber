@@ -114,7 +114,7 @@ async fn run_daemon_with_cancel(
         watchers.clone(),
     );
     // Daemon path: probe fs-event delivery before trusting the native backend
-    // (canon singleton.md §"Watch self-test").
+    // (canon provider_source.md §"Watch backend health").
     scheduler.self_test_watch_backend();
     let heartbeat = scheduler.heartbeat();
 

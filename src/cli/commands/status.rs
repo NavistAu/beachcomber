@@ -69,7 +69,8 @@ pub fn run_status(
             let out = render_preset(preset, &rows, &opts);
             print!("{out}");
 
-            // Canon singleton.md invariants 12 + 13: watch and reaper
+            // Canon provider_source.md invariant 16 and singleton.md
+            // invariant 12: watch and reaper
             // degradation are observable via `comb status`. Human
             // preset only, and on stderr so machine formats stay
             // parseable.

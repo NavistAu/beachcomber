@@ -1,8 +1,10 @@
 //! Config-file self-watch: mirrors the binary self-watch
 //! (`crate::singleton::spawn_binary_self_watch_with`) — an fs-event watch as
 //! the fast path, a guaranteed mtime poll as the backstop, 200ms debounce —
-//! but gates the restart on the new file actually parsing. See canon
-//! `docs/canon/singleton.md` §"Self-supervision".
+//! but gates the restart on the new file actually parsing. Config
+//! self-supervision is deliberately not part of the singleton canon (that spec
+//! covers binary freshness); the user-facing contract lives in the website
+//! configuration reference.
 //!
 //! The watch targets `Config::config_path()`: the deterministic XDG
 //! location, not gated on the file existing at daemon startup. Because the

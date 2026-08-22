@@ -1075,7 +1075,7 @@ fn handle_introspect_daemon(
         }));
     }
 
-    // Canon singleton.md invariant 12: watch degradation is observable.
+    // Canon provider_source.md invariant 16: watch degradation is observable.
     if watch_backend == "native" {
         verdicts.push(serde_json::json!({
             "level": "PASS",
