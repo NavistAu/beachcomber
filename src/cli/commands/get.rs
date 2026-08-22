@@ -30,6 +30,19 @@ fn path_for_key(key: &str, config: &Config) -> Option<Option<String>> {
     Some(libbeachcomber::path_expr::evaluate_path(&expr, &cwd, &env))
 }
 
+/// Returns true if `path` is exactly the process's current directory, i.e. the
+/// implicit default `main.rs` fills in for `get` when the user passed neither
+/// `--path` nor a trailing positional path. Used to scope a global-fallback
+/// retry to that implicit case only — an explicit `--path` pointing elsewhere
+/// is a deliberate scoping request and must not be papered over by a global
+/// (unscoped) hit.
+fn is_ambient_cwd_path(path: Option<&str>) -> bool {
+    let Some(p) = path else { return false };
+    std::env::current_dir()
+        .map(|cwd| cwd.to_string_lossy() == p)
+        .unwrap_or(false)
+}
+
 /// Fetch the daemon-backed refs a virtual field's expression needs.
 ///
 /// Cascade semantics (non-strict undefined): a ref that fails to fetch or is
@@ -756,6 +769,24 @@ pub fn run_get(
                             response.error.as_deref().unwrap_or("unknown error")
                         );
                         any_error = true;
+                    } else if response.data.is_none() && is_ambient_cwd_path(path) {
+                        // The session's path context is the CLI's implicit CWD default
+                        // (no --path was given), which scopes the lookup even for
+                        // `put`-created virtual entries that were stored globally (no
+                        // --path). Retry once on a fresh, context-free connection so
+                        // the global entry is still reachable, matching what a raw
+                        // request with no path field would find.
+                        let fallback = crate::client::Client::new(socket_path.clone())
+                            .connect()
+                            .and_then(|mut s| s.get_with_flags(key, None, force, wait));
+                        match fallback {
+                            Ok(fb) if fb.ok && fb.data.is_some() => {
+                                responses.push((key.clone(), fb));
+                            }
+                            _ => {
+                                responses.push((key.clone(), response));
+                            }
+                        }
                     } else {
                         responses.push((key.clone(), response));
                     }
@@ -773,7 +804,7 @@ pub fn run_get(
 
     // Single-key client-side rendering: preserve the original single-key output shape.
     if keys.len() == 1 {
-        if let Some((_, response)) = responses.first() {
+        if let Some((key, response)) = responses.first() {
             if let Some(data) = &response.data {
                 match &format {
                     OutputFormat::Json => {
@@ -801,6 +832,7 @@ pub fn run_get(
                     _ => unreachable!(),
                 }
             } else {
+                eprintln!("Error querying {key}: no data (cache miss)");
                 any_error = true;
             }
         }
