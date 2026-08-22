@@ -22,7 +22,7 @@
 | **Human version** | A user-facing build label (e.g., `0.5.1` or `0.5.1+sha.abc12345.dirty`) emitted into the binary at compile time. Stored alongside build identity in the PID file but **not** used for singleton decisions. |
 | **Supersession** | The act of a starting daemon killing an existing daemon with a different build identity, then taking the lock itself. |
 | **Serving probe** | A fast `connect()` to the canonical socket used during same-build contention to decide whether the existing owner is actually serving. A serving owner is left alone; a non-serving owner (wedged between flock and bind, or with a deleted socket) is superseded after a short grace. |
-| **Self-supervision** | The running daemon watches its own binary file — an fs-event watch as the fast path, and a guaranteed mtime poll as the backstop. On change, it gracefully shuts down so the next client invocation respawns the new binary. |
+| **Self-supervision** | The running daemon watches its own binary file and its resolved config file — an fs-event watch as the fast path, and a guaranteed mtime poll as the backstop. On binary change, or on a config change that parses as valid, it gracefully shuts down so the next client invocation respawns it; a config change that fails to parse is logged and ignored, never restarted into. |
 | **Connect retry** | Each client (CLI + every SDK) retries a failed `connect()` three times with 250ms / 500ms / 1s backoff before surfacing the error. Covers the daemon-restart window. |
 
 ## Core model
