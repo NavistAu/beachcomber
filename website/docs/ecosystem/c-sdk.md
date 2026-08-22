@@ -4,22 +4,33 @@ sidebar_position: 8
 
 # C SDK
 
-A minimal C client library for the beachcomber shell-state daemon. Uses only POSIX (sockets, unistd) and the C standard library — no external dependencies.
+A thin C binding for the beachcomber (`comb`) shell-state daemon, built
+directly on `libbeachcomber`'s C ABI (`bc_*`). Unlike the other SDKs, this
+one is not a dynamically-loaded binding — it links against the shared
+library at build time and resolves it through the platform linker and
+run-path, the same way any C program consumes a shared library.
+
+The SDK itself is just `beachcomber.h` — a cbindgen-generated header — plus
+build glue (a `Makefile` and a `libbeachcomber.pc.in` pkg-config template).
+There is no hand-written client code: every `bc_*` call is a direct entry
+point into `libbeachcomber-ffi`, the same C ABI every other SDK binds
+through `ctypes`/`fiddle`/FFI. No external dependencies beyond the shared
+library and the C standard library.
 
 ## Installing
 
 ### Debian/Ubuntu
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-dev_0.6.0_amd64.deb
-sudo dpkg -i libbeachcomber-dev_0.6.0_amd64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-dev_0.8.0_amd64.deb
+sudo dpkg -i libbeachcomber-dev_0.8.0_amd64.deb
 ```
 
 ### Fedora/RHEL
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-devel-0.6.0-1.x86_64.rpm
-sudo rpm -i libbeachcomber-devel-0.6.0-1.x86_64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-devel-0.8.0-1.x86_64.rpm
+sudo rpm -i libbeachcomber-devel-0.8.0-1.x86_64.rpm
 ```
 
 ### Arch Linux (AUR)
@@ -32,13 +43,17 @@ yay -S libbeachcomber
 
 Available as a source tarball in [GitHub Releases](https://github.com/NavistAu/beachcomber/releases), or build from the repo:
 
-## Building
-
 ```sh
-make          # builds libbeachcomber.dylib (macOS) or libbeachcomber.so (Linux) + libbeachcomber.a
-make test     # builds and runs the test suite
-make install  # installs to /usr/local (override with PREFIX=...)
+cd sdks/c
+make               # builds libbeachcomber (via `cargo build -p libbeachcomber-ffi`) if needed,
+                    # then the conformance runner
+make test          # builds and runs the conformance runner against a real daemon
+make install       # installs beachcomber.h + libbeachcomber.pc to /usr/local (override with PREFIX=...)
 ```
+
+`make` builds `libbeachcomber` itself from the workspace root if it isn't
+already present at `../../target/debug`. Override `BC_LIB_DIR` /
+`BC_INCLUDE_DIR` to build against an installed copy instead.
 
 ## Quick start
 
@@ -47,61 +62,25 @@ make install  # installs to /usr/local (override with PREFIX=...)
 #include "beachcomber.h"
 
 int main(void) {
-    comb_client_t *c = comb_connect();
-    if (!c) {
-        fprintf(stderr, "beachcomber daemon not running\n");
-        return 1;
-    }
+    BcClient *c = bc_client_new(NULL);   /* default socket discovery */
 
-    /* Read a single scalar field */
-    comb_result_t *r = comb_get(c, "git.branch", "/path/to/repo");
-    if (comb_result_ok(r) && comb_result_is_hit(r)) {
-        printf("branch: %s (age %llums)\n",
-               comb_result_get_str(r, NULL),
-               (unsigned long long)comb_result_age_ms(r));
-    } else if (comb_result_ok(r)) {
-        printf("cache miss — try again shortly\n");
-    } else {
-        printf("error: %s\n", comb_result_error(r));
-    }
-    comb_result_free(r);
+    char *r = bc_get(c, "git.branch", "/path/to/repo", 0);
+    printf("%s\n", r);
+    /* {"ok":true,"data":{"data":"main","age_ms":12,"stale":false}}
+     * or {"ok":true,"data":{"data":null,"age_ms":null,"stale":null}} on miss
+     * or {"ok":false,"error":{"kind":"...","message":"..."}} on error */
+    bc_string_free(r);
 
-    /* Read a full provider object */
-    r = comb_get(c, "git", "/path/to/repo");
-    if (comb_result_ok(r) && comb_result_is_hit(r)) {
-        int64_t staged = 0;
-        int dirty = 0;
-        comb_result_get_int(r, "staged", &staged);
-        comb_result_get_bool(r, "dirty", &dirty);
-        printf("staged=%lld dirty=%d\n", (long long)staged, dirty);
-    }
-    comb_result_free(r);
-
-    /* Set a connection-level path context */
-    comb_set_context(c, "/path/to/repo");
-    r = comb_get(c, "git.branch", NULL);   /* uses context path */
-    comb_result_free(r);
-
-    /* Force recomputation */
-    comb_refresh(c, "git", "/path/to/repo");
-
-    /* Daemon status — iterate typed cache rows */
-    comb_cache_row_t *rows = NULL;
-    size_t n = 0;
-    if (comb_status(c, &rows, &n) == 0) {
-        for (size_t i = 0; i < n; i++) {
-            printf("%s age=%llums stale=%d\n",
-                   rows[i].provider,
-                   (unsigned long long)rows[i].age_ms,
-                   (int)rows[i].stale);
-        }
-        comb_free_cache_rows(rows, n);
-    }
-
-    comb_disconnect(c);
+    bc_client_free(c);
     return 0;
 }
 ```
+
+Every `bc_*` call returns a caller-owned, NUL-terminated `char *` JSON
+string. There is no typed C struct layer over it — parse the envelope with
+your own JSON library. This SDK does not ship one; free every returned
+string with `bc_string_free()` (except `bc_version()`, which is static and
+must never be freed).
 
 Compile with pkg-config (recommended):
 
@@ -112,60 +91,143 @@ cc -o myapp myapp.c $(pkg-config --cflags --libs libbeachcomber)
 Or specify paths directly:
 
 ```sh
-cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber
+cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber \
+   -Wl,-rpath,/usr/local/lib
 ```
+
+## The JSON envelope
+
+Every operation returns one of two shapes:
+
+```json
+{"ok": true, "data": <op result>}
+{"ok": false, "error": {"kind": "...", "message": "..."}}
+```
+
+`bc_get` / `bc_session_get` nest the read itself one level deeper —
+`data.data` is the value (`null` on a cache miss), alongside `data.age_ms`
+and `data.stale`.
+
+`bc_watch_next` uses a five-outcome shape instead of the plain `data` field,
+so a binding can tell the cases apart without string matching:
+
+```json
+{"ok": true, "outcome": "event", "data": <event>}
+{"ok": true, "outcome": "timeout"}
+{"ok": true, "outcome": "eof"}
+{"ok": true, "outcome": "cancelled"}
+{"ok": false, "error": {"kind": "...", "message": "..."}}
+```
+
+### Error kinds
+
+| `error.kind` | Meaning |
+|---|---|
+| `daemon_not_running` | Cannot connect to the socket |
+| `connection_failed` | Connection attempt failed |
+| `io_error` | Socket read/write failure |
+| `parse_error` | Malformed response from the daemon |
+| `server_error` | Daemon returned `ok: false` |
+| `timeout` | The call exceeded its timeout |
+| `bad_flags` | An unrecognised bit was set in a `flags` argument |
+| `busy` | The handle's connection is already in use by another caller |
+| `version_skew` | The daemon's reported version doesn't match this library's |
+| `panic` | The call panicked internally; caught at the FFI boundary |
 
 ## API reference
 
-### Connection
+### Version
 
 | Function | Description |
 |---|---|
-| `comb_connect()` | Auto-discover socket and connect |
-| `comb_connect_path(path)` | Connect to an explicit socket path |
-| `comb_disconnect(c)` | Close connection and free client |
+| `const char *bc_version(void)` | Library build version. Static string — never pass to `bc_string_free`. |
+
+### Client lifecycle
+
+| Function | Description |
+|---|---|
+| `BcClient *bc_client_new(const char *options_json)` | Create a client handle. `options_json` is nullable; recognised keys are `socket_path`, `timeout_ms`, `autostart`. Never returns NULL. |
+| `void bc_client_free(BcClient *client)` | Free a client handle. Null-safe. |
 
 ### Operations
 
+`BcClient` operations reconnect per call.
+
 | Function | Description |
 |---|---|
-| `comb_get(c, key, path)` | Read a cached value (`path` may be NULL) |
-| `comb_refresh(c, key, path)` | Force recomputation |
-| `comb_set_context(c, path)` | Set default path for this connection |
-| `comb_status(c, rows_out, n_out)` | Return typed cache rows; caller frees with `comb_free_cache_rows()` |
-| `comb_hello(c, out)` | Handshake — fills a `comb_hello_info_t` with version info |
-| `comb_put(c, key, data, ttl, path)` | Write a value into the cache as a virtual provider |
-| `comb_put_null(c, key, path)` | Clear a virtual provider entry |
-| `comb_introspect(c, subject, dur_secs)` | Inspect a daemon subsystem (returns raw result) |
-| `comb_introspect_daemon(c, out)` | Inspect daemon health into a typed `comb_daemon_health_t` |
-| `comb_watch(c, key, path)` | Subscribe to live cache updates; returns a `comb_watch_handle_t *` |
-| `comb_watch_next(handle, event, timeout_ms)` | Receive the next watch event into `comb_watch_event_t` |
-| `comb_watch_free(handle)` | Release a watch handle and close the connection |
+| `char *bc_get(BcClient *c, const char *key, const char *path, uint32_t flags)` | Read a cached value. `path` is nullable. `flags` is a bitmask of `BC_GET_FORCE` / `BC_GET_WAIT`; any other bit yields `kind: "bad_flags"`. |
+| `char *bc_put(BcClient *c, const char *key, const char *json_data, const char *ttl, const char *path)` | Write a value into the cache as a virtual provider. `json_data` must parse as JSON; `ttl` and `path` are nullable. |
+| `char *bc_put_null(BcClient *c, const char *key, const char *path)` | Clear the cached entry for a virtual provider key. `path` is nullable. |
+| `char *bc_refresh(BcClient *c, const char *key, const char *path)` | Force recomputation of a provider. `path` is nullable. |
+| `char *bc_status(BcClient *c)` | List all cache entries currently held by the daemon. |
+| `char *bc_introspect(BcClient *c, const char *subject, const char *options_json)` | Inspect a daemon subsystem. `options_json`'s only recognised key, `duration_secs`, is consulted by the `procs` subject only. |
+| `char *bc_hello(BcClient *c)` | Handshake — daemon and protocol version info. |
 
-### Result accessors
+### Resolve / eval
 
-All operations that return data return a `comb_result_t *`. Always free it with `comb_result_free()` when done.
+Client-side field resolution — evaluated in-process, never touching the
+daemon except to fetch `cache.*` refs the expression itself names.
 
-| Function | Returns |
+| Function | Description |
 |---|---|
-| `comb_result_ok(r)` | 1 if server returned `ok:true` |
-| `comb_result_is_hit(r)` | 1 if data was present (cache hit) |
-| `comb_result_error(r)` | Error string, or NULL |
-| `comb_result_get_str(r, field)` | String value (field=NULL for scalar results) |
-| `comb_result_get_int(r, field, &out)` | Integer value; returns 1 on success |
-| `comb_result_get_float(r, field, &out)` | Float value; returns 1 on success |
-| `comb_result_get_bool(r, field, &out)` | Boolean (0/1); returns 1 on success |
-| `comb_result_age_ms(r)` | Cache age in milliseconds |
-| `comb_result_stale(r)` | 1 if data is stale |
-| `comb_result_raw_json(r)` | Full raw JSON response string |
-| `comb_result_free(r)` | Free the result (safe to call with NULL) |
+| `char *bc_resolve(BcClient *c, const char *key, const char *cwd, const char *env_json, const char *overrides_json)` | Resolve a virtual field (`key = "provider.field"`) or a path expression (`key` = a bare provider name), exactly as `comb get`'s resolution layer does. `cwd` is required. `env_json` / `overrides_json` are nullable. |
+| `char *bc_eval(BcClient *c, const char *template_str, const char *cwd, const char *env_json, const char *overrides_json)` | Evaluate an arbitrary expression string with the same evaluator, for an expression that need not be registered anywhere. `cwd` is required. |
+
+### Sessions
+
+`BcSession` holds one persistent connection — use it when a `set_context`
+needs to be visible to later calls. The connection is guarded by an
+internal mutex: a concurrent caller gets `kind: "busy"` rather than blocking.
+
+| Function | Description |
+|---|---|
+| `BcSession *bc_session_open(BcClient *client)` | Open a persistent session on `client`'s connection. Never returns NULL. |
+| `void bc_session_close(BcSession *session)` | Close and free a session handle. Null-safe. |
+| `char *bc_session_get(BcSession *s, const char *key, const char *path, uint32_t flags)` | Same as `bc_get`, on the session's persistent connection. |
+| `char *bc_session_put(BcSession *s, const char *key, const char *json_data, const char *ttl, const char *path)` | Same as `bc_put`, on the session's persistent connection. |
+| `char *bc_session_set_context(BcSession *s, const char *path)` | Set a default path so subsequent queries on this session don't need an explicit `path`. |
+
+```c
+BcSession *s = bc_session_open(c);
+char *r = bc_session_set_context(s, "/path/to/repo");
+bc_string_free(r);
+r = bc_session_get(s, "git.branch", NULL, 0);   /* uses the context path */
+bc_string_free(r);
+bc_session_close(s);
+```
+
+### Watch
+
+Blocking poll with five machine-readable outcomes (see [The JSON
+envelope](#the-json-envelope)). `bc_watch_cancel` is the one call in this
+SDK documented as safe to invoke from another thread while a
+`bc_watch_next` is in flight.
+
+| Function | Description |
+|---|---|
+| `BcWatch *bc_watch_open(BcClient *client, const char *key, const char *path)` | Open a watch on `key`. `path` is nullable. Returns NULL only on allocation failure. |
+| `char *bc_watch_next(BcWatch *w, int32_t timeout_ms)` | Wait for the next event. `timeout_ms`: `-1` blocks indefinitely, `0` polls, `>0` waits that long. |
+| `void bc_watch_cancel(BcWatch *w)` | Cancel a pending or future `bc_watch_next` call. Null-safe. Safe to call from another thread. |
+| `void bc_watch_free(BcWatch *w)` | Free a watch handle. Null-safe. |
+
+```c
+BcWatch *w = bc_watch_open(c, "git.branch", "/path/to/repo");
+char *r = bc_watch_next(w, 5000);   /* ms; -1 blocks, 0 polls */
+printf("%s\n", r);   /* {"ok":true,"outcome":"event"|"timeout"|"eof"|"cancelled",...} */
+bc_string_free(r);
+bc_watch_free(w);
+```
+
+### Memory
+
+| Function | Description |
+|---|---|
+| `void bc_string_free(char *ptr)` | Free a string returned by any `bc_*` function that documents its result as caller-owned. Null-safe. Never call on `bc_version()`'s return value. |
 
 ## Key format
 
-- `"git"` — full provider, data is an object with all fields
-- `"git.branch"` — single field, data is a scalar string
-
-For scalar results, pass `NULL` (or any field name) to `comb_result_get_str`. For object results, pass the field name to select a member.
+- `"git"` — full provider, `data.data` is an object with all fields
+- `"git.branch"` — single field, `data.data` is a scalar string
 
 ## Wire protocol reference
 
@@ -176,16 +238,16 @@ All operations follow the wire contract defined in [docs/protocol-spec.md](https
 1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
 2. `/tmp/beachcomber-<uid>/sock`
 
-This mirrors the daemon's bind path; no session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell of one user reaches the same daemon.
+This mirrors the daemon's bind path; no session-scoped environment
+(`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell of one user
+reaches the same daemon.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `beachcomber.h` | Public API header |
-| `beachcomber.c` | Library implementation |
-| `json.h` | Minimal JSON parser header |
-| `json.c` | Minimal JSON parser implementation |
-| `test_beachcomber.c` | Unit + integration test suite |
+| `beachcomber.h` | Passthrough to the cbindgen-generated ABI header |
+| `runner_json.h` / `runner_json.c` | JSON parser used only by `conformance_runner.c` — not part of the public API |
+| `conformance_runner.c` | Protocol conformance runner, driven over the ABI |
+| `libbeachcomber.pc.in` | pkg-config template for an installed `libbeachcomber` |
 | `Makefile` | Build system |
-| `libbeachcomber.pc.in` | pkg-config template |
