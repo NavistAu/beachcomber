@@ -6,7 +6,7 @@ Project-specific instructions for contributors using Claude Code.
 
 Before proposing changes or reasoning about behavior, read these. They are the authoritative project state — code alone will mislead you.
 
-- **`docs/roadmap.md`** — what's built, what's deferred, what's broken. Contains the "Known Core Issues" section; check it before claiming anything is working. If behavior seems odd, look here first.
+- **`docs/roadmap.md`** — open, forward-looking work only: planned features and deferred design work, grouped by area. It is **not** a bug tracker, an engineering log, or a session scratchpad. Done items are deleted, not annotated — shipped work lives in `CHANGELOG.md`, fix histories in git. Investigation write-ups belong in commit messages; never append them here.
 - **`docs/canon/*`** — canonical spec major architechtural designs. Tests must match this document; code that disagrees is wrong.
 - **`docs/canon/provider_source.md`** — canonical Provider/Source/Field model. The authoritative spec for how providers declare sources, invalidation strategies, lifecycle keying, cache layout, and TOML config. Read this before touching any provider, scheduler, cache, or config code.
 - **`CHANGELOG.md`** — what shipped when, at what version.
@@ -14,8 +14,6 @@ Before proposing changes or reasoning about behavior, read these. They are the a
 @docs/canon/ are 'canonical specs' in that they are long lived and only ever edited with explicit permission. Canon
 specs define test suite tdd, which defines the code, which is then communicated by the documentation/website. This is
 how we resolve 'are the docs or code correct?', its a strict line of truth.
-
-If a section of the code looks like a half-wired state machine or a config key that does nothing, check `docs/roadmap.md` → "Known Core Issues" before writing a fix. Some scaffolding is known-aspirational and has a planned rebuild.
 
 ## Basics
 
