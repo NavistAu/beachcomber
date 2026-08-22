@@ -77,4 +77,15 @@ M.Client      = client_mod.Client
 M.Result      = client_mod.Result
 M.WatchStream = require("beachcomber.watch_stream")
 
+--- Sentinel for a JSON null value nested inside put()'d data or a value
+-- decoded from the wire (e.g. a fixture/config file parsed via M.json).
+-- Lua cannot store a plain nil as a table value (the key would just be
+-- absent), so this stands in for it: `data = {v = comb.null}` puts a real
+-- null under "v", and a decoded field can be tested with
+-- `value == comb.null` / `comb.json.is_null(value)`. A `Result.data` that
+-- is Lua `nil` still means "cache miss" as always — the daemon has no way
+-- to store an actual null value (see beachcomber.json's M.NULL doc
+-- comment), so this sentinel never appears there.
+M.null = M.json.NULL
+
 return M

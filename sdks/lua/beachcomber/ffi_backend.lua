@@ -35,14 +35,29 @@ end
 
 --- `bc_get`/`bc_session_get`-shaped result: `{data:{data,age_ms,stale}}` on
 -- ok, `{error:{kind,message}}` otherwise. Flatten to the canonical shape.
+--
+-- The inner `data` field is where the wire encodes a cache miss as a
+-- literal JSON null (`"data":null`) — indistinguishable on the wire from a
+-- genuine stored null, except that the daemon has no way to store a
+-- genuine null (see beachcomber.json's M.NULL doc comment), so this field
+-- can only ever mean "miss" here. This is the one place that collapses
+-- json.NULL back to plain Lua nil; nowhere else should.
 local function unwrap_get(env)
   if not env.ok then
     return { ok = false, error = env.error }
   end
   local d = env.data or {}
-  return { ok = true, data = d.data, age_ms = d.age_ms, stale = d.stale }
+  local data = d.data
+  if data == json.NULL then data = nil end
+  return { ok = true, data = data, age_ms = d.age_ms, stale = d.stale }
 end
 
+--- put/put_null/refresh/status/introspect/hello/resolve/eval-shaped result:
+-- `{data:...}` on ok. Deliberately does NOT collapse json.NULL — none of
+-- these ops encode a "miss" as a literal null the way bc_get/bc_watch_next
+-- do (see unwrap_get above), so their `data` stays whatever it decoded to;
+-- an op that ever grows that convention should route through its own
+-- unwrap function instead of this one.
 local function plain(env)
   if not env.ok then
     return { ok = false, error = env.error }
@@ -211,7 +226,9 @@ function Watch:next_event(timeout_ms)
   end
   if env.outcome == "event" then
     local d = env.data or {}
-    return { data = d.data, age_ms = d.age_ms, stale = d.stale }, nil, "event"
+    local data = d.data
+    if data == json.NULL then data = nil end -- see unwrap_get's comment above
+    return { data = data, age_ms = d.age_ms, stale = d.stale }, nil, "event"
   end
   return nil, nil, env.outcome
 end

@@ -210,7 +210,7 @@ end
 -- ── Expectation checking ─────────────────────────────────────────────────────
 
 local function data_type_of(data)
-  if data == nil then return "null" end
+  if data == nil or json.is_null(data) then return "null" end
   local t = type(data)
   if t == "string" then return "string" end
   if t == "number" then return "number" end
@@ -431,12 +431,11 @@ for _, fpath in ipairs(fixture_paths) do
       -- roadmap-logged gap in this binding, not a runner or daemon bug.
       -- Reported as SKIP with the defect named so the gate stays green on
       -- honest terms; remove the entry when the defect is fixed.
-      local KNOWN_DEFECTS = {
-        ["mapping_null_value_becomes_empty_string"] =
-          "known defect: Lua tables cannot hold an explicit nil value, so a "
-          .. "JSON null nested in an object collapses to key-absent before "
-          .. "put() runs (docs/roadmap.md Known Core Issues, null-sentinel gap)",
-      }
+      --
+      -- mapping_null_value_becomes_empty_string was here (nested JSON null
+      -- collapsing to key-absent before put() ran) — fixed by the M.NULL
+      -- sentinel in beachcomber.json; see its doc comment.
+      local KNOWN_DEFECTS = {}
       local defect = fixture.name and KNOWN_DEFECTS[fixture.name]
       local outcome, reason
       if defect then

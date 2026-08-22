@@ -68,6 +68,14 @@ end
 
 --- Parse `comb status -f json` output (one JSON object per line) into an
 -- array of row tables, optionally filtered to a single provider.
+--
+-- Each row's `path` field is JSON null (not omitted) for a globally-scoped
+-- entry — confirmed directly against a live daemon (`comb status -f json`
+-- emits `"path":null,...`). json.decode now turns that into the json.NULL
+-- sentinel rather than Lua nil (see beachcomber.json's M.NULL doc comment),
+-- so it is collapsed back to nil right here: path_matches() below (and any
+-- future path comparison) needs plain nil to mean "no path scope", the same
+-- way it always has.
 local function status_rows(comb_bin, provider)
   local cmd = comb_bin .. " status -f json"
   if provider then
@@ -81,6 +89,7 @@ local function status_rows(comb_bin, provider)
   for line in (out or ""):gmatch("[^\n]+") do
     local row = json.decode(line)
     if type(row) == "table" then
+      if row.path == json.NULL then row.path = nil end
       rows[#rows + 1] = row
     end
   end
