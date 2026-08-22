@@ -1,3 +1,4 @@
+pub mod config_watch;
 pub mod lifecycle;
 
 use crate::boundaries::spawn::{DaemonSpawner, RealDaemonSpawner};

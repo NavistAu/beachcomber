@@ -55,6 +55,18 @@ pub fn needs_fork(is_running: bool) -> bool {
     !is_running
 }
 
+/// Decide whether a config-file change should trigger a graceful restart,
+/// given the outcome of validating the new file's content (parse it, surface
+/// the error rather than falling back to defaults). Mirrors the binary
+/// self-watch's "any change restarts" policy, but gated: restarting into a
+/// config that fails to parse would just crash-loop the freshly restarted
+/// daemon (canon singleton.md §"Self-supervision"). Pure so the policy is
+/// unit-tested independently of the file read in
+/// `crate::daemon::config_watch`.
+pub fn should_restart_for_config_change<T, E>(parse_result: &Result<T, E>) -> bool {
+    parse_result.is_ok()
+}
+
 /// True when an `--exit-with-parent` daemon should shut down because it has been
 /// re-parented: its parent pid changed from the value captured at startup,
 /// meaning the original parent (the process that spawned it) has died and the
@@ -136,6 +148,20 @@ mod tests {
         // attempt == max_attempts - 1 is the last valid slot; still returns Sleep.
         let d = next_wait_decision(7, 8, 500);
         assert_eq!(d, WaitDecision::Sleep(500));
+    }
+
+    // --- should_restart_for_config_change ---
+
+    #[test]
+    fn config_parse_success_triggers_restart() {
+        assert!(should_restart_for_config_change::<(), String>(&Ok(())));
+    }
+
+    #[test]
+    fn config_parse_failure_keeps_running() {
+        assert!(!should_restart_for_config_change::<(), String>(&Err(
+            "invalid TOML".to_string()
+        )));
     }
 
     // --- needs_fork ---

@@ -1360,6 +1360,14 @@ impl Config {
         }
     }
 
+    /// Parse TOML config text into a `Config`, surfacing the parse error
+    /// instead of silently falling back to defaults like `load()` does. Used
+    /// by the daemon's config self-watch (`src/daemon/config_watch.rs`) to
+    /// validate a changed config file before restarting into it.
+    pub fn parse_str(content: &str) -> Result<Self, String> {
+        toml::from_str(content).map_err(|e| e.to_string())
+    }
+
     /// Return the default config file path (may not exist).
     pub fn config_path() -> std::path::PathBuf {
         let xdg = xdg::BaseDirectories::with_prefix("beachcomber");

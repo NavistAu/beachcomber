@@ -129,6 +129,14 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
             );
         }
 
+        // Config self-watch: mirrors the binary self-watch, but only
+        // restarts when the changed file parses cleanly (canon
+        // singleton.md §"Self-supervision").
+        let cancel_for_config_watch = cancel.clone();
+        crate::daemon::config_watch::spawn_config_self_watch(move || {
+            cancel_for_config_watch.cancel();
+        });
+
         let our_start_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
