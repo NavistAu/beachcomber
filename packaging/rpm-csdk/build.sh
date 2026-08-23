@@ -13,6 +13,7 @@ REPO_ROOT="$(pwd)"
 tar czf "$TOPDIR/SOURCES/beachcomber-${VERSION}.tar.gz" \
     --transform "s,^,beachcomber-${VERSION}/," \
     sdks/c/ \
+    libbeachcomber-ffi/include/ \
     LICENSE
 
 # Copy spec and build

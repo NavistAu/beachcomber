@@ -10,14 +10,17 @@ BuildRequires:  gcc
 BuildRequires:  make
 
 %description
-Headers, shared library, static library, and pkg-config file for
-libbeachcomber — a C client library for the beachcomber daemon.
+Header and pkg-config file for libbeachcomber — the C ABI of the
+beachcomber daemon's shared client library. The shared library itself
+ships with the beachcomber daemon package.
 
 %prep
 %autosetup -n beachcomber-%{version}
 
 %build
-%make_build -C sdks/c VERSION=%{version}
+# Nothing to compile: the package ships the generated header and a
+# pkg-config file. The shared library ships with the daemon package.
+true
 
 %install
 %make_install -C sdks/c PREFIX=/usr VERSION=%{version}
@@ -25,7 +28,4 @@ libbeachcomber — a C client library for the beachcomber daemon.
 %files
 %license LICENSE
 /usr/include/beachcomber.h
-/usr/include/json.h
-/usr/lib/libbeachcomber.so
-/usr/lib/libbeachcomber.a
 /usr/lib/pkgconfig/libbeachcomber.pc
