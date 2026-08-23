@@ -162,6 +162,8 @@ jobs:
     defaults:
       run:
         working-directory: sdks/python
+    env:
+      BEACHCOMBER_LIB: ${{ github.workspace }}/target/debug/libbeachcomber.so
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -170,7 +172,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build comb
         working-directory: ${{ github.workspace }}
-        run: cargo build --bin comb
+        run: cargo build --bin comb && cargo build -p libbeachcomber-ffi
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -188,6 +190,8 @@ jobs:
     defaults:
       run:
         working-directory: sdks/node
+    env:
+      BEACHCOMBER_LIB: ${{ github.workspace }}/target/debug/libbeachcomber.so
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -196,7 +200,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build comb
         working-directory: ${{ github.workspace }}
-        run: cargo build --bin comb
+        run: cargo build --bin comb && cargo build -p libbeachcomber-ffi
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -216,6 +220,8 @@ jobs:
     defaults:
       run:
         working-directory: sdks/go
+    env:
+      BEACHCOMBER_LIB: ${{ github.workspace }}/target/debug/libbeachcomber.so
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -224,7 +230,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build comb
         working-directory: ${{ github.workspace }}
-        run: cargo build --bin comb
+        run: cargo build --bin comb && cargo build -p libbeachcomber-ffi
       - uses: actions/setup-go@v5
         with:
           go-version: '1.21'
@@ -240,6 +246,8 @@ jobs:
     defaults:
       run:
         working-directory: sdks/ruby
+    env:
+      BEACHCOMBER_LIB: ${{ github.workspace }}/target/debug/libbeachcomber.so
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -248,7 +256,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build comb
         working-directory: ${{ github.workspace }}
-        run: cargo build --bin comb
+        run: cargo build --bin comb && cargo build -p libbeachcomber-ffi
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
@@ -264,6 +272,8 @@ jobs:
     defaults:
       run:
         working-directory: sdks/lua
+    env:
+      BEACHCOMBER_LIB: ${{ github.workspace }}/target/debug/libbeachcomber.so
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -272,7 +282,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build comb
         working-directory: ${{ github.workspace }}
-        run: cargo build --bin comb
+        run: cargo build --bin comb && cargo build -p libbeachcomber-ffi
       - uses: leafo/gh-actions-lua@v10
         with:
           luaVersion: '5.4'
@@ -291,6 +301,8 @@ jobs:
     defaults:
       run:
         working-directory: sdks/c
+    env:
+      BEACHCOMBER_LIB: ${{ github.workspace }}/target/debug/libbeachcomber.so
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -299,7 +311,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build comb
         working-directory: ${{ github.workspace }}
-        run: cargo build --bin comb
+        run: cargo build --bin comb && cargo build -p libbeachcomber-ffi
       - name: Build and test
         run: make test
       - name: Build conformance runner

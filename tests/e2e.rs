@@ -122,15 +122,13 @@ async fn e2e_unknown_provider() {
     handle.abort();
 }
 
-// Exception to the worker_threads = 2 pinning used elsewhere in this file:
-// this test spawns 10 concurrent tasks that each block on the sync `Client`,
-// plus the in-process daemon task itself needs a thread to run on. With only
-// 2 worker threads, once both are occupied by blocking client calls the
-// daemon task can never get scheduled to service them — a real deadlock
-// (observed as a 30s test timeout), not mere slowness. Leave this on the
-// ambient (num_cpus) thread count, which comfortably covers the 10 clients
-// + daemon and matches how this test ran before the worker_threads pinning.
-#[tokio::test(flavor = "multi_thread")]
+// The 10 concurrent sync `Client` calls block, so they run on the blocking
+// pool (spawn_blocking), never on runtime workers — otherwise, on a machine
+// with fewer cores than clients (CI runners), the blockers occupy every
+// worker and the in-process daemon task starves: a real deadlock, observed
+// as a 30s test timeout on 2-4-core CI. With the blockers off the workers,
+// this test pins worker_threads = 2 like its siblings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_multiple_concurrent_clients() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -142,7 +140,7 @@ async fn e2e_multiple_concurrent_clients() {
     let mut handles = Vec::new();
     for _ in 0..10 {
         let sock = sock.clone();
-        handles.push(tokio::spawn(async move {
+        handles.push(tokio::task::spawn_blocking(move || {
             let client = Client::new(sock);
             let response = client.get("hostname.name", None).unwrap();
             assert!(response.ok);
