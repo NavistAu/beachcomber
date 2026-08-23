@@ -1,9 +1,35 @@
 use crate::provider::FieldScope;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::warn;
+
+/// Deep-merge `overlay` onto `base`: matching table keys recurse; everything
+/// else (scalars, arrays, and table/non-table type mismatches) is last-wins
+/// — `overlay`'s value replaces whatever was at that slot in `base`.
+///
+/// This is the composition primitive behind conf.d drop-ins (canon
+/// `docs/roadmap.md` conf.d convention): a drop-in overriding one key of
+/// `[providers.x]` must not clobber the rest of that block, which is exactly
+/// what table recursion gives us — only overlapping keys are touched.
+pub fn deep_merge_toml(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(base_table), toml::Value::Table(overlay_table)) => {
+            for (key, val) in overlay_table {
+                match base_table.get_mut(&key) {
+                    Some(existing) => deep_merge_toml(existing, val),
+                    None => {
+                        base_table.insert(key, val);
+                    }
+                }
+            }
+        }
+        (base_slot, overlay_val) => {
+            *base_slot = overlay_val;
+        }
+    }
+}
 
 /// Parse a duration string like "30s", "5m", "1h", or whole-second "ms" values (e.g. "2000ms")
 /// into a Duration. Returns None for sub-second `ms` values and non-whole-second multiples.
@@ -54,6 +80,15 @@ const SOURCE_KNOB_KEYS: &[&str] = &[
     "failure_backoff_interval",
     "poll_secs",
 ];
+
+/// Which resolution step supplied a socket path
+/// (canon singleton.md §"Canonical socket path resolution").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketPathSource {
+    ConfigOverride,
+    EnvVar,
+    Default,
+}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -1339,16 +1374,118 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        match Self::config_path_if_exists() {
-            Some(path) => {
-                let content = std::fs::read_to_string(&path).unwrap_or_default();
-                for warning in detect_deprecated_keys(&content) {
-                    warn!("{}", warning);
-                }
-                toml::from_str(&content).unwrap_or_default()
-            }
-            None => Self::default(),
+        let main_content = Self::config_path_if_exists()
+            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .unwrap_or_default();
+        for warning in detect_deprecated_keys(&main_content) {
+            warn!("{}", warning);
         }
+        Self::load_composed(&main_content, &Self::conf_d_dir())
+    }
+
+    /// Parse TOML config text into a `Config`, surfacing the parse error
+    /// instead of silently falling back to defaults like `load()` does. Used
+    /// by the daemon's config self-watch (`src/daemon/config_watch.rs`) to
+    /// validate a changed config file before restarting into it.
+    pub fn parse_str(content: &str) -> Result<Self, String> {
+        toml::from_str(content).map_err(|e| e.to_string())
+    }
+
+    /// Compose `main_content` with every `conf.d/*.toml` drop-in found in
+    /// `conf_d_dir`, in lexical filename order, each deep-merged onto the
+    /// accumulated value — then deserialize the result. Mirrors `load()`'s
+    /// lenient startup posture: an unparseable conf.d file is skipped with a
+    /// `tracing::warn!` naming the file and error, the rest still compose.
+    /// A missing/unparseable `main_content` starts composition from an empty
+    /// table, same as `load()` does for an absent main config file.
+    ///
+    /// Kept separate from `load()` so tests can exercise composition against
+    /// an explicit temp directory without mutating XDG env vars.
+    fn load_composed(main_content: &str, conf_d_dir: &Path) -> Self {
+        let composed = Self::compose_value(main_content, conf_d_dir);
+        Config::deserialize(composed).unwrap_or_default()
+    }
+
+    /// Value-level composition shared by `load_composed` and `parse_composed`.
+    /// Skips unparseable conf.d files with a warning (the lenient half of the
+    /// two postures — `parse_composed` is the strict half).
+    fn compose_value(main_content: &str, conf_d_dir: &Path) -> toml::Value {
+        let mut base: toml::Value =
+            toml::from_str(main_content).unwrap_or_else(|_| toml::Value::Table(Default::default()));
+        if base.as_table().is_none() {
+            base = toml::Value::Table(Default::default());
+        }
+        for file in Self::conf_d_files(conf_d_dir) {
+            let content = match std::fs::read_to_string(&file) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("conf.d: could not read {}: {e}; skipping", file.display());
+                    continue;
+                }
+            };
+            match toml::from_str::<toml::Value>(&content) {
+                Ok(overlay) => deep_merge_toml(&mut base, overlay),
+                Err(e) => {
+                    warn!("conf.d: {} failed to parse ({e}); skipping", file.display());
+                }
+            }
+        }
+        base
+    }
+
+    /// Strict composed parse: `main_content` plus every `conf.d/*.toml` in
+    /// `conf_d_dir` must ALL parse, or the whole call fails. Used by the
+    /// config self-watch's restart-gate (`src/daemon/config_watch.rs`), which
+    /// must never restart into a composed config where any file is broken —
+    /// unlike `load_composed`'s skip-and-continue.
+    pub fn parse_composed(main_content: &str, conf_d_dir: &Path) -> Result<Self, String> {
+        let mut base: toml::Value =
+            toml::from_str(main_content).map_err(|e| format!("config.toml: {e}"))?;
+        if base.as_table().is_none() {
+            return Err("config.toml: top-level value must be a table".to_string());
+        }
+        for file in Self::conf_d_files(conf_d_dir) {
+            let content =
+                std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let overlay: toml::Value =
+                toml::from_str(&content).map_err(|e| format!("{}: {e}", file.display()))?;
+            deep_merge_toml(&mut base, overlay);
+        }
+        Config::deserialize(base).map_err(|e| e.to_string())
+    }
+
+    /// The conf.d directory for a given main config file path:
+    /// `<config-file-parent>/conf.d`. Derived from the path itself, not from
+    /// whether the config file (or the conf.d directory) actually exists.
+    pub fn conf_d_dir_for(config_path: &Path) -> PathBuf {
+        config_path
+            .parent()
+            .map(|p| p.join("conf.d"))
+            .unwrap_or_else(|| PathBuf::from("conf.d"))
+    }
+
+    /// The conf.d directory for the process's resolved config path
+    /// (`Self::config_path()`).
+    pub fn conf_d_dir() -> PathBuf {
+        Self::conf_d_dir_for(&Self::config_path())
+    }
+
+    /// List `*.toml` files directly inside `dir`, sorted in lexical filename
+    /// order (spec: drop-ins compose "in lexical filename order"). Returns an
+    /// empty list if `dir` doesn't exist or can't be read — a conf.d
+    /// directory is optional.
+    pub fn conf_d_files(dir: &Path) -> Vec<PathBuf> {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return Vec::new(),
+        };
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("toml"))
+            .collect();
+        files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        files
     }
 
     /// Return the default config file path (may not exist).
@@ -1424,25 +1561,46 @@ impl Config {
     }
 
     pub fn resolve_socket_path(&self) -> PathBuf {
+        self.resolve_socket_path_with_source().0
+    }
+
+    /// Full canonical resolution, also reporting which step supplied the path.
+    /// Auto-spawn uses the source to flag `$BEACHCOMBER_SOCKET`-derived daemons
+    /// `--no-reap` (canon singleton.md §"Env-override spawns are flagged").
+    pub fn resolve_socket_path_with_source(&self) -> (PathBuf, SocketPathSource) {
         // 1. Config-file override (highest priority)
         if let Some(ref path) = self.daemon.socket_path {
-            return PathBuf::from(path);
+            return (PathBuf::from(path), SocketPathSource::ConfigOverride);
         }
 
         // 2. BEACHCOMBER_SOCKET env var
         if let Some(env_path) = std::env::var_os("BEACHCOMBER_SOCKET") {
             let p = std::path::PathBuf::from(env_path);
             if !p.as_os_str().is_empty() {
-                return p;
+                return (p, SocketPathSource::EnvVar);
             }
         }
 
-        // 3. XDG_RUNTIME_DIR
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            return PathBuf::from(runtime_dir).join("beachcomber").join("sock");
-        }
+        // 3. Stable per-user default. Consults no session-scoped environment
+        // (TMPDIR, XDG_RUNTIME_DIR): singleton enforcement is per-socket-path,
+        // so session-scoped inputs yield one daemon per session, not per user.
+        // See docs/canon/singleton.md §"Canonical socket path resolution".
+        (Self::default_socket_path(), SocketPathSource::Default)
+    }
 
-        // 4. TMPDIR fallback
+    /// Env-free resolution backing the reaper role (canon singleton.md §"Who
+    /// reaps"): config override → per-user default. `$BEACHCOMBER_SOCKET` is
+    /// deliberately excluded — it is per-process, and honoring it here would
+    /// let two daemons of one uid each self-assess "canonical" and reap each
+    /// other (fratricide).
+    pub fn resolve_reaper_socket_path(&self) -> PathBuf {
+        if let Some(ref path) = self.daemon.socket_path {
+            return PathBuf::from(path);
+        }
+        Self::default_socket_path()
+    }
+
+    fn default_socket_path() -> PathBuf {
         let uid = unsafe { libc::getuid() };
         PathBuf::from("/tmp")
             .join(format!("beachcomber-{uid}"))
@@ -1573,5 +1731,164 @@ mod tests {
             let path = cfg.resolve_socket_path();
             assert_eq!(path, std::path::PathBuf::from("/from/config/file.sock"));
         });
+    }
+
+    // ── deep_merge_toml unit tests ────────────────────────────────────────
+
+    fn toml_val(s: &str) -> toml::Value {
+        toml::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn deep_merge_recurses_into_matching_tables() {
+        let mut base = toml_val("[providers.git]\nenabled = true\npoll_interval = \"30s\"\n");
+        let overlay = toml_val("[providers.git]\npoll_interval = \"10s\"\n");
+        deep_merge_toml(&mut base, overlay);
+        let git = base.get("providers").unwrap().get("git").unwrap();
+        assert_eq!(git.get("enabled").unwrap().as_bool(), Some(true));
+        assert_eq!(git.get("poll_interval").unwrap().as_str(), Some("10s"));
+    }
+
+    #[test]
+    fn deep_merge_scalar_is_last_wins() {
+        let mut base = toml_val("x = 1\n");
+        let overlay = toml_val("x = 2\n");
+        deep_merge_toml(&mut base, overlay);
+        assert_eq!(base.get("x").unwrap().as_integer(), Some(2));
+    }
+
+    #[test]
+    fn deep_merge_array_is_last_wins_not_appended() {
+        let mut base = toml_val("arr = [1, 2, 3]\n");
+        let overlay = toml_val("arr = [9]\n");
+        deep_merge_toml(&mut base, overlay);
+        let arr = base.get("arr").unwrap().as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0].as_integer(), Some(9));
+    }
+
+    #[test]
+    fn deep_merge_adds_new_keys_without_touching_siblings() {
+        let mut base = toml_val("[a]\nb = 1\n");
+        let overlay = toml_val("[a]\nc = 2\n[d]\ne = 3\n");
+        deep_merge_toml(&mut base, overlay);
+        assert_eq!(
+            base.get("a").unwrap().get("b").unwrap().as_integer(),
+            Some(1)
+        );
+        assert_eq!(
+            base.get("a").unwrap().get("c").unwrap().as_integer(),
+            Some(2)
+        );
+        assert_eq!(
+            base.get("d").unwrap().get("e").unwrap().as_integer(),
+            Some(3)
+        );
+    }
+
+    // ── conf_d_files ordering ─────────────────────────────────────────────
+
+    #[test]
+    fn conf_d_files_are_sorted_lexically_by_filename() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("10-a.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("2-b.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("z.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("not-toml.txt"), "").unwrap();
+        let files = Config::conf_d_files(tmp.path());
+        let names: Vec<_> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        // Lexical, not numeric: "10-a.toml" < "2-b.toml" because '1' < '2'.
+        assert_eq!(names, vec!["10-a.toml", "2-b.toml", "z.toml"]);
+    }
+
+    #[test]
+    fn conf_d_files_missing_dir_is_empty() {
+        let files = Config::conf_d_files(std::path::Path::new("/no/such/conf.d/dir"));
+        assert!(files.is_empty());
+    }
+
+    // ── load_composed / parse_composed ──────────────────────────────────
+
+    #[test]
+    fn load_composed_drop_in_overrides_one_key_rest_of_block_preserved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf_d = tmp.path().join("conf.d");
+        std::fs::create_dir(&conf_d).unwrap();
+        std::fs::write(
+            conf_d.join("01-override.toml"),
+            "[providers.git]\npoll_interval = \"10s\"\n",
+        )
+        .unwrap();
+
+        let main =
+            "[providers.git]\nenabled = true\npoll_interval = \"30s\"\npoll_live_count = 5\n";
+        let cfg = Config::load_composed(main, &conf_d);
+
+        let git = cfg.providers.get("git").unwrap();
+        assert_eq!(git.get("enabled").unwrap().as_bool(), Some(true));
+        assert_eq!(git.get("poll_live_count").unwrap().as_integer(), Some(5));
+        assert_eq!(git.get("poll_interval").unwrap().as_str(), Some("10s"));
+    }
+
+    #[test]
+    fn load_composed_conf_d_with_no_main_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf_d = tmp.path().join("conf.d");
+        std::fs::create_dir(&conf_d).unwrap();
+        std::fs::write(
+            conf_d.join("01-daemon.toml"),
+            "[daemon]\nlog_level = \"debug\"\n",
+        )
+        .unwrap();
+
+        // No main config content at all (absent file).
+        let cfg = Config::load_composed("", &conf_d);
+        assert_eq!(cfg.daemon.log_level, "debug");
+    }
+
+    #[test]
+    fn load_composed_invalid_drop_in_is_skipped_rest_still_composed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf_d = tmp.path().join("conf.d");
+        std::fs::create_dir(&conf_d).unwrap();
+        std::fs::write(conf_d.join("01-bad.toml"), "this is not [ valid toml").unwrap();
+        std::fs::write(
+            conf_d.join("02-good.toml"),
+            "[daemon]\nlog_level = \"debug\"\n",
+        )
+        .unwrap();
+
+        let cfg = Config::load_composed("[daemon]\n", &conf_d);
+        assert_eq!(cfg.daemon.log_level, "debug");
+    }
+
+    #[test]
+    fn parse_composed_fails_when_any_conf_d_file_is_invalid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf_d = tmp.path().join("conf.d");
+        std::fs::create_dir(&conf_d).unwrap();
+        std::fs::write(conf_d.join("01-bad.toml"), "this is not [ valid toml").unwrap();
+
+        let result = Config::parse_composed("[daemon]\n", &conf_d);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_composed_succeeds_when_composed_set_is_all_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf_d = tmp.path().join("conf.d");
+        std::fs::create_dir(&conf_d).unwrap();
+        std::fs::write(
+            conf_d.join("01-daemon.toml"),
+            "[daemon]\nlog_level = \"debug\"\n",
+        )
+        .unwrap();
+
+        let result = Config::parse_composed("[daemon]\n", &conf_d);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().daemon.log_level, "debug");
     }
 }

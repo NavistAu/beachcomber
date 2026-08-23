@@ -1,0 +1,21 @@
+[package]
+name = "libbeachcomber"
+version = "0.8.0"
+edition = "2024"
+description = "Client library for querying the beachcomber (comb) shell state daemon"
+license = "MIT"
+repository = "https://github.com/NavistAu/beachcomber"
+keywords = ["shell", "prompt", "git", "daemon", "client"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "../README.md"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+minijinja = { workspace = true }
+
+[dev-dependencies]
+beachcomber = { path = "..", features = ["test-helpers"] }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }

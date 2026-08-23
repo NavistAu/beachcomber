@@ -1,134 +1,91 @@
 --- beachcomber — Lua client SDK for the beachcomber daemon.
 --
--- Provides a single entry point that auto-detects the best socket backend
--- (vim.uv when inside Neovim, luasocket otherwise) and returns a connected
--- Client ready for use.
+-- A binding over libbeachcomber's C ABI (see libbeachcomber-ffi/include/
+-- beachcomber.h). Two transports, selected automatically:
+--
+--   ffi        LuaJIT's `ffi` module calls straight into the cdylib.
+--              ~0.3ms/call. Used whenever `require("ffi")` succeeds —
+--              true for LuaJIT and Neovim (which always ships LuaJIT).
+--   subprocess Shells out to the `comb` binary. ~5ms/call. The sanctioned
+--              fallback for PUC Lua, which has no ffi and so cannot call
+--              into a cdylib at all — entered only because ffi is
+--              unavailable *by design*, never as a silent recovery from a
+--              broken ffi library discovery (a missing/broken library
+--              under LuaJIT is a loud error, not a fallback).
+--
+-- `client:transport()` reports which one is active, so a caller can see a
+-- 5ms-per-call transport rather than discover it in a profile.
 --
 -- Basic usage:
 --
 --   local comb = require('beachcomber')
---   local client = comb.connect()
+--   local client, err = comb.connect()
+--   if not client then error(tostring(err)) end
 --   local result = client:get('git.branch', '/my/repo')
 --   if result:is_hit() then
 --       print(result.data)
 --   end
 --   client:close()
 --
--- Supports Lua 5.1+ (including LuaJIT / Neovim).
+-- Requires LuaJIT (ffi transport) or a `comb` binary on $PATH (subprocess
+-- transport, any Lua 5.1+).
 
-local discovery = require("beachcomber.discovery")
 local client_mod = require("beachcomber.client")
 
 local M = {}
 
-local RETRY_BACKOFFS = { 0.250, 0.500, 1.000 }
-
---- Connect to a Unix socket backend with 3 retries (250ms/500ms/1s exponential).
---
--- Retries when the backend returns nil (connection refused / socket absent).
--- Intended to cover the brief restart window when the daemon is restarting.
---
--- @param backend table  Backend module with a connect(socket_path) function
--- @param socket_path string  Path to the Unix domain socket
--- @return handle, or nil, error_message
-function M._connect_with_retry(backend, socket_path)
-  local last_err = nil
-  -- Try luasocket sleep if available; fall back to os.execute for portability.
-  local function sleep_secs(s)
-    local ok, socket_lib = pcall(require, "socket")
-    if ok and socket_lib.sleep then
-      socket_lib.sleep(s)
-    else
-      -- Portable busy-wait fallback (coarse).
-      local t = os.time()
-      while os.time() - t < math.ceil(s) do end
-    end
-  end
-
-  for _, backoff in ipairs(RETRY_BACKOFFS) do
-    local handle, err = backend.connect(socket_path)
-    if handle then return handle end
-    last_err = err
-    sleep_secs(backoff)
-  end
-  -- Final attempt.
-  return backend.connect(socket_path)
-end
-
---- Detect whether we are running inside Neovim.
--- @return boolean
-local function in_neovim()
-  return vim ~= nil and (vim.uv ~= nil or vim.loop ~= nil)
-end
-
---- Load the appropriate socket backend.
--- @return backend module, or nil, error_message
-local function load_backend()
-  if in_neovim() then
-    local ok, mod = pcall(require, "beachcomber.socket_vim")
-    if ok then return mod end
-    return nil, "failed to load vim.uv backend: " .. tostring(mod)
-  end
-
-  -- Try luasocket
-  local ls_ok = pcall(require, "socket")
-  if ls_ok then
-    local ok, mod = pcall(require, "beachcomber.socket_luasocket")
-    if ok then return mod end
-  end
-
-  -- Fall back to CLI backend (shells out to `comb` binary)
-  local cli_ok, cli_mod = pcall(require, "beachcomber.socket_cli")
-  if cli_ok then return cli_mod end
-
-  return nil, "no socket backend available (install luasocket, add comb to PATH, or run inside Neovim)"
-end
-
 --- Connect to the beachcomber daemon and return a Client.
 --
--- @param opts table?  Optional configuration:
---   opts.socket_path  string  Override the socket path (skips discovery)
---   opts.backend      module  Override the backend module entirely
+-- @param opts table?  Optional configuration, forwarded to the selected
+--   backend:
+--   opts.backend       table   Override transport selection entirely (advanced/tests) —
+--                               must satisfy the backend interface documented in
+--                               beachcomber.client.
+--   opts.socket_path   string  ffi transport: override daemon socket discovery.
+--   opts.timeout_ms    number  ffi transport: per-call timeout.
+--   opts.autostart     boolean ffi transport: auto-spawn the daemon on demand.
+--   opts.library_path  string  ffi transport: override library discovery entirely.
+--   opts.comb_bin      string  subprocess transport: override `comb` discovery.
 --
--- @return Client, or nil, error_message
+-- @return Client, or nil, Error
 function M.connect(opts)
   opts = opts or {}
 
-  local socket_path
-  if opts.socket_path then
-    socket_path = opts.socket_path
-  else
-    local disc_path, disc_err = discovery.discover_socket_path()
-    if not disc_path then
-      return nil, "socket discovery failed: " .. tostring(disc_err)
-    end
-    socket_path = disc_path
-  end
-
-  local backend
   if opts.backend then
-    backend = opts.backend
+    return client_mod.Client.new(opts.backend)
+  end
+
+  local has_ffi = pcall(require, "ffi")
+  local backend, err
+  if has_ffi then
+    backend, err = require("beachcomber.ffi_backend").new(opts)
   else
-    local b, b_err = load_backend()
-    if not b then
-      return nil, b_err
-    end
-    backend = b
+    backend, err = require("beachcomber.subprocess_backend").new(opts)
+  end
+  if not backend then
+    return nil, err
   end
 
-  local sock, conn_err = M._connect_with_retry(backend, socket_path)
-  if not sock then
-    return nil, "could not connect to beachcomber daemon at " .. socket_path .. ": " .. tostring(conn_err)
-  end
-
-  return client_mod.Client.new(sock)
+  return client_mod.Client.new(backend)
 end
 
--- Re-export sub-modules for advanced use
-M.discovery   = discovery
+-- Re-export sub-modules for advanced use.
+M.discovery   = require("beachcomber.discovery")
 M.json        = require("beachcomber.json")
+M.Error       = require("beachcomber.error")
 M.Client      = client_mod.Client
 M.Result      = client_mod.Result
 M.WatchStream = require("beachcomber.watch_stream")
+
+--- Sentinel for a JSON null value nested inside put()'d data or a value
+-- decoded from the wire (e.g. a fixture/config file parsed via M.json).
+-- Lua cannot store a plain nil as a table value (the key would just be
+-- absent), so this stands in for it: `data = {v = comb.null}` puts a real
+-- null under "v", and a decoded field can be tested with
+-- `value == comb.null` / `comb.json.is_null(value)`. A `Result.data` that
+-- is Lua `nil` still means "cache miss" as always — the daemon has no way
+-- to store an actual null value (see beachcomber.json's M.NULL doc
+-- comment), so this sentinel never appears there.
+M.null = M.json.NULL
 
 return M

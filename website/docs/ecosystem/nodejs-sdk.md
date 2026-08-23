@@ -4,7 +4,7 @@ sidebar_position: 4
 
 # Node.js SDK
 
-Node.js/TypeScript client for the beachcomber shell state daemon. No external runtime dependencies — pure Node.js stdlib (`net`, `fs`, `os`, `path`). Published on [npm](https://www.npmjs.com/package/libbeachcomber).
+Node.js/TypeScript client for the beachcomber shell state daemon. A binding over the shared `libbeachcomber` C ABI, not a hand-rolled wire-protocol client: `koffi` (an optional peer dependency) gives direct FFI access to the native library when installed; without it, the SDK falls back to shelling out to `comb` (~5ms per call vs ~0.3ms via FFI). Published on [npm](https://www.npmjs.com/package/libbeachcomber).
 
 ## Requirements
 
@@ -137,9 +137,8 @@ All operations follow the wire contract defined in [docs/protocol-spec.md](https
 The socket path is resolved in this order:
 
 1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
-2. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set)
-3. `/tmp/beachcomber-<uid>/sock`
+2. `/tmp/beachcomber-<uid>/sock`
 
-This mirrors the daemon's bind path; `$TMPDIR` is not consulted.
+This mirrors the daemon's bind path; no session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell of one user reaches the same daemon.
 
 Override with the `socketPath` option.

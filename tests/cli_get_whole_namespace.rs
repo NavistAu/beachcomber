@@ -1,6 +1,6 @@
 //! Tests for evaluate_namespace (Step 1.4).
 
-use beachcomber::cli::virtual_fields::{VirtualFields, evaluate_namespace};
+use libbeachcomber::virtual_fields::{VirtualFields, evaluate_namespace};
 use serde_json::json;
 use std::collections::HashMap;
 

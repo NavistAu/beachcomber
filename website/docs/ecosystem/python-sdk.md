@@ -9,7 +9,7 @@ Python client for the beachcomber (`comb`) shell-state daemon. Published on [PyP
 ## Requirements
 
 - Python 3.9+
-- No external dependencies (stdlib only)
+- No external dependencies (stdlib `ctypes` binds directly to the shared `libbeachcomber` C ABI — no subprocess, no wire-protocol code in this SDK)
 - A running `comb` daemon
 
 ## Installation
@@ -74,10 +74,9 @@ client = Client(socket_path="/run/user/1000/beachcomber/sock")
 The SDK discovers the daemon socket at:
 
 1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
-2. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set)
-3. `/tmp/beachcomber-<uid>/sock`
+2. `/tmp/beachcomber-<uid>/sock`
 
-This mirrors the daemon's bind path; `$TMPDIR` is not consulted.
+This mirrors the daemon's bind path; no session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell of one user reaches the same daemon.
 
 ## API reference
 

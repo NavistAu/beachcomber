@@ -12,13 +12,14 @@
 //! A template that needs no daemon-backed data never starts/contacts the daemon.
 
 use crate::cli::format::{find_eval_template_pairs, render_eval_template};
-use crate::cli::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
 use crate::config::Config;
+use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 
 pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
-    let socket_path = config.resolve_socket_path();
+    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
+    let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
     let vf = VirtualFields::with_config_overrides(config.virtual_fields());
 
     // Discover every (provider, field) ref in the template (all tags, all refs).
@@ -100,15 +101,14 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
     let daemon_data: HashMap<String, serde_json::Value> = if daemon_refs.is_empty() {
         HashMap::new()
     } else {
-        if let Err(e) = crate::daemon::ensure_daemon(&socket_path) {
+        if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
             eprintln!("Failed to start daemon: {e}");
             return ExitCode::from(2);
         }
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let socket_path = socket_path.clone();
-        match rt.block_on(async move {
+        match (|| {
             let client = crate::client::Client::new(socket_path);
-            let mut session = match client.connect().await {
+            let mut session = match client.connect() {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -116,7 +116,7 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
                 }
             };
             if let Some(p) = path
-                && let Err(e) = session.set_context(p).await
+                && let Err(e) = session.set_context(p)
             {
                 eprintln!("Error: {e}");
                 return Err(ExitCode::from(2));
@@ -133,7 +133,7 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
                     // Env and Resolved variants are never added to daemon_refs.
                     _ => continue,
                 };
-                match session.get(&key, None).await {
+                match session.get(&key, None) {
                     Ok(resp) => {
                         if let Some(data) = resp.data {
                             dd.insert(store_key, data);
@@ -146,7 +146,7 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
                 }
             }
             Ok(dd)
-        }) {
+        })() {
             Ok(dd) => dd,
             Err(code) => return code,
         }

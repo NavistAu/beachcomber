@@ -1,41 +1,82 @@
-"""Socket path discovery for the beachcomber daemon.
+"""Library discovery for the beachcomber C ABI (``libbeachcomber.{so,dylib}``).
 
-Mirrors the daemon's bind-path resolution (``Config::resolve_socket_path``),
-minus the config-file step which is daemon-only. Discovery order:
+Discovery order, per the Phase-4 binding contract:
 
-1. ``$BEACHCOMBER_SOCKET``  (if set and non-empty)
-2. ``$XDG_RUNTIME_DIR/beachcomber/sock``  (if ``XDG_RUNTIME_DIR`` is set)
-3. ``/tmp/beachcomber-<uid>/sock``
+1. ``$BEACHCOMBER_LIB`` — exact path to the shared library.
+2. ``../lib/<libname>`` relative to the ``comb`` binary resolved on ``$PATH``
+   — library and binary ship together, so the one beside the ``comb`` you
+   would actually run is the matching one.
+3. The platform default dynamic-linker search path.
 
-There is no existence probe and ``$TMPDIR`` is not consulted: the result is the
-single path the daemon binds for the same environment. Non-standard setups
-point clients at the daemon via ``BEACHCOMBER_SOCKET``.
+Failure is loud: if no candidate loads, the caller raises naming every
+location tried, in order. There is no silent fallback to a subprocess
+transport — a missing library is a broken install.
 """
 
+from __future__ import annotations
+
 import os
+import shutil
+import sys
+from dataclasses import dataclass
+from typing import List, Optional
 
 
-def get_uid() -> int:
-    """Return the effective user ID of the current process."""
-    return os.geteuid()
+def library_basename() -> str:
+    """Return the platform-appropriate shared library filename."""
+    if sys.platform == "darwin":
+        return "libbeachcomber.dylib"
+    if sys.platform.startswith("linux"):
+        return "libbeachcomber.so"
+    raise RuntimeError(f"unsupported platform for libbeachcomber: {sys.platform!r}")
 
 
-def discover_socket_path() -> str:
-    """Return the expected socket path for the running daemon.
+@dataclass
+class Candidate:
+    """One location the discovery order tries, in order.
 
-    Resolves to the single path the daemon binds for the current environment.
-    Callers are responsible for verifying the socket is reachable.
-
-    Returns:
-        Absolute path string for the Unix domain socket.
+    Attributes:
+        description: Human-readable label for error messages (e.g.
+            ``"$BEACHCOMBER_LIB"``).
+        path: The concrete path/spec to attempt loading, or ``None`` if this
+            candidate could not even be constructed (e.g. ``comb`` not on
+            ``$PATH``) — still reported, with ``reason`` explaining why.
+        reason: Set when ``path`` is ``None``, explaining why this candidate
+            was skipped.
     """
-    sock = os.environ.get("BEACHCOMBER_SOCKET", "")
-    if sock:
-        return sock
 
-    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", "")
-    if xdg_runtime:
-        return os.path.join(xdg_runtime, "beachcomber", "sock")
+    description: str
+    path: Optional[str]
+    reason: Optional[str] = None
 
-    uid = get_uid()
-    return os.path.join("/tmp", f"beachcomber-{uid}", "sock")
+
+def candidates() -> List[Candidate]:
+    """Build the ordered list of library locations to try.
+
+    Pure and side-effect free (aside from reading the environment and
+    ``$PATH``) — does not touch the filesystem or attempt to load anything.
+    """
+    basename = library_basename()
+    out: List[Candidate] = []
+
+    env_path = os.environ.get("BEACHCOMBER_LIB")
+    if env_path:
+        out.append(Candidate("$BEACHCOMBER_LIB", env_path))
+    else:
+        out.append(Candidate("$BEACHCOMBER_LIB", None, "not set"))
+
+    comb_path = shutil.which("comb")
+    if comb_path:
+        comb_dir = os.path.dirname(os.path.abspath(comb_path))
+        lib_dir = os.path.normpath(os.path.join(comb_dir, "..", "lib"))
+        out.append(
+            Candidate(f"../lib/ relative to comb ({comb_path})", os.path.join(lib_dir, basename))
+        )
+    else:
+        out.append(
+            Candidate("../lib/ relative to comb on $PATH", None, "comb not found on $PATH")
+        )
+
+    out.append(Candidate("platform default search path", basename))
+
+    return out

@@ -57,14 +57,12 @@ Run `comb --version` to see the version of the installed binary. To see what the
 
 Update using the same package manager you installed with: `brew upgrade beachcomber`, `npm install -g beachcomber@latest`, `pip install -U beachcomber`, `cargo install beachcomber --force`, `yay -Syu beachcomber`, etc. The pre-built `.deb` and `.rpm` releases can be upgraded by installing the newer package.
 
-The daemon does not auto-restart when the binary is replaced. The next `comb` query after the upgrade will connect to the running (old) daemon over the existing socket. To cut over cleanly:
+The daemon supervises its own binary — an fs-event watch plus a 5s mtime poll — and gracefully shuts down when the file on disk changes. The next `comb` query respawns the new build automatically. If your package manager installs each version at a *new path* (versioned cellars with a symlink flip can do this), the old file never changes and the old daemon keeps running; cut over manually:
 
 ```sh
-comb kill                # stop the running daemon; it will auto-restart
+comb kill                # stop the running daemon
 comb s                   # triggers socket activation of the new binary
 ```
-
-This is only necessary when the upgrade crosses a protocol or config schema boundary — normal point releases are happy to keep running. The [versioning policy](./versioning-policy.md) documents what counts.
 
 ### What is the `stale` flag in responses?
 

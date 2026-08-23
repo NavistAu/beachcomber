@@ -42,12 +42,13 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 |---|---|
 | `src/lib.rs` | Module declarations; no logic |
 | `src/daemon.rs` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel`; watchdog task monitors scheduler heartbeat |
+| `src/singleton/` | Singleton enforcement: pid-file flock, build-identity supersession, serving probe, binary self-watch (fs-event + mtime poll), orphan reaping |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
 | `src/scheduler/mod.rs` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; dispatches lifecycle events into `LifecycleRegistry` and applies `TickActions`; heartbeat counter for watchdog liveness detection |
 | `src/scheduler/lifecycle.rs` | `LifecycleRegistry` state machine: Active → Decay1..4 → Evicted. Per-entry poll and decay timers. Canonical behaviour in `docs/cache-lifecycle.md` |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; generation counter |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
-| `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`; `split_key()` — first-dot-only `provider.field` split. Source-aware parsing lives in `src/query.rs` |
+| `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`; `split_key()` — first-dot-only `provider.field` split. Source-aware parsing lives in `src/query.rs` |
 | `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` / `provider.source` / `provider.source.field`), `resolve_path`, `split_metadata_suffix`, and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
 | `src/config.rs` | TOML config loading from XDG directories; `Config`, `DaemonConfig`, `LifecycleConfig`, `ScriptProviderConfig`, `SourceOverrideConfig` |
 | `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `SourceScope`, `FieldSchema`, `InvalidationStrategy`, `KeepAlive`, `FailbackConfig`, `SourceResult`; `expand_abs_path()` helper |
@@ -86,7 +87,7 @@ This traces the full path from CLI invocation to output on stdout.
 
 **Step 1: CLI entry point**
 
-The `comb get` subcommand resolves the socket path (config override → `BEACHCOMBER_SOCKET` env → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`). If no socket exists, it calls `daemon::ensure_daemon()` which forks `comb daemon --socket <path>` as a detached child and waits up to ~1.5s for the socket to appear.
+The `comb get` subcommand resolves the socket path (config override → `BEACHCOMBER_SOCKET` env → `/tmp/beachcomber-<uid>/sock`). If no socket exists, it calls `daemon::ensure_daemon()` which forks `comb daemon --socket <path>` as a detached child and waits up to ~1.5s for the socket to appear.
 
 **Step 2: Socket connection**
 
@@ -96,13 +97,13 @@ The client opens a Unix stream to the socket. For a one-shot `comb get`, this is
 
 The CLI constructs:
 ```json
-{"op":"get","key":"git.branch","path":".","format":"text"}
+{"op":"get","key":"git.branch","path":"."}
 ```
 and writes it as a single newline-terminated line.
 
 **Step 4: Server receives the request**
 
-`Server::run()` has accepted the connection and spawned `handle_connection()` as a tokio task. The task reads lines from a `BufReader`, deserialises into `Request::Get { key: "git.branch", path: Some("."), format: Text }`.
+`Server::run()` has accepted the connection and spawned `handle_connection()` as a tokio task. The task reads lines from a `BufReader`, deserialises into `Request::Get { key: "git.branch", path: Some(".") }`.
 
 **Step 5: Key splitting**
 
@@ -122,11 +123,11 @@ The handler looks up the `refs` source (via the `field → source` reverse map f
 
 **Step 9: Response formatting**
 
-`format_response(&request, &response)` sees `Format::Text`. The data is a `serde_json::Value::String`, so it outputs the raw string followed by a newline — no JSON wrapper.
+The server sends the NDJSON response as-is; there is no server-side text/shell rendering. The CLI's own formatting layer converts the JSON `data` into the requested output form (text, shell, etc.) client-side.
 
 **Step 10: CLI prints and exits**
 
-The client reads the response line, strips metadata, and writes the plain text to stdout.
+The client reads the response line, strips metadata, and writes the formatted output to stdout.
 
 **On a cache miss:**
 
@@ -292,6 +293,10 @@ A `watch` request takes over the connection for the duration of the stream. The 
 **Field-level deduplication for watch**
 
 Watching `git.branch` only emits a line when the branch value itself changes, not on every git provider update. The watch handler records the last emitted value and skips writes when the new value is identical. This prevents spurious output when unrelated git fields (e.g., `ahead`, `dirty`) change.
+
+**Daemon singleton, self-supervision, and orphan reaping**
+
+At most one daemon runs per user. Enforcement is a pid file held under exclusive `flock` next to the socket: a starting daemon that finds the lock held compares build identities (SHA256 of the binary) — a different build supersedes the owner (SIGTERM, then SIGKILL); the same build probes the socket and exits silently if the owner is serving. The running daemon supervises its own binary two ways — an fs-event watch for fast reaction and a 5s mtime poll as the guarantee (fs-event streams can be created successfully and then silently deliver nothing) — and gracefully shuts down when the binary changes, so the next query respawns the new build. At startup the daemon also self-tests kernel event delivery; if events don't arrive, provider file-watching runs on a 1s polling backend instead, surfaced by `comb check daemon`. Finally, the daemon on the default (canonical) socket sweeps for orphaned `comb daemon` processes at startup and hourly, removing daemons that are reparented to PID 1 on sockets no client resolves — dev leftovers from killed test harnesses and deleted worktrees. Attended, self-cleaning (`--exit-with-parent`), and explicitly flagged (`--no-reap`) daemons are exempt. The authoritative spec is `docs/canon/singleton.md` in the repo.
 
 **Broadcast channels for watch subscribers**
 

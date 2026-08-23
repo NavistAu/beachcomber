@@ -152,36 +152,9 @@ impl Cache {
     ) -> Option<(Value, Instant)> {
         let key = make_cache_key(provider, path);
         let entry = self.entries.get(&key)?;
-        // Split into head (top-level field) and optional rest (nested sub-path).
-        let (head, rest) = field
-            .split_once('.')
-            .map(|(h, r)| (h, Some(r)))
-            .unwrap_or((field, None));
         for src in entry.sources.values() {
-            if let Some(top) = src.fields.get(head) {
-                if let Some(subpath) = rest {
-                    // Walk into nested Value::Object maps.
-                    let mut current = top.clone();
-                    let mut found = true;
-                    for seg in subpath.split('.') {
-                        let next = match &current {
-                            Value::Object(map) => map.get(seg).cloned(),
-                            _ => None,
-                        };
-                        match next {
-                            Some(v) => current = v,
-                            None => {
-                                found = false;
-                                break;
-                            }
-                        }
-                    }
-                    if found {
-                        return Some((current, src.last_refreshed));
-                    }
-                } else {
-                    return Some((top.clone(), src.last_refreshed));
-                }
+            if let Some(value) = crate::provider::lookup_path(&src.fields, field) {
+                return Some((value.clone(), src.last_refreshed));
             }
         }
         None
@@ -278,6 +251,7 @@ impl Cache {
                         keep_alive_polls: None,
                         fsevents_reinstate: None,
                         polls_elapsed: None,
+                        next_poll_in_secs: None,
                         failure: None,
                     });
                 }
@@ -345,6 +319,10 @@ pub struct CacheRow {
     pub fsevents_reinstate: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polls_elapsed: Option<u32>,
+    /// Seconds until this source's next scheduled poll. `None` for pure Watch
+    /// sources (no poll path) or when the lifecycle registry has no entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_poll_in_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<FailureSnapshot>,
 }

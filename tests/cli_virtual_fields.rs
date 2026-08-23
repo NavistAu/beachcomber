@@ -1,7 +1,7 @@
 //! Tests for the client-side virtual field evaluator (src/cli/virtual_fields.rs),
 //! the env.* resolver, the basename filter, and related format helpers.
 
-use beachcomber::cli::format::build_env;
+use libbeachcomber::filters::build_env;
 
 // ── basename filter ──────────────────────────────────────────────────────────
 
@@ -38,7 +38,7 @@ fn basename_filter_empty_string() {
     assert_eq!(result, "");
 }
 
-use beachcomber::cli::virtual_fields::{EvalContext, VirtualFields};
+use libbeachcomber::virtual_fields::{EvalContext, VirtualFields};
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -216,7 +216,7 @@ fn all_falsy_cascade_returns_empty_string() {
 fn ref_discovery_finds_all_refs_in_cascade() {
     // Guards against first-ref-only regression.
     // "env.A or provider.field or other.field2" must discover ALL three.
-    use beachcomber::cli::virtual_fields::{Ref, discover_expression_refs};
+    use libbeachcomber::virtual_fields::{Ref, discover_expression_refs};
     let refs = discover_expression_refs("env.A or provider.field or other.field2");
     assert!(refs.contains(&Ref::Env("A".into())), "env.A missing");
     assert!(
@@ -393,7 +393,7 @@ fn gcloud_project_cascade_no_self_cycle() {
 fn nested_ref_discovery_three_segments_returns_provider_and_second_segment() {
     // foo.object.key must yield Resolved("foo", "object") — deeper segments are MiniJinja
     // attribute navigation into the fetched value, not part of the daemon key.
-    use beachcomber::cli::virtual_fields::{Ref, discover_expression_refs};
+    use libbeachcomber::virtual_fields::{Ref, discover_expression_refs};
     let refs = discover_expression_refs("foo.object.key");
     assert_eq!(refs.len(), 1, "one ref expected; got: {refs:?}");
     assert!(
@@ -405,7 +405,7 @@ fn nested_ref_discovery_three_segments_returns_provider_and_second_segment() {
 #[test]
 fn nested_ref_discovery_four_segments_and_two_segment_ref() {
     // "a.b.c.d or env.X" → [Resolved("a", "b"), Env("X")]
-    use beachcomber::cli::virtual_fields::{Ref, discover_expression_refs};
+    use libbeachcomber::virtual_fields::{Ref, discover_expression_refs};
     let refs = discover_expression_refs("a.b.c.d or env.X");
     assert_eq!(refs.len(), 2, "two refs expected; got: {refs:?}");
     assert!(

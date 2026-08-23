@@ -1,0 +1,51 @@
+{
+  "name": "mapping_deep_nesting_at_boundary_stays_object",
+  "description": "MAX_JSON_DEPTH is 10 (src/provider/mod.rs). put stores an 11-level-deep {\"n\": ...} chain; the depth guard in Value::from_json_at checks `depth >= MAX_JSON_DEPTH` before recursing into an Object/Array, where depth starts at 0 for the field's own top-level value. Walking 9 more '.n' hops from the field lands on the value processed at depth 9 (< 10), which stays a real nested object whose own \"n\" field is where the boundary bites (see mapping_deep_nesting_past_boundary_flattens_to_text).",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "mapdepth",
+        "data": {
+          "d": {
+            "n": {
+              "n": {
+                "n": {
+                  "n": {
+                    "n": {
+                      "n": {
+                        "n": {
+                          "n": {
+                            "n": {
+                              "n": {
+                                "n": "leaf"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "test": {
+    "op": "get",
+    "args": {
+      "key": "mapdepth.d.n.n.n.n.n.n.n.n.n"
+    }
+  },
+  "expect": {
+    "status": "hit",
+    "data_type": "object",
+    "data_field_equals": {
+      "field": "n",
+      "value": "{\"n\":\"leaf\"}"
+    }
+  }
+}

@@ -3,7 +3,7 @@ use beachcomber::config::Config;
 use beachcomber::daemon;
 use tempfile::TempDir;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_get_hostname_via_daemon() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -13,7 +13,7 @@ async fn e2e_get_hostname_via_daemon() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let client = Client::new(sock.clone());
-    let response = client.get("hostname", None).await.unwrap();
+    let response = client.get("hostname", None).unwrap();
     assert!(response.ok, "Response should be ok");
     let data = response.data.unwrap();
     assert!(data["name"].is_string(), "hostname.name should be a string");
@@ -25,7 +25,7 @@ async fn e2e_get_hostname_via_daemon() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_get_hostname_single_field() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -35,7 +35,7 @@ async fn e2e_get_hostname_single_field() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let client = Client::new(sock.clone());
-    let response = client.get("hostname.short", None).await.unwrap();
+    let response = client.get("hostname.short", None).unwrap();
     assert!(response.ok);
     let short = response.data.unwrap();
     assert!(
@@ -46,7 +46,7 @@ async fn e2e_get_hostname_single_field() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_get_hostname_text_format() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -56,14 +56,14 @@ async fn e2e_get_hostname_text_format() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let client = Client::new(sock.clone());
-    let text = client.get_text("hostname.short", None).await.unwrap();
+    let text = client.get_text("hostname.short", None).unwrap();
     assert!(!text.is_empty(), "Text response should not be empty");
     assert!(!text.contains('{'), "Text format should not contain JSON");
 
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_get_user() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -73,7 +73,7 @@ async fn e2e_get_user() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let client = Client::new(sock.clone());
-    let response = client.get("user", None).await.unwrap();
+    let response = client.get("user", None).unwrap();
     assert!(response.ok);
     let data = response.data.unwrap();
     assert!(data["name"].is_string());
@@ -82,7 +82,7 @@ async fn e2e_get_user() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_refresh_and_get() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -93,10 +93,10 @@ async fn e2e_refresh_and_get() {
 
     let client = Client::new(sock.clone());
 
-    let refresh_resp = client.refresh("hostname", None).await.unwrap();
+    let refresh_resp = client.refresh("hostname", None).unwrap();
     assert!(refresh_resp.ok);
 
-    let response = client.get("hostname.name", None).await.unwrap();
+    let response = client.get("hostname.name", None).unwrap();
     assert!(response.ok);
     assert!(
         response.age_ms.unwrap() < 1000,
@@ -106,7 +106,7 @@ async fn e2e_refresh_and_get() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_unknown_provider() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -116,13 +116,19 @@ async fn e2e_unknown_provider() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let client = Client::new(sock.clone());
-    let response = client.get("nonexistent", None).await.unwrap();
+    let response = client.get("nonexistent", None).unwrap();
     assert!(!response.ok, "Unknown provider should return error");
 
     handle.abort();
 }
 
-#[tokio::test]
+// The 10 concurrent sync `Client` calls block, so they run on the blocking
+// pool (spawn_blocking), never on runtime workers — otherwise, on a machine
+// with fewer cores than clients (CI runners), the blockers occupy every
+// worker and the in-process daemon task starves: a real deadlock, observed
+// as a 30s test timeout on 2-4-core CI. With the blockers off the workers,
+// this test pins worker_threads = 2 like its siblings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_multiple_concurrent_clients() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -134,9 +140,9 @@ async fn e2e_multiple_concurrent_clients() {
     let mut handles = Vec::new();
     for _ in 0..10 {
         let sock = sock.clone();
-        handles.push(tokio::spawn(async move {
+        handles.push(tokio::task::spawn_blocking(move || {
             let client = Client::new(sock);
-            let response = client.get("hostname.name", None).await.unwrap();
+            let response = client.get("hostname.name", None).unwrap();
             assert!(response.ok);
             response.data.unwrap().as_str().unwrap().to_string()
         }));
@@ -158,7 +164,7 @@ async fn e2e_multiple_concurrent_clients() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_introspect_includes_pid_and_version() {
     // pid and version moved from Request::Status to Request::Introspect{daemon}.
     let tmp = TempDir::new().unwrap();

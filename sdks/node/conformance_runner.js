@@ -18,17 +18,17 @@
 
 'use strict';
 
-const fs = require('fs');
-const net = require('net');
-const path = require('path');
-const os = require('os');
-const { spawnSync, spawn } = require('child_process');
+import fs from 'fs';
+import net from 'net';
+import path from 'path';
+import os from 'os';
+import { spawnSync, spawn } from 'child_process';
 
 // ---------------------------------------------------------------------------
 // Path setup — import the SDK from compiled dist/ or via tsx if available.
 // ---------------------------------------------------------------------------
 
-const SDK_DIR = __dirname;
+const SDK_DIR = path.dirname(new URL(import.meta.url).pathname);
 const REPO_ROOT = path.resolve(SDK_DIR, '..', '..');
 const CONFORMANCE_DIR = path.join(REPO_ROOT, 'tests', 'conformance');
 const DIST_CLIENT = path.join(SDK_DIR, 'dist', 'client.js');
@@ -68,6 +68,11 @@ if (!fs.existsSync(DIST_CLIENT)) {
           setup: Array.isArray(v.setup) ? v.setup : [],
           test: v.test,
           expect: v.expect,
+          // `resolve`-op context: field/path expression overrides, env vars,
+          // and cwd, all client-side (see tests/conformance/README.md).
+          virtual: v.virtual && typeof v.virtual === 'object' ? v.virtual : {},
+          env: v.env && typeof v.env === 'object' ? v.env : {},
+          cwd: typeof v.cwd === 'string' ? v.cwd : null,
           sourcePath: filePath,
         });
       }
@@ -111,7 +116,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beachcomber-conform-'));
     const sockPath = path.join(tmpDir, 'comb.sock');
 
-    const proc = spawn(COMB_BIN, ['--socket', sockPath], {
+    const proc = spawn(COMB_BIN, ['daemon', '--socket', sockPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, COMB_SOCKET: sockPath },
     });
@@ -161,11 +166,23 @@ if (!fs.existsSync(DIST_CLIENT)) {
     return null;
   }
 
-  async function runOp(client, descriptor) {
+  async function runOp(client, descriptor, resolveCtx) {
     const { op, args } = descriptor;
 
     try {
       switch (op) {
+        case 'resolve': {
+          const key = args.key || '';
+          const data = await client.resolve(key, {
+            cwd: resolveCtx.cwd,
+            env: resolveCtx.env,
+            overrides: resolveCtx.virtual,
+          });
+          if (data === null || data === undefined) {
+            return makeOk();
+          }
+          return makeOk({ data, dataAsText: valueAsText(data) });
+        }
         case 'hello': {
           const info = await client.hello();
           const data = {
@@ -290,6 +307,20 @@ if (!fs.existsSync(DIST_CLIENT)) {
     }
   }
 
+  // Ops this runner's binding can execute. A fixture using any op outside
+  // this set must be skipped, not failed — the binding doesn't implement it.
+  const SUPPORTED_OPS = new Set([
+    'hello', 'get', 'refresh', 'put', 'status', 'context', 'watch', 'introspect', 'resolve',
+  ]);
+
+  function unsupportedOp(fixture) {
+    for (const step of fixture.setup) {
+      if (!SUPPORTED_OPS.has(step.op)) return step.op;
+    }
+    if (!SUPPORTED_OPS.has(fixture.test.op)) return fixture.test.op;
+    return null;
+  }
+
   // ---------------------------------------------------------------------------
   // Expectation checking
   // ---------------------------------------------------------------------------
@@ -308,9 +339,24 @@ if (!fs.existsSync(DIST_CLIENT)) {
     return JSON.stringify(a) === JSON.stringify(b);
   }
 
+  // Every expectation kind documented in tests/conformance/README.md. A
+  // fixture using a key outside this set fails loudly rather than being
+  // silently ignored — the whole point of this runner is to catch a
+  // fixture asserting something the harness doesn't actually check.
+  const KNOWN_EXPECT_KEYS = new Set([
+    'status', 'data_type', 'data_equals', 'data_as_text', 'data_contains_field',
+    'data_field_equals', 'age_ms_present', 'stale', 'error_contains',
+  ]);
+
   function checkExpect(fixture, resp) {
     const expect = fixture.expect;
     const failures = [];
+
+    const unknown = Object.keys(expect).filter((k) => !KNOWN_EXPECT_KEYS.has(k));
+    if (unknown.length > 0) {
+      failures.push(`fixture uses unknown expectation key(s) ${JSON.stringify(unknown)} — the runner has no check for them`);
+      return failures;
+    }
 
     // status
     if (expect.status) {
@@ -425,20 +471,38 @@ if (!fs.existsSync(DIST_CLIENT)) {
 
     const failures = [];
     let passed = 0;
+    let skipped = 0;
+    let transportUsed = null;
 
     for (const fixture of fixtures) {
+      const skipOp = unsupportedOp(fixture);
+      if (skipOp) {
+        console.log(`  SKIP [${fixture.name}]: unsupported op ${skipOp}`);
+        skipped++;
+        continue;
+      }
       let daemon = null;
       try {
         daemon = await spawnDaemon();
         const client = new Client({ socketPath: daemon.sockPath, timeoutMs: 5000 });
+        if (transportUsed === null) {
+          transportUsed = client.transport();
+        }
+        // `resolve` is client-side: cwd defaults to this fixture's private
+        // temp dir (matching the Rust reference runner) when not declared.
+        const resolveCtx = {
+          virtual: fixture.virtual,
+          env: fixture.env,
+          cwd: fixture.cwd ?? daemon.tmpDir,
+        };
 
         // Run setup ops, ignore their responses.
         for (const setupOp of fixture.setup) {
-          await runOp(client, setupOp);
+          await runOp(client, setupOp, resolveCtx);
         }
 
         // Run the test op and check expectations.
-        const resp = await runOp(client, fixture.test);
+        const resp = await runOp(client, fixture.test, resolveCtx);
         const expectFailures = checkExpect(fixture, resp);
 
         if (expectFailures.length > 0) {
@@ -469,7 +533,8 @@ if (!fs.existsSync(DIST_CLIENT)) {
       }
     }
 
-    console.log(`\nResults: ${passed}/${fixtures.length} passed.`);
+    console.log(`\nResults: ${passed}/${fixtures.length} passed, ${skipped} skipped.`);
+    console.log(`Transport: ${transportUsed}`);
 
     if (failures.length > 0) {
       console.error(`\n${failures.length} conformance failure(s):`);

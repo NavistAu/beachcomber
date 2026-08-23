@@ -21,8 +21,13 @@ fn xdg_runtime_dir_matches_env() {
 }
 
 #[test]
-fn default_socket_path_does_not_panic() {
+fn default_socket_path_is_stable_per_user() {
     let d = RealSocketDiscovery;
-    // Just confirm it returns without panicking; the actual path depends on env state.
-    let _ = d.default_socket_path();
+    // Resolution consults no session-scoped environment, so the result is
+    // deterministic: /tmp/beachcomber-<uid>/sock regardless of env state.
+    let uid = unsafe { libc::getuid() };
+    assert_eq!(
+        d.default_socket_path(),
+        std::path::PathBuf::from(format!("/tmp/beachcomber-{uid}/sock"))
+    );
 }

@@ -1,0 +1,26 @@
+{
+  "name": "mapping_nul_byte_round_trips_in_string",
+  "description": "put stores a string with an embedded NUL byte (\\u0000 mid-string). The wire and the C ABI never carry a literal NUL inside a C string for this: JSON escaping represents it as the 6-byte sequence \\u0000, so bc_put/bc_get's `char *json_data` parameters are always NUL-terminated at the end of the JSON text, never truncated early by the embedded byte. Verified directly against the daemon: a put-then-get round trip returns the full string unmodified. Every binding whose native string type is 8-bit-clean (not itself NUL-terminated) must decode the full value. The C SDK ships no JSON code of its own (sdks/c/runner_json.h docblock) -- conformance_runner.c's own throwaway JSON parser stores strings as C char* and its equality checks are length-aware (str_len-tracked, memcmp-based) specifically so this fixture proves something rather than accidentally passing via truncated strcmp.",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "mapfix_nul",
+        "data": {
+          "v": "a\u0000b"
+        }
+      }
+    }
+  ],
+  "test": {
+    "op": "get",
+    "args": {
+      "key": "mapfix_nul.v"
+    }
+  },
+  "expect": {
+    "status": "hit",
+    "data_type": "string",
+    "data_equals": "a\u0000b"
+  }
+}

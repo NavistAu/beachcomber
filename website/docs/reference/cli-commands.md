@@ -161,7 +161,7 @@ A `◉` trailing indicator means `fsevents_reinstate=true` — a filesystem even
 
 The default output preset is `human` (coloured table) regardless of whether stdout is a TTY. Scripts that want tab-separated data should pass `-f tsv` explicitly. The `WATCH_INTERVAL` environment variable (set automatically by `watch(1)`) also enables colour when stdout is not a TTY.
 
-Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
+Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts, watch backend). The watch backend line reports `native fs events` when the startup self-test confirmed kernel event delivery, or a WARN with `polling` when it didn't — provider file-watching still works, invalidating on a 1s scan instead of kernel events.
 
 ## `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--null]`
 
@@ -260,11 +260,11 @@ Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
 
 **Exit codes:** `0` if healthy, `1` if unhealthy, `2` on error.
 
-## `comb d` (daemon) `[--socket <path>]`
+## `comb d` (daemon) `[--socket <path>] [--no-reap]`
 
 Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
 
-Socket path resolution order: `daemon.socket_path` in config → `BEACHCOMBER_SOCKET` env var → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`.
+Socket path resolution order: `daemon.socket_path` in config → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock`.
 
 ```sh
 # Run with debug logging
@@ -275,6 +275,8 @@ comb d --socket /tmp/beachcomber-debug.sock
 ```
 
 The daemon exits cleanly on SIGINT (Ctrl+C) or SIGTERM. Prefer `comb kill` from another shell rather than signalling manually.
+
+**One daemon per user.** The daemon whose socket matches its own resolution above is the *canonical* daemon. It removes orphaned `comb daemon` processes (reparented to PID 1, on sockets nothing resolves) at startup and hourly. A foreground debug run under your shell is never touched; a daemon you run under a supervisor on a *non-default* socket is parented to PID 1, so mark it exempt with `--no-reap`. Full rules in the repo's `docs/canon/singleton.md`.
 
 ## `comb k` (kill) `[--timeout <secs>] [--socket <path>]`
 

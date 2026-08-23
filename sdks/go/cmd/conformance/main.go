@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -51,12 +52,15 @@ type expectBlock struct {
 }
 
 type fixture struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Setup       []opDescriptor `json:"setup"`
-	Test        opDescriptor   `json:"test"`
-	Expect      expectBlock    `json:"expect"`
-	path        string         // source file path (not in JSON)
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Setup       []opDescriptor    `json:"setup"`
+	Test        opDescriptor      `json:"test"`
+	Expect      expectBlock       `json:"expect"`
+	Virtual     map[string]string `json:"virtual"` // resolve fixtures: field/provider key -> expression override
+	Env         map[string]string `json:"env"`     // resolve fixtures: env.* refs
+	Cwd         string            `json:"cwd"`     // resolve fixtures: cwd for path expressions; defaults to the per-fixture temp dir
+	path        string            // source file path (not in JSON)
 }
 
 // ---------------------------------------------------------------------------
@@ -90,8 +94,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	passed, failed := 0, 0
+	passed, failed, skipped := 0, 0, 0
 	for _, f := range fixtures {
+		if op := unsupportedOp(f); op != "" {
+			fmt.Printf("SKIP %s: unsupported op %q\n", f.Name, op)
+			skipped++
+			continue
+		}
 		ok, msg := runFixture(f, combBin)
 		if ok {
 			fmt.Printf("[PASS] %s\n", f.Name)
@@ -102,10 +111,33 @@ func main() {
 		}
 	}
 
-	fmt.Printf("\n%d/%d fixtures passed\n", passed, passed+failed)
+	fmt.Printf("\n%d/%d fixtures passed (%d skipped)\n", passed, passed+failed, skipped)
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// supportedOps are the ops this runner's binding can execute. A fixture
+// using any op outside this set must be skipped, not failed — the binding
+// doesn't implement it yet.
+var supportedOps = map[string]bool{
+	"hello": true, "get": true, "refresh": true, "put": true,
+	"status": true, "context": true, "watch": true, "introspect": true,
+	"resolve": true,
+}
+
+// unsupportedOp returns the first op in f (setup or test) this runner can't
+// execute, or "" if every op is supported.
+func unsupportedOp(f fixture) string {
+	for _, op := range f.Setup {
+		if !supportedOps[op.Op] {
+			return op.Op
+		}
+	}
+	if !supportedOps[f.Test.Op] {
+		return f.Test.Op
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -142,8 +174,15 @@ func loadFixtures(dir string) ([]fixture, error) {
 		if err != nil {
 			return err
 		}
+		// DisallowUnknownFields catches a fixture using an expectation key
+		// this runner doesn't check for (e.g. a typo, or a documented kind
+		// added to tests/conformance/README.md that expectBlock hasn't
+		// grown a field for yet) — it fails loudly at load time instead of
+		// silently skipping the assertion.
 		var f fixture
-		if err := json.Unmarshal(data, &f); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&f); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
 		f.path = path
@@ -237,7 +276,7 @@ func runFixture(f fixture, combBin string) (bool, string) {
 	}
 
 	// Run the test op and collect the result.
-	result, watchEvent, serverErr := runTestOp(client, f.Test)
+	result, watchEvent, serverErr := runTestOp(client, f, tmpDir)
 	return checkExpect(f.Expect, result, watchEvent, serverErr)
 }
 
@@ -245,7 +284,7 @@ func runFixture(f fixture, combBin string) (bool, string) {
 type opResult struct {
 	data     interface{}
 	ageMs    uint64
-	ageMsSet bool // true when daemon sent age_ms (non-zero or explicitly 0 is ambiguous — use >0)
+	ageMsSet bool // true when the daemon response contained an age_ms key (checked in the raw JSON; the value 0 is a real age)
 	stale    bool
 }
 
@@ -281,12 +320,28 @@ func runOp(c *beachcomber.Client, op opDescriptor, _ *opResult, _ *expectBlock) 
 	return nil
 }
 
-// runTestOp executes the test op and returns:
+// runTestOp executes fixture's test op and returns:
 //   - result (*opResult) when the op returns data
 //   - watchEvent (*beachcomber.WatchEvent) for watch ops
 //   - serverErr (error) when the daemon returns an error
-func runTestOp(c *beachcomber.Client, op opDescriptor) (*opResult, *beachcomber.WatchEvent, error) {
+//
+// tmpDir is the fixture's per-run temp directory, used as the default cwd
+// for resolve fixtures that don't declare their own.
+func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *beachcomber.WatchEvent, error) {
+	op := f.Test
 	switch op.Op {
+	case "resolve":
+		key, _ := op.Args["key"].(string)
+		cwd := f.Cwd
+		if cwd == "" {
+			cwd = tmpDir
+		}
+		r, err := c.Resolve(key, cwd, f.Env, f.Virtual)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &opResult{data: r.Data}, nil, nil
+
 	case "hello":
 		info, err := c.Hello()
 		if err != nil {
@@ -393,9 +448,15 @@ func resultFromSDK(r *beachcomber.Result) *opResult {
 		data:  r.Data,
 		stale: r.Stale,
 	}
-	if r.AgeMs > 0 {
-		or.ageMs = r.AgeMs
-		or.ageMsSet = true
+	// Presence must come from the wire, not the value: age_ms=0 is a real
+	// age (put-then-get within the same millisecond), so AgeMs > 0 misreads
+	// it as absent. Probe the raw JSON for the key instead.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(r.RawJSON(), &probe); err == nil {
+		if _, ok := probe["age_ms"]; ok {
+			or.ageMs = r.AgeMs
+			or.ageMsSet = true
+		}
 	}
 	return or
 }

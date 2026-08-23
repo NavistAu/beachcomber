@@ -1,6 +1,6 @@
 # `comb status` UX Redesign — TTL column
 
-**Status:** implemented 2026-04-24 (target release: next release). Implementation design at `docs/superpowers/specs/2026-04-24-comb-status-ttl-design.md`. Visual design below remains the source of truth for the rendering.
+**Status:** implemented 2026-04-24; extended 2026-08-23 — the TTL cell gained a humanized total time-to-eviction segment (`<lead> Ps×K (total) <indicator>`), the next-poll countdown moved to a dedicated POLL column placed before TTL, failing rows render `⚠ #N` with the retry countdown in POLL, and `$HOME` paths compact to `~` in the human preset. The rendering source of truth is now `src/cli/status_format.rs` and its pinned tests; the current legend is in `comb status --help`. The design below is the 2026-04-24 record and describes the pre-extension cell.
 
 **Source:** brainstorm session 2026-04-23/24, refined and approved 2026-04-24. Authoritative design directive from user: the `comb status` output must carry the full lifecycle story per row, render well under `watch(1)`, and let you watch entries evolve (fresh → stale, Active → Decay → eviction) live.
 

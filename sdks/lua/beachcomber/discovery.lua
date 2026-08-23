@@ -1,60 +1,81 @@
---- Socket path discovery for the beachcomber daemon.
+--- Shared discovery helpers for the beachcomber Lua SDK.
 --
--- Mirrors the daemon's bind-path resolution (Config::resolve_socket_path),
--- minus the config-file step which is daemon-only. Discovery order:
--- 1. $BEACHCOMBER_SOCKET  (if set and non-empty)
--- 2. $XDG_RUNTIME_DIR/beachcomber/sock  (if XDG_RUNTIME_DIR is set)
--- 3. /tmp/beachcomber-<uid>/sock
+-- Two independent things are discovered here:
 --
--- There is no existence probe and $TMPDIR is not consulted: the result is the
--- single path the daemon binds for the same environment. Non-standard setups
--- point clients at the daemon via BEACHCOMBER_SOCKET.
+-- 1. The `comb` binary on `$PATH` — used both by the subprocess transport
+--    (which shells out to it for every op) and by the ffi transport's
+--    library discovery (step 2: `../lib/` relative to the resolved `comb`).
+-- 2. The library candidate list for the ffi transport (see
+--    `beachcomber.ffi` for the load/verify loop that consumes it) —
+--    `library_candidates()` below.
+--
+-- Library discovery order (the seven-point common contract, point 1):
+--   1. `$BEACHCOMBER_LIB`
+--   2. `../lib/<platform name>` relative to the resolved `comb` on `$PATH`
+--   3. the platform default dynamic-linker search path (bare library name)
+--
+-- This mirrors the daemon's `../lib/` packaging convention (Homebrew-style
+-- `bin/` + `lib/` siblings under one prefix) — see docs/superpowers/plans/
+-- 2026-08-15-client-abi-and-sdk-refactor.md, Phase 4 common contract.
 
 local M = {}
 
---- Return the effective user ID.
--- Uses io.popen("id -u") which works on macOS and Linux.
--- @return number uid, or nil, error_message
-function M.get_uid()
-  local f, err = io.popen("id -u 2>/dev/null")
-  if not f then
-    return nil, "id -u failed: " .. (err or "unknown")
+--- Find the `comb` binary on `$PATH`.
+-- @return string|nil absolute path to the first `comb` found on PATH
+function M.find_comb_on_path()
+  local path = os.getenv("PATH") or ""
+  for dir in path:gmatch("[^:]+") do
+    local candidate = dir .. "/comb"
+    local f = io.open(candidate, "r")
+    if f then
+      f:close()
+      return candidate
+    end
   end
-  local out = f:read("*l")
-  f:close()
-  if not out then
-    return nil, "id -u produced no output"
-  end
-  local uid = tonumber(out)
-  if not uid then
-    return nil, "id -u returned non-numeric: " .. tostring(out)
-  end
-  return uid
+  return nil
 end
 
---- Return the expected socket path for the running daemon.
---
--- Resolves to the single path the daemon binds for the current environment.
--- Callers are responsible for verifying the socket is actually reachable.
---
--- @return string path, or nil, error_message
-function M.discover_socket_path()
-  local sock = os.getenv("BEACHCOMBER_SOCKET")
-  if sock and sock ~= "" then
-    return sock
+--- Return the platform-appropriate shared library filename.
+-- Requires LuaJIT's `ffi` module (for `ffi.os`) — only meaningful for the
+-- ffi transport, which is the only caller.
+-- @param ffi_os string  LuaJIT's `ffi.os` value ("OSX", "Linux", "Windows", ...)
+-- @return string
+function M.platform_lib_filename(ffi_os)
+  if ffi_os == "OSX" then
+    return "libbeachcomber.dylib"
+  elseif ffi_os == "Windows" then
+    return "beachcomber.dll"
+  end
+  return "libbeachcomber.so" -- Linux, BSD, POSIX
+end
+
+--- Build the ordered list of library candidates the ffi transport should
+-- try, per the discovery contract above. Every candidate is returned
+-- (there is no existence probe here — `ffi.load` itself is the probe;
+-- see beachcomber.ffi), so the caller can report every path it tried on a
+-- loud discovery failure.
+-- @param ffi_os string  LuaJIT's `ffi.os` value
+-- @return string[] ordered candidate list
+function M.library_candidates(ffi_os)
+  local libname = M.platform_lib_filename(ffi_os)
+  local candidates = {}
+
+  local env_lib = os.getenv("BEACHCOMBER_LIB")
+  if env_lib and env_lib ~= "" then
+    candidates[#candidates + 1] = env_lib
   end
 
-  local xdg = os.getenv("XDG_RUNTIME_DIR")
-  if xdg and xdg ~= "" then
-    return xdg .. "/beachcomber/sock"
+  local comb_path = M.find_comb_on_path()
+  if comb_path then
+    local comb_dir = comb_path:match("^(.*)/[^/]+$") or "."
+    candidates[#candidates + 1] = comb_dir .. "/../lib/" .. libname
   end
 
-  local uid, err = M.get_uid()
-  if not uid then
-    return nil, "socket path discovery: could not determine uid: " .. err
-  end
+  -- Platform default search path: the bare library name, letting the
+  -- dynamic linker (dyld / ld.so) search its own default locations.
+  candidates[#candidates + 1] = libname
 
-  return "/tmp/beachcomber-" .. uid .. "/sock"
+  return candidates
 end
 
 return M

@@ -279,6 +279,204 @@ pub fn acquire_or_supersede_with(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Orphan reaping — canonical daemon only. See docs/canon/singleton.md
+// §"Orphan reaping".
+// ---------------------------------------------------------------------------
+
+/// Grace age below which a candidate is never reaped (canon: 60s).
+pub const REAP_GRACE_AGE_SECS: u64 = 60;
+
+/// Outcome of one reap sweep. Feeds the canon-mandated per-sweep summary log
+/// and the reaper health counters (canon singleton.md invariant 13): a sweep
+/// that found nothing eligible must be distinguishable from a sweep that
+/// could not see anything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SweepReport {
+    /// Uid-owned rows the process table returned.
+    pub rows_enumerated: usize,
+    /// Rows matching `comb daemon` argv (exemption rules apply to these).
+    pub candidates: usize,
+    /// Exemption tallies by matched rule, insertion-ordered.
+    pub exemptions: Vec<(&'static str, usize)>,
+    /// Pids successfully reaped.
+    pub reaped: Vec<u32>,
+    /// Kill attempts denied by the OS (EPERM — degraded signal capability).
+    pub kill_denied: u32,
+    /// Kill attempts failing for any other reason.
+    pub kill_failed: u32,
+    /// Reaper visibility self-test at this sweep: PID 1 present in the raw
+    /// enumeration (canon §"Reaper visibility self-test").
+    pub pid1_visible: bool,
+    /// Reaped orphans whose corpse files (socket + pid files) were removed
+    /// (canon §"Corpse cleanup", invariant 14).
+    pub corpses_unlinked: u32,
+}
+
+impl SweepReport {
+    fn tally(&mut self, rule: &'static str) {
+        match self.exemptions.iter_mut().find(|(r, _)| *r == rule) {
+            Some((_, n)) => *n += 1,
+            None => self.exemptions.push((rule, 1)),
+        }
+    }
+}
+
+/// Shared reaper health state — written by the canonical daemon's reap loop,
+/// read by the server's introspect handler. Backs canon singleton.md
+/// invariant 13 ("reaper capability is never silently degraded"): the
+/// visibility self-test verdict and OS-denied kill counts are observable via
+/// `comb check daemon`, `comb status`, and introspect `reaper`.
+#[derive(Debug, Default)]
+pub struct ReaperHealth {
+    /// True once the reap loop is armed (canonical daemon only). Side daemons
+    /// and embedded/test servers never arm; their introspect reports reflect that.
+    pub armed: std::sync::atomic::AtomicBool,
+    /// Most recent visibility self-test verdict (PID 1 present in raw
+    /// enumeration). Only meaningful once `armed`.
+    pub visibility_ok: std::sync::atomic::AtomicBool,
+    pub sweeps_total: std::sync::atomic::AtomicU64,
+    pub reaped_total: std::sync::atomic::AtomicU64,
+    /// Reap kills denied by the OS (EPERM) — degraded signal capability.
+    pub kill_denied_total: std::sync::atomic::AtomicU64,
+}
+
+impl ReaperHealth {
+    /// Fold one sweep's outcome into the counters.
+    pub fn record_sweep(&self, report: &SweepReport) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.sweeps_total.fetch_add(1, Relaxed);
+        self.reaped_total
+            .fetch_add(report.reaped.len() as u64, Relaxed);
+        self.kill_denied_total
+            .fetch_add(u64::from(report.kill_denied), Relaxed);
+        self.visibility_ok.store(report.pid1_visible, Relaxed);
+    }
+}
+
+/// Run one reap sweep with injected boundaries. For each uid-owned process,
+/// `decide_reap` applies the canon exemption rules; orphans are killed via
+/// `kill` (SIGTERM → 1s grace → SIGKILL in production). Evaluates the
+/// visibility self-test and logs the canon-mandated per-sweep summary at
+/// debug level. Returns the full report.
+pub fn reap_sweep_with(
+    table: &dyn crate::boundaries::proc_table::ProcessTable,
+    kill: &dyn Fn(u32) -> std::io::Result<()>,
+    cleanup: &dyn Fn(&Path) -> bool,
+    ctx: &policy::ReapContext,
+) -> SweepReport {
+    let mut report = SweepReport {
+        pid1_visible: table.pid1_visible(),
+        ..SweepReport::default()
+    };
+
+    for candidate in table.list_own() {
+        report.rows_enumerated += 1;
+        match policy::decide_reap(&candidate, ctx) {
+            policy::ReapDecision::Reap => {
+                report.candidates += 1;
+                let exe = candidate.argv.first().map(String::as_str).unwrap_or("?");
+                let socket = policy::socket_arg(&candidate.argv).unwrap_or_default();
+                match kill(candidate.pid) {
+                    Ok(()) => {
+                        tracing::info!(
+                            pid = candidate.pid,
+                            exe,
+                            socket = %socket.display(),
+                            "reaped orphan daemon"
+                        );
+                        report.reaped.push(candidate.pid);
+                        // Corpse cleanup (canon §"Corpse cleanup"): remove the
+                        // dead orphan's socket + pid files so existence-probing
+                        // clients cannot re-latch onto the path.
+                        if !socket.as_os_str().is_empty() && cleanup(&socket) {
+                            report.corpses_unlinked += 1;
+                        }
+                    }
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::PermissionDenied {
+                            report.kill_denied += 1;
+                        } else {
+                            report.kill_failed += 1;
+                        }
+                        tracing::warn!(pid = candidate.pid, exe, "failed to reap orphan: {e}");
+                    }
+                }
+            }
+            policy::ReapDecision::Exempt("not a comb daemon") => {}
+            policy::ReapDecision::Exempt(rule) => {
+                report.candidates += 1;
+                report.tally(rule);
+            }
+        }
+    }
+
+    tracing::debug!(
+        rows = report.rows_enumerated,
+        candidates = report.candidates,
+        exemptions = ?report.exemptions,
+        reaped = ?report.reaped,
+        kill_denied = report.kill_denied,
+        kill_failed = report.kill_failed,
+        pid1_visible = report.pid1_visible,
+        corpses_unlinked = report.corpses_unlinked,
+        "reap sweep summary"
+    );
+
+    report
+}
+
+/// Remove a reaped orphan's corpse files: the socket itself and the sibling
+/// `pid` / `daemon.pid` files. Probes first and NEVER unlinks a serving
+/// socket — a racing respawn that re-bound the path between kill and cleanup
+/// keeps its socket (canon §"Corpse cleanup", invariant 14). Returns true if
+/// anything was removed.
+pub fn cleanup_orphan_corpse(
+    probe: &dyn crate::boundaries::socket::SocketProbe,
+    socket: &Path,
+) -> bool {
+    if probe.is_serving(socket) {
+        tracing::info!(socket = %socket.display(), "corpse cleanup skipped: socket is serving again");
+        return false;
+    }
+    let mut removed = false;
+    for path in [
+        socket.to_path_buf(),
+        socket.with_file_name("pid"),
+        socket.with_file_name("daemon.pid"),
+    ] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed = true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "corpse cleanup failed: {e}");
+            }
+        }
+    }
+    if removed {
+        tracing::info!(socket = %socket.display(), "removed reaped orphan's corpse files");
+    }
+    removed
+}
+
+/// Production reap sweep: real process table, `supersede_existing` kill
+/// semantics (SIGTERM, 1s grace, SIGKILL; already-dead is Ok), corpse cleanup
+/// with a real serving probe. Called by the reaping daemon on entering
+/// Running and hourly thereafter.
+pub fn reap_sweep(our_socket: &Path) -> SweepReport {
+    let ctx = policy::ReapContext {
+        our_pid: std::process::id(),
+        our_socket: our_socket.to_path_buf(),
+        grace_age_secs: REAP_GRACE_AGE_SECS,
+    };
+    reap_sweep_with(
+        &crate::boundaries::proc_table::RealProcessTable,
+        &|pid| supersede_existing(pid, Duration::from_secs(1)),
+        &|socket| cleanup_orphan_corpse(&crate::boundaries::socket::RealSocketProbe, socket),
+        &ctx,
+    )
+}
+
 /// Spawn a thread that watches `current_exe()`. When the binary is modified
 /// (after a 200ms debounce window), calls `on_change` once. The watcher thread
 /// exits after firing (one-shot).
@@ -287,45 +485,87 @@ pub fn acquire_or_supersede_with(
 /// thread itself logs and exits silently on internal failures (like the
 /// notify channel disconnecting).
 pub fn spawn_binary_self_watch<F: FnOnce() + Send + 'static>(on_change: F) -> std::io::Result<()> {
-    use notify::{EventKind, RecursiveMode, Watcher};
-    use std::sync::mpsc;
-    use std::time::{Duration, Instant};
-
     let exe = std::env::current_exe()?;
     // Canonicalize so we match what the fs-watcher reports (resolves /tmp → /private/tmp on macOS).
     let exe = exe.canonicalize().unwrap_or(exe);
+    spawn_binary_self_watch_with(exe, SELF_WATCH_POLL_INTERVAL, true, on_change);
+    Ok(())
+}
+
+/// Self-watch poll interval (canon: 5s). The poll is the guarantee; the
+/// fs-event watch is only the fast path.
+pub const SELF_WATCH_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Parameterised self-watch: `exe` to supervise, `poll_interval`, and whether
+/// to attempt the fs-event fast path (`fs_events: false` is the degraded mode
+/// the mtime poll exists for — a stream created without error that delivers
+/// nothing, as on sandboxed CI hosts or under a degraded fseventsd). Tests
+/// use this seam directly; production goes through
+/// [`spawn_binary_self_watch`].
+pub fn spawn_binary_self_watch_with<F: FnOnce() + Send + 'static>(
+    exe: PathBuf,
+    poll_interval: Duration,
+    fs_events: bool,
+    on_change: F,
+) {
+    use notify::{EventKind, RecursiveMode, Watcher};
+    use std::sync::mpsc;
 
     std::thread::spawn(move || {
+        let start_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        // Watcher setup failure is a degradation, not a defeat: the poll
+        // below runs regardless (canon §"Self-supervision").
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
-        let mut watcher = match notify::recommended_watcher(tx) {
-            Ok(w) => w,
-            Err(e) => {
-                tracing::error!("failed to create fs watcher for self-watch: {e}");
-                return;
+        let watcher = if fs_events {
+            match (notify::recommended_watcher(tx), exe.parent()) {
+                (Ok(mut w), Some(parent)) => match w.watch(parent, RecursiveMode::NonRecursive) {
+                    Ok(()) => {
+                        tracing::debug!("self-watch: watching {parent:?} for changes to {exe:?}");
+                        Some(w)
+                    }
+                    Err(e) => {
+                        tracing::warn!("self-watch: failed to watch {parent:?}: {e}; poll only");
+                        None
+                    }
+                },
+                (Err(e), _) => {
+                    tracing::warn!("self-watch: failed to create fs watcher: {e}; poll only");
+                    None
+                }
+                (_, None) => {
+                    tracing::warn!("self-watch: current_exe has no parent: {exe:?}; poll only");
+                    None
+                }
             }
+        } else {
+            None
         };
-        let parent = match exe.parent() {
-            Some(p) => p.to_path_buf(),
-            None => {
-                tracing::error!("current_exe has no parent: {exe:?}");
-                return;
-            }
-        };
-        tracing::debug!("self-watch: watching {parent:?} for changes to {exe:?}");
-        if let Err(e) = watcher.watch(&parent, RecursiveMode::NonRecursive) {
-            tracing::error!("failed to watch {parent:?}: {e}");
+
+        if watcher.is_none() {
+            poll_until_changed(&exe, poll_interval, start_unix_ms);
+            tracing::info!("daemon binary changed (mtime poll); initiating graceful shutdown");
+            on_change();
             return;
         }
+        let _watcher = watcher;
 
-        let mut last_event: Option<Instant> = None;
         let debounce = Duration::from_millis(200);
+        let mut last_event: Option<Instant> = None;
+        let mut next_poll = Instant::now() + poll_interval;
 
         loop {
-            let timeout = last_event
-                .map(|t| (t + debounce).saturating_duration_since(Instant::now()))
-                .unwrap_or(Duration::from_secs(60));
+            let now = Instant::now();
+            let debounce_deadline = last_event.map(|t| t + debounce);
+            let wake = match debounce_deadline {
+                Some(d) => d.min(next_poll),
+                None => next_poll,
+            };
 
-            match rx.recv_timeout(timeout) {
+            match rx.recv_timeout(wake.saturating_duration_since(now)) {
                 Ok(Ok(event)) => {
                     tracing::debug!(
                         "self-watch event: kind={:?} paths={:?}",
@@ -350,20 +590,47 @@ pub fn spawn_binary_self_watch<F: FnOnce() + Send + 'static>(on_change: F) -> st
                     tracing::error!("fs-watch error: {e}");
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Some(t) = last_event
-                        && Instant::now() >= t + debounce
+                    if let Some(d) = debounce_deadline
+                        && Instant::now() >= d
                     {
                         tracing::info!("daemon binary changed; initiating graceful shutdown");
                         on_change();
                         return; // one-shot
                     }
+                    if Instant::now() >= next_poll {
+                        next_poll = Instant::now() + poll_interval;
+                        if matches!(binary_newer_than(&exe, start_unix_ms), Ok(true)) {
+                            tracing::info!(
+                                "daemon binary changed (mtime poll); initiating graceful shutdown"
+                            );
+                            on_change();
+                            return; // one-shot
+                        }
+                    }
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // Event channel gone mid-run; the poll carries on alone.
+                    poll_until_changed(&exe, poll_interval, start_unix_ms);
+                    tracing::info!(
+                        "daemon binary changed (mtime poll); initiating graceful shutdown"
+                    );
+                    on_change();
+                    return;
+                }
             }
         }
     });
+}
 
-    Ok(())
+/// Block until `exe`'s mtime is newer than `start_unix_ms`, checking every
+/// `poll_interval`. Stat failures (e.g. deleted binary) are not a change.
+fn poll_until_changed(exe: &Path, poll_interval: Duration, start_unix_ms: u64) {
+    loop {
+        std::thread::sleep(poll_interval);
+        if matches!(binary_newer_than(exe, start_unix_ms), Ok(true)) {
+            return;
+        }
+    }
 }
 
 /// Returns true iff `binary`'s mtime is strictly newer than `process_start_unix_ms`.

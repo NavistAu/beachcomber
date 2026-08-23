@@ -67,7 +67,7 @@ fn bench_socket_roundtrip_cold(c: &mut Criterion) {
             let sock = server.sock.clone();
             async move {
                 let client = Client::new(sock);
-                let resp = client.get("hostname.name", None).await.unwrap();
+                let resp = client.get("hostname.name", None).unwrap();
                 criterion::black_box(resp);
             }
         })
@@ -83,7 +83,7 @@ fn bench_socket_roundtrip_text(c: &mut Criterion) {
             let sock = server.sock.clone();
             async move {
                 let client = Client::new(sock);
-                let text = client.get_text("hostname.name", None).await.unwrap();
+                let text = client.get_text("hostname.name", None).unwrap();
                 criterion::black_box(text);
             }
         })
@@ -99,7 +99,7 @@ fn bench_socket_refresh(c: &mut Criterion) {
             let sock = server.sock.clone();
             async move {
                 let client = Client::new(sock);
-                let resp = client.refresh("hostname", None).await.unwrap();
+                let resp = client.refresh("hostname", None).unwrap();
                 criterion::black_box(resp);
             }
         })
@@ -143,9 +143,9 @@ fn bench_socket_session_gets(c: &mut Criterion) {
             let sock = server.sock.clone();
             async move {
                 let client = Client::new(sock);
-                let mut session = client.connect().await.unwrap();
+                let mut session = client.connect().unwrap();
                 for _ in 0..10 {
-                    let resp = session.get("hostname.name", None).await.unwrap();
+                    let resp = session.get("hostname.name", None).unwrap();
                     criterion::black_box(resp);
                 }
             }

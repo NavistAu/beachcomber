@@ -1,0 +1,8 @@
+{
+  "name": "resolve_path_expression_selects_workspace_a",
+  "description": "A path expression evaluated over a supplied cwd selects the matching branch.",
+  "virtual": { "myproject": "'workspace-a' if cwd == '/Users/x/repo-a' else 'workspace-b'" },
+  "cwd": "/Users/x/repo-a",
+  "test": { "op": "resolve", "args": { "key": "myproject" } },
+  "expect": { "status": "hit", "data_type": "string", "data_equals": "workspace-a" }
+}

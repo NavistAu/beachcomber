@@ -291,3 +291,4 @@ When modifying beachcomber, verify these properties:
 - [ ] Provider execution does not block the scheduler loop (must use `spawn_blocking`)
 - [ ] New providers that shell out document why a file read is not feasible
 - [ ] Throughput sustains >30k req/s at 100 concurrent clients (run `cargo bench --bench throughput`)
+- [ ] CLI invocation (`comb get` against a running daemon) stays under 6ms median (run `cargo bench --bench cli`; baseline `pre-sync` measured ~4.0ms median / ~4.35ms mean — process spawn benchmarks are noisier than in-process ones)

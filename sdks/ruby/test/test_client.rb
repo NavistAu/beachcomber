@@ -106,9 +106,15 @@ class TestClient < Minitest::Test
 
   # --- connection error ---
 
+  # An explicit-but-unreachable socket_path surfaces as
+  # Beachcomber::ConnectionFailedError (the shared client's
+  # CombError::ConnectionFailed) rather than DaemonNotRunning, which is
+  # reserved for the no-override, autostart-disabled default-discovery path.
+  # Both share the CombError ancestor and carry a `kind`.
   def test_daemon_not_running_when_no_socket
     client = Beachcomber::Client.new(socket_path: '/tmp/beachcomber-no-such-socket-xyz/sock')
-    assert_raises(Beachcomber::DaemonNotRunning) { client.get('git.branch') }
+    err = assert_raises(Beachcomber::CombError) { client.get('git.branch') }
+    assert_includes %w[connection_failed daemon_not_running], err.kind
   end
 
   # --- protocol errors ---

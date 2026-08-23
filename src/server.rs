@@ -1,6 +1,6 @@
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::protocol::{self, Format, IntrospectSubject, Request, Response};
+use crate::protocol::{self, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::{InvalidationStrategy, SourceScope};
 use crate::query::{KeyParse, resolve_path};
@@ -26,6 +26,9 @@ pub struct Server {
     start_instant: Instant,
     requests_total: Arc<AtomicU64>,
     config: Arc<Config>,
+    /// Reaper health, present only in the daemon path (canon invariant 13).
+    /// None for embedded/test servers — introspect then omits the field.
+    reaper: Option<Arc<crate::singleton::ReaperHealth>>,
 }
 
 impl Server {
@@ -45,6 +48,7 @@ impl Server {
             start_instant: Instant::now(),
             requests_total: Arc::new(AtomicU64::new(0)),
             config: Arc::new(Config::load()),
+            reaper: None,
         }
     }
 
@@ -65,7 +69,14 @@ impl Server {
             start_instant: Instant::now(),
             requests_total: Arc::new(AtomicU64::new(0)),
             config: Arc::new(config),
+            reaper: None,
         }
+    }
+
+    /// Attach reaper health state for introspect surfacing (daemon path only).
+    pub fn with_reaper_health(mut self, health: Arc<crate::singleton::ReaperHealth>) -> Self {
+        self.reaper = Some(health);
+        self
     }
 
     pub async fn run(&self) -> std::io::Result<()> {
@@ -104,6 +115,7 @@ impl Server {
                     let requests_total = Arc::clone(&self.requests_total);
                     let socket_path = self.socket_path.clone();
                     let config = Arc::clone(&self.config);
+                    let reaper = self.reaper.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handle_connection(
                             stream,
@@ -115,6 +127,7 @@ impl Server {
                             requests_total,
                             socket_path,
                             config,
+                            reaper,
                         )
                         .await
                         {
@@ -141,6 +154,7 @@ async fn handle_connection(
     requests_total: Arc<AtomicU64>,
     socket_path: PathBuf,
     config: Arc<Config>,
+    reaper: Option<Arc<crate::singleton::ReaperHealth>>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -156,13 +170,12 @@ async fn handle_connection(
         }
 
         match serde_json::from_str::<Request>(trimmed) {
-            Ok(Request::Watch { key, path, format }) => {
+            Ok(Request::Watch { key, path }) => {
                 requests_total.fetch_add(1, Ordering::Relaxed);
                 // Watch takes over the connection — enter streaming mode
                 handle_watch(
                     key,
                     path,
-                    format,
                     &context_path,
                     &cache,
                     &registry,
@@ -186,9 +199,11 @@ async fn handle_connection(
                     &requests_total,
                     &socket_path,
                     &config,
+                    reaper.as_deref(),
                 )
                 .await;
-                let response_bytes = format_response(&request, &response);
+                let mut response_bytes = serde_json::to_string(&response).unwrap();
+                response_bytes.push('\n');
                 writer.write_all(response_bytes.as_bytes()).await?;
             }
             Err(e) => {
@@ -208,7 +223,6 @@ async fn handle_connection(
 async fn handle_watch(
     key: String,
     path: Option<String>,
-    format: Format,
     context_path: &Option<String>,
     cache: &Cache,
     registry: &ProviderRegistry,
@@ -277,7 +291,7 @@ async fn handle_watch(
 
     // Send initial value
     let initial = read_watch_value(cache, &plan.target, effective_path.as_deref());
-    if write_watch_line(writer, &initial, &format).await.is_err() {
+    if write_watch_line(writer, &initial).await.is_err() {
         return;
     }
 
@@ -306,7 +320,7 @@ async fn handle_watch(
                 }
                 last_data = response.data.clone();
 
-                if write_watch_line(writer, &response, &format).await.is_err() {
+                if write_watch_line(writer, &response).await.is_err() {
                     break; // Client disconnected
                 }
             }
@@ -315,7 +329,7 @@ async fn handle_watch(
                 let response = read_watch_value(cache, &plan.target, effective_path.as_deref());
                 if response.data != last_data {
                     last_data = response.data.clone();
-                    if write_watch_line(writer, &response, &format).await.is_err() {
+                    if write_watch_line(writer, &response).await.is_err() {
                         break;
                     }
                 }
@@ -465,9 +479,9 @@ fn read_watch_value(cache: &Cache, target: &KeyParse, path: Option<&str>) -> Res
 async fn write_watch_line(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
     response: &Response,
-    format: &Format,
 ) -> Result<(), std::io::Error> {
-    let line = format_data(format, response);
+    let mut line = serde_json::to_string(response).unwrap();
+    line.push('\n');
     writer.write_all(line.as_bytes()).await
 }
 
@@ -483,6 +497,7 @@ async fn handle_request(
     requests_total: &AtomicU64,
     socket_path: &std::path::Path,
     config: &Config,
+    reaper: Option<&crate::singleton::ReaperHealth>,
 ) -> Response {
     match request {
         Request::Get {
@@ -660,20 +675,22 @@ async fn handle_request(
                         hit = cache.get_source(provider, effective_path.as_deref(), source);
                     }
                     match hit {
-                        Some(src_entry) => match src_entry.fields.get(field.as_str()) {
-                            Some(value) => {
-                                let age_ms = src_entry.age_ms();
-                                let stale = src_entry.is_stale();
-                                let data =
-                                    serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-                                (true, Response::ok(data, age_ms, stale))
+                        Some(src_entry) => {
+                            match crate::provider::lookup_path(&src_entry.fields, field.as_str()) {
+                                Some(value) => {
+                                    let age_ms = src_entry.age_ms();
+                                    let stale = src_entry.is_stale();
+                                    let data = serde_json::to_value(value)
+                                        .unwrap_or(serde_json::Value::Null);
+                                    (true, Response::ok(data, age_ms, stale))
+                                }
+                                None => {
+                                    return Response::error(format!(
+                                        "unknown field: {provider}.{source}.{field}"
+                                    ));
+                                }
                             }
-                            None => {
-                                return Response::error(format!(
-                                    "unknown field: {provider}.{source}.{field}"
-                                ));
-                            }
-                        },
+                        }
                         None => (false, Response::miss()),
                     }
                 }
@@ -873,24 +890,8 @@ async fn handle_request(
             };
 
             // Convert JSON object fields to provider Value map.
-            let mut fields: HashMap<String, crate::provider::Value> = HashMap::new();
-            for (field_key, field_val) in obj {
-                let value = match field_val {
-                    serde_json::Value::String(s) => crate::provider::Value::String(s.clone()),
-                    serde_json::Value::Bool(b) => crate::provider::Value::Bool(*b),
-                    serde_json::Value::Number(n) => {
-                        if let Some(i) = n.as_i64() {
-                            crate::provider::Value::Int(i)
-                        } else if let Some(f) = n.as_f64() {
-                            crate::provider::Value::Float(f)
-                        } else {
-                            crate::provider::Value::String(n.to_string())
-                        }
-                    }
-                    other => crate::provider::Value::String(other.to_string()),
-                };
-                fields.insert(field_key.clone(), value);
-            }
+            let fields: HashMap<String, crate::provider::Value> =
+                crate::provider::SourceResult::from_json_object(obj).fields;
 
             // Parse optional TTL.
             let interval_secs = ttl
@@ -970,6 +971,7 @@ async fn handle_request(
                             row.poll_interval_secs = Some(snap.poll_interval_secs);
                             row.keep_alive_polls = Some(snap.keep_alive_polls);
                             row.polls_elapsed = Some(snap.polls_elapsed);
+                            row.next_poll_in_secs = snap.next_poll_in_secs;
                         }
                         row.fsevents_reinstate = Some(snap.fsevents_reinstate);
                     } else {
@@ -993,13 +995,16 @@ async fn handle_request(
             duration_secs,
         } => match subject {
             IntrospectSubject::Daemon => {
-                // Gather in_flight from scheduler status if available.
-                let in_flight_count = if let Some(sched) = scheduler
+                // Gather in_flight + watch backend from scheduler status if available.
+                let (in_flight_count, watch_backend) = if let Some(sched) = scheduler
                     && let Some(sched_status) = sched.get_status().await
                 {
-                    sched_status.in_flight.len() as u64
+                    (
+                        sched_status.in_flight.len() as u64,
+                        sched_status.watch_backend,
+                    )
                 } else {
-                    0
+                    (0, "unknown".to_string())
                 };
                 let active_watchers = watchers.entry_count() as u64;
                 let cache_entries = cache.len() as u64;
@@ -1010,6 +1015,8 @@ async fn handle_request(
                     in_flight_count,
                     active_watchers,
                     cache_entries,
+                    &watch_backend,
+                    reaper,
                 )
             }
             IntrospectSubject::Providers => handle_introspect_providers(registry, scheduler).await,
@@ -1038,6 +1045,7 @@ async fn handle_request(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_introspect_daemon(
     socket_path: &std::path::Path,
     start_instant: Instant,
@@ -1045,6 +1053,8 @@ fn handle_introspect_daemon(
     in_flight_count: u64,
     active_watchers: u64,
     cache_entries: u64,
+    watch_backend: &str,
+    reaper: Option<&crate::singleton::ReaperHealth>,
 ) -> Response {
     let config_path = crate::config::Config::config_path_if_exists()
         .map(|p| serde_json::Value::String(p.to_string_lossy().into_owned()))
@@ -1066,6 +1076,63 @@ fn handle_introspect_daemon(
         }));
     }
 
+    // Canon provider_source.md invariant 16: watch degradation is observable.
+    if watch_backend == "native" {
+        verdicts.push(serde_json::json!({
+            "level": "PASS",
+            "message": "watch backend: native fs events"
+        }));
+    } else {
+        verdicts.push(serde_json::json!({
+            "level": "WARN",
+            "message": format!(
+                "watch backend: {watch_backend} — kernel fs events undelivered; watch invalidation degraded to polling"
+            )
+        }));
+    }
+
+    // Canon singleton.md invariant 13: reaper capability is never silently
+    // degraded. `reaper` is None for embedded/test servers (field omitted).
+    let reaper_json = reaper.map(|health| {
+        use std::sync::atomic::Ordering::Relaxed;
+        let armed = health.armed.load(Relaxed);
+        let visibility_ok = health.visibility_ok.load(Relaxed);
+        let kill_denied = health.kill_denied_total.load(Relaxed);
+
+        if !armed {
+            verdicts.push(serde_json::json!({
+                "level": "PASS",
+                "message": "reaper: not armed (side daemon)"
+            }));
+        } else if visibility_ok {
+            verdicts.push(serde_json::json!({
+                "level": "PASS",
+                "message": "reaper: armed, system-wide process visibility"
+            }));
+        } else {
+            verdicts.push(serde_json::json!({
+                "level": "WARN",
+                "message": "reaper visibility degraded: PID 1 not visible in process enumeration — this daemon runs confined (sandbox-spawned?) and cannot police daemons outside its confinement; restart it from an unconfined shell"
+            }));
+        }
+        if armed && kill_denied > 0 {
+            verdicts.push(serde_json::json!({
+                "level": "WARN",
+                "message": format!(
+                    "reaper: {kill_denied} kill attempt(s) denied by the OS — orphans visible but unsignalable"
+                )
+            }));
+        }
+
+        serde_json::json!({
+            "armed": armed,
+            "visibility": if visibility_ok { "system-wide" } else { "confined" },
+            "sweeps": health.sweeps_total.load(Relaxed),
+            "reaped": health.reaped_total.load(Relaxed),
+            "kill_denied": kill_denied,
+        })
+    });
+
     let data = serde_json::json!({
         "pid": std::process::id(),
         "version": env!("BEACHCOMBER_VERSION"),
@@ -1076,6 +1143,8 @@ fn handle_introspect_daemon(
         "in_flight": in_flight_count,
         "active_watchers": active_watchers,
         "cache_entries": cache_entries,
+        "watch_backend": watch_backend,
+        "reaper": reaper_json,
         "verdicts": verdicts,
     });
 
@@ -1492,117 +1561,6 @@ fn handle_introspect_procs(duration_secs: Option<u64>) -> Response {
             )
         }
         Err(e) => Response::error(format!("procs snapshot failed: {e}")),
-    }
-}
-
-fn format_response(request: &Request, response: &Response) -> String {
-    let format = match request {
-        Request::Get { format, .. } => format,
-        _ => &Format::Json,
-    };
-
-    format_data(format, response)
-}
-
-fn format_data(format: &Format, response: &Response) -> String {
-    match format {
-        Format::Text => {
-            if !response.ok {
-                return format!(
-                    "error: {}\n\n",
-                    response.error.as_deref().unwrap_or("unknown")
-                );
-            }
-            match &response.data {
-                Some(serde_json::Value::String(s)) => format!("{s}\n\n"),
-                Some(serde_json::Value::Number(n)) => format!("{n}\n\n"),
-                Some(serde_json::Value::Bool(b)) => format!("{b}\n\n"),
-                Some(serde_json::Value::Object(map)) => {
-                    // Emit `subkey=value` lines, sorted. Nested objects flatten
-                    // as `outer.inner=value`. Matches
-                    // docs/superpowers/specs/2026-04-21-code-review-fixes-design.md C9.
-                    let mut lines: Vec<String> = map
-                        .iter()
-                        .flat_map(|(k, v)| {
-                            if let serde_json::Value::Object(inner) = v {
-                                inner
-                                    .iter()
-                                    .map(|(ik, iv)| {
-                                        let val = match iv {
-                                            serde_json::Value::String(s) => s.clone(),
-                                            other => other.to_string(),
-                                        };
-                                        format!("{k}.{ik}={val}")
-                                    })
-                                    .collect::<Vec<_>>()
-                            } else {
-                                let val = match v {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    other => other.to_string(),
-                                };
-                                vec![format!("{k}={val}")]
-                            }
-                        })
-                        .collect();
-                    lines.sort();
-                    let mut out = lines.join("\n");
-                    out.push_str("\n\n");
-                    out
-                }
-                Some(serde_json::Value::Null) | None => "\n".to_string(),
-                Some(other) => format!("{other}\n\n"),
-            }
-        }
-        Format::Sh => {
-            if !response.ok {
-                return format!(
-                    "error: {}\n\n",
-                    response.error.as_deref().unwrap_or("unknown")
-                );
-            }
-            match &response.data {
-                Some(serde_json::Value::String(s)) => format!("{s}\n\n"),
-                Some(serde_json::Value::Number(n)) => format!("{n}\n\n"),
-                Some(serde_json::Value::Bool(b)) => format!("{b}\n\n"),
-                Some(serde_json::Value::Object(map)) => {
-                    let mut lines: Vec<String> = map
-                        .iter()
-                        .flat_map(|(k, v)| {
-                            if let serde_json::Value::Object(inner) = v {
-                                // Nested object: flatten as outer.inner=value
-                                inner
-                                    .iter()
-                                    .map(|(ik, iv)| {
-                                        let val = match iv {
-                                            serde_json::Value::String(s) => s.clone(),
-                                            other => other.to_string(),
-                                        };
-                                        format!("{k}.{ik}={val}")
-                                    })
-                                    .collect::<Vec<_>>()
-                            } else {
-                                let val = match v {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    other => other.to_string(),
-                                };
-                                vec![format!("{k}={val}")]
-                            }
-                        })
-                        .collect();
-                    lines.sort();
-                    let mut out = lines.join("\n");
-                    out.push_str("\n\n");
-                    out
-                }
-                Some(serde_json::Value::Null) | None => "\n".to_string(),
-                Some(other) => format!("{other}\n\n"),
-            }
-        }
-        Format::Json => {
-            let mut out = serde_json::to_string(response).unwrap();
-            out.push('\n');
-            out
-        }
     }
 }
 

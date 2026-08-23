@@ -1,3 +1,4 @@
+pub mod config_watch;
 pub mod lifecycle;
 
 use crate::boundaries::spawn::{DaemonSpawner, RealDaemonSpawner};
@@ -46,12 +47,28 @@ pub fn start_in_process_with_cancel(
     config: Config,
     cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
+    start_in_process_with_reaper(socket_path, config, cancel, None)
+}
+
+/// Daemon-path variant: also attaches reaper health for introspect surfacing
+/// (canon singleton.md invariant 13).
+pub fn start_in_process_with_reaper(
+    socket_path: PathBuf,
+    config: Config,
+    cancel: CancellationToken,
+    reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        run_daemon_with_cancel(socket_path, config, cancel).await;
+        run_daemon_with_cancel(socket_path, config, cancel, reaper).await;
     })
 }
 
-async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: CancellationToken) {
+async fn run_daemon_with_cancel(
+    socket_path: PathBuf,
+    config: Config,
+    cancel: CancellationToken,
+    reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
+) {
     // Load env file before anything else — providers need these vars
     let env_count = config.load_env_file();
     if env_count > 0 {
@@ -90,12 +107,15 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
         }
     }
 
-    let (handle, scheduler) = Scheduler::new(
+    let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
         registry.clone(),
         config.clone(),
         watchers.clone(),
     );
+    // Daemon path: probe fs-event delivery before trusting the native backend
+    // (canon provider_source.md §"Watch backend health").
+    scheduler.self_test_watch_backend();
     let heartbeat = scheduler.heartbeat();
 
     let scheduler_handle = handle.clone();
@@ -104,7 +124,7 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
     // Start watchdog if configured.
     let watchdog_task = spawn_watchdog(&config, heartbeat, cancel.clone());
 
-    let server = Server::new_with_config(
+    let mut server = Server::new_with_config(
         socket_path,
         cache,
         registry,
@@ -112,12 +132,20 @@ async fn run_daemon_with_cancel(socket_path: PathBuf, config: Config, cancel: Ca
         watchers,
         config.clone(),
     );
+    if let Some(health) = reaper {
+        server = server.with_reaper_health(health);
+    }
 
     tokio::select! {
         result = server.run() => {
             if let Err(e) = result {
                 tracing::error!("Server error: {}", e);
             }
+            // Server returned (bind failure or accept-loop error): shut the
+            // scheduler down too, or `scheduler_task.await` below blocks
+            // forever and the process lingers, unkillable by SIGTERM (the
+            // cancel token has no remaining observer once this select ends).
+            scheduler_handle.send(SchedulerMessage::Shutdown).await;
         }
         _ = cancel.cancelled() => {
             info!("Shutdown signal received");
@@ -186,7 +214,9 @@ fn spawn_watchdog(
 // ---------------------------------------------------------------------------
 
 /// Fork a daemon process. Called by `RealDaemonSpawner::fork_daemon`.
-pub fn fork_daemon(binary_path: &str, socket_path: &Path) -> std::io::Result<()> {
+/// `no_reap` appends `--no-reap` for `$BEACHCOMBER_SOCKET`-derived spawns
+/// (canon singleton.md §"Env-override spawns are flagged").
+pub fn fork_daemon(binary_path: &str, socket_path: &Path, no_reap: bool) -> std::io::Result<()> {
     use std::process::Command;
 
     let pid_path = pid_path_for_socket(socket_path);
@@ -210,10 +240,14 @@ pub fn fork_daemon(binary_path: &str, socket_path: &Path) -> std::io::Result<()>
             std::fs::File::open("/dev/null").unwrap()
         });
 
-    let child = Command::new(binary_path)
-        .arg("daemon")
+    let mut cmd = Command::new(binary_path);
+    cmd.arg("daemon")
         .arg("--socket")
-        .arg(socket_path.as_os_str())
+        .arg(socket_path.as_os_str());
+    if no_reap {
+        cmd.arg("--no-reap");
+    }
+    let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::from(log_file))
@@ -252,24 +286,50 @@ pub fn wait_for_daemon(socket_path: &Path, max_attempts: u32) -> bool {
 
 /// Ensure the daemon is running at `socket_path`.
 ///
-/// If not running, forks it and waits up to 8 attempts for the socket to appear.
-/// This is the backwards-compatible entry point; it uses `RealDaemonSpawner`.
-pub fn ensure_daemon(socket_path: &Path) -> std::io::Result<()> {
-    ensure_daemon_with(&RealDaemonSpawner, socket_path)
+/// If not running, forks it and waits up to 8 attempts for the socket to
+/// appear. `no_reap` must be true when `socket_path` was resolved from
+/// `$BEACHCOMBER_SOCKET` (`SocketPathSource::EnvVar`) so the forked daemon is
+/// flagged exempt from reaping (canon singleton.md §"Env-override spawns are
+/// flagged").
+pub fn ensure_daemon(socket_path: &Path, no_reap: bool) -> std::io::Result<()> {
+    ensure_daemon_with(&RealDaemonSpawner, socket_path, no_reap)
 }
+
+/// Maximum usable unix socket path length in bytes, exclusive. `sun_path` is
+/// 104 bytes on macOS (108 on Linux); use the conservative bound on both so
+/// behavior is uniform.
+pub const MAX_SOCKET_PATH_BYTES: usize = 104;
 
 /// Injection-point variant of `ensure_daemon` — accepts any `DaemonSpawner`.
 ///
 /// Useful for tests: pass a `MockDaemonSpawner` to assert fork/wait behaviour
 /// without touching the filesystem.
-pub fn ensure_daemon_with(spawner: &dyn DaemonSpawner, socket_path: &Path) -> std::io::Result<()> {
+pub fn ensure_daemon_with(
+    spawner: &dyn DaemonSpawner,
+    socket_path: &Path,
+    no_reap: bool,
+) -> std::io::Result<()> {
+    // Pre-flight: a path the kernel cannot bind (SUN_LEN) would fork a daemon
+    // doomed to fail; surface the real cause here instead of a spawn timeout.
+    if socket_path.as_os_str().len() >= MAX_SOCKET_PATH_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "socket path is {} bytes; unix sockets are limited to {} (SUN_LEN): {}",
+                socket_path.as_os_str().len(),
+                MAX_SOCKET_PATH_BYTES,
+                socket_path.display()
+            ),
+        ));
+    }
+
     if !lifecycle::needs_fork(is_daemon_running(socket_path)) {
         return Ok(());
     }
 
     let binary = std::env::current_exe()?.to_string_lossy().to_string();
 
-    spawner.fork_daemon(&binary, socket_path)?;
+    spawner.fork_daemon(&binary, socket_path, no_reap)?;
 
     if !spawner.wait_for_socket(socket_path, 8) {
         return Err(std::io::Error::new(

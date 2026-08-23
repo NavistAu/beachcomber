@@ -1,0 +1,13 @@
+{
+  "name": "mapping_empty_object_is_present",
+  "description": "put stores an empty JSON object {} as a field's value. This must come back as a present (hit) empty object, not be conflated with the field simply being absent — see mapping_absent_key_is_miss for the contrasting case using the same setup shape.",
+  "setup": [
+    { "op": "put", "args": { "key": "mapfix_shape", "data": { "emptyobj": {}, "sibling": "x" } } }
+  ],
+  "test": { "op": "get", "args": { "key": "mapfix_shape.emptyobj" } },
+  "expect": {
+    "status": "hit",
+    "data_type": "object",
+    "data_equals": {}
+  }
+}

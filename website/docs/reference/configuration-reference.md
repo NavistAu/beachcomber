@@ -16,7 +16,6 @@ beachcomber runs with sensible defaults and requires no configuration. The optio
 
 # Override the Unix socket path.
 # Default resolution order: BEACHCOMBER_SOCKET env var →
-#          $XDG_RUNTIME_DIR/beachcomber/sock →
 #          /tmp/beachcomber-<uid>/sock
 # socket_path = "/path/to/socket.sock"
 
@@ -243,13 +242,47 @@ JSON metadata:
 }
 ```
 
+### Composition / conf.d
+
+Config can be split across multiple files using the `conf.d` convention —
+no `include =` directive needed. Any `*.toml` file placed in
+`~/.config/beachcomber/conf.d/` is composed onto `config.toml` automatically:
+
+```
+~/.config/beachcomber/
+├── config.toml
+└── conf.d/
+    ├── 10-scanline.toml
+    └── 20-overrides.toml
+```
+
+Composition rules:
+
+- Files in `conf.d/` are merged in **lexical filename order** (a numeric
+  prefix like `10-`, `20-` is a common way to control that order).
+- Each file is **deep-merged** onto the accumulated config: tables merge key
+  by key (a drop-in overriding one key of `[providers.x]` doesn't clobber the
+  rest of that block), while scalars and arrays are **last-wins** (the last
+  file to set a given key or array wins outright — arrays are replaced, not
+  concatenated).
+- `config.toml` itself is optional; `conf.d/*.toml` files compose fine with
+  no main file present.
+- A `conf.d` file that fails to parse is **skipped** (with a warning naming
+  the file) rather than blocking daemon startup — the rest of the composed
+  set still loads.
+- Config changes take effect via **automatic daemon restart** — no manual
+  restart, no in-place reload. Changes to `config.toml` or any `conf.d/*.toml`
+  file (including files added or removed) trigger the daemon's config
+  self-watch, which restarts only once the *whole* composed set parses
+  cleanly; an edit that doesn't parse is ignored with a logged warning.
+
 ## Config field summary
 
 **`[daemon]` section:**
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `socket_path` | string | (see resolution order) | Unix socket path. Resolution order: this key → `BEACHCOMBER_SOCKET` env var → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock` |
+| `socket_path` | string | (see resolution order) | Unix socket path. Resolution order: this key → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock` |
 | `log_level` | string | `"info"` | Tracing log level |
 | `provider_timeout_secs` | int | `10` | Max seconds for any provider to run |
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |

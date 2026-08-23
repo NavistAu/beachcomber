@@ -4,13 +4,13 @@ sidebar_position: 1
 
 # Ecosystem Overview
 
-beachcomber has client SDKs for seven languages plus a POSIX shell polyfill. All SDKs are stdlib-only (no external dependencies) and are published to their native package registries.
+beachcomber has client SDKs for seven languages plus a POSIX shell polyfill. Each SDK is a binding over the shared `libbeachcomber` C ABI rather than a hand-rolled wire-protocol client: Go uses `purego` (vendored), Python uses stdlib `ctypes`, Ruby uses stdlib `fiddle`, Lua uses LuaJIT `ffi` (with a subprocess fallback for PUC Lua), and Node.js uses `koffi` as an optional peer dependency (falling back to a `comb` subprocess when it isn't installed). All are published to their native package registries.
 
 ## Install
 
 | SDK | Registry | Install |
 |---|---|---|
-| [Rust](./rust-sdk.md) | [crates.io](https://crates.io/crates/beachcomber-client) | `cargo add beachcomber-client` |
+| [Rust](./rust-sdk.md) | [crates.io](https://crates.io/crates/libbeachcomber) | `cargo add libbeachcomber` |
 | [Python](./python-sdk.md) | [PyPI](https://pypi.org/project/libbeachcomber/) | `pip install libbeachcomber` |
 | [Node.js](./nodejs-sdk.md) | [npm](https://www.npmjs.com/package/libbeachcomber) | `npm install libbeachcomber` |
 | [Go](./go-sdk.md) | [Go module](https://github.com/NavistAu/beachcomber/tree/main/sdks/go) | `go get github.com/NavistAu/beachcomber/sdks/go` |
@@ -19,7 +19,7 @@ beachcomber has client SDKs for seven languages plus a POSIX shell polyfill. All
 | [C](./c-sdk.md) | [GitHub Release](https://github.com/NavistAu/beachcomber/releases) | Source tarball, `.deb`, `.rpm`, or [AUR](https://aur.archlinux.org/packages/libbeachcomber) |
 | Shell / POSIX | — | See the [Polyfill](/docs/integrating/polyfill) |
 
-The Rust SDK ships as `beachcomber-client` on crates.io; the other language SDKs are `libbeachcomber` on their native registries.
+The Rust SDK ships as `libbeachcomber` on crates.io, matching the other language SDKs' `libbeachcomber` naming on their native registries.
 
 ## When to use an SDK vs the CLI
 

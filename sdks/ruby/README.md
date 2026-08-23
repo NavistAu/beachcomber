@@ -1,16 +1,16 @@
 # beachcomber Ruby SDK
 
-Ruby client for the [beachcomber](https://github.com/NavistAu/beachcomber) daemon. Communicates over a Unix domain socket using newline-delimited JSON.
+Ruby client for the [beachcomber](https://github.com/NavistAu/beachcomber) daemon. Binds via `fiddle` to the shared C library (`libbeachcomber.{so,dylib}`).
 
-**No external dependencies** — stdlib only (`socket`, `json`, `etc`). Ruby 3.0+.
+**No external dependencies** — stdlib only (`fiddle`, `json`, `etc`, `rbconfig`). Ruby 3.0+.
 
 ## Installation
 
 Copy the `lib/` directory into your project or install as a gem:
 
 ```sh
-gem build beachcomber.gemspec
-gem install beachcomber-0.1.0.gem
+gem build libbeachcomber.gemspec
+gem install libbeachcomber-0.8.0.gem
 ```
 
 ## Quick start
@@ -109,10 +109,9 @@ All inherit from `Beachcomber::Error < StandardError`.
 ## Socket discovery
 
 1. `$BEACHCOMBER_SOCKET` — if set and non-empty
-2. `$XDG_RUNTIME_DIR/beachcomber/sock` — if `XDG_RUNTIME_DIR` is set
-3. `/tmp/beachcomber-<uid>/sock`
+2. `/tmp/beachcomber-<uid>/sock`
 
-This mirrors the daemon's bind path; `$TMPDIR` is not consulted.
+This mirrors the daemon's bind path. No session-scoped environment is consulted (`$TMPDIR`, `$XDG_RUNTIME_DIR`); non-standard setups point clients at the daemon via `$BEACHCOMBER_SOCKET`.
 
 ## Running tests
 

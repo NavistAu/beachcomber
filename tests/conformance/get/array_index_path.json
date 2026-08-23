@@ -1,0 +1,19 @@
+{
+  "name": "get_array_index_path_addresses_element",
+  "description": "A JSON array is stored keyed by decimal index, so an element is addressable by path.",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "fixture_arr",
+        "data": { "items": ["alpha", "beta"] }
+      }
+    }
+  ],
+  "test": { "op": "get", "args": { "key": "fixture_arr.items.1" } },
+  "expect": {
+    "status": "hit",
+    "data_type": "string",
+    "data_equals": "beta"
+  }
+}

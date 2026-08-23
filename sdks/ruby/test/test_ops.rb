@@ -1,5 +1,4 @@
 require_relative 'test_helper'
-require 'stringio'
 
 class TestOps < Minitest::Test
   def setup
@@ -27,11 +26,12 @@ class TestOps < Minitest::Test
     assert_equal '0.5.0', info.daemon_version
   end
 
-  def test_hello_tolerates_missing_data_fields
+  # The shared client parses hello's response strictly: protocol_version and
+  # daemon_version must both be present (libbeachcomber::parse_hello_response),
+  # unlike the pre-ABI Ruby client which defaulted missing fields to "".
+  def test_hello_missing_data_fields_raises_protocol_error
     @server.enqueue('{"ok":true,"data":{}}')
-    info = @client.hello
-    assert_equal '', info.protocol_version
-    assert_equal '', info.daemon_version
+    assert_raises(Beachcomber::ProtocolError) { @client.hello }
   end
 
   # --- put ---
@@ -51,11 +51,14 @@ class TestOps < Minitest::Test
     assert_nil result
   end
 
+  # The wire protocol's ttl field is a String (src/protocol.rs); bc_put's
+  # `ttl` parameter is a C string, so a non-string Ruby value is coerced via
+  # #to_s rather than sent as a JSON number.
   def test_put_with_ttl
     @server.enqueue('{"ok":true}')
     @client.put('custom.value', 'x', ttl: 60)
     req = @server.requests.last
-    assert_equal 60, req['ttl']
+    assert_equal '60', req['ttl']
   end
 
   def test_put_with_path
@@ -250,14 +253,44 @@ class TestOps < Minitest::Test
     assert_includes Beachcomber::WatchStream.ancestors, Enumerable
   end
 
-  def test_watch_stream_each_yields_watch_events
-    # Build a fake socket that delivers 3 watch events then EOF.
-    lines = 3.times.map { '{"ok":true,"data":"val","age_ms":1,"stale":false}' }.join("\n") + "\n"
-    fake_io = StringIO.new(lines)
-    stream  = Beachcomber::WatchStream.new(fake_io)
-    events  = stream.to_a
-    assert_equal 3, events.size
-    events.each { |e| assert_instance_of Beachcomber::WatchEvent, e }
+  def test_watch_cancel_unblocks_pending_next
+    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    stream = @client.watch('git.branch')
+    stream.next_event
+    stream.cancel
+    # After cancel, next_event returns nil (outcome: cancelled) rather than
+    # blocking indefinitely.
+    assert_nil stream.next_event
+    stream.close
+  end
+
+  # --- resolve / eval_expression ---
+  # (client-side resolution; env.* refs never touch the daemon)
+
+  def test_resolve_field_expression_with_filter
+    value = @client.resolve(
+      'filters.based', cwd: '/tmp',
+      env: { 'PYVAR' => '/foo/bar/baz' },
+      overrides: { 'filters.based' => 'env.PYVAR | basename' },
+    )
+    assert_equal 'baz', value
+  end
+
+  def test_resolve_undeclared_field_raises_protocol_error
+    assert_raises(Beachcomber::ProtocolError) do
+      @client.resolve('nope.field', cwd: '/tmp')
+    end
+  end
+
+  def test_resolve_path_expression_selects_by_cwd
+    overrides = { 'myproject' => "'a' if cwd == '/repo-a' else 'b'" }
+    assert_equal 'a', @client.resolve('myproject', cwd: '/repo-a', overrides: overrides)
+    assert_equal 'b', @client.resolve('myproject', cwd: '/repo-b', overrides: overrides)
+  end
+
+  def test_eval_expression_evaluates_raw_template
+    result = @client.eval_expression('env.X | truncate(3)', cwd: '/tmp', env: { 'X' => 'abcdefgh' })
+    assert_equal 'abc...', result
   end
 
   def test_watch_event_stale_flag

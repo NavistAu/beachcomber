@@ -1,0 +1,48 @@
+{
+  "name": "mapping_deep_nesting_past_boundary_flattens_to_text",
+  "description": "MAX_JSON_DEPTH is 10 (src/provider/mod.rs). Continuing one more '.n' hop past mapping_deep_nesting_at_boundary_stays_object lands on the value processed at depth 10 (>= MAX_JSON_DEPTH): Value::from_json_at stops recursing and stores the remaining subtree as its own JSON text instead of an addressable object. No data is lost, but it stops being addressable by further path segments \u2014 this is documented, not a bug.",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "mapdepth2",
+        "data": {
+          "d": {
+            "n": {
+              "n": {
+                "n": {
+                  "n": {
+                    "n": {
+                      "n": {
+                        "n": {
+                          "n": {
+                            "n": {
+                              "n": {
+                                "n": "leaf"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "test": {
+    "op": "get",
+    "args": {
+      "key": "mapdepth2.d.n.n.n.n.n.n.n.n.n.n"
+    }
+  },
+  "expect": {
+    "status": "hit",
+    "data_type": "string",
+    "data_equals": "{\"n\":\"leaf\"}"
+  }
+}

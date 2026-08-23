@@ -42,7 +42,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/scheduler/lifecycle.rs` | `LifecycleRegistry` — per-key cache lifecycle state machine: Active → Decay1 → Decay2 → Decay3 → Decay4 → Evicted. Exponential decay of poll interval and step duration each stage. See `docs/cache-lifecycle.md` for the full spec. |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; per-source `SourceResult` sub-entries within each `CacheEntry` |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
-| `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`, `Format`; `split_key()` — first-dot-only `provider.field` split. Source-aware `provider.source` / `provider.source.field` parsing lives in `src/query.rs` (`parse_key`) |
+| `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`; `split_key()` — first-dot-only `provider.field` split. Source-aware `provider.source` / `provider.source.field` parsing lives in `src/query.rs` (`parse_key`) |
 | `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` / `provider.source` / `provider.source.field`), `resolve_path`, `split_metadata_suffix`, and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
 | `src/config.rs` | TOML config loading from XDG directories; `Config`, `DaemonConfig`, `LifecycleConfig`, `ScriptProviderConfig` |
 | `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `SourceScope`, `FieldSchema`, `InvalidationStrategy`, `KeepAlive`, `FailbackConfig`; `expand_abs_path()` helper |
@@ -106,13 +106,13 @@ The client opens a Unix stream to the socket. For a one-shot `comb get`, this is
 
 The CLI constructs:
 ```json
-{"op":"get","key":"git.branch","path":".","format":"text"}
+{"op":"get","key":"git.branch","path":"."}
 ```
 and writes it as a single newline-terminated line.
 
 **Step 4: Server receives the request**
 
-`Server::run()` has accepted the connection and spawned `handle_connection()` as a tokio task. The task reads lines from a `BufReader`, deserialises into `Request::Get { key: "git.branch", path: Some("."), format: Text }`.
+`Server::run()` has accepted the connection and spawned `handle_connection()` as a tokio task. The task reads lines from a `BufReader`, deserialises into `Request::Get { key: "git.branch", path: Some(".") }`.
 
 **Step 5: Key splitting**
 
@@ -132,7 +132,7 @@ The handler accesses `entry.result.get("branch")` and converts the `Value::Strin
 
 **Step 9: Response formatting**
 
-`format_response(&request, &response)` sees `Format::Text`. The data is a `serde_json::Value::String`, so it outputs the raw string followed by a newline — no JSON wrapper.
+The server always emits the JSON envelope (`Response::ok(data, age_ms, stale)`) over the wire. Rendering into other shapes — plain text, `sh`, csv/tsv, fmt — happens client-side (e.g. in the `comb` CLI), not on the server.
 
 **Step 10: CLI prints and exits**
 

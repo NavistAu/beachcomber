@@ -8,7 +8,7 @@
 // These unit-level tests use the split_key / is_virtual path directly.
 
 use beachcomber::cli::commands::get::key_needs_daemon;
-use beachcomber::cli::virtual_fields::VirtualFields;
+use libbeachcomber::virtual_fields::VirtualFields;
 
 #[test]
 fn env_star_key_is_recognized_as_client_side() {
@@ -40,7 +40,7 @@ fn git_branch_is_not_virtual() {
 
 #[test]
 fn discover_refs_finds_daemon_dep_in_cascade() {
-    use beachcomber::cli::virtual_fields::{Ref, discover_expression_refs};
+    use libbeachcomber::virtual_fields::{Ref, discover_expression_refs};
     // The cascade "env.TF_WORKSPACE or cache.terraform.workspace" has a daemon dep (CacheField).
     let refs = discover_expression_refs("env.TF_WORKSPACE or cache.terraform.workspace");
     let has_daemon_dep = refs.contains(&Ref::CacheField("terraform".into(), "workspace".into()));

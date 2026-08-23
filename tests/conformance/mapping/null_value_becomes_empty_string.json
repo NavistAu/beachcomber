@@ -1,0 +1,13 @@
+{
+  "name": "mapping_null_value_becomes_empty_string",
+  "description": "put stores an explicit JSON null. src/provider/mod.rs Value::from_json_at maps serde_json::Value::Null to Value::String(String::new()) unconditionally — the daemon's cache has no null representation, so a put null is documented, verified behavior: it comes back as an empty string with data_type \"string\", not \"null\". This is genuinely surprising and every binding must agree on it rather than each guessing independently (e.g. surfacing it as a native null/None/nil).",
+  "setup": [
+    { "op": "put", "args": { "key": "mapfix_null", "data": { "v": null } } }
+  ],
+  "test": { "op": "get", "args": { "key": "mapfix_null.v" } },
+  "expect": {
+    "status": "hit",
+    "data_type": "string",
+    "data_equals": ""
+  }
+}

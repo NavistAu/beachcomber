@@ -146,14 +146,14 @@ The npm and pip packages download the correct pre-built binary for your platform
 Download the `.deb` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.7.0-1_amd64.deb
-sudo dpkg -i beachcomber_0.7.0-1_amd64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.8.0-1_amd64.deb
+sudo dpkg -i beachcomber_0.8.0-1_amd64.deb
 ```
 
 ```sh
 # ARM64
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.7.0-1_arm64.deb
-sudo dpkg -i beachcomber_0.7.0-1_arm64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.8.0-1_arm64.deb
+sudo dpkg -i beachcomber_0.8.0-1_arm64.deb
 ```
 
 #### Fedora/RHEL
@@ -161,14 +161,14 @@ sudo dpkg -i beachcomber_0.7.0-1_arm64.deb
 Download the `.rpm` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.7.0-1.x86_64.rpm
-sudo rpm -i beachcomber-0.7.0-1.x86_64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.8.0-1.x86_64.rpm
+sudo rpm -i beachcomber-0.8.0-1.x86_64.rpm
 ```
 
 ```sh
 # ARM64
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.7.0-1.aarch64.rpm
-sudo rpm -i beachcomber-0.7.0-1.aarch64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.8.0-1.aarch64.rpm
+sudo rpm -i beachcomber-0.8.0-1.aarch64.rpm
 ```
 
 #### Arch Linux (AUR)
@@ -357,8 +357,7 @@ The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 **Socket path resolution** — the daemon (and all client commands) resolve the socket path in this order:
 1. `daemon.socket_path` in config, if set
 2. `BEACHCOMBER_SOCKET` environment variable, if set
-3. `$XDG_RUNTIME_DIR/beachcomber/sock`
-4. `/tmp/beachcomber-<uid>/sock`
+3. `/tmp/beachcomber-<uid>/sock` — stable per-user default; no session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell, sandbox, and container of one user reaches the same single daemon
 
 ### `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--null]`
 
@@ -513,8 +512,7 @@ beachcomber runs with sensible defaults and requires no configuration. The optio
 [daemon]
 
 # Override the Unix socket path.
-# Default: $XDG_RUNTIME_DIR/beachcomber/sock
-#          Falls back to: /tmp/beachcomber-<uid>/sock
+# Default: /tmp/beachcomber-<uid>/sock
 socket_path = ""
 
 # Log level for daemon output.
@@ -682,7 +680,7 @@ poll = "86400s"
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `socket_path` | string | `$XDG_RUNTIME_DIR/beachcomber/sock` | Unix socket path |
+| `socket_path` | string | `/tmp/beachcomber-<uid>/sock` | Unix socket path |
 | `log_level` | string | `"info"` | Tracing log level |
 | `provider_timeout_secs` | int | `10` | Max seconds for any provider to run |
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
@@ -1067,7 +1065,7 @@ end
 
 ### neovim statusline (Lua SDK)
 
-The `beachcomber` Lua SDK auto-detects neovim and uses `vim.uv` for zero-dependency socket access:
+The `beachcomber` Lua SDK auto-detects LuaJIT (which neovim always ships) and binds the shared `libbeachcomber` C ABI directly via `ffi` for zero-dependency, sub-millisecond access:
 
 ```lua
 -- In your statusline plugin or init.lua
@@ -1084,7 +1082,7 @@ local function git_branch()
 end
 ```
 
-Outside neovim, the SDK falls back to luasocket if available, or shells out to `comb` as a last resort.
+Outside LuaJIT — on PUC Lua 5.1–5.4, which has no `ffi` — the SDK falls back to shelling out to `comb` as a subprocess.
 
 ### starship custom module
 
@@ -1212,17 +1210,17 @@ if [ "$(comb g git.dirty . 2>/dev/null)" = "true" ]; then
 fi
 ```
 
-### Rust SDK (`beachcomber-client`)
+### Rust SDK (`libbeachcomber`)
 
-For Rust consumers, the `beachcomber-client` crate provides a typed, synchronous API with no tokio dependency:
+For Rust consumers, the `libbeachcomber` crate provides a typed, synchronous API with no tokio dependency:
 
 ```toml
 [dependencies]
-beachcomber-client = "0.1"
+libbeachcomber = "0.8"
 ```
 
 ```rust
-use beachcomber_client::{Client, CombResult};
+use libbeachcomber::{Client, CombResult};
 
 let client = Client::new(); // auto-discovers socket, starts daemon if needed
 
@@ -1299,17 +1297,17 @@ branch=$(comb g git.branch . 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/d
 
 ## Client SDKs
 
-Every SDK wraps the Unix socket protocol with typed APIs, socket discovery, timeouts, and error handling. All are stdlib-only (no external runtime dependencies).
+Every SDK provides typed APIs, socket discovery, timeouts, and error handling by binding the shared `libbeachcomber` C ABI (via `libbeachcomber-ffi`). Python, Ruby, and C are stdlib-only (`ctypes`, `fiddle`, and the generated header, respectively). Go vendors `purego` to call the ABI without cgo. Node.js binds it through `koffi`, an optional peer dependency, and falls back to a `comb` subprocess when `koffi` isn't installed. Lua uses LuaJIT's `ffi` when available (including inside Neovim) and falls back to a `comb` subprocess under PUC Lua 5.1–5.4, which has no `ffi`.
 
 | SDK | Location | Notes |
 |---|---|---|
-| **Rust** (`beachcomber-client`) | `beachcomber-client/` | Sync, no tokio dependency |
-| **C** (`libbeachcomber`) | `sdks/c/` | Shared + static lib, embedded JSON parser |
-| **Python** (`beachcomber`) | `sdks/python/` | Dataclasses, sync client + session |
-| **Node.js** (`beachcomber`) | `sdks/node/` | TypeScript, async API |
-| **Go** (`beachcomber`) | `sdks/go/` | Idiomatic error returns |
-| **Lua** (`beachcomber`) | `sdks/lua/` | vim.uv / luasocket / CLI fallback |
-| **Ruby** (`beachcomber`) | `sdks/ruby/` | Block-based sessions |
+| **Rust** (`libbeachcomber`) | `libbeachcomber/` | Sync, no tokio dependency |
+| **C** (`libbeachcomber`) | `sdks/c/` | Shared + static lib, generated header, no embedded JSON parser |
+| **Python** (`beachcomber`) | `sdks/python/` | Dataclasses, sync client + session, ctypes over the C ABI |
+| **Node.js** (`beachcomber`) | `sdks/node/` | TypeScript, async API, koffi (optional peer dep) with subprocess fallback |
+| **Go** (`beachcomber`) | `sdks/go/` | Idiomatic error returns, vendored purego over the C ABI |
+| **Lua** (`beachcomber`) | `sdks/lua/` | LuaJIT ffi, with PUC Lua subprocess fallback |
+| **Ruby** (`beachcomber`) | `sdks/ruby/` | Block-based sessions, fiddle over the C ABI |
 | **Shell** (POSIX function) | In README | Copy-paste fallback pattern |
 
 You don't need an SDK to talk to beachcomber — the protocol is newline-delimited JSON over a Unix socket. See [Protocol Reference](#protocol-reference).
@@ -1744,11 +1742,10 @@ comb g hostname.short
 
 **Daemon never starts / connection refused**
 
-The daemon socket path depends on `$XDG_RUNTIME_DIR` (Linux) or `/tmp` (macOS). Check that the socket exists:
+The daemon socket lives at `/tmp/beachcomber-<uid>/sock` (unless overridden via config or `BEACHCOMBER_SOCKET`). Check that the socket exists:
 
 ```sh
-ls -la /run/user/$(id -u)/beachcomber/       # Linux
-ls -la /tmp/beachcomber-$(id -u)/            # macOS fallback
+ls -la /tmp/beachcomber-$(id -u)/
 ```
 
 If the socket is missing, run `comb d` in the foreground to see why it failed to start.
@@ -1805,8 +1802,7 @@ beachcomber uses a simple newline-delimited JSON protocol over a Unix socket. An
 Socket path resolution order:
 1. `daemon.socket_path` in config, if set
 2. `BEACHCOMBER_SOCKET` environment variable, if set
-3. `$XDG_RUNTIME_DIR/beachcomber/sock`
-4. `/tmp/beachcomber-<uid>/sock`
+3. `/tmp/beachcomber-<uid>/sock`
 
 Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each response is a JSON object followed by `\n`.
 
@@ -1817,7 +1813,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "get", "key": "git.branch", "path": "/home/user/project"}
 {"op": "get", "key": "git", "path": "/home/user/project"}
 {"op": "get", "key": "battery"}
-{"op": "get", "key": "git.branch", "path": "/home/user/project", "format": "text"}
 {"op": "get", "key": "git", "path": "/home/user/project", "force": true}
 {"op": "get", "key": "git.branch", "path": "/home/user/project", "wait": true}
 {"op": "refresh", "key": "git", "path": "/home/user/project"}
@@ -1845,7 +1840,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | `op` | string | Operation: `hello`, `get`, `refresh`, `put`, `watch`, `context`, `status`, `introspect` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
-| `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
 | `force` | bool | (`get` only) Trigger immediate recomputation before returning. |
 | `wait` | bool | (`get` only) Block until a fresh value is available. |
 
@@ -1902,21 +1896,17 @@ Field-level filtering applies: watching `git.branch` only emits when the branch 
 
 **`status`:** Returns cache rows — one entry per warm cache key. Each row includes provider, field, value, age, and stale flag. For daemon health information (uptime, scheduler state, active watchers), use `{"op":"introspect","subject":"daemon"}` instead. See [docs/protocol-spec.md](docs/protocol-spec.md) for the full wire contract.
 
-### Wire Formats
+### Wire Format
 
-The wire protocol supports three response formats (set via the `format` field in the request):
+The wire protocol is JSON-only: every response is the JSON envelope with `ok`, `data`, `age_ms`, `stale` shown above. There is no request-level `format` field — rendering into other output shapes happens client-side.
 
-**`json`:** (default) Full JSON envelope with `ok`, `data`, `age_ms`, `stale`.
+### CLI-only Output Formats
+
+The `comb` CLI renders the JSON response into additional output formats on the client side (these are not part of the wire protocol):
 
 **`text`:** Raw value only, followed by `\n`. For full-provider queries, returns one raw value per field, one per line, sorted alphabetically.
 
 **`sh`:** `key=value` lines sorted alphabetically, one per line. Suitable for `eval` or `while IFS='=' read -r key value` parsing.
-
-For non-JSON wire formats, errors emit `error: <message>\n\n` on stdout; `ok` is false in the JSON response.
-
-### CLI-only Output Formats
-
-The `comb` CLI adds additional output formats on top of the wire formats above (these are not part of the wire protocol):
 
 **`csv` / `tsv`:** Comma- or tab-separated values. For single-field queries: one value per line. For full-provider queries: field values in alphabetical key order, one row.
 
@@ -1924,7 +1914,7 @@ The `comb` CLI adds additional output formats on top of the wire formats above (
 
 **`fmt`:** Compact human-readable format, suitable for terminal display.
 
-Use format suffixes on the CLI (`.c` csv, `.C` CSV, `.t` tsv, `.T` TSV, `.f` fmt) or the `-f` flag.
+Use format suffixes on the CLI (`.s` sh, `.c` csv, `.C` CSV, `.t` tsv, `.T` TSV, `.f` fmt) or the `-f` flag.
 
 ### Connection Context Example
 

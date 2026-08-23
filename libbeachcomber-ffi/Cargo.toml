@@ -1,0 +1,31 @@
+[package]
+name = "libbeachcomber-ffi"
+version.workspace = true
+edition = "2024"
+description = "C ABI for the beachcomber (comb) client library"
+license = "MIT"
+repository = "https://github.com/NavistAu/beachcomber"
+keywords = ["shell", "prompt", "git", "daemon", "client"]
+categories = ["command-line-utilities", "development-tools"]
+
+[lib]
+name = "beachcomber"
+# cdylib is the shipped artifact; rlib lets this crate's own integration
+# tests link against it directly (a cdylib alone carries no Rust metadata
+# for `rustc` to consume as an `extern crate`).
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+libbeachcomber = { path = "../libbeachcomber" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# Keyed `comb-daemon` rather than the default `beachcomber`: this crate's own
+# `[lib] name` is *also* `beachcomber` (it must match the shipped dylib name),
+# so the default key would collide with the root daemon crate's identical
+# lib name inside this crate's own test binaries.
+comb-daemon = { package = "beachcomber", path = "..", features = ["test-helpers"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
+tempfile = "3"

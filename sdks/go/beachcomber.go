@@ -1,7 +1,11 @@
 // Package beachcomber provides a client for the beachcomber daemon.
 //
 // The daemon caches shell-environment data (git state, hostname, battery, …)
-// and serves it over a Unix domain socket using newline-delimited JSON.
+// and serves it over a Unix domain socket using newline-delimited JSON. This
+// SDK does not speak that protocol itself — it binds to libbeachcomber's C
+// ABI (via purego; see ffi.go) and the shared library speaks it on the
+// SDK's behalf. Discovery, socket retries, and the wire protocol all live in
+// one place: libbeachcomber.
 //
 // Quick start — one-shot queries:
 //
@@ -22,17 +26,15 @@
 package beachcomber
 
 import (
-	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net"
-	"strings"
-	"time"
+	"runtime"
+
+	"github.com/ebitengine/purego"
 )
 
 // ---------------------------------------------------------------------------
-// New types
+// Types
 // ---------------------------------------------------------------------------
 
 // HelloInfo is returned by Hello.
@@ -53,6 +55,7 @@ type CacheRow struct {
 	PollIntervalSecs  *uint64
 	KeepAlivePolls    *uint32
 	FseventsReinstate *bool
+	PollsElapsed      *uint64
 	Failure           map[string]interface{} // e.g. {"consecutive_failures":3}
 	Source            string                 // owning source name within the provider; empty when not set
 }
@@ -61,6 +64,17 @@ type CacheRow struct {
 type Verdict struct {
 	Level   string
 	Message string
+}
+
+// ReaperInfo is the daemon's reaper capability snapshot, embedded in
+// DaemonHealth when the daemon attaches one (canon singleton.md invariant
+// 13). Absent (nil) for embedded/test servers.
+type ReaperInfo struct {
+	Armed      bool
+	Visibility string // "system-wide" or "confined"
+	Sweeps     uint64
+	Reaped     uint64
+	KillDenied uint64
 }
 
 // DaemonHealth is the typed response for Introspect(SubjectDaemon).
@@ -74,6 +88,8 @@ type DaemonHealth struct {
 	InFlight       uint64
 	ActiveWatchers uint64
 	CacheEntries   uint64
+	WatchBackend   string // "native", "polling", "disabled", "unknown", or "" if absent
+	Reaper         *ReaperInfo
 	Verdicts       []Verdict
 }
 
@@ -107,86 +123,132 @@ type WatchEvent struct {
 	Stale bool
 }
 
-// WatchStream holds a dedicated connection for watching key changes.
-// Drop it (call Close) to disconnect.
+// WatchStream holds a handle to a watch subscription opened via bc_watch_open.
+// Call Close to cancel and free it.
 type WatchStream struct {
-	conn    net.Conn
-	scanner *bufio.Scanner
+	lib    *nativeLib
+	handle uintptr
 }
 
-// NextEvent blocks until the daemon emits the next change. Returns nil, nil on
-// connection close.
+// NextEvent blocks until the daemon emits the next change. Returns nil, nil
+// when the stream ends (daemon closed the connection, or the watch was
+// cancelled).
 func (w *WatchStream) NextEvent() (*WatchEvent, error) {
-	if !w.scanner.Scan() {
-		if err := w.scanner.Err(); err != nil {
-			return nil, err
+	env, err := w.lib.callWatch(w.lib.bcWatchNext, w.handle, i32arg(-1))
+	if err != nil {
+		return nil, err
+	}
+	if !env.OK {
+		kind, msg := "", ""
+		if env.Error != nil {
+			kind, msg = env.Error.Kind, env.Error.Message
 		}
+		return nil, &ServerError{Kind: kind, Message: msg, LibVersion: w.lib.version}
+	}
+	switch env.Outcome {
+	case "event":
+		return watchEventFromData(env.Data)
+	case "eof", "cancelled", "timeout":
 		return nil, nil
+	default:
+		return nil, &ProtocolError{msg: "unknown watch outcome: " + env.Outcome}
 	}
-	var resp response
-	if err := json.Unmarshal(w.scanner.Bytes(), &resp); err != nil {
-		return nil, &ProtocolError{msg: "watch event parse: " + err.Error()}
+}
+
+// Close cancels and frees the watch handle, ending the stream. A NextEvent
+// call already in flight on another goroutine observes the cancellation
+// within one poll tick (see bc_watch_cancel's documentation); Close itself
+// must not race a NextEvent call still in flight on the same handle.
+func (w *WatchStream) Close() error {
+	if w.handle != 0 {
+		purego.SyscallN(w.lib.bcWatchCancel, w.handle)
+		purego.SyscallN(w.lib.bcWatchFree, w.handle)
+		w.handle = 0
+		runtime.SetFinalizer(w, nil)
 	}
-	if !resp.OK {
-		return nil, &ServerError{Message: resp.Error}
+	return nil
+}
+
+func (w *WatchStream) finalize() {
+	if w.handle != 0 {
+		purego.SyscallN(w.lib.bcWatchCancel, w.handle)
+		purego.SyscallN(w.lib.bcWatchFree, w.handle)
 	}
-	var data interface{}
-	if len(resp.Data) > 0 && string(resp.Data) != "null" {
-		json.Unmarshal(resp.Data, &data) //nolint:errcheck
-	}
-	return &WatchEvent{Data: data, AgeMs: resp.AgeMs, Stale: resp.Stale}, nil
 }
 
-// Close closes the underlying watch connection.
-func (w *WatchStream) Close() error { return w.conn.Close() }
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
 
-const defaultTimeout = 100 * time.Millisecond
-
-// ErrDaemonNotRunning is returned when the Unix socket cannot be reached.
-var ErrDaemonNotRunning = errors.New("beachcomber daemon is not running")
-
-// ServerError is returned when the daemon responds with ok:false.
-type ServerError struct {
-	Message string
-}
-
-func (e *ServerError) Error() string {
-	return fmt.Sprintf("beachcomber: daemon error: %s", e.Message)
-}
-
-// ProtocolError is returned when a response cannot be parsed.
-type ProtocolError struct {
-	msg string
-}
-
-func (e *ProtocolError) Error() string {
-	return fmt.Sprintf("beachcomber: protocol error: %s", e.msg)
-}
-
-// Client sends individual requests, opening a fresh connection for each call.
-// For latency-sensitive use cases prefer [Session].
+// Client sends individual requests; each call to the underlying library
+// opens a fresh daemon connection (libbeachcomber's own behaviour — this
+// SDK does not hold a socket open on the Client's behalf). For
+// latency-sensitive use cases prefer [Session].
 type Client struct {
-	socketPath string
-	timeout    time.Duration
+	lib     *nativeLib
+	handle  uintptr // BcClient*
+	loadErr error   // set when the library failed to load; deferred to the first op
 }
 
-// NewClient returns a Client that auto-discovers the daemon socket path.
-// Returns [ErrDaemonNotRunning] wrapped in an error if discovery fails (i.e.,
-// none of the candidate paths resolve to a reachable socket). The error is
-// deferred to the first actual network call; NewClient itself never dials.
-func NewClient() (*Client, error) {
-	path := DiscoverSocketPath()
-	return &Client{
-		socketPath: path,
-		timeout:    defaultTimeout,
-	}, nil
+// Option customises client construction.
+type Option func(opts map[string]interface{})
+
+// WithAutostart sets whether the client forks a daemon when none is serving
+// the socket. When the option is omitted the shared library's default
+// applies (autostart on). Autostart only fires when the socket path is
+// auto-discovered ([NewClient]): the shared library never autostarts for an
+// explicit socket path, so this option is a no-op under [NewClientWithPath].
+func WithAutostart(enabled bool) Option {
+	return func(opts map[string]interface{}) { opts["autostart"] = enabled }
+}
+
+// NewClient returns a Client that auto-discovers the daemon socket path (the
+// resolution libbeachcomber itself performs — see docs/canon/singleton.md).
+// Unlike [NewClientWithPath] this may fail immediately: locating and
+// validating libbeachcomber happens here, and a broken install (missing
+// library, missing symbol) is reported now rather than deferred.
+func NewClient(options ...Option) (*Client, error) {
+	l, err := getLib()
+	if err != nil {
+		return nil, err
+	}
+	return newClientWithLib(l, "", options...)
 }
 
 // NewClientWithPath returns a Client that uses an explicit socket path.
-func NewClientWithPath(socketPath string) *Client {
-	return &Client{
-		socketPath: socketPath,
-		timeout:    defaultTimeout,
+// Mirrors libbeachcomber's own BcClient construction contract: this never
+// fails from the caller's point of view. A library discovery/validation
+// failure is recorded and surfaced on the Client's first operation instead.
+func NewClientWithPath(socketPath string, options ...Option) *Client {
+	l, err := getLib()
+	if err != nil {
+		return &Client{loadErr: err}
+	}
+	c, _ := newClientWithLib(l, socketPath, options...)
+	return c
+}
+
+func newClientWithLib(l *nativeLib, socketPath string, options ...Option) (*Client, error) {
+	opts := map[string]interface{}{}
+	if socketPath != "" {
+		opts["socket_path"] = socketPath
+	}
+	for _, o := range options {
+		o(opts)
+	}
+	optsJSON, _ := json.Marshal(opts)
+	optsBuf := cBytes(string(optsJSON))
+	r1, _, _ := purego.SyscallN(l.bcClientNew, ptrOf(optsBuf))
+	runtime.KeepAlive(optsBuf)
+
+	c := &Client{lib: l, handle: r1}
+	runtime.SetFinalizer(c, func(c *Client) { c.finalize() })
+	return c, nil
+}
+
+func (c *Client) finalize() {
+	if c.lib != nil && c.handle != 0 {
+		purego.SyscallN(c.lib.bcClientFree, c.handle)
 	}
 }
 
@@ -195,200 +257,136 @@ func NewClientWithPath(socketPath string) *Client {
 // key follows the "provider" or "provider.field" format (e.g. "git" or
 // "git.branch"). path is the working directory context; pass "" to omit it.
 func (c *Client) Get(key string, path string) (*Result, error) {
-	req := map[string]interface{}{"op": "get", "key": key}
-	if path != "" {
-		req["path"] = path
+	return c.GetWithFlags(key, path, false, false)
+}
+
+// GetWithFlags is like Get but supports force and wait flags.
+func (c *Client) GetWithFlags(key, path string, force, wait bool) (*Result, error) {
+	if c.loadErr != nil {
+		return nil, c.loadErr
 	}
-	return c.roundtrip(req)
+	keyBuf, pathBuf := cBytes(key), optBytes(path)
+	data, err := c.lib.call(c.lib.bcGet, c.handle, ptrOf(keyBuf), ptrOf(pathBuf), uintptr(getFlags(force, wait)))
+	runtime.KeepAlive(keyBuf)
+	runtime.KeepAlive(pathBuf)
+	if err != nil {
+		return nil, err
+	}
+	return resultFromGetData(data)
+}
+
+func getFlags(force, wait bool) uint32 {
+	var f uint32
+	if force {
+		f |= 1 << 0 // BC_GET_FORCE
+	}
+	if wait {
+		f |= 1 << 1 // BC_GET_WAIT
+	}
+	return f
 }
 
 // Refresh forces the daemon to recompute the given provider/key.
 func (c *Client) Refresh(key string, path string) error {
-	req := map[string]interface{}{"op": "refresh", "key": key}
-	if path != "" {
-		req["path"] = path
+	if c.loadErr != nil {
+		return c.loadErr
 	}
-	_, err := c.roundtrip(req)
+	keyBuf, pathBuf := cBytes(key), optBytes(path)
+	_, err := c.lib.call(c.lib.bcRefresh, c.handle, ptrOf(keyBuf), ptrOf(pathBuf))
+	runtime.KeepAlive(keyBuf)
+	runtime.KeepAlive(pathBuf)
 	return err
 }
 
 // Status returns cache rows from the daemon.
 func (c *Client) Status() ([]CacheRow, error) {
-	result, err := c.roundtrip(map[string]interface{}{"op": "status"})
+	if c.loadErr != nil {
+		return nil, c.loadErr
+	}
+	data, err := c.lib.call(c.lib.bcStatus, c.handle)
 	if err != nil {
 		return nil, err
 	}
-	return parseCacheRowsFromResult(result)
+	return parseCacheRowsFromData(data)
 }
 
 // Session opens a persistent connection and returns a [Session].
 func (c *Client) Session() (*Session, error) {
-	conn, err := c.dial()
-	if err != nil {
-		return nil, err
+	if c.loadErr != nil {
+		return nil, c.loadErr
 	}
-	return &Session{
-		conn:    conn,
-		scanner: bufio.NewScanner(conn),
-	}, nil
-}
-
-// GetWithFlags is like Get but supports force and wait flags.
-func (c *Client) GetWithFlags(key, path string, force, wait bool) (*Result, error) {
-	req := map[string]interface{}{"op": "get", "key": key}
-	if path != "" {
-		req["path"] = path
-	}
-	if force {
-		req["force"] = true
-	}
-	if wait {
-		req["wait"] = true
-	}
-	return c.roundtrip(req)
+	r1, _, _ := purego.SyscallN(c.lib.bcSessionOpen, c.handle)
+	s := &Session{client: c, lib: c.lib, handle: r1}
+	runtime.SetFinalizer(s, func(s *Session) { s.finalize() })
+	return s, nil
 }
 
 // Hello returns the daemon's protocol and build versions.
 func (c *Client) Hello() (*HelloInfo, error) {
-	result, err := c.roundtrip(map[string]interface{}{"op": "hello"})
+	if c.loadErr != nil {
+		return nil, c.loadErr
+	}
+	data, err := c.lib.call(c.lib.bcHello, c.handle)
 	if err != nil {
 		return nil, err
 	}
-	return parseHelloFromResult(result)
+	return parseHelloFromData(data)
 }
 
 // Put stores data into a virtual provider. data should be a JSON object.
 // ttl and path are optional; pass "" to omit them.
 func (c *Client) Put(key string, data interface{}, ttl, path string) error {
-	req := map[string]interface{}{"op": "put", "key": key, "data": data}
-	if ttl != "" {
-		req["ttl"] = ttl
+	if c.loadErr != nil {
+		return c.loadErr
 	}
-	if path != "" {
-		req["path"] = path
+	dataJSON, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("beachcomber: marshal put data: %w", err)
 	}
-	_, err := c.roundtrip(req)
+	keyBuf, dataBuf, ttlBuf, pathBuf := cBytes(key), cBytes(string(dataJSON)), optBytes(ttl), optBytes(path)
+	_, err = c.lib.call(c.lib.bcPut, c.handle, ptrOf(keyBuf), ptrOf(dataBuf), ptrOf(ttlBuf), ptrOf(pathBuf))
+	runtime.KeepAlive(keyBuf)
+	runtime.KeepAlive(dataBuf)
+	runtime.KeepAlive(ttlBuf)
+	runtime.KeepAlive(pathBuf)
 	return err
 }
 
 // Introspect runs a diagnostic query. durationSecs is only consulted for
 // SubjectProcs; pass 0 otherwise.
 func (c *Client) Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error) {
-	req := map[string]interface{}{"op": "introspect", "subject": string(subject)}
+	if c.loadErr != nil {
+		return nil, c.loadErr
+	}
+	subjectBuf := cBytes(string(subject))
+	var optsBuf []byte
 	if durationSecs > 0 {
-		req["duration_secs"] = durationSecs
+		optsJSON, _ := json.Marshal(map[string]uint64{"duration_secs": durationSecs})
+		optsBuf = cBytes(string(optsJSON))
 	}
-	result, err := c.roundtrip(req)
+	data, err := c.lib.call(c.lib.bcIntrospect, c.handle, ptrOf(subjectBuf), ptrOf(optsBuf))
+	runtime.KeepAlive(subjectBuf)
+	runtime.KeepAlive(optsBuf)
 	if err != nil {
 		return nil, err
 	}
-	return parseIntrospectFromResult(subject, result)
+	return parseIntrospectFromData(subject, data)
 }
 
-// Watch subscribes to changes on a key. The returned stream holds a dedicated
-// connection; call Close on it to disconnect.
+// Watch subscribes to changes on a key. The returned stream holds a watch
+// handle; call Close on it to cancel and free it.
 func (c *Client) Watch(key, path string) (*WatchStream, error) {
-	conn, err := c.dial()
-	if err != nil {
-		return nil, err
+	if c.loadErr != nil {
+		return nil, c.loadErr
 	}
-	req := map[string]interface{}{"op": "watch", "key": key}
-	if path != "" {
-		req["path"] = path
+	keyBuf, pathBuf := cBytes(key), optBytes(path)
+	r1, _, _ := purego.SyscallN(c.lib.bcWatchOpen, c.handle, ptrOf(keyBuf), ptrOf(pathBuf))
+	runtime.KeepAlive(keyBuf)
+	runtime.KeepAlive(pathBuf)
+	if r1 == 0 {
+		return nil, &LibraryError{Message: "beachcomber: bc_watch_open: allocation failure", LibVersion: c.lib.version}
 	}
-	if err := writeJSON(conn, req); err != nil {
-		conn.Close()
-		return nil, err
-	}
-	return &WatchStream{conn: conn, scanner: bufio.NewScanner(conn)}, nil
-}
-
-// roundtrip dials, sends one request, reads one response, and closes.
-func (c *Client) roundtrip(req map[string]interface{}) (*Result, error) {
-	conn, err := c.dial()
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	if err := writeJSON(conn, req); err != nil {
-		return nil, err
-	}
-
-	scanner := bufio.NewScanner(conn)
-	return readResponse(scanner)
-}
-
-var retryBackoffs = []time.Duration{
-	250 * time.Millisecond,
-	500 * time.Millisecond,
-	1000 * time.Millisecond,
-}
-
-// connectWithRetry dials a Unix socket with 3 retries (250ms/500ms/1s
-// exponential backoff).  Retries only on connection-refused and
-// no-such-file errors — other errors surface immediately.
-func connectWithRetry(path string, timeout time.Duration) (net.Conn, error) {
-	var lastErr error
-	for _, backoff := range retryBackoffs {
-		conn, err := net.DialTimeout("unix", path, timeout)
-		if err == nil {
-			return conn, nil
-		}
-		if !isRetriable(err) {
-			return nil, err
-		}
-		lastErr = err
-		time.Sleep(backoff)
-	}
-	// Final attempt.
-	conn, err := net.DialTimeout("unix", path, timeout)
-	if err != nil {
-		if lastErr != nil {
-			return nil, lastErr
-		}
-		return nil, err
-	}
-	return conn, nil
-}
-
-// isRetriable returns true for transient connect errors that may resolve
-// when the daemon finishes restarting (connection refused / socket absent).
-func isRetriable(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "connection refused") ||
-		strings.Contains(s, "no such file or directory")
-}
-
-func (c *Client) dial() (net.Conn, error) {
-	conn, err := connectWithRetry(c.socketPath, c.timeout)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrDaemonNotRunning, c.socketPath)
-	}
-	return conn, nil
-}
-
-// writeJSON serialises req as a single JSON line.
-func writeJSON(conn net.Conn, req map[string]interface{}) error {
-	data, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("beachcomber: marshal: %w", err)
-	}
-	data = append(data, '\n')
-	_, err = conn.Write(data)
-	return err
-}
-
-// readResponse reads one line from scanner and parses it as a daemon response.
-func readResponse(scanner *bufio.Scanner) (*Result, error) {
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return nil, fmt.Errorf("beachcomber: read: %w", err)
-		}
-		return nil, &ProtocolError{msg: "connection closed before response"}
-	}
-	return parseResponse(scanner.Bytes())
+	w := &WatchStream{lib: c.lib, handle: r1}
+	runtime.SetFinalizer(w, func(w *WatchStream) { w.finalize() })
+	return w, nil
 }

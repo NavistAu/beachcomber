@@ -116,6 +116,17 @@ graph LR
 
 When a Source instance refreshes, it overwrites only its own declared Fields in the cache entry. Other Sources' Fields are untouched. The entry has multiple per-Field provenance records — which Source wrote each Field, and when.
 
+### Watch backend health (self-test and polling fallback)
+
+At startup, the daemon verifies that the kernel fs-event backend delivers events at all: it registers a watch on a private temp directory, touches a file inside it, and waits up to 2s for the corresponding event. The self-test runs concurrently with the scheduler loop — a failure verdict swaps the live watcher for the polling backend and re-registers every watch path — so the timeout adds no startup latency.
+
+- **Delivered** → provider file-watching uses the kernel-native backend (FSEvents / inotify).
+- **Not delivered** → provider file-watching uses the polling backend for the life of the process. The degradation is logged and surfaced by `comb check daemon` and `comb status`.
+
+The 2s timeout sits well above load-degraded delivery: healthy-idle delivery is ~10ms, but hundreds of ms under heavy filesystem load (parallel builds), and the timeout must not misclassify a loaded-but-healthy backend as dead.
+
+The test probes the capability, not the environment: detecting "am I sandboxed" is fragile and platform-specific, while "do events arrive" is exactly the property the watch subsystem depends on. Without this, a daemon whose stream delivers nothing serves watch-invalidated entries that silently never invalidate. Watch health is in-process state exposed over the protocol, with no external consumer.
+
 ## Lifecycle
 
 A Source instance follows the [`cache-lifecycle.md`](./cache-lifecycle.md) state machine: Cold → Active → Decay1..4 → Evicted, with demand signals reinstating from any Decay step. The state machine is **per Source instance**, not per cache entry. Sibling Sources at the same `(provider, path)` decay independently.
@@ -285,6 +296,7 @@ The cache entry for a read-always Source is still written on every re-execution 
 13. A consumer query for `provider.field` is demand for the Source that owns `field`. It is not demand for sibling Sources of the same Provider.
 14. A read-always Source is re-executed on every request-path read; its value is never served from cache. Read-always is reserved for Sources whose `execute` is a cheap file/syscall read.
 15. A `PathScoped` Source may be scoped by a file path or separator-joined file list; it reads/merges those file(s) in `execute` and declares the files to watch via `watched_files`. For `Watch`/`WatchAndPoll` Sources the scheduler registers a watch on each declared file. The Source never reads the selector env var.
+16. Provider file-watching is never silently dead: the watch self-test either confirms event delivery or flips to the polling backend, and the degradation is observable via `comb check daemon` and `comb status`.
 
 ## Behaviour assertions
 
@@ -389,6 +401,10 @@ Feature: Source-level invalidation
     Then the Source has no refresh path
     And cache Fields owned by the Source serve their last cached values (or are absent)
     And no automatic poll fallback occurs
+  Scenario: Watch self-test failure flips provider watching to polling
+    Given a daemon starting where fs events do not deliver within 2s
+    Then provider file-watching uses the polling backend
+    And the degradation is reported by comb check daemon
 ```
 
 ## Out of scope

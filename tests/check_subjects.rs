@@ -15,16 +15,12 @@ async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<(
     (tmp, client, handle)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_daemon_returns_expected_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({
-            "op": "introspect",
-            "subject": "daemon"
-        }))
-        .await
+        .introspect("daemon", None)
         .expect("request succeeded");
 
     assert!(resp.ok, "error: {:?}", resp.error);
@@ -92,13 +88,12 @@ async fn introspect_daemon_returns_expected_fields() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_providers_lists_catalog_with_scope_and_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "providers"}))
-        .await
+        .introspect("providers", None)
         .expect("providers introspect");
     assert!(resp.ok, "error: {:?}", resp.error);
     let data = resp.data.expect("payload present");
@@ -144,14 +139,11 @@ async fn introspect_providers_lists_catalog_with_scope_and_fields() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_config_reports_path_and_parse_status() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "config"}))
-        .await
-        .unwrap();
+    let resp = client.introspect("config", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(d.get("path").is_some(), "path key present (may be null)");
@@ -169,14 +161,11 @@ async fn introspect_config_reports_path_and_parse_status() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_cache_reports_totals_and_stale_ratio() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "cache"}))
-        .await
-        .unwrap();
+    let resp = client.introspect("cache", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(d.get("total_entries").and_then(|v| v.as_u64()).is_some());
@@ -193,14 +182,11 @@ async fn introspect_cache_reports_totals_and_stale_ratio() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_lifecycle_returns_list_and_verdicts() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "lifecycle"}))
-        .await
-        .unwrap();
+    let resp = client.introspect("lifecycle", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(
@@ -230,14 +216,11 @@ async fn introspect_lifecycle_returns_list_and_verdicts() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_watches_returns_paths_and_verdicts() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "watches"}))
-        .await
-        .unwrap();
+    let resp = client.introspect("watches", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(
@@ -267,14 +250,11 @@ async fn introspect_watches_returns_paths_and_verdicts() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_timers_returns_timers_and_verdicts() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "timers"}))
-        .await
-        .unwrap();
+    let resp = client.introspect("timers", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(
@@ -304,14 +284,11 @@ async fn introspect_timers_returns_timers_and_verdicts() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_demand_returns_active_keys() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "demand"}))
-        .await
-        .unwrap();
+    let resp = client.introspect("demand", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(
@@ -342,17 +319,12 @@ async fn introspect_demand_returns_active_keys() {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_procs_returns_sample_structure() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({
-            "op": "introspect",
-            "subject": "procs",
-            "duration_secs": 1
-        }))
-        .await
+        .introspect("procs", Some(1))
         .expect("introspect procs request");
 
     // procs may fail in sandboxed environments; accept either ok or a recognisable error.
@@ -414,7 +386,7 @@ async fn introspect_procs_returns_sample_structure() {
 
 /// All eight fast subjects (excluding procs which requires elevated permissions)
 /// can be queried via the introspect op without error, and each returns verdicts.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn all_subjects_reachable_via_introspect() {
     let (_tmp, client, handle) = setup_daemon().await;
 
@@ -431,8 +403,7 @@ async fn all_subjects_reachable_via_introspect() {
 
     for subject in subjects {
         let resp = client
-            .send_raw(serde_json::json!({"op": "introspect", "subject": subject}))
-            .await
+            .introspect(subject, None)
             .unwrap_or_else(|e| panic!("introspect {subject} failed: {e}"));
         assert!(
             resp.ok,
@@ -450,27 +421,38 @@ async fn all_subjects_reachable_via_introspect() {
     handle.abort();
 }
 
+/// Locate the `comb` binary for real-process e2e tests. Test binaries live in
+/// `target/debug/deps/`; the bin is one level up. Asserts existence — a silent
+/// skip here previously masked these tests never running under nextest.
+fn comb_binary() -> std::path::PathBuf {
+    let mut dir = std::env::current_exe()
+        .expect("current_exe")
+        .parent()
+        .expect("parent dir")
+        .to_path_buf();
+    if dir.ends_with("deps") {
+        dir.pop();
+    }
+    let exe = dir.join("comb");
+    assert!(
+        exe.exists(),
+        "comb binary not found at {} — build layout changed?",
+        exe.display()
+    );
+    exe
+}
+
 /// `comb check daemon` with an unreachable socket exits 2 and prints a FAIL line.
-/// Redirect via XDG_RUNTIME_DIR so `resolve_socket_path` finds a path with no daemon.
+/// Redirect via BEACHCOMBER_SOCKET so `resolve_socket_path` finds a path with no daemon.
 #[test]
 fn check_daemon_unreachable_exits_two() {
     let tmp = tempfile::TempDir::new().unwrap();
 
-    // Find the `comb` binary next to the test runner.
-    let exe = std::env::current_exe()
-        .expect("current_exe")
-        .parent()
-        .expect("parent dir")
-        .join("comb");
-
-    if !exe.exists() {
-        // Binary not built yet (e.g. running with `cargo test --no-run`). Skip.
-        return;
-    }
+    let exe = comb_binary();
 
     let output = std::process::Command::new(&exe)
-        // Point XDG_RUNTIME_DIR at a temp dir with no daemon socket inside it.
-        .env("XDG_RUNTIME_DIR", tmp.path())
+        // Point BEACHCOMBER_SOCKET at a temp path with no daemon behind it.
+        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
         .args(["check", "daemon"])
         .output()
         .expect("run comb check daemon");
@@ -492,13 +474,12 @@ fn check_daemon_unreachable_exits_two() {
 }
 
 /// Daemon introspect payload contains at least one PASS verdict.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_introspect_has_pass_verdict() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "daemon"}))
-        .await
+        .introspect("daemon", None)
         .expect("daemon introspect");
 
     assert!(resp.ok, "error: {:?}", resp.error);
@@ -517,13 +498,12 @@ async fn daemon_introspect_has_pass_verdict() {
 }
 
 /// Providers introspect lists at least one provider with all required fields.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn providers_introspect_has_entries_with_required_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "providers"}))
-        .await
+        .introspect("providers", None)
         .expect("providers introspect");
 
     assert!(resp.ok, "error: {:?}", resp.error);
@@ -558,14 +538,11 @@ async fn providers_introspect_has_entries_with_required_fields() {
 }
 
 /// Cache stale_ratio is in the valid range [0.0, 1.0].
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cache_introspect_stale_ratio_coherent() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "introspect", "subject": "cache"}))
-        .await
-        .expect("cache introspect");
+    let resp = client.introspect("cache", None).expect("cache introspect");
 
     assert!(resp.ok, "error: {:?}", resp.error);
     let data = resp.data.unwrap();
@@ -579,4 +556,248 @@ async fn cache_introspect_stale_ratio_coherent() {
     );
 
     handle.abort();
+}
+
+/// Canon singleton.md invariant 12: the chosen watch backend is observable via
+/// `comb check daemon` — a PASS line for native, a WARN line when degraded.
+#[test]
+fn check_daemon_reports_watch_backend() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("beachcomber").join("sock");
+
+    let exe = comb_binary();
+
+    let mut daemon = std::process::Command::new(&exe)
+        .args(["daemon", "--exit-with-parent", "--socket"])
+        .arg(&sock)
+        .spawn()
+        .expect("spawn daemon");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !sock.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(sock.exists(), "daemon never bound socket");
+
+    let output = std::process::Command::new(&exe)
+        .env("BEACHCOMBER_SOCKET", &sock)
+        .args(["check", "daemon"])
+        .output()
+        .expect("run comb check daemon");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("watch backend:"),
+        "check daemon must report the watch backend, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("watch backend: native fs events")
+            || stdout.contains("watch backend: polling"),
+        "backend must be native or polling, got:\n{stdout}"
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+}
+
+// --- Reaper health surfacing (canon singleton.md invariant 13) ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn introspect_daemon_reaper_null_when_not_attached() {
+    // Embedded/test servers never attach reaper health; the field is null.
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .introspect("daemon", None)
+        .expect("request succeeded");
+    assert!(resp.ok);
+    let data = resp.data.expect("payload");
+    assert!(
+        data.get("reaper").expect("reaper key present").is_null(),
+        "reaper must be null when health is not attached"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn introspect_daemon_reaper_confined_surfaces_warn_verdict() {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let health = std::sync::Arc::new(beachcomber::singleton::ReaperHealth::default());
+    health.armed.store(true, Relaxed);
+    health.visibility_ok.store(false, Relaxed); // confined
+    health.kill_denied_total.store(2, Relaxed);
+
+    let handle = beachcomber::daemon::start_in_process_with_reaper(
+        sock.clone(),
+        Config::default(),
+        tokio_util::sync::CancellationToken::new(),
+        Some(health),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let client = Client::new(sock);
+
+    let resp = client
+        .introspect("daemon", None)
+        .expect("request succeeded");
+    assert!(resp.ok);
+    let data = resp.data.expect("payload");
+
+    let reaper = data.get("reaper").expect("reaper present");
+    assert_eq!(
+        reaper.get("visibility").and_then(|v| v.as_str()),
+        Some("confined")
+    );
+    assert_eq!(reaper.get("armed").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(reaper.get("kill_denied").and_then(|v| v.as_u64()), Some(2));
+
+    let verdicts = data
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .expect("verdicts");
+    assert!(
+        verdicts.iter().any(|v| {
+            v.get("level").and_then(|l| l.as_str()) == Some("WARN")
+                && v.get("message")
+                    .and_then(|m| m.as_str())
+                    .is_some_and(|m| m.contains("reaper visibility degraded"))
+        }),
+        "confined reaper must produce a WARN verdict, got: {verdicts:?}"
+    );
+    assert!(
+        verdicts.iter().any(|v| {
+            v.get("level").and_then(|l| l.as_str()) == Some("WARN")
+                && v.get("message")
+                    .and_then(|m| m.as_str())
+                    .is_some_and(|m| m.contains("denied by the OS"))
+        }),
+        "kill_denied > 0 must produce a WARN verdict, got: {verdicts:?}"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn introspect_daemon_reaper_healthy_surfaces_pass_verdict() {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let health = std::sync::Arc::new(beachcomber::singleton::ReaperHealth::default());
+    health.armed.store(true, Relaxed);
+    health.visibility_ok.store(true, Relaxed);
+
+    let handle = beachcomber::daemon::start_in_process_with_reaper(
+        sock.clone(),
+        Config::default(),
+        tokio_util::sync::CancellationToken::new(),
+        Some(health),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let client = Client::new(sock);
+
+    let resp = client
+        .introspect("daemon", None)
+        .expect("request succeeded");
+    assert!(resp.ok);
+    let data = resp.data.expect("payload");
+
+    let reaper = data.get("reaper").expect("reaper present");
+    assert_eq!(
+        reaper.get("visibility").and_then(|v| v.as_str()),
+        Some("system-wide")
+    );
+    let verdicts = data
+        .get("verdicts")
+        .and_then(|v| v.as_array())
+        .expect("verdicts");
+    assert!(
+        verdicts.iter().any(|v| {
+            v.get("level").and_then(|l| l.as_str()) == Some("PASS")
+                && v.get("message")
+                    .and_then(|m| m.as_str())
+                    .is_some_and(|m| m.contains("system-wide process visibility"))
+        }),
+        "healthy reaper must produce a PASS verdict, got: {verdicts:?}"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn env_override_daemon_does_not_arm_reaper() {
+    // Canon singleton.md §"Who reaps": reaper resolution ignores
+    // $BEACHCOMBER_SOCKET, so a daemon bound via the env override is a side
+    // daemon — introspect must report reaper.armed == false. This is the
+    // fratricide guard: two daemons of one uid never both hold the reaper role.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("override.sock");
+
+    let exe = comb_binary();
+
+    let mut daemon = std::process::Command::new(&exe)
+        .env("BEACHCOMBER_SOCKET", &sock)
+        .args(["daemon", "--exit-with-parent", "--socket"])
+        .arg(&sock)
+        .spawn()
+        .expect("spawn daemon");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !sock.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(sock.exists(), "daemon never bound socket");
+
+    let client = Client::new(sock.clone());
+    let resp = client
+        .introspect("daemon", None)
+        .expect("introspect request");
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+
+    assert!(resp.ok, "introspect failed: {:?}", resp.error);
+    let data = resp.data.expect("payload");
+    let armed = data.pointer("/reaper/armed").and_then(|v| v.as_bool());
+    assert_eq!(
+        armed,
+        Some(false),
+        "env-override daemon must not arm the reaper; payload: {data}"
+    );
+}
+
+/// Regression: a daemon whose bind fails (here: socket path over SUN_LEN) must
+/// EXIT, not linger. Previously `scheduler_task.await` blocked forever after a
+/// server error and the process ignored SIGTERM (roadmap 2026-07-23 finding).
+#[test]
+fn daemon_exits_when_bind_fails() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    // Build a path comfortably past the 104-byte unix-socket limit.
+    let long = "x".repeat(120);
+    let sock = tmp.path().join(long).join("sock");
+
+    let exe = comb_binary();
+    let mut daemon = std::process::Command::new(&exe)
+        .args(["daemon", "--socket"])
+        .arg(&sock)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match daemon.try_wait().expect("try_wait") {
+            Some(_) => break, // exited — the regression is fixed
+            None if std::time::Instant::now() > deadline => {
+                let _ = daemon.kill();
+                let _ = daemon.wait();
+                panic!("daemon lingered past 10s after bind failure");
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    }
 }

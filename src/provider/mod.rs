@@ -42,7 +42,66 @@ pub enum Value {
     Object(HashMap<String, Value>),
 }
 
+/// Maximum nesting depth preserved when converting JSON into [`Value`].
+///
+/// Beyond this, a subtree is stored as its JSON text rather than dropped, so no
+/// data is lost — it just stops being addressable by path. The bound exists
+/// because provider output is untrusted input and recursion is unbounded
+/// otherwise.
+pub const MAX_JSON_DEPTH: usize = 10;
+
 impl Value {
+    /// The single conversion from `serde_json::Value` into a provider [`Value`].
+    ///
+    /// Every ingestion path — `put`, script, http, library — goes through this.
+    /// Do not pattern-match `serde_json::Value` to build a `Value` anywhere else;
+    /// four copies of that match previously existed and all four failed to
+    /// recurse, so nested objects were silently stringified despite
+    /// `docs/canon/field_resolution.md` invariant 12 promising depth-independent
+    /// addressing.
+    ///
+    /// Objects become [`Value::Object`]. Arrays become [`Value::Object`] keyed by
+    /// decimal index, matching how array segments are already addressed by path
+    /// elsewhere. Null becomes an empty string. Depth is capped at
+    /// [`MAX_JSON_DEPTH`].
+    pub fn from_json(value: &serde_json::Value) -> Value {
+        Self::from_json_at(value, 0)
+    }
+
+    fn from_json_at(value: &serde_json::Value, depth: usize) -> Value {
+        match value {
+            serde_json::Value::String(s) => Value::String(s.clone()),
+            serde_json::Value::Bool(b) => Value::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Int(i)
+                } else if let Some(f) = n.as_f64() {
+                    Value::Float(f)
+                } else {
+                    Value::String(n.to_string())
+                }
+            }
+            serde_json::Value::Null => Value::String(String::new()),
+            serde_json::Value::Object(_) | serde_json::Value::Array(_)
+                if depth >= MAX_JSON_DEPTH =>
+            {
+                Value::String(value.to_string())
+            }
+            serde_json::Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), Self::from_json_at(v, depth + 1)))
+                    .collect(),
+            ),
+            serde_json::Value::Array(items) => Value::Object(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| (i.to_string(), Self::from_json_at(v, depth + 1)))
+                    .collect(),
+            ),
+        }
+    }
+
     pub fn as_text(&self) -> String {
         match self {
             Value::String(s) => s.clone(),
@@ -59,6 +118,34 @@ impl Value {
             }
         }
     }
+}
+
+/// The single dotted-path walk over a provider's field map.
+///
+/// Every caller that resolves `provider.field.sub…` against a `HashMap<String,
+/// Value>` goes through this — `ProviderResult::get_path`, the cache's
+/// `get_field`, and the server's source-field lookup. Three copies of this walk
+/// previously existed with different depth behaviour.
+///
+/// Tries `path` as a literal field name first, so a provider declaring a field
+/// with a dot in its name still resolves. Otherwise splits on the first `.` and
+/// walks into nested [`Value::Object`]s for as many segments as the path has.
+///
+/// Returns `None` if a segment is absent, or if the walk lands on a non-Object
+/// before the path is consumed.
+pub fn lookup_path<'a>(fields: &'a HashMap<String, Value>, path: &str) -> Option<&'a Value> {
+    if let Some(v) = fields.get(path) {
+        return Some(v);
+    }
+    let (head, rest) = path.split_once('.')?;
+    let mut current = fields.get(head)?;
+    for segment in rest.split('.') {
+        match current {
+            Value::Object(map) => current = map.get(segment)?,
+            _ => return None,
+        }
+    }
+    Some(current)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -90,20 +177,7 @@ impl ProviderResult {
     /// `Value::Object({"rust": "1.94.0", "cargo-nextest": "0.9.133"})`,
     /// `get_path("project.rust")` returns `Some(Value::String("1.94.0"))`.
     pub fn get_path(&self, path: &str) -> Option<&Value> {
-        if let Some(v) = self.fields.get(path) {
-            return Some(v);
-        }
-        let (head, rest) = path.split_once('.')?;
-        let mut current = self.fields.get(head)?;
-        for segment in rest.split('.') {
-            match current {
-                Value::Object(map) => {
-                    current = map.get(segment)?;
-                }
-                _ => return None,
-            }
-        }
-        Some(current)
+        lookup_path(&self.fields, path)
     }
 
     pub fn to_json(&self) -> serde_json::Value {
@@ -300,6 +374,19 @@ impl SourceResult {
     }
     pub fn insert(&mut self, key: impl Into<String>, value: Value) {
         self.fields.insert(key.into(), value);
+    }
+
+    /// Build a result from a JSON object's top-level keys, converting each value
+    /// through [`Value::from_json`].
+    ///
+    /// This is the shared body of every "provider emitted a JSON object" path.
+    /// Use it rather than looping and converting at each call site.
+    pub fn from_json_object(map: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let mut result = Self::new();
+        for (key, val) in map {
+            result.insert(key.clone(), Value::from_json(val));
+        }
+        result
     }
 }
 

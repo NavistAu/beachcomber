@@ -348,25 +348,7 @@ fn parse_json_output(stdout: &str) -> Option<SourceResult> {
     let parsed: serde_json::Value = serde_json::from_str(stdout).ok()?;
     let obj = parsed.as_object()?;
 
-    let mut result = SourceResult::new();
-    for (key, val) in obj {
-        let value = match val {
-            serde_json::Value::String(s) => Value::String(s.clone()),
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Value::Int(i)
-                } else if let Some(f) = n.as_f64() {
-                    Value::Float(f)
-                } else {
-                    Value::String(n.to_string())
-                }
-            }
-            serde_json::Value::Bool(b) => Value::Bool(*b),
-            other => Value::String(other.to_string()),
-        };
-        result.insert(key.clone(), value);
-    }
-    Some(result)
+    Some(SourceResult::from_json_object(obj))
 }
 
 fn parse_kv_output(stdout: &str) -> Option<SourceResult> {

@@ -30,18 +30,11 @@ impl SocketProbe for RealSocketProbe {
 pub struct RealSocketDiscovery;
 
 impl SocketDiscovery for RealSocketDiscovery {
-    /// Mirror the algorithm in `Config::resolve_socket_path` for the no-config-override case.
-    ///
-    /// Priority:
-    /// 1. `$XDG_RUNTIME_DIR/beachcomber/sock`
-    /// 2. `/tmp/beachcomber-<uid>/sock`
+    /// Mirror the algorithm in `Config::resolve_socket_path` for the
+    /// no-config-override, no-`$BEACHCOMBER_SOCKET` case: the stable per-user
+    /// default `/tmp/beachcomber-<uid>/sock`. Consults no session-scoped
+    /// environment (see docs/canon/singleton.md).
     fn default_socket_path(&self) -> std::path::PathBuf {
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            return std::path::PathBuf::from(runtime_dir)
-                .join("beachcomber")
-                .join("sock");
-        }
-
         let uid = unsafe { libc::getuid() };
         std::path::PathBuf::from("/tmp")
             .join(format!("beachcomber-{uid}"))

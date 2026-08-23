@@ -11,6 +11,7 @@ use beachcomber::cli::status_format::{
     RenderOpts, render_csv, render_preset, render_sh_env, render_tsv, row_context,
 };
 use common::git::GitRepoFixture;
+use common::poll::poll_until;
 
 fn sample_rows() -> Vec<CacheRow> {
     vec![
@@ -27,6 +28,7 @@ fn sample_rows() -> Vec<CacheRow> {
             keep_alive_polls: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
+            next_poll_in_secs: None,
             failure: None,
         },
         CacheRow {
@@ -42,6 +44,7 @@ fn sample_rows() -> Vec<CacheRow> {
             keep_alive_polls: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
+            next_poll_in_secs: None,
             failure: None,
         },
         CacheRow {
@@ -57,6 +60,7 @@ fn sample_rows() -> Vec<CacheRow> {
             keep_alive_polls: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
+            next_poll_in_secs: None,
             failure: None,
         },
     ]
@@ -151,6 +155,7 @@ fn human_preset_truncates_value_to_meet_total_cap() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     });
     // With a 120-col total cap, the non-VALUE columns for these rows fit comfortably,
@@ -190,6 +195,7 @@ fn human_preset_color_on_stale_rows() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }];
     let opts = RenderOpts {
@@ -221,6 +227,7 @@ fn json_preset_path_none_serializes_as_null() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }];
     let out = render_preset("json", &rows, &RenderOpts::default());
@@ -247,6 +254,7 @@ fn csv_preset_quotes_values_with_commas() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }];
     let out = render_preset("csv", &rows, &RenderOpts::default());
@@ -283,6 +291,7 @@ fn custom_template_supports_truncate_filter() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }];
     let out = render_preset("{{ value | truncate(7) }}", &rows, &RenderOpts::default());
@@ -336,6 +345,7 @@ fn custom_template_supports_age_human() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }];
     let out = render_preset("{{ age_human }}", &rows, &RenderOpts::default());
@@ -519,26 +529,18 @@ async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<(
     (tmp, client, handle)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_returns_rows_per_field() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     // Warm up a global provider so at least something is in cache.
-    let _ = client
-        .send_raw(serde_json::json!({"op": "get", "key": "hostname"}))
-        .await
-        .expect("get hostname");
+    let _ = client.get("hostname", None).expect("get hostname");
 
     // Give the cache a moment to settle.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "status"}))
-        .await
-        .expect("status");
-
-    assert!(resp.ok, "status should succeed, error: {:?}", resp.error);
-    let data = resp.data.expect("status data present");
+    let status_rows = client.status().expect("status");
+    let data = serde_json::to_value(&status_rows).expect("rows serialize");
     let rows = data.as_array().expect("status response is an array");
 
     for row in rows {
@@ -704,6 +706,7 @@ fn max_width_value_column_shrinks_not_others() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     // Use a narrow max_width that cannot fit the full value.
@@ -750,6 +753,7 @@ fn max_width_total_row_width_does_not_exceed_cap() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     let total_cap = 80usize;
@@ -825,6 +829,7 @@ fn default_sort_is_path_provider_field() {
             keep_alive_polls: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
+            next_poll_in_secs: None,
             failure: None,
         }
     }
@@ -910,6 +915,7 @@ fn cache_row_new_fields_serde_round_trip() {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     let v = serde_json::to_value(&row).unwrap();
@@ -921,7 +927,7 @@ fn cache_row_new_fields_serde_round_trip() {
     assert!(v.get("decay").is_none(), "old decay field is gone");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lifecycle_snapshots_message_returns_per_entry_data() {
     use beachcomber::cache::Cache;
     use beachcomber::provider::registry::ProviderRegistry;
@@ -964,7 +970,7 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
     let _ = task.await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failure_states_message_returns_provider_map() {
     use beachcomber::cache::Cache;
     use beachcomber::provider::registry::ProviderRegistry;
@@ -996,29 +1002,18 @@ async fn failure_states_message_returns_provider_map() {
 }
 
 /// Status on a fresh daemon with an empty cache returns an empty array, not an error.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_empty_cache_returns_empty_array() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "status"}))
-        .await
-        .expect("status");
-
-    assert!(
-        resp.ok,
-        "status should succeed on empty cache: {:?}",
-        resp.error
-    );
-    let data = resp.data.expect("status data present");
-    let rows = data.as_array().expect("status response is an array");
-    // May be empty — that's fine. Just verify it's a valid array.
+    let rows = client.status().expect("status");
+    // May be empty — that's fine. Just verify the call succeeds.
     let _ = rows.len();
 
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_response_lifecycle_row_carries_kind_and_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
@@ -1031,21 +1026,35 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     // which would leave the diff source absent from the status output.
     let repo = GitRepoFixture::new();
     let repo_path = repo.path_str();
-    let _ = client
-        .send_raw(serde_json::json!({"op": "get", "key": "git", "path": repo_path}))
-        .await
-        .expect("get git");
+    let _ = client.get("git", Some(repo_path)).expect("get git");
 
-    // Give the scheduler time to populate lifecycle state.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-    let resp = client
-        .send_raw(serde_json::json!({"op": "status"}))
-        .await
-        .expect("status");
-    assert!(resp.ok, "status failed: {:?}", resp.error);
-    let rows: Vec<CacheRow> =
-        serde_json::from_value(resp.data.expect("data present")).expect("rows deserialize");
+    // Poll until the scheduler has populated lifecycle state for both git
+    // sources (refs + diff) rather than sleeping a fixed duration and hoping.
+    //
+    // Deadline was widened to 20s to absorb a daemon-side stall: the
+    // scheduler registered fs watches synchronously in its demand arm, once
+    // per git source for the same path (refs + status both watch the repo
+    // root), so a single `get git` paid kernel FSEvents registration cost
+    // twice — >6s total on a loaded host — during which every pending
+    // response (including this test's status polls) sat undelivered. Fixed
+    // by deduping the kernel watch() call to once per path and moving it off
+    // the scheduler task via spawn_blocking (src/scheduler/mod.rs
+    // `register_path_watch`), so this reverts to the original 5s deadline as
+    // the regression guard.
+    let rows = poll_until(
+        "status rows for git after get",
+        "rows containing provider=git source=refs and provider=git source=diff",
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        || client.status().expect("status"),
+        |rows: &Vec<CacheRow>| {
+            rows.iter()
+                .any(|r| r.provider == "git" && r.source == "refs")
+                && rows
+                    .iter()
+                    .any(|r| r.provider == "git" && r.source == "diff")
+        },
+    );
 
     // Pick a git row from the `refs` source (fsevent strategy → watches_files=true).
     // After Phase 1 each row carries its source's strategy individually, so the diff
@@ -1107,26 +1116,19 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_response_once_row_has_kind_once() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     // hostname is a Watch-only global provider with KeepAlive::Never — the equivalent
     // of the old "Once" semantics. It enters the lifecycle map immediately on demand.
     let _ = client
-        .send_raw(serde_json::json!({"op": "get", "key": "hostname.short"}))
-        .await
+        .get("hostname.short", None)
         .expect("get hostname.short");
 
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "status"}))
-        .await
-        .expect("status");
-    assert!(resp.ok, "status failed: {:?}", resp.error);
-    let rows: Vec<CacheRow> =
-        serde_json::from_value(resp.data.expect("data present")).expect("rows deserialize");
+    let rows = client.status().expect("status");
 
     let row = rows
         .iter()
@@ -1158,25 +1160,18 @@ async fn status_response_once_row_has_kind_once() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_response_virtual_row_has_kind_virtual() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     // Store a virtual entry via put.
     let _ = client
-        .send_raw(serde_json::json!({"op": "put", "key": "custom", "data": {"color": "blue"}}))
-        .await
+        .put("custom", serde_json::json!({"color": "blue"}), None, None)
         .expect("put custom");
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let resp = client
-        .send_raw(serde_json::json!({"op": "status"}))
-        .await
-        .expect("status");
-    assert!(resp.ok, "status failed: {:?}", resp.error);
-    let rows: Vec<CacheRow> =
-        serde_json::from_value(resp.data.expect("data present")).expect("rows deserialize");
+    let rows = client.status().expect("status");
 
     let row = rows
         .iter()
@@ -1218,6 +1213,7 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     let opts = FormatOptions { ascii: false };
@@ -1251,6 +1247,7 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }
 }
@@ -1365,6 +1362,7 @@ fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(false),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }
 }
@@ -1385,6 +1383,7 @@ fn once_row(provider: &str) -> beachcomber::cache::CacheRow {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }
 }
@@ -1488,11 +1487,18 @@ fn human_renders_p_zero_k_zero_without_panic() {
         keep_alive_polls: Some(0),
         fsevents_reinstate: Some(false),
         polls_elapsed: None,
+        next_poll_in_secs: Some(0),
         failure: None,
     };
     let opts = beachcomber::cli::status_format::FormatOptions::default();
     let out = beachcomber::cli::status_format::render_human(&[row], &opts);
-    assert!(out.contains("0s\u{00d7}00"), "P=0 K=0 expected: {}", out);
+    assert!(
+        out.contains("0s\u{00d7}00 (0s)"),
+        "P=0 K=0 expected: {}",
+        out
+    );
+    // POLL column also renders 0s without panicking.
+    assert!(out.contains("0s"), "POLL column expected 0s: {}", out);
 }
 
 // ---------------------------------------------------------------------------
@@ -1520,6 +1526,7 @@ fn failure_state_renders_warn_and_red_row() {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(false),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: Some(FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
@@ -1560,6 +1567,7 @@ fn render_preset_ascii_flag_swaps_glyphs() {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     let opts_unicode = RenderOpts {
@@ -1617,6 +1625,7 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     // Simulate the WATCH_INTERVAL case: caller resolved color=true even though
@@ -1633,5 +1642,150 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
         out.contains("\x1b[92m"),
         "bright green ANSI expected when no_color=false even with is_tty=false: {}",
         out
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Home-path compaction (`~`) — human preset only
+// ---------------------------------------------------------------------------
+
+#[test]
+fn human_preset_compacts_home_path() {
+    use beachcomber::cache::CacheRow;
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+    use serde_json::json;
+
+    let row = CacheRow {
+        provider: "git".into(),
+        path: Some("/Users/x/ws/beachcomber".into()),
+        source: "refs".into(),
+        field: "branch".into(),
+        value: json!("main"),
+        age_ms: 0,
+        stale: false,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        polls_elapsed: None,
+        next_poll_in_secs: None,
+        failure: None,
+    };
+    let opts = RenderOpts::default();
+
+    let out = temp_env::with_var("HOME", Some("/Users/x"), || {
+        render_preset("human", &[row], &opts)
+    });
+    assert!(
+        out.contains("~/ws/beachcomber"),
+        "expected compacted path: {out}"
+    );
+    assert!(
+        !out.contains("/Users/x/ws/beachcomber"),
+        "raw home-prefixed path should not appear: {out}"
+    );
+}
+
+#[test]
+fn machine_presets_keep_real_path_under_home() {
+    use beachcomber::cache::CacheRow;
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+    use serde_json::json;
+
+    let row = CacheRow {
+        provider: "git".into(),
+        path: Some("/home/testuser/ws/beachcomber".into()),
+        source: "refs".into(),
+        field: "branch".into(),
+        value: json!("main"),
+        age_ms: 0,
+        stale: false,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        polls_elapsed: None,
+        next_poll_in_secs: None,
+        failure: None,
+    };
+    let opts = RenderOpts::default();
+
+    temp_env::with_var("HOME", Some("/home/testuser"), || {
+        // json/csv/tsv/table carry `path` verbatim; sh flattens it into a
+        // sanitized shell-variable key (slashes → underscores) rather than
+        // embedding the literal path string, so it's checked separately —
+        // the shared assertion across all five is simply "no `~` leaks in".
+        for preset in ["json", "csv", "tsv", "table"] {
+            let out = render_preset(preset, std::slice::from_ref(&row), &opts);
+            assert!(
+                out.contains("/home/testuser/ws/beachcomber"),
+                "{preset} preset should keep the real path: {out}"
+            );
+            assert!(
+                !out.contains('~'),
+                "{preset} preset should not compact the path: {out}"
+            );
+        }
+        let sh_out = render_preset("sh", std::slice::from_ref(&row), &opts);
+        assert!(
+            !sh_out.contains('~'),
+            "sh preset should not compact the path: {sh_out}"
+        );
+    });
+}
+
+#[test]
+fn human_preset_path_compaction_frees_width_for_value() {
+    use beachcomber::cache::CacheRow;
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+    use serde_json::json;
+
+    let row = CacheRow {
+        provider: "p".into(),
+        path: Some("/home/testuser/p".into()),
+        source: "default".into(),
+        field: "f".into(),
+        value: json!("a".repeat(20)),
+        age_ms: 0,
+        stale: false,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        polls_elapsed: None,
+        next_poll_in_secs: None,
+        failure: None,
+    };
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: true,
+        max_width: Some(70),
+        no_trunc: false,
+        ascii: false,
+    };
+
+    // HOME matches the row's path: compaction shrinks PATH from 16 to 3
+    // chars, freeing width the budget hands to VALUE — the full 20-char
+    // value fits uncut.
+    let compacted = temp_env::with_var("HOME", Some("/home/testuser"), || {
+        render_preset("human", std::slice::from_ref(&row), &opts)
+    });
+    assert!(
+        compacted.contains(&"a".repeat(20)),
+        "compaction should free enough width for the full VALUE: {compacted}"
+    );
+    assert!(
+        compacted.contains("~/p"),
+        "path should compact: {compacted}"
+    );
+
+    // Same total-width budget, but HOME doesn't match this row's path: PATH
+    // stays at its full 16-char length, so VALUE must truncate.
+    let uncompacted = temp_env::with_var("HOME", Some("/no/match/here"), || {
+        render_preset("human", &[row], &opts)
+    });
+    assert!(
+        !uncompacted.contains(&"a".repeat(20)),
+        "without compaction the same width budget should truncate VALUE: {uncompacted}"
     );
 }

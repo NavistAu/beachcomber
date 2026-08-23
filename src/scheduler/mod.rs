@@ -74,6 +74,10 @@ pub struct LifecycleSnapshot {
     /// step. Used by the status formatter to render the `{age}×{N}` suffix on
     /// the age column.
     pub polls_elapsed: u32,
+    /// Seconds until the next scheduled poll fires (`poll_timer.last_fired +
+    /// poll_timer.interval`, clamped to now). `None` for pure Watch sources
+    /// (no poll timer).
+    pub next_poll_in_secs: Option<u64>,
     /// Whether fsevents are reinstated on demand for this entry.
     pub fsevents_reinstate: bool,
     /// True if the provider uses Watch or WatchAndPoll invalidation strategy.
@@ -89,6 +93,9 @@ pub struct SchedulerStatus {
     pub lifecycle: Vec<LifecycleInfo>,
     pub poll_timers: Vec<PollTimerInfo>,
     pub demand: Vec<DemandInfo>,
+    /// Provider file-watch backend chosen by the startup self-test:
+    /// "native", "polling", or "disabled" (watcher creation failed).
+    pub watch_backend: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -252,11 +259,7 @@ fn snapshot_entry(
             // For pure Watch (no poll path) polls don't apply; report 0.
             // For WatchAndPoll, derive K = secs / base_poll_secs so the renderer
             // can produce the {p}s×{k:02} format.
-            let k = if base_poll_secs > 0 {
-                (secs / base_poll_secs) as u32
-            } else {
-                0
-            };
+            let k = secs.checked_div(base_poll_secs).unwrap_or(0) as u32;
             (k, secs * rate_mult)
         }
         KeepAlive::Never => (0, 0),
@@ -277,11 +280,19 @@ fn snapshot_entry(
         _ => 0,
     };
 
+    // Seconds until the poll timer's next scheduled fire, mirroring the
+    // `tick()` due-check (`last_fired + interval`). Saturates to 0 once due.
+    let next_poll_in_secs = entry.poll_timer.as_ref().map(|pt| {
+        let next_due = pt.last_fired + pt.interval;
+        next_due.saturating_duration_since(now).as_secs()
+    });
+
     LifecycleSnapshot {
         decay,
         poll_interval_secs,
         keep_alive_polls,
         polls_elapsed,
+        next_poll_in_secs,
         fsevents_reinstate: entry.config.fsevents_reinstate,
         watches_files,
         source: key.2.clone(),
@@ -307,6 +318,7 @@ fn build_status(
     lifecycle: &LifecycleRegistry,
     watch_paths: &HashMap<PathBuf, Vec<Subscription>>,
     in_flight: &std::sync::Mutex<std::collections::HashSet<lifecycle::Key>>,
+    watch_backend: &str,
 ) -> SchedulerStatus {
     let watched: Vec<String> = watch_paths
         .keys()
@@ -375,6 +387,7 @@ fn build_status(
         lifecycle: backoff_info,
         poll_timers: poll_timer_info,
         demand: demand_info,
+        watch_backend: watch_backend.to_string(),
     }
 }
 
@@ -435,6 +448,10 @@ pub struct Scheduler {
     heartbeat: Arc<AtomicU64>,
     /// WatcherRegistry — gc() called periodically to remove dead channel entries.
     watchers: Arc<WatcherRegistry>,
+    /// Whether `run()` probes fs-event delivery before choosing the watch
+    /// backend. Set by the daemon path via `self_test_watch_backend()`;
+    /// defaults to false (assume native) for directly-constructed schedulers.
+    run_watch_self_test: bool,
 }
 
 impl Scheduler {
@@ -457,6 +474,7 @@ impl Scheduler {
             failure_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
             heartbeat,
             watchers,
+            run_watch_self_test: false,
         };
         (handle, scheduler)
     }
@@ -647,8 +665,24 @@ impl Scheduler {
         });
     }
 
+    /// Opt this scheduler into the startup watch self-test (canon
+    /// provider_source.md §"Watch backend health"). The daemon path sets this; directly-constructed
+    /// schedulers (tests) default to assuming the native backend, exactly the
+    /// pre-self-test behaviour, and skip the probe and its 500ms worst case.
+    pub fn self_test_watch_backend(&mut self) {
+        self.run_watch_self_test = true;
+    }
+
     pub async fn run(mut self) {
-        // Set up filesystem watcher.
+        // Provider file-watching starts on the kernel-native backend
+        // immediately; the watch self-test (canon provider_source.md §"Watch
+        // backend health") runs concurrently rather than gating the loop — kernel
+        // event delivery can take hundreds of ms even when healthy, and the
+        // scheduler must serve demand from its first moment. If the self-test
+        // fails, the loop swaps to the polling backend and re-registers every
+        // watch path (a stream can be created without error and deliver
+        // nothing — sandboxed CI hosts, degraded fseventsd; chosen blind,
+        // watch-invalidated entries would silently never invalidate).
         let (mut fs_watcher, mut fs_rx) = match FsWatcher::new() {
             Ok(pair) => pair,
             Err(e) => {
@@ -662,6 +696,22 @@ impl Scheduler {
                 return self.run_without_watcher(rx).await;
             }
         };
+        let mut watch_backend = crate::watcher::WatchBackend::Native;
+
+        let mut self_test_rx: Option<tokio::sync::oneshot::Receiver<bool>> =
+            if self.run_watch_self_test {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                tokio::spawn(async move {
+                    let ok = crate::watcher::self_test_native_backend(
+                        crate::watcher::WATCH_SELF_TEST_TIMEOUT,
+                    )
+                    .await;
+                    let _ = tx.send(ok);
+                });
+                Some(rx)
+            } else {
+                None
+            };
 
         // Lifecycle registry: replaces the three old maps (demand, backoff, poll_states).
         let mut lifecycle = LifecycleRegistry::new();
@@ -711,7 +761,12 @@ impl Scheduler {
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
-                            let status = build_status(&lifecycle, &watch_paths, &self.in_flight);
+                            let status = build_status(
+                                &lifecycle,
+                                &watch_paths,
+                                &self.in_flight,
+                                watch_backend.as_str(),
+                            );
                             let _ = reply.send(status);
                         }
                         Some(SchedulerMessage::GetFailureStates { reply }) => {
@@ -806,21 +861,22 @@ impl Scheduler {
                                             let patterns = crate::provider::watch_patterns(
                                                 &sm.invalidation,
                                             );
-                                            if let Err(e) = fs_watcher.watch(&watch_path) {
-                                                warn!(
-                                                    "Failed to watch {:?}: {}",
-                                                    watch_path, e
-                                                );
-                                            } else {
-                                                watch_paths
-                                                    .entry(watch_path)
-                                                    .or_default()
-                                                    .push(Subscription {
-                                                        provider: provider.clone(),
-                                                        path: path.clone(),
-                                                        source: sm.name.clone(),
-                                                        patterns,
-                                                    });
+                                            let sub = Subscription {
+                                                provider: provider.clone(),
+                                                path: path.clone(),
+                                                source: sm.name.clone(),
+                                                patterns,
+                                            };
+                                            let (returned_watcher, registered) =
+                                                register_path_watch(
+                                                    fs_watcher,
+                                                    &mut watch_paths,
+                                                    watch_path.clone(),
+                                                    sub,
+                                                )
+                                                .await;
+                                            fs_watcher = returned_watcher;
+                                            if registered {
                                                 debug!(
                                                     "Demand: watching path {:?} for provider={} source={}",
                                                     path, provider, sm.name
@@ -833,16 +889,21 @@ impl Scheduler {
                                             // THIS instance's lifecycle key.
                                             if let Some(src) = self.registry.source(&provider, &sm.name) {
                                                 for file in src.watched_files(Some(path_str)) {
-                                                    if let Err(e) = fs_watcher.watch(&file) {
-                                                        warn!("Failed to watch file {:?}: {}", file, e);
-                                                    } else {
-                                                        watch_paths.entry(file).or_default().push(Subscription {
-                                                            provider: provider.clone(),
-                                                            path: path.clone(),
-                                                            source: sm.name.clone(),
-                                                            patterns: Vec::new(),
-                                                        });
-                                                    }
+                                                    let sub = Subscription {
+                                                        provider: provider.clone(),
+                                                        path: path.clone(),
+                                                        source: sm.name.clone(),
+                                                        patterns: Vec::new(),
+                                                    };
+                                                    let (returned_watcher, _) =
+                                                        register_path_watch(
+                                                            fs_watcher,
+                                                            &mut watch_paths,
+                                                            file,
+                                                            sub,
+                                                        )
+                                                        .await;
+                                                    fs_watcher = returned_watcher;
                                                 }
                                             }
                                         }
@@ -854,22 +915,20 @@ impl Scheduler {
                                                 crate::provider::watch_abs_paths(&sm.invalidation);
                                             for abs_path_str in &abs_paths {
                                                 let abs_path = PathBuf::from(abs_path_str);
-                                                if let Err(e) = fs_watcher.watch(&abs_path) {
-                                                    warn!(
-                                                        "Failed to watch abs_path {:?}: {}",
-                                                        abs_path, e
-                                                    );
-                                                } else {
-                                                    watch_paths
-                                                        .entry(abs_path)
-                                                        .or_default()
-                                                        .push(Subscription {
-                                                            provider: provider.clone(),
-                                                            path: None,
-                                                            source: sm.name.clone(),
-                                                            patterns: Vec::new(),
-                                                        });
-                                                }
+                                                let sub = Subscription {
+                                                    provider: provider.clone(),
+                                                    path: None,
+                                                    source: sm.name.clone(),
+                                                    patterns: Vec::new(),
+                                                };
+                                                let (returned_watcher, _) = register_path_watch(
+                                                    fs_watcher,
+                                                    &mut watch_paths,
+                                                    abs_path,
+                                                    sub,
+                                                )
+                                                .await;
+                                                fs_watcher = returned_watcher;
                                             }
                                         }
                                     }
@@ -902,6 +961,42 @@ impl Scheduler {
                         }
                     }
                     last_activity = Instant::now();
+                }
+
+                // Watch self-test verdict (canon provider_source.md §"Watch backend health").
+                // Failure swaps the live watcher for the polling backend and
+                // re-registers every watch path on it.
+                res = async { self_test_rx.as_mut().expect("guarded by is_some").await },
+                    if self_test_rx.is_some() =>
+                {
+                    self_test_rx = None;
+                    // A dropped sender is a harness failure, not evidence of a
+                    // dead backend — stay on native.
+                    if !res.unwrap_or(true) {
+                        warn!(
+                            "watch self-test: no fs events delivered within {:?}; provider watching falls back to polling",
+                            crate::watcher::WATCH_SELF_TEST_TIMEOUT
+                        );
+                        match FsWatcher::new_polling_fallback(
+                            crate::watcher::POLLING_FALLBACK_INTERVAL,
+                        ) {
+                            Ok((mut poll_watcher, poll_rx)) => {
+                                for path in watch_paths.keys() {
+                                    if let Err(e) = poll_watcher.watch(path) {
+                                        warn!("failed to re-register watch on {path:?}: {e}");
+                                    }
+                                }
+                                fs_watcher = poll_watcher;
+                                fs_rx = poll_rx;
+                                watch_backend = crate::watcher::WatchBackend::Polling;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "failed to create polling fallback watcher: {e}; staying on native (events may not deliver)"
+                                );
+                            }
+                        }
+                    }
                 }
 
                 // Periodic GC: remove dead broadcast channel entries.
@@ -991,7 +1086,12 @@ impl Scheduler {
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
                             let empty_watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
-                            let status = build_status(&lifecycle, &empty_watch_paths, &self.in_flight);
+                            let status = build_status(
+                                &lifecycle,
+                                &empty_watch_paths,
+                                &self.in_flight,
+                                "disabled",
+                            );
                             let _ = reply.send(status);
                         }
                         Some(SchedulerMessage::GetFailureStates { reply }) => {
@@ -1135,6 +1235,66 @@ impl Scheduler {
     }
 }
 
+/// Register a fs watch on `path` for `sub`, deduplicating the underlying
+/// kernel registration against already-tracked paths: multiple Sources
+/// subscribing to the same path (e.g. git's `refs` and `status` sources at
+/// the same repo root) share one kernel `watch()` call, keyed off
+/// `watch_paths` — the same map that already governs unwatch-on-last-drop
+/// in `drop_watches_for_key`, so registration and cleanup share one source
+/// of truth for "is this path currently watched".
+///
+/// When a kernel call is actually needed (first subscriber for `path`), it
+/// runs on the blocking thread pool via `spawn_blocking`: kernel FSEvents
+/// registration has been measured at 1-3s per call on a loaded host, and
+/// running it inline on the scheduler's async task blocks the worker thread
+/// it shares with other tasks (e.g. connection tasks writing already-computed
+/// responses) for that whole duration. `fs_watcher` is moved in and handed
+/// back so the caller's loop keeps ownership across the await point.
+///
+/// Gap semantics: between the moment this call is issued and the moment the
+/// kernel registration completes, no fs events for `path` are observed (the
+/// OS is not yet watching it) — the same gap that existed before this fix's
+/// spawn_blocking off-load, just no longer accompanied by a blocked
+/// scheduler task. A demand signal that arrives for a Source whose
+/// registration is still in flight is not lost: `on_demand` already
+/// recorded the lifecycle transition synchronously, and the scheduler's
+/// message loop processes one `QueryActivity` at a time, so no second
+/// registration attempt races this one for the same path.
+///
+/// Returns the `FsWatcher` plus whether the subscription was recorded —
+/// false only when a fresh kernel registration was required and failed.
+async fn register_path_watch(
+    fs_watcher: FsWatcher,
+    watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
+    path: PathBuf,
+    sub: Subscription,
+) -> (FsWatcher, bool) {
+    if let Some(subs) = watch_paths.get_mut(&path) {
+        subs.push(sub);
+        return (fs_watcher, true);
+    }
+
+    let path_for_call = path.clone();
+    let (fs_watcher, result) = tokio::task::spawn_blocking(move || {
+        let mut fs_watcher = fs_watcher;
+        let result = fs_watcher.watch(&path_for_call);
+        (fs_watcher, result)
+    })
+    .await
+    .expect("watch registration task panicked");
+
+    match result {
+        Ok(()) => {
+            watch_paths.insert(path, vec![sub]);
+            (fs_watcher, true)
+        }
+        Err(e) => {
+            warn!("Failed to watch {:?}: {}", path, e);
+            (fs_watcher, false)
+        }
+    }
+}
+
 /// Resolve affected lifecycle keys from a set of changed paths using watch_paths + patterns.
 fn resolve_keys_from_paths(
     changed_paths: &[PathBuf],
@@ -1181,6 +1341,53 @@ fn drop_watches_for_key(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    /// Pinning test for the watch-registration dedup fix: when multiple
+    /// Sources subscribe to the same path (e.g. git's `refs` and `status`
+    /// sources at the same repo root), the underlying kernel `watch()` call
+    /// must happen exactly once — not once per subscribing Source. Kernel
+    /// FSEvents registration costs 1-3s per call on a loaded host; calling
+    /// it redundantly once per source is what caused the scheduler-loop
+    /// stall this fix addresses.
+    #[tokio::test]
+    async fn register_path_watch_dedupes_kernel_registration_for_shared_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let (fs_watcher, _rx) =
+            crate::watcher::FsWatcher::new_polling(Duration::from_millis(50)).unwrap();
+        let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
+
+        let sub_refs = Subscription {
+            provider: "git".to_string(),
+            path: Some(dir.display().to_string()),
+            source: "refs".to_string(),
+            patterns: vec![".git".to_string()],
+        };
+        let sub_status = Subscription {
+            provider: "git".to_string(),
+            path: Some(dir.display().to_string()),
+            source: "status".to_string(),
+            patterns: vec![".git/index".to_string()],
+        };
+
+        let (fs_watcher, ok_a) =
+            register_path_watch(fs_watcher, &mut watch_paths, dir.clone(), sub_refs).await;
+        assert!(ok_a, "first subscriber's registration should succeed");
+        let (fs_watcher, ok_b) =
+            register_path_watch(fs_watcher, &mut watch_paths, dir.clone(), sub_status).await;
+        assert!(ok_b, "second subscriber's registration should succeed");
+
+        assert_eq!(
+            fs_watcher.watch_call_count(),
+            1,
+            "kernel watch() must be called once per path, not once per subscribing source"
+        );
+        assert_eq!(
+            watch_paths.get(&dir).unwrap().len(),
+            2,
+            "both subscriptions are recorded despite the single kernel registration"
+        );
+    }
 
     #[test]
     fn event_matches_pattern_component_equality() {

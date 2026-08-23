@@ -8,7 +8,7 @@ struct DetectedTool {
 
 pub fn run_init(write_config: bool) -> ExitCode {
     if write_config {
-        use crate::cli::virtual_fields::VirtualFields;
+        use libbeachcomber::virtual_fields::VirtualFields;
         let vf = VirtualFields::defaults_only();
         let toml = vf.to_config_toml();
         let home = std::env::var("HOME").unwrap_or_default();

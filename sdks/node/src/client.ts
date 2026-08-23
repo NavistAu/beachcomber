@@ -1,18 +1,17 @@
 /**
- * Client and Session implementations for the beachcomber daemon.
+ * Client, Session and WatchStream implementations for the beachcomber
+ * daemon, built over the C ABI (`libbeachcomber.{so,dylib}` via `koffi`,
+ * or the `comb` subprocess fallback — see `transport_select.ts`).
  */
 
-import * as net from 'net';
-import { discoverSocketPath } from './discovery.js';
-import { DaemonNotRunning, ParseError, ServerError } from './errors.js';
-import {
-  parseResponseLine,
-  serialiseRequest,
-} from './protocol.js';
+import { selectTransport } from './transport_select.js';
+import { unwrap } from './envelope.js';
+import type { ClientHandle, SessionHandle, Transport, WatchHandle } from './transport.js';
 import type {
   HelloInfo,
   CacheRow,
   DaemonHealth,
+  ReaperStatus,
   IntrospectSubject,
   IntrospectResponse,
   RowKind,
@@ -20,7 +19,20 @@ import type {
   WatchEvent,
 } from './types.js';
 
-export type { HelloInfo, CacheRow, DaemonHealth, IntrospectSubject, IntrospectResponse, RowKind, Verdict, WatchEvent };
+export type {
+  HelloInfo,
+  CacheRow,
+  DaemonHealth,
+  ReaperStatus,
+  IntrospectSubject,
+  IntrospectResponse,
+  RowKind,
+  Verdict,
+  WatchEvent,
+};
+
+const BC_GET_FORCE = 1 << 0;
+const BC_GET_WAIT = 1 << 1;
 
 // ---- CombResult ----
 
@@ -39,8 +51,6 @@ export interface CombResult {
   ageMs: number;
   /** True when the cached value is considered stale (0 on miss). */
   stale: boolean;
-  /** Error message when ok is false (should not normally be seen — errors throw). */
-  error?: string;
   /** True when the cache had a value for this key. */
   isHit: boolean;
   /** True when the cache had no value for this key. */
@@ -67,16 +77,23 @@ function pickField(data: unknown, field?: string): unknown {
   return data;
 }
 
-function makeCombResult(raw: Record<string, unknown>): CombResult {
-  const ok = raw['ok'] === true;
-  const hasData = 'data' in raw && raw['data'] !== null && raw['data'] !== undefined;
-  const data = hasData ? raw['data'] : undefined;
-  const ageMs = typeof raw['age_ms'] === 'number' ? raw['age_ms'] : 0;
-  const stale = raw['stale'] === true;
-  const isHit = ok && hasData;
+interface GetResultShape {
+  data: unknown;
+  age_ms: number | null;
+  stale: boolean | null;
+}
+
+function makeCombResult(raw: GetResultShape): CombResult {
+  // The ABI's Miss variant sets age_ms/stale to null alongside data; a Hit
+  // always carries an age. That is the reliable hit/miss signal, since the
+  // data value itself may legitimately be JSON null on a hit.
+  const isHit = raw.age_ms !== null;
+  const data = isHit ? raw.data : undefined;
+  const ageMs = raw.age_ms ?? 0;
+  const stale = raw.stale ?? false;
 
   return {
-    ok,
+    ok: true,
     data,
     ageMs,
     stale,
@@ -106,139 +123,21 @@ function makeCombResult(raw: Record<string, unknown>): CombResult {
   };
 }
 
-// ---- Low-level socket helpers ----
-
-const RETRY_BACKOFFS_MS = [250, 500, 1000];
-
-/**
- * Connect to a Unix socket with 3 retries (250ms/500ms/1s exponential backoff).
- * Retries on ECONNREFUSED and ENOENT only — other errors surface immediately.
- * Covers the brief restart window when the daemon is restarting.
- */
-export function connectWithRetry(path: string): Promise<net.Socket> {
-  return new Promise((resolve, reject) => {
-    let attempt = 0;
-    const tryConnect = () => {
-      const sock = net.createConnection(path);
-      sock.once('connect', () => resolve(sock));
-      sock.once('error', (err: NodeJS.ErrnoException) => {
-        if (err.code !== 'ECONNREFUSED' && err.code !== 'ENOENT') {
-          reject(err);
-          return;
-        }
-        if (attempt >= RETRY_BACKOFFS_MS.length) {
-          reject(err);
-          return;
-        }
-        const backoff = RETRY_BACKOFFS_MS[attempt];
-        attempt++;
-        setTimeout(tryConnect, backoff);
-      });
-    };
-    tryConnect();
-  });
-}
-
-interface ClientOptions {
-  /** Override the auto-discovered socket path. */
-  socketPath?: string;
-  /** Connection + read timeout in milliseconds. Default: 5000. */
-  timeoutMs?: number;
-}
-
-/**
- * Open a TCP/Unix connection, send one newline-delimited JSON request, and
- * resolve with the trimmed response line.  The socket is destroyed after
- * the response is received.  Uses connectWithRetry to tolerate the brief
- * restart window when the daemon is restarting.
- */
-async function sendOneShot(socketPath: string, request: string, timeoutMs: number): Promise<string> {
-  let socket: net.Socket;
-  try {
-    socket = await connectWithRetry(socketPath);
-  } catch (err: unknown) {
-    throw new DaemonNotRunning(socketPath);
-  }
-
-  return new Promise((resolve, reject) => {
-    let responded = false;
-    let buffer = '';
-
-    const timer = setTimeout(() => {
-      if (!responded) {
-        responded = true;
-        socket.destroy();
-        reject(new DaemonNotRunning(socketPath));
-      }
-    }, timeoutMs);
-
-    socket.write(request);
-
-    socket.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString('utf8');
-      const newline = buffer.indexOf('\n');
-      if (newline !== -1) {
-        if (!responded) {
-          responded = true;
-          clearTimeout(timer);
-          const line = buffer.slice(0, newline);
-          socket.destroy();
-          resolve(line);
-        }
-      }
-    });
-
-    socket.on('error', (err: NodeJS.ErrnoException) => {
-      if (!responded) {
-        responded = true;
-        clearTimeout(timer);
-        if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
-          reject(new DaemonNotRunning(socketPath));
-        } else {
-          reject(err);
-        }
-      }
-    });
-
-    socket.on('close', () => {
-      if (!responded) {
-        responded = true;
-        clearTimeout(timer);
-        reject(new DaemonNotRunning(socketPath));
-      }
-    });
-  });
-}
-
-function parseAndCheck(line: string): Record<string, unknown> {
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = parseResponseLine(line);
-  } catch (e) {
-    throw new ParseError(line, e instanceof Error ? e.message : String(e));
-  }
-  if (parsed['ok'] === false) {
-    const msg = typeof parsed['error'] === 'string' ? parsed['error'] : 'unknown error';
-    throw new ServerError(msg);
-  }
-  return parsed;
-}
-
 // ---- Parse helpers ----
 
-function parseHello(resp: Record<string, unknown>): HelloInfo {
-  const data = (resp['data'] ?? {}) as Record<string, unknown>;
+function parseHello(data: unknown): HelloInfo {
+  const d = (data ?? {}) as Record<string, unknown>;
   return {
-    protocolVersion: String(data['protocol_version'] ?? ''),
-    daemonVersion: String(data['daemon_version'] ?? ''),
+    protocolVersion: String(d['protocol_version'] ?? ''),
+    daemonVersion: String(d['daemon_version'] ?? ''),
   };
 }
 
-function parseCacheRows(resp: Record<string, unknown>): CacheRow[] {
-  if (!Array.isArray(resp['data'])) {
-    throw new ParseError(JSON.stringify(resp), 'status data is not an array');
+function parseCacheRows(data: unknown): CacheRow[] {
+  if (!Array.isArray(data)) {
+    throw new TypeError('status data is not an array');
   }
-  return (resp['data'] as unknown[]).map((row: unknown) => {
+  return data.map((row: unknown) => {
     const r = row as Record<string, unknown>;
     return {
       provider: String(r['provider'] ?? ''),
@@ -250,6 +149,7 @@ function parseCacheRows(resp: Record<string, unknown>): CacheRow[] {
       kind: r['kind'] != null ? (r['kind'] as RowKind) : undefined,
       pollIntervalSecs: r['poll_interval_secs'] != null ? Number(r['poll_interval_secs']) : undefined,
       keepAlivePolls: r['keep_alive_polls'] != null ? Number(r['keep_alive_polls']) : undefined,
+      pollsElapsed: r['polls_elapsed'] != null ? Number(r['polls_elapsed']) : undefined,
       fseventsReinstate: r['fsevents_reinstate'] != null ? Boolean(r['fsevents_reinstate']) : undefined,
       failure: r['failure'] != null ? (r['failure'] as CacheRow['failure']) : undefined,
       source: r['source'] != null ? String(r['source']) : undefined,
@@ -268,6 +168,7 @@ function parseDaemonHealth(data: unknown): DaemonHealth {
         };
       })
     : [];
+  const reaperRaw = d['reaper'] as Record<string, unknown> | null | undefined;
   return {
     pid: Number(d['pid'] ?? 0),
     version: String(d['version'] ?? ''),
@@ -278,266 +179,202 @@ function parseDaemonHealth(data: unknown): DaemonHealth {
     inFlight: Number(d['in_flight'] ?? 0),
     activeWatchers: Number(d['active_watchers'] ?? 0),
     cacheEntries: Number(d['cache_entries'] ?? 0),
+    watchBackend: d['watch_backend'] != null ? String(d['watch_backend']) : undefined,
+    reaper: reaperRaw
+      ? {
+          armed: Boolean(reaperRaw['armed']),
+          visibility: String(reaperRaw['visibility'] ?? ''),
+          sweeps: Number(reaperRaw['sweeps'] ?? 0),
+          reaped: Number(reaperRaw['reaped'] ?? 0),
+          killDenied: Number(reaperRaw['kill_denied'] ?? 0),
+        }
+      : undefined,
     verdicts,
   };
 }
 
-function parseIntrospect(subject: IntrospectSubject, resp: Record<string, unknown>): IntrospectResponse {
+function parseIntrospect(subject: IntrospectSubject, data: unknown): IntrospectResponse {
   if (subject === 'daemon') {
-    return { subject: 'daemon', daemon: parseDaemonHealth(resp['data']) };
+    return { subject: 'daemon', daemon: parseDaemonHealth(data) };
   }
-  return { subject, other: resp['data'] ?? null } as IntrospectResponse;
+  return { subject, other: data ?? null } as IntrospectResponse;
+}
+
+function flagsOf(opts?: { force?: boolean; wait?: boolean }): number {
+  let flags = 0;
+  if (opts?.force) flags |= BC_GET_FORCE;
+  if (opts?.wait) flags |= BC_GET_WAIT;
+  return flags;
 }
 
 // ---- WatchStream ----
 
 /**
- * An AsyncIterable that yields WatchEvent values from a persistent socket
- * connection opened for an 'op:watch' request.
+ * An AsyncIterable that yields WatchEvent values from an open watch handle.
  *
- * Iterate with `for await (const event of stream)`.  Call `stream.close()`
+ * Iterate with `for await (const event of stream)`. Call `stream.close()`
  * to stop watching.
  */
 export class WatchStream implements AsyncIterable<WatchEvent> {
-  constructor(private readonly socket: net.Socket) {}
+  private closed = false;
+
+  constructor(
+    private readonly tp: Transport,
+    private readonly handle: WatchHandle,
+  ) {}
 
   async *[Symbol.asyncIterator](): AsyncIterator<WatchEvent> {
-    let buffer = '';
-    for await (const chunk of this.socket) {
-      buffer += (chunk as Buffer).toString('utf8');
-      let idx: number;
-      while ((idx = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, idx).trim();
-        buffer = buffer.slice(idx + 1);
-        if (!line) continue;
-        let resp: Record<string, unknown>;
-        try {
-          resp = parseResponseLine(line);
-        } catch (e) {
-          throw new ParseError(line, e instanceof Error ? e.message : String(e));
+    try {
+      while (!this.closed) {
+        const result = await this.tp.watchNext(this.handle, -1);
+        if (result.outcome === 'event') {
+          yield { data: result.data ?? null, ageMs: result.ageMs ?? 0, stale: result.stale ?? false };
+        } else if (result.outcome === 'eof' || result.outcome === 'cancelled') {
+          return;
         }
-        if (resp['ok'] === false) {
-          const msg = typeof resp['error'] === 'string' ? resp['error'] : 'watch error';
-          throw new ServerError(msg);
-        }
-        yield {
-          data: resp['data'] ?? null,
-          ageMs: Number(resp['age_ms'] ?? 0),
-          stale: Boolean(resp['stale']),
-        };
+        // 'timeout' does not occur with an indefinite (-1) wait.
       }
+    } finally {
+      this.tp.freeWatch(this.handle);
     }
   }
 
   close(): void {
-    this.socket.destroy();
+    if (this.closed) return;
+    this.closed = true;
+    this.tp.watchCancel(this.handle);
   }
 }
 
 // ---- Session ----
 
 /**
- * A persistent connection to the daemon.
+ * A persistent connection to the daemon (FFI transport) or a lightweight
+ * context-remembering wrapper (subprocess transport — see
+ * `subprocess_transport.ts` for why there is no real shared connection to
+ * reuse there).
  *
- * More efficient than individual `Client` method calls when querying
- * multiple values in sequence (one connection vs. N connections).
- *
- * Obtain a Session via `client.session()`.  Call `session.close()` when done.
+ * Obtain a Session via `client.session()`. Call `session.close()` when done.
  */
 export class Session {
-  private readonly socket: net.Socket;
-  private buffer: string = '';
-  private readonly pending: Array<{
-    resolve: (line: string) => void;
-    reject: (err: Error) => void;
-  }> = [];
   private closed = false;
 
-  constructor(socket: net.Socket) {
-    this.socket = socket;
+  constructor(
+    private readonly tp: Transport,
+    private readonly clientHandle: ClientHandle,
+    private readonly handle: SessionHandle,
+  ) {}
 
-    socket.on('data', (chunk: Buffer) => {
-      this.buffer += chunk.toString('utf8');
-      while (true) {
-        const newline = this.buffer.indexOf('\n');
-        if (newline === -1) break;
-        const line = this.buffer.slice(0, newline);
-        this.buffer = this.buffer.slice(newline + 1);
-        const waiter = this.pending.shift();
-        if (waiter) {
-          waiter.resolve(line);
-        }
-      }
-    });
-
-    socket.on('error', (err: Error) => {
-      this.closed = true;
-      for (const waiter of this.pending) {
-        waiter.reject(err);
-      }
-      this.pending.length = 0;
-    });
-
-    socket.on('close', () => {
-      this.closed = true;
-      for (const waiter of this.pending) {
-        waiter.reject(new Error('socket closed unexpectedly'));
-      }
-      this.pending.length = 0;
-    });
-  }
-
-  private sendAndReceive(request: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      if (this.closed) {
-        reject(new Error('session is closed'));
-        return;
-      }
-      this.pending.push({ resolve, reject });
-      this.socket.write(request);
-    });
-  }
-
-  /**
-   * Set the default path for subsequent queries on this connection.
-   * After calling this, `get` and `refresh` calls can omit the path.
-   */
+  /** Set the default path for subsequent queries on this connection. */
   async setContext(repoPath: string): Promise<void> {
-    const req = serialiseRequest({ op: 'context', path: repoPath });
-    const line = await this.sendAndReceive(req);
-    parseAndCheck(line);
+    unwrap(await this.tp.sessionSetContext(this.handle, repoPath));
   }
 
-  /**
-   * Query a key.  If `setContext` has been called, `path` can be omitted.
-   */
+  /** Query a key. If `setContext` has been called, `path` can be omitted. */
   async get(key: string, path?: string): Promise<CombResult> {
-    const req = serialiseRequest(
-      path !== undefined ? { op: 'get', key, path } : { op: 'get', key },
-    );
-    const line = await this.sendAndReceive(req);
-    const parsed = parseAndCheck(line);
-    return makeCombResult(parsed);
+    const result = unwrap(await this.tp.sessionGet(this.handle, key, path, 0)) as GetResultShape;
+    return makeCombResult(result);
   }
 
-  /**
-   * Query a key with optional force/wait flags.
-   *
-   * @param key   Provider key.
-   * @param path  Optional path.
-   * @param opts  Optional flags: force recomputation, wait for fresh value.
-   */
+  /** Query a key with optional force/wait flags. */
   async getWithFlags(
     key: string,
     path?: string,
     opts?: { force?: boolean; wait?: boolean },
   ): Promise<CombResult> {
-    const baseReq: Record<string, unknown> = { op: 'get', key };
-    if (path !== undefined) baseReq['path'] = path;
-    if (opts?.force) baseReq['force'] = true;
-    if (opts?.wait) baseReq['wait'] = true;
-    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
-    const line = await this.sendAndReceive(req);
-    const parsed = parseAndCheck(line);
-    return makeCombResult(parsed);
+    const result = unwrap(
+      await this.tp.sessionGet(this.handle, key, path, flagsOf(opts)),
+    ) as GetResultShape;
+    return makeCombResult(result);
   }
 
   /**
-   * Trigger recomputation of a provider.
+   * Trigger recomputation of a provider. There is no session-scoped
+   * `bc_session_refresh` in the ABI; this issues a one-shot client-level
+   * refresh against the same daemon connection this client was constructed
+   * with.
    */
   async refresh(key: string, path?: string): Promise<void> {
-    const req = serialiseRequest(
-      path !== undefined ? { op: 'refresh', key, path } : { op: 'refresh', key },
-    );
-    const line = await this.sendAndReceive(req);
-    parseAndCheck(line);
+    unwrap(await this.tp.refresh(this.clientHandle, key, path));
   }
 
-  /**
-   * Store data in the cache under the given key.
-   *
-   * @param key   Provider key (e.g. "myprovider").
-   * @param data  Object payload to store.
-   * @param opts  Optional ttl string and path.
-   */
-  async put(
-    key: string,
-    data?: unknown,
-    opts?: { ttl?: string; path?: string },
-  ): Promise<void> {
-    const baseReq: Record<string, unknown> = { op: 'put', key };
-    if (data !== undefined) baseReq['data'] = data;
-    if (opts?.ttl !== undefined) baseReq['ttl'] = opts.ttl;
-    if (opts?.path !== undefined) baseReq['path'] = opts.path;
-    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
-    const line = await this.sendAndReceive(req);
-    parseAndCheck(line);
+  /** Store data in the cache under the given key. */
+  async put(key: string, data?: unknown, opts?: { ttl?: string; path?: string }): Promise<void> {
+    const jsonData = JSON.stringify(data ?? {});
+    unwrap(await this.tp.sessionPut(this.handle, key, jsonData, opts?.ttl, opts?.path));
   }
 
-  /**
-   * Query daemon health/hello information.
-   */
+  /** Query daemon health/hello information (one-shot, not session-scoped in the ABI). */
   async hello(): Promise<HelloInfo> {
-    const req = serialiseRequest({ op: 'hello' });
-    const line = await this.sendAndReceive(req);
-    const parsed = parseAndCheck(line);
-    return parseHello(parsed);
+    return parseHello(unwrap(await this.tp.hello(this.clientHandle)));
   }
 
-  /**
-   * Introspect an internal daemon subject.
-   */
+  /** Introspect an internal daemon subject (one-shot, not session-scoped in the ABI). */
   async introspect(
     subject: IntrospectSubject,
     opts?: { durationSecs?: number },
   ): Promise<IntrospectResponse> {
-    const baseReq: Record<string, unknown> = { op: 'introspect', subject };
-    if (opts?.durationSecs !== undefined) baseReq['duration_secs'] = opts.durationSecs;
-    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
-    const line = await this.sendAndReceive(req);
-    const parsed = parseAndCheck(line);
-    return parseIntrospect(subject, parsed);
+    const optionsJson =
+      opts?.durationSecs !== undefined ? JSON.stringify({ duration_secs: opts.durationSecs }) : undefined;
+    const data = unwrap(await this.tp.introspect(this.clientHandle, subject, optionsJson));
+    return parseIntrospect(subject, data);
   }
 
-  /**
-   * Return cache rows from the daemon.
-   */
+  /** Return cache rows from the daemon (one-shot, not session-scoped in the ABI). */
   async status(): Promise<CacheRow[]> {
-    const req = serialiseRequest({ op: 'status' });
-    const line = await this.sendAndReceive(req);
-    const parsed = parseAndCheck(line);
-    return parseCacheRows(parsed);
+    return parseCacheRows(unwrap(await this.tp.status(this.clientHandle)));
   }
 
-  /** Close the underlying socket. */
+  /** Close the session handle. */
   close(): void {
+    if (this.closed) return;
     this.closed = true;
-    this.socket.destroy();
+    this.tp.closeSession(this.handle);
   }
 }
 
 // ---- Client ----
 
+export interface ClientOptions {
+  /** Override the auto-discovered socket path. */
+  socketPath?: string;
+  /** Connection + read timeout in milliseconds. Default: 5000. */
+  timeoutMs?: number;
+  /** Whether the underlying client may auto-start the daemon. Default: true. */
+  autostart?: boolean;
+}
+
+export interface ResolveOptions {
+  /** Required: path expressions resolve over `cwd`. Never defaults to the process's own cwd. */
+  cwd: string;
+  /** `env.*` references in the expression. Absent references resolve to `""`. */
+  env?: Record<string, string>;
+  /** Field-expression overrides (`"provider.field"`) or path-expression overrides (a bare provider name). */
+  overrides?: Record<string, string>;
+}
+
 /**
- * Client for the beachcomber daemon.
+ * Client for the beachcomber daemon, over the C ABI.
  *
- * Each method call (except `session()`) opens a new socket connection,
- * sends one request, reads one response, and closes the connection.
- *
- * For multiple sequential queries, use `session()` to reuse one connection.
+ * Uses `koffi` FFI over `libbeachcomber.{so,dylib}` when available, or the
+ * `comb` subprocess fallback otherwise — see `transport()`.
  */
 export class Client {
-  private readonly socketPath: string;
-  private readonly timeoutMs: number;
+  private readonly tp: Transport;
+  private readonly handle: ClientHandle;
 
   constructor(opts: ClientOptions = {}) {
-    this.socketPath = opts.socketPath ?? discoverSocketPath();
-    this.timeoutMs = opts.timeoutMs ?? 5000;
+    this.tp = selectTransport();
+    this.handle = this.tp.newClient({
+      socketPath: opts.socketPath,
+      timeoutMs: opts.timeoutMs,
+      autostart: opts.autostart,
+    });
   }
 
-  private async doRequest(request: string): Promise<Record<string, unknown>> {
-    const line = await sendOneShot(this.socketPath, request, this.timeoutMs);
-    return parseAndCheck(line);
+  /** Which transport this client is using: `"ffi"` (koffi) or `"subprocess"` (comb CLI). */
+  transport(): 'ffi' | 'subprocess' {
+    return this.tp.kind;
   }
 
   /**
@@ -547,24 +384,8 @@ export class Client {
    * @param path  Optional repository/working-directory path.
    */
   async get(key: string, path?: string): Promise<CombResult> {
-    const req = serialiseRequest(
-      path !== undefined ? { op: 'get', key, path } : { op: 'get', key },
-    );
-    const parsed = await this.doRequest(req);
-    return makeCombResult(parsed);
-  }
-
-  /**
-   * Force recomputation of a provider.
-   *
-   * @param key   Provider key, e.g. `"git"`.
-   * @param path  Optional repository path.
-   */
-  async refresh(key: string, path?: string): Promise<void> {
-    const req = serialiseRequest(
-      path !== undefined ? { op: 'refresh', key, path } : { op: 'refresh', key },
-    );
-    await this.doRequest(req);
+    const result = unwrap(await this.tp.get(this.handle, key, path, 0)) as GetResultShape;
+    return makeCombResult(result);
   }
 
   /**
@@ -579,42 +400,43 @@ export class Client {
     path?: string,
     opts?: { force?: boolean; wait?: boolean },
   ): Promise<CombResult> {
-    const baseReq: Record<string, unknown> = { op: 'get', key };
-    if (path !== undefined) baseReq['path'] = path;
-    if (opts?.force) baseReq['force'] = true;
-    if (opts?.wait) baseReq['wait'] = true;
-    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
-    const parsed = await this.doRequest(req);
-    return makeCombResult(parsed);
+    const result = unwrap(await this.tp.get(this.handle, key, path, flagsOf(opts))) as GetResultShape;
+    return makeCombResult(result);
   }
 
   /**
-   * Query daemon protocol and version information.
+   * Force recomputation of a provider.
+   *
+   * @param key   Provider key, e.g. `"git"`.
+   * @param path  Optional repository path.
    */
-  async hello(): Promise<HelloInfo> {
-    const req = serialiseRequest({ op: 'hello' });
-    const parsed = await this.doRequest(req);
-    return parseHello(parsed);
+  async refresh(key: string, path?: string): Promise<void> {
+    unwrap(await this.tp.refresh(this.handle, key, path));
   }
 
   /**
    * Store data in the cache under the given key.
    *
-   * @param key   Provider key (e.g. "myprovider").
+   * @param key   Provider key (e.g. "myapp").
    * @param data  Object payload to store.
    * @param opts  Optional ttl string and path.
    */
-  async put(
-    key: string,
-    data?: unknown,
-    opts?: { ttl?: string; path?: string },
-  ): Promise<void> {
-    const baseReq: Record<string, unknown> = { op: 'put', key };
-    if (data !== undefined) baseReq['data'] = data;
-    if (opts?.ttl !== undefined) baseReq['ttl'] = opts.ttl;
-    if (opts?.path !== undefined) baseReq['path'] = opts.path;
-    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
-    await this.doRequest(req);
+  async put(key: string, data?: unknown, opts?: { ttl?: string; path?: string }): Promise<void> {
+    const jsonData = JSON.stringify(data ?? {});
+    unwrap(await this.tp.put(this.handle, key, jsonData, opts?.ttl, opts?.path));
+  }
+
+  /**
+   * Clear the cached entry for a virtual provider key without dropping the
+   * registry entry.
+   */
+  async putNull(key: string, path?: string): Promise<void> {
+    unwrap(await this.tp.putNull(this.handle, key, path));
+  }
+
+  /** Query daemon protocol and version information. */
+  async hello(): Promise<HelloInfo> {
+    return parseHello(unwrap(await this.tp.hello(this.handle)));
   }
 
   /**
@@ -627,52 +449,62 @@ export class Client {
     subject: IntrospectSubject,
     opts?: { durationSecs?: number },
   ): Promise<IntrospectResponse> {
-    const baseReq: Record<string, unknown> = { op: 'introspect', subject };
-    if (opts?.durationSecs !== undefined) baseReq['duration_secs'] = opts.durationSecs;
-    const req = serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]);
-    const parsed = await this.doRequest(req);
-    return parseIntrospect(subject, parsed);
+    const optionsJson =
+      opts?.durationSecs !== undefined ? JSON.stringify({ duration_secs: opts.durationSecs }) : undefined;
+    const data = unwrap(await this.tp.introspect(this.handle, subject, optionsJson));
+    return parseIntrospect(subject, data);
   }
 
-  /**
-   * Return cache rows from the daemon.
-   */
+  /** Return cache rows from the daemon. */
   async status(): Promise<CacheRow[]> {
-    const req = serialiseRequest({ op: 'status' });
-    const parsed = await this.doRequest(req);
-    return parseCacheRows(parsed);
+    return parseCacheRows(unwrap(await this.tp.status(this.handle)));
   }
 
   /**
-   * Open a watch stream for a key.  The stream is an AsyncIterable<WatchEvent>.
+   * Resolve a virtual field (`key = "provider.field"`) or a path expression
+   * (`key` = a bare provider name) client-side — exactly as `comb get`'s
+   * resolution layer does. `cwd` is required: this library never falls back
+   * to the process's own working directory.
+   */
+  async resolve(key: string, opts: ResolveOptions): Promise<unknown> {
+    const envJson = opts.env !== undefined ? JSON.stringify(opts.env) : undefined;
+    const overridesJson = opts.overrides !== undefined ? JSON.stringify(opts.overrides) : undefined;
+    return unwrap(await this.tp.resolve(this.handle, key, opts.cwd, envJson, overridesJson));
+  }
+
+  /**
+   * Evaluate an arbitrary expression string — the same evaluator `resolve`
+   * uses for a declared virtual field, but for a raw expression that need
+   * not be registered anywhere.
+   */
+  async eval(templateStr: string, opts: ResolveOptions): Promise<unknown> {
+    const envJson = opts.env !== undefined ? JSON.stringify(opts.env) : undefined;
+    const overridesJson = opts.overrides !== undefined ? JSON.stringify(opts.overrides) : undefined;
+    return unwrap(await this.tp.evaluate(this.handle, templateStr, opts.cwd, envJson, overridesJson));
+  }
+
+  /**
+   * Open a watch stream for a key. The stream is an AsyncIterable<WatchEvent>.
    * Call `stream.close()` to stop watching.
    *
    * @param key   Provider key, e.g. `"git.branch"`.
    * @param path  Optional repository path.
    */
   async watch(key: string, path?: string): Promise<WatchStream> {
-    let socket: net.Socket;
-    try {
-      socket = await connectWithRetry(this.socketPath);
-    } catch {
-      throw new DaemonNotRunning(this.socketPath);
-    }
-    const baseReq: Record<string, unknown> = { op: 'watch', key };
-    if (path !== undefined) baseReq['path'] = path;
-    socket.write(serialiseRequest(baseReq as unknown as Parameters<typeof serialiseRequest>[0]));
-    return new WatchStream(socket);
+    const handle = this.tp.openWatch(this.handle, key, path);
+    return new WatchStream(this.tp, handle);
   }
 
   /**
-   * Open a persistent session.  Remember to call `session.close()` when done.
+   * Open a persistent session. Remember to call `session.close()` when done.
    */
   async session(): Promise<Session> {
-    let socket: net.Socket;
-    try {
-      socket = await connectWithRetry(this.socketPath);
-    } catch {
-      throw new DaemonNotRunning(this.socketPath);
-    }
-    return new Session(socket);
+    const handle = this.tp.openSession(this.handle);
+    return new Session(this.tp, this.handle, handle);
+  }
+
+  /** Release the underlying client handle. */
+  close(): void {
+    this.tp.freeClient(this.handle);
   }
 }

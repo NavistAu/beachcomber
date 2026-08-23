@@ -13,7 +13,7 @@ fn daemon_fixture_starts_and_exits() {
 
 /// Build a `comb` Command pre-configured with `BEACHCOMBER_SOCKET` pointing
 /// directly at the test daemon's socket path, so `Config::resolve_socket_path()`
-/// resolves to the isolated test socket without overriding `XDG_RUNTIME_DIR`.
+/// resolves to the isolated test socket.
 ///
 /// The current_dir is fixed to "/" so that path-scoped virtual keys written with
 /// `--path /` are found by `get` (which always injects CWD as path context for
@@ -79,6 +79,68 @@ fn golden_put_sets_a_value() {
         .assert()
         .success()
         .stdout(predicates::str::contains("golden"));
+}
+
+// ── get_json_finds_put_created_virtual_without_explicit_path ─────────────────
+
+/// Regression test for the bug where `comb put myvirtual '{"field1":"hello"}'`
+/// (no `--path`, so the entry is stored globally) followed by
+/// `comb get myvirtual.field1 -f json` (also no `--path`) exited 2 with empty
+/// stdout AND stderr, even though the identical request over the raw socket
+/// (no path field at all) answers correctly. Root cause: `get`'s CLI layer
+/// defaults the request path to the process CWD when neither `--path` nor a
+/// trailing positional path is given, which scopes the lookup away from the
+/// global entry `put` created. `get` must still find a globally-put virtual
+/// entry when no path was explicitly requested.
+#[test]
+fn get_json_finds_put_created_virtual_without_explicit_path() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["put", "myvirtual", r#"{"field1":"hello"}"#])
+        .assert()
+        .success();
+
+    comb(&d)
+        .args(["get", "myvirtual.field1", "-f", "json"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("hello"));
+}
+
+// ── single_key_get_error_paths_always_write_stderr ────────────────────────────
+
+/// Regression test: every path in `run_get`'s single-key client-side rendering
+/// block that exits non-zero must also write something to stderr. Before the
+/// fix, the `ok:true`/`data:None` (cache-miss) branch set the error flag with
+/// no accompanying `eprintln!`, so the process exited 2 with zero bytes on
+/// both stdout and stderr — indistinguishable from a hang or a swallowed
+/// panic. This exercises a genuine miss (an unknown field on an existing
+/// virtual provider, path-matched on both ends) rather than the routing bug
+/// above, to isolate the "silent failure" defect from the "wrong routing"
+/// defect.
+#[test]
+fn single_key_get_error_paths_always_write_stderr() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["put", "myvirtual2", r#"{"field1":"hello"}"#, "--path", "/"])
+        .assert()
+        .success();
+
+    let out = comb(&d)
+        .args(["get", "myvirtual2.nosuchfield", "-f", "json", "--path", "/"])
+        .output()
+        .unwrap();
+
+    assert!(
+        !out.status.success(),
+        "querying a nonexistent field must fail, not silently succeed"
+    );
+    assert!(
+        !out.stderr.is_empty(),
+        "a non-zero exit from a single-key get must always explain itself on stderr"
+    );
 }
 
 // ── golden_watch_emits_initial_value_then_exits ───────────────────────────────

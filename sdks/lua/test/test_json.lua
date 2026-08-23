@@ -8,9 +8,12 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   test("decode true/false/null", function()
     assert_eq(json.decode("true"), true)
     assert_eq(json.decode("false"), false)
-    -- null decodes to nil; decode returns nil,nil (no error second return)
+    -- null decodes to the M.NULL sentinel (a table cannot record an
+    -- explicit nil value at a key/index, so JSON null needs a non-nil
+    -- stand-in even at the top level); decode returns v,nil (no error
+    -- second return)
     local v, err = json.decode("null")
-    assert_nil(v)
+    assert_true(json.is_null(v), "top-level null should decode to json.NULL")
     assert_nil(err)
   end)
 
@@ -75,9 +78,10 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   test("decode array with mixed types", function()
     local a = json.decode('[true,null,"x",42]')
     assert_eq(a[1], true)
-    assert_nil(a[2])
+    assert_true(json.is_null(a[2]), "null element should decode to json.NULL")
     assert_eq(a[3], "x")
     assert_eq(a[4], 42)
+    assert_eq(#a, 4, "null element must not leave a hole in the array")
   end)
 
   test("decode whitespace tolerance", function()
@@ -110,6 +114,10 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
   test("encode nil", function()
     assert_eq(json.encode(nil), "null")
+  end)
+
+  test("encode json.NULL sentinel", function()
+    assert_eq(json.encode(json.NULL), "null")
   end)
 
   test("encode booleans", function()
@@ -177,6 +185,16 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(decoded.data, "main")
     assert_eq(decoded.age_ms, 1234)
     assert_eq(decoded.stale, false)
+  end)
+
+  test("nested null in object round-trip", function()
+    -- A plain Lua table cannot hold a real nil value at a key ({v = nil} is
+    -- indistinguishable from {}), so json.NULL is required to construct and
+    -- round-trip an explicit null nested under a key.
+    local encoded = json.encode({ v = json.NULL, sibling = "x" })
+    local decoded = json.decode(encoded)
+    assert_true(json.is_null(decoded.v), "nested null should decode to json.NULL")
+    assert_eq(decoded.sibling, "x")
   end)
 
   test("provider list round-trip", function()

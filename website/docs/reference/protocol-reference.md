@@ -12,8 +12,7 @@ beachcomber uses a simple newline-delimited JSON protocol over a Unix socket. An
 Socket path resolution order:
 1. `daemon.socket_path` in config, if set
 2. `BEACHCOMBER_SOCKET` env var, if non-empty
-3. `$XDG_RUNTIME_DIR/beachcomber/sock`
-4. `/tmp/beachcomber-<uid>/sock`
+3. `/tmp/beachcomber-<uid>/sock`
 
 Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each response is a JSON object followed by `\n`.
 
@@ -23,7 +22,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "get", "key": "git.branch", "path": "/home/user/project"}
 {"op": "get", "key": "git", "path": "/home/user/project"}
 {"op": "get", "key": "battery"}
-{"op": "get", "key": "git.branch", "path": "/home/user/project", "format": "text"}
 {"op": "refresh", "key": "git", "path": "/home/user/project"}
 {"op": "context", "path": "/home/user/project"}
 {"op": "status"}
@@ -37,7 +35,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | `op` | string | Operation: `hello`, `get`, `refresh`, `context`, `status`, `introspect`, `put`, `watch` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
-| `format` | string | Response format: `"json"` (default), `"text"`, `"sh"`. CSV/TSV/FMT are CLI-only output modes applied client-side, not wire formats. |
 
 ## Response Format
 
@@ -113,11 +110,11 @@ Response: `{"ok":true}`
 
 Returns an error if the key conflicts with a built-in or script provider.
 
-**`watch`:** Stream cache updates for a key. The server holds the connection open and emits a response line on each cache update for the watched key. An optional `path` scopes the watch to a directory. An optional `format` field accepts any of the supported format values (see Request Format table).
+**`watch`:** Stream cache updates for a key. The server holds the connection open and emits a response line on each cache update for the watched key. An optional `path` scopes the watch to a directory.
 
 ```json
 {"op":"watch","key":"git.branch","path":"/project"}
-{"op":"watch","key":"git.branch","format":"text"}
+{"op":"watch","key":"git.branch"}
 ```
 
 The server streams responses:
@@ -129,21 +126,9 @@ The server streams responses:
 
 The first line is emitted immediately with the current cached value (or a null data miss). Subsequent lines are emitted on each cache update. Watching a field path (e.g. `git.branch`) only emits when that field's value changes, not on every provider update. The client disconnects to stop the stream.
 
-## Text Format
+## Text and Shell Rendering
 
-When `"format": "text"` is specified:
-- Single field queries return the raw value followed by `\n` (e.g., `main\n`)
-- Full provider queries return raw values only, one per line, sorted alphabetically by field name
-- Errors emit `error: <message>\n\n`; the JSON response's `ok` is false
-
-## Shell Format
-
-When `"format": "sh"` is specified:
-- Single scalar-field queries return the raw value followed by `\n\n` (suitable for shell `eval` or `source` when concatenating with known prefixes).
-- Full-provider queries return `key=value` lines sorted alphabetically, one per line, terminated with `\n\n`.
-- Object-valued fields (e.g., `mise.project`) flatten to `key=value` lines for each entry.
-- Values are not quoted — consumers are responsible for safe handling of whitespace.
-- Errors emit `error: <message>\n\n`; the JSON response's `ok` is false.
+The wire protocol is JSON-only — there is no `format` field. Text (`-t`) and shell (`-s`) rendering are performed client-side by the CLI and SDKs after receiving the JSON response.
 
 ## Connection Context Example
 

@@ -11,6 +11,54 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+/// The `comb status` help legend, rendered with the glyph set the user will
+/// actually see: `--ascii` anywhere in argv selects the ascii variant (clap
+/// builds help before parsing, so the flag is pre-scanned from argv). The
+/// unicode variant ends with the ascii translation line; the ascii variant
+/// needs no translating and omits it.
+fn status_after_help() -> String {
+    let ascii = std::env::args().any(|a| a == "--ascii");
+    let (star, warn, times, dot, ring) = if ascii {
+        ("*", "!", "x", "-", "+")
+    } else {
+        ("\u{2605}", "\u{26a0}", "\u{00d7}", "\u{2219}", "\u{2299}")
+    };
+    let mut help = format!(
+        "Reading the output:\n\
+        \n\
+        \x20 PROVIDER  PATH              FIELD   VALUE  AGE    POLL  TTL\n\
+        \x20 git       ~/ws/beachcomber  branch  main   14s{times}2   37s  {star}  60s{times}12 (12m) {ring}\n\
+        \n\
+        \x20 Each row is one cache ENTRY, returned by a Query ie `comb get`.\n\
+        \x20 - ENTRY Refreshes VALUE by SOURCE(PROVIDER.FIELD @ PATH).\n\
+        \x20 - Polls and FSEvents Refresh VALUE from SOURCE.\n\
+        \x20 - Queries reset AGE.PollCount.\n\
+        \x20 - If AGE.PollCount >= TTL.PollCount, the ENTRY Idles.\n\
+        \x20   - Idle entries halve their TTL.PollRate each TTL.PollLifetime.\n\
+        \x20   - After 4 lifetimes, the ENTRY is Evicted from cache.\n\
+        \n\
+        \x20 AGE    43s         RefreshTime:  Time since VALUE Refreshed from SOURCE\n\
+        \x20        {times}2          PollCount:    Polls since last Query\n\
+        \x20 POLL                             Time until the next Poll / next Retry if Failing\n\
+        \x20 TTL    {star} 3..0    {star} Active:       ENTRY is within first TTL.PollLifetime\n\
+        \x20                 # Number:        ENTRY is Idle, Polls halve each lifetime, # lifetimes until Eviction\n\
+        \x20        {warn} #3                      Failing \u{2014} 3 failures in a row; POLL shows the Retry countdown\n\
+        \x20        60s{times}12      PollLifetime: Current lifetime, ie 720s with 12 VALUE Refreshes\n\
+        \x20                      PollRate:   Every 60s\n\
+        \x20                      PollCount:  12 times\n\
+        \x20        (12m)       EvictTime:    Total time to Eviction\n\
+        \x20        {dot} {ring}       {dot} WatchActive:  Watches files while Active; not during the Idle countdown\n\
+        \x20                 {ring} WatchAlways:   Watches files until Evicted\n\
+        \x20                 <blank>          No FSEvents, Refreshes only by Polling"
+    );
+    if !ascii {
+        help.push_str(
+            "\n\nWith --ascii: * ! x - + replace \u{2605} \u{26a0} \u{00d7} \u{2219} \u{2299}.",
+        );
+    }
+    help
+}
+
 #[derive(Parser)]
 #[command(
     name = "comb",
@@ -42,6 +90,12 @@ enum Commands {
         /// even when the test process is SIGKILLed (which skips normal cleanup).
         #[arg(long)]
         exit_with_parent: bool,
+        /// Exempt this daemon from orphan reaping by the canonical daemon.
+        /// For deliberate, supervised daemons on non-canonical sockets (a
+        /// supervisor parents the process to PID 1, which otherwise marks it
+        /// orphaned). The flag only needs to be visible in argv.
+        #[arg(long)]
+        no_reap: bool,
     },
     /// Query one or more cached values.
     ///
@@ -70,10 +124,10 @@ enum Commands {
         wait: bool,
     },
     /// Show daemon status
-    #[command(visible_alias = "s")]
+    #[command(visible_alias = "s", after_help = status_after_help())]
     Status {
         /// Output format: human (default), tsv, json, csv, table, sh
-        #[arg(long, short = 'f', default_value = "")]
+        #[arg(long, short = 'f', default_value = "", hide_default_value = true)]
         format: String,
         /// Filter rows (e.g. provider=git, path=/home/*, stale=true); repeatable, AND semantics
         #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
@@ -193,6 +247,8 @@ fn main() -> ExitCode {
         Commands::Daemon {
             socket,
             exit_with_parent,
+            // Read by the reaping canonical daemon from our argv, not by us.
+            no_reap: _,
         } => {
             let socket_path = socket.unwrap_or_else(|| config.resolve_socket_path());
             run_daemon(socket_path, config, exit_with_parent)

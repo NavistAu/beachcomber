@@ -4,15 +4,15 @@ sidebar_position: 6
 
 # Lua SDK
 
-Lua client for the beachcomber daemon. Communicates over a Unix domain socket using newline-delimited JSON. Published on [LuaRocks](https://luarocks.org/modules/navist/libbeachcomber).
+Lua client for the beachcomber daemon. A binding over `libbeachcomber`'s C ABI, not a hand-rolled socket protocol. Published on [LuaRocks](https://luarocks.org/modules/navist/libbeachcomber).
 
-Designed for Neovim plugin authors (via `vim.uv`) but also works in standalone Lua scripts via luasocket.
+Two transports, selected automatically by `comb.connect()`: under LuaJIT (including Neovim, which always ships LuaJIT), `ffi` calls straight into the shared library (~0.3ms/call); under PUC Lua 5.1–5.4, which has no `ffi`, the SDK falls back to shelling out to the `comb` binary (~5ms/call). Call `client:transport()` to see which one is active.
 
 ## Requirements
 
 - Lua 5.1+ or LuaJIT (Neovim-compatible)
-- **Inside Neovim:** no extra dependencies (`vim.uv` / `vim.loop` used automatically)
-- **Outside Neovim:** [luasocket](https://github.com/lunarmodules/luasocket) 3.0+
+- **LuaJIT (incl. Neovim):** no extra dependencies — `ffi` binds directly to `libbeachcomber.{so,dylib}`
+- **PUC Lua 5.1–5.4:** no extra dependencies — subprocess fallback needs only a `comb` binary on `$PATH`
 
 ## Installation
 
@@ -152,10 +152,9 @@ All operations follow the wire contract defined in [docs/protocol-spec.md](https
 The SDK looks for the daemon socket in this order:
 
 1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
-2. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set)
-3. `/tmp/beachcomber-<uid>/sock`
+2. `/tmp/beachcomber-<uid>/sock`
 
-This mirrors the daemon's bind path; `$TMPDIR` is not consulted.
+This mirrors the daemon's bind path; no session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell of one user reaches the same daemon.
 
 ## Neovim example
 

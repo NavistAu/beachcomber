@@ -1,8 +1,8 @@
 # Daemon Singleton
 
-**Status:** canonical. Describes how at most one beachcomber daemon runs per user at any time, how startup detects existing instances, how a rebuilt binary triggers automatic restart, and how clients tolerate the brief restart window. Tests must match this document; disagreements mean the code is wrong.
+**Status:** canonical. Describes how at most one beachcomber daemon runs per user at any time, how startup detects existing instances, how a rebuilt binary triggers automatic restart, how the canonical daemon reaps orphaned daemons, and how clients tolerate the brief restart window. Tests must match this document; disagreements mean the code is wrong.
 
-**Scope:** the daemon-lifetime singleton property — startup contention, version-mismatch supersession, same-build serving-probe supersession, self-triggered restart on binary change, client-side connect retry. Out-of-scope items at the end.
+**Scope:** the daemon-lifetime singleton property — startup contention, version-mismatch supersession, same-build serving-probe supersession, self-triggered restart on binary change, orphan reaping, client-side connect retry. Out-of-scope items at the end.
 
 ## Glossary
 
@@ -10,13 +10,17 @@
 |---|---|
 | **Singleton** | The invariant that at most one beachcomber daemon process runs per `<uid>` at any time, with brief transition windows during supersession explicitly excluded. |
 | **Canonical socket path** | The Unix socket path a client connects to and a starting daemon binds. Resolution is identical across macOS and Linux given identical env state. |
+| **Canonical daemon** | A daemon whose bound socket equals its own resolution of the canonical socket path, computed ignoring any `--socket` override. This is the daemon clients reach under that environment. |
+| **Reaping daemon** | The daemon whose bound socket equals the **env-free** resolution (config override → `/tmp/beachcomber-<uid>/sock`, ignoring both `--socket` and `$BEACHCOMBER_SOCKET`). Only it reaps. The distinction matters because `$BEACHCOMBER_SOCKET` is per-process: two daemons under divergent env would each self-assess "canonical" and reap each other (see §"Orphan reaping"). The config-file override stays in the reaper resolution — it is per-user-stable, so all processes of one uid agree on it. |
+| **Side daemon** | A daemon bound to any other socket (explicit `--socket`, or an env override differing from the env-free resolution). Test daemons, foreground debug runs, supervised custom deployments. A side daemon never reaps. |
+| **Orphan** | A uid-owned `comb daemon` process that is not on the reaper's socket path, has been reparented to PID 1, carries neither `--exit-with-parent` nor `--no-reap`, and is older than the reap grace age. Orphans are unreachable dead weight: nothing resolves their socket, and nothing will ever supersede them. |
+| **Reaping** | The canonical daemon terminating orphans (SIGTERM, 1s grace, SIGKILL) — at startup and on an hourly sweep. |
+| **Reaper visibility self-test** | A probe verifying process enumeration plausibly spans the whole system: PID 1 (launchd/init) must appear in the raw enumeration. Failure means the daemon is confined (sandbox, `hidepid`) and can neither see nor police daemons outside its confinement; the degradation is surfaced, never silent. |
 | **PID file** | JSON record at `<socket-parent>/pid` written and held under exclusive `flock` by the running daemon. Released on graceful shutdown. |
 | **Build identity** | A SHA256 of the daemon binary file content, computed at startup. The canonical answer to "is the running daemon the same physical build as the one that just started?" |
 | **Human version** | A user-facing build label (e.g., `0.5.1` or `0.5.1+sha.abc12345.dirty`) emitted into the binary at compile time. Stored alongside build identity in the PID file but **not** used for singleton decisions. |
 | **Supersession** | The act of a starting daemon killing an existing daemon with a different build identity, then taking the lock itself. |
 | **Serving probe** | A fast `connect()` to the canonical socket used during same-build contention to decide whether the existing owner is actually serving. A serving owner is left alone; a non-serving owner (wedged between flock and bind, or with a deleted socket) is superseded after a short grace. |
-| **Self-supervision** | The running daemon watches its own binary file. On modify, it gracefully shuts down so the next client invocation respawns the new binary. |
-| **Connect retry** | Each client (CLI + every SDK) retries a failed `connect()` three times with 250ms / 500ms / 1s backoff before surfacing the error. Covers the daemon-restart window. |
 
 ## Core model
 
@@ -31,7 +35,8 @@ stateDiagram-v2
     ExitSilent --> [*]
     Starting --> Superseding: existing daemon holds lock<br/>but binary hashes differ
     Superseding --> Starting: SIGTERM old, wait 1s<br/>SIGKILL if still alive<br/>retry acquire
-    Starting --> Running: lock acquired
+    Starting --> Running: lock acquired<br/>reap sweep if canonical
+    Running --> Running: hourly reap sweep<br/>(canonical daemon only)
     Running --> ShuttingDown: fs-watch fires<br/>(binary modified)
     Running --> ShuttingDown: SIGINT / SIGTERM
     Running --> ShuttingDown: mtime race detected at startup
@@ -40,14 +45,13 @@ stateDiagram-v2
 
 ### Canonical socket path resolution
 
-Four steps, identical on macOS and Linux:
+Three steps, identical on macOS and Linux:
 
 1. **Config override** — `config.daemon.socket_path` if set.
 2. **`$BEACHCOMBER_SOCKET`** — if set and non-empty (any platform). Lets a user or integration point the daemon (and, identically, every client) at an explicit socket. Clients honor the same variable, so daemon and clients always agree.
-3. **`$XDG_RUNTIME_DIR/beachcomber/sock`** — if the env var is set (any platform).
-4. **`/tmp/beachcomber-<uid>/sock`** — hardcoded `/tmp` fallback. **Does NOT consult `$TMPDIR`.**
+3. **`/tmp/beachcomber-<uid>/sock`** — hardcoded per-user default.
 
-The TMPDIR step was removed because macOS gives every shell session a unique TMPDIR (sandbox/launchd-managed). With the TMPDIR step, two shells produced two socket paths and two daemons — violating singleton.
+Resolution consults no session-scoped environment: not `$TMPDIR` (macOS gives every shell session a unique one, sandbox/launchd-managed) and not `$XDG_RUNTIME_DIR` (sandboxes, containers, and per-session shims remap it). Singleton enforcement is per-socket-path, so any session-scoped input to resolution produces one daemon per session instead of one per user — violating singleton. Environments that want a different placement (e.g. `/run/user/<uid>` on systemd) say so explicitly via `$BEACHCOMBER_SOCKET` or the config override.
 
 ### PID file with `flock`
 
@@ -76,13 +80,14 @@ Two distinct concerns:
 
 ### Self-supervision
 
-The daemon registers an `fs-watch` (via `notify`) on the parent directory of `current_exe()`. On modify/create/remove events that touch the binary path:
+The daemon supervises its own binary through two mechanisms; either one triggers graceful shutdown:
 
-1. Debounce 200ms (catches multi-event rewrites like `cargo build`).
-2. Trigger the existing `CancellationToken` for the daemon.
-3. Daemon proceeds through graceful shutdown.
+1. **fs-event watch (fast path).** An fs-watch (via `notify`) on the parent directory of `current_exe()`. Modify/create/remove events touching the binary path are debounced 200ms, then trigger the `CancellationToken`.
+2. **mtime poll (guarantee).** Every 5s, the daemon checks `binary_newer_than(current_exe, our_start_unix_ms)`. One `stat` per interval — effectively free.
 
-Additionally, immediately after the watch is registered, the daemon checks `binary_newer_than(current_exe, our_start_unix_ms)`. If true (binary was replaced between exec and watch arming), trigger shutdown immediately. Catches the small race window before the watch is live.
+The poll exists because fs-event backends can be silently non-functional or degraded: a stream is created without error and then delivers nothing, or delivers too late to be useful — seen on sandboxed CI hosts and under a degraded or heavily loaded `fseventsd`. With an event-only watch, such a daemon outlives every rebuild of its binary indefinitely. The poll bounds staleness at one interval regardless of backend health.
+
+Immediately after the watch is registered, the daemon performs the same `binary_newer_than` check once against its own start time. If true (binary replaced between exec and watch arming), shutdown begins immediately. Catches the race window before the watch is live.
 
 ### Same-build serving probe
 
@@ -93,9 +98,51 @@ When flock contention reveals an existing owner with the **same** `binary_hash`,
 
 The grace window preserves the concurrent-start race (Example 2): the losing process waits for the winner to bind rather than killing a daemon that is merely slow to reach `bind`.
 
+### Orphan reaping
+
+The singleton property is per-user, but enforcement through the flock alone is per-socket-path: a daemon on a socket nothing resolves to is invisible to startup contention and lives forever by default. Orphans arise from dev flows — test harnesses SIGKILLed before their daemons (predating `--exit-with-parent`), worktree builds whose binaries were deleted, sandbox-spawned daemons whose event-driven self-supervision never fired. The canonical daemon closes this gap by reaping.
+
+**Who reaps.** Only the reaping daemon. Every daemon determines this for itself at startup: it resolves the **env-free** canonical socket path (config override → `/tmp/beachcomber-<uid>/sock`, ignoring both its `--socket` CLI override **and** `$BEACHCOMBER_SOCKET`) and compares it to the socket it actually bound. Equal → it reaps. Different → side daemon; it never signals any process outside its own socket path's contention domain.
+
+`$BEACHCOMBER_SOCKET` is excluded because it is per-process: a daemon auto-spawned under the override resolves *itself* as canonical while the default-path daemon does too, and each would classify the other as an unflagged PPID-1 orphan — mutual reaping on alternating sweeps (fratricide). With env excluded, at most one daemon per uid (under one config) can ever hold the reaper role. The corollary is accepted and documented: an environment where *every* client is pointed at an override socket runs no reaper at all.
+
+**Env-override spawns are flagged.** When auto-spawn (`ensure_daemon` in the CLI, `auto_start` in `libbeachcomber`) resolves the socket path from `$BEACHCOMBER_SOCKET`, it appends `--no-reap` to the daemon it forks. A deliberate override daemon thereby expresses its supervised status without user action, and the reaping daemon's exemption rule 3 spares it. Spawns resolving from config or the default are not flagged. Auto-spawn applies only when the socket path came from canonical resolution (config override, `$BEACHCOMBER_SOCKET`, or the default): a client handed an explicit per-client socket path never spawns a daemon there, and surfaces `DaemonNotRunning` when nothing serves it.
+
+**When.** Once on entering Running, then hourly.
+
+**Reap set.** Uid-owned processes running `comb daemon` (matched on process argv), **excluding** any that are:
+
+1. the reaper itself, or on the reaper's own socket path (startup contention — the flock and serving probe govern those);
+2. carrying `--exit-with-parent` — self-cleaning; they exit when their spawner dies;
+3. carrying `--no-reap` — the explicit opt-out for a deliberate, supervised, non-canonical daemon (a supervised process is parented to PID 1, so it needs the flag);
+4. still parented (PPID ≠ 1) — an attended foreground run under a live shell;
+5. younger than 60s — never race a daemon mid-startup.
+
+What remains — orphaned, unattended, unflagged daemons on sockets nothing resolves — receives SIGTERM, 1s grace, then SIGKILL. Each reap is logged with pid, exe, and socket path.
+
+**Corpse cleanup.** After a reaped orphan's death, its socket file and sibling pid files (`pid`, `daemon.pid`) are removed. A corpse socket is a trap: clients with existence-probing discovery (pre-0.6.1 resolution rules) latch onto the dead path and respawn a daemon there on the next query — the mechanism that kept one orphan path continuously resurrected for four months. Cleanup probes the socket first and **never unlinks a serving socket**: if a racing respawn bound the path between kill and cleanup, the live daemon keeps its socket (and is itself subject to the next sweep's rules). Additionally, **every sweep logs a summary** (debug level): rows enumerated, `comb daemon` candidates, exemption tallies by rule, and reaped pids — so a sweep that found nothing eligible is distinguishable from a sweep that could not see anything, without an instrumented build.
+
+The exemptions make deliberate side daemons expressible instead of heuristically guessed: alive parent means attended, `--exit-with-parent` means self-cleaning, `--no-reap` means opted out. A daemon fitting none of these is unreachable dead weight by construction.
+
+**Process enumeration** is a boundary trait (hand-rolled: `sysctl KERN_PROC_ALL` on macOS, `/proc` on Linux; no external dependency). On macOS the pid list must come from `sysctl KERN_PROC_ALL`, **not** `libproc`'s `proc_listallpids`: seatbelt sandbox profiles filter the latter to the session's own processes while leaving the sysctl unrestricted — a canonical daemon that happened to be auto-spawned from a sandboxed client shell enumerated 51 of 737 system pids and silently never saw the orphans it existed to reap (2026-07-16 incident). Per-pid detail (`proc_pidinfo`, `KERN_PROCARGS2`) is unaffected. A process whose exe has been deleted from disk remains enumerable and reapable — deleted-worktree daemons are a primary target.
+
+### Reaper visibility self-test
+
+Enumeration mechanisms can be silently confined: a seatbelt profile, a `hidepid` mount, or a future platform quirk can shrink the visible process table without any call failing. A confined reaper sweeps clean logs forever while orphans accumulate — exactly the failure the reaper exists to prevent, made invisible.
+
+The self-test probes the capability, not the environment (same doctrine as the watch self-test in `provider_source.md`): **PID 1 must appear in the raw enumeration**. `launchd`/`init` always exists, is never the daemon's own descendant, and a view filtered to the daemon's session or namespace will not contain it. In a PID namespace (container), PID 1 is the namespace's own init and *is* visible — correctly reporting healthy, since reaping within the namespace is exactly the reaper's jurisdiction there.
+
+- **Evaluated** when the canonical daemon arms the reaper, and again on every sweep (the sweep already enumerates; the check is free).
+- **Visible** → reaper healthy; sweeps proceed normally.
+- **Not visible** → the daemon logs a warning (once at arming, not per sweep) and marks reaper visibility degraded. Sweeps continue — orphans that *are* visible (same-session test leaks) are still reaped. The degradation is surfaced via `comb check daemon`, `comb status`, and introspect `reaper.visibility`.
+
+A degraded verdict also implies the daemon itself is running confined (it was auto-spawned from a sandboxed client), which the operator may want to remedy by restarting it from an unconfined shell; the surfaced state is what makes that decision possible.
+
+**Signal capability** is not probed synthetically (there is no guaranteed-present same-uid foreign target to probe against); instead, reap kill attempts that fail with `EPERM` are counted as `kill_denied` and surfaced through the same introspection — capability observed at point of use.
+
 ### Client connect retry
 
-Every client (CLI + Python/Go/Node/Ruby/C/Lua SDKs + `beachcomber-client`) retries `connect()` three times with backoffs `250ms / 500ms / 1000ms` (total worst-case ~1.75s) on `ECONNREFUSED` or `ENOENT`. Other errors surface immediately. Once a connection is established, mid-request errors are NOT retried.
+Every client rides through the brief no-daemon window during restart/supersession. A `connect()` that fails because nothing is serving the socket (`ECONNREFUSED`, `ENOENT`) is retried briefly with a bounded total wait — retry count and backoffs are Parameters, not contract. Any other connect error surfaces immediately. Once a connection is established, mid-request errors are NOT retried — there are no hidden replay semantics.
 
 ## Sequence diagrams
 
@@ -174,6 +221,28 @@ sequenceDiagram
     Note over N: enter Running
 ```
 
+### Reap sweep (canonical daemon)
+
+```mermaid
+sequenceDiagram
+    participant D as Canonical daemon
+    participant PT as Process table
+    participant O as Orphan
+
+    D->>PT: enumerate uid-owned `comb daemon` processes
+    PT-->>D: candidates (pid, ppid, argv, age)
+    loop each candidate
+        alt exempt (self / same socket / --exit-with-parent / --no-reap / PPID ≠ 1 / age < 60s)
+            Note over D: skip
+        else orphan
+            D->>O: SIGTERM
+            Note over D: wait up to 1s
+            D->>O: SIGKILL if still alive
+            Note over D: log reap (pid, exe, socket)
+        end
+    end
+```
+
 ### Binary modified during run
 
 ```mermaid
@@ -235,15 +304,19 @@ sequenceDiagram
 4. Different-build-identity contention resolves to the new daemon taking over; the existing daemon receives SIGTERM (1s grace) then SIGKILL.
 5. The PID file is deleted on graceful shutdown (`SingletonLock::drop`). The flock is released when the file descriptor closes — including on SIGKILL or ungraceful exit.
 6. Stale PID files (file present but no process holds the flock) do not block startup — `flock(LOCK_EX | LOCK_NB)` succeeds and the new daemon overwrites the file.
-7. The daemon's binary on disk being modified causes the daemon to shut down within `200ms (debounce) + drain time`. Next client invocation respawns from the new binary.
+7. The daemon's binary on disk being modified causes the daemon to shut down — within `200ms (debounce) + drain time` when the fs-event watch is live, and within `5s (poll interval) + drain time` regardless of fs-event backend health. Next client invocation respawns from the new binary.
 8. Clients tolerate up to ~1.75s of socket-unavailable through retry. Connection errors surfacing past that point indicate genuine daemon-down conditions.
 9. Connect retry only fires on initial `connect()` failure. Mid-request socket errors propagate immediately to the caller.
+10. Only the reaping daemon (bound socket == env-free resolution: config → default, ignoring `--socket` and `$BEACHCOMBER_SOCKET`) reaps. A side daemon never signals a process outside its own socket path's contention domain. Two daemons of one uid never reap each other.
+11. A reaped process is never: the reaper, a process on the reaper's socket path, a process with a live parent, a process carrying `--exit-with-parent` or `--no-reap`, or a process younger than the reap grace age. Auto-spawn appends `--no-reap` whenever the spawn path was resolved from `$BEACHCOMBER_SOCKET`.
+12. Reaper capability is never silently degraded: the visibility self-test (PID 1 present in raw enumeration) runs at arming and on every sweep, kill attempts denied by the OS are counted, and both are observable via `comb check daemon`, `comb status`, and introspect `reaper`. Every sweep leaves a log trace (summary at debug; reaps at info; failures at warn).
+13. Reaping leaves no corpse: after a reaped orphan's confirmed death, its socket and pid files are removed — unless the socket is serving again, which is never unlinked.
 
 ## Parameters
 
 | Parameter | Scope | Unit | Configurability |
 |---|---|---|---|
-| Canonical socket path | per-user | path | config override → `$BEACHCOMBER_SOCKET` → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock` |
+| Canonical socket path | per-user | path | config override → `$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock` |
 | PID file location | per-user | path | derived: `<socket-parent>/pid` |
 | `BEACHCOMBER_VERSION` (human) | per-build | string | `build.rs` reads `COMB_BUILD_SHA` / `COMB_BUILD_DIRTY` env at compile time |
 | `binary_hash` (build identity) | per-build | hex SHA256 | computed at daemon startup; not configurable |
@@ -252,8 +325,12 @@ sequenceDiagram
 | Acquire-after-supersession retry deadline | global | seconds | fixed at 2s |
 | Same-build serving-probe grace | global | seconds | fixed at 2s |
 | fs-watch debounce | global | milliseconds | fixed at 200ms |
-| Client connect retry count | per-SDK | retries | fixed at 3 |
-| Client connect retry backoffs | per-SDK | milliseconds | fixed at 250 / 500 / 1000 |
+| Client connect retry count | all clients | retries | fixed at 3 |
+| Client connect retry backoffs | all clients | milliseconds | fixed at 250 / 500 / 1000 |
+| Self-watch poll interval | global | seconds | fixed at 5s |
+| Reap sweep period | global | duration | fixed at 1h (plus once at startup) |
+| Reap grace age | global | seconds | fixed at 60s |
+| Reaper visibility probe | global | predicate | fixed: PID 1 present in raw enumeration |
 
 Resolution is hardcoded throughout. Singleton enforcement should not be tunable — there is no useful "per-user 5 daemons" config.
 
@@ -297,6 +374,17 @@ A daemon acquired the flock and wrote its PID file, then stalled before binding 
 | Client retry | The client's connect retry covers the brief window; the next `connect()` lands on the new daemon. |
 
 Without the serving probe, the new process would have exited silently on the matching hash, leaving the socket unbound and clients hitting "nothing here boss" indefinitely.
+
+### Example 4 — orphaned dev daemons reaped, live ones spared
+
+A test harness was SIGKILLed weeks ago, leaking a daemon on a tempdir socket (spawned by a build predating `--exit-with-parent`); its worktree — including its binary — has since been deleted. Its fs-event stream delivered nothing, so event-only self-supervision never fired; before reaping existed it was immortal. Meanwhile a nextest run is currently executing, and the developer has a foreground `comb d --socket /tmp/debug.sock` open in a shell.
+
+| Candidate | Exemption check | Outcome |
+|---|---|---|
+| Leaked daemon (PPID 1, no flags, socket `/tmp/.tmpXYZ/…`, age 3 weeks, exe deleted) | none apply | SIGTERM → exits. |
+| Live nextest `TestDaemon` (`--exit-with-parent`, parent alive) | exempt twice over (rules 2 and 4) | untouched. |
+| Foreground debug daemon (parented to the developer's shell) | exempt (rule 4) | untouched. |
+| The canonical daemon itself | exempt (rule 1) | continues Running. |
 
 ## Behaviour assertions
 
@@ -392,19 +480,109 @@ Feature: Daemon singleton
     And the PID file at the canonical path no longer exists
     And the flock is released
 
-  Scenario: Canonical socket path ignores TMPDIR
-    Given XDG_RUNTIME_DIR is unset
+  Scenario: Canonical socket path ignores session-scoped environment
+    Given XDG_RUNTIME_DIR is set to "/per/session/runtime"
     And TMPDIR is set to "/per/shell/tmpdir"
     When resolve_socket_path is called with no config override
     Then the result starts with "/tmp/beachcomber-" and ends with "/sock"
     And the result does not contain "/per/shell/tmpdir"
+    And the result does not contain "/per/session/runtime"
+
+  Scenario: Canonical daemon reaps an orphaned side daemon
+    Given a uid-owned comb daemon on a non-canonical socket
+    And its parent has died (PPID = 1)
+    And its argv contains neither --exit-with-parent nor --no-reap
+    And it is older than 60s
+    When the canonical daemon runs a reap sweep
+    Then the orphan receives SIGTERM, then SIGKILL after 1s if still alive
+
+  Scenario: Live test daemon is exempt from reaping
+    Given a comb daemon spawned with --exit-with-parent whose parent is alive
+    When the canonical daemon runs a reap sweep
+    Then the test daemon is not signalled
+
+  Scenario: Attended foreground daemon is exempt from reaping
+    Given a comb daemon on a non-canonical socket whose parent process is alive
+    When the canonical daemon runs a reap sweep
+    Then the daemon is not signalled
+
+  Scenario: Flagged side daemon is exempt from reaping
+    Given a comb daemon started with --no-reap, reparented to PID 1
+    When the canonical daemon runs a reap sweep
+    Then the daemon is not signalled
+
+  Scenario: Young daemon is not reaped
+    Given a uid-owned comb daemon on a non-canonical socket younger than 60s
+    When the canonical daemon runs a reap sweep
+    Then the daemon is not signalled
+
+  Scenario: Side daemon never reaps
+    Given a daemon bound to a socket that differs from its own env-free canonical resolution
+    When its reap schedule would fire
+    Then it enumerates no processes and signals nothing
+
+  Scenario: Env-override daemon does not claim the reaper role
+    Given BEACHCOMBER_SOCKET is set to "/custom/sock"
+    And a daemon is bound to "/custom/sock"
+    When the daemon evaluates the reaper role
+    Then it is a side daemon and never reaps
+    Because reaper resolution ignores BEACHCOMBER_SOCKET
+
+  Scenario: Auto-spawn flags env-override daemons no-reap
+    Given BEACHCOMBER_SOCKET is set to "/custom/sock"
+    When ensure_daemon or libbeachcomber auto-start forks a daemon
+    Then the forked argv contains --no-reap
+    And the reaping daemon's sweep exempts it (rule 3)
+
+  Scenario: Auto-spawn does not flag default-path daemons
+    Given BEACHCOMBER_SOCKET is unset and no config override exists
+    When ensure_daemon forks a daemon at the default path
+    Then the forked argv does not contain --no-reap
+
+  Scenario: Reap removes the orphan's corpse files
+    Given a reap-eligible orphan with a socket file and sibling pid files
+    When the sweep reaps it and death is confirmed
+    Then the orphan's socket file and pid files no longer exist
+
+  Scenario: A serving socket is never unlinked by corpse cleanup
+    Given a reaped orphan's socket path was re-bound by a new daemon before cleanup
+    When corpse cleanup probes the socket
+    Then the socket file is left in place
+
+  Scenario: Confined enumeration is detected and surfaced
+    Given process enumeration whose raw view does not contain PID 1
+    When the canonical daemon arms the reaper or runs a sweep
+    Then reaper visibility is reported degraded via introspect daemon
+    And comb check daemon emits a WARN verdict for the reaper
+    And sweeps still reap orphans that are visible
+
+  Scenario: Healthy enumeration reports system-wide visibility
+    Given process enumeration whose raw view contains PID 1
+    When the canonical daemon runs a sweep
+    Then reaper visibility is reported healthy via introspect daemon
+
+  Scenario: Every sweep leaves a log trace
+    Given the canonical daemon runs a reap sweep
+    Then a summary with enumerated rows, candidate count, exemption tallies, and reaped pids is logged at debug level
+
+  Scenario: OS-denied kills are counted and surfaced
+    Given a reap-eligible orphan whose kill fails with EPERM
+    When the sweep attempts to reap it
+    Then the failure is logged at warn level
+    And the kill_denied counter surfaced via introspect daemon increments
+
+  Scenario: Poll catches binary replacement when fs events are dead
+    Given a Running daemon whose fs-event watch delivers no events
+    When the binary at current_exe is replaced
+    Then within 5s + drain time the daemon exits gracefully
+
 ```
 
 ## Out of scope
 
 - **Multi-user daemons.** Each `<uid>` has its own canonical path. Two users on the same machine each run their own singleton; they do not collide.
 - **Network / TCP daemons.** Singleton enforcement is per-user-per-host via Unix socket. There is no networked variant.
-- **Backwards compatibility with old TMPDIR-derived sockets.** The TMPDIR-step removal is a breaking change for users with running daemons on old paths. Such daemons sit on non-canonical sockets that no client resolves to; they age out on their own (self-supervision on rebuild, or manual kill). No in-place migration of clients with cached socket paths, and no startup reaping.
+- **Backwards compatibility with sockets on non-canonical paths** (e.g. TMPDIR- or XDG_RUNTIME_DIR-derived paths from earlier resolution rules). Daemons on such sockets are unreachable by any client following canonical resolution. Orphaned ones are removed by the canonical daemon's reap sweep; attended or flagged side daemons persist by design. No in-place migration of clients with cached socket paths.
 - **`daemon.pid` (the older file).** A separate `daemon.pid` is written by `fork_daemon` for the auto-spawn mechanism. It is unrelated to the singleton's `pid` file. Coexists today; possible future cleanup to merge or remove.
 - **In-process drain semantics.** The acceptor loop and connection-handler tasks do not currently honour the cancellation token cleanly — they are abandoned mid-await on shutdown rather than draining gracefully. Pre-existing concern, tracked separately. The singleton design assumes graceful shutdown completes; in practice, in-flight requests may be aborted abruptly. Not a singleton-property violation, but a quality-of-shutdown gap.
 - **Distributed coordination.** Singleton applies to one host. There is no cross-host election.

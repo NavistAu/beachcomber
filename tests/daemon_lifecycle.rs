@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 struct AlwaysRunningSpawner;
 
 impl DaemonSpawner for AlwaysRunningSpawner {
-    fn fork_daemon(&self, _binary: &str, _socket: &Path) -> std::io::Result<()> {
+    fn fork_daemon(&self, _binary: &str, _socket: &Path, _no_reap: bool) -> std::io::Result<()> {
         panic!("fork_daemon should never be called when daemon is already running");
     }
 
@@ -31,6 +31,7 @@ impl DaemonSpawner for AlwaysRunningSpawner {
 /// A spawner that records whether it was called and controls the wait result.
 struct RecordingSpawner {
     fork_called: Arc<AtomicBool>,
+    fork_no_reap: Arc<AtomicBool>,
     wait_called: Arc<AtomicU32>,
     wait_returns: bool,
 }
@@ -41,6 +42,7 @@ impl RecordingSpawner {
         let wait_called = Arc::new(AtomicU32::new(0));
         let spawner = Self {
             fork_called: fork_called.clone(),
+            fork_no_reap: Arc::new(AtomicBool::new(false)),
             wait_called: wait_called.clone(),
             wait_returns,
         };
@@ -49,7 +51,8 @@ impl RecordingSpawner {
 }
 
 impl DaemonSpawner for RecordingSpawner {
-    fn fork_daemon(&self, _binary: &str, _socket: &Path) -> std::io::Result<()> {
+    fn fork_daemon(&self, _binary: &str, _socket: &Path, no_reap: bool) -> std::io::Result<()> {
+        self.fork_no_reap.store(no_reap, Ordering::SeqCst);
         self.fork_called.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -115,7 +118,7 @@ fn ensure_daemon_returns_quickly_if_already_running() {
     let _listener = UnixListener::bind(&sock_path).unwrap();
 
     // AlwaysRunningSpawner panics if fork_daemon or wait_for_socket is called.
-    let result = ensure_daemon_with(&AlwaysRunningSpawner, &sock_path);
+    let result = ensure_daemon_with(&AlwaysRunningSpawner, &sock_path, false);
     assert!(
         result.is_ok(),
         "ensure_daemon_with should succeed: {result:?}"
@@ -134,7 +137,7 @@ fn ensure_daemon_forks_if_socket_missing() {
     // Socket does not exist, so is_daemon_running returns false.
     let (spawner, fork_called, wait_called) = RecordingSpawner::new(true);
 
-    let result = ensure_daemon_with(&spawner, &sock_path);
+    let result = ensure_daemon_with(&spawner, &sock_path, false);
     assert!(
         result.is_ok(),
         "ensure_daemon_with should succeed: {result:?}"
@@ -161,7 +164,7 @@ fn ensure_daemon_errors_when_wait_times_out() {
 
     let (spawner, fork_called, _wait_called) = RecordingSpawner::new(false);
 
-    let result = ensure_daemon_with(&spawner, &sock_path);
+    let result = ensure_daemon_with(&spawner, &sock_path, false);
     assert!(result.is_err(), "should return an error on timeout");
     assert_eq!(
         result.unwrap_err().kind(),
@@ -171,5 +174,41 @@ fn ensure_daemon_errors_when_wait_times_out() {
     assert!(
         fork_called.load(Ordering::SeqCst),
         "fork_daemon should have been called"
+    );
+}
+
+/// Canon singleton.md §"Env-override spawns are flagged": the no_reap flag
+/// passes through ensure_daemon_with to the spawner verbatim.
+#[test]
+fn ensure_daemon_threads_no_reap_flag_to_fork() {
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let sock_path = tmp.path().join("no-such-sock");
+
+    let (spawner, fork_called, _wait) = RecordingSpawner::new(true);
+    let no_reap_seen = spawner.fork_no_reap.clone();
+
+    ensure_daemon_with(&spawner, &sock_path, true).unwrap();
+    assert!(fork_called.load(Ordering::SeqCst));
+    assert!(
+        no_reap_seen.load(Ordering::SeqCst),
+        "no_reap=true must reach fork_daemon"
+    );
+}
+
+/// Pre-flight SUN_LEN guard: a socket path the kernel cannot bind is rejected
+/// before forking a doomed daemon.
+#[test]
+fn ensure_daemon_rejects_overlong_socket_path_without_forking() {
+    let long = format!("/tmp/{}/sock", "x".repeat(120));
+    let (spawner, fork_called, _wait) = RecordingSpawner::new(true);
+
+    let result = ensure_daemon_with(&spawner, Path::new(&long), false);
+    let err = result.expect_err("overlong path must be rejected");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        !fork_called.load(Ordering::SeqCst),
+        "must not fork a daemon doomed to fail bind"
     );
 }

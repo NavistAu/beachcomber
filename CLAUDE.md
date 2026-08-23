@@ -6,7 +6,7 @@ Project-specific instructions for contributors using Claude Code.
 
 Before proposing changes or reasoning about behavior, read these. They are the authoritative project state — code alone will mislead you.
 
-- **`docs/roadmap.md`** — what's built, what's deferred, what's broken. Contains the "Known Core Issues" section; check it before claiming anything is working. If behavior seems odd, look here first.
+- **`docs/roadmap.md`** — open, forward-looking work only: planned features and deferred design work, grouped by area. It is **not** a bug tracker, an engineering log, or a session scratchpad. Done items are deleted, not annotated — shipped work lives in `CHANGELOG.md`, fix histories in git. Investigation write-ups belong in commit messages; never append them here.
 - **`docs/canon/*`** — canonical spec major architechtural designs. Tests must match this document; code that disagrees is wrong.
 - **`docs/canon/provider_source.md`** — canonical Provider/Source/Field model. The authoritative spec for how providers declare sources, invalidation strategies, lifecycle keying, cache layout, and TOML config. Read this before touching any provider, scheduler, cache, or config code.
 - **`CHANGELOG.md`** — what shipped when, at what version.
@@ -15,13 +15,11 @@ Before proposing changes or reasoning about behavior, read these. They are the a
 specs define test suite tdd, which defines the code, which is then communicated by the documentation/website. This is
 how we resolve 'are the docs or code correct?', its a strict line of truth.
 
-If a section of the code looks like a half-wired state machine or a config key that does nothing, check `docs/roadmap.md` → "Known Core Issues" before writing a fix. Some scaffolding is known-aspirational and has a planned rebuild.
-
 ## Basics
 
 - **Project:** beachcomber — a daemon that caches shell environment state
 - **Binary:** `comb` (not `beachcomber`)
-- **Crate:** `beachcomber` (workspace root) + `beachcomber-client` (client library)
+- **Crate:** `beachcomber` (workspace root) + `libbeachcomber` (client library) + `libbeachcomber-ffi` (C-ABI cdylib for the SDKs)
 - **Rust version:** pinned in `mise.toml` — use `mise install` to get it
 - **Platform:** macOS and Linux
 
@@ -89,13 +87,13 @@ Virtual providers created by `put` are data-only entries in the cache — no `ex
 
 TOML at `~/.config/beachcomber/config.toml`. Three sections: `[daemon]`, `[lifecycle]`, `[providers.<name>]`.
 
-Socket path resolution (daemon): config override → `$BEACHCOMBER_SOCKET` → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`. Client SDKs mirror this minus the config-file step (`$BEACHCOMBER_SOCKET` → `$XDG_RUNTIME_DIR/beachcomber/sock` → `/tmp/beachcomber-<uid>/sock`); `$TMPDIR` is not consulted by either.
+Socket path resolution (daemon): config override → `$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock`. Client SDKs mirror this minus the config-file step (`$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock`). No session-scoped environment is consulted (`$TMPDIR`, `$XDG_RUNTIME_DIR`) — see `docs/canon/singleton.md`.
 
 ## SDKs
 
-Client SDKs live in `sdks/` — one directory per language (C, Go, Lua, Node.js, Python, Ruby). Each is self-contained with its own test suite. All are stdlib-only (no external dependencies).
+Client SDKs live in `sdks/` — one directory per language (C, Go, Lua, Node.js, Python, Ruby). Each is self-contained with its own test suite. Each SDK binds the shared `libbeachcomber` C ABI (ctypes/fiddle/purego/LuaJIT-ffi/koffi). Python, Ruby, and C are stdlib-only. Go vendors `purego`. Node.js takes `koffi` as an optional peer dependency. Node and PUC-Lua (no `ffi`) have subprocess fallback tiers.
 
-The Rust client SDK is `beachcomber-client/` (workspace member).
+The Rust client SDK is `libbeachcomber/` (workspace member).
 
 ## Dependencies
 

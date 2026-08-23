@@ -7,6 +7,59 @@
 
 local M = {}
 
+-- A plain empty Lua table cannot record whether it came from JSON `{}` or
+-- `[]` — both decode to a table with no keys, and Lua has no separate empty
+-- vector/map runtime types the way Python (dict{} vs list[]) or Go
+-- (map[string]interface{}{} vs []interface{}{}) do. decode_object tags an
+-- empty result with this sentinel metatable so a consumer that needs to
+-- recover the JSON type (e.g. the conformance runner's data_type check) can
+-- via M.is_empty_object(); a non-empty table stays distinguishable by shape
+-- (sequential integer keys from 1) without any tagging. Encoding does not
+-- need to consult this — encode_table already defaults an empty table to a
+-- JSON object (its is_array check requires count > 0), matching this tag.
+local EMPTY_OBJECT_MT = {}
+
+--- True when `t` is an empty table that was decoded from a JSON object
+-- (`{}`), as opposed to a plain empty table or one decoded from `[]`.
+function M.is_empty_object(t)
+  return type(t) == 'table' and getmetatable(t) == EMPTY_OBJECT_MT
+end
+
+-- A plain Lua `nil` cannot be stored as a table value — `t[k] = nil` deletes
+-- `k` rather than recording "present with value null" — so a JSON `null`
+-- nested inside an object or array is indistinguishable from that key/index
+-- being entirely absent once it has passed through a plain-nil decode. That
+-- collapse happens *before* any caller-visible put/get logic runs (e.g. a
+-- conformance fixture's own `{"data":{"v":null}}` setup payload loses the
+-- `v` key while the fixture file itself is being parsed), so callers can
+-- never legitimately construct or observe a null-valued field at all.
+--
+-- M.NULL is a unique sentinel table standing in for JSON null at any
+-- nesting level, including a bare top-level `"null"` document: decode
+-- produces it, encode turns it back into the literal `null` token, and it
+-- is stored/iterated like any other non-nil table value. It is exported
+-- (re-exported as `beachcomber.null` from init.lua) so a caller can test a
+-- decoded field with `v == json.NULL` / `json.is_null(v)`.
+--
+-- This sentinel must NOT leak into miss-detection. The wire protocol's own
+-- "no cached value" encoding is the literal shape `"data":null` in a
+-- get/watch response — identical on the wire to a genuine stored null —
+-- so a transport that decoded that field with M.decode would see M.NULL
+-- for a miss too. The daemon has no representation for an actual stored
+-- null (src/provider/mod.rs converts a put null to an empty string before
+-- caching it — see tests/conformance/mapping/
+-- null_value_becomes_empty_string.json), so that specific "data" field can
+-- only ever mean "miss" and is the one place a sentinel must be collapsed
+-- back to plain Lua nil: see ffi_backend.lua's unwrap_get and
+-- Watch:next_event. Nowhere else should perform that collapse.
+local NULL = setmetatable({}, { __tostring = function() return "null" end })
+M.NULL = NULL
+
+--- True when `v` is the JSON-null sentinel (see M.NULL above).
+function M.is_null(v)
+  return v == NULL
+end
+
 -- ── Decoder ──────────────────────────────────────────────────────────────────
 
 local function decode_error(s, pos, msg)
@@ -104,7 +157,10 @@ local function decode_array(s, pos)
   -- pos points at '['
   pos = pos + 1
   local arr = {}
-  local n = 0  -- explicit counter so null values (nil) are stored correctly
+  local n = 0  -- explicit counter: a JSON null decodes to M.NULL (non-nil), so
+               -- a null element is stored (and counted) like any other value,
+               -- but the counter still guards against pairs()/# relying on
+               -- table-length inference over a sparse table
   pos = skip_ws(s, pos)
   if s:sub(pos, pos) == ']' then
     return arr, pos + 1
@@ -133,6 +189,7 @@ local function decode_object(s, pos)
   local obj = {}
   pos = skip_ws(s, pos)
   if s:sub(pos, pos) == '}' then
+    setmetatable(obj, EMPTY_OBJECT_MT)
     return obj, pos + 1
   end
   while true do
@@ -187,7 +244,7 @@ decode_value = function(s, pos)
     decode_error(s, pos, "invalid token")
   elseif c == 'n' then
     if s:sub(pos, pos + 3) == 'null' then
-      return nil, pos + 4 -- nil represents JSON null
+      return NULL, pos + 4 -- M.NULL represents JSON null (see M.NULL above)
     end
     decode_error(s, pos, "invalid token")
   elseif c == '-' or (c >= '0' and c <= '9') then
@@ -198,8 +255,9 @@ decode_value = function(s, pos)
 end
 
 --- Decode a JSON string into a Lua value.
--- JSON null becomes nil. JSON objects become tables with string keys.
--- JSON arrays become tables with integer keys.
+-- JSON null becomes the M.NULL sentinel (see above), at any nesting level
+-- including a bare top-level "null" document. JSON objects become tables
+-- with string keys. JSON arrays become tables with integer keys.
 -- @param s string  JSON text
 -- @return value, nil on success; nil, error_message on failure
 function M.decode(s)
@@ -280,6 +338,8 @@ encode_value = function(v)
   local t = type(v)
   if t == 'nil' then
     return 'null'
+  elseif v == NULL then
+    return 'null' -- M.NULL round-trips back to the literal JSON null token
   elseif t == 'boolean' then
     return v and 'true' or 'false'
   elseif t == 'number' then

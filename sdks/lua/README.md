@@ -1,18 +1,56 @@
 # beachcomber — Lua SDK
 
 Lua client for the [beachcomber](https://github.com/NavistAu/beachcomber)
-daemon. Communicates over a Unix domain socket using newline-delimited JSON.
+daemon. A binding over `libbeachcomber`'s C ABI
+(`libbeachcomber-ffi/include/beachcomber.h`), not a hand-rolled socket
+protocol.
 
-Designed for Neovim plugin authors (via `vim.uv`) but also works in standalone
-Lua scripts via luasocket.
+---
+
+## Transport
+
+Two transports, selected automatically by `comb.connect()`:
+
+| Transport | Interpreter | Mechanism | Cost/call | `transport()` |
+|---|---|---|---|---|
+| `ffi` | LuaJIT (incl. Neovim, which always ships LuaJIT) | `ffi` calls straight into the cdylib | ~0.3ms | `"ffi"` |
+| `subprocess` | PUC Lua 5.1–5.4 | shells out to the `comb` binary | ~5ms | `"subprocess"` |
+
+**Why PUC Lua gets a subprocess fallback instead of a C shim.** PUC Lua has
+no `ffi` and cannot call into a cdylib without one — a C shim compiled per
+platform is the only other way to bridge that gap, and it would be the sole
+binding artifact across every SDK in this project needing a build toolchain
+at install time. Given that trade-off, PUC Lua is supported only through
+the subprocess fallback, which needs nothing beyond a `comb` binary on
+`$PATH`.
+
+The fallback is a *sanctioned* fallback, not a silent recovery path: it's
+selected only when `ffi` is unavailable *by design* (checked once, at
+`comb.connect()` time). A broken or missing library under LuaJIT is a loud
+error naming every path tried — it never silently downgrades to
+`subprocess`, so a broken install reads as a broken install, not as a
+mysterious 5ms-per-call slowdown. Call `client:transport()` any time you
+need to know which one you got.
+
+**Capability ceiling of the subprocess transport.** `comb` has no CLI
+surface for `hello`, `introspect`, `resolve`, `eval`, or `watch` (the last
+was tried and rejected — see `beachcomber/subprocess_backend.lua`'s header
+comment: piped through `io.popen`, the CLI's stdout buffering means a
+`read("*l")` blocks forever even though the daemon already sent the event).
+Those `Client` methods return `nil, err` with `err.kind == "unsupported"`
+over `subprocess`; get/put/put_null/refresh/status/context all work fully
+over either transport.
 
 ---
 
 ## Requirements
 
-- Lua 5.1+ or LuaJIT (Neovim-compatible)
-- **Inside Neovim:** no extra dependencies (`vim.uv` / `vim.loop` used automatically)
-- **Outside Neovim:** [luasocket](https://github.com/lunarmodules/luasocket) 3.0+
+- **LuaJIT** (`ffi` transport) — no extra dependencies, works standalone
+  or inside Neovim.
+- **PUC Lua 5.1–5.4** (`subprocess` transport) — needs `comb` on `$PATH`.
+
+Either way: no external Lua dependency. The JSON encoder/decoder
+(`beachcomber/json.lua`) is hand-rolled stdlib-only, same as before.
 
 ---
 
@@ -21,7 +59,7 @@ Lua scripts via luasocket.
 ### LuaRocks
 
 ```sh
-luarocks install --local beachcomber
+luarocks install --local libbeachcomber
 ```
 
 ### Manual (Neovim)
@@ -36,11 +74,12 @@ somewhere on your `runtimepath`.
 ```lua
 local comb = require('beachcomber')
 
--- Connect (auto-detects vim.uv or luasocket)
 local client, err = comb.connect()
 if not client then
-  error("beachcomber: " .. err)
+  error("beachcomber: " .. tostring(err))
 end
+
+print(client:transport())  -- "ffi" or "subprocess"
 
 -- get a single field
 local result = client:get('git.branch', '/my/repo')
@@ -59,9 +98,9 @@ end
 -- refresh (force recompute)
 client:refresh('git', '/my/repo')
 
--- persistent context — path applies to all subsequent queries
+-- default path — applies to subsequent queries made without an explicit path
 client:set_context('/my/repo')
-local r2 = client:get('git.branch')  -- uses context path
+local r2 = client:get('git.branch')
 
 -- daemon cache status rows
 local rows = client:status()
@@ -72,47 +111,90 @@ end
 client:close()
 ```
 
-### Custom socket path
+### Custom options
 
 ```lua
-local client = comb.connect({ socket_path = '/run/user/1000/beachcomber/sock' })
+local client = comb.connect({
+  socket_path = '/run/user/1000/beachcomber/sock',  -- ffi transport
+  timeout_ms  = 2000,                                -- ffi transport
+  autostart   = true,                                -- ffi transport
+  library_path = '/opt/beachcomber/lib/libbeachcomber.dylib', -- ffi: override discovery
+  comb_bin     = '/opt/beachcomber/bin/comb',                 -- subprocess: override discovery
+})
 ```
 
 ---
 
 ## API reference
 
-### `comb.connect([opts])` → `Client | nil, error`
+### `comb.connect([opts])` → `Client | nil, Error`
 
-Connect to the daemon and return a `Client`.
+Selects a transport and returns a connected `Client`. See "Custom options"
+above for `opts`. `opts.backend` bypasses transport selection entirely
+(advanced use / tests) with any table satisfying the backend interface
+documented at the top of `beachcomber/client.lua`.
 
-| Option | Type | Description |
-|---|---|---|
-| `socket_path` | string | Override automatic socket discovery |
-| `backend` | module | Override the socket backend (advanced) |
+### `Client:transport()` → `"ffi" | "subprocess"`
 
-Returns `nil, error_message` on failure.
+### `Client:get(key [, path])` → `Result | nil, Error`
 
-### `Client:get(key [, path])` → `Result | nil, error`
+Read a cached value. `key` is `"provider"` or `"provider.field"`. `path`
+overrides `set_context()`'s default, if any.
 
-Read a cached value. `key` is `"provider"` or `"provider.field"`.
-`path` overrides any connection context.
+### `Client:get_with_flags(key, path, force, wait)` → `Result | nil, Error`
 
-### `Client:refresh(key [, path])` → `true | nil, error`
+Like `get`, with `bc_get`'s `BC_GET_FORCE` / `BC_GET_WAIT` flags.
+
+### `Client:refresh(key [, path])` → `true | nil, Error`
 
 Force the daemon to recompute `key`.
 
-### `Client:set_context(path)` → `true | nil, error`
+### `Client:set_context(path)` → `true`
 
-Set the default working-directory path for this connection.
+Set the default path used by later calls that don't pass one explicitly.
+Client-side (works identically over both transports).
 
-### `Client:status()` → `table[] | nil, error`
+### `Client:status()` → `table[] | nil, Error`
 
-Return typed cache rows (one per warm cache entry). Each row has `provider`, `field`, `value`, `age_ms`, and `stale` keys.
+Cache rows (one per warm cache entry): `provider`, `field`, `path`,
+`value`, `age_ms`, `stale`, plus lifecycle fields.
+
+### `Client:put(key, data [, ttl [, path]])` → `true | false, Error`
+### `Client:put_null(key [, path])` → `true | false, Error`
+
+Write to / clear a virtual provider's cached value.
+
+### `Client:hello()` → `table {protocol_version, daemon_version} | nil, Error`
+### `Client:introspect(subject [, duration_secs])` → `table {subject, daemon, other} | nil, Error`
+
+ffi transport only — `Error{kind="unsupported"}` over subprocess.
+
+### `Client:resolve(key [, opts])` → `value | nil, Error`
+### `Client:eval(template_str [, opts])` → `value | nil, Error`
+
+Client-side field/path-expression resolution (`bc_resolve`/`bc_eval`) —
+the same evaluator `comb get`'s resolution layer uses, exposed so a caller
+never has to reimplement it. `opts.cwd` (default: the context path, then
+`"."`), `opts.env`, `opts.virtual` (expression overrides, keyed
+`"provider.field"` or a bare provider name — see
+`tests/conformance/README.md`'s `resolve` fixture shape). ffi transport
+only.
+
+### `Client:watch(key [, path])` → `WatchStream | nil, Error`
+
+ffi transport only. `stream:next_event([timeout_ms])` → event table
+`{data, age_ms, stale}`, or `nil` on eof/cancelled, or `nil, Error` on a
+real error; `-1` (default) blocks indefinitely, `0` polls, `>0` waits that
+long. `stream:cancel()`, `stream:close()`, `stream:each()` for a for-loop.
+
+### `Client:session()` → session object | nil, Error
+
+Advanced: a persistent connection with true server-side context
+(`bc_session_*`). Most callers want `set_context()` instead — it works
+over either transport by keeping the default path client-side. ffi
+transport only.
 
 ### `Client:close()`
-
-Close the underlying socket.
 
 ### `Result`
 
@@ -127,17 +209,40 @@ Close the underlying socket.
 | `result:is_hit()` | boolean | True when `data ~= nil` |
 | `result:get_str(field)` | string\|nil, error | Get a string field from object data |
 
+### `Error`
+
+Every failing call returns `nil, Error` (or `false, Error` for
+put/put_null). `Error.kind` is a machine-readable slug mirroring the ABI
+envelope's `error.kind` (`"server_error"`, `"daemon_not_running"`,
+`"unsupported"` for a capability the active transport lacks, ...);
+`Error.message` is human-readable; `tostring(err)` gives both.
+
 ---
 
-## Socket path discovery
+## Discovery
 
-The SDK looks for the daemon socket in this order:
+### ffi transport: library discovery
 
-1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
-2. `$XDG_RUNTIME_DIR/beachcomber/sock` (if `XDG_RUNTIME_DIR` is set)
-3. `/tmp/beachcomber-<uid>/sock`
+1. `$BEACHCOMBER_LIB`
+2. `../lib/<platform name>` relative to the `comb` resolved on `$PATH`
+   (the Homebrew-style `bin/` + `lib/` layout — `comb` and the library
+   ship together, so the one beside the `comb` you'd actually run is the
+   matching one)
+3. the platform default dynamic-linker search path
 
-This mirrors the daemon's bind path; `$TMPDIR` is not consulted.
+Every candidate tried is remembered: if none load, the error names all of
+them, in order — a missing library is a broken install, not a silent
+downgrade to `subprocess` (see "Transport" above). Every symbol the ABI
+declares is verified at load time, not on first use; a missing symbol's
+error names the symbol and the loaded library's `bc_version()`, so a
+version-skew install error is diagnosable at a glance.
+
+### subprocess transport: `comb` discovery
+
+The `comb` binary is found on `$PATH` (or via `opts.comb_bin`). Standard
+Lua has no `setenv`, so `opts.socket_path` (or the daemon's own discovery,
+if unset) is threaded into each spawned `comb` invocation's command line
+rather than the process environment.
 
 ---
 
@@ -145,12 +250,15 @@ This mirrors the daemon's bind path; `$TMPDIR` is not consulted.
 
 ```
 beachcomber/
-  init.lua              -- entry point, backend detection, comb.connect()
-  client.lua            -- Client and Result types
-  discovery.lua         -- socket path discovery
-  json.lua              -- minimal JSON encoder/decoder (no dependencies)
-  socket_luasocket.lua  -- luasocket backend
-  socket_vim.lua        -- vim.uv / vim.loop backend
+  init.lua               -- entry point, transport selection, comb.connect()
+  client.lua              -- transport-agnostic Client and Result
+  error.lua                -- idiomatic Error (kind + message)
+  watch_stream.lua         -- WatchStream wrapping a backend watch handle
+  ffi.lua                  -- LuaJIT ffi: cdef, library discovery/load/symbol check
+  ffi_backend.lua           -- backend implementation over ffi.lua
+  subprocess_backend.lua    -- backend implementation shelling out to `comb`
+  discovery.lua             -- `comb`-on-PATH lookup; ffi library candidate ordering
+  json.lua                  -- minimal JSON encoder/decoder (no dependencies)
 ```
 
 ---
@@ -159,11 +267,17 @@ beachcomber/
 
 ```sh
 cd sdks/lua
-lua test/test_runner.lua
+luajit test/test_runner.lua   # exercises the ffi transport's supporting code
+lua test/test_runner.lua      # PUC Lua — same suite, mock-backend tests only
 ```
 
-The mock Unix socket server tests require luasocket. They are skipped
-automatically when luasocket is not available.
+Unit tests run against a mock backend (no live daemon required). For the
+full protocol conformance suite against a real daemon:
+
+```sh
+TMPDIR=/tmp COMB_BIN=/path/to/comb luajit sdks/lua/conformance_runner.lua   # ffi
+TMPDIR=/tmp COMB_BIN=/path/to/comb lua sdks/lua/conformance_runner.lua      # subprocess
+```
 
 ---
 
@@ -174,10 +288,9 @@ automatically when luasocket is not available.
 local ok, comb = pcall(require, 'beachcomber')
 if not ok then return '' end
 
-local client = comb.connect()
+local client = comb.connect()  -- always "ffi" inside Neovim (LuaJIT)
 if not client then return '' end
 
--- Keep a persistent client across calls for best performance
 vim.api.nvim_create_autocmd('VimLeavePre', {
   callback = function() client:close() end,
 })
@@ -189,5 +302,5 @@ local function git_branch()
 end
 ```
 
-All socket I/O in the `vim.uv` backend is synchronous so `git_branch()` can
-be called directly from a statusline evaluation without scheduling callbacks.
+All ffi calls are synchronous, so `git_branch()` can be called directly
+from a statusline evaluation without scheduling callbacks.

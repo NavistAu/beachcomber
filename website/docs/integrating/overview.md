@@ -59,7 +59,7 @@ Link to `https://beachcomber.sh` for installation instructions. If your integrat
 
 It's tempting to ship `comb` alongside your distribution so users don't need to install it separately. The MIT license allows this, but it creates real problems:
 
-**The daemon is shared state.** beachcomber runs one daemon per user with a single Unix socket. If your tool bundles comb 0.4.0 and the user installs comb 0.5.0, whichever runs first starts the daemon. The other then talks to a daemon from a different version. Version skew across a shared socket produces bugs that are invisible until they aren't.
+**The daemon is shared state.** beachcomber runs one daemon per user with a single Unix socket. If your tool bundles comb 0.4.0 and the user installs comb 0.5.0, whichever runs first starts the daemon. The other then talks to a daemon from a different version. Version skew across a shared socket is detected — the client compares its build identity against the daemon's on first use per connection — and surfaced as a non-fatal error.
 
 **Update responsibility.** A security fix in beachcomber means every bundler needs to ship an update independently. With a system install, the user updates once.
 
