@@ -100,7 +100,16 @@ jobs:
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Build cdylib (native)
-        if: ${{ !matrix.cross }}
+        if: ${{ !matrix.cross && !matrix.musl }}
+        run: cargo build --release --target ${{ matrix.target }} -p libbeachcomber-ffi
+
+      - name: Build cdylib (musl)
+        if: matrix.musl
+        # musl defaults to a static CRT, which suppresses cdylib output;
+        # the shared library needs a dynamic CRT (the binary build above
+        # stays fully static).
+        env:
+          RUSTFLAGS: -C target-feature=-crt-static
         run: cargo build --release --target ${{ matrix.target }} -p libbeachcomber-ffi
 
       - name: Build cdylib (cross)
@@ -128,6 +137,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Create C SDK tarball
         run: |
+          # The header comes from libbeachcomber-ffi/include: sdks/c's own
+          # beachcomber.h is a repo-relative passthrough that only resolves
+          # inside a checkout; an installed header must be self-contained.
+          cp libbeachcomber-ffi/include/beachcomber.h sdks/c/beachcomber.h
           tar czf beachcomber-c-sdk-${{ needs.gate.outputs.tag }}.tar.gz \
             -C sdks/c \
             beachcomber.h Makefile libbeachcomber.pc.in README.md
@@ -206,9 +219,7 @@ jobs:
             pkg-config --cflags libbeachcomber
             pkg-config --libs libbeachcomber
             test -f /usr/include/beachcomber.h
-            test -f /usr/include/json.h
-            test -f /usr/lib/libbeachcomber.so
-            test -f /usr/lib/libbeachcomber.a
+            test -f /usr/lib/pkgconfig/libbeachcomber.pc
             echo "All checks passed"
           '
 

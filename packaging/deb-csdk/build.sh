@@ -19,7 +19,9 @@ Architecture: amd64
 Maintainer: NavistAu <github@navistau.io>
 Homepage: https://github.com/NavistAu/beachcomber
 Description: C client library for the beachcomber daemon (development files)
- Headers, shared library, static library, and pkg-config file for libbeachcomber.
+ Header and pkg-config file for libbeachcomber, the C ABI of the daemon's
+ shared client library. The shared library itself ships with the beachcomber
+ daemon package.
 EOF
 
 OUTPUT="libbeachcomber-dev_${VERSION}_amd64.deb"
