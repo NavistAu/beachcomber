@@ -28,6 +28,7 @@ fn sample_rows() -> Vec<CacheRow> {
             keep_alive_polls: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
+            next_poll_in_secs: None,
             failure: None,
         },
         CacheRow {
@@ -43,6 +44,7 @@ fn sample_rows() -> Vec<CacheRow> {
             keep_alive_polls: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
+            next_poll_in_secs: None,
             failure: None,
         },
         CacheRow {
@@ -58,6 +60,7 @@ fn sample_rows() -> Vec<CacheRow> {
             keep_alive_polls: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
+            next_poll_in_secs: None,
             failure: None,
         },
     ]
@@ -152,6 +155,7 @@ fn human_preset_truncates_value_to_meet_total_cap() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     });
     // With a 120-col total cap, the non-VALUE columns for these rows fit comfortably,
@@ -191,6 +195,7 @@ fn human_preset_color_on_stale_rows() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }];
     let opts = RenderOpts {
@@ -222,6 +227,7 @@ fn json_preset_path_none_serializes_as_null() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }];
     let out = render_preset("json", &rows, &RenderOpts::default());
@@ -248,6 +254,7 @@ fn csv_preset_quotes_values_with_commas() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }];
     let out = render_preset("csv", &rows, &RenderOpts::default());
@@ -284,6 +291,7 @@ fn custom_template_supports_truncate_filter() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }];
     let out = render_preset("{{ value | truncate(7) }}", &rows, &RenderOpts::default());
@@ -337,6 +345,7 @@ fn custom_template_supports_age_human() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }];
     let out = render_preset("{{ age_human }}", &rows, &RenderOpts::default());
@@ -697,6 +706,7 @@ fn max_width_value_column_shrinks_not_others() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     // Use a narrow max_width that cannot fit the full value.
@@ -743,6 +753,7 @@ fn max_width_total_row_width_does_not_exceed_cap() {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     let total_cap = 80usize;
@@ -818,6 +829,7 @@ fn default_sort_is_path_provider_field() {
             keep_alive_polls: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
+            next_poll_in_secs: None,
             failure: None,
         }
     }
@@ -903,6 +915,7 @@ fn cache_row_new_fields_serde_round_trip() {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     let v = serde_json::to_value(&row).unwrap();
@@ -1200,6 +1213,7 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     let opts = FormatOptions { ascii: false };
@@ -1233,6 +1247,7 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }
 }
@@ -1347,6 +1362,7 @@ fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(false),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }
 }
@@ -1367,6 +1383,7 @@ fn once_row(provider: &str) -> beachcomber::cache::CacheRow {
         keep_alive_polls: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     }
 }
@@ -1470,11 +1487,18 @@ fn human_renders_p_zero_k_zero_without_panic() {
         keep_alive_polls: Some(0),
         fsevents_reinstate: Some(false),
         polls_elapsed: None,
+        next_poll_in_secs: Some(0),
         failure: None,
     };
     let opts = beachcomber::cli::status_format::FormatOptions::default();
     let out = beachcomber::cli::status_format::render_human(&[row], &opts);
-    assert!(out.contains("0s\u{00d7}00"), "P=0 K=0 expected: {}", out);
+    assert!(
+        out.contains("0s\u{00d7}00 (0s)"),
+        "P=0 K=0 expected: {}",
+        out
+    );
+    // POLL column also renders 0s without panicking.
+    assert!(out.contains("0s"), "POLL column expected 0s: {}", out);
 }
 
 // ---------------------------------------------------------------------------
@@ -1502,6 +1526,7 @@ fn failure_state_renders_warn_and_red_row() {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(false),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: Some(FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
@@ -1542,6 +1567,7 @@ fn render_preset_ascii_flag_swaps_glyphs() {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     let opts_unicode = RenderOpts {
@@ -1599,6 +1625,7 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
         keep_alive_polls: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
+        next_poll_in_secs: None,
         failure: None,
     };
     // Simulate the WATCH_INTERVAL case: caller resolved color=true even though
@@ -1615,5 +1642,150 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
         out.contains("\x1b[92m"),
         "bright green ANSI expected when no_color=false even with is_tty=false: {}",
         out
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Home-path compaction (`~`) — human preset only
+// ---------------------------------------------------------------------------
+
+#[test]
+fn human_preset_compacts_home_path() {
+    use beachcomber::cache::CacheRow;
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+    use serde_json::json;
+
+    let row = CacheRow {
+        provider: "git".into(),
+        path: Some("/Users/x/ws/beachcomber".into()),
+        source: "refs".into(),
+        field: "branch".into(),
+        value: json!("main"),
+        age_ms: 0,
+        stale: false,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        polls_elapsed: None,
+        next_poll_in_secs: None,
+        failure: None,
+    };
+    let opts = RenderOpts::default();
+
+    let out = temp_env::with_var("HOME", Some("/Users/x"), || {
+        render_preset("human", &[row], &opts)
+    });
+    assert!(
+        out.contains("~/ws/beachcomber"),
+        "expected compacted path: {out}"
+    );
+    assert!(
+        !out.contains("/Users/x/ws/beachcomber"),
+        "raw home-prefixed path should not appear: {out}"
+    );
+}
+
+#[test]
+fn machine_presets_keep_real_path_under_home() {
+    use beachcomber::cache::CacheRow;
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+    use serde_json::json;
+
+    let row = CacheRow {
+        provider: "git".into(),
+        path: Some("/home/testuser/ws/beachcomber".into()),
+        source: "refs".into(),
+        field: "branch".into(),
+        value: json!("main"),
+        age_ms: 0,
+        stale: false,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        polls_elapsed: None,
+        next_poll_in_secs: None,
+        failure: None,
+    };
+    let opts = RenderOpts::default();
+
+    temp_env::with_var("HOME", Some("/home/testuser"), || {
+        // json/csv/tsv/table carry `path` verbatim; sh flattens it into a
+        // sanitized shell-variable key (slashes → underscores) rather than
+        // embedding the literal path string, so it's checked separately —
+        // the shared assertion across all five is simply "no `~` leaks in".
+        for preset in ["json", "csv", "tsv", "table"] {
+            let out = render_preset(preset, std::slice::from_ref(&row), &opts);
+            assert!(
+                out.contains("/home/testuser/ws/beachcomber"),
+                "{preset} preset should keep the real path: {out}"
+            );
+            assert!(
+                !out.contains('~'),
+                "{preset} preset should not compact the path: {out}"
+            );
+        }
+        let sh_out = render_preset("sh", std::slice::from_ref(&row), &opts);
+        assert!(
+            !sh_out.contains('~'),
+            "sh preset should not compact the path: {sh_out}"
+        );
+    });
+}
+
+#[test]
+fn human_preset_path_compaction_frees_width_for_value() {
+    use beachcomber::cache::CacheRow;
+    use beachcomber::cli::status_format::{RenderOpts, render_preset};
+    use serde_json::json;
+
+    let row = CacheRow {
+        provider: "p".into(),
+        path: Some("/home/testuser/p".into()),
+        source: "default".into(),
+        field: "f".into(),
+        value: json!("a".repeat(20)),
+        age_ms: 0,
+        stale: false,
+        kind: None,
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        polls_elapsed: None,
+        next_poll_in_secs: None,
+        failure: None,
+    };
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: true,
+        max_width: Some(70),
+        no_trunc: false,
+        ascii: false,
+    };
+
+    // HOME matches the row's path: compaction shrinks PATH from 16 to 3
+    // chars, freeing width the budget hands to VALUE — the full 20-char
+    // value fits uncut.
+    let compacted = temp_env::with_var("HOME", Some("/home/testuser"), || {
+        render_preset("human", std::slice::from_ref(&row), &opts)
+    });
+    assert!(
+        compacted.contains(&"a".repeat(20)),
+        "compaction should free enough width for the full VALUE: {compacted}"
+    );
+    assert!(
+        compacted.contains("~/p"),
+        "path should compact: {compacted}"
+    );
+
+    // Same total-width budget, but HOME doesn't match this row's path: PATH
+    // stays at its full 16-char length, so VALUE must truncate.
+    let uncompacted = temp_env::with_var("HOME", Some("/no/match/here"), || {
+        render_preset("human", &[row], &opts)
+    });
+    assert!(
+        !uncompacted.contains(&"a".repeat(20)),
+        "without compaction the same width budget should truncate VALUE: {uncompacted}"
     );
 }

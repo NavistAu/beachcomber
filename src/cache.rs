@@ -251,6 +251,7 @@ impl Cache {
                         keep_alive_polls: None,
                         fsevents_reinstate: None,
                         polls_elapsed: None,
+                        next_poll_in_secs: None,
                         failure: None,
                     });
                 }
@@ -318,6 +319,10 @@ pub struct CacheRow {
     pub fsevents_reinstate: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polls_elapsed: Option<u32>,
+    /// Seconds until this source's next scheduled poll. `None` for pure Watch
+    /// sources (no poll path) or when the lifecycle registry has no entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_poll_in_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<FailureSnapshot>,
 }

@@ -74,6 +74,10 @@ pub struct LifecycleSnapshot {
     /// step. Used by the status formatter to render the `{age}×{N}` suffix on
     /// the age column.
     pub polls_elapsed: u32,
+    /// Seconds until the next scheduled poll fires (`poll_timer.last_fired +
+    /// poll_timer.interval`, clamped to now). `None` for pure Watch sources
+    /// (no poll timer).
+    pub next_poll_in_secs: Option<u64>,
     /// Whether fsevents are reinstated on demand for this entry.
     pub fsevents_reinstate: bool,
     /// True if the provider uses Watch or WatchAndPoll invalidation strategy.
@@ -276,11 +280,19 @@ fn snapshot_entry(
         _ => 0,
     };
 
+    // Seconds until the poll timer's next scheduled fire, mirroring the
+    // `tick()` due-check (`last_fired + interval`). Saturates to 0 once due.
+    let next_poll_in_secs = entry.poll_timer.as_ref().map(|pt| {
+        let next_due = pt.last_fired + pt.interval;
+        next_due.saturating_duration_since(now).as_secs()
+    });
+
     LifecycleSnapshot {
         decay,
         poll_interval_secs,
         keep_alive_polls,
         polls_elapsed,
+        next_poll_in_secs,
         fsevents_reinstate: entry.config.fsevents_reinstate,
         watches_files,
         source: key.2.clone(),

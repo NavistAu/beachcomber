@@ -971,6 +971,7 @@ async fn handle_request(
                             row.poll_interval_secs = Some(snap.poll_interval_secs);
                             row.keep_alive_polls = Some(snap.keep_alive_polls);
                             row.polls_elapsed = Some(snap.polls_elapsed);
+                            row.next_poll_in_secs = snap.next_poll_in_secs;
                         }
                         row.fsevents_reinstate = Some(snap.fsevents_reinstate);
                     } else {

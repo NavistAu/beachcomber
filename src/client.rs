@@ -137,6 +137,7 @@ fn cache_row_from_lib(r: libbeachcomber::CacheRow) -> crate::cache::CacheRow {
         keep_alive_polls: r.keep_alive_polls,
         fsevents_reinstate: r.fsevents_reinstate,
         polls_elapsed: r.polls_elapsed,
+        next_poll_in_secs: r.next_poll_in_secs,
         failure: r.failure.map(failure_from_lib),
     }
 }

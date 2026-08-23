@@ -76,7 +76,22 @@ enum Commands {
         wait: bool,
     },
     /// Show daemon status
-    #[command(visible_alias = "s")]
+    #[command(
+        visible_alias = "s",
+        after_help = "Columns (human/table, in order): PROVIDER PATH FIELD VALUE AGE POLL TTL\n\
+            \n\
+            PATH   Paths under $HOME render as ~ in the human preset (json/csv/tsv/sh keep the real path).\n\
+            AGE    \"{age}\u{00d7}N\" — N = polls elapsed in the current lifecycle step.\n\
+            POLL   Seconds until the next poll. While a source is failing, this is the retry countdown instead.\n\
+            \x20      \"-\" = no poll path (pure watch, or a once/virtual/transient row).\n\
+            TTL    \"<lead> Ps\u{00d7}K (total) <indicator>\":\n\
+            \x20        lead      \u{2605} active | 3 2 1 0 decay countdown to eviction | \u{26a0} failing (cell becomes \"\u{26a0} #N\", N = failed attempts)\n\
+            \x20        P\u{00d7}K       poll interval \u{00d7} keep-alive count\n\
+            \x20        (total)   total time-to-eviction at the current rate, humanized\n\
+            \x20        indicator \u{2219} watches files | \u{2299} watches + fsevents-reinstate | blank = poll-only\n\
+            \n\
+            --ascii swaps: \u{2605}\u{2192}* \u{26a0}\u{2192}! \u{00d7}\u{2192}x \u{2219}\u{2192}- \u{2299}\u{2192}+"
+    )]
     Status {
         /// Output format: human (default), tsv, json, csv, table, sh
         #[arg(long, short = 'f', default_value = "")]

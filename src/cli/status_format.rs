@@ -47,28 +47,101 @@ pub struct TtlCell {
     pub color: Option<ansi::Color>,
 }
 
-/// Maximum width for the P-seconds sub-field. 6 digits covers ~11 days of
-/// seconds; beyond that we clamp rather than grow the cell.
+/// Maximum width for the raw P-seconds sub-field (`{P}s×{KK}`). 6 digits
+/// covers ~11 days of seconds; beyond that we clamp rather than grow the cell.
 pub const TTL_P_WIDTH_MAX: usize = 6;
+const TTL_P_MAX: u64 = 999_999;
 
-/// Compute the P-seconds field width for a snapshot: the widest `poll_interval_secs`
-/// across all Lifecycle rows, capped at `TTL_P_WIDTH_MAX`. No lower floor — the
-/// width auto-shrinks so single-digit-P snapshots don't over-pad.
-///
-/// Rows without a poll interval (Once/Virtual/Transient) are ignored. Empty
-/// snapshots (no lifecycle rows) return 1; the value is unused in that case
-/// because every cell renders as `---`, but avoid zero so format! can't panic.
-pub fn compute_ttl_p_width(rows: &[CacheRow]) -> usize {
-    use crate::cache::RowKind;
-    rows.iter()
-        .filter(|r| matches!(r.kind, Some(RowKind::Lifecycle { .. })))
-        .filter_map(|r| r.poll_interval_secs)
-        .map(|p| p.min(999_999).to_string().len())
-        .max()
-        .unwrap_or(1)
-        .min(TTL_P_WIDTH_MAX)
+/// Maximum width for the humanized total-budget sub-field (`P × K`, e.g.
+/// `99h59m`). Values are clamped before humanizing so the cell can't grow
+/// past this.
+pub const TTL_TOTAL_WIDTH_MAX: usize = 6;
+/// Clamp applied to the total-budget seconds (`poll_interval_secs *
+/// keep_alive_polls`) before humanizing, so the formatted string can never
+/// exceed `TTL_TOTAL_WIDTH_MAX` chars (`99h59m`).
+const TTL_TOTAL_MAX_SECS: u64 = 359_999;
+
+/// Clamp applied to the POLL column's raw-seconds value (next-poll or
+/// next-retry) before display. 6 digits covers ~11 days. The POLL column
+/// otherwise auto-sizes like any other plain column (via `nat_poll` in
+/// `render_table`) — this only bounds the displayed number, not a padded
+/// sub-field width.
+const TTL_SECONDS_MAX: u64 = 999_999;
+
+/// Per-snapshot field widths for the TTL cell's internal `{P}s×{KK} (total)`
+/// sub-fields, auto-sized to the widest value seen across all rendered rows
+/// so digits line up between rows. The POLL column is a separate, plain
+/// column and doesn't need an entry here — its width is measured the same
+/// way AGE/PROVIDER/etc. are, from the rendered cell text.
+#[derive(Debug, Clone, Copy)]
+pub struct TtlWidths {
+    /// Width of the raw poll-interval field (`P` in `{P}s×{KK}`).
+    pub p: usize,
+    /// Width of the humanized total-budget field (`P × K`, e.g. `12m`, `1h36m`).
+    pub total: usize,
 }
 
+/// Compute `TtlWidths` for a snapshot: the widest raw `P` and the widest
+/// humanized total-budget string across all Lifecycle rows with a poll path,
+/// capped at `TTL_P_WIDTH_MAX` / `TTL_TOTAL_WIDTH_MAX`. No lower floor — the
+/// width auto-shrinks so narrow snapshots don't over-pad.
+///
+/// Rows without a poll interval (Once/Virtual/Transient, or pure-Watch
+/// Lifecycle rows) are ignored. Empty snapshots return 1 for both fields;
+/// the value is unused in that case (every cell renders as `---`), but avoid
+/// zero so `format!` can't panic.
+pub fn compute_ttl_widths(rows: &[CacheRow]) -> TtlWidths {
+    use crate::cache::RowKind;
+    let mut p = 1usize;
+    let mut total = 1usize;
+    for row in rows {
+        if !matches!(row.kind, Some(RowKind::Lifecycle { .. })) {
+            continue;
+        }
+        if let (Some(pv), Some(k)) = (row.poll_interval_secs, row.keep_alive_polls) {
+            p = p.max(pv.min(TTL_P_MAX).to_string().len());
+            let total_secs = pv.saturating_mul(k as u64);
+            total = total.max(format_duration_compact(total_secs).chars().count());
+        }
+    }
+    TtlWidths {
+        p: p.min(TTL_P_WIDTH_MAX),
+        total: total.min(TTL_TOTAL_WIDTH_MAX),
+    }
+}
+
+/// Humanize a seconds count for the TTL cell's total-budget field, clamping
+/// to `TTL_TOTAL_MAX_SECS` first so the result never exceeds
+/// `TTL_TOTAL_WIDTH_MAX` chars. Shares `format_age`'s unit logic (s/m/h).
+fn format_duration_compact(secs: u64) -> String {
+    format_age((secs.min(TTL_TOTAL_MAX_SECS) as u128) * 1000)
+}
+
+/// Seconds until a failing source's next retry attempt. When suppression is
+/// active (`suppressed_until_unix_ms` is set), it's the time remaining until
+/// that deadline. When the source is failing but not yet suppressed (below
+/// the failure threshold), there is no backoff in effect — it will simply be
+/// retried at its next regularly-scheduled poll, so this falls back to
+/// `next_poll_in_secs` (0 if that's unavailable either).
+fn failure_retry_secs(
+    f: &crate::cache::FailureSnapshot,
+    next_poll_in_secs: Option<u64>,
+    now_unix_ms: u64,
+) -> u64 {
+    match f.suppressed_until_unix_ms {
+        Some(until) => until.saturating_sub(now_unix_ms) / 1000,
+        None => next_poll_in_secs.unwrap_or(0),
+    }
+}
+
+/// Format the TTL cell: lifecycle countdown, `{P}s×{KK} (total)` budget, and
+/// the watch indicator. The next-poll/next-retry countdown lives in the
+/// separate POLL column (`format_poll_cell`), not here.
+///
+/// Failure state swaps the cell CONTENT to `#{attempt:02}` — the countdown
+/// itself is POLL's job (POLL literally *is* the next attempt when a source
+/// is failing), so TTL only needs to say "how many attempts have failed" here.
+/// The lead glyph (⚠) and the trailing watch indicator are unaffected.
 #[allow(dead_code)]
 pub fn format_ttl_cell(
     kind: Option<&crate::cache::RowKind>,
@@ -77,7 +150,7 @@ pub fn format_ttl_cell(
     fsevents_reinstate: Option<bool>,
     failure: Option<&crate::cache::FailureSnapshot>,
     ascii: bool,
-    p_width: usize,
+    widths: &TtlWidths,
 ) -> TtlCell {
     use crate::cache::RowKind;
 
@@ -103,19 +176,6 @@ pub fn format_ttl_cell(
             decay,
             watches_files,
         }) => {
-            // Lead char: failure overrides decay.
-            let (lead, color) = if failure.is_some() {
-                (warn.to_string(), ansi::Color::Red)
-            } else {
-                match decay {
-                    0 => (star.to_string(), ansi::Color::BrightGreen),
-                    1 => ("3".into(), ansi::Color::Dim),
-                    2 => ("2".into(), ansi::Color::Yellow),
-                    3 => ("1".into(), ansi::Color::BrightYellow),
-                    _ => ("0".into(), ansi::Color::Red),
-                }
-            };
-
             // Indicator keyed on fs-watching capability first; reinstate-armed is
             // the decorator. Poll-only sources render a blank cell trailer.
             let indicator = match (*watches_files, fsevents_reinstate.unwrap_or(false)) {
@@ -123,21 +183,44 @@ pub fn format_ttl_cell(
                 (true, false) => dot,
                 (true, true) => dot_ring,
             };
-            // The poll segment (`{p}s×{k:02}`) only renders for sources with a
-            // poll path: Poll and WatchAndPoll. Pure Watch sources have no poll;
-            // their cells pad with spaces of the same width so the indicator
-            // glyph stays in a consistent column across all rows.
+
+            if let Some(f) = failure {
+                let attempt = f.consecutive_failures.min(99);
+                let text = format!("{warn} #{attempt:02} {indicator}");
+                return TtlCell {
+                    text,
+                    color: Some(ansi::Color::Red),
+                };
+            }
+
+            let (lead, color) = match decay {
+                0 => (star.to_string(), ansi::Color::BrightGreen),
+                1 => ("3".into(), ansi::Color::Dim),
+                2 => ("2".into(), ansi::Color::Yellow),
+                3 => ("1".into(), ansi::Color::BrightYellow),
+                _ => ("0".into(), ansi::Color::Red),
+            };
+
+            // `{P}s×{KK} (total)` only renders for sources with a poll path
+            // (Poll and WatchAndPoll). Pure Watch sources have no poll; their
+            // cells pad with spaces of the same width so the indicator glyph
+            // stays in a consistent column across all rows.
             //
-            // Width of the poll segment: p_width digits + "s" + "×" + "kk" = p_width + 4.
+            // Width: p_width + "s×KK" (4) + " (" (2) + total_width + ")" (1).
             let poll_seg = match (poll_interval_secs, keep_alive_polls) {
-                (Some(p), Some(k)) => format!(
-                    "{:>width$}s{}{:02}",
-                    p.min(999_999),
-                    times,
-                    k.min(99),
-                    width = p_width
-                ),
-                _ => " ".repeat(p_width + 4),
+                (Some(p), Some(k)) => {
+                    let total_secs = p.saturating_mul(k as u64);
+                    let total_str = format_duration_compact(total_secs);
+                    format!(
+                        "{:>pw$}s{times}{:02} ({:>tw$})",
+                        p.min(TTL_P_MAX),
+                        k.min(99),
+                        total_str,
+                        pw = widths.p,
+                        tw = widths.total
+                    )
+                }
+                _ => " ".repeat(widths.p + 4 + 2 + widths.total + 1),
             };
             let text = format!("{} {} {}", lead, poll_seg, indicator);
             TtlCell {
@@ -145,6 +228,30 @@ pub fn format_ttl_cell(
                 color: Some(color),
             }
         }
+    }
+}
+
+/// Format the POLL column: seconds until this source's next scheduled poll,
+/// or — for a failing source — seconds until its next retry attempt (POLL
+/// literally *is* the next attempt in that case). `-` for rows with no poll
+/// path: Once/Virtual/Transient/no-kind, and pure-Watch Lifecycle rows.
+pub fn format_poll_cell(
+    kind: Option<&crate::cache::RowKind>,
+    next_poll_in_secs: Option<u64>,
+    failure: Option<&crate::cache::FailureSnapshot>,
+    now_unix_ms: u64,
+) -> String {
+    use crate::cache::RowKind;
+    if !matches!(kind, Some(RowKind::Lifecycle { .. })) {
+        return "-".to_string();
+    }
+    if let Some(f) = failure {
+        let retry = failure_retry_secs(f, next_poll_in_secs, now_unix_ms).min(TTL_SECONDS_MAX);
+        return format!("{retry}s");
+    }
+    match next_poll_in_secs {
+        Some(n) => format!("{}s", n.min(TTL_SECONDS_MAX)),
+        None => "-".to_string(),
     }
 }
 
@@ -245,14 +352,14 @@ pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> Stri
         "csv" => render_csv(rows),
         "tsv" => render_tsv(rows),
         "sh" => render_sh(rows),
-        "table" => render_table(rows, false, None, true, false),
+        "table" => render_table(rows, false, None, true, false, false),
         "human" => {
             let trunc = if opts.no_trunc { None } else { opts.max_width };
             // `no_color` is the resolved color decision from the caller (already
             // accounts for NO_COLOR, TTY, WATCH_INTERVAL). Don't re-AND with is_tty
             // here — that would undo the WATCH_INTERVAL color promotion.
             let color = !opts.no_color;
-            render_table(rows, color, trunc, true, opts.ascii)
+            render_table(rows, color, trunc, true, opts.ascii, true)
         }
         custom => {
             if let Some(body) = custom.strip_prefix("table ") {
@@ -409,6 +516,9 @@ pub fn row_context(r: &CacheRow) -> minijinja::Value {
     }
     if let Some(n) = r.polls_elapsed {
         ctx.insert("polls_elapsed".into(), serde_json::json!(n));
+    }
+    if let Some(n) = r.next_poll_in_secs {
+        ctx.insert("next_poll_in_secs".into(), serde_json::json!(n));
     }
     // failure object
     if let Some(f) = &r.failure {
@@ -729,20 +839,36 @@ fn shell_quote(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 // Column indices for the human/table preset.
-const COLS: usize = 6;
-// TTL is the last column (index 5); failure-state colouring skips it.
-const TTL_COL_IDX: usize = 5;
-const HEADERS: [&str; COLS] = ["PROVIDER", "PATH", "FIELD", "VALUE", "AGE", "TTL"];
+const COLS: usize = 7;
+// TTL is the last column (index 6); failure-state colouring skips only this
+// one (its own warn-glyph + red already come from format_ttl_cell). POLL
+// (index 5) is a plain column and gets red-wrapped like the others.
+const TTL_COL_IDX: usize = 6;
+const HEADERS: [&str; COLS] = ["PROVIDER", "PATH", "FIELD", "VALUE", "AGE", "POLL", "TTL"];
 
 /// Render rows as aligned columns for the `human` preset.
 ///
 /// - `color_enabled`: apply per-cell ANSI colour (AGE yellow/green by stale, TTL by decay,
 ///   failure rows red on non-TTL cells).
 /// - `trunc`: maximum width for the VALUE column (in characters). `None` = no truncation.
-/// - `header`: prepend a PROVIDER / PATH / FIELD / VALUE / AGE / TTL header row.
+/// - `header`: prepend a PROVIDER / PATH / FIELD / VALUE / AGE / POLL / TTL header row.
 /// - `ascii`: use ASCII-only glyphs in the TTL cell instead of Unicode.
 pub fn render_human(rows: &[CacheRow], opts: &FormatOptions) -> String {
-    render_table(rows, false, None, true, opts.ascii)
+    render_table(rows, false, None, true, opts.ascii, true)
+}
+
+/// Compact a path under `$HOME` to a `~`-prefixed display form. Exact-prefix
+/// match only — no symlink resolution, no partial-segment matches (e.g. a
+/// home of `/Users/joe` does not compact `/Users/joel/x`). Paths outside
+/// `$HOME`, and the pathless-global marker `-`, pass through unchanged.
+fn compact_home_path(path: &str, home: Option<&str>) -> String {
+    match home {
+        Some(h) if !h.is_empty() && path == h => "~".to_string(),
+        Some(h) if !h.is_empty() && path.starts_with(&format!("{h}/")) => {
+            format!("~{}", &path[h.len()..])
+        }
+        _ => path.to_string(),
+    }
 }
 
 fn render_table(
@@ -751,28 +877,44 @@ fn render_table(
     trunc: Option<usize>,
     header: bool,
     ascii: bool,
+    compact_home: bool,
 ) -> String {
     // `trunc` is the **total table width cap** (all columns + padding).
     // We scan all rows first to measure natural column widths, then compute
     // how much room the VALUE column has once other columns claim their natural
     // widths and inter-column separators are accounted for.
 
+    // Display-only: `~`-compact paths under $HOME so the freed width benefits
+    // the VALUE column. Machine presets (json/csv/tsv/sh) never call through
+    // this path — they use `row.path` directly. Resolved once per render.
+    let home = if compact_home {
+        std::env::var("HOME").ok()
+    } else {
+        None
+    };
+
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
     // -----------------------------------------------------------------------
     // Pass 1: measure natural widths of every column (no truncation).
-    // Columns: PROVIDER, PATH, FIELD, VALUE, AGE, TTL
+    // Columns: PROVIDER, PATH, FIELD, VALUE, AGE, POLL, TTL
     // -----------------------------------------------------------------------
     let mut nat_provider = HEADERS[0].len();
     let mut nat_path = HEADERS[1].len();
     let mut nat_field = HEADERS[2].len();
     let mut nat_age = HEADERS[4].len();
-    let mut nat_ttl = HEADERS[5].len();
+    let mut nat_poll = HEADERS[5].len();
+    let mut nat_ttl = HEADERS[6].len();
 
-    // Auto-size the P field inside each TTL cell to the widest P in this
-    // snapshot, clamped to [TTL_P_WIDTH_MIN, TTL_P_WIDTH_MAX].
-    let p_width = compute_ttl_p_width(rows);
+    // Auto-size the TTL cell's `{P}s×{KK} (total)` sub-fields to the widest
+    // values in this snapshot, capped at TTL_P_WIDTH_MAX / TTL_TOTAL_WIDTH_MAX.
+    let ttl_widths = compute_ttl_widths(rows);
 
     for row in rows {
-        let path = row.path.as_deref().unwrap_or("-");
+        let path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
         nat_provider = nat_provider.max(row.provider.chars().count());
         nat_path = nat_path.max(path.chars().count());
         nat_field = nat_field.max(row.field.chars().count());
@@ -789,9 +931,19 @@ fn render_table(
                 row.fsevents_reinstate,
                 row.failure.as_ref(),
                 ascii,
-                p_width,
+                &ttl_widths,
             )
             .text
+            .chars()
+            .count(),
+        );
+        nat_poll = nat_poll.max(
+            format_poll_cell(
+                row.kind.as_ref(),
+                row.next_poll_in_secs,
+                row.failure.as_ref(),
+                now_unix_ms,
+            )
             .chars()
             .count(),
         );
@@ -799,20 +951,26 @@ fn render_table(
 
     // -----------------------------------------------------------------------
     // Compute effective VALUE cap from the total-table-width budget.
-    // Layout: MARGIN provider(2sp)path(2sp)field(2sp)value(2sp)age(2sp)ttl MARGIN
-    // Separators: 5 × 2 = 10
+    // Layout: MARGIN provider(2sp)path(2sp)field(2sp)value(2sp)age(2sp)poll(2sp)ttl MARGIN
+    // Separators: 6 × 2 = 12
     // Margins: 2 spaces each side (breathing room so the table doesn't hug
     // the terminal edge).
-    // Non-VALUE: nat_provider + nat_path + nat_field + nat_age + nat_ttl + 10 + 4
+    // Non-VALUE: nat_provider + nat_path + nat_field + nat_age + nat_poll + nat_ttl + 12 + 4
     // -----------------------------------------------------------------------
     const MIN_VALUE_WIDTH: usize = 8;
-    const SEP_TOTAL: usize = 10; // 5 separators × 2 spaces
+    const SEP_TOTAL: usize = 12; // 6 separators × 2 spaces
     const MARGIN: usize = 2; // spaces applied to both the left and right edges
     const MARGIN_TOTAL: usize = MARGIN * 2;
 
     let value_cap: Option<usize> = trunc.map(|total_cap| {
-        let non_value =
-            nat_provider + nat_path + nat_field + nat_age + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
+        let non_value = nat_provider
+            + nat_path
+            + nat_field
+            + nat_age
+            + nat_poll
+            + nat_ttl
+            + SEP_TOTAL
+            + MARGIN_TOTAL;
         if total_cap > non_value + MIN_VALUE_WIDTH {
             total_cap - non_value
         } else {
@@ -839,7 +997,7 @@ fn render_table(
     }
 
     for row in rows {
-        let path = row.path.as_deref().unwrap_or("-").to_string();
+        let path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
         let mut value = value_to_string(&row.value);
         if let Some(max) = value_cap {
             value = truncate(&value, max);
@@ -858,7 +1016,10 @@ fn render_table(
             age_text
         };
 
-        // TTL cell — built from lifecycle metadata.
+        // TTL cell — built from lifecycle metadata. TTL is the last column,
+        // so the general per-row padding loop below (which only pads
+        // non-last columns) never touches it; it has its own internal
+        // fixed-width discipline via `ttl_widths` instead.
         let ttl = format_ttl_cell(
             row.kind.as_ref(),
             row.poll_interval_secs,
@@ -866,13 +1027,29 @@ fn render_table(
             row.fsevents_reinstate,
             row.failure.as_ref(),
             ascii,
-            p_width,
+            &ttl_widths,
         );
         let ttl_vis = ttl.text.chars().count();
         let ttl_cell = match (color_enabled, ttl.color) {
             (true, Some(c)) => ansi::wrap(&ttl.text, c, true),
             _ => ttl.text,
         };
+
+        // POLL cell — seconds until next poll / next retry attempt. Unlike
+        // PROVIDER/PATH/FIELD/etc., POLL is right-aligned (it's a number),
+        // so it's pre-padded here against the natural width from Pass 1
+        // rather than relying on the general (left-justifying) padding loop.
+        let poll_text = format!(
+            "{:>width$}",
+            format_poll_cell(
+                row.kind.as_ref(),
+                row.next_poll_in_secs,
+                row.failure.as_ref(),
+                now_unix_ms,
+            ),
+            width = nat_poll
+        );
+        let poll_vis = poll_text.chars().count();
 
         let provider_vis = row.provider.chars().count();
         let path_vis = path.chars().count();
@@ -885,11 +1062,13 @@ fn render_table(
             row.field.clone(),
             value,
             age_cell,
+            poll_text,
             ttl_cell,
         ];
 
         // Failure-state colouring: red on all cells except TTL (which already
-        // has its own ⚠ + red from format_ttl_cell).
+        // has its own ⚠ + red from format_ttl_cell). POLL is a plain cell —
+        // it gets red-wrapped like PROVIDER/PATH/FIELD/VALUE/AGE.
         if color_enabled && row.failure.is_some() {
             for (i, cell) in row_cells.iter_mut().enumerate() {
                 if i != TTL_COL_IDX {
@@ -904,6 +1083,7 @@ fn render_table(
             field_vis,
             value_vis,
             age_vis,
+            poll_vis,
             ttl_vis,
         ];
 
@@ -1223,12 +1403,75 @@ mod ansi_tests {
 }
 
 #[cfg(test)]
+mod compact_home_path_tests {
+    use super::compact_home_path;
+
+    #[test]
+    fn compacts_exact_prefix_match() {
+        assert_eq!(
+            compact_home_path("/Users/x/ws/beachcomber", Some("/Users/x")),
+            "~/ws/beachcomber"
+        );
+    }
+
+    #[test]
+    fn compacts_path_equal_to_home() {
+        assert_eq!(compact_home_path("/Users/x", Some("/Users/x")), "~");
+    }
+
+    #[test]
+    fn leaves_non_home_path_untouched() {
+        assert_eq!(
+            compact_home_path("/var/log/beachcomber", Some("/Users/x")),
+            "/var/log/beachcomber"
+        );
+    }
+
+    #[test]
+    fn does_not_compact_on_partial_segment_match() {
+        // "/Users/joe" is a string-prefix of "/Users/joel/x" but not a path
+        // component prefix — must not compact.
+        assert_eq!(
+            compact_home_path("/Users/joel/x", Some("/Users/joe")),
+            "/Users/joel/x"
+        );
+    }
+
+    #[test]
+    fn leaves_dash_marker_untouched() {
+        assert_eq!(compact_home_path("-", Some("/Users/x")), "-");
+    }
+
+    #[test]
+    fn passes_through_when_home_unknown() {
+        assert_eq!(
+            compact_home_path("/Users/x/ws/beachcomber", None),
+            "/Users/x/ws/beachcomber"
+        );
+    }
+
+    #[test]
+    fn passes_through_when_home_empty() {
+        assert_eq!(
+            compact_home_path("/Users/x/ws/beachcomber", Some("")),
+            "/Users/x/ws/beachcomber"
+        );
+    }
+}
+
+#[cfg(test)]
 mod ttl_cell_tests {
     use super::*;
-    use crate::cache::{FailureSnapshot, RowKind};
+    use crate::cache::{CacheRow, FailureSnapshot, RowKind};
+
+    /// Widths used by most pinned tests below: wide enough (6/6) that the
+    /// digits in these examples never get clamped, matching the module's
+    /// `TTL_P_WIDTH_MAX` / `TTL_TOTAL_WIDTH_MAX` caps.
+    const W6: TtlWidths = TtlWidths { p: 6, total: 6 };
 
     #[test]
     fn active_lifecycle_unicode() {
+        // P=60, K=12 → total budget 720s = 12m, shown in parens.
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
@@ -1239,14 +1482,15 @@ mod ttl_cell_tests {
             Some(true),
             None,
             false,
-            6,
+            &W6,
         );
-        assert_eq!(cell.text, "\u{2605}     60s\u{00d7}12 \u{2299}");
+        assert_eq!(cell.text, "\u{2605}     60s\u{00d7}12 (   12m) \u{2299}");
         assert!(matches!(cell.color, Some(ansi::Color::BrightGreen)));
     }
 
     #[test]
     fn decay4_lifecycle_unicode() {
+        // P=480 (already-decayed effective interval), K=12 → total 5760s = 1h36m.
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 4,
@@ -1257,9 +1501,9 @@ mod ttl_cell_tests {
             Some(false),
             None,
             false,
-            6,
+            &W6,
         );
-        assert_eq!(cell.text, "0    480s\u{00d7}12  ");
+        assert_eq!(cell.text, "0    480s\u{00d7}12 ( 1h36m)  ");
         assert!(matches!(cell.color, Some(ansi::Color::Red)));
     }
 
@@ -1275,9 +1519,9 @@ mod ttl_cell_tests {
             Some(true),
             None,
             true,
-            6,
+            &W6,
         );
-        assert_eq!(cell.text, "*     60sx12 +");
+        assert_eq!(cell.text, "*     60sx12 (   12m) +");
     }
 
     #[test]
@@ -1293,14 +1537,14 @@ mod ttl_cell_tests {
             Some(true),
             None,
             false,
-            6,
+            &W6,
         );
-        assert!(cell.text.ends_with("12  "), "no indicator: {:?}", cell.text);
+        assert!(cell.text.ends_with(")  "), "no indicator: {:?}", cell.text);
     }
 
     #[test]
     fn indicator_bare_dot_when_watches_files_without_reinstate() {
-        // Watches but reinstate=false: bare dot `●` (decorated glyph progression).
+        // Watches but reinstate=false: bare dot (decorated glyph progression).
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
@@ -1311,10 +1555,10 @@ mod ttl_cell_tests {
             Some(false),
             None,
             false,
-            6,
+            &W6,
         );
         assert!(
-            cell.text.ends_with("12 \u{2219}"),
+            cell.text.ends_with(") \u{2219}"),
             "expected bare dot indicator, got {:?}",
             cell.text
         );
@@ -1332,10 +1576,10 @@ mod ttl_cell_tests {
             Some(false),
             None,
             true,
-            6,
+            &W6,
         );
         assert!(
-            cell.text.ends_with("12 -"),
+            cell.text.ends_with(") -"),
             "expected '-' ascii dot, got {:?}",
             cell.text
         );
@@ -1343,25 +1587,36 @@ mod ttl_cell_tests {
 
     #[test]
     fn once_renders_dashes() {
-        let cell = format_ttl_cell(Some(&RowKind::Once), None, None, None, None, false, 6);
+        let cell = format_ttl_cell(Some(&RowKind::Once), None, None, None, None, false, &W6);
         assert_eq!(cell.text, "---");
         assert!(cell.color.is_none());
     }
 
     #[test]
     fn virtual_renders_dashes() {
-        let cell = format_ttl_cell(Some(&RowKind::Virtual), None, None, None, None, false, 6);
+        let cell = format_ttl_cell(Some(&RowKind::Virtual), None, None, None, None, false, &W6);
         assert_eq!(cell.text, "---");
     }
 
     #[test]
     fn transient_renders_dashes() {
-        let cell = format_ttl_cell(Some(&RowKind::Transient), None, None, None, None, false, 6);
+        let cell = format_ttl_cell(
+            Some(&RowKind::Transient),
+            None,
+            None,
+            None,
+            None,
+            false,
+            &W6,
+        );
         assert_eq!(cell.text, "---");
     }
 
     #[test]
-    fn failure_swaps_lead_to_warn() {
+    fn failure_shows_attempt_count_not_timing() {
+        // TTL's failure content is just "how many attempts have failed" —
+        // the retry countdown lives in the POLL column now (POLL literally
+        // *is* the next attempt when a source is failing).
         let snap = FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
@@ -1376,9 +1631,9 @@ mod ttl_cell_tests {
             Some(true),
             Some(&snap),
             false,
-            6,
+            &W6,
         );
-        assert!(cell.text.starts_with("\u{26a0}"));
+        assert_eq!(cell.text, "\u{26a0} #03 \u{2299}");
         assert!(matches!(cell.color, Some(ansi::Color::Red)));
     }
 
@@ -1398,31 +1653,33 @@ mod ttl_cell_tests {
             Some(true),
             Some(&snap),
             true,
-            6,
+            &W6,
         );
         assert!(cell.text.starts_with("!"));
     }
 
     #[test]
-    fn p_cap_at_six_chars() {
+    fn total_clamps_at_max() {
+        // P*K clamps to TTL_TOTAL_MAX_SECS (99h59m) before humanizing; the
+        // raw P itself clamps to TTL_P_MAX (999999).
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
                 watches_files: false,
             }),
             Some(9_999_999),
-            Some(12),
+            Some(99),
             Some(false),
             None,
             false,
-            6,
+            &W6,
         );
-        // P clamped to 999999.
-        assert!(cell.text.contains("999999s"));
+        assert!(cell.text.contains("99h59m"), "got: {:?}", cell.text);
+        assert!(cell.text.contains("999999s"), "got: {:?}", cell.text);
     }
 
     #[test]
-    fn p_zero_does_not_panic() {
+    fn zero_does_not_panic() {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
@@ -1433,35 +1690,33 @@ mod ttl_cell_tests {
             Some(false),
             None,
             false,
-            6,
+            &W6,
         );
-        assert!(cell.text.contains("0s"));
-        assert!(cell.text.contains("\u{00d7}00"));
+        assert!(cell.text.contains("0s"), "got: {:?}", cell.text);
     }
 
     #[test]
-    fn p_width_tight_for_two_digit_p() {
-        // With p_width=2 and a 2-digit P, zero padding: minimum visual gap
-        // between the lead and "60s" is the single literal separator space.
+    fn widths_tight_no_floor_padding() {
+        // P=1 in a width-2 field pads one space; total=1*0=0 → "0s" exactly
+        // fills a width-2 field. No extra floor padding beyond that.
+        let widths = TtlWidths { p: 2, total: 2 };
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
                 watches_files: true,
             }),
-            Some(60),
-            Some(12),
+            Some(1),
+            Some(0),
             Some(true),
             None,
             false,
-            2,
+            &widths,
         );
-        assert_eq!(cell.text, "\u{2605} 60s\u{00d7}12 \u{2299}");
+        assert_eq!(cell.text, "\u{2605}  1s\u{00d7}00 (0s) \u{2299}");
     }
 
-    #[test]
-    fn p_width_auto_sizes_to_widest_lifecycle_row() {
-        use crate::cache::CacheRow;
-        let row_small = CacheRow {
+    fn lifecycle_row(poll: u64, keep: u32, next: u64) -> CacheRow {
+        CacheRow {
             provider: "load".into(),
             path: None,
             source: "loadavg".into(),
@@ -1473,55 +1728,156 @@ mod ttl_cell_tests {
                 decay: 0,
                 watches_files: false,
             }),
-            poll_interval_secs: Some(30),
-            keep_alive_polls: Some(4),
+            poll_interval_secs: Some(poll),
+            keep_alive_polls: Some(keep),
             fsevents_reinstate: Some(false),
             polls_elapsed: None,
+            next_poll_in_secs: Some(next),
             failure: None,
-        };
-        let mut row_large = row_small.clone();
-        row_large.poll_interval_secs = Some(12_345);
+        }
+    }
 
-        // 2-digit P → width 2 (tight, no floor).
-        assert_eq!(compute_ttl_p_width(std::slice::from_ref(&row_small)), 2);
-        // Widest P is 5 digits → width grows to 5.
+    #[test]
+    fn widths_auto_size_to_widest_row() {
+        // P=30 (2 digits); total=30*4=120s="2m" (2 chars).
+        let row_small = lifecycle_row(30, 4, 5);
+        // P=12345 (5 digits); total=12345*4=49380s="13h43m" (6 chars).
+        let row_large = lifecycle_row(12_345, 4, 12_345);
+
+        let w = compute_ttl_widths(std::slice::from_ref(&row_small));
+        assert_eq!((w.p, w.total), (2, 2));
+
+        let w = compute_ttl_widths(&[row_small, row_large]);
+        assert_eq!((w.p, w.total), (5, 6));
+    }
+
+    #[test]
+    fn widths_cap_at_max() {
+        let row = lifecycle_row(9_999_999, 99, 9_999_999);
+        let w = compute_ttl_widths(&[row]);
+        assert_eq!((w.p, w.total), (TTL_P_WIDTH_MAX, TTL_TOTAL_WIDTH_MAX));
+    }
+
+    #[test]
+    fn widths_default_when_no_lifecycle_rows() {
+        // Empty / Once-only snapshot: values unused (every cell renders as
+        // `---`), but a non-zero default keeps format! from panicking.
+        let w = compute_ttl_widths(&[]);
+        assert_eq!((w.p, w.total), (1, 1));
+    }
+}
+
+#[cfg(test)]
+mod poll_cell_tests {
+    use super::*;
+    use crate::cache::{FailureSnapshot, RowKind};
+
+    #[test]
+    fn active_row_shows_next_poll_seconds() {
         assert_eq!(
-            compute_ttl_p_width(&[row_small.clone(), row_large.clone()]),
-            5
+            format_poll_cell(
+                Some(&RowKind::Lifecycle {
+                    decay: 0,
+                    watches_files: true,
+                }),
+                Some(37),
+                None,
+                0,
+            ),
+            "37s"
         );
     }
 
     #[test]
-    fn p_width_caps_at_six() {
-        use crate::cache::CacheRow;
-        let row = CacheRow {
-            provider: "x".into(),
-            path: None,
-            source: "default".into(),
-            field: "y".into(),
-            value: serde_json::Value::Null,
-            age_ms: 0,
-            stale: false,
-            kind: Some(RowKind::Lifecycle {
-                decay: 0,
-                watches_files: false,
-            }),
-            // Over 999_999 — clamped to 999_999 (6 digits) inside format_ttl_cell;
-            // compute_ttl_p_width applies the same clamp before counting digits.
-            poll_interval_secs: Some(9_999_999),
-            keep_alive_polls: Some(1),
-            fsevents_reinstate: Some(false),
-            polls_elapsed: None,
-            failure: None,
-        };
-        assert_eq!(compute_ttl_p_width(&[row]), 6);
+    fn watch_only_row_shows_dash() {
+        // Lifecycle but no poll path (pure Watch): next_poll_in_secs is None.
+        assert_eq!(
+            format_poll_cell(
+                Some(&RowKind::Lifecycle {
+                    decay: 0,
+                    watches_files: true,
+                }),
+                None,
+                None,
+                0,
+            ),
+            "-"
+        );
     }
 
     #[test]
-    fn p_width_one_when_no_lifecycle_rows() {
-        // Empty / Once-only snapshot: value unused (all cells render as `---`),
-        // but compute_ttl_p_width returns a non-zero default so format! works.
-        assert_eq!(compute_ttl_p_width(&[]), 1);
+    fn once_virtual_transient_and_no_kind_show_dash() {
+        for kind in [
+            None,
+            Some(RowKind::Once),
+            Some(RowKind::Virtual),
+            Some(RowKind::Transient),
+        ] {
+            assert_eq!(
+                format_poll_cell(kind.as_ref(), Some(37), None, 0),
+                "-",
+                "kind={kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_not_suppressed_falls_back_to_next_poll() {
+        // Failing but below the suppression threshold: no backoff in effect,
+        // so POLL mirrors the source's regular next-poll time.
+        let snap = FailureSnapshot {
+            consecutive_failures: 3,
+            suppressed_until_unix_ms: None,
+        };
+        assert_eq!(
+            format_poll_cell(
+                Some(&RowKind::Lifecycle {
+                    decay: 1,
+                    watches_files: true,
+                }),
+                Some(45),
+                Some(&snap),
+                0,
+            ),
+            "45s"
+        );
+    }
+
+    #[test]
+    fn failure_suppressed_computes_retry_from_now() {
+        let snap = FailureSnapshot {
+            consecutive_failures: 5,
+            suppressed_until_unix_ms: Some(10_000),
+        };
+        // (10_000 - 3_000) / 1000 = 7s remaining until suppression lifts.
+        assert_eq!(
+            format_poll_cell(
+                Some(&RowKind::Lifecycle {
+                    decay: 1,
+                    watches_files: false,
+                }),
+                Some(999),
+                Some(&snap),
+                3_000,
+            ),
+            "7s"
+        );
+    }
+
+    #[test]
+    fn clamps_at_max() {
+        assert_eq!(
+            format_poll_cell(
+                Some(&RowKind::Lifecycle {
+                    decay: 0,
+                    watches_files: false,
+                }),
+                Some(9_999_999),
+                None,
+                0,
+            ),
+            "999999s"
+        );
     }
 }
 

@@ -235,6 +235,8 @@ pub struct CacheRow {
     pub fsevents_reinstate: Option<bool>,
     /// Number of polls that have fired in the current lifecycle step.
     pub polls_elapsed: Option<u32>,
+    /// Seconds until this source's next scheduled poll.
+    pub next_poll_in_secs: Option<u64>,
     /// Phase 2.7: failure state if the provider has been failing.
     pub failure: Option<FailureSnapshot>,
     /// Phase 5: source name within the provider that owns this field.
@@ -272,6 +274,7 @@ impl CacheRow {
         let polls_elapsed = v
             .get("polls_elapsed")
             .and_then(|x| x.as_u64().map(|n| n as u32));
+        let next_poll_in_secs = v.get("next_poll_in_secs").and_then(|x| x.as_u64());
         let failure = v
             .get("failure")
             .and_then(|x| serde_json::from_value(x.clone()).ok());
@@ -291,6 +294,7 @@ impl CacheRow {
             keep_alive_polls,
             fsevents_reinstate,
             polls_elapsed,
+            next_poll_in_secs,
             failure,
             source,
         })
