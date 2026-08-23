@@ -11,6 +11,54 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+/// The `comb status` help legend, rendered with the glyph set the user will
+/// actually see: `--ascii` anywhere in argv selects the ascii variant (clap
+/// builds help before parsing, so the flag is pre-scanned from argv). The
+/// unicode variant ends with the ascii translation line; the ascii variant
+/// needs no translating and omits it.
+fn status_after_help() -> String {
+    let ascii = std::env::args().any(|a| a == "--ascii");
+    let (star, warn, times, dot, ring) = if ascii {
+        ("*", "!", "x", "-", "+")
+    } else {
+        ("\u{2605}", "\u{26a0}", "\u{00d7}", "\u{2219}", "\u{2299}")
+    };
+    let mut help = format!(
+        "Reading the output:\n\
+        \n\
+        \x20 PROVIDER  PATH              FIELD   VALUE  AGE    POLL  TTL\n\
+        \x20 git       ~/ws/beachcomber  branch  main   14s{times}2   37s  {star}  60s{times}12 (12m) {ring}\n\
+        \n\
+        \x20 Each row is one cache ENTRY, returned by a Query ie `comb get`.\n\
+        \x20 - ENTRY Refreshes VALUE by SOURCE(PROVIDER.FIELD @ PATH).\n\
+        \x20 - Polls and FSEvents Refresh VALUE from SOURCE.\n\
+        \x20 - Queries reset AGE.PollCount.\n\
+        \x20 - If AGE.PollCount >= TTL.PollCount, the ENTRY Idles.\n\
+        \x20   - Idle entries halve their TTL.PollRate each TTL.PollLifetime.\n\
+        \x20   - After 4 lifetimes, the ENTRY is Evicted from cache.\n\
+        \n\
+        \x20 AGE    43s         RefreshTime:  Time since VALUE Refreshed from SOURCE\n\
+        \x20        {times}2          PollCount:    Polls since last Query\n\
+        \x20 POLL                             Time until the next Poll / next Retry if Failing\n\
+        \x20 TTL    {star} 3..0    {star} Active:       ENTRY is within first TTL.PollLifetime\n\
+        \x20                 # Number:        ENTRY is Idle, Polls halve each lifetime, # lifetimes until Eviction\n\
+        \x20        {warn} #3                      Failing \u{2014} 3 failures in a row; POLL shows the Retry countdown\n\
+        \x20        60s{times}12      PollLifetime: Current lifetime, ie 720s with 12 VALUE Refreshes\n\
+        \x20                      PollRate:   Every 60s\n\
+        \x20                      PollCount:  12 times\n\
+        \x20        (12m)       EvictTime:    Total time to Eviction\n\
+        \x20        {dot} {ring}       {dot} WatchActive:  Watches files while Active; not during the Idle countdown\n\
+        \x20                 {ring} WatchAlways:   Watches files until Evicted\n\
+        \x20                 <blank>          No FSEvents, Refreshes only by Polling"
+    );
+    if !ascii {
+        help.push_str(
+            "\n\nWith --ascii: * ! x - + replace \u{2605} \u{26a0} \u{00d7} \u{2219} \u{2299}.",
+        );
+    }
+    help
+}
+
 #[derive(Parser)]
 #[command(
     name = "comb",
@@ -76,25 +124,10 @@ enum Commands {
         wait: bool,
     },
     /// Show daemon status
-    #[command(
-        visible_alias = "s",
-        after_help = "Columns (human/table, in order): PROVIDER PATH FIELD VALUE AGE POLL TTL\n\
-            \n\
-            PATH   Paths under $HOME render as ~ in the human preset (json/csv/tsv/sh keep the real path).\n\
-            AGE    \"{age}\u{00d7}N\" — N = polls elapsed in the current lifecycle step.\n\
-            POLL   Seconds until the next poll. While a source is failing, this is the retry countdown instead.\n\
-            \x20      \"-\" = no poll path (pure watch, or a once/virtual/transient row).\n\
-            TTL    \"<lead> Ps\u{00d7}K (total) <indicator>\":\n\
-            \x20        lead      \u{2605} active | 3 2 1 0 decay countdown to eviction | \u{26a0} failing (cell becomes \"\u{26a0} #N\", N = failed attempts)\n\
-            \x20        P\u{00d7}K       poll interval \u{00d7} keep-alive count\n\
-            \x20        (total)   total time-to-eviction at the current rate, humanized\n\
-            \x20        indicator \u{2219} watches files | \u{2299} watches + fsevents-reinstate | blank = poll-only\n\
-            \n\
-            --ascii swaps: \u{2605}\u{2192}* \u{26a0}\u{2192}! \u{00d7}\u{2192}x \u{2219}\u{2192}- \u{2299}\u{2192}+"
-    )]
+    #[command(visible_alias = "s", after_help = status_after_help())]
     Status {
         /// Output format: human (default), tsv, json, csv, table, sh
-        #[arg(long, short = 'f', default_value = "")]
+        #[arg(long, short = 'f', default_value = "", hide_default_value = true)]
         format: String,
         /// Filter rows (e.g. provider=git, path=/home/*, stale=true); repeatable, AND semantics
         #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
