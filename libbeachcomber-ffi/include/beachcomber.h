@@ -173,16 +173,21 @@ char *bc_resolve(BcClient *client,
                  const char *overrides_json);
 
 /**
- * Evaluate an arbitrary expression string — the same evaluator
+ * Evaluate a value expression in any of the three forms canon
+ * `field_resolution.md` (invariant 14) defines: a bare expression, exactly
+ * one `{{ expr }}` tag (keeps the expression's natural type), or literal
+ * text and/or several tags (string-valued) — the same evaluator
  * `bc_resolve` uses for a declared virtual field, but for a raw expression
- * that need not be registered anywhere. Refs are discovered and `cache.*`
- * refs fetched the same way `bc_resolve` does.
+ * that need not be registered anywhere. Every reference the source makes
+ * is threaded in: `env.*` from `env_json`, and `cache.*` / plain
+ * `provider.field` refs fetched from the daemon, following virtual fields
+ * transitively — the same closure `bc_resolve` uses. A missing or unknown
+ * ref (an absent `env.*`, a daemon miss, or a daemon-rejected key such as
+ * an unregistered provider) is falsy at any depth, not an error.
  *
  * `cwd` is required, matching `bc_resolve`'s signature (see there for
- * why); `env.*` and `cache.*` refs in `template_str` are the only inputs
- * currently threaded into the expression — a bare `cwd` reference in a
- * field expression is reserved for a later task and not evaluated by
- * `evaluate_expression` today.
+ * why) — a bare `cwd` reference in a field expression is reserved for a
+ * later task and not evaluated by `bc_eval` today.
  *
  * # Safety
  * `client` must be a valid pointer from [`bc_client_new`]; `template_str`

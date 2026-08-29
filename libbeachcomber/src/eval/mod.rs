@@ -232,6 +232,21 @@ pub fn fetch_daemon_data<E>(
 }
 
 // ── Evaluation ────────────────────────────────────────────────────────────────
+//
+// ERROR-MESSAGE ABI CONTRACT. The two compile failures below are prefixed
+// `"expression compile error: "` (the typed path, `evaluate_expression`) and
+// `"template compile error: "` (the render path, `render_template`). Those
+// prefixes are not cosmetic: `libbeachcomber-ffi::eval_error_kind` matches the
+// substring `"compile error"` in them to report `parse_error` — the caller's
+// own source being malformed — and everything else as `server_error`. The
+// runtime failures deliberately do NOT carry it (`"expression eval error: "`,
+// `"template render error: "`), and neither does `VirtualFields::evaluate`'s
+// cycle error. Reword either prefix and every SDK silently reclassifies its
+// syntax errors as server faults, so change the two together with
+// `eval_error_kind` and the FFI tests that pin both halves
+// (`bc_eval_compile_error_is_parse_error_kind`,
+// `bc_eval_runtime_error_is_server_error_kind`). `docs/roadmap.md` carries the
+// proper fix: a typed `EvalError` the FFI can match on instead.
 
 /// Evaluate a value expression in any of the three [`Form`]s.
 ///

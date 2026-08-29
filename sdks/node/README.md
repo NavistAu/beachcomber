@@ -88,11 +88,17 @@ Daemon protocol/version info, and internal daemon introspection
 #### `client.resolve(key, opts)` / `client.eval(templateStr, opts)`
 
 Client-side field resolution — the same evaluator `comb get`'s resolution
-layer uses, run entirely in this process (no daemon round-trip beyond
-fetching any `cache.*` refs the expression needs). `opts.cwd` is
-**required**: this library never falls back to the process's own working
-directory. `opts.env` and `opts.overrides` are optional. **FFI transport
+layer uses, run entirely in this process except for a daemon round-trip per
+`cache.*` / `provider.field` ref the expression names (virtual fields
+followed transitively); an expression with only `env.*` refs never
+contacts the daemon. `opts.cwd` is **required**: this library never falls
+back to the process's own working directory, and refs are fetched scoped
+to it. `opts.env` and `opts.overrides` are optional. **FFI transport
 only**.
+
+`templateStr` accepts a bare expression, a single `{{ expr }}` tag (keeps
+the expression's natural type), or literal text/several tags (always a
+string).
 
 ```typescript
 const value = await client.resolve('myapp.workspace', {
