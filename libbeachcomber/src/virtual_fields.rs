@@ -237,6 +237,13 @@ impl VirtualFields {
                 "virtual field cycle detected: {provider}.{field} references itself"
             ));
         }
+        // `stack` holds exactly the fields currently being evaluated, so its
+        // length is this recursion's depth. The cycle check above only stops a
+        // field repeating; a chain of distinct fields recurses once per link
+        // and is bounded here instead. See `crate::eval::MAX_VIRTUAL_DEPTH`.
+        if stack.len() >= crate::eval::MAX_VIRTUAL_DEPTH {
+            return Err(crate::eval::too_deep());
+        }
         let expr = self
             .expression(provider, field)
             .ok_or_else(|| format!("{provider}.{field} is not a virtual field"))?;

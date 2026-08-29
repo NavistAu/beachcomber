@@ -586,7 +586,8 @@ pub unsafe extern "C" fn bc_resolve(
                         )
                     })?
                     .to_string();
-                let refs = eval::daemon_refs(&expr, &vf);
+                let refs = eval::daemon_refs(&expr, &vf)
+                    .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
                 let daemon_data = fetch_via_client(c, cwd, &refs)?;
                 let ctx = EvalContext {
                     env_vars: &env_vars,
@@ -652,7 +653,8 @@ pub unsafe extern "C" fn bc_eval(
 
         // Every daemon key this source needs, virtual-field dependencies
         // included — mirrors the CLI's `run_eval`.
-        let refs = eval::daemon_refs(template_str, &vf);
+        let refs = eval::daemon_refs(template_str, &vf)
+            .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
         let daemon_data = fetch_via_client(c, cwd, &refs)?;
         let ctx = EvalContext {
             env_vars: &env_vars,

@@ -171,7 +171,7 @@ fn empty_source_renders_empty() {
         Value::String("   ".into()),
         "whitespace-only is literal template text, and survives"
     );
-    assert_eq!(daemon_refs("", &vf), vec![]);
+    assert_eq!(daemon_refs("", &vf).unwrap(), vec![]);
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn virtual_field_defined_with_tags_is_typed() {
     // The gap Task 2 closes: the deps of a tag-written virtual field were
     // already discovered, but the field itself failed to compile.
     assert_eq!(
-        daemon_refs("{{ x.tagged }}", &vf),
+        daemon_refs("{{ x.tagged }}", &vf).unwrap(),
         vec![Ref::CacheField("x".into(), "y".into())]
     );
 
@@ -796,4 +796,62 @@ fn virtual_field_error_names_the_field() {
         "loop.self: virtual field cycle detected: loop.self references itself"
     );
     assert_eq!(err.matches("loop.self").count(), 2, "got: {err}");
+}
+
+// ── Recursion depth ───────────────────────────────────────────────────────────
+
+/// A chain of distinct virtual fields, each referencing the next, recurses once
+/// per link through both the ref closure (`daemon_refs`) and the evaluation
+/// (`build_context_json` ↔ `VirtualFields::evaluate`). The cycle guard does not
+/// bound it — no field repeats — so nothing but a depth limit stands between a
+/// long chain and the native stack. Through `libbeachcomber-ffi` that is a
+/// SIGSEGV in the host process, not a recoverable error, so the limit has to be
+/// an `Err` well before the stack runs out.
+#[test]
+fn deeply_nested_virtual_fields_error_rather_than_recurse() {
+    // f0 -> f1 -> ... -> f199 -> cache.leaf.v. Every link is distinct.
+    let mut entries: Vec<(String, String, String)> = (0..199)
+        .map(|i| {
+            (
+                "chain".to_string(),
+                format!("f{i}"),
+                format!("{{{{ chain.f{} }}}}", i + 1),
+            )
+        })
+        .collect();
+    entries.push((
+        "chain".to_string(),
+        "f199".to_string(),
+        "{{ cache.leaf.v }}".to_string(),
+    ));
+    let vf = VirtualFields::with_config_overrides(entries.into_iter().map(|(p, f, e)| ((p, f), e)));
+
+    let env = HashMap::new();
+    let data = data_of(&[("leaf.v", json!("bottom"))]);
+    let ctx = EvalContext {
+        env_vars: &env,
+        daemon_data: &data,
+    };
+
+    let err = evaluate("{{ chain.f0 }}", &vf, &ctx).unwrap_err();
+    assert!(
+        err.contains("virtual field nesting too deep (limit 128)"),
+        "got: {err}"
+    );
+
+    // The ref closure hits its own limit on the same chain, before any
+    // evaluation happens.
+    let err = daemon_refs("{{ chain.f0 }}", &vf).unwrap_err();
+    assert_eq!(err, "virtual field nesting too deep (limit 128)");
+
+    // A chain just inside the limit still resolves, so the guard is not simply
+    // rejecting everything nested.
+    let shallow = vfields(&[
+        ("chain", "f0", "{{ chain.f1 }}"),
+        ("chain", "f1", "{{ cache.leaf.v }}"),
+    ]);
+    assert_eq!(
+        evaluate("{{ chain.f0 }}", &shallow, &ctx).unwrap(),
+        json!("bottom")
+    );
 }

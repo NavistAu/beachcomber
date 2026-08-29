@@ -359,7 +359,10 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                             // Every daemon key the expression needs, virtual-field
                             // dependencies included — the fixture's `setup` `put` ops
                             // seed these.
-                            let refs = eval::daemon_refs(&expr, &vf);
+                            let refs = match eval::daemon_refs(&expr, &vf) {
+                                Ok(refs) => refs,
+                                Err(e) => return err_resp(e),
+                            };
                             match fetch_via_client(client, resolve.cwd, &refs) {
                                 Ok(daemon_data) => {
                                     let ctx = EvalContext {
@@ -413,7 +416,10 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
             // Same three steps `bc_eval` and `comb eval` take: close the ref set
             // over virtual fields, fetch it, evaluate whichever of the three
             // forms the source is written in.
-            let refs = eval::daemon_refs(template, &vf);
+            let refs = match eval::daemon_refs(template, &vf) {
+                Ok(refs) => refs,
+                Err(e) => return err_resp(e),
+            };
             match fetch_via_client(client, resolve.cwd, &refs) {
                 Ok(daemon_data) => {
                     let ctx = EvalContext {

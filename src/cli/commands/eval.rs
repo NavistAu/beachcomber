@@ -34,7 +34,14 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
     let vf = VirtualFields::with_config_overrides(config.virtual_fields());
 
     // Every daemon key this source needs, virtual-field dependencies included.
-    let refs = eval::daemon_refs(template, &vf);
+    // Errs only when the virtual-field chain is deeper than the recursion limit.
+    let refs = match eval::daemon_refs(template, &vf) {
+        Ok(refs) => refs,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(2);
+        }
+    };
 
     let daemon_data = if refs.is_empty() {
         // Nothing daemon-backed (env.* only, or pure-env virtual fields): never

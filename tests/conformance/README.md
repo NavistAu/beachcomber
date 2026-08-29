@@ -180,6 +180,8 @@ tests/conformance/
 │   └── *.json
 ├── introspect/
 │   └── *.json
+├── mapping/
+│   └── *.json
 ├── resolve/
 │   └── *.json
 └── eval/

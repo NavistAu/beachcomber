@@ -145,6 +145,26 @@ pub fn discover_refs(src: &str) -> Vec<Ref> {
     }
 }
 
+/// How deeply one virtual field may reference another before evaluation gives
+/// up. Both recursions over the virtual-field graph — the ref closure
+/// ([`close_over_virtuals`]) and the evaluation itself
+/// ([`crate::virtual_fields::build_context_json`] ↔
+/// [`crate::virtual_fields::VirtualFields::evaluate`]) — are cycle-guarded, but
+/// a cycle guard only stops a *repeat*: a chain of N distinct fields, each
+/// referencing the next, visits every one exactly once and recurses N frames
+/// deep. Nothing bounds N — a `put`, an `overrides_json` or a config file can
+/// declare thousands — and blowing the native stack in a cdylib is not a
+/// recoverable error for the host process, it is a SIGSEGV in someone else's
+/// program.
+///
+/// 128 is far past any legible cascade and far short of the stack.
+pub(crate) const MAX_VIRTUAL_DEPTH: usize = 128;
+
+/// The message both recursions return at [`MAX_VIRTUAL_DEPTH`].
+pub(crate) fn too_deep() -> String {
+    format!("virtual field nesting too deep (limit {MAX_VIRTUAL_DEPTH})")
+}
+
 /// The refs a caller must fetch from the daemon before evaluating `src`.
 ///
 /// The transitive closure of [`discover_refs`] over virtual fields: every
@@ -154,15 +174,24 @@ pub fn discover_refs(src: &str) -> Vec<Ref> {
 /// from the caller's shell, never the daemon, and are dropped.
 ///
 /// A reference cycle terminates: each virtual field is expanded at most once.
-pub fn daemon_refs(src: &str, vf: &VirtualFields) -> Vec<Ref> {
+/// A chain longer than [`MAX_VIRTUAL_DEPTH`] is an `Err` rather than a deeper
+/// recursion.
+pub fn daemon_refs(src: &str, vf: &VirtualFields) -> Result<Vec<Ref>, String> {
     let mut out = Vec::new();
     let mut seen: HashSet<Ref> = HashSet::new();
     let mut expanded: HashSet<(String, String)> = HashSet::new();
-    close_over_virtuals(&discover_refs(src), vf, &mut out, &mut seen, &mut expanded);
+    close_over_virtuals(
+        &discover_refs(src),
+        vf,
+        &mut out,
+        &mut seen,
+        &mut expanded,
+        0,
+    )?;
     // Expansion interleaves each virtual field's own refs into the walk, so a
     // sorted input does not stay sorted through the closure.
     out.sort();
-    out
+    Ok(out)
 }
 
 fn close_over_virtuals(
@@ -171,7 +200,11 @@ fn close_over_virtuals(
     out: &mut Vec<Ref>,
     seen: &mut HashSet<Ref>,
     expanded: &mut HashSet<(String, String)>,
-) {
+    depth: usize,
+) -> Result<(), String> {
+    if depth >= MAX_VIRTUAL_DEPTH {
+        return Err(too_deep());
+    }
     for r in refs {
         match r {
             // env.* is read from the calling shell, not fetched.
@@ -182,7 +215,7 @@ fn close_over_virtuals(
                 if expanded.insert((p.clone(), f.clone()))
                     && let Some(expr) = vf.expression(p, f)
                 {
-                    close_over_virtuals(&discover_refs(expr), vf, out, seen, expanded);
+                    close_over_virtuals(&discover_refs(expr), vf, out, seen, expanded, depth + 1)?;
                 }
             }
             other => {
@@ -192,6 +225,7 @@ fn close_over_virtuals(
             }
         }
     }
+    Ok(())
 }
 
 /// Fetch each ref's value through `fetch`, keyed the way

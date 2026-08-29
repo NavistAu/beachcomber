@@ -254,7 +254,7 @@ fn discover_refs_deduplicates_across_tags() {
 fn daemon_refs_follows_nested_virtual_fields() {
     let vf = vfields(&[("a", "x", "b.y or cache.c.z"), ("b", "y", "cache.d.w")]);
 
-    let refs: HashSet<Ref> = daemon_refs("{{ a.x }}", &vf).into_iter().collect();
+    let refs: HashSet<Ref> = daemon_refs("{{ a.x }}", &vf).unwrap().into_iter().collect();
     let expected: HashSet<Ref> = [
         Ref::CacheField("d".into(), "w".into()),
         Ref::CacheField("c".into(), "z".into()),
@@ -269,6 +269,7 @@ fn daemon_refs_follows_nested_virtual_fields() {
 
     // A non-virtual resolved ref survives the closure as-is, and env refs drop out.
     let refs: HashSet<Ref> = daemon_refs("{{ a.x }} {{ other.field }} {{ env.HOME }}", &vf)
+        .unwrap()
         .into_iter()
         .collect();
     assert!(refs.contains(&Ref::Resolved("other".into(), "field".into())));
@@ -282,7 +283,7 @@ fn daemon_refs_is_sorted_after_expansion() {
     // discovered first, but `cache.a.b` — reached through a.x — sorts ahead.
     let vf = vfields(&[("a", "x", "cache.a.b")]);
     assert_eq!(
-        daemon_refs("{{ cache.z.q or a.x }}", &vf),
+        daemon_refs("{{ cache.z.q or a.x }}", &vf).unwrap(),
         vec![
             Ref::CacheField("a".into(), "b".into()),
             Ref::CacheField("z".into(), "q".into()),
@@ -293,12 +294,12 @@ fn daemon_refs_is_sorted_after_expansion() {
 #[test]
 fn daemon_refs_cycle_terminates() {
     let vf = vfields(&[("a", "x", "b.y"), ("b", "y", "a.x")]);
-    assert_eq!(daemon_refs("{{ a.x }}", &vf), vec![]);
+    assert_eq!(daemon_refs("{{ a.x }}", &vf).unwrap(), vec![]);
 
     // A self-cycle with a real dependency still yields that dependency.
     let vf = vfields(&[("a", "x", "a.x or cache.c.z")]);
     assert_eq!(
-        daemon_refs("a.x", &vf),
+        daemon_refs("a.x", &vf).unwrap(),
         vec![Ref::CacheField("c".into(), "z".into())]
     );
 }

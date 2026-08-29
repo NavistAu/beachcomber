@@ -701,3 +701,44 @@ fn bc_resolve_path_scoped_ref_resolves_at_cwd() {
 
     unsafe { bc_client_free(client) };
 }
+
+/// A chain of distinct virtual fields recurses once per link on both the ref
+/// closure and the evaluation, and the cycle guard does not bound it — no field
+/// repeats. Before the depth limit a ~2000-link `overrides_json` ran the native
+/// stack out inside the cdylib, which is a SIGSEGV in the *host* process: not
+/// an error the caller can catch, and not something `call_ffi`'s panic guard
+/// sees. The whole point of the limit is that this returns an envelope.
+#[test]
+fn bc_eval_deeply_nested_overrides_error_rather_than_crash() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let cwd = cs("/tmp");
+
+    let mut entries: Vec<String> = (0..1999)
+        .map(|i| format!(r#""chain.f{i}":"{{{{ chain.f{} }}}}""#, i + 1))
+        .collect();
+    entries.push(r#""chain.f1999":"{{ cache.leaf.v }}""#.to_string());
+    let overrides = cs(&format!("{{{}}}", entries.join(",")));
+    let expr = cs("{{ chain.f0 }}");
+
+    let v = read(unsafe {
+        bc_eval(
+            client,
+            expr.as_ptr(),
+            cwd.as_ptr(),
+            ptr::null(),
+            overrides.as_ptr(),
+        )
+    });
+    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+    assert_eq!(v["error"]["kind"], serde_json::json!("server_error"), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("nesting too deep"),
+        "{v}"
+    );
+
+    unsafe { bc_client_free(client) };
+}
