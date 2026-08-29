@@ -219,3 +219,255 @@ async fn store_with_path_scope() {
 
     handle.abort();
 }
+
+// ── Global-slot fallback for virtual providers ──────────────────────────────
+//
+// A virtual provider declares no sources and therefore no path expression, so
+// `docs/canon/field_resolution.md` §"Path resolution" has `get` read it from
+// the requested path's slot if that holds an entry and the pathless
+// `(provider, None)` one otherwise. (Invariant 2 is the narrower claim about an
+// empty/falsy path *expression*; a virtual provider has none to evaluate.)
+// A `get` that carries a path (explicitly
+// or via connection context) must still find it — otherwise data stored by a
+// pathless `put` is unreachable to every caller that supplies a cwd, which is
+// what the client SDKs' bc_eval/bc_resolve do unconditionally. `put --path`
+// still wins at its own path.
+//
+// The fallback is slot-level: one slot answers the whole read, never a merge
+// of two (`virtual_slots_do_not_merge`).
+//
+// The mirror-image case — a *non-virtual* PathScoped provider must NOT gain
+// this fallback — lives in tests/connection_context.rs, which already owns a
+// fake path-scoped provider.
+
+#[tokio::test]
+async fn global_put_is_visible_to_a_path_scoped_get() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    send_recv(
+        &mut stream,
+        r#"{"op":"put","key":"myapp","data":{"v":"global-val"}}"#,
+    )
+    .await;
+
+    // Field read at a path with nothing stored there.
+    let resp = send_recv(
+        &mut stream,
+        r#"{"op":"get","key":"myapp.v","path":"fake-scope-a"}"#,
+    )
+    .await;
+    assert!(resp.ok, "get should succeed: {:?}", resp.error);
+    assert_eq!(resp.data.unwrap(), "global-val");
+
+    // Whole-provider read takes the same fallback.
+    let resp = send_recv(
+        &mut stream,
+        r#"{"op":"get","key":"myapp","path":"fake-scope-a"}"#,
+    )
+    .await;
+    assert!(resp.ok, "get should succeed: {:?}", resp.error);
+    assert_eq!(resp.data.unwrap()["v"], "global-val");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn path_scoped_put_wins_over_global_at_its_own_path() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    send_recv(
+        &mut stream,
+        r#"{"op":"put","key":"myapp","data":{"v":"global-val"}}"#,
+    )
+    .await;
+    send_recv(
+        &mut stream,
+        r#"{"op":"put","key":"myapp","data":{"v":"proj-a"},"path":"fake-scope-a"}"#,
+    )
+    .await;
+
+    // The path-keyed slot exists, so it answers — no fallback.
+    let resp = send_recv(
+        &mut stream,
+        r#"{"op":"get","key":"myapp.v","path":"fake-scope-a"}"#,
+    )
+    .await;
+    assert_eq!(resp.data.unwrap(), "proj-a");
+
+    // A path with no slot of its own still falls back to the global value.
+    let resp = send_recv(
+        &mut stream,
+        r#"{"op":"get","key":"myapp.v","path":"fake-scope-b"}"#,
+    )
+    .await;
+    assert_eq!(resp.data.unwrap(), "global-val");
+
+    handle.abort();
+}
+
+/// Passes with or without the fallback — nothing is stored globally, so there
+/// is nothing to fall back to. It guards the *other* direction: that a
+/// path-scoped read of an empty slot still reports a miss rather than
+/// borrowing a sibling path's value.
+#[tokio::test]
+async fn path_scoped_get_misses_when_no_global_entry_exists() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    send_recv(
+        &mut stream,
+        r#"{"op":"put","key":"myapp","data":{"v":"proj-a"},"path":"fake-scope-a"}"#,
+    )
+    .await;
+
+    // Nothing at fake-scope-b and nothing global: a miss, not another path's
+    // value and not an error.
+    let resp = send_recv(
+        &mut stream,
+        r#"{"op":"get","key":"myapp.v","path":"fake-scope-b"}"#,
+    )
+    .await;
+    assert!(resp.ok, "miss is ok=true: {:?}", resp.error);
+    assert!(resp.data.is_none(), "expected a miss, got {:?}", resp.data);
+
+    handle.abort();
+}
+
+/// The fallback picks one slot; it never merges two. A path slot holding `{x}`
+/// and a global slot holding `{y}` means `get p.y --path A` misses: the path
+/// slot exists, so it answers alone, and it has no `y`.
+///
+/// This is the intended coherent-snapshot semantics — a read never returns a
+/// value stitched together from two independently-written slots — and the
+/// price is that `y` is shadowed at A. Documented in canon §"Path resolution".
+#[tokio::test]
+async fn virtual_slots_do_not_merge() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    send_recv(
+        &mut stream,
+        r#"{"op":"put","key":"myapp","data":{"y":"global-only"}}"#,
+    )
+    .await;
+    send_recv(
+        &mut stream,
+        r#"{"op":"put","key":"myapp","data":{"x":"at-a"},"path":"fake-scope-a"}"#,
+    )
+    .await;
+
+    // The path slot answers, so `x` resolves there.
+    let resp = send_recv(
+        &mut stream,
+        r#"{"op":"get","key":"myapp.x","path":"fake-scope-a"}"#,
+    )
+    .await;
+    assert_eq!(resp.data.unwrap(), "at-a");
+
+    // ...and `y` is shadowed, not merged in from the global slot.
+    let resp = send_recv(
+        &mut stream,
+        r#"{"op":"get","key":"myapp.y","path":"fake-scope-a"}"#,
+    )
+    .await;
+    assert!(resp.ok, "miss is ok=true: {:?}", resp.error);
+    assert!(
+        resp.data.is_none(),
+        "the global slot must not merge into the path slot, got {:?}",
+        resp.data
+    );
+
+    handle.abort();
+}
+
+/// The scenario actually reported: a pathless `put`, then a `context` op
+/// setting the connection's path — the CLI's session path, and what every SDK
+/// does via bc_eval/bc_resolve. The context path must not hide the global
+/// entry any more than an explicit `--path` does.
+#[tokio::test]
+async fn global_put_is_visible_through_a_connection_context() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    send_recv(
+        &mut stream,
+        r#"{"op":"put","key":"myapp","data":{"v":"global-val"}}"#,
+    )
+    .await;
+
+    let resp = send_recv(&mut stream, r#"{"op":"context","path":"fake-scope-a"}"#).await;
+    assert!(resp.ok, "context should succeed: {:?}", resp.error);
+
+    let resp = send_recv(&mut stream, r#"{"op":"get","key":"myapp.v"}"#).await;
+    assert!(resp.ok, "get should succeed: {:?}", resp.error);
+    assert_eq!(resp.data.unwrap(), "global-val");
+
+    handle.abort();
+}
+
+/// `watch` deliberately keeps no fallback. Its initial read is paired with a
+/// `watchers.subscribe` keyed by the same path, so a fallback that only moved
+/// the read would emit the global value once and then never update when that
+/// value changed — a first value that silently goes stale is worse than a
+/// clean miss. Re-keying the subscription alongside the read is the follow-up
+/// (docs/roadmap.md).
+#[tokio::test]
+async fn watch_does_not_take_the_global_fallback() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    send_recv(
+        &mut stream,
+        r#"{"op":"put","key":"myapp","data":{"v":"global-val"}}"#,
+    )
+    .await;
+
+    // `get` at this path finds the global entry; `watch` at the same path does
+    // not — the asymmetry this test exists to pin.
+    let resp = send_recv(
+        &mut stream,
+        r#"{"op":"get","key":"myapp.v","path":"fake-scope-a"}"#,
+    )
+    .await;
+    assert_eq!(resp.data.unwrap(), "global-val");
+
+    let resp = send_recv(
+        &mut stream,
+        r#"{"op":"watch","key":"myapp.v","path":"fake-scope-a"}"#,
+    )
+    .await;
+    assert!(resp.ok, "watch should open: {:?}", resp.error);
+    assert!(
+        resp.data.is_none(),
+        "watch's initial read takes no global fallback, got {:?}",
+        resp.data
+    );
+
+    handle.abort();
+}

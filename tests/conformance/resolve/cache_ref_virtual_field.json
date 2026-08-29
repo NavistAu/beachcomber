@@ -1,10 +1,10 @@
 {
   "name": "resolve_cache_ref_virtual_field",
-  "description": "A virtual field expression referencing cache.P.F resolves to that cached value. The seed is put at the fixture's cwd because resolution queries the daemon scoped to that cwd.",
+  "description": "A virtual field expression referencing cache.P.F resolves to that cached value. The seed is put globally while the query runs at a cwd, so this also pins the global-slot fallback a virtual provider gets per canon field_resolution.md \u00a7\"Path resolution\".",
   "virtual": { "widget.label": "cache.widgetdata.label" },
   "cwd": "/nonexistent/proj",
   "setup": [
-    { "op": "put", "args": { "key": "widgetdata", "data": { "label": "hello-value" }, "path": "/nonexistent/proj" } }
+    { "op": "put", "args": { "key": "widgetdata", "data": { "label": "hello-value" } } }
   ],
   "test": { "op": "resolve", "args": { "key": "widget.label" } },
   "expect": { "status": "hit", "data_type": "string", "data_equals": "hello-value" }

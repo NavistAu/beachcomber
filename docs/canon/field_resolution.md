@@ -94,6 +94,8 @@ path = "env.SELECTOR or '<default-path>'"     {# a selector chooses a path; defa
 
 The path expression is the general form of the Global/PathScoped distinction. Built-in providers ship a compiled-in default; config-defined providers declare `path = "<expr>"`. A provider with no path expression keeps its declared scope.
 
+A virtual provider — one a `put` created, declaring no sources and so no path expression — is read by `get` from exactly one slot: the requested path's if that slot holds any entry, otherwise the global one, never a merge across the two. A read therefore always sees one coherent snapshot, at the cost that a field present only globally is shadowed wherever a path slot exists, and that a strictly path-scoped read of a virtual provider is not expressible. `watch` takes no such fallback — it subscribes to the requested slot alone, since its initial read and its subscription are keyed together.
+
 ### Value resolution
 
 Every field has a **value expression**, written either bare (`env.A or cache.x.y`) or as a single tag (`{{ env.A or cache.x.y }}`) — the two are equivalent. A **template** — literal text around a tag, or more than one tag, e.g. `{{ git.branch }}{% if git.dirty %}*{% endif %}` — is a string-valued field: only a value expression written as exactly one tag keeps the expression's natural type. The documented form is `{{ }}`; bare stays accepted for backward compatibility.

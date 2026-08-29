@@ -571,6 +571,37 @@ async fn handle_request(
                 return Response::ok(serde_json::Value::String(src.to_string()), 0, false);
             }
 
+            // Virtual providers fall back to the global slot. A virtual provider
+            // (one `put` created) declares no sources and therefore no path
+            // expression, and `docs/canon/field_resolution.md` §"Path
+            // resolution" says such a provider is read by `get` from the
+            // requested path's slot if it holds an entry and the global one
+            // otherwise — so data stored globally must stay readable when the
+            // caller supplies a path or a context. (Invariant 2 is the narrower
+            // claim that an empty/falsy path *expression* selects the global
+            // slot; a virtual provider has no path expression to evaluate at
+            // all, so the prose is what governs here.)
+            // `put --path` entries still win at their own path: the requested
+            // slot is preferred and the global one is only reached when that slot
+            // holds nothing. Non-virtual providers are untouched — a PathScoped
+            // source's whole point is that /a and /b differ.
+            //
+            // The fallback is slot-level, not field-level: whichever slot answers
+            // answers alone, so a path slot never merges with the global one (see
+            // canon, same section). `read_path` rather than a shadowed
+            // `effective_path` so a grep says which reads take the fallback —
+            // every use below is a cache read; `effective_path` still keeps the
+            // requested path for the force-evict, wait and demand paths above.
+            let read_path = match effective_path {
+                Some(p)
+                    if registry.is_virtual(provider_name)
+                        && !cache.has_entry(provider_name, Some(&p)) =>
+                {
+                    None
+                }
+                other => other,
+            };
+
             // Cache lookup with cold-miss inline-execute, routed by key parse form.
             // Canon §"Cold cache miss triggers inline fetch": on cache miss, synchronously
             // execute the relevant source(s), write to cache, then re-read.
@@ -585,12 +616,12 @@ async fn handle_request(
                             cache,
                             provider,
                             source_name,
-                            effective_path.as_deref(),
+                            read_path.as_deref(),
                         )
                         .await;
                     }
                     // Cold-miss execute for non-read-always sources (read-always already ran above).
-                    let mut hit = cache.get_field(provider, effective_path.as_deref(), field);
+                    let mut hit = cache.get_field(provider, read_path.as_deref(), field);
                     if hit.is_none()
                         && let Some(source_name) = registry.source_for_field(provider, head)
                     {
@@ -600,11 +631,11 @@ async fn handle_request(
                             cache,
                             provider,
                             &source_name,
-                            effective_path.as_deref(),
+                            read_path.as_deref(),
                         )
                         .await
                         {
-                            hit = cache.get_field(provider, effective_path.as_deref(), field);
+                            hit = cache.get_field(provider, read_path.as_deref(), field);
                         }
                     }
                     match hit {
@@ -618,7 +649,7 @@ async fn handle_request(
                             // Distinguish nested-path not-found from full miss.
                             if field.contains('.')
                                 && cache
-                                    .get_field(provider, effective_path.as_deref(), head)
+                                    .get_field(provider, read_path.as_deref(), head)
                                     .is_some()
                             {
                                 return Response::error(format!(
@@ -631,20 +662,20 @@ async fn handle_request(
                 }
                 KeyParse::Source(provider, source) => {
                     // Re-execute read-always sources before reading.
-                    maybe_read_always(registry, cache, provider, source, effective_path.as_deref())
+                    maybe_read_always(registry, cache, provider, source, read_path.as_deref())
                         .await;
-                    let mut hit = cache.get_source(provider, effective_path.as_deref(), source);
+                    let mut hit = cache.get_source(provider, read_path.as_deref(), source);
                     if hit.is_none()
                         && inline_execute_source(
                             registry,
                             cache,
                             provider,
                             source,
-                            effective_path.as_deref(),
+                            read_path.as_deref(),
                         )
                         .await
                     {
-                        hit = cache.get_source(provider, effective_path.as_deref(), source);
+                        hit = cache.get_source(provider, read_path.as_deref(), source);
                     }
                     match hit {
                         Some(src_entry) => {
@@ -659,20 +690,20 @@ async fn handle_request(
                 }
                 KeyParse::SourceField(provider, source, field) => {
                     // Re-execute read-always sources before reading.
-                    maybe_read_always(registry, cache, provider, source, effective_path.as_deref())
+                    maybe_read_always(registry, cache, provider, source, read_path.as_deref())
                         .await;
-                    let mut hit = cache.get_source(provider, effective_path.as_deref(), source);
+                    let mut hit = cache.get_source(provider, read_path.as_deref(), source);
                     if hit.is_none()
                         && inline_execute_source(
                             registry,
                             cache,
                             provider,
                             source,
-                            effective_path.as_deref(),
+                            read_path.as_deref(),
                         )
                         .await
                     {
-                        hit = cache.get_source(provider, effective_path.as_deref(), source);
+                        hit = cache.get_source(provider, read_path.as_deref(), source);
                     }
                     match hit {
                         Some(src_entry) => {
@@ -702,22 +733,16 @@ async fn handle_request(
                             .iter()
                             .filter(|sm| match sm.scope {
                                 SourceScope::Global => true,
-                                SourceScope::PathScoped => effective_path.is_some(),
+                                SourceScope::PathScoped => read_path.is_some(),
                             })
                             .map(|sm| sm.name.clone())
                             .collect();
                         for sn in &source_names {
-                            maybe_read_always(
-                                registry,
-                                cache,
-                                provider,
-                                sn,
-                                effective_path.as_deref(),
-                            )
-                            .await;
+                            maybe_read_always(registry, cache, provider, sn, read_path.as_deref())
+                                .await;
                         }
                     }
-                    let mut hit = cache.get_entry(provider, effective_path.as_deref());
+                    let mut hit = cache.get_entry(provider, read_path.as_deref());
                     if hit.is_none()
                         && let Some(sources) = registry.provider_sources(provider)
                     {
@@ -725,7 +750,7 @@ async fn handle_request(
                             .iter()
                             .filter(|sm| match sm.scope {
                                 SourceScope::Global => true,
-                                SourceScope::PathScoped => effective_path.is_some(),
+                                SourceScope::PathScoped => read_path.is_some(),
                             })
                             .map(|sm| sm.name.clone())
                             .collect();
@@ -735,11 +760,11 @@ async fn handle_request(
                                 cache,
                                 provider,
                                 sn,
-                                effective_path.as_deref(),
+                                read_path.as_deref(),
                             )
                             .await;
                         }
-                        hit = cache.get_entry(provider, effective_path.as_deref());
+                        hit = cache.get_entry(provider, read_path.as_deref());
                     }
                     match hit {
                         Some(entry) => {

@@ -5,7 +5,7 @@
   "env": { "MYAPP_ENV": "prod-env" },
   "cwd": "/nonexistent/proj",
   "setup": [
-    { "op": "put", "args": { "key": "myappcache", "data": { "workspace": "cache-env" }, "path": "/nonexistent/proj" } }
+    { "op": "put", "args": { "key": "myappcache", "data": { "workspace": "cache-env" } } }
   ],
   "test": { "op": "resolve", "args": { "key": "myapp.workspace" } },
   "expect": { "status": "hit", "data_type": "string", "data_equals": "prod-env" }
