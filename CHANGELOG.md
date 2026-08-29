@@ -4,6 +4,36 @@ All notable changes to beachcomber will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **One expression syntax: `{{ }}` everywhere.** A value expression written as exactly one `{{ expr }}` tag keeps the expression's natural type; literal text or more than one tag makes it a string; a bare expression (no tags) is still accepted and equivalent to the single-tag form (`docs/canon/field_resolution.md` §"Value resolution", invariant 14).
+- **`libbeachcomber::eval`** — the module that classifies a value expression's form, discovers what it references, and evaluates it: the evaluation API (`Form`, `classify`, `single_tag_expression`, `discover_refs`, `daemon_refs`, `fetch_daemon_data`, `evaluate`, `render_template` — the workspace's one template render) plus the low-level tag scanner (`Tag`, `TagKind`, `scan_tags`) it's built on.
+- **`bc_eval` accepts templates and single tags with the same typing rule as the CLI** — and therefore every SDK's `eval` does too.
+- **Cross-binding conformance: an `eval` op**, with seven fixtures under `tests/conformance/eval/` run by the Rust reference runner and the five SDK runners with an FFI transport (Python, Node, Go, Ruby, C; Lua under LuaJIT); the PUC Lua subprocess tier reports them as skipped, never passed.
+- **`comb init --write-config` writes virtual field expressions in the `{{ }}` form.**
+
+### Changed
+
+- **`comb eval`: plain text with no tags is now an expression, not literal text** — a source with no `{{ }}` is two bare identifiers, and now exits 2 with a syntax error instead of printing itself back. Write `{{ }}` for literal text.
+- **`comb eval`: a single-tag result that is an object prints as `comb get -f text` does** (sorted `key=value` lines), not minijinja's map debug format.
+- **`comb eval`: a missing daemon ref at any depth** (`{{ p.f }}`, `{{ p.f.sub }}`) **renders empty at exit 0 instead of erroring**, and `| default(…)` now fires on a miss.
+- **`comb eval` now follows virtual-field dependencies transitively.** With `x.a = {{ b.y or cache.c.z }}` and `b.y = {{ cache.d.w }}`, `comb eval '{{ x.a }}'` fetches `d.w` — 0.8.0 expanded only one level and rendered empty.
+- **`-f fmt`, `watch -f fmt` and `status -f` render a null value as empty** where they used to print the literal word `none`; attribute access on a missing value renders empty instead of a template error; and `comb get -f fmt` / `comb watch -f fmt` errors now read `template compile error: …` / `template render error: …` (were `Template error: …`).
+- **`comb eval`'s error messages are now correctly kinded**: a template syntax error now reads `template compile error: …` (was unconditionally `template render error: …`, even for a compile failure), and a virtual-field failure reads `p.f: …` (was `Error evaluating p.f: …`).
+- **`bc_resolve` reports `parse_error`** (was `server_error`) for a virtual field whose expression does not compile; it now fetches plain `provider.field` refs (not just `cache.*`) and follows virtual fields transitively; and it aborts on a transport failure instead of silently evaluating against an empty map (a daemon miss or unknown provider still stays falsy).
+- **`bc_eval`/`bc_resolve` fetch every daemon ref scoped to the supplied `cwd`** — path-scoped providers now resolve correctly, and a virtual field `put` globally (no path) still resolves, through the new daemon global-slot fallback.
+- **A resolved minijinja map or sequence is now a JSON object/array**, not a debug-formatted string.
+- **`libbeachcomber` API (pre-1.0): `discover_expression_refs` is now crate-private** — use `eval::discover_refs`. `Ref` derives `Ord`, and every discovery path returns sorted output.
+
+### Fixed
+
+- **`get` on a virtual (`put`-created) provider with a path now falls back to the global slot** when the requested slot holds nothing. On 0.8.0 the daemon read only the path-keyed slot for a virtual provider, so any caller that supplied a path or connection context — `comb get`, whose default is the CWD — could not see a pathless `put`, and the CLI masked it with a pathless retry. The daemon now falls back to the global slot, which is also what lets this release's cwd-scoped `bc_eval`/`bc_resolve` reach a global `put`.
+- **Virtual-field errors now name the field** (`p.f: …`), including in `comb get`. On 0.8.0 a bad expression in a config virtual field surfaced as a bare `expression compile error: …` with nothing pointing at which field to fix.
+- **`scripts/conformance-all.sh` builds the Node SDK's `dist/` up front**, and its summary now names every runner that failed, could not run, or skipped fixtures — two distinct defects on 0.8.0. First, attribution: the exit code was already correct when a runner failed or could not run, but the summary named no runner, so a failure couldn't be pinned on a specific one — the Node runner's immediate exit on a clean checkout (`dist/` isn't checked in) scrolled past between other runners' output, invisible as a runner that never ran at all. Second, a runner that only *skipped* fixtures (e.g. Lua's subprocess tier skipping `resolve`/`eval`) exited 0 and still printed a green `conformance-all: all SDK runners passed`.
+- **`cache.P` / `cache.P.F` ref binding order was hash-order dependent** — where a whole-object ref and a same-provider field ref disagreed about a key, which one won could vary run to run. The whole object now always wins, deterministically.
+
 ## [0.8.0] - 2026-08-23
 
 The client-unification cycle: the shared Rust client core is exposed as a C ABI,

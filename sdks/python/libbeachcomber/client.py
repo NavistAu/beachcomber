@@ -394,9 +394,13 @@ class Client:
         env: Optional[dict] = None,
         overrides: Optional[dict] = None,
     ) -> Any:
-        """Evaluate an arbitrary expression string — the same evaluator
-        :meth:`resolve` uses for a declared virtual field, but for a raw
-        expression that need not be registered anywhere.
+        """Evaluate a value expression — the same evaluator :meth:`resolve`
+        uses for a declared virtual field, but for a raw expression that
+        need not be registered anywhere.
+
+        ``template_str`` accepts a bare expression, a single ``{{ expr }}``
+        tag, or literal text/several tags — the first two keep the
+        expression's natural type, the third is always a string.
 
         Args:
             template_str: The expression to evaluate.

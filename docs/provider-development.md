@@ -483,10 +483,10 @@ aws_profiles.default  → Object{ region: "us-east-1" }
 aws_profiles.staging  → Object{ region: "us-west-2" }
 
 # consumer namespace: client-side virtual fields
-aws.profile = env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default"
-aws.region  = env.AWS_REGION or env.AWS_DEFAULT_REGION
-              or cache.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT
-                                     or env.AWS_DEFAULT_PROFILE or "default" ].region
+aws.profile = {{ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" }}
+aws.region  = {{ env.AWS_REGION or env.AWS_DEFAULT_REGION
+                 or cache.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT
+                                        or env.AWS_DEFAULT_PROFILE or "default" ].region }}
 ```
 
 `comb get aws_profiles` returns the raw dump. `comb get aws` evaluates the computed consumer fields. The daemon never reads `$AWS_PROFILE`.
@@ -501,7 +501,7 @@ This matters when a virtual field needs to override a same-named cached value:
 
 ```
 # terraform.workspace (virtual field) overrides the cached workspace without a cycle:
-terraform.workspace = env.TF_WORKSPACE or cache.terraform.workspace
+terraform.workspace = {{ env.TF_WORKSPACE or cache.terraform.workspace }}
 ```
 
 `cache.terraform.workspace` is the stored value; `terraform.workspace` is the resolved field. No self-reference, no rename needed.
@@ -510,7 +510,7 @@ terraform.workspace = env.TF_WORKSPACE or cache.terraform.workspace
 
 ## 2c. Path Expressions
 
-A provider's **cache-key path** is computed client-side by a **path expression** — a Jinja expression over `cwd` and `env.*`.
+A provider's **cache-key path** is computed client-side by a **path expression** — a Jinja expression over `cwd` and `env.*`. Like a value expression it may be written bare, as a single `{{ }}` tag, or as a template; the examples below are bare, and wrapping any of them in `{{ }}` means exactly the same thing.
 
 ```toml
 [providers.myproject]

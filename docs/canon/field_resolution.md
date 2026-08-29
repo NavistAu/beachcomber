@@ -114,7 +114,7 @@ Properties:
 **Overriding a cached value under its own name.** When a consumer wants "env override on top of a single cached value," the expression references the **cached** value, not the resolved field:
 
 ```
-terraform.workspace = env.TF_WORKSPACE or cache.terraform.workspace
+terraform.workspace = {{ env.TF_WORKSPACE or cache.terraform.workspace }}
 ```
 
 This is not a cycle — `cache.terraform.workspace` is the stored value, distinct from the resolved field `terraform.workspace`. Because of this, a cached value **keeps its own name**; no rename is needed to let a same-named virtual field build on it.
@@ -122,8 +122,8 @@ This is not a cycle — `cache.terraform.workspace` is the stored value, distinc
 **Selection over distinct cached values.** Where several *distinct* values feed one consumer field, each keeps its own name and the virtual field selects among them:
 
 ```
-python.version = env.PYENV_VERSION or env.MISE_PYTHON_VERSION
-                 or cache.mise.python or cache.asdf.python or cache.python.venv_version
+python.version = {{ env.PYENV_VERSION or env.MISE_PYTHON_VERSION
+                 or cache.mise.python or cache.asdf.python or cache.python.venv_version }}
 ```
 
 `cache.python.venv_version` (the venv's version), `cache.mise.python`, `cache.asdf.python` are genuinely different things with their own names; `python.version` is the selection logic, with no cached value of its own.
@@ -143,7 +143,7 @@ The value phase then does nothing special: the field resolves to the cached valu
 **It designates a value within a slot → it drives the value phase.** All variants live where the daemon already looks (one file or directory), so the daemon publishes the whole set as a **data provider**: a provider whose cached fields are the variants, keyed by variant name (e.g. `aws_profiles.default`, `aws_profiles.staging`, each an object of per-variant values). The consumer field is a virtual field that **indexes** the set by the selector's value:
 
 ```
-<namespace>.<field> = env.<DIRECT> or cache.<data_provider>[ env.<SELECTOR> or <default_key> ].<field>
+<namespace>.<field> = {{ env.<DIRECT> or cache.<data_provider>[ env.<SELECTOR> or <default_key> ].<field> }}
 ```
 
 The daemon caches every variant regardless of the shell; the client does the indexing. `comb get <data_provider>` returns the whole set; `comb get <namespace>` returns the computed consumer fields.
@@ -189,8 +189,8 @@ This document defines no tunable runtime parameters. Per-field value expressions
 ### Example 1 — fixed cascade over distinct cached values: `python.version`
 
 ```
-python.version = env.PYENV_VERSION or env.MISE_PYTHON_VERSION
-                 or cache.mise.python or cache.asdf.python or cache.python.venv_version
+python.version = {{ env.PYENV_VERSION or env.MISE_PYTHON_VERSION
+                 or cache.mise.python or cache.asdf.python or cache.python.venv_version }}
 ```
 
 There is no cached `python.version`; it is pure selection logic. `cache.python.venv_version` (the venv's version), `cache.mise.python`, and `cache.asdf.python` are distinct cached values with their own names, read at the resolved (cwd) path. First non-empty wins; all-empty ⇒ `""`.
@@ -198,7 +198,7 @@ There is no cached `python.version`; it is pure selection logic. `cache.python.v
 ### Example 2 — single-value override: `terraform.workspace`
 
 ```
-terraform.workspace = env.TF_WORKSPACE or cache.terraform.workspace
+terraform.workspace = {{ env.TF_WORKSPACE or cache.terraform.workspace }}
 ```
 
 One underlying cached value (the workspace from `.terraform/environment`) with an env override on top. The cached value keeps the name `workspace`; the expression references `cache.terraform.workspace`, so there is no self-reference and no rename.
@@ -208,9 +208,9 @@ One underlying cached value (the workspace from `.terraform/environment`) with a
 `aws_profiles` is the data provider (a cached field per profile, each an object); `aws` is the consumer namespace.
 
 ```
-aws.profile = env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default"
-aws.region  = env.AWS_REGION or env.AWS_DEFAULT_REGION
-              or cache.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" ].region
+aws.profile = {{ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" }}
+aws.region  = {{ env.AWS_REGION or env.AWS_DEFAULT_REGION
+              or cache.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" ].region }}
 ```
 
 With `$AWS_PROFILE=staging` the client indexes the cached `aws_profiles` object at `["staging"].region`; unset → `["default"]`. `$AWS_REGION` short-circuits before the index. The daemon caches every profile regardless of the shell's selector.

@@ -158,7 +158,10 @@ char *bc_hello(BcClient *client);
  *
  * `cwd` is required: NULL returns an error envelope rather than falling
  * back to the process's own working directory — this library must never
- * read ambient state on the caller's behalf. `env_json` and
+ * read ambient state on the caller's behalf. Every daemon-backed ref the
+ * field's expression makes (`cache.*` and plain `provider.field`,
+ * virtual fields followed transitively) is fetched scoped to `cwd`, the
+ * same convention `comb get`'s `--path` follows. `env_json` and
  * `overrides_json` are nullable, meaning "none supplied".
  *
  * # Safety
@@ -180,10 +183,11 @@ char *bc_resolve(BcClient *client,
  * `bc_resolve` uses for a declared virtual field, but for a raw expression
  * that need not be registered anywhere. Every reference the source makes
  * is threaded in: `env.*` from `env_json`, and `cache.*` / plain
- * `provider.field` refs fetched from the daemon, following virtual fields
- * transitively — the same closure `bc_resolve` uses. A missing or unknown
- * ref (an absent `env.*`, a daemon miss, or a daemon-rejected key such as
- * an unregistered provider) is falsy at any depth, not an error.
+ * `provider.field` refs fetched from the daemon scoped to `cwd`, following
+ * virtual fields transitively — the same closure `bc_resolve` uses. A
+ * missing or unknown ref (an absent `env.*`, a daemon miss, or a
+ * daemon-rejected key such as an unregistered provider) is falsy at any
+ * depth, not an error.
  *
  * `cwd` is required, matching `bc_resolve`'s signature (see there for
  * why) — a bare `cwd` reference in a field expression is reserved for a
