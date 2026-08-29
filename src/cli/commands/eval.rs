@@ -13,7 +13,8 @@
 
 use crate::cli::format::{find_eval_template_pairs, render_eval_template};
 use crate::config::Config;
-use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
+use libbeachcomber::eval::discover_refs;
+use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields};
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 
@@ -55,7 +56,7 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
     }
     for (p, f) in &virtual_refs {
         if let Some(expr) = vf.expression(p, f) {
-            for r in discover_expression_refs(expr) {
+            for r in discover_refs(expr) {
                 match r {
                     Ref::Env(_) => {
                         // env.* — no daemon fetch needed.

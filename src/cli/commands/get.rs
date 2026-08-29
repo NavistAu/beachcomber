@@ -5,9 +5,8 @@
 use crate::cli::format::render_fmt_template_json;
 use crate::cli::output_format::{OutputFormat, format_sv, value_to_string};
 use crate::config::Config;
-use libbeachcomber::virtual_fields::{
-    EvalContext, Ref, VirtualFields, discover_expression_refs, evaluate_namespace,
-};
+use libbeachcomber::eval::discover_refs;
+use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, evaluate_namespace};
 use std::collections::HashMap;
 use std::process::ExitCode;
 
@@ -63,7 +62,7 @@ fn fetch_daemon_deps(
         return HashMap::new();
     };
     let expr = vf.expression(provider, field).unwrap_or("");
-    let refs = discover_expression_refs(expr);
+    let refs = discover_refs(expr);
     let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
     if let Some(session) = session {
         for r in refs {
@@ -143,7 +142,7 @@ fn fetch_daemon_deps_for_namespace(
     let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for field in vf.fields_for(provider) {
         let expr = vf.expression(provider, &field).unwrap_or("");
-        let refs = discover_expression_refs(expr);
+        let refs = discover_refs(expr);
         for r in refs {
             match r {
                 Ref::Env(_) => {
@@ -267,7 +266,7 @@ pub fn key_needs_daemon(key: &str, vf: &VirtualFields) -> bool {
         // whole provider object (for canon invariant 12 whole-subtree merge).
         return virtual_fields.iter().any(|field| {
             let expr = vf.expression(key, field).unwrap_or("");
-            let refs = discover_expression_refs(expr);
+            let refs = discover_refs(expr);
             refs.iter().any(|r| match r {
                 Ref::Env(_) => false,
                 Ref::CacheField(_, _) => true,
@@ -284,7 +283,7 @@ pub fn key_needs_daemon(key: &str, vf: &VirtualFields) -> bool {
     }
     if vf.is_virtual(provider, field) {
         let expr = vf.expression(provider, field).unwrap_or("");
-        let refs = discover_expression_refs(expr);
+        let refs = discover_refs(expr);
         // Needs daemon if any ref requires a daemon fetch.
         // Note: for single-key virtual with daemon refs, run_get does an env-first
         // pass (#7) and only calls ensure_daemon when the env terms don't win.

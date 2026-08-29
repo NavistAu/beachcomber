@@ -31,6 +31,13 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       only. `comb watch <computed.field>` is deferred — users will reasonably expect `watch python.version` to behave
       like `get python.version`, so this needs a client-side re-evaluation loop driven by the underlying daemon fields'
       changes (and a story for `env.*`, which the daemon can't watch). Pick up after the env/cascade P1 lands.
+- [ ] **A path-expression compile error is swallowed to `None`.** `path_expr::evaluate_path` returns
+      `Option<String>`, where `None` means "empty/falsy result ⇒ the global slot" (canon `field_resolution.md`
+      §"Path resolution"). A source that fails to compile takes the same `None` — so a typo in a config `path =`
+      silently collapses the provider to the global slot instead of reporting the syntax error. Both forms now
+      compile (`{{ }}` and bare), which removes the most common way to hit this, but the wart stands: the return
+      type needs to distinguish "no path" from "bad expression", and every caller (`comb get`'s resolution layer,
+      `bc_resolve`'s path-expression arm, the conformance runners) needs to surface it.
 
 ### CLI Ergonomics
 

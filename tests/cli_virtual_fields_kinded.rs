@@ -2,15 +2,16 @@
 //!
 //! Write-first (failing), then implement in src/cli/virtual_fields.rs.
 
-use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
+use libbeachcomber::eval::{self, discover_refs};
+use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields};
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 // ── Step 1.1: Ref discovery returns kinded refs ───────────────────────────────
 
 #[test]
 fn discovers_env_cache_and_resolved_refs() {
-    let refs = discover_expression_refs(
+    let refs = discover_refs(
         r#"env.AWS_REGION or cache.aws_profiles[env.AWS_PROFILE or "default"].region or aws.profile"#,
     );
     assert!(
@@ -33,7 +34,7 @@ fn discovers_env_cache_and_resolved_refs() {
 
 #[test]
 fn discovers_cache_field_ref() {
-    let refs = discover_expression_refs("cache.mise.python or cache.python.venv_version");
+    let refs = discover_refs("cache.mise.python or cache.python.venv_version");
     assert!(
         refs.contains(&Ref::CacheField("mise".into(), "python".into())),
         "must discover CacheField(mise, python); got: {refs:?}"
@@ -47,7 +48,7 @@ fn discovers_cache_field_ref() {
 #[test]
 fn discovers_cache_provider_without_field() {
     // "cache.aws_profiles" (two segments only) → CacheProvider
-    let refs = discover_expression_refs("cache.aws_profiles");
+    let refs = discover_refs("cache.aws_profiles");
     assert!(
         refs.contains(&Ref::CacheProvider("aws_profiles".into())),
         "must discover CacheProvider(aws_profiles); got: {refs:?}"
@@ -65,14 +66,14 @@ fn discovers_cache_provider_without_field() {
 #[test]
 fn bare_name_is_ignored() {
     // A bare name with no dot is not a provider.field ref — must be ignored.
-    let refs = discover_expression_refs("somename");
+    let refs = discover_refs("somename");
     assert!(refs.is_empty(), "bare name must be ignored; got: {refs:?}");
 }
 
 #[test]
 fn cwd_is_ignored() {
     // cwd is a path-expression variable, not a field ref — must be ignored.
-    let refs = discover_expression_refs("cwd or env.HOME");
+    let refs = discover_refs("cwd or env.HOME");
     assert!(
         !refs
             .iter()
@@ -100,13 +101,7 @@ fn cache_field_reads_raw_value() {
         env_vars: &env,
         daemon_data: &daemon,
     };
-    let got = vf
-        .evaluate_expression(
-            "env.TF_WORKSPACE or cache.terraform.workspace",
-            &ctx,
-            &mut HashSet::new(),
-        )
-        .unwrap();
+    let got = eval::evaluate("env.TF_WORKSPACE or cache.terraform.workspace", &vf, &ctx).unwrap();
     assert_eq!(got, json!("staging"));
 }
 
@@ -124,13 +119,7 @@ fn cache_field_env_wins_over_raw_cache() {
         env_vars: &env,
         daemon_data: &daemon,
     };
-    let got = vf
-        .evaluate_expression(
-            "env.TF_WORKSPACE or cache.terraform.workspace",
-            &ctx,
-            &mut HashSet::new(),
-        )
-        .unwrap();
+    let got = eval::evaluate("env.TF_WORKSPACE or cache.terraform.workspace", &vf, &ctx).unwrap();
     assert_eq!(got, json!("dev"), "env.TF_WORKSPACE must win over cache");
 }
 
@@ -150,13 +139,12 @@ fn cache_provider_object_is_indexable() {
         env_vars: &env,
         daemon_data: &daemon,
     };
-    let got = vf
-        .evaluate_expression(
-            r#"cache.aws_profiles[env.AWS_PROFILE or "default"].region"#,
-            &ctx,
-            &mut HashSet::new(),
-        )
-        .unwrap();
+    let got = eval::evaluate(
+        r#"cache.aws_profiles[env.AWS_PROFILE or "default"].region"#,
+        &vf,
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(got, json!("us-east-1"));
 }
 
@@ -174,13 +162,12 @@ fn cache_provider_object_defaults_when_selector_unset() {
         env_vars: &env,
         daemon_data: &daemon,
     };
-    let got = vf
-        .evaluate_expression(
-            r#"cache.aws_profiles[env.AWS_PROFILE or "default"].region"#,
-            &ctx,
-            &mut HashSet::new(),
-        )
-        .unwrap();
+    let got = eval::evaluate(
+        r#"cache.aws_profiles[env.AWS_PROFILE or "default"].region"#,
+        &vf,
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(
         got,
         json!("eu-west-1"),
@@ -202,9 +189,7 @@ fn resolved_ref_reads_daemon_value_for_non_virtual() {
         env_vars: &env,
         daemon_data: &daemon,
     };
-    let got = vf
-        .evaluate_expression("git.branch", &ctx, &mut HashSet::new())
-        .unwrap();
+    let got = eval::evaluate("git.branch", &vf, &ctx).unwrap();
     assert_eq!(got, json!("main"));
 }
 
@@ -224,9 +209,7 @@ fn resolved_ref_recurses_for_virtual_field() {
     };
     // We evaluate an expression that references terraform.workspace (resolved, not cache.*)
     // terraform.workspace is virtual, so it should recurse into its expression.
-    let got = vf
-        .evaluate_expression("terraform.workspace", &ctx, &mut HashSet::new())
-        .unwrap();
+    let got = eval::evaluate("terraform.workspace", &vf, &ctx).unwrap();
     assert_eq!(
         got,
         json!("myws"),

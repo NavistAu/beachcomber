@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 pub mod envelope;
 
 use envelope::{ErrorKind, FfiError, WatchOutcome, call_ffi, call_watch_next};
+use libbeachcomber::eval::discover_refs;
 use libbeachcomber::path_expr::{evaluate_path, path_expression_for};
-use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
+use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields};
 use libbeachcomber::{CacheRow, CombResult, DaemonHealth, IntrospectResponse, IntrospectSubject};
 use std::collections::{HashMap, HashSet};
 
@@ -490,7 +491,7 @@ fn fetch_cache_refs(
     expr: &str,
 ) -> HashMap<String, serde_json::Value> {
     let mut daemon_data = HashMap::new();
-    for r in discover_expression_refs(expr) {
+    for r in discover_refs(expr) {
         match r {
             Ref::CacheField(p, f) => {
                 if let Ok(CombResult::Hit { data, .. }) = client.get(&format!("{p}.{f}"), None) {

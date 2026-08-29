@@ -29,11 +29,20 @@ fn classify_bare_is_expression() {
     assert_eq!(classify("git.branch"), Form::Expression);
     assert_eq!(classify("env.A or cache.x.y"), Form::Expression);
     assert_eq!(classify("  git.branch  "), Form::Expression);
-    // Empty source has no tag either — a compile error surfaces later, not here.
-    assert_eq!(classify(""), Form::Expression);
-    assert_eq!(classify("   "), Form::Expression);
 
     assert_eq!(single_tag_expression("git.branch"), None);
+}
+
+#[test]
+fn classify_empty_source_is_template() {
+    // An empty source is a template of no tags, rendering to "" — not an
+    // expression, which would make `-f ''` a compile error.
+    assert_eq!(classify(""), Form::Template);
+    assert_eq!(classify("   "), Form::Template);
+    assert_eq!(classify("\n\t "), Form::Template);
+
+    assert_eq!(single_tag_expression(""), None);
+    assert_eq!(discover_refs(""), vec![]);
 }
 
 #[test]
@@ -113,6 +122,15 @@ fn classify_unterminated_marker_is_template() {
 
     // A lone `{` opens no tag and is left to the expression compiler.
     assert_eq!(classify("a { b"), Form::Expression);
+
+    // A stray closer drives the scanner's bracket depth negative, and a negative
+    // depth never closes: the `}}` two bytes on is a close MiniJinja does not
+    // accept, so treating it as one would hand a broken source to the
+    // expression compiler. Unterminated instead — the template compiler reports
+    // "unexpected `}`".
+    assert_eq!(classify("{{ x } }}"), Form::Template);
+    assert_eq!(single_tag_expression("{{ x } }}"), None);
+    assert!(scan_tags("{{ x } }}").is_empty());
 }
 
 #[test]

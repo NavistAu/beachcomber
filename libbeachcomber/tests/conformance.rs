@@ -7,8 +7,9 @@
 mod common;
 use common::daemon::DaemonGuard;
 
+use libbeachcomber::eval::discover_refs;
 use libbeachcomber::path_expr::{evaluate_path, path_expression_for};
-use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
+use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields};
 use libbeachcomber::{Client, ClientConfig, CombResult, IntrospectResponse, IntrospectSubject};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -356,7 +357,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                             // Fetch live daemon data for cache.* refs in the expression —
                             // the fixture's `setup` `put` ops seed these.
                             let mut daemon_data: HashMap<String, Value> = HashMap::new();
-                            for r in discover_expression_refs(&expr) {
+                            for r in discover_refs(&expr) {
                                 match r {
                                     Ref::CacheField(p, f) => {
                                         if let Ok(CombResult::Hit { data, .. }) =

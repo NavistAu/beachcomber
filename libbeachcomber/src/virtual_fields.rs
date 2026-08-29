@@ -1,9 +1,13 @@
 //! Client-side virtual field evaluator.
 //!
-//! A virtual field (expression form) is a minijinja *expression* (not a template)
-//! evaluated to a typed `serde_json::Value`. Ref discovery uses
-//! `Expression::undeclared_variables(true)` to enumerate all `provider.field`
-//! and `env.*` refs in the expression — no byte-level scanning.
+//! A virtual field's value expression is written bare (`env.A or cache.x.y`),
+//! as a single tag (`{{ env.A or cache.x.y }}`), or as a template
+//! (`{{ git.branch }}{% if git.dirty %}*{% endif %}`). The first two evaluate
+//! to a typed `serde_json::Value`; a template is string-valued. [`crate::eval`]
+//! owns that classification and the evaluation itself; this module owns the
+//! registry, the reference taxonomy, and the context the refs bind to. Ref
+//! discovery uses minijinja's `undeclared_variables(true)` meta-analysis to
+//! enumerate all `provider.field` and `env.*` refs — no byte-level scanning.
 //!
 //! Built-in default virtual fields are compiled into `libbeachcomber`; no
 //! config file is required. Config may override or extend them. Any binary
@@ -162,8 +166,14 @@ impl VirtualFields {
     }
 
     /// Serialize the built-in virtual fields to a TOML config snippet.
-    /// Groups entries by provider: `[providers.<name>]` with `virtual.<field> = "expression"` keys.
+    /// Groups entries by provider: `[providers.<name>]` with
+    /// `virtual.<field> = "{{ expression }}"` keys.
     /// Uses TOML's dotted-key form: `virtual.<field>` under `[providers.<name>]`.
+    ///
+    /// Expressions are written in the documented single-tag form (canon
+    /// `field_resolution.md` invariant 14), which reads back as the same typed
+    /// field the bare form would. `BUILTIN_DEFAULTS` stay bare in the source:
+    /// they are internal, and the bare form remains accepted permanently.
     pub fn to_config_toml(&self) -> String {
         use std::collections::BTreeMap;
 
@@ -185,10 +195,18 @@ impl VirtualFields {
             fields.sort_by_key(|(f, _)| *f);
             out.push_str(&format!("[providers.{}]\n", provider));
             for (field, expr) in fields {
-                // TOML dotted-key form: virtual.<field> = "<expression>"
+                // TOML dotted-key form: virtual.<field> = "{{ <expression> }}"
                 // "virtual" is read as a string key in TOML — no Rust keyword collision.
-                let escaped = expr.replace('\\', "\\\\").replace('"', "\\\"");
-                out.push_str(&format!("virtual.{} = \"{}\"\n", field, escaped));
+                // A bare expression is wrapped in the documented single-tag
+                // form; a source that already carries tags is emitted as-is, so
+                // a config override round-trips instead of being double-wrapped.
+                let value = if crate::eval::classify(expr) == crate::eval::Form::Expression {
+                    format!("{{{{ {expr} }}}}")
+                } else {
+                    expr.to_string()
+                };
+                let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+                out.push_str(&format!("virtual.{field} = \"{escaped}\"\n"));
             }
             out.push('\n');
         }
@@ -228,34 +246,31 @@ impl VirtualFields {
         result
     }
 
-    /// Evaluate an arbitrary expression string against the given context.
+    /// Evaluate an arbitrary value expression against the given context.
     ///
-    /// Refs in the expression are discovered via `undeclared_variables(true)`.
+    /// Accepts all three forms (canon `field_resolution.md` invariant 14) —
+    /// bare, a single `{{ }}` tag, or a template — via [`crate::eval`]. Refs
+    /// are discovered per form, then bound:
     ///
     /// - `Env(X)` refs → `ctx.env_vars.get(X)` (empty string on miss).
     /// - `CacheField(P, F)` refs → `ctx.daemon_data["P.F"]` (raw cached value).
     /// - `CacheProvider(P)` refs → `ctx.daemon_data["P"]` (whole provider object).
     /// - `Resolved(P, F)` refs → if virtual, recurse `self.evaluate(P, F, ...)`
     ///   with cycle detection; otherwise `ctx.daemon_data["P.F"]`.
-    pub fn evaluate_expression(
+    ///
+    /// Crate-private: [`crate::eval::evaluate`] is the public entry point for
+    /// evaluating a value expression, and this is only the thread-the-stack
+    /// variant [`Self::evaluate`] needs. Demoted in the same release as
+    /// [`discover_expression_refs`], for the same reason — two public spellings
+    /// of one operation, where only one of them handles all three forms
+    /// correctly by name.
+    pub(crate) fn evaluate_expression(
         &self,
         expr: &str,
         ctx: &EvalContext<'_>,
         stack: &mut HashSet<(String, String)>,
     ) -> Result<JsonValue, String> {
-        let refs = discover_expression_refs(expr);
-        let ctx_json = build_context_json(&refs, ctx, self, stack)?;
-        let top = MjValue::from_serialize(&ctx_json);
-
-        let env = build_expression_env();
-        let compiled = env
-            .compile_expression(expr)
-            .map_err(|e| format!("expression compile error: {e}"))?;
-        let mj_result = compiled
-            .eval(top)
-            .map_err(|e| format!("expression eval error: {e}"))?;
-
-        Ok(mj_to_json(mj_result))
+        crate::eval::evaluate_with_stack(expr, self, ctx, stack)
     }
 }
 
@@ -296,7 +311,13 @@ pub fn evaluate_namespace(
 ///   and `{P: daemon_data["P"]}` for each `CacheProvider(P)`
 /// - Top-level `P: {F: <resolved>}` for each `Resolved(P, F)`
 ///   (if `vf.is_virtual(P, F)` → recurse `vf.evaluate(...)`; else `daemon_data["P.F"]`)
-fn build_context_json(
+///
+/// Where a `CacheProvider(P)` object and a `CacheField(P, F)` disagree about
+/// `F`, the whole object wins — it is the authoritative snapshot. That holds
+/// **whichever ref is bound first**: the provider arm overrides on merge, and
+/// the field arm only fills a key the object did not supply. So the result does
+/// not depend on `refs` order.
+pub(crate) fn build_context_json(
     refs: &[Ref],
     ctx: &EvalContext<'_>,
     vf: &VirtualFields,
@@ -338,12 +359,14 @@ fn build_context_json(
                 if let JsonValue::Object(cache_map) = cache_entry {
                     // If a CacheProvider binding already inserted a whole object for
                     // this provider, insert just the individual field key into it
-                    // rather than replacing the whole map.
+                    // rather than replacing the whole map — and never over a key the
+                    // whole object already supplied: that object is the authoritative
+                    // snapshot, so it wins on collision whichever ref is bound first.
                     let provider_entry = cache_map
                         .entry(provider.clone())
                         .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
                     if let JsonValue::Object(pmap) = provider_entry {
-                        pmap.insert(field.clone(), raw_val);
+                        pmap.entry(field.clone()).or_insert(raw_val);
                     }
                     // If provider_entry is not an Object (e.g. it was set to Null by a
                     // CacheProvider ref that returned nothing), leave it — the field
@@ -464,13 +487,22 @@ pub(crate) fn refs_from_names(names: impl IntoIterator<Item = String>) -> Vec<Re
 /// `Expression::undeclared_variables(true)` (nested = true), classified by
 /// `classify_dotted`.
 ///
-/// Returns a deduplicated list of refs.
-pub fn discover_expression_refs(expr: &str) -> Vec<Ref> {
+/// Returns a deduplicated list of refs, sorted for reproducibility — see
+/// [`crate::eval::discover_refs`], which states the rule for every discovery
+/// path in this crate.
+///
+/// Takes an expression, not a value expression: a source written with `{{ }}`
+/// fails to compile here and yields nothing. [`crate::eval::discover_refs`] is
+/// the entry point that handles all three forms, and is what callers outside
+/// this module use.
+pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
     let env = build_expression_env();
     let Ok(compiled) = env.compile_expression(expr) else {
         return vec![];
     };
-    refs_from_names(compiled.undeclared_variables(true))
+    let mut refs = refs_from_names(compiled.undeclared_variables(true));
+    refs.sort();
+    refs
 }
 
 // ── Minijinja environment for expressions ─────────────────────────────────────
@@ -490,8 +522,10 @@ pub(crate) fn build_expression_env<'a>() -> Environment<'a> {
 
 /// Convert a minijinja `Value` to a `serde_json::Value`.
 ///
-/// Preserves types: bool → bool, integer → number, string → string.
-/// UNDEFINED / None → empty string (all-falsy result).
+/// Preserves types: bool → bool, integer → number, string → string, map →
+/// object, sequence → array. UNDEFINED / None → empty string (all-falsy
+/// result, per canon `field_resolution.md` invariant 9: an all-empty cascade
+/// resolves to `""`).
 pub(crate) fn mj_to_json(v: MjValue) -> JsonValue {
     if v.is_undefined() || v.is_none() {
         return JsonValue::String(String::new());
@@ -515,6 +549,20 @@ pub(crate) fn mj_to_json(v: MjValue) -> JsonValue {
         {
             return JsonValue::Number(n);
         }
+    }
+    // Structured values keep their shape: an interior node is an object and a
+    // sequence an array, rather than MiniJinja's `{"a": 1}` debug rendering —
+    // canon `field_resolution.md` invariants 8 and 12. serde round-trips the
+    // whole tree (a nested `none` becomes JSON null); anything it cannot
+    // represent falls through to the string form below.
+    if matches!(
+        v.kind(),
+        minijinja::value::ValueKind::Map
+            | minijinja::value::ValueKind::Seq
+            | minijinja::value::ValueKind::Iterable
+    ) && let Ok(json) = serde_json::to_value(&v)
+    {
+        return json;
     }
     // String fallback — also handles UNDEFINED that slipped through.
     let s = v.to_string();
