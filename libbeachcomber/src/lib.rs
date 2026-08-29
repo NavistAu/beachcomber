@@ -15,6 +15,7 @@
 //! }
 //! ```
 
+pub mod eval;
 pub mod filters;
 pub mod path_expr;
 pub mod render;

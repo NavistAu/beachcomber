@@ -85,7 +85,12 @@ const BUILTIN_DEFAULTS: &[(&str, &str, &str)] = &[
 /// - `cache.P.F` → `CacheField(P, F)` (raw cached value, bypasses field expressions)
 /// - `cache.P` → `CacheProvider(P)` (the whole provider object)
 /// - `P.F` (P ∉ {env, cache}) → `Resolved(P, F)` (resolved field, recurse if virtual)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// `Ord` is derived: variants sort in declaration order (Env < CacheField <
+/// CacheProvider < Resolved), then field-wise. Discovery runs off minijinja's
+/// `HashSet` of undeclared variables, so sorting is what makes ref order
+/// reproducible across runs — see `crate::eval::discover_refs`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Ref {
     /// `env.X` — the calling shell's environment variable X.
     Env(String),
@@ -398,16 +403,66 @@ fn build_context_json(
 
 // ── Ref discovery ─────────────────────────────────────────────────────────────
 
-/// Discover all refs in an expression using minijinja's
-/// `Expression::undeclared_variables(true)` (nested = true).
+/// Classify one dotted name from minijinja's undeclared-variable analysis.
 ///
-/// Classifies each dotted name:
 /// - `env.X` → `Ref::Env(X)`
 /// - `cache.P.F` → `Ref::CacheField(P, F)`
 /// - `cache.P` → `Ref::CacheProvider(P)`
-/// - `cwd` → ignored (path-expression variable, reserved for a later task)
+/// - `cwd` → `None` (path-expression variable, reserved for a later task)
 /// - `P.F` (P ∉ {env, cache, cwd}) → `Ref::Resolved(P, F)`
-/// - bare single name → ignored
+/// - bare single name → `None`
+///
+/// Segments beyond the second (third for `cache.*`) are MiniJinja attribute
+/// navigation into the fetched value — NOT part of the ref key itself.
+///
+/// Shared by [`discover_expression_refs`] and the template discovery path in
+/// [`crate::eval`], so expression and template forms classify identically.
+pub(crate) fn classify_dotted(name: &str) -> Option<Ref> {
+    let mut segments = name.split('.');
+    let first = segments.next()?;
+    // Bare name — no ref (includes "cwd").
+    let second = segments.next()?;
+    let third = segments.next();
+
+    match first {
+        "env" => Some(Ref::Env(second.to_string())),
+        "cache" => Some(match third {
+            Some(field) => Ref::CacheField(second.to_string(), field.to_string()),
+            None => Ref::CacheProvider(second.to_string()),
+        }),
+        // Path-expression variable — reserved for a later task; ignore here.
+        "cwd" => None,
+        _ => Some(Ref::Resolved(first.to_string(), second.to_string())),
+    }
+}
+
+/// Classify a batch of undeclared-variable names into a deduplicated ref list.
+///
+/// Shared by [`discover_expression_refs`] and the template discovery path in
+/// `crate::eval`, so the expression and template forms of one value expression
+/// always yield the same refs.
+///
+/// VERIFIED against vendor/minijinja 2.19.0 (compiler/meta.rs:141-157): with
+/// nested = true, an attribute chain `a.b` is recorded as the dotted string
+/// "a.b" (e.g. `env.PYENV_VERSION or mise.python` → {"env.PYENV_VERSION",
+/// "mise.python"}). So `classify_dotted` splits each entry on '.' — no
+/// byte-scanning needed.
+pub(crate) fn refs_from_names(names: impl IntoIterator<Item = String>) -> Vec<Ref> {
+    let mut refs: Vec<Ref> = Vec::new();
+    let mut seen: HashSet<Ref> = HashSet::new();
+    for name in names {
+        if let Some(r) = classify_dotted(&name)
+            && seen.insert(r.clone())
+        {
+            refs.push(r);
+        }
+    }
+    refs
+}
+
+/// Discover all refs in an expression using minijinja's
+/// `Expression::undeclared_variables(true)` (nested = true), classified by
+/// `classify_dotted`.
 ///
 /// Returns a deduplicated list of refs.
 pub fn discover_expression_refs(expr: &str) -> Vec<Ref> {
@@ -415,52 +470,7 @@ pub fn discover_expression_refs(expr: &str) -> Vec<Ref> {
     let Ok(compiled) = env.compile_expression(expr) else {
         return vec![];
     };
-    // VERIFIED against vendor/minijinja 2.19.0 (compiler/meta.rs:141-157): with
-    // nested = true, an attribute chain `a.b` is recorded as the dotted string "a.b"
-    // (e.g. `env.PYENV_VERSION or mise.python` → {"env.PYENV_VERSION", "mise.python"}).
-    // So we split each entry on the first '.' — no byte-scanning needed.
-    let mut refs: Vec<Ref> = Vec::new();
-    let mut seen: HashSet<Ref> = HashSet::new();
-
-    for v in compiled.undeclared_variables(true) {
-        let mut segments = v.splitn(4, '.');
-        let first = match segments.next() {
-            Some(s) => s,
-            None => continue,
-        };
-        let second = match segments.next() {
-            Some(s) => s,
-            None => {
-                // Bare name — skip (includes "cwd").
-                continue;
-            }
-        };
-        // Segments beyond the second are MiniJinja attribute navigation into
-        // the fetched value — NOT part of the ref key itself.
-        let third = segments.next(); // optional: None for two-segment refs
-
-        let r = match first {
-            "env" => Ref::Env(second.to_string()),
-            "cache" => match third {
-                Some(_) => Ref::CacheField(second.to_string(), third.unwrap().to_string()),
-                None => Ref::CacheProvider(second.to_string()),
-            },
-            "cwd" => {
-                // Path-expression variable — reserved for a later task; ignore here.
-                continue;
-            }
-            _ => {
-                // P.F where P ∉ {env, cache, cwd} → Resolved(P, F)
-                Ref::Resolved(first.to_string(), second.to_string())
-            }
-        };
-
-        if seen.insert(r.clone()) {
-            refs.push(r);
-        }
-    }
-
-    refs
+    refs_from_names(compiled.undeclared_variables(true))
 }
 
 // ── Minijinja environment for expressions ─────────────────────────────────────
