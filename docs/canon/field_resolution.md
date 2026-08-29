@@ -75,7 +75,7 @@ For a cached field with the default identity expression the two coincide; they d
 - A **miss yields `""`**, never an error.
 - **Directly queryable**: `comb get env.X` returns the value (valid, if rarely useful alone — its purpose is to be a term in a larger expression).
 - **Never contacts the daemon**; carries no `age`/`ttl`/`stale` metadata (live by definition).
-- Available wherever expressions or templates are evaluated: value expressions, path expressions, and `eval` templates (`{{ env.X }}`).
+- Available wherever value expressions are evaluated, including inside `{{ }}` tags and in path expressions (`{{ env.X }}`).
 - `--format json` emits the bare value (no metadata wrapper); `--format sh` shell-escapes it.
 
 ### Path resolution
@@ -96,7 +96,7 @@ The path expression is the general form of the Global/PathScoped distinction. Bu
 
 ### Value resolution
 
-Every field has a **value expression**.
+Every field has a **value expression**, written either bare (`env.A or cache.x.y`) or as a single tag (`{{ env.A or cache.x.y }}`) — the two are equivalent. A **template** — literal text around a tag, or more than one tag, e.g. `{{ git.branch }}{% if git.dirty %}*{% endif %}` — is a string-valued field: only a value expression written as exactly one tag keeps the expression's natural type. The documented form is `{{ }}`; bare stays accepted for backward compatibility.
 
 - A **cached** field's value expression defaults to the **identity** — its own cached value, `cache.<provider>.<field>`.
 - A **virtual** field's value expression is custom: selection or computation over `cache.*`, `env.*`, and other fields' resolved values. A virtual field **need not have a cached value of its own** — its value is entirely the expression.
@@ -176,6 +176,7 @@ A resolved value keeps its natural type. `--format json` emits bool / number / s
 11. Path-phase env selection — the selector designates a slot — resolves the selector to a path client-side; the daemon receives only that path as the cache coordinate, never the selector env var. Producing and watching the value at the path is the Source's concern (`provider_source.md`).
 12. A query may address any node of the value tree: a leaf resolves to a scalar, an interior node (a field whose value is an object, or a bare provider/namespace) to its subtree as an object. A consumer namespace's subtree is its evaluated virtual fields; a cached provider's, its cached fields. Addressing is independent of whether a node is cached or computed.
 13. Built-in value and path expressions are built into the client; configuration overrides them per provider/field.
+14. A value expression written as exactly one `{{ expr }}` evaluates to the expression's natural type; one written with literal text or more than one tag evaluates to a string.
 
 ## Parameters
 
@@ -224,6 +225,22 @@ Both address a provider root — an interior node — and return its subtree as 
 
 ```gherkin
 Feature: Field resolution
+
+  Scenario: a bare value expression is equivalent to a single tag
+    Given field A has value expression written bare as "env.X or cache.a.y"
+    And field B has the same expression written as a single tag "{{ env.X or cache.a.y }}"
+    When each field is resolved
+    Then both yield the same value with the expression's natural type
+
+  Scenario: a single-tag expression keeps the expression's natural type
+    Given a value expression "{{ cache.provider.flag }}" where cache.provider.flag is a boolean
+    When the field is resolved
+    Then the value is a boolean, not a string
+
+  Scenario: a template expression resolves to a string
+    Given a value expression "{{ git.branch }}{% if git.dirty %}*{% endif %}"
+    When the field is resolved
+    Then the value is a string
 
   Scenario: a cached field resolves to its cached value by default
     Given a cached field provider.f with no custom value expression
