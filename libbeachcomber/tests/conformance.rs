@@ -7,10 +7,12 @@
 mod common;
 use common::daemon::DaemonGuard;
 
-use libbeachcomber::eval::discover_refs;
+use libbeachcomber::eval;
 use libbeachcomber::path_expr::{evaluate_path, path_expression_for};
 use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields};
-use libbeachcomber::{Client, ClientConfig, CombResult, IntrospectResponse, IntrospectSubject};
+use libbeachcomber::{
+    Client, ClientConfig, CombError, CombResult, IntrospectResponse, IntrospectSubject,
+};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -25,7 +27,7 @@ struct Fixture {
     test: OpDescriptor,
     expect: Value,
     source_path: PathBuf,
-    /// `resolve` op context, parsed from the fixture's top-level `virtual`/`env`/`cwd`.
+    /// `resolve`/`eval` op context, parsed from the fixture's top-level `virtual`/`env`/`cwd`.
     /// `virtual` entries keyed "provider.field" become field expression overrides;
     /// entries keyed by a bare provider name become path expression overrides.
     field_overrides: Vec<((String, String), String)>,
@@ -34,7 +36,7 @@ struct Fixture {
     cwd: Option<String>,
 }
 
-/// Per-fixture context a `resolve` op is evaluated against.
+/// Per-fixture context a `resolve` or `eval` op is evaluated against.
 struct ResolveCtx<'a> {
     field_overrides: &'a [((String, String), String)],
     path_overrides: &'a HashMap<String, String>,
@@ -354,44 +356,28 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     match vf.expression(provider, field) {
                         Some(expr) => {
                             let expr = expr.to_string();
-                            // Fetch live daemon data for cache.* refs in the expression —
-                            // the fixture's `setup` `put` ops seed these.
-                            let mut daemon_data: HashMap<String, Value> = HashMap::new();
-                            for r in discover_refs(&expr) {
-                                match r {
-                                    Ref::CacheField(p, f) => {
-                                        if let Ok(CombResult::Hit { data, .. }) =
-                                            client.get(&format!("{p}.{f}"), None)
-                                        {
-                                            daemon_data.insert(
-                                                format!("{p}.{f}"),
-                                                data.as_value().clone(),
-                                            );
-                                        }
+                            // Every daemon key the expression needs, virtual-field
+                            // dependencies included — the fixture's `setup` `put` ops
+                            // seed these.
+                            let refs = eval::daemon_refs(&expr, &vf);
+                            match fetch_via_client(client, resolve.cwd, &refs) {
+                                Ok(daemon_data) => {
+                                    let ctx = EvalContext {
+                                        env_vars: resolve.env_vars,
+                                        daemon_data: &daemon_data,
+                                    };
+                                    match vf.evaluate(provider, field, &ctx, &mut HashSet::new()) {
+                                        Ok(v) => CanonicalResponse {
+                                            ok: true,
+                                            data: Some(v),
+                                            data_as_text: None,
+                                            age_ms: None,
+                                            stale: None,
+                                            error: None,
+                                        },
+                                        Err(e) => err_resp(e),
                                     }
-                                    Ref::CacheProvider(p) => {
-                                        if let Ok(CombResult::Hit { data, .. }) =
-                                            client.get(&p, None)
-                                        {
-                                            daemon_data.insert(p, data.as_value().clone());
-                                        }
-                                    }
-                                    Ref::Env(_) | Ref::Resolved(_, _) => {}
                                 }
-                            }
-                            let ctx = EvalContext {
-                                env_vars: resolve.env_vars,
-                                daemon_data: &daemon_data,
-                            };
-                            match vf.evaluate(provider, field, &ctx, &mut HashSet::new()) {
-                                Ok(v) => CanonicalResponse {
-                                    ok: true,
-                                    data: Some(v),
-                                    data_as_text: None,
-                                    age_ms: None,
-                                    stale: None,
-                                    error: None,
-                                },
                                 Err(e) => err_resp(e),
                             }
                         }
@@ -421,8 +407,60 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                 },
             }
         }
+        "eval" => {
+            let template = descriptor.args["template"].as_str().unwrap_or("");
+            let vf = VirtualFields::with_config_overrides(resolve.field_overrides.iter().cloned());
+            // Same three steps `bc_eval` and `comb eval` take: close the ref set
+            // over virtual fields, fetch it, evaluate whichever of the three
+            // forms the source is written in.
+            let refs = eval::daemon_refs(template, &vf);
+            match fetch_via_client(client, resolve.cwd, &refs) {
+                Ok(daemon_data) => {
+                    let ctx = EvalContext {
+                        env_vars: resolve.env_vars,
+                        daemon_data: &daemon_data,
+                    };
+                    match eval::evaluate(template, &vf, &ctx) {
+                        Ok(v) => CanonicalResponse {
+                            ok: true,
+                            data: Some(v),
+                            data_as_text: None,
+                            age_ms: None,
+                            stale: None,
+                            error: None,
+                        },
+                        Err(e) => err_resp(e),
+                    }
+                }
+                Err(e) => err_resp(e),
+            }
+        }
         other => panic!("unknown op in fixture: {other}"),
     }
+}
+
+/// Fetch every ref in `refs` from the daemon, keyed the way an
+/// [`EvalContext`] expects — the reference runner's copy of the FFI's
+/// `fetch_via_client` (`libbeachcomber-ffi/src/lib.rs`), so `resolve` and
+/// `eval` fixtures exercise one fetch contract rather than three.
+///
+/// `cwd` scopes the query the way `bc_resolve`/`bc_eval` scope theirs. A cache
+/// miss and a daemon-rejected key (`CombError::ServerError` — "unknown
+/// provider: c" for a `cache.*` ref that names nothing registered) are both
+/// simply absent from the map and evaluate falsy, per canon's "a missing or
+/// unknown ref is falsy at any depth". Every other `CombError` is a genuine
+/// transport failure and fails the fixture.
+fn fetch_via_client(
+    client: &Client,
+    cwd: &str,
+    refs: &[Ref],
+) -> Result<HashMap<String, Value>, String> {
+    eval::fetch_daemon_data(refs, |key| match client.get(key, Some(cwd)) {
+        Ok(CombResult::Hit { data, .. }) => Ok(Some(data.as_value().clone())),
+        Ok(CombResult::Miss) => Ok(None),
+        Err(CombError::ServerError(_)) => Ok(None),
+        Err(e) => Err(format!("querying {key}: {e}")),
+    })
 }
 
 fn error_response(e: libbeachcomber::CombError) -> CanonicalResponse {

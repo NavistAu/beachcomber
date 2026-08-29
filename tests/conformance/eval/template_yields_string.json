@@ -1,0 +1,6 @@
+{
+  "name": "eval_template_yields_string",
+  "description": "A tag plus literal text is a template: it renders to a string, so the number 2 arrives as part of \"2 apples\".",
+  "test": { "op": "eval", "args": { "template": "{{ 1 + 1 }} apples" } },
+  "expect": { "status": "hit", "data_type": "string", "data_equals": "2 apples" }
+}

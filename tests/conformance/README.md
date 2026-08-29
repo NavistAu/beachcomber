@@ -43,14 +43,14 @@ conformance run in the same commit.
 | `setup` | no | array of op descriptors to run first (ignored for expectations) |
 | `test` | yes | the op descriptor whose response is asserted |
 | `expect` | yes | assertions — see below |
-| `virtual` | no | object mapping a field key (`"provider.field"`) or a bare provider name to an expression string. Feeds the client-side resolver for `resolve` fixtures — see below. Defaults to empty. |
-| `env` | no | object mapping env var name to string value. Feeds the client-side resolver's `env.*` refs for `resolve` fixtures. Defaults to empty. |
-| `cwd` | no | string. Feeds the client-side resolver's `cwd` for path-expression `resolve` fixtures. Defaults to the runner's per-fixture temp directory. |
+| `virtual` | no | object mapping a field key (`"provider.field"`) or a bare provider name to an expression string. Feeds the client-side resolver for `resolve` and `eval` fixtures — see below. Defaults to empty. |
+| `env` | no | object mapping env var name to string value. Feeds the client-side resolver's `env.*` refs for `resolve` and `eval` fixtures. Defaults to empty. |
+| `cwd` | no | string. Feeds the client-side resolver's `cwd`: the path-expression variable for `resolve` fixtures, and the path daemon queries are scoped to for both `resolve` and `eval`. Defaults to the runner's per-fixture temp directory. |
 
 ### Op descriptor
 
 ```json
-{ "op": "<hello|get|refresh|context|put|status|watch|introspect|resolve>", "args": {...} }
+{ "op": "<hello|get|refresh|context|put|status|watch|introspect|resolve|eval>", "args": {...} }
 ```
 
 `args` matches the wire request body for that op (minus `op` itself). See
@@ -85,11 +85,47 @@ so this is deliberately **not** wired through a daemon config file — the
 fixture's `virtual`/`env`/`cwd` feed the resolver call directly (for the C
 ABI this is `overrides_json` / `env_json` / `cwd`).
 
-**Not every runner supports `resolve` yet.** Only the Rust reference runner
-(`libbeachcomber/tests/conformance.rs`) does. A runner whose binding
-doesn't implement resolution must **skip** `resolve` fixtures and report them
-as skipped, never as passed — a silent skip that reads as a pass is worse
-than no fixture. Other runners gain `resolve` support in Phase 4.
+Daemon queries a `resolve` makes are scoped to the fixture's `cwd`, so a
+`setup` `put` that seeds a cache ref must carry the matching `args.path` —
+a pathless (global) `put` is not visible to a cwd-scoped read.
+
+### The `eval` op
+
+`eval` is not a wire op either. It evaluates one **value expression** in any
+of the three forms canon `field_resolution.md` (invariant 14) defines, against
+the same client-side context `resolve` uses. `args.template` is the only
+argument:
+
+```json
+{ "op": "eval", "args": { "template": "{{ env.A or cache.p.f }}" } }
+```
+
+The type rule the fixtures pin down:
+
+- **bare expression** (no tag markers) — evaluated as an expression, keeping
+  its natural type. `env.A != ""` yields a bool.
+- **exactly one `{{ expr }}`** spanning the whole source — identical to the
+  bare form, natural type preserved. Surrounding whitespace is not literal
+  text.
+- **anything else** — literal text, more than one tag, a `{% %}` statement
+  tag, an unterminated marker, or an empty source — is a template and yields
+  a **string**. `{{ 1 + 1 }} apples` is `"2 apples"`, not a number.
+
+A missing or unknown ref is falsy at any depth, never an error: an absent
+`env.*`, a cache miss, and a daemon-rejected key (an unregistered provider)
+all evaluate falsy, so `{{ nope.field or "x" }}` is `"x"`.
+
+`virtual`, `env` and `cwd` apply exactly as they do for `resolve`: `virtual`
+entries keyed `"provider.field"` define the field expressions a `provider.field`
+reference resolves through (transitively — a virtual field may reference
+another), `env` supplies `env.*`, and `cwd` scopes the daemon queries. As with
+`resolve`, a `setup` `put` seeding a ref must carry the matching `args.path`.
+
+**Not every runner supports `resolve`/`eval`.** A runner whose binding
+doesn't implement them must **skip** those fixtures and report them as
+skipped, never as passed — a silent skip that reads as a pass is worse than
+no fixture. The Lua runner skips both when it falls back to its subprocess
+transport, which has no client-side resolver.
 
 ### Expectation kinds
 
@@ -140,7 +176,9 @@ tests/conformance/
 │   └── *.json
 ├── introspect/
 │   └── *.json
-└── resolve/
+├── resolve/
+│   └── *.json
+└── eval/
     └── *.json
 ```
 

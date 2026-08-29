@@ -1,0 +1,6 @@
+{
+  "name": "eval_missing_ref_is_falsy",
+  "description": "A missing or unknown ref is falsy, not an error: nope.field names no registered provider, so the cascade yields \"x\".",
+  "test": { "op": "eval", "args": { "template": "{{ nope.field or \"x\" }}" } },
+  "expect": { "status": "hit", "data_type": "string", "data_equals": "x" }
+}

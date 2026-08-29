@@ -1,9 +1,10 @@
 {
   "name": "resolve_cache_ref_virtual_field",
-  "description": "A virtual field expression referencing cache.P.F resolves to that cached value.",
+  "description": "A virtual field expression referencing cache.P.F resolves to that cached value. The seed is put at the fixture's cwd because resolution queries the daemon scoped to that cwd.",
   "virtual": { "widget.label": "cache.widgetdata.label" },
+  "cwd": "/nonexistent/proj",
   "setup": [
-    { "op": "put", "args": { "key": "widgetdata", "data": { "label": "hello-value" } } }
+    { "op": "put", "args": { "key": "widgetdata", "data": { "label": "hello-value" }, "path": "/nonexistent/proj" } }
   ],
   "test": { "op": "resolve", "args": { "key": "widget.label" } },
   "expect": { "status": "hit", "data_type": "string", "data_equals": "hello-value" }

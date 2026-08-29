@@ -1,10 +1,11 @@
 {
   "name": "resolve_cascade_env_wins_over_cache",
-  "description": "env.X or cache.P.F cascade takes the env term when both env and cache are present.",
+  "description": "env.X or cache.P.F cascade takes the env term when both env and cache are present. This fixture proves env precedence only; that the cache term is reachable at all is its sibling cascade_falls_through_to_cache's job.",
   "virtual": { "myapp.workspace": "env.MYAPP_ENV or cache.myappcache.workspace" },
   "env": { "MYAPP_ENV": "prod-env" },
+  "cwd": "/nonexistent/proj",
   "setup": [
-    { "op": "put", "args": { "key": "myappcache", "data": { "workspace": "cache-env" } } }
+    { "op": "put", "args": { "key": "myappcache", "data": { "workspace": "cache-env" }, "path": "/nonexistent/proj" } }
   ],
   "test": { "op": "resolve", "args": { "key": "myapp.workspace" } },
   "expect": { "status": "hit", "data_type": "string", "data_equals": "prod-env" }

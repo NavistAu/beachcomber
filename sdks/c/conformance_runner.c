@@ -28,9 +28,9 @@
  *     "description": "...",
  *     "setup": [ { "op": "put", "args": {...} } ],
  *     "test":  { "op": "get",  "args": {...} },
- *     "virtual": { "provider.field": "expr" },   // resolve fixtures only
- *     "env": { "VAR": "value" },                 // resolve fixtures only
- *     "cwd": "/some/path",                       // resolve fixtures only
+ *     "virtual": { "provider.field": "expr" },   // resolve/eval fixtures only
+ *     "env": { "VAR": "value" },                 // resolve/eval fixtures only
+ *     "cwd": "/some/path",                       // resolve/eval fixtures only
  *     "expect": {
  *       "status": "hit"|"miss"|"ok"|"error",
  *       "data_type": "string"|"number"|"bool"|"object"|"array"|"null",
@@ -103,14 +103,14 @@ static void report_skip(const char *name, const char *op) {
 }
 
 /* Every op the fixture format defines is implemented directly over the ABI
- * (bc_resolve gives us "resolve" — the one op earlier phases of this
- * refactor had no binding for). Kept as an explicit allow-list, rather than
- * assuming, so a future op the ABI doesn't yet cover skips loudly instead
- * of crashing into a NULL. */
+ * (bc_resolve and bc_eval give us the two client-side ops, "resolve" and
+ * "eval"). Kept as an explicit allow-list, rather than assuming, so a future
+ * op the ABI doesn't yet cover skips loudly instead of crashing into a
+ * NULL. */
 static int op_supported(const char *op) {
     static const char *supported[] = {
         "hello", "get", "refresh", "put", "status", "context", "watch",
-        "introspect", "resolve", NULL
+        "introspect", "resolve", "eval", NULL
     };
     for (int i = 0; supported[i]; i++) {
         if (strcmp(op, supported[i]) == 0) return 1;
@@ -502,8 +502,8 @@ static void stop_daemon(daemon_proc_t *dp) {
  * ---------------------------------------------------------------------- */
 
 /*
- * default_cwd: the directory `resolve` fixtures get when they don't declare
- * their own "cwd" — this run's shared per-run temp directory (real,
+ * default_cwd: the directory `resolve`/`eval` fixtures get when they don't
+ * declare their own "cwd" — this run's shared per-run temp directory (real,
  * existing, but otherwise inert; path-expression fixtures that care about a
  * specific cwd always declare one explicitly).
  */
@@ -593,6 +593,30 @@ static char *run_op(BcClient *client, BcSession *session,
                                     : NULL;
 
         char *result = bc_resolve(client, key ? key : "", cwd, env_json, overrides_json);
+        free(env_json);
+        free(overrides_json);
+        return result;
+    }
+
+    if (strcmp(op_str, "eval") == 0) {
+        /* Same fixture-level cwd / env / virtual as "resolve" — see
+         * tests/conformance/README.md's "eval" section. */
+        const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
+        if (!cwd) cwd = default_cwd;
+
+        json_node_t *env_node = json_get(fixture_root, "env");
+        char *env_json = (env_node && env_node->type == JSON_OBJECT)
+                              ? serialise_node(env_node)
+                              : NULL;
+
+        json_node_t *virtual_node = json_get(fixture_root, "virtual");
+        char *overrides_json = (virtual_node && virtual_node->type == JSON_OBJECT)
+                                    ? serialise_node(virtual_node)
+                                    : NULL;
+
+        const char *template_str = args ? json_as_str(json_get(args, "template")) : NULL;
+        char *result = bc_eval(client, template_str ? template_str : "", cwd,
+                               env_json, overrides_json);
         free(env_json);
         free(overrides_json);
         return result;

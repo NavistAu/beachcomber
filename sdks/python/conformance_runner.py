@@ -153,8 +153,8 @@ def _run_op(
     Returns the raw response data (or None for ops that return nothing),
     or raises CombError / ServerError on failure.
 
-    `resolve_ctx` (only consulted for the `resolve` op) carries the
-    fixture's `virtual`/`env`/`cwd` blocks — see
+    `resolve_ctx` (only consulted for the `resolve` and `eval` ops) carries
+    the fixture's `virtual`/`env`/`cwd` blocks — see
     tests/conformance/README.md.
     """
     if op == "resolve":
@@ -166,6 +166,19 @@ def _run_op(
             env=resolve_ctx["env"] or None,
             overrides=resolve_ctx["virtual"] or None,
         )
+    if op == "eval":
+        assert resolve_ctx is not None
+        from libbeachcomber.result import CombResult
+
+        value = client.eval(
+            args.get("template", ""),
+            cwd=resolve_ctx["cwd"],
+            env=resolve_ctx["env"] or None,
+            overrides=resolve_ctx["virtual"] or None,
+        )
+        # Client.eval returns the bare value; wrap it the way Client.resolve
+        # already does so the shared expectation checks see one shape.
+        return CombResult(ok=True, data=value, age_ms=0, stale=False)
     if op == "get":
         return client.get(**args)
     if op == "refresh":
@@ -221,6 +234,7 @@ _SUPPORTED_OPS = {
     "watch",
     "introspect",
     "resolve",
+    "eval",
 }
 
 
@@ -408,7 +422,7 @@ def _check_data_type(data: Any, expected_type: str) -> bool:
         return isinstance(data, str)
     if expected_type == "number":
         return isinstance(data, (int, float)) and not isinstance(data, bool)
-    if expected_type == "boolean":
+    if expected_type == "bool":
         return isinstance(data, bool)
     if expected_type == "null":
         return data is None
