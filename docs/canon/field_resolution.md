@@ -242,6 +242,12 @@ Feature: Field resolution
     When the field is resolved
     Then the value is a string
 
+  Scenario: whitespace around a single tag is not literal text
+    Given a value expression " {{ cache.provider.flag }}\n" where cache.provider.flag is a boolean
+    When the field is resolved
+    Then the value is a boolean, not a string
+    And the surrounding whitespace does not appear in the value
+
   Scenario: a cached field resolves to its cached value by default
     Given a cached field provider.f with no custom value expression
     When provider.f is resolved
