@@ -1,81 +1,9 @@
-//! Tests for comb eval env.* injection and daemon-skip behavior.
-//! These are unit-level tests on run_eval's logic; full e2e in e2e_providers.rs.
-
-// These tests verify the CONTRACT, not the full end-to-end behavior.
-// We test the helper functions directly.
-
-use beachcomber::cli::format::find_eval_template_pairs;
-
-#[test]
-fn find_eval_template_pairs_finds_multi_ref_cascade_in_block() {
-    // Guards against first-ref-only regression for block tags.
-    // "{% if git.branch or user.name %}" must yield both pairs.
-    let pairs = find_eval_template_pairs("{% if git.branch or user.name %}x{% endif %}");
-    assert!(
-        pairs.iter().any(|(p, f)| p == "git" && f == "branch"),
-        "git.branch missing"
-    );
-    assert!(
-        pairs.iter().any(|(p, f)| p == "user" && f == "name"),
-        "user.name missing"
-    );
-}
-
-#[test]
-fn env_refs_in_template_identified() {
-    // 'env' must appear as a provider name in template pairs for eval injection.
-    let pairs = find_eval_template_pairs("{{ env.MY_VAR }}");
-    assert!(
-        pairs.iter().any(|(p, f)| p == "env" && f == "MY_VAR"),
-        "env.MY_VAR must be found as a pair; got: {pairs:?}"
-    );
-}
-
-// ── #3: {{ }} expression tags discover ALL refs (not just the first) ──────────
-
-#[test]
-fn expr_tag_finds_all_refs_in_cascade() {
-    // "{{ env.NOPE or user.name }}" must yield BOTH refs — the first-ref-only
-    // scanner missed user.name, so the cascade fell back to an undefined value.
-    let pairs = find_eval_template_pairs("{{ env.NOPE or user.name }}");
-    assert!(
-        pairs.iter().any(|(p, f)| p == "env" && f == "NOPE"),
-        "env.NOPE missing; got: {pairs:?}"
-    );
-    assert!(
-        pairs.iter().any(|(p, f)| p == "user" && f == "name"),
-        "user.name missing — {{ }} scanner is still first-ref-only; got: {pairs:?}"
-    );
-}
-
-#[test]
-fn expr_tag_nested_ref_records_provider_field_only() {
-    // A nested chain records only ("foo","bar") — daemon keys are provider.field
-    // (one dot); ".baz" is MiniJinja nested attribute access.
-    let pairs = find_eval_template_pairs("{{ foo.bar.baz }}");
-    assert!(
-        pairs.iter().any(|(p, f)| p == "foo" && f == "bar"),
-        "foo.bar missing; got: {pairs:?}"
-    );
-    assert!(
-        !pairs.iter().any(|(p, f)| p == "bar" && f == "baz"),
-        "spurious bar.baz recorded; got: {pairs:?}"
-    );
-}
-
-#[test]
-fn expr_tag_skips_string_literal_dotted_pairs() {
-    // A dotted string literal must not produce a spurious pair.
-    let pairs = find_eval_template_pairs(r#"{{ git.branch or "foo.bar" }}"#);
-    assert!(
-        pairs.iter().any(|(p, f)| p == "git" && f == "branch"),
-        "git.branch missing; got: {pairs:?}"
-    );
-    assert!(
-        !pairs.iter().any(|(p, f)| p == "foo" && f == "bar"),
-        "string literal 'foo.bar' must not be a pair; got: {pairs:?}"
-    );
-}
+//! End-to-end tests for `comb eval`: env.* injection and daemon-skip behavior.
+//!
+//! Task 3 deleted the hand-rolled `find_eval_template_pairs` scanner these
+//! tests used to exercise directly; reference discovery is now
+//! `libbeachcomber::eval::discover_refs`, covered in
+//! `libbeachcomber/tests/eval_classify.rs` and `tests/template.rs`.
 
 // ── #2: eval resolves virtual fields (end-to-end via the real binary) ─────────
 

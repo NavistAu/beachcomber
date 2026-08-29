@@ -243,7 +243,12 @@ impl VirtualFields {
         stack.insert(key.clone());
         let result = self.evaluate_expression(expr, ctx, stack);
         stack.remove(&key);
-        result
+        // Name the field the failure came from. Without this a bad expression in
+        // one config virtual field surfaces as a bare "expression compile error:
+        // ..." with nothing pointing at which field to go and fix. The cycle
+        // error above already names the field, and is returned before this
+        // point, so it is never prefixed twice.
+        result.map_err(|e| format!("{provider}.{field}: {e}"))
     }
 
     /// Evaluate an arbitrary value expression against the given context.
@@ -312,11 +317,25 @@ pub fn evaluate_namespace(
 /// - Top-level `P: {F: <resolved>}` for each `Resolved(P, F)`
 ///   (if `vf.is_virtual(P, F)` → recurse `vf.evaluate(...)`; else `daemon_data["P.F"]`)
 ///
+/// **A miss binds nothing**, in every arm: not the value, and not the object
+/// that would have enclosed it. The ref is then *undefined* rather than `none`,
+/// which is what makes `{{ p.f | default("FB") }}` fall back on a cache miss —
+/// MiniJinja's `default` filter replaces an undefined value, not a null one, so
+/// binding a miss to `JsonValue::Null` would silently swallow every `default`
+/// in the wild. Nothing needs a placeholder empty map: `{{ p.f.sub }}` chains
+/// through undefined under `build_expression_env`'s
+/// `UndefinedBehavior::Chainable`, and a sibling hit on `p.g` creates `p`
+/// through its own `entry()`. Pre-creating one would instead make
+/// `{{ p | default("FB") }}` render `{}` whenever a field ref for the same
+/// provider happened to co-occur.
+///
 /// Where a `CacheProvider(P)` object and a `CacheField(P, F)` disagree about
 /// `F`, the whole object wins — it is the authoritative snapshot. That holds
 /// **whichever ref is bound first**: the provider arm overrides on merge, and
-/// the field arm only fills a key the object did not supply. So the result does
-/// not depend on `refs` order.
+/// the field arm only fills a key the object did not supply. Should the whole
+/// provider value not be an object at all, the field arm leaves it untouched —
+/// a field of a scalar is not navigable either way. So the result does not
+/// depend on `refs` order.
 pub(crate) fn build_context_json(
     refs: &[Ref],
     ctx: &EvalContext<'_>,
@@ -348,11 +367,13 @@ pub(crate) fn build_context_json(
             }
 
             Ref::CacheField(provider, field) => {
-                let raw_val = ctx
-                    .daemon_data
-                    .get(&format!("{provider}.{field}"))
-                    .cloned()
-                    .unwrap_or(JsonValue::Null);
+                // A miss binds nothing — not the field, and not the `cache.P` map
+                // that would enclose it — so both stay undefined and `default`
+                // fires on either.
+                let Some(raw_val) = ctx.daemon_data.get(&format!("{provider}.{field}")).cloned()
+                else {
+                    continue;
+                };
                 let cache_entry = top
                     .entry("cache".to_string())
                     .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
@@ -368,18 +389,16 @@ pub(crate) fn build_context_json(
                     if let JsonValue::Object(pmap) = provider_entry {
                         pmap.entry(field.clone()).or_insert(raw_val);
                     }
-                    // If provider_entry is not an Object (e.g. it was set to Null by a
-                    // CacheProvider ref that returned nothing), leave it — the field
-                    // value would not be navigable anyway.
+                    // If provider_entry is not an Object (a non-object whole-provider
+                    // value), leave it — a field of a scalar is not navigable anyway.
                 }
             }
 
             Ref::CacheProvider(provider) => {
-                let whole_obj = ctx
-                    .daemon_data
-                    .get(provider.as_str())
-                    .cloned()
-                    .unwrap_or(JsonValue::Null);
+                // A miss binds nothing, so `{{ cache.P | default(...) }}` falls back.
+                let Some(whole_obj) = ctx.daemon_data.get(provider.as_str()).cloned() else {
+                    continue;
+                };
                 let cache_entry = top
                     .entry("cache".to_string())
                     .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
@@ -395,7 +414,7 @@ pub(crate) fn build_context_json(
                                 existing.insert(k, v);
                             }
                         }
-                        // If whole_obj is not an object (e.g. Null), leave existing as-is.
+                        // If whole_obj is not an object, leave existing as-is.
                     } else {
                         cache_map.insert(provider.clone(), whole_obj);
                     }
@@ -403,19 +422,20 @@ pub(crate) fn build_context_json(
             }
 
             Ref::Resolved(provider, field) => {
+                // A virtual field always resolves to a value (an all-empty cascade
+                // is `""`); a plain daemon ref that missed binds nothing — neither
+                // the field nor the `P` map that would enclose it.
                 let resolved_val = if vf.is_virtual(provider, field) {
-                    vf.evaluate(provider, field, ctx, stack)?
+                    Some(vf.evaluate(provider, field, ctx, stack)?)
                 } else {
-                    ctx.daemon_data
-                        .get(&format!("{provider}.{field}"))
-                        .cloned()
-                        .unwrap_or(JsonValue::Null)
+                    ctx.daemon_data.get(&format!("{provider}.{field}")).cloned()
                 };
+                let Some(v) = resolved_val else { continue };
                 let provider_entry = top
                     .entry(provider.clone())
                     .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
                 if let JsonValue::Object(pmap) = provider_entry {
-                    pmap.insert(field.clone(), resolved_val);
+                    pmap.insert(field.clone(), v);
                 }
             }
         }
@@ -509,12 +529,20 @@ pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
 
 /// Build a minijinja `Environment` suitable for `compile_expression`.
 ///
-/// Registers the same filters as `build_env()` (truncate, basename) and
-/// sets lenient undefined behavior so missing refs are falsy, not errors.
+/// Registers the same filters as `build_env()` (truncate, basename) and sets
+/// chainable undefined behavior so missing refs are falsy, not errors.
+///
+/// `Chainable` rather than `Lenient` because canon `field_resolution.md` says a
+/// missing ref is falsy, and that has to hold at any depth: `Lenient` renders
+/// an undefined value as empty but *errors* on attribute access into one, so
+/// `{{ p.f.sub }}` blew up whenever `p.f` missed while `{{ p.f }}` quietly
+/// rendered nothing. Chaining through undefined yields undefined instead.
+/// Cascades are unaffected — undefined is falsy under both — and `default`
+/// still fires, since `build_context_json` leaves a missed key absent.
 pub(crate) fn build_expression_env<'a>() -> Environment<'a> {
     use crate::filters::build_env;
     let mut env = build_env();
-    env.set_undefined_behavior(UndefinedBehavior::Lenient);
+    env.set_undefined_behavior(UndefinedBehavior::Chainable);
     env
 }
 

@@ -294,9 +294,8 @@ fn evaluate_expression(
 
 /// Render `src` as a template against an already-assembled `context`.
 ///
-/// The client library's template render. The CLI still has its own render call
-/// sites (`-f fmt`, `watch`, the status formatter); those move onto this in
-/// Task 3, at which point it is the workspace's only one.
+/// The workspace's only template render: `comb eval`'s template form, `-f fmt`,
+/// `watch -f fmt` and the status formatter's custom templates all land here.
 ///
 /// `context` is a JSON object whose keys are the template's top-level names:
 /// the shape the [`Form::Template`] path resolves an [`EvalContext`] to, and

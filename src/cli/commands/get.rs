@@ -591,7 +591,7 @@ pub fn run_get(
                         return ExitCode::SUCCESS;
                     }
                     Err(e) => {
-                        eprintln!("Template error: {e}");
+                        eprintln!("{e}");
                         return ExitCode::from(2);
                     }
                 },
@@ -824,7 +824,7 @@ pub fn run_get(
                     OutputFormat::Fmt(template) => match render_fmt_template_json(template, data) {
                         Ok(rendered) => print!("{}", rendered),
                         Err(e) => {
-                            eprintln!("Template error: {e}");
+                            eprintln!("{e}");
                             return ExitCode::from(2);
                         }
                     },
@@ -925,7 +925,7 @@ pub fn run_get(
             match render_fmt_template_json(template, &serde_json::Value::Object(merged)) {
                 Ok(rendered) => print!("{}", rendered),
                 Err(e) => {
-                    eprintln!("Template error: {e}");
+                    eprintln!("{e}");
                     return ExitCode::from(2);
                 }
             }

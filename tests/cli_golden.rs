@@ -174,11 +174,16 @@ fn golden_eval_renders_template() {
 
     // A template with no provider.field references is rendered directly without
     // touching the daemon — cheapest golden path.
+    //
+    // The source needs at least one tag to be a *template*: canon invariant 14
+    // makes a source with no tags a bare expression, so the pre-Task-3
+    // `"hello world"` is now two identifiers juxtaposed — an expression syntax
+    // error, not literal text. `{{ }}` is how you say "this is text".
     comb(&d)
-        .args(["eval", "hello world"])
+        .args(["eval", "hello {{ 'world' }}"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("hello world"));
+        .stdout(predicates::str::diff("hello world"));
 }
 
 // ── golden_check_daemon ───────────────────────────────────────────────────────
@@ -231,4 +236,349 @@ fn golden_init_prints_or_writes_config() {
     // `comb init` detects installed tools and prints suggestions.
     // It doesn't contact the daemon, so it always exits 0.
     comb(&d).args(["init"]).assert().success();
+}
+
+// ── one expression syntax: `comb eval` over all three forms ──────────────────
+//
+// Task 3 routed `run_eval` through `libbeachcomber::eval`, so `comb eval`
+// accepts every form canon `field_resolution.md` invariant 14 defines: a bare
+// expression, exactly one `{{ expr }}` (natural type), and a template (string).
+// A typed result prints through `libbeachcomber::render::render_data` — the
+// same renderer `comb get -f text` uses — so `comb eval '{{ p.f }}'` and
+// `comb get p.f` agree on how a value looks.
+
+/// A `comb` command with an isolated, empty config dir, so the ambient
+/// `~/.config/beachcomber/config.toml` cannot leak virtual fields into a test.
+/// `cfg` may hold a `beachcomber/config.toml` written by the caller.
+fn comb_with_config(d: &TestDaemon, cfg: &std::path::Path) -> assert_cmd::Command {
+    let mut cmd = comb(d);
+    cmd.env("XDG_CONFIG_HOME", cfg);
+    cmd
+}
+
+/// Write `body` as the beachcomber config inside `dir`, returning the
+/// `XDG_CONFIG_HOME` to hand to [`comb_with_config`].
+fn write_config(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+    let cfg = dir.join("cfg");
+    std::fs::create_dir_all(cfg.join("beachcomber")).unwrap();
+    std::fs::write(cfg.join("beachcomber").join("config.toml"), body).unwrap();
+    cfg
+}
+
+#[test]
+fn eval_single_tag_prints_raw_string() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["put", "evalprov", r#"{"s":"hello"}"#])
+        .assert()
+        .success();
+
+    // Exactly one tag → the expression's natural type (a string), printed raw
+    // with no trailing newline — byte-identical to the pre-Task-3 rendering.
+    comb(&d)
+        .args(["eval", "{{ evalprov.s }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("hello"));
+}
+
+#[test]
+fn eval_bare_expression_prints_value() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["put", "evalbare", r#"{"s":"hello"}"#])
+        .assert()
+        .success();
+
+    // No tags at all → the whole source is the expression. Before Task 3 this
+    // printed the literal text `evalbare.s`.
+    comb(&d)
+        .args(["eval", "evalbare.s"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("hello"));
+}
+
+#[test]
+fn eval_template_with_literal_text() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["put", "evaltmpl", r#"{"s":"main"}"#])
+        .assert()
+        .success();
+
+    // Literal text around the tag → string-valued, rendered as written.
+    comb(&d)
+        .args(["eval", "branch: {{ evaltmpl.s }}!"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("branch: main!"));
+}
+
+#[test]
+fn eval_single_tag_bool_prints_true() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["put", "evalbool", r#"{"b":true,"c":false}"#])
+        .assert()
+        .success();
+
+    comb(&d)
+        .args(["eval", "{{ evalbool.b }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("true"));
+
+    comb(&d)
+        .args(["eval", "{{ evalbool.c }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("false"));
+}
+
+#[test]
+fn eval_single_tag_object_prints_like_get_text() {
+    let d = TestDaemon::spawn();
+
+    // `--path /` matches the "/" CWD the `comb()` helper fixes, so the
+    // server-side `-f text` path finds the same entry `eval` does.
+    comb(&d)
+        .args([
+            "put",
+            "evalobj",
+            r#"{"o":{"a":1,"b":"two"}}"#,
+            "--path",
+            "/",
+        ])
+        .assert()
+        .success();
+
+    // An object keeps its type through the single-tag form and prints through
+    // `render_data` — sorted `key=value` lines, exactly what `comb get -f text`
+    // gives for the same key. Before Task 3 this was minijinja's map
+    // formatting (`{"a": 1, "b": "two"}`).
+    let expected = comb(&d).args(["get", "evalobj.o"]).output().unwrap();
+    let expected = String::from_utf8(expected.stdout).unwrap();
+    assert_eq!(expected, "a=1\nb=two");
+
+    comb(&d)
+        .args(["eval", "{{ evalobj.o }}", "/"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("a=1\nb=two"));
+}
+
+#[test]
+fn eval_virtual_field_defined_with_tags_in_config() {
+    let d = TestDaemon::spawn();
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = write_config(
+        dir.path(),
+        r#"
+[providers.x]
+virtual.y = "{{ env.A }}"
+"#,
+    );
+
+    // A config virtual field written with tags resolves the same way through
+    // `get` and through `eval`.
+    comb_with_config(&d, &cfg)
+        .env("A", "from-env")
+        .args(["get", "x.y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("from-env"));
+
+    comb_with_config(&d, &cfg)
+        .env("A", "from-env")
+        .args(["eval", "{{ x.y }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("from-env"));
+}
+
+#[test]
+fn eval_nested_virtual_dependency_is_fetched() {
+    let d = TestDaemon::spawn();
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = write_config(
+        dir.path(),
+        r#"
+[providers.x]
+virtual.a = "{{ b.y or cache.c.z }}"
+
+[providers.b]
+virtual.y = "{{ cache.d.w }}"
+"#,
+    );
+
+    comb(&d)
+        .args(["put", "d", r#"{"w":"deep-value"}"#])
+        .assert()
+        .success();
+
+    // `x.a` → `b.y` (virtual) → `cache.d.w`: the daemon-ref closure must reach
+    // through two levels of virtual field and actually fetch `d.w`.
+    comb_with_config(&d, &cfg)
+        .args(["eval", "{{ x.a }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("deep-value"));
+}
+
+#[test]
+fn eval_env_only_template_does_not_need_daemon() {
+    // No daemon at all: the socket path's parent is a regular file, so one
+    // cannot even be started. A source referencing only `env.*` has no daemon
+    // refs, so `ensure_daemon` is never called.
+    let dir = tempfile::TempDir::new().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"not a dir").unwrap();
+    let unstartable = blocker.join("sock");
+
+    assert_cmd::Command::cargo_bin("comb")
+        .unwrap()
+        .env("BEACHCOMBER_SOCKET", &unstartable)
+        .env("RUST_LOG", "error")
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("cfg"))
+        .env("FOO", "hi")
+        .args(["eval", "env.FOO is {{ env.FOO }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("env.FOO is hi"));
+}
+
+// ── -f fmt and the status formatter ──────────────────────────────────────────
+
+#[test]
+fn fmt_renders_literal_filter_and_conditional() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["put", "fmtprov", r#"{"val":"formatted","n":3}"#])
+        .assert()
+        .success();
+
+    // `-f fmt` (reached through the `.f` suffix syntax) renders through
+    // `eval::render_template` after Task 3. Literal text, filters and a
+    // conditional must all still behave exactly as they did under `render_str`.
+    comb(&d)
+        .args(["g.f", "[{{ val }}/{{ n }}]", "fmtprov"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("[formatted/3]"));
+
+    comb(&d)
+        .args([
+            "g.f",
+            "{% if n %}{{ val | truncate(4) }}{% endif %}",
+            "fmtprov",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("form..."));
+}
+
+// ── eval_default_filter_fires_on_daemon_miss ─────────────────────────────────
+
+#[test]
+fn eval_default_filter_fires_on_daemon_miss() {
+    let d = TestDaemon::spawn();
+
+    // A daemon-backed ref that misses leaves the key absent from the render
+    // context, so it is *undefined* and `default` fires. Binding a miss to JSON
+    // null instead would make `default` a no-op and print nothing.
+    comb(&d)
+        .args(["eval", r#"{{ probe.missing | default("FB") }}"#])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("FB"));
+
+    // The bare and template forms agree.
+    comb(&d)
+        .args(["eval", r#"probe.missing | default("FB")"#])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("FB"));
+
+    comb(&d)
+        .args(["eval", r#"[{{ probe.missing | default("FB") }}]"#])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("[FB]"));
+
+    // A hit still wins over the default.
+    comb(&d)
+        .args(["put", "probehit", r#"{"f":"real"}"#])
+        .assert()
+        .success();
+    comb(&d)
+        .args(["eval", r#"{{ probehit.f | default("FB") }}"#])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("real"));
+}
+
+#[test]
+fn fmt_missing_and_null_render_empty() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["put", "nullfmt", r#"{"v":"x","n":null}"#, "--path", "/"])
+        .assert()
+        .success();
+
+    // An unbound name chained into is undefined all the way down, and renders
+    // empty rather than erroring (`UndefinedBehavior::Chainable`).
+    comb(&d)
+        .args(["g.f", "[{{ nope.sub }}]", "nullfmt"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("[]"));
+
+    // A field that really is JSON null renders empty too, not the word `none`.
+    comb(&d)
+        .args(["g.f", "[{{ n }}]", "nullfmt"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("[]"));
+
+    // Same rule in the status formatter: a global row's null `path` is empty.
+    comb(&d)
+        .args(["put", "globalfmt", r#"{"g":"v"}"#])
+        .assert()
+        .success();
+    comb(&d)
+        .args([
+            "status",
+            "-f",
+            "[{{ path }}]",
+            "--filter",
+            "provider=globalfmt",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("[]\n"));
+}
+
+// ── eval_plain_text_without_tags_is_an_expression_error ──────────────────────
+
+#[test]
+fn eval_plain_text_without_tags_is_an_expression_error() {
+    let d = TestDaemon::spawn();
+
+    // Canon invariant 14: a source with no tags is a bare *expression*, so
+    // plain prose is two identifiers juxtaposed — a syntax error, not literal
+    // text. `{{ }}` is how you say "this is text".
+    comb(&d)
+        .args(["eval", "hello world"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains("expression compile error"));
 }

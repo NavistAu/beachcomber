@@ -1,21 +1,31 @@
 //! Handler for the `eval` subcommand.
 //!
-//! Moved from `src/main.rs` in Task 2.6.
+//! `eval` evaluates a value expression in any of the three forms canon
+//! `field_resolution.md` (invariant 14) defines: a bare expression, exactly one
+//! `{{ expr }}` (which keeps the expression's natural type), or literal text
+//! and/or several tags (which is string-valued). `libbeachcomber::eval` owns
+//! all three; this handler only supplies what the library cannot reach on its
+//! own — the calling shell's environment and the daemon.
 //!
-//! `eval` renders a MiniJinja template referencing `provider.field` values.
 //! Resolution mirrors `comb get`'s layering:
 //!
 //! - `env.*` refs come from the calling shell's environment.
 //! - virtual fields (e.g. `terraform.workspace`) are evaluated client-side.
 //! - plain `provider.field` refs are fetched from the daemon.
 //!
-//! A template that needs no daemon-backed data never starts/contacts the daemon.
+//! A source that needs no daemon-backed data never starts/contacts the daemon:
+//! `eval::daemon_refs` returns the transitive closure of the daemon keys the
+//! source needs (following virtual fields into their own dependencies), and an
+//! empty closure means `ensure_daemon` is never called.
+//!
+//! The result prints through `libbeachcomber::render::render_data` — the same
+//! renderer `comb get -f text` uses — so `comb eval '{{ p.f }}'` and
+//! `comb get p.f` agree on how a value looks.
 
-use crate::cli::format::{find_eval_template_pairs, render_eval_template};
 use crate::config::Config;
-use libbeachcomber::eval::discover_refs;
-use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields};
-use std::collections::{HashMap, HashSet};
+use libbeachcomber::eval;
+use libbeachcomber::virtual_fields::{EvalContext, VirtualFields};
+use std::collections::HashMap;
 use std::process::ExitCode;
 
 pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
@@ -23,181 +33,63 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
     let vf = VirtualFields::with_config_overrides(config.virtual_fields());
 
-    // Discover every (provider, field) ref in the template (all tags, all refs).
-    let pairs = find_eval_template_pairs(template);
+    // Every daemon key this source needs, virtual-field dependencies included.
+    let refs = eval::daemon_refs(template, &vf);
 
-    // Partition refs: env.* (shell), virtual fields (client-side), plain daemon.
-    let mut env_fields: Vec<String> = Vec::new();
-    let mut virtual_refs: Vec<(String, String)> = Vec::new();
-    let mut plain_daemon_refs: Vec<(String, String)> = Vec::new();
-    let mut seen_virtual: HashSet<(String, String)> = HashSet::new();
-    let mut seen_plain: HashSet<(String, String)> = HashSet::new();
-    for (provider, field) in pairs {
-        if provider == "env" {
-            env_fields.push(field);
-        } else if vf.is_virtual(&provider, &field) {
-            if seen_virtual.insert((provider.clone(), field.clone())) {
-                virtual_refs.push((provider, field));
-            }
-        } else if seen_plain.insert((provider.clone(), field.clone())) {
-            plain_daemon_refs.push((provider, field));
-        }
-    }
-
-    // Daemon refs to fetch = plain daemon refs ∪ daemon deps of each virtual ref.
-    // Stored as typed Ref variants so dispatch at fetch time needs no sentinel encoding.
-    let mut daemon_refs: Vec<Ref> = Vec::new();
-    let mut seen_field: HashSet<(String, String)> = HashSet::new();
-    let mut seen_provider: HashSet<String> = HashSet::new();
-    for (p, f) in &plain_daemon_refs {
-        if seen_field.insert((p.clone(), f.clone())) {
-            daemon_refs.push(Ref::CacheField(p.clone(), f.clone()));
-        }
-    }
-    for (p, f) in &virtual_refs {
-        if let Some(expr) = vf.expression(p, f) {
-            for r in discover_refs(expr) {
-                match r {
-                    Ref::Env(_) => {
-                        // env.* — no daemon fetch needed.
-                    }
-                    Ref::CacheField(dp, df) => {
-                        if seen_field.insert((dp.clone(), df.clone())) {
-                            daemon_refs.push(Ref::CacheField(dp, df));
-                        }
-                    }
-                    Ref::CacheProvider(dp) => {
-                        // Whole provider object fetch.
-                        if seen_provider.insert(dp.clone()) {
-                            daemon_refs.push(Ref::CacheProvider(dp));
-                        }
-                    }
-                    Ref::Resolved(dp, df) => {
-                        if !vf.is_virtual(&dp, &df) && seen_field.insert((dp.clone(), df.clone())) {
-                            daemon_refs.push(Ref::CacheField(dp, df));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // The calling shell's environment.
-    let shell_env: HashMap<String, String> = std::env::vars().collect();
-
-    // Build the render context. Always inject the env.* object (even if empty)
-    // so templates can use `{{ env.FOO | default("") }}` without error.
-    let mut ctx: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-    {
-        let mut env_map = serde_json::Map::new();
-        for field in &env_fields {
-            let val = shell_env.get(field).cloned().unwrap_or_default();
-            env_map.insert(field.clone(), serde_json::Value::String(val));
-        }
-        ctx.insert("env".to_string(), serde_json::Value::Object(env_map));
-    }
-
-    // Fetch daemon-backed data only when something actually needs it. A template
-    // referencing only env.* and/or pure-env virtual fields never starts the daemon.
-    let daemon_data: HashMap<String, serde_json::Value> = if daemon_refs.is_empty() {
+    let daemon_data = if refs.is_empty() {
+        // Nothing daemon-backed (env.* only, or pure-env virtual fields): never
+        // start or contact a daemon.
         HashMap::new()
     } else {
         if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
             eprintln!("Failed to start daemon: {e}");
             return ExitCode::from(2);
         }
-        let socket_path = socket_path.clone();
-        match (|| {
-            let client = crate::client::Client::new(socket_path);
-            let mut session = match client.connect() {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    return Err(ExitCode::from(2));
-                }
-            };
-            if let Some(p) = path
-                && let Err(e) = session.set_context(p)
-            {
-                eprintln!("Error: {e}");
-                return Err(ExitCode::from(2));
-            }
-            let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
-            for r in &daemon_refs {
-                // Dispatch directly on the Ref variant — no sentinel encoding needed.
-                let (key, store_key) = match r {
-                    Ref::CacheProvider(p) => (p.clone(), p.clone()),
-                    Ref::CacheField(p, f) => {
-                        let k = format!("{p}.{f}");
-                        (k.clone(), k)
-                    }
-                    // Env and Resolved variants are never added to daemon_refs.
-                    _ => continue,
-                };
-                match session.get(&key, None) {
-                    Ok(resp) => {
-                        if let Some(data) = resp.data {
-                            dd.insert(store_key, data);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Error querying {key}: {e}");
-                        return Err(ExitCode::from(2));
-                    }
-                }
-            }
-            Ok(dd)
-        })() {
-            Ok(dd) => dd,
-            Err(code) => return code,
-        }
-    };
-
-    // Inject plain daemon refs into the context (nested as ctx[provider][field]).
-    for (p, f) in &plain_daemon_refs {
-        if let Some(v) = daemon_data.get(&format!("{p}.{f}")) {
-            inject(&mut ctx, p, f, v.clone());
-        }
-    }
-
-    // Evaluate virtual fields client-side and inject their typed results.
-    let eval_ctx = EvalContext {
-        env_vars: &shell_env,
-        daemon_data: &daemon_data,
-    };
-    for (p, f) in &virtual_refs {
-        match vf.evaluate(p, f, &eval_ctx, &mut HashSet::new()) {
-            Ok(v) => inject(&mut ctx, p, f, v),
+        let client = crate::client::Client::new(socket_path);
+        let mut session = match client.connect() {
+            Ok(s) => s,
             Err(e) => {
-                eprintln!("Error evaluating {p}.{f}: {e}");
+                eprintln!("Error: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        if let Some(p) = path
+            && let Err(e) = session.set_context(p)
+        {
+            eprintln!("Error: {e}");
+            return ExitCode::from(2);
+        }
+        // A transport failure aborts the whole command; a cache miss is simply
+        // absent from the map and evaluates falsy.
+        let fetched = eval::fetch_daemon_data(&refs, |key| {
+            session
+                .get(key, None)
+                .map(|resp| resp.data)
+                .map_err(|e| format!("Error querying {key}: {e}"))
+        });
+        match fetched {
+            Ok(d) => d,
+            Err(msg) => {
+                eprintln!("{msg}");
                 return ExitCode::from(2);
             }
         }
-    }
+    };
 
-    match render_eval_template(template, &serde_json::Value::Object(ctx)) {
-        Ok(s) => {
-            print!("{s}");
+    let shell_env: HashMap<String, String> = std::env::vars().collect();
+    let ctx = EvalContext {
+        env_vars: &shell_env,
+        daemon_data: &daemon_data,
+    };
+
+    match eval::evaluate(template, &vf, &ctx) {
+        Ok(value) => {
+            print!("{}", libbeachcomber::render::render_data(Some(&value)));
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("template render error: {e}");
+            eprintln!("{e}");
             ExitCode::from(2)
         }
-    }
-}
-
-/// Insert `value` at the nested context path `ctx[provider][field]`.
-fn inject(
-    ctx: &mut serde_json::Map<String, serde_json::Value>,
-    provider: &str,
-    field: &str,
-    value: serde_json::Value,
-) {
-    let entry = ctx
-        .entry(provider.to_string())
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    if let serde_json::Value::Object(m) = entry {
-        m.insert(field.to_string(), value);
     }
 }

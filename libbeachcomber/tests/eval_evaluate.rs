@@ -587,10 +587,11 @@ fn undefined_ref_renders_empty_in_both_forms() {
 
 #[test]
 fn template_missing_ref_renders_empty_not_none() {
-    // A ref with no value binds to JSON null, and MiniJinja's own `Display` for
-    // `none` is the literal text "none". The template form writes nothing for
-    // it instead — the same "missing is falsy" reading canon gives `env.*`
-    // misses and `render::render_data` gives an explicit null.
+    // A ref with no value binds nothing at all, so it is undefined and writes
+    // nothing. A ref that resolved to an explicit JSON null would render as
+    // MiniJinja's `none` — the literal text "none" — and the template form
+    // writes nothing for that too: the same "missing is falsy" reading canon
+    // gives `env.*` misses and `render::render_data` gives an explicit null.
     let vf = VirtualFields::defaults_only();
     let env = HashMap::new();
     let data = HashMap::new();
@@ -622,9 +623,177 @@ fn render_template_over_assembled_context() {
     // A null in the assembled context renders as nothing.
     assert_eq!(render_template("[{{ git.tag }}]", &ctx).unwrap(), "[]");
 
+    // An unbound name is undefined, and chaining through it stays undefined —
+    // not a render error (see `build_expression_env`'s `Chainable`).
+    assert_eq!(
+        render_template("[{{ nope.field }}]", &json!({})).unwrap(),
+        "[]"
+    );
+
     // Errors are prefixed by phase.
     let err = render_template("{{ x } }}", &ctx).unwrap_err();
     assert!(err.starts_with("template compile error:"), "got: {err}");
-    let err = render_template("{{ nope.field }}", &json!({})).unwrap_err();
+    let err = render_template("{% for x in 5 %}{% endfor %}", &json!({})).unwrap_err();
     assert!(err.starts_with("template render error:"), "got: {err}");
+}
+
+// ── A miss is undefined, not none ─────────────────────────────────────────────
+
+#[test]
+fn missing_ref_leaves_key_undefined_so_default_fires() {
+    // `default` replaces an *undefined* value, not a null one, so a miss has to
+    // leave the key absent from the assembled context. Binding it to JSON null
+    // would make every `| default(...)` in the wild silently render empty.
+    let vf = VirtualFields::defaults_only();
+    let env = HashMap::new();
+    let data = HashMap::new();
+    let ctx = EvalContext {
+        env_vars: &env,
+        daemon_data: &data,
+    };
+
+    for src in [
+        r#"{{ probe.missing | default("FB") }}"#,
+        r#"probe.missing | default("FB")"#,
+    ] {
+        assert_eq!(
+            evaluate(src, &vf, &ctx).unwrap(),
+            Value::String("FB".into()),
+            "src: {src}"
+        );
+    }
+    // The template form too, and for a `cache.*` ref and a whole-provider ref.
+    assert_eq!(
+        evaluate(r#"[{{ probe.missing | default("FB") }}]"#, &vf, &ctx).unwrap(),
+        Value::String("[FB]".into())
+    );
+    assert_eq!(
+        evaluate(r#"{{ cache.probe.missing | default("FB") }}"#, &vf, &ctx).unwrap(),
+        Value::String("FB".into())
+    );
+    assert_eq!(
+        evaluate(r#"{{ cache.probe | default("FB") }}"#, &vf, &ctx).unwrap(),
+        Value::String("FB".into())
+    );
+
+    // A hit still wins over the default, and a sibling hit lands even though
+    // the other field of the same provider missed.
+    let data = data_of(&[("probe.here", json!("V"))]);
+    let ctx = EvalContext {
+        env_vars: &env,
+        daemon_data: &data,
+    };
+    assert_eq!(
+        evaluate(r#"{{ probe.here | default("FB") }}"#, &vf, &ctx).unwrap(),
+        Value::String("V".into())
+    );
+    assert_eq!(
+        evaluate(
+            r#"{{ probe.here }}/{{ probe.missing | default("FB") }}"#,
+            &vf,
+            &ctx
+        )
+        .unwrap(),
+        Value::String("V/FB".into())
+    );
+}
+
+#[test]
+fn nested_access_on_missing_ref_renders_empty() {
+    // Canon: a missing ref is falsy — at any depth. Under `Lenient` this was an
+    // "undefined value" error; `Chainable` makes the chain yield undefined.
+    let vf = VirtualFields::defaults_only();
+    let env = HashMap::new();
+    let data = HashMap::new();
+    let ctx = EvalContext {
+        env_vars: &env,
+        daemon_data: &data,
+    };
+
+    assert_eq!(
+        evaluate("{{ probe.missing.sub }}", &vf, &ctx).unwrap(),
+        Value::String(String::new())
+    );
+    assert_eq!(
+        evaluate("[{{ probe.missing.sub }}]", &vf, &ctx).unwrap(),
+        Value::String("[]".into())
+    );
+    // Still falsy, so a cascade past it picks the next arm.
+    assert_eq!(
+        evaluate(r#"{{ probe.missing.sub or "next" }}"#, &vf, &ctx).unwrap(),
+        Value::String("next".into())
+    );
+}
+
+#[test]
+fn provider_miss_with_sibling_field_ref_still_lets_default_fire() {
+    // A miss must bind nothing at all — including the object that would have
+    // enclosed it. Pre-creating an empty `cache.nope` / `nope` map to hold the
+    // missed field would make the whole-provider ref *defined* (an empty map),
+    // so `default` would not fire and the ref would render `{}`.
+    let vf = VirtualFields::defaults_only();
+    let env = HashMap::new();
+    let data = HashMap::new();
+    let ctx = EvalContext {
+        env_vars: &env,
+        daemon_data: &data,
+    };
+
+    assert_eq!(
+        evaluate(
+            r#"{{ cache.nope.f }}|{{ cache.nope | default("FB") }}"#,
+            &vf,
+            &ctx
+        )
+        .unwrap(),
+        Value::String("|FB".into())
+    );
+    assert_eq!(
+        evaluate(r#"{{ p.f }}|{{ p | default("FB") }}"#, &vf, &ctx).unwrap(),
+        Value::String("|FB".into())
+    );
+
+    // A hit still binds, and the map it creates is the real one — the
+    // whole-provider ref sees the field that hit, not an empty placeholder.
+    // (`cache.P.F` is keyed `"P.F"`; `cache.P` is keyed `"P"`.)
+    let data = data_of(&[("nope.f", json!("V")), ("nope", json!({"f": "V"}))]);
+    let ctx = EvalContext {
+        env_vars: &env,
+        daemon_data: &data,
+    };
+    assert_eq!(
+        evaluate(
+            r#"{{ cache.nope.f }}|{{ cache.nope | default("FB") }}"#,
+            &vf,
+            &ctx
+        )
+        .unwrap(),
+        Value::String(r#"V|{"f": "V"}"#.into())
+    );
+}
+
+#[test]
+fn virtual_field_error_names_the_field() {
+    // A broken expression in a config virtual field has to say which field is
+    // broken — a bare "expression compile error: ..." points at nothing.
+    let vf = vfields(&[("bad", "oops", "this is ? not an expression")]);
+    let env = HashMap::new();
+    let data = HashMap::new();
+    let ctx = EvalContext {
+        env_vars: &env,
+        daemon_data: &data,
+    };
+
+    let err = evaluate("{{ bad.oops }}", &vf, &ctx).unwrap_err();
+    assert!(err.starts_with("bad.oops: "), "got: {err}");
+    assert!(err.contains("expression compile error"), "got: {err}");
+
+    // The self-cycle error already names the field; it is not prefixed twice.
+    let vf = vfields(&[("loop", "self", "loop.self")]);
+    let err = evaluate("{{ loop.self }}", &vf, &ctx).unwrap_err();
+    assert_eq!(
+        err,
+        "loop.self: virtual field cycle detected: loop.self references itself"
+    );
+    assert_eq!(err.matches("loop.self").count(), 2, "got: {err}");
 }
