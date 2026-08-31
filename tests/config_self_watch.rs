@@ -156,6 +156,32 @@ fn conf_d_invalid_edit_does_not_restart() {
 }
 
 #[test]
+fn conf_d_only_change_restarts_without_a_main_config_file() {
+    // A daemon whose config lives entirely in conf.d/ (no config.toml at
+    // all) must still restart on a conf.d change. Validation must treat a
+    // missing main config file as empty content — same tolerance `Config::load()`
+    // already gives daemon startup — not as a failure that blocks every restart.
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.toml"); // deliberately never created
+    let conf_d = tmp.path().join("conf.d");
+    std::fs::create_dir(&conf_d).unwrap();
+    let drop_in = conf_d.join("01-drop-in.toml");
+    std::fs::write(&drop_in, "[daemon]\nlog_level = \"debug\"\n").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    spawn_config_self_watch_with(cfg, Duration::from_millis(100), false, move || {
+        let _ = tx.send(());
+    });
+
+    std::thread::sleep(Duration::from_millis(50));
+    std::fs::write(&drop_in, "[daemon]\nlog_level = \"trace\"\n").unwrap();
+    touch_future(&drop_in);
+
+    rx.recv_timeout(Duration::from_secs(3))
+        .expect("conf.d change should trigger restart even when config.toml doesn't exist");
+}
+
+#[test]
 fn new_file_appearing_in_conf_d_triggers_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = tmp.path().join("config.toml");

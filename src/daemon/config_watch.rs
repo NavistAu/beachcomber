@@ -304,10 +304,11 @@ fn fresh_baseline(config_path: &Path, conf_d_dir: &Path) -> Baseline {
 
 /// Validate the composed config at `config_path` (its conf.d dir included)
 /// and, if it parses cleanly, consume `on_change` and fire it (returns
-/// `true` — caller must stop watching). If it fails to parse (including
-/// "file doesn't exist", e.g. deleted, or any composed file being invalid),
-/// logs a warning naming the error and returns `false` — caller keeps
-/// watching.
+/// `true` — caller must stop watching). A missing main config file parses as
+/// empty content (see `validate_config_file`), not a failure. If the
+/// composed set fails to parse (any composed file being invalid, or the main
+/// file unreadable for a reason other than not existing), logs a warning
+/// naming the error and returns `false` — caller keeps watching.
 fn try_restart<F: FnOnce()>(config_path: &Path, on_change: &mut Option<F>) -> bool {
     let result = validate_config_file(config_path);
     if should_restart_for_config_change(&result) {
@@ -328,11 +329,16 @@ fn try_restart<F: FnOnce()>(config_path: &Path, on_change: &mut Option<F>) -> bo
 }
 
 /// Validates the WHOLE composed set (main file + every conf.d/*.toml) — see
-/// `Config::parse_composed`. The main config file must still be readable;
-/// that requirement is unchanged from before conf.d existed.
+/// `Config::parse_composed`. A missing main config file is treated as empty
+/// content, same tolerance `Config::load()` already gives daemon startup (a
+/// config that lives entirely in conf.d/ is legitimate); any other read
+/// error (e.g. permissions) still fails validation.
 fn validate_config_file(config_path: &Path) -> Result<(), String> {
-    let content = std::fs::read_to_string(config_path)
-        .map_err(|e| format!("could not read config file: {e}"))?;
+    let content = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("could not read config file: {e}")),
+    };
     let conf_d_dir = Config::conf_d_dir_for(config_path);
     Config::parse_composed(&content, &conf_d_dir).map(|_| ())
 }
