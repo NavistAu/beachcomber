@@ -296,3 +296,54 @@ async fn global_provider_ignores_context() {
 
     handle.abort();
 }
+
+/// Test 4: the global-slot fallback is for *virtual* providers only.
+///
+/// A `get` at a path with no entry falls back to the global slot when the
+/// provider is virtual (see tests/store.rs). A PathScoped provider must not
+/// gain that: /project/a and /project/b holding different values is the whole
+/// point of path scoping, and a stray global entry must never leak into a
+/// path-scoped read. Here the path-keyed slot is cold, so the normal cold-miss
+/// inline execute answers with the requested path — not the global entry.
+///
+/// This is the guard against dropping the `registry.is_virtual(..)` conjunct
+/// from `read_path` in src/server.rs: without it the seeded global entry would
+/// answer here and every path-scoped provider would silently collapse onto one
+/// slot. It passes either way today — nothing about the fallback's *virtual*
+/// half is exercised — so its whole value is failing if that conjunct goes.
+#[tokio::test]
+async fn path_scoped_provider_has_no_global_fallback() {
+    let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
+
+    // A global entry for a PathScoped provider — reachable only by a pathless
+    // read, never by a path-scoped one.
+    let mut fields = HashMap::new();
+    fields.insert(
+        "active_path".to_string(),
+        Value::String("global-sentinel".to_string()),
+    );
+    cache.put_source("pathprov", None, "main", fields, Some(60));
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = tokio::spawn(async move { server.run().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let stream = UnixStream::connect(&sock).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+
+    let resp = send_recv_line(
+        &mut writer,
+        &mut reader,
+        r#"{"op":"get","key":"pathprov.active_path","path":"/project/zz"}"#,
+    )
+    .await;
+    assert!(resp.ok, "get should succeed: {:?}", resp.error);
+    assert_eq!(
+        resp.data.unwrap(),
+        serde_json::json!("/project/zz"),
+        "a PathScoped provider must execute at the requested path, never fall back to the global entry"
+    );
+
+    handle.abort();
+}

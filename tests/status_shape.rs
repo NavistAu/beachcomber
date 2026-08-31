@@ -1323,9 +1323,8 @@ fn sh_preset_exposes_new_fields() {
 #[test]
 fn minijinja_row_context_exposes_new_fields() {
     let row = sample_lifecycle_row();
-    let ctx = row_context(&row);
-    // Serialize minijinja::Value back to serde_json::Value for easy inspection
-    let v: serde_json::Value = serde_json::to_value(&ctx).expect("serialize minijinja context");
+    // `row_context` is already a `serde_json::Value` object — inspect it directly.
+    let v = row_context(&row);
     assert_eq!(v.get("kind").and_then(|v| v.as_str()), Some("lifecycle"));
     assert_eq!(v.get("decay").and_then(|v| v.as_u64()), Some(0));
     assert_eq!(

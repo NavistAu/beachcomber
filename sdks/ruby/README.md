@@ -10,7 +10,7 @@ Copy the `lib/` directory into your project or install as a gem:
 
 ```sh
 gem build libbeachcomber.gemspec
-gem install libbeachcomber-0.8.0.gem
+gem install libbeachcomber-0.9.0.gem
 ```
 
 ## Quick start
@@ -51,6 +51,13 @@ Opens a fresh socket connection for each call. Simple and stateless.
 | `watch(key, path: nil)` | Subscribe to live updates. Returns a `WatchStream` (Enumerable). |
 | `status` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
 | `session { \|s\| }` | Open a persistent connection (see below). |
+| `resolve(key, cwd:, env: nil, overrides: nil)` | Client-side field resolution — the same evaluator `comb get`'s resolution layer uses. |
+| `eval_expression(template_str, cwd:, env: nil, overrides: nil)` | Evaluate a value expression in any of the three forms — bare, one `{{ }}` tag, or a template — same evaluator as `resolve`. |
+
+`resolve` and `eval_expression` require `cwd`. `template_str` (and each
+field's own expression) accepts a bare expression, a single `{{ expr }}`
+tag, or literal text/several tags — the first two keep the expression's
+natural type, the third is always a string.
 
 ### `Beachcomber::Session`
 

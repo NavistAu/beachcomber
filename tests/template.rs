@@ -1,7 +1,21 @@
-use beachcomber::cli::format::{
-    find_eval_template_pairs, find_eval_template_refs, render_eval_template, render_fmt_template,
-};
+//! Tests for the CLI's `-f fmt` rendering and for the value-expression
+//! rendering it now shares with `comb eval` and config virtual fields.
+//!
+//! Task 3 deleted `src/cli/format.rs`'s hand-rolled `{{ }}` scanner
+//! (`find_eval_template_pairs` / `find_eval_template_refs`) and its
+//! `render_eval_template`: reference discovery is `eval::discover_refs` and
+//! rendering is `eval::render_template`, both in `libbeachcomber`. The scanner
+//! cases that had no library equivalent are kept below, restated against
+//! `discover_refs`.
+
+use beachcomber::cli::format::render_fmt_template;
 use beachcomber::provider::{ProviderResult, Value};
+use libbeachcomber::eval::{discover_refs, render_template};
+use libbeachcomber::virtual_fields::Ref;
+
+fn resolved(provider: &str, field: &str) -> Ref {
+    Ref::Resolved(provider.into(), field.into())
+}
 
 fn result_with_fields(fields: &[(&str, Value)]) -> ProviderResult {
     let mut r = ProviderResult::new();
@@ -62,7 +76,7 @@ fn eval_template_renders_provider_field_refs() {
         "load": {"one": 0.42, "five": 0.3, "fifteen": 0.25}
     });
     let out =
-        render_eval_template("hostname: {{ hostname.value }}, load: {{ load.one }}", &ctx).unwrap();
+        render_template("hostname: {{ hostname.value }}, load: {{ load.one }}", &ctx).unwrap();
     assert_eq!(out, "hostname: me-laptop, load: 0.42");
 }
 
@@ -71,7 +85,7 @@ fn eval_template_truncate_filter_works_on_fields() {
     let ctx = serde_json::json!({
         "git": {"sha": "abcdef1234567890"}
     });
-    let out = render_eval_template("{{ git.sha | truncate(7) }}", &ctx).unwrap();
+    let out = render_template("{{ git.sha | truncate(7) }}", &ctx).unwrap();
     assert_eq!(out, "abcdef1...");
 }
 
@@ -80,108 +94,77 @@ fn eval_template_conditional_works() {
     let ctx = serde_json::json!({
         "git": {"dirty": true, "branch": "main"}
     });
-    let out = render_eval_template("{% if git.dirty %}*{% endif %}{{ git.branch }}", &ctx).unwrap();
+    let out = render_template("{% if git.dirty %}*{% endif %}{{ git.branch }}", &ctx).unwrap();
     assert_eq!(out, "*main");
 }
 
 #[test]
 fn eval_template_default_filter_for_missing_field() {
     let ctx = serde_json::json!({"git": {"branch": "main"}});
-    let out = render_eval_template("{{ git.tag | default('no-tag') }}", &ctx).unwrap();
+    let out = render_template("{{ git.tag | default('no-tag') }}", &ctx).unwrap();
     assert_eq!(out, "no-tag");
 }
 
 #[test]
 fn eval_template_single_brace_is_literal() {
     let ctx = serde_json::json!({"git": {"branch": "main"}});
-    let out = render_eval_template("{git.branch}", &ctx).unwrap();
+    let out = render_template("{git.branch}", &ctx).unwrap();
     assert_eq!(out, "{git.branch}");
 }
 
+// --- reference discovery (was the deleted `find_eval_template_pairs`) ---
+
 #[test]
-fn find_eval_template_refs_extracts_provider_names() {
-    let refs = find_eval_template_refs(
-        "{{ git.branch }} {{ hostname.value }} {{ git.sha | truncate(7) }}",
+fn discover_refs_finds_refs_in_for_block() {
+    assert_eq!(
+        discover_refs("{% for x in items.list %}{{ x }}{% endfor %}"),
+        vec![resolved("items", "list")]
     );
-    assert!(refs.contains("git"));
-    assert!(refs.contains("hostname"));
 }
 
 #[test]
-fn find_eval_template_pairs_extracts_provider_field_pairs() {
-    let pairs = find_eval_template_pairs("{{ git.branch }} {{ hostname.value }} {{ git.sha }}");
-    assert!(pairs.contains(&("git".to_string(), "branch".to_string())));
-    assert!(pairs.contains(&("hostname".to_string(), "value".to_string())));
-    assert!(pairs.contains(&("git".to_string(), "sha".to_string())));
+fn discover_refs_skips_comment_blocks() {
+    assert_eq!(
+        discover_refs("{# git.dirty #}{{ hostname.name }}"),
+        vec![resolved("hostname", "name")]
+    );
 }
 
 #[test]
-fn find_eval_template_pairs_ignores_bare_vars() {
-    // {{ name }} with no dot should not produce a pair
-    let pairs = find_eval_template_pairs("{{ name }}");
-    assert!(pairs.is_empty());
+fn discover_refs_handles_whitespace_control_dashes() {
+    assert_eq!(
+        discover_refs("{%- if git.dirty -%}*{%- endif -%}"),
+        vec![resolved("git", "dirty")]
+    );
 }
 
 #[test]
-fn find_eval_template_refs_deduplicates_providers() {
-    let refs = find_eval_template_refs("{{ git.branch }} {{ git.sha }}");
-    assert_eq!(refs.len(), 1);
-    assert!(refs.contains("git"));
+fn discover_refs_combines_block_and_expression_refs() {
+    assert_eq!(
+        discover_refs(
+            "{% if git.dirty %}dirty:{{ git.branch }}{% else %}{{ git.branch }}{% endif %}"
+        ),
+        vec![resolved("git", "branch"), resolved("git", "dirty")]
+    );
+}
+
+#[test]
+fn discover_refs_skips_dotted_string_literals() {
+    // A dotted string literal is not a ref.
+    assert_eq!(
+        discover_refs(r#"{{ git.branch or "foo.bar" }}"#),
+        vec![resolved("git", "branch")]
+    );
 }
 
 #[test]
 fn eval_template_accepts_tab_and_newline_whitespace_inside_braces() {
     let ctx = serde_json::json!({"git": {"branch": "main"}});
-    // Tab after {{ — scanner must still detect git.branch
-    let out = render_eval_template("{{\tgit.branch }}", &ctx).unwrap();
+    let out = render_template("{{\tgit.branch }}", &ctx).unwrap();
     assert_eq!(out, "main");
 
-    // Also verify the pair extraction sees the ref
-    let pairs = find_eval_template_pairs("{{\tgit.branch }}");
-    assert!(pairs.iter().any(|(p, f)| p == "git" && f == "branch"));
-}
-
-// --- block tag scanner tests ---
-
-#[test]
-fn eval_scanner_finds_refs_in_if_block() {
-    let pairs = find_eval_template_pairs("{% if git.dirty %}*{% endif %}");
-    assert!(pairs.iter().any(|(p, f)| p == "git" && f == "dirty"));
-}
-
-#[test]
-fn eval_scanner_finds_refs_in_for_block() {
-    let pairs = find_eval_template_pairs("{% for x in items.list %}{{ x }}{% endfor %}");
-    assert!(pairs.iter().any(|(p, f)| p == "items" && f == "list"));
-}
-
-#[test]
-fn eval_scanner_finds_multiple_refs_in_one_block() {
-    let pairs = find_eval_template_pairs("{% if git.dirty and load.one > 2 %}!{% endif %}");
-    let got: std::collections::HashSet<(String, String)> = pairs.into_iter().collect();
-    assert!(got.contains(&("git".into(), "dirty".into())));
-    assert!(got.contains(&("load".into(), "one".into())));
-}
-
-#[test]
-fn eval_scanner_skips_comment_blocks() {
-    let pairs = find_eval_template_pairs("{# git.dirty #}{{ hostname.name }}");
-    assert!(!pairs.iter().any(|(p, _)| p == "git"));
-    assert!(pairs.iter().any(|(p, f)| p == "hostname" && f == "name"));
-}
-
-#[test]
-fn eval_scanner_combines_block_and_expression_refs() {
-    let pairs = find_eval_template_pairs(
-        "{% if git.dirty %}dirty:{{ git.branch }}{% else %}{{ git.branch }}{% endif %}",
+    assert_eq!(
+        discover_refs("{{\tgit.branch }}"),
+        vec![resolved("git", "branch")]
     );
-    let got: std::collections::HashSet<(String, String)> = pairs.into_iter().collect();
-    assert!(got.contains(&("git".into(), "dirty".into())));
-    assert!(got.contains(&("git".into(), "branch".into())));
-}
-
-#[test]
-fn eval_scanner_handles_whitespace_control_dashes() {
-    let pairs = find_eval_template_pairs("{%- if git.dirty -%}*{%- endif -%}");
-    assert!(pairs.iter().any(|(p, f)| p == "git" && f == "dirty"));
 }

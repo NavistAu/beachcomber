@@ -38,6 +38,7 @@ fn basename_filter_empty_string() {
     assert_eq!(result, "");
 }
 
+use libbeachcomber::eval;
 use libbeachcomber::virtual_fields::{EvalContext, VirtualFields};
 use serde_json::json;
 use std::collections::HashMap;
@@ -54,9 +55,7 @@ fn env_star_set_returns_value() {
         env_vars: &env_vars,
         daemon_data: &HashMap::new(),
     };
-    let result = vf
-        .evaluate_expression("env.MY_VAR", &ctx, &mut Default::default())
-        .unwrap();
+    let result = eval::evaluate("env.MY_VAR", &vf, &ctx).unwrap();
     assert_eq!(result, json!("hello"));
 }
 
@@ -68,9 +67,7 @@ fn env_star_unset_returns_empty_string() {
         env_vars: &env_vars,
         daemon_data: &HashMap::new(),
     };
-    let result = vf
-        .evaluate_expression("env.NONEXISTENT_VAR", &ctx, &mut Default::default())
-        .unwrap();
+    let result = eval::evaluate("env.NONEXISTENT_VAR", &vf, &ctx).unwrap();
     assert_eq!(result, json!(""));
 }
 
@@ -88,13 +85,7 @@ fn bool_expression_returns_bool_value() {
         daemon_data: &HashMap::new(),
     };
     // op.signed_in expression: env.OP_SERVICE_ACCOUNT_TOKEN != ""
-    let result = vf
-        .evaluate_expression(
-            r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#,
-            &ctx,
-            &mut Default::default(),
-        )
-        .unwrap();
+    let result = eval::evaluate(r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#, &vf, &ctx).unwrap();
     assert_eq!(
         result,
         json!(true),
@@ -110,13 +101,7 @@ fn bool_expression_false_when_token_absent() {
         env_vars: &env_vars,
         daemon_data: &HashMap::new(),
     };
-    let result = vf
-        .evaluate_expression(
-            r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#,
-            &ctx,
-            &mut Default::default(),
-        )
-        .unwrap();
+    let result = eval::evaluate(r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#, &vf, &ctx).unwrap();
     assert_eq!(
         result,
         json!(false),
@@ -137,13 +122,7 @@ fn op_signed_in_never_returns_token_string() {
         env_vars: &env_vars,
         daemon_data: &HashMap::new(),
     };
-    let result = vf
-        .evaluate_expression(
-            r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#,
-            &ctx,
-            &mut Default::default(),
-        )
-        .unwrap();
+    let result = eval::evaluate(r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#, &vf, &ctx).unwrap();
     assert_ne!(
         result.as_str().unwrap_or(""),
         token,
@@ -166,13 +145,8 @@ fn cascade_first_non_empty_wins() {
         env_vars: &env_vars,
         daemon_data: &daemon_data,
     };
-    let result = vf
-        .evaluate_expression(
-            "env.TF_WORKSPACE or cache.terraform.workspace",
-            &ctx,
-            &mut Default::default(),
-        )
-        .unwrap();
+    let result =
+        eval::evaluate("env.TF_WORKSPACE or cache.terraform.workspace", &vf, &ctx).unwrap();
     assert_eq!(result, json!("dev"), "env var wins when set");
 }
 
@@ -186,13 +160,8 @@ fn cascade_falls_through_to_daemon_when_env_empty() {
         env_vars: &env_vars,
         daemon_data: &daemon_data,
     };
-    let result = vf
-        .evaluate_expression(
-            "env.TF_WORKSPACE or cache.terraform.workspace",
-            &ctx,
-            &mut Default::default(),
-        )
-        .unwrap();
+    let result =
+        eval::evaluate("env.TF_WORKSPACE or cache.terraform.workspace", &vf, &ctx).unwrap();
     assert_eq!(result, json!("staging"), "daemon value used when env empty");
 }
 
@@ -204,9 +173,7 @@ fn all_falsy_cascade_returns_empty_string() {
         env_vars: &env_vars,
         daemon_data: &HashMap::new(),
     };
-    let result = vf
-        .evaluate_expression("env.A or env.B or env.C", &ctx, &mut Default::default())
-        .unwrap();
+    let result = eval::evaluate("env.A or env.B or env.C", &vf, &ctx).unwrap();
     assert_eq!(result, json!(""), "all falsy → empty string");
 }
 
@@ -216,8 +183,9 @@ fn all_falsy_cascade_returns_empty_string() {
 fn ref_discovery_finds_all_refs_in_cascade() {
     // Guards against first-ref-only regression.
     // "env.A or provider.field or other.field2" must discover ALL three.
-    use libbeachcomber::virtual_fields::{Ref, discover_expression_refs};
-    let refs = discover_expression_refs("env.A or provider.field or other.field2");
+    use libbeachcomber::eval::discover_refs;
+    use libbeachcomber::virtual_fields::Ref;
+    let refs = discover_refs("env.A or provider.field or other.field2");
     assert!(refs.contains(&Ref::Env("A".into())), "env.A missing");
     assert!(
         refs.contains(&Ref::Resolved("provider".into(), "field".into())),
@@ -242,9 +210,7 @@ fn large_u64_daemon_field_preserved_as_integer() {
         env_vars: &env_vars,
         daemon_data: &daemon_data,
     };
-    let result = vf
-        .evaluate_expression("bignum.value", &ctx, &mut Default::default())
-        .unwrap();
+    let result = eval::evaluate("bignum.value", &vf, &ctx).unwrap();
     assert_eq!(
         result,
         json!(18446744073709551615u64),
@@ -393,8 +359,9 @@ fn gcloud_project_cascade_no_self_cycle() {
 fn nested_ref_discovery_three_segments_returns_provider_and_second_segment() {
     // foo.object.key must yield Resolved("foo", "object") — deeper segments are MiniJinja
     // attribute navigation into the fetched value, not part of the daemon key.
-    use libbeachcomber::virtual_fields::{Ref, discover_expression_refs};
-    let refs = discover_expression_refs("foo.object.key");
+    use libbeachcomber::eval::discover_refs;
+    use libbeachcomber::virtual_fields::Ref;
+    let refs = discover_refs("foo.object.key");
     assert_eq!(refs.len(), 1, "one ref expected; got: {refs:?}");
     assert!(
         refs.contains(&Ref::Resolved("foo".into(), "object".into())),
@@ -405,8 +372,9 @@ fn nested_ref_discovery_three_segments_returns_provider_and_second_segment() {
 #[test]
 fn nested_ref_discovery_four_segments_and_two_segment_ref() {
     // "a.b.c.d or env.X" → [Resolved("a", "b"), Env("X")]
-    use libbeachcomber::virtual_fields::{Ref, discover_expression_refs};
-    let refs = discover_expression_refs("a.b.c.d or env.X");
+    use libbeachcomber::eval::discover_refs;
+    use libbeachcomber::virtual_fields::Ref;
+    let refs = discover_refs("a.b.c.d or env.X");
     assert_eq!(refs.len(), 2, "two refs expected; got: {refs:?}");
     assert!(
         refs.contains(&Ref::Resolved("a".into(), "b".into())),
@@ -431,9 +399,7 @@ fn nested_ref_evaluates_via_minijinja_attribute_navigation() {
         env_vars: &env_vars,
         daemon_data: &daemon_data,
     };
-    let result = vf
-        .evaluate_expression("git.info.sub", &ctx, &mut Default::default())
-        .unwrap();
+    let result = eval::evaluate("git.info.sub", &vf, &ctx).unwrap();
     assert_eq!(
         result,
         json!("val"),

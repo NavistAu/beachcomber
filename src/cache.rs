@@ -180,6 +180,11 @@ impl Cache {
         self.entries.get(&key).map(|e| e.clone())
     }
 
+    /// Whether the `(provider, path)` slot holds an entry, without cloning it.
+    pub fn has_entry(&self, provider: &str, path: Option<&str>) -> bool {
+        self.entries.contains_key(&make_cache_key(provider, path))
+    }
+
     pub fn remove(&self, provider: &str, path: Option<&str>) {
         let key = make_cache_key(provider, path);
         self.entries.remove(&key);

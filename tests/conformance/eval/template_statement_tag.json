@@ -1,0 +1,7 @@
+{
+  "name": "eval_template_statement_tag",
+  "description": "A {% %} statement tag is a template, never the single-tag typed form: the if/else renders to the string \"on\".",
+  "env": { "A": "yes" },
+  "test": { "op": "eval", "args": { "template": "{% if env.A %}on{% else %}off{% endif %}" } },
+  "expect": { "status": "hit", "data_type": "string", "data_equals": "on" }
+}

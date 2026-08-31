@@ -1,0 +1,7 @@
+{
+  "name": "eval_bare_expression_typed",
+  "description": "A bare expression (no tag markers) is still accepted and keeps the expression's natural type — here a bool, not the string \"true\".",
+  "env": { "A": "set" },
+  "test": { "op": "eval", "args": { "template": "env.A != \"\"" } },
+  "expect": { "status": "hit", "data_type": "bool", "data_equals": true }
+}

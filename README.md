@@ -146,14 +146,14 @@ The npm and pip packages download the correct pre-built binary for your platform
 Download the `.deb` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.8.0-1_amd64.deb
-sudo dpkg -i beachcomber_0.8.0-1_amd64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.9.0-1_amd64.deb
+sudo dpkg -i beachcomber_0.9.0-1_amd64.deb
 ```
 
 ```sh
 # ARM64
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.8.0-1_arm64.deb
-sudo dpkg -i beachcomber_0.8.0-1_arm64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.9.0-1_arm64.deb
+sudo dpkg -i beachcomber_0.9.0-1_arm64.deb
 ```
 
 #### Fedora/RHEL
@@ -161,14 +161,14 @@ sudo dpkg -i beachcomber_0.8.0-1_arm64.deb
 Download the `.rpm` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.8.0-1.x86_64.rpm
-sudo rpm -i beachcomber-0.8.0-1.x86_64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.9.0-1.x86_64.rpm
+sudo rpm -i beachcomber-0.9.0-1.x86_64.rpm
 ```
 
 ```sh
 # ARM64
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.8.0-1.aarch64.rpm
-sudo rpm -i beachcomber-0.8.0-1.aarch64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.9.0-1.aarch64.rpm
+sudo rpm -i beachcomber-0.9.0-1.aarch64.rpm
 ```
 
 #### Arch Linux (AUR)
@@ -397,11 +397,14 @@ Field-level filtering: watching `git.branch` only emits when the branch value ch
 
 ### `comb e` (eval) `<template> [path]`
 
-Evaluate a minijinja template string against cached provider data. Resolves all referenced keys in a single connection.
+Evaluate a value expression against cached provider data, resolving all referenced keys in a single connection. Three forms: **bare** (`git.branch`, backward compatible), a **single `{{ expr }}` tag** (keeps the expression's natural type), or **literal text and/or several tags** (always string-valued). Plain text with no tags at all is a bare expression, not literal text — write `{{ }}` for text.
 
 ```sh
 comb e "{{ git.branch }} | {{ battery.percent }}%" .     # → main | 82%
 PS1="$(comb e '{{ git.branch }} \$ ' . 2>/dev/null)"
+
+# Bare expression — equivalent to {{ git.dirty }}, keeps its bool type
+comb e 'git.dirty' .
 
 # Conditionals and filters
 comb e '{% if git.dirty %}*{{ git.branch }}{% else %}{{ git.branch }}{% endif %}' .

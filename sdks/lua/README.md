@@ -180,6 +180,10 @@ never has to reimplement it. `opts.cwd` (default: the context path, then
 `tests/conformance/README.md`'s `resolve` fixture shape). ffi transport
 only.
 
+`template_str` accepts a bare expression, a single `{{ expr }}` tag, or
+literal text/several tags — the first two keep the expression's natural
+type, the third is always a string.
+
 ### `Client:watch(key [, path])` → `WatchStream | nil, Error`
 
 ffi transport only. `stream:next_event([timeout_ms])` → event table

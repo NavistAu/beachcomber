@@ -22,15 +22,15 @@ library and the C standard library.
 ### Debian/Ubuntu
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-dev_0.8.0_amd64.deb
-sudo dpkg -i libbeachcomber-dev_0.8.0_amd64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-dev_0.9.0_amd64.deb
+sudo dpkg -i libbeachcomber-dev_0.9.0_amd64.deb
 ```
 
 ### Fedora/RHEL
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-devel-0.8.0-1.x86_64.rpm
-sudo rpm -i libbeachcomber-devel-0.8.0-1.x86_64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-devel-0.9.0-1.x86_64.rpm
+sudo rpm -i libbeachcomber-devel-0.9.0-1.x86_64.rpm
 ```
 
 ### Arch Linux (AUR)
@@ -171,7 +171,7 @@ daemon except to fetch `cache.*` refs the expression itself names.
 | Function | Description |
 |---|---|
 | `char *bc_resolve(BcClient *c, const char *key, const char *cwd, const char *env_json, const char *overrides_json)` | Resolve a virtual field (`key = "provider.field"`) or a path expression (`key` = a bare provider name), exactly as `comb get`'s resolution layer does. `cwd` is required. `env_json` / `overrides_json` are nullable. |
-| `char *bc_eval(BcClient *c, const char *template_str, const char *cwd, const char *env_json, const char *overrides_json)` | Evaluate an arbitrary expression string with the same evaluator, for an expression that need not be registered anywhere. `cwd` is required. |
+| `char *bc_eval(BcClient *c, const char *template_str, const char *cwd, const char *env_json, const char *overrides_json)` | Evaluate a value expression with the same evaluator, for an expression that need not be registered anywhere: a bare expression, a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string). `cwd` is required, and every daemon ref the expression names is fetched scoped to it. |
 
 ### Sessions
 

@@ -1,7 +1,8 @@
 {
   "name": "resolve_cascade_falls_through_to_cache",
-  "description": "env.X or cache.P.F cascade falls through to the cache term when env is absent.",
+  "description": "env.X or cache.P.F cascade falls through to the cache term when env is absent. The seed is put globally while the query runs at a cwd, so this also pins the global-slot fallback a virtual provider gets per canon field_resolution.md \u00a7\"Path resolution\".",
   "virtual": { "myapp.workspace": "env.MYAPP_ENV or cache.myappcache.workspace" },
+  "cwd": "/nonexistent/proj",
   "setup": [
     { "op": "put", "args": { "key": "myappcache", "data": { "workspace": "cache-env" } } }
   ],

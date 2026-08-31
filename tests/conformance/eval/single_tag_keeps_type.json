@@ -1,0 +1,7 @@
+{
+  "name": "eval_single_tag_keeps_type",
+  "description": "Exactly one {{ expr }} spanning the whole source keeps the expression's natural type — the same bool the bare form yields.",
+  "env": { "A": "set" },
+  "test": { "op": "eval", "args": { "template": "{{ env.A != \"\" }}" } },
+  "expect": { "status": "hit", "data_type": "bool", "data_equals": true }
+}

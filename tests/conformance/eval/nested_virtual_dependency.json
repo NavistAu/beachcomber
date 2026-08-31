@@ -1,0 +1,14 @@
+{
+  "name": "eval_nested_virtual_dependency",
+  "description": "The daemon-ref closure follows virtual fields transitively: {{ a.x }} depends on b.y, which depends on cache.d.w, so d.w must be fetched before a.x can be evaluated. cache.c.z names no registered provider and is falsy, so the cascade falls through to b.y. d is put globally while the query runs at a cwd, which a virtual provider's global-slot fallback makes visible (canon field_resolution.md \u00a7\"Path resolution\").",
+  "cwd": "/nonexistent/proj",
+  "virtual": {
+    "a.x": "{{ b.y or cache.c.z }}",
+    "b.y": "{{ cache.d.w }}"
+  },
+  "setup": [
+    { "op": "put", "args": { "key": "d", "data": { "w": "deep-value" } } }
+  ],
+  "test": { "op": "eval", "args": { "template": "{{ a.x }}" } },
+  "expect": { "status": "hit", "data_type": "string", "data_equals": "deep-value" }
+}

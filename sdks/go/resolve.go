@@ -31,10 +31,14 @@ func (c *Client) Resolve(key, cwd string, env, overrides map[string]string) (*Re
 	return resultFromScalarData(data)
 }
 
-// Eval evaluates an arbitrary expression string — the same evaluator
-// Resolve uses for a declared virtual field, but for a raw expression that
-// need not be registered anywhere. See Resolve for cwd/env/overrides
-// semantics, which this shares.
+// Eval evaluates a value expression — the same evaluator Resolve uses for a
+// declared virtual field, but for a raw expression that need not be
+// registered anywhere. See Resolve for cwd/env/overrides semantics, which
+// this shares.
+//
+// templateStr accepts a bare expression, a single "{{ expr }}" tag, or
+// literal text/several tags — the first two keep the expression's natural
+// type, the third is always a string.
 func (c *Client) Eval(templateStr, cwd string, env, overrides map[string]string) (*Result, error) {
 	if c.loadErr != nil {
 		return nil, c.loadErr
