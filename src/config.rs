@@ -1279,6 +1279,20 @@ impl Config {
                     continue;
                 }
 
+                // Legacy flat external-backend shape (bare `command`, no `backend` key)
+                // uses `fields` and `invalidation` as provider-level sub-tables directly
+                // (see ScriptProviderConfig::{fields, invalidation}) — they are not
+                // per-source blocks. Skip them here so they aren't flagged as
+                // unrecognized source blocks, mirroring parse_external_sources' skip
+                // logic. Scoped to the no-`backend`-key case so Phase 4 `backend = "..."`
+                // providers (which declare real sources, not these keys) are unaffected.
+                if is_external_backend
+                    && table.get("backend").is_none()
+                    && matches!(sub_key.as_str(), "fields" | "invalidation")
+                {
+                    continue;
+                }
+
                 // sub_key is a potential source name.
                 let sub_table = sub_val.as_table().unwrap();
                 let block_name = format!("[providers.{prov_name}.{sub_key}]");

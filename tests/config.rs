@@ -926,6 +926,87 @@ not_a_valid_key = "oops"
     );
 }
 
+// ── Legacy flat external backend TOML validation tests ──────────────────────
+
+#[test]
+fn legacy_flat_script_provider_fields_and_invalidation_accepted_in_validate() {
+    // Legacy flat shape: bare top-level `command`, no `backend` key. `fields`
+    // and `invalidation` are provider-level sub-tables in this shape (see
+    // ScriptProviderConfig::{fields, invalidation}), not per-source blocks —
+    // validate_providers must not flag them as unrecognized source blocks.
+    // `virtual` is also a legitimate provider-level sub-table here.
+    let toml_str = r#"
+[providers.chronoclaude]
+command = "comb eval '{{ scanline.stdin }}' | '/path/statusline'"
+output = "text"
+fields = { value = "string" }
+virtual.extra = "fields.value"
+
+[providers.chronoclaude.invalidation]
+poll = "1s"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let known_providers: Vec<String> = vec![];
+    let known_sources = std::collections::HashMap::new();
+    let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
+    assert!(
+        errors.is_empty(),
+        "legacy flat provider's fields/invalidation/virtual sub-tables must not \
+         produce validation errors: {:?}",
+        errors
+    );
+    assert!(warnings.is_empty(), "no warnings expected: {:?}", warnings);
+}
+
+#[test]
+fn legacy_flat_provider_unknown_subtable_still_errors() {
+    // A genuinely unrecognized sub-table on a legacy flat provider must still
+    // be rejected — the fields/invalidation carve-out must not swallow
+    // everything.
+    let toml_str = r#"
+[providers.chronoclaude]
+command = "/path/statusline"
+output = "text"
+
+[providers.chronoclaude.bogus]
+not_a_real_key = "junk"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let known_providers: Vec<String> = vec![];
+    let known_sources = std::collections::HashMap::new();
+    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
+    assert!(
+        !errors.is_empty(),
+        "unknown sub-table on legacy flat provider must still produce an error"
+    );
+}
+
+#[test]
+fn backend_script_fields_subtable_still_errors() {
+    // A Phase 4 `backend = "script"` block does not use provider-level
+    // `fields`/`invalidation` sub-tables — the legacy-flat carve-out must not
+    // extend to explicit-backend providers, so this behaves exactly as it
+    // did before the fix (no scope creep onto Phase 4 validation).
+    let toml_str = r#"
+[providers.localdash]
+backend = "script"
+fields = { value = "string" }
+
+[providers.localdash.weather]
+command = "/usr/bin/weather"
+type = "poll"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let known_providers: Vec<String> = vec![];
+    let known_sources = std::collections::HashMap::new();
+    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
+    assert!(
+        !errors.is_empty(),
+        "backend = script provider with a stray provider-level 'fields' sub-table \
+         must still error, unchanged from pre-fix behavior"
+    );
+}
+
 #[test]
 fn config_parses_virtual_field_expressions() {
     let toml = r#"

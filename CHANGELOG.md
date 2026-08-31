@@ -4,6 +4,13 @@ All notable changes to beachcomber will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-09-01
+
+### Fixed
+
+- **`validate_providers` rejected the documented legacy flat script-provider shape.** A provider declared with a bare top-level `command` (no `backend` key) legitimately carries `fields` and `invalidation` as provider-level sub-tables (`ScriptProviderConfig::{fields, invalidation}`) — config parsing itself accepts this shape — but validation walked those sub-tables as if they were per-source blocks and flagged both as unrecognized, so a daemon with such a provider refused to start. `validate_providers` now carries the same skip `parse_external_sources` already applied for the Phase 4 multi-source path, scoped to providers with no `backend` key so Phase 4 `backend = "…"` validation is unchanged.
+- **Config self-watch restart validation required `config.toml` to exist**, even when a daemon's whole configuration lives in `conf.d/*.toml` drop-ins. A conf.d-only change was detected but validation read the (absent) main config file and always failed, so the daemon never restarted into the change without a workaround empty `config.toml`. A missing main config file is now treated as empty content, the same tolerance `Config::load()` already gives daemon startup.
+
 ## [0.9.0] - 2026-08-31
 
 ### Added

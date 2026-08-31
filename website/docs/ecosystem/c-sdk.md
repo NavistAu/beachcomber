@@ -22,15 +22,15 @@ library and the C standard library.
 ### Debian/Ubuntu
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-dev_0.9.0_amd64.deb
-sudo dpkg -i libbeachcomber-dev_0.9.0_amd64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-dev_0.9.1_amd64.deb
+sudo dpkg -i libbeachcomber-dev_0.9.1_amd64.deb
 ```
 
 ### Fedora/RHEL
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-devel-0.9.0-1.x86_64.rpm
-sudo rpm -i libbeachcomber-devel-0.9.0-1.x86_64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-devel-0.9.1-1.x86_64.rpm
+sudo rpm -i libbeachcomber-devel-0.9.1-1.x86_64.rpm
 ```
 
 ### Arch Linux (AUR)
