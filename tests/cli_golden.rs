@@ -143,6 +143,109 @@ fn single_key_get_error_paths_always_write_stderr() {
     );
 }
 
+// ── get_text_finds_put_created_virtual_without_explicit_path ─────────────────
+
+/// Regression test for the text/sh half of the bug 6980405 fixed for `-f json`.
+///
+/// `comb put scanline '{...}'` (no `--path`, so the entry is stored globally)
+/// followed by `comb get scanline.stdin` printed nothing and exited 0, while
+/// `-f json` on the same key returned the value. The two formats take
+/// different routes through `run_get`: client-side formats collect a
+/// `Response` and got 6980405's global-fallback retry, whereas text/sh
+/// short-circuit into `get_formatted_with_flags`, which renders a miss as the
+/// empty string with no retry. Every shape of the key is covered because they
+/// all funnel through that same short-circuit: a scalar field, a nested field,
+/// and the bare provider.
+#[test]
+fn get_text_finds_put_created_virtual_without_explicit_path() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args([
+            "put",
+            "textvirt",
+            r#"{"stdin":"{\"session_id\":\"abc\"}","context":{"pct":42}}"#,
+        ])
+        .assert()
+        .success();
+
+    // Scalar field.
+    comb(&d)
+        .args(["get", "textvirt.stdin"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(r#"{"session_id":"abc"}"#));
+
+    // Nested field.
+    comb(&d)
+        .args(["get", "textvirt.context.pct"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("42"));
+
+    // Whole provider: sorted `key=value` lines, nested objects flattened one level.
+    comb(&d)
+        .args(["get", "textvirt"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("context.pct=42"))
+        .stdout(predicates::str::contains(r#"stdin={"session_id":"abc"}"#));
+}
+
+// ── get_sh_finds_put_created_virtual_without_explicit_path ───────────────────
+
+/// The `sh` output format shares the text short-circuit (both are
+/// `is_server_side()` and render through `render::render_data`), so it lost
+/// put-created values the same way. Companion to the text test above.
+#[test]
+fn get_sh_finds_put_created_virtual_without_explicit_path() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args([
+            "put",
+            "shvirt",
+            r#"{"stdin":"raw-blob","context":{"pct":42}}"#,
+        ])
+        .assert()
+        .success();
+
+    comb(&d)
+        .args(["get", "-f", "sh", "shvirt.stdin"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("raw-blob"));
+
+    comb(&d)
+        .args(["get", "-f", "sh", "shvirt"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("context.pct=42"));
+}
+
+// ── multi_key_get_text_finds_put_created_virtual_without_explicit_path ───────
+
+/// The multi-key text/sh loop loses the same value by a different mechanism:
+/// it issues each get with no request path, but on a session whose context was
+/// already set to the CLI's ambient CWD default, which scopes the lookup away
+/// from the globally-stored entry just as an explicit path would. A daemon
+/// provider queried alongside it still answers, so the miss is silent.
+#[test]
+fn multi_key_get_text_finds_put_created_virtual_without_explicit_path() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["put", "multivirt", r#"{"field1":"multi-hello"}"#])
+        .assert()
+        .success();
+
+    comb(&d)
+        .args(["get", "multivirt.field1", "hostname.name"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("multi-hello"));
+}
+
 // ── golden_watch_emits_initial_value_then_exits ───────────────────────────────
 
 #[test]
