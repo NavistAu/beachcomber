@@ -333,14 +333,18 @@ module Beachcomber
       Beachcomber::FFI.call!(:bc_resolve, @handle, key, cwd, json_or_nil(env), json_or_nil(overrides))
     end
 
-    # Evaluates an arbitrary expression string against `env.*`/`cache.*`
-    # refs, using the same evaluator {#resolve} uses for a declared field.
+    # Evaluates a value expression against `env.*`/`cache.*` refs, using the
+    # same evaluator {#resolve} uses for a declared field.
+    #
+    # +template+ accepts a bare expression, a single <tt>{{ expr }}</tt>
+    # tag, or literal text/several tags — the first two keep the
+    # expression's natural type, the third is always a string.
     #
     # @param template [String]
     # @param cwd [String] required, matching {#resolve}
     # @param env [Hash, nil]
     # @param overrides [Hash, nil]
-    # @return [String]
+    # @return [Object]
     def eval_expression(template, cwd:, env: nil, overrides: nil)
       Beachcomber::FFI.call!(:bc_eval, @handle, template, cwd, json_or_nil(env), json_or_nil(overrides))
     end

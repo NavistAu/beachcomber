@@ -79,7 +79,7 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: OutputF
                             match render_fmt_template_json(template, data) {
                                 Ok(rendered) => println!("{}", rendered),
                                 Err(e) => {
-                                    eprintln!("Template error: {e}");
+                                    eprintln!("{e}");
                                     return ExitCode::from(2);
                                 }
                             }

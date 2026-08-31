@@ -26,11 +26,34 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       integration could let the daemon precompute and cache these per-path env-derived values, turning those live reads
       back into cache hits where direnv is in play. Deferred until the env/cascade work lands; needs a way to ingest a
       directory's direnv-exported env and key the affected cache entries by `(path, that env)`.
+- [ ] **`watch` on a virtual provider: take the global-slot fallback.** `get` on a virtual provider reads the requested
+      path's slot if it holds an entry and the global one otherwise (canon `field_resolution.md` §"Path resolution");
+      `watch` deliberately does not. Its initial read is paired with a `watchers.subscribe` keyed by the same path, so
+      moving only the read would emit the global value once and then never update when that value changed — a first
+      value that silently goes stale, which is worse than the clean miss it returns today
+      (`tests/store.rs::watch_does_not_take_the_global_fallback` pins the current behavior). Doing this properly means
+      re-keying the subscription alongside the read, and deciding what happens when a path slot is later `put` into
+      while a watcher is subscribed to the global one — the watch should presumably switch slots and emit.
 - [ ] **`watch` support for computed fields.** The env/cascade design adds client-side **computed fields** (jinja
       expressions over `env.*` + `provider.field`, evaluated in the CLI). v1 wires them into `comb get` and `comb eval`
       only. `comb watch <computed.field>` is deferred — users will reasonably expect `watch python.version` to behave
       like `get python.version`, so this needs a client-side re-evaluation loop driven by the underlying daemon fields'
       changes (and a story for `env.*`, which the daemon can't watch). Pick up after the env/cascade P1 lands.
+- [ ] **`eval`'s "JSON null" ambiguity across conformance runners.** A daemon-fetched ref that resolves to JSON `null`
+      is treated as data-present in the Rust and C conformance runners but as a miss in Node, Ruby, Lua and Python.
+      Settle whether `eval` has a genuine "miss" notion distinct from "resolved to null", and pin the answer with a
+      conformance fixture.
+- [ ] **A path-expression compile error is swallowed to `None`.** `path_expr::evaluate_path` returns
+      `Option<String>`, where `None` means "empty/falsy result ⇒ the global slot" (canon `field_resolution.md`
+      §"Path resolution"). A source that fails to compile takes the same `None` — so a typo in a config `path =`
+      silently collapses the provider to the global slot instead of reporting the syntax error. Both forms now
+      compile (`{{ }}` and bare), which removes the most common way to hit this, but the wart stands: the return
+      type needs to distinguish "no path" from "bad expression", and every caller (`comb get`'s resolution layer,
+      `bc_resolve`'s path-expression arm, the conformance runners) needs to surface it.
+- [ ] **Typed `EvalError` from `libbeachcomber::eval`.** `eval::evaluate` (and `VirtualFields::evaluate`) return a
+      plain `String` on failure; `libbeachcomber-ffi`'s `eval_error_kind` classifies `parse_error` vs `server_error` by
+      a substring check on `"compile error"`. Replace the `String` with a typed `EvalError { Compile, Eval, Render,
+      Cycle }` so the FFI (and any other caller) can match on the failure kind instead of parsing the message.
 
 ### CLI Ergonomics
 

@@ -473,9 +473,13 @@ export class Client {
   }
 
   /**
-   * Evaluate an arbitrary expression string — the same evaluator `resolve`
-   * uses for a declared virtual field, but for a raw expression that need
-   * not be registered anywhere.
+   * Evaluate a value expression — the same evaluator `resolve` uses for a
+   * declared virtual field, but for a raw expression that need not be
+   * registered anywhere.
+   *
+   * `templateStr` accepts a bare expression, a single `{{ expr }}` tag, or
+   * literal text/several tags — the first two keep the expression's
+   * natural type, the third is always a string.
    */
   async eval(templateStr: string, opts: ResolveOptions): Promise<unknown> {
     const envJson = opts.env !== undefined ? JSON.stringify(opts.env) : undefined;

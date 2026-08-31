@@ -1,0 +1,6 @@
+{
+  "name": "eval_single_tag_keeps_number",
+  "description": "The single-tag form keeps a number as a number, not just a bool: {{ 1 + 1 }} is 2, where the same expression with literal text around it renders \"2 apples\" (eval_template_yields_string).",
+  "test": { "op": "eval", "args": { "template": "{{ 1 + 1 }}" } },
+  "expect": { "status": "hit", "data_type": "number", "data_equals": 2 }
+}

@@ -183,6 +183,18 @@ if (!fs.existsSync(DIST_CLIENT)) {
           }
           return makeOk({ data, dataAsText: valueAsText(data) });
         }
+        case 'eval': {
+          const template = args.template || '';
+          const data = await client.eval(template, {
+            cwd: resolveCtx.cwd,
+            env: resolveCtx.env,
+            overrides: resolveCtx.virtual,
+          });
+          if (data === null || data === undefined) {
+            return makeOk();
+          }
+          return makeOk({ data, dataAsText: valueAsText(data) });
+        }
         case 'hello': {
           const info = await client.hello();
           const data = {
@@ -310,7 +322,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
   // Ops this runner's binding can execute. A fixture using any op outside
   // this set must be skipped, not failed — the binding doesn't implement it.
   const SUPPORTED_OPS = new Set([
-    'hello', 'get', 'refresh', 'put', 'status', 'context', 'watch', 'introspect', 'resolve',
+    'hello', 'get', 'refresh', 'put', 'status', 'context', 'watch', 'introspect', 'resolve', 'eval',
   ]);
 
   function unsupportedOp(fixture) {

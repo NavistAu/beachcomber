@@ -84,7 +84,12 @@ end
 class ConformanceRunner
   # Ops this runner's binding can execute. A fixture using any op outside
   # this set must be skipped, not failed — the binding doesn't implement it.
-  SUPPORTED_OPS = %w[hello get refresh put status context watch introspect resolve].freeze
+  SUPPORTED_OPS = %w[hello get refresh put status context watch introspect resolve eval].freeze
+
+  # Ops that are not wire ops: their "result" is the resolved/evaluated value
+  # itself (a String/Hash/Array/true/nil), not a typed Result/HelloInfo/etc.
+  # wrapper, so status and data extraction special-case them.
+  RAW_VALUE_OPS = %w[resolve eval].freeze
 
   # Every expectation kind documented in tests/conformance/README.md. A
   # fixture using a key outside this set fails loudly rather than being
@@ -196,6 +201,10 @@ class ConformanceRunner
       cwd = fixture['cwd'] || @default_cwd
       value = @client.resolve(args['key'], cwd: cwd, env: fixture['env'], overrides: fixture['virtual'])
       [value, nil]
+    when 'eval'
+      cwd = fixture['cwd'] || @default_cwd
+      value = @client.eval_expression(args['template'], cwd: cwd, env: fixture['env'], overrides: fixture['virtual'])
+      [value, nil]
     else
       raise "unknown op in fixture: #{op.inspect}"
     end
@@ -255,17 +264,16 @@ class ConformanceRunner
     end
   end
 
-  # `resolve` is not a wire op: its "result" is the resolved value itself
-  # (a String/Hash/Array/nil), not a typed Result/HelloInfo/etc. wrapper, so
-  # status/data extraction special-case it rather than trying to duck-type
-  # a raw JSON scalar against the wrapper types below.
+  # See RAW_VALUE_OPS: `resolve` and `eval` hand back a raw JSON scalar, so
+  # status/data extraction special-case them rather than trying to duck-type
+  # that scalar against the wrapper types below.
   def check_status(expect, result, op)
     expected = expect['status']
     case expected
     when 'ok'
       true # result returned without raising
     when 'hit'
-      if op == 'resolve'
+      if RAW_VALUE_OPS.include?(op)
         !result.nil?
       elsif result.respond_to?(:data) && !result.data.nil?
         true
@@ -275,7 +283,7 @@ class ConformanceRunner
         false
       end
     when 'miss'
-      if op == 'resolve'
+      if RAW_VALUE_OPS.include?(op)
         result.nil?
       else
         result.respond_to?(:miss?) ? result.miss? : false
@@ -289,7 +297,7 @@ class ConformanceRunner
   end
 
   def extract_data(result, op)
-    return result if op == 'resolve'
+    return result if RAW_VALUE_OPS.include?(op)
 
     case result
     when Beachcomber::Result
@@ -328,7 +336,7 @@ class ConformanceRunner
              when Array   then 'array'
              when Integer, Float then 'number'
              when String  then 'string'
-             when TrueClass, FalseClass then 'boolean'
+             when TrueClass, FalseClass then 'bool'
              when NilClass then 'null'
              else data.class.name
              end

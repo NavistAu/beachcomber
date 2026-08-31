@@ -57,9 +57,9 @@ type fixture struct {
 	Setup       []opDescriptor    `json:"setup"`
 	Test        opDescriptor      `json:"test"`
 	Expect      expectBlock       `json:"expect"`
-	Virtual     map[string]string `json:"virtual"` // resolve fixtures: field/provider key -> expression override
-	Env         map[string]string `json:"env"`     // resolve fixtures: env.* refs
-	Cwd         string            `json:"cwd"`     // resolve fixtures: cwd for path expressions; defaults to the per-fixture temp dir
+	Virtual     map[string]string `json:"virtual"` // resolve/eval fixtures: field/provider key -> expression override
+	Env         map[string]string `json:"env"`     // resolve/eval fixtures: env.* refs
+	Cwd         string            `json:"cwd"`     // resolve/eval fixtures: cwd for path expressions and daemon query scope; defaults to the per-fixture temp dir
 	path        string            // source file path (not in JSON)
 }
 
@@ -123,7 +123,7 @@ func main() {
 var supportedOps = map[string]bool{
 	"hello": true, "get": true, "refresh": true, "put": true,
 	"status": true, "context": true, "watch": true, "introspect": true,
-	"resolve": true,
+	"resolve": true, "eval": true,
 }
 
 // unsupportedOp returns the first op in f (setup or test) this runner can't
@@ -337,6 +337,18 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 			cwd = tmpDir
 		}
 		r, err := c.Resolve(key, cwd, f.Env, f.Virtual)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &opResult{data: r.Data}, nil, nil
+
+	case "eval":
+		template, _ := op.Args["template"].(string)
+		cwd := f.Cwd
+		if cwd == "" {
+			cwd = tmpDir
+		}
+		r, err := c.Eval(template, cwd, f.Env, f.Virtual)
 		if err != nil {
 			return nil, nil, err
 		}

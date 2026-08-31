@@ -211,21 +211,43 @@ Field-level filtering: `comb w git.branch` only emits when the branch value chan
 
 ## `comb e` (eval) `<template> [path]`
 
-Evaluate a minijinja template string against cached provider data. Resolves all referenced keys in a single connection.
+Evaluate a value expression against cached provider data, resolving every referenced key in a single connection.
+
+A value expression is written in one of three forms:
+
+- **Bare** — no `{{ }}` at all: the whole argument is the expression (e.g. `git.branch`). Accepted for backward compatibility.
+- **Single tag** — exactly one `{{ expr }}` spanning the whole argument apart from surrounding whitespace (`'{{ git.dirty }} '` is still a single tag): keeps the expression's natural type (bool, number, object, …), same as bare.
+- **Template** — literal text and/or more than one tag: always string-valued.
+
+Plain text with no tags at all is parsed as a *bare expression*, not literal text — `comb e "hello world"` is two identifiers and fails to compile. Write `{{ }}` to say "this is text".
 
 ```sh
-# Formatted prompt segment
+# Template (two tags + literal text) — a formatted prompt segment, string-valued
 comb e "{{ git.branch }} | {{ battery.percent }}%" .
+
+# Single tag keeping its natural type
+comb e '{{ git.dirty }}' .
+
+# Bare expression — equivalent to the single-tag form above
+comb e 'git.dirty' .
 
 # With path
 comb e "{{ git.branch }}" /home/user/project
 
-# Conditionals and filters
+# Template: conditionals and filters
 comb e '{% if git.dirty %}*{{ git.branch }}{% else %}{{ git.branch }}{% endif %}' .
 comb e '{{ git.branch | truncate(20) }}' .
 ```
 
 Available filters: `truncate`, `default`, `upper`, `lower`, `length`.
+
+The natural type a bare or single-tag expression keeps is mostly *not* visible
+in `comb e`'s own output, which is text: a bool prints `true`, and so does the
+string `"true"`. Where it does show is in the shapes text cannot flatten — an
+object prints as sorted `key=value` lines and an array as JSON — and in every
+programmatic consumer: `bc_eval`, and so every SDK's `eval`, hands back a typed
+value (bool, number, object, array). A template is always a string in all of
+them.
 
 **Exit codes:** `0` on success, `2` on error.
 

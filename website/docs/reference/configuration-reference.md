@@ -242,6 +242,22 @@ JSON metadata:
 }
 ```
 
+### Virtual fields
+
+A **virtual field** is a value expression computed client-side over `env.*`, `cache.*`, and other fields' resolved values — it need not have a cached value of its own. Declare one under `[providers.<name>]` as a dotted `virtual.<field>` key:
+
+```toml
+[providers.myapp]
+virtual.region = "{{ env.AWS_REGION or cache.aws_profiles[env.AWS_PROFILE or \"default\"].region }}"
+
+[providers.git]
+virtual.summary = "{{ git.branch }}{% if git.dirty %}*{% endif %}"
+```
+
+`myapp.region` is a single `{{ expr }}` tag spanning the whole value, so it keeps the expression's natural type (here, whatever type the indexed `region` field is — typically a string, but a boolean or number cascades the same way). `git.summary` is not a single tag — it carries several, and the `{% if %}`/`{% endif %}` pair are `{% %}` statements rather than `{{ }}` expressions — so it is a template, and always string-valued. Either fact disqualifies it on its own: only exactly one `{{ }}` tag spanning the whole value takes the typed path, and the `*` here is literal text inside the `if`, not around the tags.
+
+A value expression may also be written **bare** — no `{{ }}` at all (`env.AWS_REGION or cache.aws_profiles[...].region`) — which is equivalent to the single-tag form and stays accepted for backward compatibility. `{{ }}` is the documented form; `comb init --write-config` materialises the built-in virtual fields into `~/.config/beachcomber/config.toml` in this form.
+
 ### Composition / conf.d
 
 Config can be split across multiple files using the `conf.d` convention —

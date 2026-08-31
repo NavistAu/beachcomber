@@ -98,8 +98,12 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
 - `bc_resolve` / `bc_eval` are client-side field resolution — virtual field
   expressions and path expressions, evaluated in-process against an
   explicit `cwd` (required) and optional `env_json` / `overrides_json`.
-  Nothing here talks to the daemon except to fetch `cache.*` refs the
-  expression itself names.
+  Every `cache.*` and plain `provider.field` ref the expression names is
+  fetched from the daemon at `cwd`, following virtual fields transitively;
+  an expression with only `env.*` refs never contacts the daemon.
+- `bc_eval`'s `template_str` accepts a bare expression, a single `{{ expr
+  }}` tag, or literal text/several tags — the first two keep the
+  expression's natural type, the third is always a string.
 - `bc_watch_open` + `bc_watch_next(w, timeout_ms)` + `bc_watch_cancel` /
   `bc_watch_free`: blocking poll, five machine-readable outcomes
   (`event`/`timeout`/`eof`/`cancelled`/the ordinary `ok:false` error

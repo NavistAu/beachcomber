@@ -1,6 +1,4 @@
 use crate::cache::CacheRow;
-use libbeachcomber::filters::build_env;
-use minijinja;
 
 // ---------------------------------------------------------------------------
 // ANSI colour helper (basic-16 palette, fg-only, no external crate)
@@ -377,13 +375,12 @@ pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> Stri
 
 /// Render each row using a minijinja template. One output line per row.
 pub fn render_minijinja(template: &str, rows: &[CacheRow]) -> String {
-    let env = build_env();
     let rendered: Vec<String> = rows
         .iter()
         .map(|r| {
             let ctx = row_context(r);
-            env.render_str(template, ctx)
-                .unwrap_or_else(|e| format!("<template error: {e}>"))
+            crate::cli::format::render_fmt_template_json(template, &ctx)
+                .unwrap_or_else(|e| format!("<{e}>"))
         })
         .collect();
     let mut out = rendered.join("\n");
@@ -399,15 +396,13 @@ pub fn render_minijinja(template: &str, rows: &[CacheRow]) -> String {
 /// Column widths are computed across all rendered rows plus the derived header,
 /// and the output is printed as a left-aligned block.
 pub fn render_minijinja_table(body: &str, rows: &[CacheRow]) -> String {
-    let env = build_env();
-
     // 1. Render each row.
     let rendered: Vec<String> = rows
         .iter()
         .map(|r| {
             let ctx = row_context(r);
-            env.render_str(body, ctx)
-                .unwrap_or_else(|e| format!("<template error: {e}>"))
+            crate::cli::format::render_fmt_template_json(body, &ctx)
+                .unwrap_or_else(|e| format!("<{e}>"))
         })
         .collect();
 
@@ -468,8 +463,11 @@ pub fn render_minijinja_table(body: &str, rows: &[CacheRow]) -> String {
     out
 }
 
-/// Build a minijinja context `Value` from a `CacheRow`.
-pub fn row_context(r: &CacheRow) -> minijinja::Value {
+/// Build the template render context for a `CacheRow`.
+///
+/// A `serde_json::Value` object — the shape
+/// [`crate::cli::format::render_fmt_template_json`] takes.
+pub fn row_context(r: &CacheRow) -> serde_json::Value {
     use crate::cache::RowKind;
     let mut ctx = serde_json::Map::new();
     ctx.insert(
@@ -532,7 +530,7 @@ pub fn row_context(r: &CacheRow) -> minijinja::Value {
         }
         ctx.insert("failure".into(), serde_json::Value::Object(fobj));
     }
-    minijinja::Value::from_serialize(serde_json::Value::Object(ctx))
+    serde_json::Value::Object(ctx)
 }
 
 /// Scan `template` for `{{ varname }}` patterns and return uppercased names

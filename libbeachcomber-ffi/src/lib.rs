@@ -10,9 +10,12 @@ use std::time::{Duration, Instant};
 pub mod envelope;
 
 use envelope::{ErrorKind, FfiError, WatchOutcome, call_ffi, call_watch_next};
+use libbeachcomber::eval;
 use libbeachcomber::path_expr::{evaluate_path, path_expression_for};
-use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, discover_expression_refs};
-use libbeachcomber::{CacheRow, CombResult, DaemonHealth, IntrospectResponse, IntrospectSubject};
+use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields};
+use libbeachcomber::{
+    CacheRow, CombError, CombResult, DaemonHealth, IntrospectResponse, IntrospectSubject,
+};
 use std::collections::{HashMap, HashSet};
 
 /// Opaque client handle returned by [`bc_client_new`].
@@ -478,34 +481,64 @@ fn parse_overrides_json(
     Ok((field_overrides, path_overrides))
 }
 
-/// Fetches `cache.*` refs an expression makes, via the client, into a
-/// daemon-data map an [`EvalContext`] can borrow. Mirrors the conformance
-/// runner's `resolve` arm (`libbeachcomber/tests/conformance.rs`): each ref
-/// is looked up without a path context, matching what that reference
-/// implementation does. A fetch failure just leaves the ref absent from the
-/// map — [`VirtualFields::evaluate_expression`] treats a missing cache ref
-/// as a miss, not an error.
-fn fetch_cache_refs(
+/// Fetches every ref in `refs` from the daemon via `client.get(key,
+/// Some(cwd))`, into a daemon-data map an [`EvalContext`] can borrow. `cwd`
+/// is threaded through so path-scoped providers (`git`, `terraform`,
+/// `python`, `kubecontext`, …) resolve at the caller's supplied directory —
+/// the same convention `comb get`'s `--path` and `comb eval`'s
+/// `set_context` follow. Keying and dedup are [`eval::fetch_daemon_data`]'s;
+/// this closure only translates one `client.get` call into the
+/// `Result<Option<Value>, FfiError>` shape it wants. A cache miss is simply
+/// absent from the map and evaluates falsy.
+///
+/// So is `CombError::ServerError` — the daemon answered, but rejected the
+/// key (e.g. "unknown provider: c" for a `cache.*` ref that names nothing
+/// registered). Canon: a missing ref is falsy at any depth, and a rejected
+/// key is exactly that, not a transport failure. This mirrors
+/// `src/client.rs`'s `to_response`, which turns the very same
+/// `CombError::ServerError` into a response with `data: None` for the CLI
+/// (`comb eval '{{ c.z or "x" }}'` prints `x`) — so the FFI and the CLI
+/// agree on what a rejected key means. Every other `CombError` variant
+/// (connection/IO/parse/timeout/daemon-not-running) is a genuine transport
+/// failure and aborts the whole fetch: the [`CombError`]-derived envelope
+/// error every other `bc_*` op already produces via `?`, with the failing
+/// key named in the message the way `run_eval`'s own fetch closure names it.
+fn fetch_via_client(
     client: &libbeachcomber::Client,
-    expr: &str,
-) -> HashMap<String, serde_json::Value> {
-    let mut daemon_data = HashMap::new();
-    for r in discover_expression_refs(expr) {
-        match r {
-            Ref::CacheField(p, f) => {
-                if let Ok(CombResult::Hit { data, .. }) = client.get(&format!("{p}.{f}"), None) {
-                    daemon_data.insert(format!("{p}.{f}"), data.as_value().clone());
-                }
-            }
-            Ref::CacheProvider(p) => {
-                if let Ok(CombResult::Hit { data, .. }) = client.get(&p, None) {
-                    daemon_data.insert(p, data.as_value().clone());
-                }
-            }
-            Ref::Env(_) | Ref::Resolved(_, _) => {}
+    cwd: &str,
+    refs: &[Ref],
+) -> Result<HashMap<String, serde_json::Value>, FfiError> {
+    eval::fetch_daemon_data(refs, |key| match client.get(key, Some(cwd)) {
+        Ok(CombResult::Hit { data, .. }) => Ok(Some(data.as_value().clone())),
+        Ok(CombResult::Miss) => Ok(None),
+        Err(CombError::ServerError(_)) => Ok(None),
+        Err(e) => {
+            let mapped = FfiError::from(e);
+            Err(FfiError::new(
+                mapped.kind,
+                format!("querying {key}: {}", mapped.message),
+            ))
         }
+    })
+}
+
+/// Maps an evaluation error message from [`eval::evaluate`] /
+/// [`VirtualFields::evaluate`] to an [`ErrorKind`]. Both
+/// `eval::evaluate`'s typed path and `eval::render_template` prefix a
+/// compile failure with `"expression compile error: "` / `"template compile
+/// error: "` (optionally itself wrapped by `VirtualFields::evaluate`'s
+/// `"provider.field: "`) — that is the caller's own expression being
+/// malformed, a `parse_error`. Everything else (a runtime eval/render
+/// failure, an evaluation cycle) is a `server_error`. There is no typed
+/// error to match on here — both functions return a plain `String` — so
+/// this is deliberately a substring check on the one phrase both compile
+/// paths share.
+fn eval_error_kind(message: &str) -> ErrorKind {
+    if message.contains("compile error") {
+        ErrorKind::ParseError
+    } else {
+        ErrorKind::ServerError
     }
-    daemon_data
 }
 
 /// Resolve a virtual field (`key` = `"provider.field"`) or a path
@@ -514,7 +547,10 @@ fn fetch_cache_refs(
 ///
 /// `cwd` is required: NULL returns an error envelope rather than falling
 /// back to the process's own working directory — this library must never
-/// read ambient state on the caller's behalf. `env_json` and
+/// read ambient state on the caller's behalf. Every daemon-backed ref the
+/// field's expression makes (`cache.*` and plain `provider.field`,
+/// virtual fields followed transitively) is fetched scoped to `cwd`, the
+/// same convention `comb get`'s `--path` follows. `env_json` and
 /// `overrides_json` are nullable, meaning "none supplied".
 ///
 /// # Safety
@@ -550,14 +586,16 @@ pub unsafe extern "C" fn bc_resolve(
                         )
                     })?
                     .to_string();
-                let daemon_data = fetch_cache_refs(c, &expr);
+                let refs = eval::daemon_refs(&expr, &vf)
+                    .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
+                let daemon_data = fetch_via_client(c, cwd, &refs)?;
                 let ctx = EvalContext {
                     env_vars: &env_vars,
                     daemon_data: &daemon_data,
                 };
                 let v = vf
                     .evaluate(provider, field, &ctx, &mut HashSet::new())
-                    .map_err(|e| FfiError::new(ErrorKind::ServerError, e))?;
+                    .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
                 Ok(v)
             }
             None => match path_expression_for(key, &path_overrides) {
@@ -574,16 +612,22 @@ pub unsafe extern "C" fn bc_resolve(
     })
 }
 
-/// Evaluate an arbitrary expression string — the same evaluator
+/// Evaluate a value expression in any of the three forms canon
+/// `field_resolution.md` (invariant 14) defines: a bare expression, exactly
+/// one `{{ expr }}` tag (keeps the expression's natural type), or literal
+/// text and/or several tags (string-valued) — the same evaluator
 /// `bc_resolve` uses for a declared virtual field, but for a raw expression
-/// that need not be registered anywhere. Refs are discovered and `cache.*`
-/// refs fetched the same way `bc_resolve` does.
+/// that need not be registered anywhere. Every reference the source makes
+/// is threaded in: `env.*` from `env_json`, and `cache.*` / plain
+/// `provider.field` refs fetched from the daemon scoped to `cwd`, following
+/// virtual fields transitively — the same closure `bc_resolve` uses. A
+/// missing or unknown ref (an absent `env.*`, a daemon miss, or a
+/// daemon-rejected key such as an unregistered provider) is falsy at any
+/// depth, not an error.
 ///
 /// `cwd` is required, matching `bc_resolve`'s signature (see there for
-/// why); `env.*` and `cache.*` refs in `template_str` are the only inputs
-/// currently threaded into the expression — a bare `cwd` reference in a
-/// field expression is reserved for a later task and not evaluated by
-/// `evaluate_expression` today.
+/// why) — a bare `cwd` reference in a field expression is reserved for a
+/// later task and not evaluated by `bc_eval` today.
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `template_str`
@@ -600,20 +644,23 @@ pub unsafe extern "C" fn bc_eval(
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let template_str = unsafe { required_str(template_str, "template_str") }?;
-        let _cwd = unsafe { required_str(cwd, "cwd") }?;
+        let cwd = unsafe { required_str(cwd, "cwd") }?;
         let env_json = unsafe { optional_str(env_json) }?;
         let overrides_json = unsafe { optional_str(overrides_json) }?;
         let env_vars = parse_env_json(env_json)?;
         let (field_overrides, _path_overrides) = parse_overrides_json(overrides_json)?;
         let vf = VirtualFields::with_config_overrides(field_overrides);
 
-        let daemon_data = fetch_cache_refs(c, template_str);
+        // Every daemon key this source needs, virtual-field dependencies
+        // included — mirrors the CLI's `run_eval`.
+        let refs = eval::daemon_refs(template_str, &vf)
+            .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
+        let daemon_data = fetch_via_client(c, cwd, &refs)?;
         let ctx = EvalContext {
             env_vars: &env_vars,
             daemon_data: &daemon_data,
         };
-        vf.evaluate_expression(template_str, &ctx, &mut HashSet::new())
-            .map_err(|e| FfiError::new(ErrorKind::ServerError, e))
+        eval::evaluate(template_str, &vf, &ctx).map_err(|e| FfiError::new(eval_error_kind(&e), e))
     })
 }
 

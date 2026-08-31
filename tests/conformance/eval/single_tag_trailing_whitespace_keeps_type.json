@@ -1,0 +1,7 @@
+{
+  "name": "eval_single_tag_trailing_whitespace_keeps_type",
+  "description": "Whitespace around a single tag is not literal text: \"{{ env.A != \\\"\\\" }} \" is still the single-tag form and keeps the expression's bool, where minijinja's own template semantics would keep the space and make it the string \"true \".",
+  "env": { "A": "set" },
+  "test": { "op": "eval", "args": { "template": "{{ env.A != \"\" }} " } },
+  "expect": { "status": "hit", "data_type": "bool", "data_equals": true }
+}

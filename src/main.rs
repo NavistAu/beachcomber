@@ -177,10 +177,10 @@ enum Commands {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
-    /// Interpolate a template string with cached values
+    /// Evaluate a value expression against cached values
     #[command(visible_alias = "e")]
     Eval {
-        /// Template string with {{ provider.field }} placeholders
+        /// Template or expression: `{{ provider.field }}`, a bare expression, or text with several tags
         template: String,
         /// Path context for directory-scoped providers
         path: Option<String>,

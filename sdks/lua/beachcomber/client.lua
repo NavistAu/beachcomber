@@ -199,7 +199,10 @@ function Client:resolve(key, opts)
   return resp.data
 end
 
---- Evaluate a raw expression string client-side (via bc_eval).
+--- Evaluate a value expression client-side (via bc_eval). template_str
+-- accepts a bare expression, a single "{{ expr }}" tag, or literal
+-- text/several tags — the first two keep the expression's natural type,
+-- the third is always a string.
 -- @param template_str string
 -- @param opts table?  Same shape as Client:resolve's opts.
 -- @return value, or nil, Error

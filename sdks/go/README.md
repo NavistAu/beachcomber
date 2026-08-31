@@ -124,7 +124,7 @@ For latency-sensitive use, prefer `Session`.
 | `Hello() (*HelloInfo, error)` | Protocol/daemon version handshake. |
 | `Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)` | Inspect a daemon subsystem. |
 | `Resolve(key, cwd string, env, overrides map[string]string) (*Result, error)` | Client-side field resolution — the same evaluator `comb get` uses, run in-process. |
-| `Eval(templateStr, cwd string, env, overrides map[string]string) (*Result, error)` | Evaluate an arbitrary expression string, same evaluator as `Resolve`. |
+| `Eval(templateStr, cwd string, env, overrides map[string]string) (*Result, error)` | Evaluate a value expression in any of the three forms — bare, one `{{ }}` tag, or a template — same evaluator as `Resolve`. |
 | `Watch(key, path string) (*WatchStream, error)` | Subscribe to live updates. |
 | `Session() (*Session, error)` | Open a persistent connection. |
 
@@ -133,6 +133,10 @@ coordinate over it, so the library never falls back to the process's own
 working directory. `env` and `overrides` are optional (`nil` for "not
 supplied") — a `nil` `env` makes every `env.*` reference resolve to `""`,
 and `nil` `overrides` uses the built-in default expressions.
+
+`templateStr` accepts a bare expression, a single `{{ expr }}` tag, or
+literal text/several tags — the first two keep the expression's natural
+type, the third is always a string.
 
 ### `Session`
 
