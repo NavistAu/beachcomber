@@ -41,7 +41,7 @@ libc = "0.2"
 notify = "8"
 tokio-util = "0.7"
 ureq = "3"
-libloading = "0.9.0"
+libloading = "0.9"
 minijinja = { workspace = true }
 terminal_size = "0.3"
 thiserror = "2.0.18"
