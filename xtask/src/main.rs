@@ -40,6 +40,12 @@ struct Target {
     expected: usize,
     /// When true, the file is also renamed (old→new substituted in its path).
     rename: bool,
+    /// When set, the file is a `Cargo.lock` and only the `version = "…"` lines
+    /// belonging to these `[[package]]` names are replaced. A plain occurrence
+    /// count cannot work there: third-party crates legitimately share version
+    /// strings with the workspace (first seen at 0.9.0, which collided with
+    /// `libloading`, `rand_chacha` and `untrusted`).
+    lock_names: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +126,53 @@ fn rename_path(path: &str, old: &str, new: &str) -> String {
     path.replace(old, new)
 }
 
+/// Replace `version = "old"` with `version = "new"` inside a `Cargo.lock`, but
+/// only on the line immediately following a `name = "<pkg>"` line whose name is
+/// in `names`. Every listed name must be found exactly once with the expected
+/// old version; anything else is an error and leaves the content untouched.
+fn replace_lock_versions(
+    content: &str,
+    old: &str,
+    new: &str,
+    names: &[String],
+) -> Result<String, String> {
+    let mut replaced: Vec<&str> = Vec::with_capacity(names.len());
+    let mut out = String::with_capacity(content.len());
+    let mut pending: Option<&str> = None; // a matched name awaiting its version line
+    for line in content.lines() {
+        if let Some(name) = pending.take() {
+            let expected_line = format!("version = \"{old}\"");
+            if line.trim() != expected_line {
+                return Err(format!(
+                    "package `{name}`: expected `{expected_line}` on the line after its name, found `{line}`"
+                ));
+            }
+            out.push_str(&format!("version = \"{new}\"\n"));
+            replaced.push(name);
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("name = \"")
+            && let Some(end) = rest.find('"')
+            && let Some(name) = names.iter().find(|n| n.as_str() == &rest[..end])
+        {
+            if replaced.contains(&name.as_str()) {
+                return Err(format!("package `{name}` appears more than once"));
+            }
+            pending = Some(name);
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if replaced.len() != names.len() {
+        let missing: Vec<_> = names
+            .iter()
+            .filter(|n| !replaced.contains(&n.as_str()))
+            .collect();
+        return Err(format!("packages not found at version {old}: {missing:?}"));
+    }
+    Ok(out)
+}
+
 /// The full manifest of files to edit for a version bump from `old`.
 /// The rockspec path embeds `old`, so it is built from the current version.
 fn release_targets(old: &str) -> Vec<Target> {
@@ -127,13 +180,24 @@ fn release_targets(old: &str) -> Vec<Target> {
         path: path.to_string(),
         expected,
         rename: false,
+        lock_names: None,
     };
     vec![
         // Root manifest: [workspace.package] version, [package] version, and
         // the libbeachcomber path-dep pin. The lockfile carries beachcomber,
-        // libbeachcomber, and libbeachcomber-ffi (workspace-inherited).
+        // libbeachcomber, and libbeachcomber-ffi (workspace-inherited) — matched
+        // by package name, never by count (third-party crates share versions).
         t("Cargo.toml", 3),
-        t("Cargo.lock", 3),
+        Target {
+            path: "Cargo.lock".to_string(),
+            expected: 3,
+            rename: false,
+            lock_names: Some(vec![
+                "beachcomber".to_string(),
+                "libbeachcomber".to_string(),
+                "libbeachcomber-ffi".to_string(),
+            ]),
+        },
         t("libbeachcomber/Cargo.toml", 1),
         t("sdks/node/package.json", 1),
         t("sdks/node/package-lock.json", 2),
@@ -149,6 +213,7 @@ fn release_targets(old: &str) -> Vec<Target> {
             path: format!("sdks/lua/rockspec/libbeachcomber-{old}-1.rockspec"),
             expected: 2,
             rename: true,
+            lock_names: None,
         },
     ]
 }
@@ -269,8 +334,11 @@ fn set_version(new: &str, dry_run: bool, no_verify: bool) -> Result<(), String> 
         let abs = root.join(&t.path);
         let content =
             std::fs::read_to_string(&abs).map_err(|e| format!("reading {}: {e}", t.path))?;
-        let updated = replace_exact(&content, &old, new, t.expected)
-            .map_err(|e| format!("{}: {e}", t.path))?;
+        let updated = match &t.lock_names {
+            Some(names) => replace_lock_versions(&content, &old, new, names),
+            None => replace_exact(&content, &old, new, t.expected),
+        }
+        .map_err(|e| format!("{}: {e}", t.path))?;
         planned.push((t.clone(), updated));
     }
 
@@ -322,6 +390,26 @@ fn set_version(new: &str, dry_run: bool, no_verify: bool) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lock_versions_replace_only_named_packages() {
+        let lock = "[[package]]\nname = \"beachcomber\"\nversion = \"0.9.0\"\n\n[[package]]\nname = \"libloading\"\nversion = \"0.9.0\"\n\n[[package]]\nname = \"libbeachcomber\"\nversion = \"0.9.0\"\n";
+        let names = vec!["beachcomber".to_string(), "libbeachcomber".to_string()];
+        let out = replace_lock_versions(lock, "0.9.0", "0.9.1", &names).unwrap();
+        assert_eq!(out.matches("version = \"0.9.1\"").count(), 2);
+        // The third-party crate at the colliding version is untouched.
+        assert!(out.contains("name = \"libloading\"\nversion = \"0.9.0\""));
+    }
+
+    #[test]
+    fn lock_versions_error_when_a_named_package_is_missing_or_drifted() {
+        let lock = "[[package]]\nname = \"beachcomber\"\nversion = \"0.8.0\"\n";
+        let names = vec!["beachcomber".to_string()];
+        // Wrong version on the named package: error, nothing written.
+        assert!(replace_lock_versions(lock, "0.9.0", "0.9.1", &names).is_err());
+        // Named package absent entirely: error.
+        assert!(replace_lock_versions("", "0.9.0", "0.9.1", &names).is_err());
+    }
 
     #[test]
     fn parse_current_version_reads_package_version() {
