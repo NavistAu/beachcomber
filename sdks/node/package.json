@@ -1,6 +1,6 @@
 {
   "name": "libbeachcomber",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Node.js client SDK for the beachcomber shell state daemon",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
