@@ -2,14 +2,14 @@
 members = [".", "libbeachcomber", "libbeachcomber-ffi", "tests/fixtures/test_provider_lib", "xtask"]
 
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 
 [workspace.dependencies]
 minijinja = { version = "2", default-features = false, features = ["builtins", "serde"] }
 
 [package]
 name = "beachcomber"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "A centralized daemon that caches shell state (git, battery, hostname, etc.) so every consumer reads from one fast cache instead of independently forking shells"
 license = "MIT"
@@ -46,7 +46,7 @@ minijinja = { workspace = true }
 terminal_size = "0.3"
 thiserror = "2.0.18"
 sha2 = "0.11.0"
-libbeachcomber = { path = "libbeachcomber", version = "0.8.0" }
+libbeachcomber = { path = "libbeachcomber", version = "0.9.0" }
 
 [features]
 test-helpers = []
