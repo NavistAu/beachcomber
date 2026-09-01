@@ -183,6 +183,24 @@ comb p myapp --null
 
 `--null` clears a previously written virtual provider entry. Omitting `--null` requires a JSON object argument.
 
+### Session-scoped entries
+
+The `--path` value is a cache coordinate, not a filesystem lookup — a path that doesn't exist on disk is stored
+verbatim. Appending a session discriminator to the directory gives each writer its own slot, so several agents
+working in the same directory can publish independent state:
+
+```sh
+# Two agents in one project, each with its own slot
+comb p agent '{"context_pct":42}' --path "/home/user/project#session-a"
+comb p agent '{"context_pct":97}' --path "/home/user/project#session-b"
+
+comb g agent.context_pct "/home/user/project#session-a"   # 42
+```
+
+Reads must pass the exact path the writer used. A `get` at a session path that holds no entry falls back to the
+global (pathless) slot — never to the plain directory's slot. Use absolute paths: a relative `--path` is resolved
+against the daemon's working directory, not the caller's.
+
 Read back with standard `comb g`:
 
 ```sh
