@@ -355,7 +355,7 @@ fn evaluate_expression(
 ///
 /// The workspace's only template render: `comb eval`'s template form, `-f fmt`,
 /// `watch -f fmt` and the status formatter's custom templates all land here.
-/// `exec()` is unavailable — see [`render_template_exec`] for the sibling
+/// `exec()` is unavailable — see `render_template_exec` for the sibling
 /// that enables it. Keeping this signature and exec-off behaviour unchanged
 /// means `src/cli/format.rs` and every other formatting surface calling this
 /// function is untouched by exec()'s addition.

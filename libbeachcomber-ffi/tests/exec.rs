@@ -1,11 +1,11 @@
-//! `bc_eval` stays exec-off: Task 5 of the exec() plan enables `.with_exec()`
-//! on the CLI's user-initiated evaluation (`comb eval`/`comb get`) but the
-//! FFI/SDK surface must not opt in — the design principle is that the CLI
-//! user already has a shell, while an embedded/FFI caller does not get to
-//! spawn processes on the caller's behalf. `bc_eval` builds its
-//! `EvalContext` with plain `EvalContext::new(...)`, so an `exec()` call in
-//! an evaluated expression must fail with the on-topic disabled-exec
-//! message rather than actually running anything.
+//! `bc_eval` stays exec-off: the CLI's user-initiated evaluation
+//! (`comb eval`/`comb get`) opts into `.with_exec()`, but the FFI/SDK
+//! surface must not — the design principle is that the CLI user already
+//! has a shell, while an embedded/FFI caller does not get to spawn
+//! processes on the caller's behalf. `bc_eval` builds its `EvalContext`
+//! with plain `EvalContext::new(...)`, so an `exec()` call in an evaluated
+//! expression must fail with the on-topic disabled-exec message rather
+//! than actually running anything.
 
 use std::ffi::{CStr, CString, c_char};
 use std::path::Path;

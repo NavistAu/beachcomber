@@ -186,7 +186,7 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
         let _ = child.wait();
     }
 
-    // One shared grace budget for both receives (M1), not one full
+    // One shared grace budget for both receives, not one full
     // READER_JOIN_GRACE each — a stdout reader that eats the whole grace
     // window leaves stderr's receive nothing to wait on, rather than a
     // second full grace on top.
@@ -276,7 +276,7 @@ fn spawn_stdin_writer(mut pipe: ChildStdin, data: Option<String>) {
 
 /// Drain `pipe` on its own thread until EOF (so the child is never blocked
 /// writing to it), handing the collected bytes back over an `mpsc` channel
-/// rather than a plain `JoinHandle` — see [`recv_or_default`].
+/// rather than a plain `JoinHandle` — see [`stdout_outcome`].
 ///
 /// At most `retain_limit` bytes are kept in the returned buffer; bytes read
 /// past that are still drained (to keep the child unblocked) but discarded.
@@ -409,7 +409,7 @@ mod tests {
         // 256 KiB comfortably exceeds the ~64 KiB OS pipe buffer in both
         // directions (stdin in, stdout out): writing stdin on the main
         // thread, or draining stdout only after the write finished, would
-        // deadlock here (C1).
+        // deadlock here.
         let payload = "x".repeat(256 * 1024);
         let req = ExecRequest {
             cmd: "cat",
@@ -429,11 +429,10 @@ mod tests {
 
     #[test]
     fn timeout_covers_the_stdin_write() {
-        // C2 repro: `sleep` never reads stdin, so a 256 KiB payload (past
-        // the pipe buffer) blocks the write until something reads it or the
-        // pipe breaks. If the deadline were computed (or the write
-        // performed) before threading, this would time out at ~3s instead
-        // of ~200ms.
+        // `sleep` never reads stdin, so a 256 KiB payload (past the pipe
+        // buffer) blocks the write until something reads it or the pipe
+        // breaks. If the deadline were computed (or the write performed)
+        // before threading, this would time out at ~3s instead of ~200ms.
         let payload = "x".repeat(256 * 1024);
         let req = ExecRequest {
             cmd: "sh",
@@ -455,9 +454,9 @@ mod tests {
     fn grandchild_does_not_block_success_path() {
         // `sh` exits successfully almost immediately, but `sleep 3 &`
         // backgrounds a grandchild that inherits the stdout/stderr pipes.
-        // Without an explicit post-exit process-group kill (C3), the
-        // readers would block on that grandchild's open fds until IT exits
-        // (~3s) even though the command we asked for already finished.
+        // Without an explicit post-exit process-group kill, the readers
+        // would block on that grandchild's open fds until IT exits (~3s)
+        // even though the command we asked for already finished.
         let req = ExecRequest {
             cmd: "sh",
             args: &["-c".to_string(), "sleep 3 & echo started".to_string()],
@@ -598,10 +597,9 @@ mod tests {
 
     #[test]
     fn stdout_outcome_reports_a_timed_out_reader_as_failure() {
-        // I3 repro (deterministic half): nothing is ever sent, so the
-        // receive times out — this must not collapse to `Ok("")`, since a
-        // descendant holding the pipe past the grace window may still have
-        // real output in flight.
+        // Nothing is ever sent, so the receive times out — this must not
+        // collapse to `Ok("")`, since a descendant holding the pipe past
+        // the grace window may still have real output in flight.
         let (_tx, rx) = mpsc::channel::<Vec<u8>>();
         let result = rx.recv_timeout(Duration::from_millis(10));
         let err = stdout_outcome(result, "some-cmd", b"").unwrap_err();
@@ -610,9 +608,8 @@ mod tests {
 
     #[test]
     fn stdout_outcome_reports_a_disconnected_reader_as_failure() {
-        // I3 repro (deterministic half): the sender is dropped without
-        // sending (standing in for a reader thread that panicked) — this
-        // must not collapse to `Ok("")` either.
+        // The sender is dropped without sending (standing in for a reader
+        // thread that panicked) — this must not collapse to `Ok("")` either.
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         drop(tx);
         let result = rx.recv_timeout(Duration::from_millis(10));

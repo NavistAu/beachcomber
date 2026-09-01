@@ -323,12 +323,23 @@ fn format_virtual_value(val: &serde_json::Value, format: &OutputFormat) -> Resul
 /// `daemon_data` must contain pre-fetched values for any daemon-backed refs
 /// the expression needs (keyed as `"provider.field"`).
 ///
+/// `allow_exec` gates `exec()` for this evaluation. `run_get`'s env-first
+/// lazy probe (empty `daemon_data`, trying to skip the daemon entirely)
+/// calls this once and, if the env terms don't win, calls it again with the
+/// real `daemon_data` — an exec-backed expression reachable from both calls
+/// would otherwise spawn its command twice per `comb get`. The probe call
+/// passes `false`: an exec() call inside it errors with the disabled
+/// message rather than actually running, which is falsy-equivalent for the
+/// probe's "did an env term win" check, so it correctly falls through to the
+/// one real, exec-enabled evaluation.
+///
 /// Returns `Ok(formatted_string)` or `Err(error_message)`.
 fn evaluate_client_side(
     key: &str,
     format: &OutputFormat,
     daemon_data: &HashMap<String, serde_json::Value>,
     vf: &VirtualFields,
+    allow_exec: bool,
 ) -> Result<String, String> {
     let dot = key.find('.').ok_or_else(|| format!("invalid key: {key}"))?;
     let provider = &key[..dot];
@@ -342,7 +353,10 @@ fn evaluate_client_side(
         return format_virtual_value(&json_val, format);
     }
 
-    let ctx = EvalContext::new(&env_vars, daemon_data).with_exec();
+    let mut ctx = EvalContext::new(&env_vars, daemon_data);
+    if allow_exec {
+        ctx = ctx.with_exec();
+    }
     let json_val = vf.evaluate(provider, field, &ctx, &mut Default::default())?;
     format_virtual_value(&json_val, format)
 }
@@ -428,7 +442,10 @@ pub fn run_get(
                 // Bug #7: env-first lazy evaluation.
                 // Try with empty daemon_data: only env vars + virtual refs are consulted.
                 let empty_daemon_data = HashMap::new();
-                let env_only_result = evaluate_client_side(key, &format, &empty_daemon_data, &vf);
+                // allow_exec=false: this probe must never spawn a process —
+                // see evaluate_client_side's doc comment for why.
+                let env_only_result =
+                    evaluate_client_side(key, &format, &empty_daemon_data, &vf, false);
                 let env_only_is_nonempty = match &env_only_result {
                     Ok(text) => {
                         // A non-empty string or non-null value means the env term won.
@@ -475,7 +492,7 @@ pub fn run_get(
                     return ExitCode::from(2);
                 }
                 let daemon_data = fetch_daemon_deps(key, &vf, Some(&mut session), force, wait);
-                match evaluate_client_side(key, &format, &daemon_data, &vf) {
+                match evaluate_client_side(key, &format, &daemon_data, &vf, true) {
                     Ok(text) => {
                         print!("{text}");
                         return ExitCode::SUCCESS;
@@ -487,7 +504,7 @@ pub fn run_get(
                 }
             } else {
                 // Pure env/virtual with no daemon refs — evaluate directly.
-                match evaluate_client_side(key, &format, &HashMap::new(), &vf) {
+                match evaluate_client_side(key, &format, &HashMap::new(), &vf, true) {
                     Ok(text) => {
                         print!("{text}");
                         return ExitCode::SUCCESS;
@@ -669,7 +686,7 @@ pub fn run_get(
                 } else {
                     HashMap::new()
                 };
-                match evaluate_client_side(key, &format, &daemon_data, &vf) {
+                match evaluate_client_side(key, &format, &daemon_data, &vf, true) {
                     Ok(text) => {
                         if !text.is_empty() {
                             println!("{text}");
@@ -734,7 +751,7 @@ pub fn run_get(
             // Multi-key --format json wraps every key (virtual and daemon) uniformly in the
             // response shape, intentionally matching existing daemon multi-key JSON output.
             // Single-key client-side JSON emits the bare value (see single-key path above).
-            match evaluate_client_side(key, &OutputFormat::Json, &daemon_data, &vf) {
+            match evaluate_client_side(key, &OutputFormat::Json, &daemon_data, &vf, true) {
                 Ok(json_str) => {
                     let data: serde_json::Value =
                         serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null);

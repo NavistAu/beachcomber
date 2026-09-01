@@ -328,8 +328,9 @@ impl VirtualFields {
 ///
 /// `ctx` is caller-supplied rather than built internally, so a caller that
 /// wants `exec()` available across the whole namespace passes one built with
-/// [`EvalContext::with_exec`]; every production call site today passes an
-/// exec-off context.
+/// [`EvalContext::with_exec`]. The CLI's bare-provider `comb get` namespace
+/// path does exactly that (the CLI user already has a shell); the FFI/SDK
+/// surface stays exec-off.
 pub fn evaluate_namespace(provider: &str, vf: &VirtualFields, ctx: &EvalContext<'_>) -> JsonValue {
     let mut obj = serde_json::Map::new();
     for field in vf.fields_for(provider) {
