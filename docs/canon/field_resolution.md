@@ -179,6 +179,7 @@ A resolved value keeps its natural type. `--format json` emits bool / number / s
 12. A query may address any node of the value tree: a leaf resolves to a scalar, an interior node (a field whose value is an object, or a bare provider/namespace) to its subtree as an object. A consumer namespace's subtree is its evaluated virtual fields; a cached provider's, its cached fields. Addressing is independent of whether a node is cached or computed.
 13. Built-in value and path expressions are built into the client; configuration overrides them per provider/field.
 14. A value expression written as exactly one `{{ expr }}` evaluates to the expression's natural type; one written with literal text or more than one tag evaluates to a string.
+15. `exec()` capability is surface-scoped: a value expression may spawn a command only where the evaluating surface opted in (`comb eval`, `comb get`'s virtual-field evaluation). It is evaluated client-side, never by the daemon, and is unavailable in path expressions and formatting surfaces.
 
 ## Parameters
 

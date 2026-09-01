@@ -267,6 +267,28 @@ programmatic consumer: `bc_eval`, and so every SDK's `eval`, hands back a typed
 value (bool, number, object, array). A template is always a string in all of
 them.
 
+### `exec()` — running a command from an expression
+
+A value expression evaluated by `comb e` can call `exec()` to run a command and use its output:
+
+```sh
+comb e '{{ exec("git", "rev-parse", "--short", "HEAD") }}' .
+```
+
+| | |
+|---|---|
+| Signature | `exec(cmd, arg1, arg2, ..., timeout_ms=10000, stdin="")` |
+| Spawn | argv only — `cmd` and each positional argument become one argv entry each. No shell: no interpolation, no globbing, no `\|`/`&&`/redirection. |
+| Argument coercion | string → itself; bool → `"true"`/`"false"` (not minijinja's `Display`, which prints `True`/`False`); number → its canonical string form; `undefined`/`none` → error (typically a missed daemon ref reaching `exec()` un-guarded); a sequence or map → error, pointing at `stdin=` instead |
+| `timeout_ms` | keyword, default `10000`. A command still running at the deadline is killed (whole process group) and the call fails. |
+| `stdin` | keyword, default none. Must be a string — pass structured data through `\| tojson` first (e.g. `stdin=(some_map \| tojson)`). |
+| Output | stdout, lossy-UTF-8 decoded, with at most one trailing `\n` (and a preceding `\r`) stripped |
+| Output cap | stdout past 1 MiB is a failure, not a truncation |
+| Failure | a non-zero exit, a timeout, an oversized stdout, or a spawn error is an eval error naming the command, with stderr (truncated) attached |
+| Availability | `comb eval` and `comb get`'s virtual-field evaluation only — the CLI user already has a shell. Disabled everywhere else a value expression is evaluated: path expressions, every other formatting surface (`-f fmt`, `watch -f fmt`, the status formatter), and the FFI/SDK surface (`bc_eval`/`bc_resolve`). A call on a disabled surface fails immediately with `exec() is disabled in this context`. |
+
+`exec()` always runs client-side — the daemon never executes it, the same as every other value expression. See the [Configuration Reference](/docs/reference/configuration-reference) for a virtual-field example that wraps a script call.
+
 **Exit codes:** `0` on success, `2` on error.
 
 ## `comb i` (init)

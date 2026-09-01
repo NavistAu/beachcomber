@@ -258,6 +258,28 @@ virtual.summary = "{{ git.branch }}{% if git.dirty %}*{% endif %}"
 
 A value expression may also be written **bare** — no `{{ }}` at all (`env.AWS_REGION or cache.aws_profiles[...].region`) — which is equivalent to the single-tag form and stays accepted for backward compatibility. `{{ }}` is the documented form; `comb init --write-config` materialises the built-in virtual fields into `~/.config/beachcomber/config.toml` in this form.
 
+### `exec()` in virtual fields
+
+A `virtual.<field>` expression can call `exec()` to shell out to a script and use its output as the field's value:
+
+```toml
+[providers.myapp]
+virtual.deploy_tag = "{{ exec(\"git\", \"describe\", \"--tags\", \"--always\") }}"
+```
+
+| | |
+|---|---|
+| Signature | `exec(cmd, arg1, arg2, ..., timeout_ms=10000, stdin="")` |
+| Spawn | argv only — no shell. `cmd` and each positional become one argv entry; no interpolation, no `\|`/`&&`/redirection. |
+| Argument coercion | string → itself; bool → `"true"`/`"false"`; number → its canonical string form; `undefined`/`none`, a sequence, or a map → error (structured data goes through `stdin=` instead) |
+| `timeout_ms` | keyword, default `10000` |
+| `stdin` | keyword, default none; must be a string — `\| tojson` first for structured data |
+| Output | stdout, lossy-UTF-8, at most one trailing newline stripped; capped at 1 MiB (an oversized stdout is a failure, not a truncation) |
+| Failure | non-zero exit / timeout / oversized stdout / spawn failure → eval error naming the command, with truncated stderr attached |
+| Availability | `comb eval` and `comb get` only — evaluation is always client-side, never on the daemon. Disabled (`exec() is disabled in this context`) in path expressions, formatting surfaces (`-f fmt`, `watch -f fmt`, the status formatter), and the FFI/SDK surface (`bc_eval`/`bc_resolve`) |
+
+See [CLI Commands](/docs/reference/cli-commands) for the expression-level reference and more examples.
+
 ### Composition / conf.d
 
 Config can be split across multiple files using the `conf.d` convention —
