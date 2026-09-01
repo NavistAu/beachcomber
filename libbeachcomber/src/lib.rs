@@ -16,9 +16,8 @@
 //! ```
 
 pub mod eval;
-// `exec()` spawn engine for a later task's jinja function; nothing calls it
-// yet, hence the dead_code allowance (see the module doc).
-#[allow(dead_code)]
+// `exec()` spawn engine, backing the `exec()` jinja function registered in
+// `virtual_fields::build_expression_env`.
 mod exec;
 pub mod filters;
 pub mod path_expr;

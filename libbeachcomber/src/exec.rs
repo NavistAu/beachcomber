@@ -1,5 +1,5 @@
-//! Spawn engine backing the future `exec()` jinja function (registered in a
-//! later task — nothing calls [`run`] yet).
+//! Spawn engine backing the `exec()` jinja function, registered in
+//! `virtual_fields::build_expression_env`.
 //!
 //! [`run`] spawns one argv command in its own process group, writes+closes
 //! stdin, and drains stdout/stderr concurrently — each on its own thread —

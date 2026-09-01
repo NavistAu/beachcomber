@@ -18,8 +18,8 @@
 //! `virtual_fields`. The TOML key "virtual" is read as a string literal
 //! `"virtual"` in Rust code — e.g. `table.get("virtual")` — which is legal.
 
-use minijinja::value::Value as MjValue;
-use minijinja::{Environment, UndefinedBehavior};
+use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
+use minijinja::{Environment, Error, ErrorKind, UndefinedBehavior};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 
@@ -108,9 +108,9 @@ pub enum Ref {
 
 /// The evaluation context: resolved env vars + pre-fetched daemon data.
 ///
-/// Construct via [`EvalContext::new`]; opt into the `exec()` jinja function
-/// with [`EvalContext::with_exec`]. These are the only ways to build one —
-/// `allow_exec` is crate-private so external consumers can't set it directly.
+/// All fields are private, so these constructors are the only way to build
+/// one: [`EvalContext::new`], and [`EvalContext::with_exec`] to additionally
+/// opt into the `exec()` jinja function.
 pub struct EvalContext<'a> {
     /// The calling shell's environment variables.
     env_vars: &'a HashMap<String, String>,
@@ -119,11 +119,12 @@ pub struct EvalContext<'a> {
     /// - key = "provider" for whole-provider objects (CacheProvider refs)
     daemon_data: &'a HashMap<String, JsonValue>,
     /// Whether the `exec()` jinja function is available during evaluation.
-    pub(crate) allow_exec: bool,
+    allow_exec: bool,
 }
 
 impl<'a> EvalContext<'a> {
-    /// Build a context with `exec()` unavailable.
+    /// Build a context from the calling shell's environment variables and
+    /// pre-fetched daemon data, with `exec()` unavailable.
     pub fn new(
         env_vars: &'a HashMap<String, String>,
         daemon_data: &'a HashMap<String, JsonValue>,
@@ -135,10 +136,17 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    /// Opt into the `exec()` jinja function.
+    /// Opt into the `exec()` jinja function. Enabling this lets an evaluated
+    /// expression spawn processes, so only trusted expression sources should
+    /// get it.
     pub fn with_exec(mut self) -> Self {
         self.allow_exec = true;
         self
+    }
+
+    /// Whether the `exec()` jinja function is available during evaluation.
+    pub(crate) fn allow_exec(&self) -> bool {
+        self.allow_exec
     }
 }
 
@@ -546,7 +554,11 @@ pub(crate) fn refs_from_names(names: impl IntoIterator<Item = String>) -> Vec<Re
 /// the entry point that handles all three forms, and is what callers outside
 /// this module use.
 pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
-    let env = build_expression_env();
+    // Ref discovery never evaluates anything, and both `allow_exec` modes
+    // register a function under the same name (`exec`), so `exec` is never
+    // undeclared either way — which mode this env is built in doesn't
+    // change what `undeclared_variables` finds.
+    let env = build_expression_env(false);
     let Ok(compiled) = env.compile_expression(expr) else {
         return vec![];
     };
@@ -559,8 +571,14 @@ pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
 
 /// Build a minijinja `Environment` suitable for `compile_expression`.
 ///
-/// Registers the same filters as `build_env()` (truncate, basename) and sets
-/// chainable undefined behavior so missing refs are falsy, not errors.
+/// Registers the same filters as `build_env()` (truncate, basename), sets
+/// chainable undefined behavior so missing refs are falsy, not errors, and
+/// registers the `exec()` jinja function: the real closure ([`exec_fn`])
+/// when `allow_exec` is true, a closure that always errors ([`exec_disabled_fn`])
+/// otherwise. Both modes register a function under the same name, so an
+/// expression's compile-time shape — in particular, whether `exec` counts
+/// as a declared name during ref discovery — never depends on which mode
+/// built the environment; only a call's runtime outcome does.
 ///
 /// `Chainable` rather than `Lenient` because canon `field_resolution.md` says a
 /// missing ref is falsy, and that has to hold at any depth: `Lenient` renders
@@ -569,11 +587,95 @@ pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
 /// rendered nothing. Chaining through undefined yields undefined instead.
 /// Cascades are unaffected — undefined is falsy under both — and `default`
 /// still fires, since `build_context_json` leaves a missed key absent.
-pub(crate) fn build_expression_env<'a>() -> Environment<'a> {
+pub(crate) fn build_expression_env<'a>(allow_exec: bool) -> Environment<'a> {
     use crate::filters::build_env;
     let mut env = build_env();
     env.set_undefined_behavior(UndefinedBehavior::Chainable);
+    if allow_exec {
+        env.add_function("exec", exec_fn);
+    } else {
+        env.add_function("exec", exec_disabled_fn);
+    }
     env
+}
+
+// ── exec() ────────────────────────────────────────────────────────────────
+
+/// The `exec()` stub registered when `allow_exec` is false: same name and
+/// calling convention as [`exec_fn`], so a template that calls `exec(...)`
+/// fails at the call site with a clear message rather than at compile time
+/// with an "unknown function" error.
+fn exec_disabled_fn(_args: Rest<MjValue>, _kwargs: Kwargs) -> Result<MjValue, Error> {
+    Err(Error::new(
+        ErrorKind::InvalidOperation,
+        "exec() is disabled in this context",
+    ))
+}
+
+/// The real `exec()` jinja function, registered only when `allow_exec` is
+/// true: `exec(cmd, arg1, arg2, ..., timeout_ms=10000, stdin=none)`, backed
+/// by the spawn engine in [`crate::exec`].
+///
+/// `cmd` (the first positional) must be a string. Every remaining positional
+/// is coerced to a string argv entry — see [`coerce_exec_argv`]. `timeout_ms`
+/// (default 10000) and `stdin` (default none) are the only recognized
+/// keyword arguments; any other keyword argument is an error.
+fn exec_fn(args: Rest<MjValue>, kwargs: Kwargs) -> Result<MjValue, Error> {
+    let cmd = args.first().ok_or_else(|| {
+        Error::new(
+            ErrorKind::MissingArgument,
+            "exec() requires at least a command argument",
+        )
+    })?;
+    let cmd = cmd.as_str().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidOperation,
+            "exec(): argument 1 (the command) must be a string",
+        )
+    })?;
+
+    let mut argv = Vec::with_capacity(args.len().saturating_sub(1));
+    for (i, v) in args.iter().enumerate().skip(1) {
+        argv.push(coerce_exec_argv(v, i + 1)?);
+    }
+
+    let timeout_ms = kwargs.get::<Option<u64>>("timeout_ms")?.unwrap_or(10_000);
+    let stdin = kwargs.get::<Option<String>>("stdin")?;
+    kwargs.assert_all_used()?;
+
+    let req = crate::exec::ExecRequest {
+        cmd,
+        args: &argv,
+        stdin: stdin.as_deref(),
+        timeout_ms,
+    };
+    crate::exec::run(&req)
+        .map(MjValue::from)
+        .map_err(|e| Error::new(ErrorKind::InvalidOperation, e))
+}
+
+/// Coerce one `exec()` positional argument (beyond `cmd`) into an argv
+/// string. `position` is the argument's 1-based position in the call, used
+/// only to name it in an error.
+///
+/// A string passes through as-is; an integer, float, or bool renders in
+/// minijinja's canonical string form; an undefined or none value is an
+/// error (most commonly a missed daemon ref reaching `exec()` un-guarded);
+/// a sequence or map is an error directing the caller to `stdin=` instead —
+/// argv entries are scalars, not structured data.
+fn coerce_exec_argv(v: &MjValue, position: usize) -> Result<String, Error> {
+    match v.kind() {
+        ValueKind::String => Ok(v.as_str().expect("kind checked above").to_string()),
+        ValueKind::Number | ValueKind::Bool => Ok(v.to_string()),
+        ValueKind::Undefined | ValueKind::None => Err(Error::new(
+            ErrorKind::InvalidOperation,
+            format!("exec(): argument {position} is undefined or none"),
+        )),
+        _ => Err(Error::new(
+            ErrorKind::InvalidOperation,
+            "exec(): scalar arguments only; pass structured data via stdin=",
+        )),
+    }
 }
 
 // ── Value conversion ──────────────────────────────────────────────────────────
@@ -625,4 +727,89 @@ pub(crate) fn mj_to_json(v: MjValue) -> JsonValue {
     // String fallback — also handles UNDEFINED that slipped through.
     let s = v.to_string();
     JsonValue::String(s)
+}
+
+// ── exec() tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eval::evaluate;
+
+    fn empty_maps() -> (HashMap<String, String>, HashMap<String, JsonValue>) {
+        (HashMap::new(), HashMap::new())
+    }
+
+    #[test]
+    fn exec_enabled_env_runs_command_with_scalar_args() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        let result = evaluate(r#"exec("/bin/echo", "hi", 42)"#, &vf, &ctx).unwrap();
+        assert_eq!(result, JsonValue::String("hi 42".to_string()));
+    }
+
+    #[test]
+    fn exec_argv_separation_is_pinned() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        // `sh -c script arg0 arg1 arg2` sets $0 = arg0, so "_" fills $0 and
+        // $1/$2 are "x"/"y" — $# must be 2, not 3, pinning that `cmd` +
+        // remaining positionals map onto argv exactly (no accidental $0
+        // duplication or off-by-one).
+        let result = evaluate(r#"exec("sh", "-c", "echo $#", "_", "x", "y")"#, &vf, &ctx).unwrap();
+        assert_eq!(result, JsonValue::String("2".to_string()));
+    }
+
+    #[test]
+    fn exec_disabled_by_default() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data);
+
+        let err = evaluate(r#"exec("/bin/echo", "hi")"#, &vf, &ctx).unwrap_err();
+        // minijinja's Display prefixes the error kind, and `eval` adds its
+        // own "expression eval error: " prefix — assert the substring, not
+        // the whole message.
+        assert!(
+            err.contains("exec() is disabled in this context"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn exec_undefined_arg_names_its_1_based_position() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        // `cache.missing.value` is a daemon ref that never got fetched (not
+        // in `data`), so it binds to nothing and evaluates as chainable
+        // undefined — landing as exec()'s 2nd positional (1-based).
+        let err = evaluate(r#"exec("/bin/echo", cache.missing.value)"#, &vf, &ctx).unwrap_err();
+        assert!(err.contains("argument 2"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn exec_stdin_kwarg_reaches_the_child() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        let result = evaluate(r#"exec("cat", stdin="round trip")"#, &vf, &ctx).unwrap();
+        assert_eq!(result, JsonValue::String("round trip".to_string()));
+    }
+
+    #[test]
+    fn exec_unknown_kwarg_errors() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        let err = evaluate(r#"exec("/bin/echo", "hi", bogus=1)"#, &vf, &ctx).unwrap_err();
+        assert!(err.contains("bogus"), "unexpected error: {err}");
+    }
 }

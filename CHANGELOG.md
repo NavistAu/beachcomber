@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- **BREAKING (pre-1.0, `libbeachcomber` API): `EvalContext` construction goes through `EvalContext::new()`/`with_exec()`.** The struct's fields are now private — `env_vars`/`daemon_data` are no longer `pub`, and the new `allow_exec` flag is crate-private — so a caller (including `libbeachcomber-ffi`) must build a context via `EvalContext::new(env_vars, daemon_data)` rather than a literal struct. `with_exec()` will gate the upcoming `exec()` jinja function; nothing opts into it yet.
+- **BREAKING (pre-1.0, `libbeachcomber` API): `EvalContext` construction goes through `EvalContext::new()`/`with_exec()`.** The struct's fields are now private — `env_vars`/`daemon_data` are no longer `pub`, and the new `allow_exec` flag is crate-private, with no accessor at all for a former field reader outside the crate (including `libbeachcomber-ffi`) — so a caller must build a context via `EvalContext::new(env_vars, daemon_data)` rather than a literal struct, and cannot read one back afterward. `with_exec()` gates the `exec()` jinja function, now registered in both modes — the real closure when enabled, an error stub (`exec() is disabled in this context`) otherwise, so an expression's compile-time shape never depends on which mode built the environment. Nothing in the CLI opts into `with_exec()` yet; that comes in a later task.
 
 ## [0.9.1] - 2026-09-01
 

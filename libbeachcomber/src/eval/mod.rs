@@ -134,7 +134,11 @@ pub fn discover_refs(src: &str) -> Vec<Ref> {
         Analysis::Expression => discover_expression_refs(src),
         Analysis::SingleTag(expr) => discover_expression_refs(expr),
         Analysis::Template => {
-            let env = build_expression_env();
+            // Ref discovery never evaluates anything, and both `allow_exec`
+            // modes register a function under the same name (`exec`), so
+            // which mode this env is built in never changes what
+            // `undeclared_variables` finds.
+            let env = build_expression_env(false);
             let Ok(template) = env.template_from_str(src) else {
                 return Vec::new();
             };
@@ -330,7 +334,7 @@ fn evaluate_expression(
     let ctx_json = build_context_json(&refs, ctx, vf, stack)?;
     let top = MjValue::from_serialize(&ctx_json);
 
-    let env = build_expression_env();
+    let env = build_expression_env(ctx.allow_exec());
     let compiled = env
         .compile_expression(expr)
         .map_err(|e| format!("expression compile error: {e}"))?;
@@ -345,6 +349,10 @@ fn evaluate_expression(
 ///
 /// The workspace's only template render: `comb eval`'s template form, `-f fmt`,
 /// `watch -f fmt` and the status formatter's custom templates all land here.
+/// `exec()` is unavailable — see [`render_template_exec`] for the sibling
+/// that enables it. Keeping this signature and exec-off behaviour unchanged
+/// means `src/cli/format.rs` and every other formatting surface calling this
+/// function is untouched by exec()'s addition.
 ///
 /// `context` is a JSON object whose keys are the template's top-level names:
 /// the shape the [`Form::Template`] path resolves an [`EvalContext`] to, and
@@ -357,7 +365,29 @@ fn evaluate_expression(
 /// matching how a missing `env.*` and [`crate::render::render_data`] already
 /// render nothing.
 pub fn render_template(src: &str, context: &serde_json::Value) -> Result<String, String> {
-    let mut env = build_expression_env();
+    render_template_with(src, context, false)
+}
+
+/// [`render_template`], with the `exec()` jinja function available.
+///
+/// Not called anywhere yet — wired up by the task that threads `allow_exec`
+/// through exec-enabled template-form evaluation. Kept as a sibling rather
+/// than a parameter on `render_template` so every existing formatting call
+/// site stays exec-off without having to say so at each call.
+#[allow(dead_code)]
+pub(crate) fn render_template_exec(
+    src: &str,
+    context: &serde_json::Value,
+) -> Result<String, String> {
+    render_template_with(src, context, true)
+}
+
+fn render_template_with(
+    src: &str,
+    context: &serde_json::Value,
+    allow_exec: bool,
+) -> Result<String, String> {
+    let mut env = build_expression_env(allow_exec);
     env.set_formatter(|out, state, value| {
         if value.is_none() {
             Ok(())
