@@ -342,10 +342,7 @@ fn evaluate_client_side(
         return format_virtual_value(&json_val, format);
     }
 
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, daemon_data);
     let json_val = vf.evaluate(provider, field, &ctx, &mut Default::default())?;
     format_virtual_value(&json_val, format)
 }

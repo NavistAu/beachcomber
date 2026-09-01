@@ -44,10 +44,7 @@ fn single_tag_keeps_bool() {
     let vf = VirtualFields::defaults_only();
     let env = env_of(&[("T", "yes")]);
     let data = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     // One tag spanning the whole source: the comparison's bool survives.
     assert_eq!(
@@ -77,10 +74,7 @@ fn single_tag_keeps_number_and_object() {
     let vf = VirtualFields::defaults_only();
     let env = HashMap::new();
     let data = data_of(&[("n.v", json!(42)), ("p", json!({"a": 1, "b": "two"}))]);
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     // A number stays a number in the single-tag form, exactly as bare.
     assert_eq!(evaluate("{{ cache.n.v }}", &vf, &ctx).unwrap(), json!(42));
@@ -129,10 +123,7 @@ fn template_yields_string() {
     let vf = VirtualFields::defaults_only();
     let env = HashMap::new();
     let data = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     assert_eq!(
         evaluate("{{ 1 + 1 }} apples", &vf, &ctx).unwrap(),
@@ -156,10 +147,7 @@ fn empty_source_renders_empty() {
     let vf = VirtualFields::defaults_only();
     let env = HashMap::new();
     let data = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     assert_eq!(classify(""), Form::Template);
     assert_eq!(
@@ -183,20 +171,14 @@ fn template_with_if_over_virtual_field() {
     let src = "{{ git.branch }}{% if git.dirty %}*{% endif %}";
 
     let data = data_of(&[("git.branch", json!("main")), ("git.dirty", json!(true))]);
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
     assert_eq!(
         evaluate(src, &vf, &ctx).unwrap(),
         Value::String("main*".into())
     );
 
     let data = data_of(&[("git.branch", json!("main")), ("git.dirty", json!(false))]);
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
     assert_eq!(
         evaluate(src, &vf, &ctx).unwrap(),
         Value::String("main".into())
@@ -204,10 +186,7 @@ fn template_with_if_over_virtual_field() {
 
     // The env override inside the virtual field still wins.
     let env = env_of(&[("BRANCH", "feature")]);
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
     assert_eq!(
         evaluate(src, &vf, &ctx).unwrap(),
         Value::String("feature".into())
@@ -281,10 +260,7 @@ fn bare_and_single_tag_agree() {
 
             for with_env in [true, false] {
                 let (env, data) = context_for(&expr, with_env);
-                let ctx = EvalContext {
-                    env_vars: &env,
-                    daemon_data: &data,
-                };
+                let ctx = EvalContext::new(&env, &data);
                 let bare = evaluate(&expr, &vf, &ctx);
                 let single = evaluate(&tagged, &vf, &ctx);
                 assert!(
@@ -312,10 +288,7 @@ fn virtual_field_defined_with_tags_is_typed() {
     ]);
     let env = HashMap::new();
     let data = data_of(&[("x.y", json!(7))]);
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     // The gap Task 2 closes: the deps of a tag-written virtual field were
     // already discovered, but the field itself failed to compile.
@@ -345,10 +318,7 @@ fn virtual_field_template_form_is_string() {
     )]);
     let env = HashMap::new();
     let data = data_of(&[("git.branch", json!("main")), ("git.dirty", json!(true))]);
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     assert_eq!(
         vf.evaluate("git", "label", &ctx, &mut HashSet::new())
@@ -367,10 +337,7 @@ fn virtual_field_template_form_is_string() {
 fn virtual_field_cycle_still_detected_through_tags() {
     let env = HashMap::new();
     let data = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     // Single-tag form on both sides.
     let vf = vfields(&[("a", "x", "{{ b.y }}"), ("b", "y", "{{ a.x }}")]);
@@ -499,10 +466,7 @@ fn whole_provider_object_wins_over_a_disagreeing_cache_field() {
     let vf = VirtualFields::defaults_only();
     let env = HashMap::new();
     let data = data_of(&[("p", json!({"f": "whole"})), ("p.f", json!("field"))]);
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     // The field ref alone: nothing to override it, so its own value stands.
     assert_eq!(
@@ -527,10 +491,7 @@ fn whole_provider_object_wins_over_a_disagreeing_cache_field() {
 
     // A field the object does not carry is still filled in by its own ref.
     let data = data_of(&[("p", json!({"other": 1})), ("p.f", json!("field"))]);
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
     assert_eq!(
         evaluate("{{ cache.p.f or cache.p }}", &vf, &ctx).unwrap(),
         json!("field")
@@ -544,10 +505,7 @@ fn undefined_ref_renders_empty_in_both_forms() {
     let vf = VirtualFields::defaults_only();
     let env = HashMap::new();
     let data = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     // Typed path: a missing ref is the empty string, bare and tagged alike.
     assert_eq!(
@@ -595,10 +553,7 @@ fn template_missing_ref_renders_empty_not_none() {
     let vf = VirtualFields::defaults_only();
     let env = HashMap::new();
     let data = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     let out = evaluate("branch={{ missing.field }};", &vf, &ctx).unwrap();
     assert_eq!(out, Value::String("branch=;".into()));
@@ -647,10 +602,7 @@ fn missing_ref_leaves_key_undefined_so_default_fires() {
     let vf = VirtualFields::defaults_only();
     let env = HashMap::new();
     let data = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     for src in [
         r#"{{ probe.missing | default("FB") }}"#,
@@ -679,10 +631,7 @@ fn missing_ref_leaves_key_undefined_so_default_fires() {
     // A hit still wins over the default, and a sibling hit lands even though
     // the other field of the same provider missed.
     let data = data_of(&[("probe.here", json!("V"))]);
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
     assert_eq!(
         evaluate(r#"{{ probe.here | default("FB") }}"#, &vf, &ctx).unwrap(),
         Value::String("V".into())
@@ -705,10 +654,7 @@ fn nested_access_on_missing_ref_renders_empty() {
     let vf = VirtualFields::defaults_only();
     let env = HashMap::new();
     let data = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     assert_eq!(
         evaluate("{{ probe.missing.sub }}", &vf, &ctx).unwrap(),
@@ -734,10 +680,7 @@ fn provider_miss_with_sibling_field_ref_still_lets_default_fire() {
     let vf = VirtualFields::defaults_only();
     let env = HashMap::new();
     let data = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     assert_eq!(
         evaluate(
@@ -757,10 +700,7 @@ fn provider_miss_with_sibling_field_ref_still_lets_default_fire() {
     // whole-provider ref sees the field that hit, not an empty placeholder.
     // (`cache.P.F` is keyed `"P.F"`; `cache.P` is keyed `"P"`.)
     let data = data_of(&[("nope.f", json!("V")), ("nope", json!({"f": "V"}))]);
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
     assert_eq!(
         evaluate(
             r#"{{ cache.nope.f }}|{{ cache.nope | default("FB") }}"#,
@@ -779,10 +719,7 @@ fn virtual_field_error_names_the_field() {
     let vf = vfields(&[("bad", "oops", "this is ? not an expression")]);
     let env = HashMap::new();
     let data = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     let err = evaluate("{{ bad.oops }}", &vf, &ctx).unwrap_err();
     assert!(err.starts_with("bad.oops: "), "got: {err}");
@@ -828,10 +765,7 @@ fn deeply_nested_virtual_fields_error_rather_than_recurse() {
 
     let env = HashMap::new();
     let data = data_of(&[("leaf.v", json!("bottom"))]);
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &data,
-    };
+    let ctx = EvalContext::new(&env, &data);
 
     let err = evaluate("{{ chain.f0 }}", &vf, &ctx).unwrap_err();
     assert!(

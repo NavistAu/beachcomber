@@ -107,13 +107,39 @@ pub enum Ref {
 }
 
 /// The evaluation context: resolved env vars + pre-fetched daemon data.
+///
+/// Construct via [`EvalContext::new`]; opt into the `exec()` jinja function
+/// with [`EvalContext::with_exec`]. These are the only ways to build one —
+/// `allow_exec` is crate-private so external consumers can't set it directly.
 pub struct EvalContext<'a> {
     /// The calling shell's environment variables.
-    pub env_vars: &'a HashMap<String, String>,
+    env_vars: &'a HashMap<String, String>,
     /// Pre-fetched daemon values:
     /// - key = "provider.field" for individual fields
     /// - key = "provider" for whole-provider objects (CacheProvider refs)
-    pub daemon_data: &'a HashMap<String, JsonValue>,
+    daemon_data: &'a HashMap<String, JsonValue>,
+    /// Whether the `exec()` jinja function is available during evaluation.
+    pub(crate) allow_exec: bool,
+}
+
+impl<'a> EvalContext<'a> {
+    /// Build a context with `exec()` unavailable.
+    pub fn new(
+        env_vars: &'a HashMap<String, String>,
+        daemon_data: &'a HashMap<String, JsonValue>,
+    ) -> Self {
+        Self {
+            env_vars,
+            daemon_data,
+            allow_exec: false,
+        }
+    }
+
+    /// Opt into the `exec()` jinja function.
+    pub fn with_exec(mut self) -> Self {
+        self.allow_exec = true;
+        self
+    }
 }
 
 /// The virtual field registry: built-in defaults + config overrides.
@@ -296,10 +322,7 @@ pub fn evaluate_namespace(
     env_vars: &HashMap<String, String>,
     daemon_data: &HashMap<String, JsonValue>,
 ) -> JsonValue {
-    let ctx = EvalContext {
-        env_vars,
-        daemon_data,
-    };
+    let ctx = EvalContext::new(env_vars, daemon_data);
     let mut obj = serde_json::Map::new();
     for field in vf.fields_for(provider) {
         let mut stack = HashSet::new();

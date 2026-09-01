@@ -365,10 +365,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                             };
                             match fetch_via_client(client, resolve.cwd, &refs) {
                                 Ok(daemon_data) => {
-                                    let ctx = EvalContext {
-                                        env_vars: resolve.env_vars,
-                                        daemon_data: &daemon_data,
-                                    };
+                                    let ctx = EvalContext::new(resolve.env_vars, &daemon_data);
                                     match vf.evaluate(provider, field, &ctx, &mut HashSet::new()) {
                                         Ok(v) => CanonicalResponse {
                                             ok: true,
@@ -422,10 +419,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
             };
             match fetch_via_client(client, resolve.cwd, &refs) {
                 Ok(daemon_data) => {
-                    let ctx = EvalContext {
-                        env_vars: resolve.env_vars,
-                        daemon_data: &daemon_data,
-                    };
+                    let ctx = EvalContext::new(resolve.env_vars, &daemon_data);
                     match eval::evaluate(template, &vf, &ctx) {
                         Ok(v) => CanonicalResponse {
                             ok: true,

@@ -4,6 +4,12 @@ All notable changes to beachcomber will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING (pre-1.0, `libbeachcomber` API): `EvalContext` construction goes through `EvalContext::new()`/`with_exec()`.** The struct's fields are now private — `env_vars`/`daemon_data` are no longer `pub`, and the new `allow_exec` flag is crate-private — so a caller (including `libbeachcomber-ffi`) must build a context via `EvalContext::new(env_vars, daemon_data)` rather than a literal struct. `with_exec()` will gate the upcoming `exec()` jinja function; nothing opts into it yet.
+
 ## [0.9.1] - 2026-09-01
 
 ### Fixed
