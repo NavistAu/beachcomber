@@ -589,10 +589,7 @@ pub unsafe extern "C" fn bc_resolve(
                 let refs = eval::daemon_refs(&expr, &vf)
                     .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
                 let daemon_data = fetch_via_client(c, cwd, &refs)?;
-                let ctx = EvalContext {
-                    env_vars: &env_vars,
-                    daemon_data: &daemon_data,
-                };
+                let ctx = EvalContext::new(&env_vars, &daemon_data);
                 let v = vf
                     .evaluate(provider, field, &ctx, &mut HashSet::new())
                     .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
@@ -656,10 +653,7 @@ pub unsafe extern "C" fn bc_eval(
         let refs = eval::daemon_refs(template_str, &vf)
             .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
         let daemon_data = fetch_via_client(c, cwd, &refs)?;
-        let ctx = EvalContext {
-            env_vars: &env_vars,
-            daemon_data: &daemon_data,
-        };
+        let ctx = EvalContext::new(&env_vars, &daemon_data);
         eval::evaluate(template_str, &vf, &ctx).map_err(|e| FfiError::new(eval_error_kind(&e), e))
     })
 }

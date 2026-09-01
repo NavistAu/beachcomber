@@ -51,10 +51,8 @@ fn env_star_set_returns_value() {
     let env_vars: HashMap<String, String> = [("MY_VAR".to_string(), "hello".to_string())]
         .into_iter()
         .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = eval::evaluate("env.MY_VAR", &vf, &ctx).unwrap();
     assert_eq!(result, json!("hello"));
 }
@@ -63,10 +61,8 @@ fn env_star_set_returns_value() {
 fn env_star_unset_returns_empty_string() {
     let vf = VirtualFields::defaults_only();
     let env_vars: HashMap<String, String> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = eval::evaluate("env.NONEXISTENT_VAR", &vf, &ctx).unwrap();
     assert_eq!(result, json!(""));
 }
@@ -80,10 +76,8 @@ fn bool_expression_returns_bool_value() {
         [("OP_SERVICE_ACCOUNT_TOKEN".to_string(), "secret".to_string())]
             .into_iter()
             .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     // op.signed_in expression: env.OP_SERVICE_ACCOUNT_TOKEN != ""
     let result = eval::evaluate(r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#, &vf, &ctx).unwrap();
     assert_eq!(
@@ -97,10 +91,8 @@ fn bool_expression_returns_bool_value() {
 fn bool_expression_false_when_token_absent() {
     let vf = VirtualFields::defaults_only();
     let env_vars: HashMap<String, String> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = eval::evaluate(r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#, &vf, &ctx).unwrap();
     assert_eq!(
         result,
@@ -118,10 +110,8 @@ fn op_signed_in_never_returns_token_string() {
         [("OP_SERVICE_ACCOUNT_TOKEN".to_string(), token.to_string())]
             .into_iter()
             .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = eval::evaluate(r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#, &vf, &ctx).unwrap();
     assert_ne!(
         result.as_str().unwrap_or(""),
@@ -141,10 +131,7 @@ fn cascade_first_non_empty_wins() {
         .collect();
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("terraform.workspace".to_string(), json!("staging"));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result =
         eval::evaluate("env.TF_WORKSPACE or cache.terraform.workspace", &vf, &ctx).unwrap();
     assert_eq!(result, json!("dev"), "env var wins when set");
@@ -156,10 +143,7 @@ fn cascade_falls_through_to_daemon_when_env_empty() {
     let env_vars: HashMap<String, String> = HashMap::new();
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("terraform.workspace".to_string(), json!("staging"));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result =
         eval::evaluate("env.TF_WORKSPACE or cache.terraform.workspace", &vf, &ctx).unwrap();
     assert_eq!(result, json!("staging"), "daemon value used when env empty");
@@ -169,10 +153,8 @@ fn cascade_falls_through_to_daemon_when_env_empty() {
 fn all_falsy_cascade_returns_empty_string() {
     let vf = VirtualFields::defaults_only();
     let env_vars: HashMap<String, String> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = eval::evaluate("env.A or env.B or env.C", &vf, &ctx).unwrap();
     assert_eq!(result, json!(""), "all falsy → empty string");
 }
@@ -206,10 +188,7 @@ fn large_u64_daemon_field_preserved_as_integer() {
     let env_vars: HashMap<String, String> = HashMap::new();
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("bignum.value".to_string(), json!(18446744073709551615u64)); // u64::MAX
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = eval::evaluate("bignum.value", &vf, &ctx).unwrap();
     assert_eq!(
         result,
@@ -314,10 +293,8 @@ fn gcloud_project_cascade_no_self_cycle() {
             [("CLOUDSDK_CORE_PROJECT".to_string(), "myproj".to_string())]
                 .into_iter()
                 .collect();
-        let ctx = EvalContext {
-            env_vars: &env_vars,
-            daemon_data: &HashMap::new(),
-        };
+        let daemon_data = HashMap::new();
+        let ctx = EvalContext::new(&env_vars, &daemon_data);
         let result = vf.evaluate("gcloud", "project", &ctx, &mut Default::default());
         assert!(
             result.is_ok(),
@@ -336,10 +313,7 @@ fn gcloud_project_cascade_no_self_cycle() {
         let configs_obj = json!({"active_config": "default", "default": {"project": "fromfile", "account": "user@example.com"}});
         daemon_data.insert("gcloud_configs".to_string(), configs_obj.clone());
         daemon_data.insert("gcloud_configs.active_config".to_string(), json!("default"));
-        let ctx = EvalContext {
-            env_vars: &env_vars,
-            daemon_data: &daemon_data,
-        };
+        let ctx = EvalContext::new(&env_vars, &daemon_data);
         let result = vf.evaluate("gcloud", "project", &ctx, &mut Default::default());
         assert!(
             result.is_ok(),
@@ -395,10 +369,7 @@ fn nested_ref_evaluates_via_minijinja_attribute_navigation() {
     let env_vars: HashMap<String, String> = HashMap::new();
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("git.info".to_string(), json!({"sub": "val"}));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = eval::evaluate("git.info.sub", &vf, &ctx).unwrap();
     assert_eq!(
         result,
@@ -457,10 +428,8 @@ fn aws_region_env_aws_region_wins() {
         [("AWS_REGION".to_string(), "ap-southeast-1".to_string())]
             .into_iter()
             .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &aws_profiles_daemon_data(),
-    };
+    let daemon_data = aws_profiles_daemon_data();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("aws", "region", &ctx, &mut Default::default())
         .unwrap();
@@ -477,10 +446,8 @@ fn aws_region_named_profile_via_aws_profile_env() {
     let env_vars: HashMap<String, String> = [("AWS_PROFILE".to_string(), "staging".to_string())]
         .into_iter()
         .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &aws_profiles_daemon_data(),
-    };
+    let daemon_data = aws_profiles_daemon_data();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("aws", "region", &ctx, &mut Default::default())
         .unwrap();
@@ -495,10 +462,8 @@ fn aws_region_named_profile_via_aws_profile_env() {
 fn aws_region_default_profile_when_no_env() {
     let vf = VirtualFields::defaults_only();
     let env_vars: HashMap<String, String> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &aws_profiles_daemon_data(),
-    };
+    let daemon_data = aws_profiles_daemon_data();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("aws", "region", &ctx, &mut Default::default())
         .unwrap();
@@ -515,10 +480,8 @@ fn aws_region_default_profile_when_no_env() {
 fn aws_profile_returns_default_when_all_env_unset() {
     let vf = VirtualFields::defaults_only();
     let env_vars: HashMap<String, String> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("aws", "profile", &ctx, &mut Default::default())
         .unwrap();
@@ -535,10 +498,8 @@ fn aws_profile_aws_profile_env_wins() {
     let env_vars: HashMap<String, String> = [("AWS_PROFILE".to_string(), "prod".to_string())]
         .into_iter()
         .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("aws", "profile", &ctx, &mut Default::default())
         .unwrap();
@@ -551,10 +512,8 @@ fn aws_profile_aws_profile_env_wins() {
 fn gcloud_project_active_config_from_cache() {
     let vf = VirtualFields::defaults_only();
     let env_vars: HashMap<String, String> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &gcloud_configs_daemon_data("default"),
-    };
+    let daemon_data = gcloud_configs_daemon_data("default");
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("gcloud", "project", &ctx, &mut Default::default())
         .unwrap();
@@ -574,10 +533,8 @@ fn gcloud_project_cloudsdk_active_config_name_env_overrides() {
     )]
     .into_iter()
     .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &gcloud_configs_daemon_data("default"),
-    };
+    let daemon_data = gcloud_configs_daemon_data("default");
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("gcloud", "project", &ctx, &mut Default::default())
         .unwrap();
@@ -597,10 +554,8 @@ fn gcloud_project_cloudsdk_core_project_env_wins() {
     )]
     .into_iter()
     .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &gcloud_configs_daemon_data("default"),
-    };
+    let daemon_data = gcloud_configs_daemon_data("default");
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("gcloud", "project", &ctx, &mut Default::default())
         .unwrap();
@@ -617,10 +572,8 @@ fn gcloud_project_cloudsdk_core_project_env_wins() {
 fn gcloud_account_active_config_from_cache() {
     let vf = VirtualFields::defaults_only();
     let env_vars: HashMap<String, String> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &gcloud_configs_daemon_data("work"),
-    };
+    let daemon_data = gcloud_configs_daemon_data("work");
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("gcloud", "account", &ctx, &mut Default::default())
         .unwrap();
@@ -640,10 +593,8 @@ fn gcloud_account_cloudsdk_active_config_name_env_overrides() {
     )]
     .into_iter()
     .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &gcloud_configs_daemon_data("default"),
-    };
+    let daemon_data = gcloud_configs_daemon_data("default");
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("gcloud", "account", &ctx, &mut Default::default())
         .unwrap();
@@ -665,10 +616,7 @@ fn python_version_env_pyenv_version_wins() {
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("mise.python".to_string(), json!("3.11.0"));
     daemon_data.insert("python.venv_version".to_string(), json!("3.10.0"));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("python", "version", &ctx, &mut Default::default())
         .unwrap();
@@ -686,10 +634,7 @@ fn python_version_cache_mise_python_fallback() {
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("mise.python".to_string(), json!("3.11.5"));
     daemon_data.insert("python.venv_version".to_string(), json!("3.10.0"));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("python", "version", &ctx, &mut Default::default())
         .unwrap();
@@ -706,10 +651,7 @@ fn python_version_cache_python_venv_version_fallback() {
     let env_vars: HashMap<String, String> = HashMap::new();
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("python.venv_version".to_string(), json!("3.10.14"));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("python", "version", &ctx, &mut Default::default())
         .unwrap();
@@ -730,10 +672,7 @@ fn terraform_workspace_env_wins() {
         .collect();
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("terraform.workspace".to_string(), json!("staging"));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("terraform", "workspace", &ctx, &mut Default::default())
         .unwrap();
@@ -746,10 +685,7 @@ fn terraform_workspace_cache_fallback() {
     let env_vars: HashMap<String, String> = HashMap::new();
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("terraform.workspace".to_string(), json!("main"));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("terraform", "workspace", &ctx, &mut Default::default())
         .unwrap();
@@ -770,10 +706,8 @@ fn op_signed_in_is_bool_true_when_token_set() {
         [("OP_SERVICE_ACCOUNT_TOKEN".to_string(), token.to_string())]
             .into_iter()
             .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("op", "signed_in", &ctx, &mut Default::default())
         .unwrap();
@@ -798,10 +732,8 @@ fn op_signed_in_is_bool_true_when_token_set() {
 fn op_signed_in_is_bool_false_when_token_unset() {
     let vf = VirtualFields::defaults_only();
     let env_vars: HashMap<String, String> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("op", "signed_in", &ctx, &mut Default::default())
         .unwrap();
@@ -836,10 +768,7 @@ fn aws_region_aws_default_region_beats_profile_index() {
     )]
     .into_iter()
     .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon);
     let result = vf
         .evaluate("aws", "region", &ctx, &mut Default::default())
         .unwrap();
@@ -865,10 +794,7 @@ fn aws_region_aws_vault_selects_profile_when_aws_profile_unset() {
     )]
     .into_iter()
     .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon);
     let result = vf
         .evaluate("aws", "region", &ctx, &mut Default::default())
         .unwrap();
@@ -885,10 +811,8 @@ fn aws_profile_aws_vault_wins_when_aws_profile_unset() {
     let env_vars: HashMap<String, String> = [("AWS_VAULT".to_string(), "prod".to_string())]
         .into_iter()
         .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("aws", "profile", &ctx, &mut Default::default())
         .unwrap();
@@ -911,10 +835,7 @@ fn python_version_mise_env_beats_cache() {
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("asdf.python".to_string(), json!("3.11.0"));
     daemon_data.insert("python.venv_version".to_string(), json!("3.10.0"));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("python", "version", &ctx, &mut Default::default())
         .unwrap();
@@ -933,10 +854,7 @@ fn python_version_cache_asdf_python_beats_venv_version() {
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("asdf.python".to_string(), json!("3.11.9"));
     daemon_data.insert("python.venv_version".to_string(), json!("3.10.0"));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("python", "version", &ctx, &mut Default::default())
         .unwrap();
@@ -960,10 +878,7 @@ fn python_venv_name_cache_local_venv_name_wins() {
     .collect();
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("python.local_venv_name".to_string(), json!("project-venv"));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("python", "venv_name", &ctx, &mut Default::default())
         .unwrap();
@@ -981,10 +896,8 @@ fn python_venv_name_basename_virtual_env_when_cache_empty() {
         [("VIRTUAL_ENV".to_string(), "/home/u/.venv".to_string())]
             .into_iter()
             .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("python", "venv_name", &ctx, &mut Default::default())
         .unwrap();
@@ -1004,10 +917,8 @@ fn conda_env_returns_conda_default_env_value() {
         [("CONDA_DEFAULT_ENV".to_string(), "myenv".to_string())]
             .into_iter()
             .collect();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("conda", "env", &ctx, &mut Default::default())
         .unwrap();
@@ -1022,10 +933,8 @@ fn conda_env_returns_conda_default_env_value() {
 fn conda_env_returns_empty_string_when_unset() {
     let vf = VirtualFields::defaults_only();
     let env_vars: HashMap<String, String> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &HashMap::new(),
-    };
+    let daemon_data = HashMap::new();
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("conda", "env", &ctx, &mut Default::default())
         .unwrap();

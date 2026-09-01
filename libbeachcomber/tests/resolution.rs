@@ -25,10 +25,7 @@ fn virtual_field_resolves_cache_reference() {
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("otherprov.otherfield".to_string(), json!("hello-value"));
 
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
 
     let result = vf
         .evaluate("myprov", "myfield", &ctx, &mut HashSet::new())
@@ -50,10 +47,7 @@ fn cascade_env_or_cache_falls_through_to_empty_string_on_miss() {
     env_vars.insert("TF_WORKSPACE".to_string(), "prod-env".to_string());
     let mut daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     daemon_data.insert("terraform.workspace".to_string(), json!("cache-env"));
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
     let result = vf
         .evaluate("terraform", "workspace", &ctx, &mut HashSet::new())
         .expect("evaluate");
@@ -61,10 +55,7 @@ fn cascade_env_or_cache_falls_through_to_empty_string_on_miss() {
 
     // (b) env absent, cache present -> falls through to the cache term.
     let empty_env: HashMap<String, String> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &empty_env,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&empty_env, &daemon_data);
     let result = vf
         .evaluate("terraform", "workspace", &ctx, &mut HashSet::new())
         .expect("evaluate");
@@ -72,10 +63,7 @@ fn cascade_env_or_cache_falls_through_to_empty_string_on_miss() {
 
     // (c) both absent -> a miss yields "" (empty string), not an error.
     let empty_daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &empty_env,
-        daemon_data: &empty_daemon_data,
-    };
+    let ctx = EvalContext::new(&empty_env, &empty_daemon_data);
     let result = vf
         .evaluate("terraform", "workspace", &ctx, &mut HashSet::new())
         .expect("evaluate");
@@ -174,10 +162,7 @@ fn truncate_and_basename_filters_resolve() {
     env_vars.insert("LONGVAR".to_string(), "abcdefghij".to_string());
     env_vars.insert("PYVAR".to_string(), "/foo/bar/baz".to_string());
     let daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env_vars,
-        daemon_data: &daemon_data,
-    };
+    let ctx = EvalContext::new(&env_vars, &daemon_data);
 
     let truncated = eval::evaluate("env.LONGVAR | truncate(5)", &vf, &ctx).expect("truncate");
     assert_eq!(truncated, json!("abcde..."));

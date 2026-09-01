@@ -61,6 +61,9 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       plain `String` on failure; `libbeachcomber-ffi`'s `eval_error_kind` classifies `parse_error` vs `server_error` by
       a substring check on `"compile error"`. Replace the `String` with a typed `EvalError { Compile, Eval, Render,
       Cycle }` so the FFI (and any other caller) can match on the failure kind instead of parsing the message.
+      Exposing `exec()` on the FFI/SDK surface is blocked on this: an `exec()` failure message carries the child's
+      stderr verbatim, which can contain arbitrary text (including, incidentally, the substring `"compile error"`),
+      so string-substring classification is unsafe once exec-sourced messages can reach it.
 
 ### CLI Ergonomics
 

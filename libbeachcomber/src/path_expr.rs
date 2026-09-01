@@ -57,7 +57,9 @@ pub fn evaluate_path(expr: &str, cwd: &str, env_vars: &HashMap<String, String>) 
         // and `None` for the bare one, where the whole source is the expression.
         Form::Expression | Form::SingleTag => {
             let inner = single_tag_expression(expr).unwrap_or(expr);
-            let env = build_expression_env();
+            // `exec()` is never available in path expressions, per the
+            // `exec()` design spec — only value expressions may spawn.
+            let env = build_expression_env(false);
             let compiled = env.compile_expression(inner).ok()?;
             let result = compiled.eval(MjValue::from_serialize(&ctx)).ok()?;
             // Check the falsy variants before stringifying: minijinja's `none`

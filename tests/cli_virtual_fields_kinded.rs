@@ -97,10 +97,7 @@ fn cache_field_reads_raw_value() {
         [("terraform.workspace".to_string(), json!("staging"))]
             .into_iter()
             .collect();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &daemon,
-    };
+    let ctx = EvalContext::new(&env, &daemon);
     let got = eval::evaluate("env.TF_WORKSPACE or cache.terraform.workspace", &vf, &ctx).unwrap();
     assert_eq!(got, json!("staging"));
 }
@@ -115,10 +112,7 @@ fn cache_field_env_wins_over_raw_cache() {
         [("terraform.workspace".to_string(), json!("staging"))]
             .into_iter()
             .collect();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &daemon,
-    };
+    let ctx = EvalContext::new(&env, &daemon);
     let got = eval::evaluate("env.TF_WORKSPACE or cache.terraform.workspace", &vf, &ctx).unwrap();
     assert_eq!(got, json!("dev"), "env.TF_WORKSPACE must win over cache");
 }
@@ -135,10 +129,7 @@ fn cache_provider_object_is_indexable() {
     )]
     .into_iter()
     .collect();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &daemon,
-    };
+    let ctx = EvalContext::new(&env, &daemon);
     let got = eval::evaluate(
         r#"cache.aws_profiles[env.AWS_PROFILE or "default"].region"#,
         &vf,
@@ -158,10 +149,7 @@ fn cache_provider_object_defaults_when_selector_unset() {
     )]
     .into_iter()
     .collect();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &daemon,
-    };
+    let ctx = EvalContext::new(&env, &daemon);
     let got = eval::evaluate(
         r#"cache.aws_profiles[env.AWS_PROFILE or "default"].region"#,
         &vf,
@@ -185,10 +173,7 @@ fn resolved_ref_reads_daemon_value_for_non_virtual() {
     let daemon: HashMap<String, serde_json::Value> = [("git.branch".to_string(), json!("main"))]
         .into_iter()
         .collect();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &daemon,
-    };
+    let ctx = EvalContext::new(&env, &daemon);
     let got = eval::evaluate("git.branch", &vf, &ctx).unwrap();
     assert_eq!(got, json!("main"));
 }
@@ -203,10 +188,7 @@ fn resolved_ref_recurses_for_virtual_field() {
         .into_iter()
         .collect();
     let daemon: HashMap<String, serde_json::Value> = HashMap::new();
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &daemon,
-    };
+    let ctx = EvalContext::new(&env, &daemon);
     // We evaluate an expression that references terraform.workspace (resolved, not cache.*)
     // terraform.workspace is virtual, so it should recurse into its expression.
     let got = eval::evaluate("terraform.workspace", &vf, &ctx).unwrap();
@@ -247,7 +229,8 @@ fn evaluate_namespace_returns_all_virtual_fields_as_object() {
         .collect();
     let daemon: HashMap<String, serde_json::Value> = HashMap::new();
 
-    let result = evaluate_namespace("terraform", &vf, &env, &daemon);
+    let ctx = EvalContext::new(&env, &daemon);
+    let result = evaluate_namespace("terraform", &vf, &ctx);
     let obj = result
         .as_object()
         .expect("evaluate_namespace must return an object");
@@ -273,7 +256,8 @@ fn evaluate_namespace_all_virtual_fields_present() {
     .collect();
 
     // "aws" namespace has profile, region, expiration virtual fields
-    let result = evaluate_namespace("aws", &vf, &env, &daemon);
+    let ctx = EvalContext::new(&env, &daemon);
+    let result = evaluate_namespace("aws", &vf, &ctx);
     let obj = result
         .as_object()
         .expect("evaluate_namespace must return an object");
@@ -323,10 +307,7 @@ fn cache_provider_and_cache_field_same_provider_both_visible() {
     .into_iter()
     .collect();
 
-    let ctx = EvalContext {
-        env_vars: &env,
-        daemon_data: &daemon,
-    };
+    let ctx = EvalContext::new(&env, &daemon);
 
     // Evaluate gcloud.project:
     //   env.CLOUDSDK_CORE_PROJECT (unset)
