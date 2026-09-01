@@ -134,10 +134,11 @@ pub fn discover_refs(src: &str) -> Vec<Ref> {
         Analysis::Expression => discover_expression_refs(src),
         Analysis::SingleTag(expr) => discover_expression_refs(expr),
         Analysis::Template => {
-            // Ref discovery never evaluates anything, and both `allow_exec`
-            // modes register a function under the same name (`exec`), so
-            // which mode this env is built in never changes what
-            // `undeclared_variables` finds.
+            // Ref discovery never evaluates anything, so `allow_exec`
+            // doesn't matter here — `false` is an arbitrary, harmless
+            // choice. (This has nothing to do with `exec` showing up as an
+            // "undeclared variable": minijinja's meta-analysis never
+            // reports a call's callee name at all, registered or not.)
             let env = build_expression_env(false);
             let Ok(template) = env.template_from_str(src) else {
                 return Vec::new();
@@ -318,7 +319,12 @@ pub(crate) fn evaluate_with_stack(
         Analysis::SingleTag(expr) => evaluate_expression(expr, vf, ctx, stack),
         Analysis::Template => {
             let context = build_context_json(&discover_refs(src), ctx, vf, stack)?;
-            render_template(src, &context).map(serde_json::Value::String)
+            let rendered = if ctx.allow_exec() {
+                render_template_exec(src, &context)
+            } else {
+                render_template(src, &context)
+            };
+            rendered.map(serde_json::Value::String)
         }
     }
 }
@@ -370,11 +376,12 @@ pub fn render_template(src: &str, context: &serde_json::Value) -> Result<String,
 
 /// [`render_template`], with the `exec()` jinja function available.
 ///
-/// Not called anywhere yet — wired up by the task that threads `allow_exec`
-/// through exec-enabled template-form evaluation. Kept as a sibling rather
-/// than a parameter on `render_template` so every existing formatting call
-/// site stays exec-off without having to say so at each call.
-#[allow(dead_code)]
+/// Used by [`evaluate_with_stack`]'s template arm when `ctx.allow_exec()` —
+/// a template evaluated through an exec-enabled [`EvalContext`] can call
+/// `exec()` the same as the typed expression path can. Kept as a sibling
+/// rather than a parameter on `render_template` so every other formatting
+/// call site (`comb eval`'s template form, `-f fmt`, `watch -f fmt`, the
+/// status formatter) stays exec-off without having to say so at each call.
 pub(crate) fn render_template_exec(
     src: &str,
     context: &serde_json::Value,

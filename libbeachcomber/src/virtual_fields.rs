@@ -554,10 +554,11 @@ pub(crate) fn refs_from_names(names: impl IntoIterator<Item = String>) -> Vec<Re
 /// the entry point that handles all three forms, and is what callers outside
 /// this module use.
 pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
-    // Ref discovery never evaluates anything, and both `allow_exec` modes
-    // register a function under the same name (`exec`), so `exec` is never
-    // undeclared either way — which mode this env is built in doesn't
-    // change what `undeclared_variables` finds.
+    // Ref discovery never evaluates anything, so `allow_exec` doesn't
+    // matter here — `false` is an arbitrary, harmless choice. (This has
+    // nothing to do with `exec` showing up as an "undeclared variable":
+    // minijinja's meta-analysis never reports a call's callee name at all,
+    // registered or not.)
     let env = build_expression_env(false);
     let Ok(compiled) = env.compile_expression(expr) else {
         return vec![];
@@ -575,10 +576,11 @@ pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
 /// chainable undefined behavior so missing refs are falsy, not errors, and
 /// registers the `exec()` jinja function: the real closure ([`exec_fn`])
 /// when `allow_exec` is true, a closure that always errors ([`exec_disabled_fn`])
-/// otherwise. Both modes register a function under the same name, so an
-/// expression's compile-time shape — in particular, whether `exec` counts
-/// as a declared name during ref discovery — never depends on which mode
-/// built the environment; only a call's runtime outcome does.
+/// otherwise. Both modes register *some* function named `exec` so a
+/// disabled call fails with the on-topic "exec() is disabled in this
+/// context" rather than minijinja's generic "unknown function: exec" —
+/// indistinguishable, to the person reading it, from a typo'd function
+/// name.
 ///
 /// `Chainable` rather than `Lenient` because canon `field_resolution.md` says a
 /// missing ref is falsy, and that has to hold at any depth: `Lenient` renders
@@ -618,8 +620,10 @@ fn exec_disabled_fn(_args: Rest<MjValue>, _kwargs: Kwargs) -> Result<MjValue, Er
 ///
 /// `cmd` (the first positional) must be a string. Every remaining positional
 /// is coerced to a string argv entry — see [`coerce_exec_argv`]. `timeout_ms`
-/// (default 10000) and `stdin` (default none) are the only recognized
-/// keyword arguments; any other keyword argument is an error.
+/// (default 10000) must convert to an integer; `stdin` (default none) must
+/// be a string — `| tojson` first for structured data, symmetric with argv
+/// coercion rejecting a sequence or map. Any other keyword argument is an
+/// error.
 fn exec_fn(args: Rest<MjValue>, kwargs: Kwargs) -> Result<MjValue, Error> {
     let cmd = args.first().ok_or_else(|| {
         Error::new(
@@ -639,8 +643,38 @@ fn exec_fn(args: Rest<MjValue>, kwargs: Kwargs) -> Result<MjValue, Error> {
         argv.push(coerce_exec_argv(v, i + 1)?);
     }
 
-    let timeout_ms = kwargs.get::<Option<u64>>("timeout_ms")?.unwrap_or(10_000);
-    let stdin = kwargs.get::<Option<String>>("stdin")?;
+    // A bare `?` here would surface a conversion failure (e.g.
+    // `timeout_ms="x"`) as minijinja's generic "cannot convert string to
+    // u64", with nothing naming `exec()` or which keyword caused it.
+    let timeout_ms = kwargs
+        .get::<Option<u64>>("timeout_ms")
+        .map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidOperation,
+                format!(
+                    "exec(): timeout_ms= {}",
+                    e.detail().unwrap_or("invalid value")
+                ),
+            )
+        })?
+        .unwrap_or(10_000);
+    // Fetched as a raw `Value` (not `Option<String>`) so a non-string —
+    // e.g. `stdin=true` or `stdin={"a": 1}` — is rejected instead of
+    // silently stringifying through minijinja's `Display` (`"True"`, a
+    // jinja-repr map), which would be asymmetric with argv coercion
+    // rejecting the same shapes outright.
+    let stdin = match kwargs.get::<Option<MjValue>>("stdin")? {
+        None => None,
+        Some(v) => match v.as_str() {
+            Some(s) => Some(s.to_string()),
+            None => {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    "exec(): stdin= must be a string; use | tojson to pass structured data",
+                ));
+            }
+        },
+    };
     kwargs.assert_all_used()?;
 
     let req = crate::exec::ExecRequest {
@@ -656,24 +690,31 @@ fn exec_fn(args: Rest<MjValue>, kwargs: Kwargs) -> Result<MjValue, Error> {
 
 /// Coerce one `exec()` positional argument (beyond `cmd`) into an argv
 /// string. `position` is the argument's 1-based position in the call, used
-/// only to name it in an error.
+/// to name it in an error.
 ///
-/// A string passes through as-is; an integer, float, or bool renders in
-/// minijinja's canonical string form; an undefined or none value is an
-/// error (most commonly a missed daemon ref reaching `exec()` un-guarded);
-/// a sequence or map is an error directing the caller to `stdin=` instead —
+/// A string (or valid-UTF8 bytes) passes through as-is; a bool renders as
+/// the literal `"true"`/`"false"` — not minijinja's `Display`, which prints
+/// `True`/`False`; an integer or float renders in minijinja's canonical
+/// string form; an undefined or none value is an error (most commonly a
+/// missed daemon ref reaching `exec()` un-guarded); a sequence or map is an
+/// error naming the argument and directing the caller to `stdin=` instead —
 /// argv entries are scalars, not structured data.
 fn coerce_exec_argv(v: &MjValue, position: usize) -> Result<String, Error> {
+    if let Some(s) = v.as_str() {
+        return Ok(s.to_string());
+    }
     match v.kind() {
-        ValueKind::String => Ok(v.as_str().expect("kind checked above").to_string()),
-        ValueKind::Number | ValueKind::Bool => Ok(v.to_string()),
+        ValueKind::Bool => Ok(if v.is_true() { "true" } else { "false" }.to_string()),
+        ValueKind::Number => Ok(v.to_string()),
         ValueKind::Undefined | ValueKind::None => Err(Error::new(
             ErrorKind::InvalidOperation,
             format!("exec(): argument {position} is undefined or none"),
         )),
         _ => Err(Error::new(
             ErrorKind::InvalidOperation,
-            "exec(): scalar arguments only; pass structured data via stdin=",
+            format!(
+                "exec(): argument {position} is not a scalar; pass structured data via stdin= instead"
+            ),
         )),
     }
 }
@@ -811,5 +852,106 @@ mod tests {
 
         let err = evaluate(r#"exec("/bin/echo", "hi", bogus=1)"#, &vf, &ctx).unwrap_err();
         assert!(err.contains("bogus"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn exec_bool_arg_coerces_to_lowercase_literal() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        // minijinja's own `Display` for a bool prints "True"/"False"
+        // (Python-style); exec() must emit the canonical "true"/"false".
+        let result = evaluate(r#"exec("/bin/echo", true, false)"#, &vf, &ctx).unwrap();
+        assert_eq!(result, JsonValue::String("true false".to_string()));
+    }
+
+    #[test]
+    fn exec_stdin_rejects_non_string_value() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        // A bool (or a map/seq) must not silently stringify through
+        // minijinja's `Display` — symmetric with argv coercion, which
+        // rejects the same shapes outright.
+        let err = evaluate(r#"exec("cat", stdin=true)"#, &vf, &ctx).unwrap_err();
+        assert!(err.contains("stdin"), "unexpected error: {err}");
+        assert!(err.contains("tojson"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn exec_timeout_ms_conversion_error_names_the_kwarg() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        let err = evaluate(r#"exec("/bin/echo", "hi", timeout_ms="x")"#, &vf, &ctx).unwrap_err();
+        assert!(err.contains("timeout_ms"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn exec_seq_arg_is_rejected_with_its_position() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        let err = evaluate(r#"exec("/bin/echo", "hi", [1, 2])"#, &vf, &ctx).unwrap_err();
+        assert!(err.contains("argument 3"), "unexpected error: {err}");
+        assert!(err.contains("stdin="), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn exec_non_string_cmd_errors() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        let err = evaluate(r#"exec(42)"#, &vf, &ctx).unwrap_err();
+        assert!(err.contains("argument 1"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn exec_runtime_failure_is_an_eval_error_not_a_compile_error() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        // `libbeachcomber-ffi::eval_error_kind` matches the substring
+        // "compile error" to classify a failure as the caller's own source
+        // being malformed; a real command failure must never read as one.
+        let err = evaluate(r#"exec("sh", "-c", "exit 3")"#, &vf, &ctx).unwrap_err();
+        assert!(
+            err.starts_with("expression eval error: "),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !err.contains("compile error"),
+            "must not read as a compile error: {err}"
+        );
+    }
+
+    #[test]
+    fn exec_enabled_in_template_form_when_with_exec() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        let result = evaluate(r#"prefix {{ exec("/bin/echo", "hi") }} suffix"#, &vf, &ctx).unwrap();
+        assert_eq!(result, JsonValue::String("prefix hi suffix".to_string()));
+    }
+
+    #[test]
+    fn exec_disabled_in_template_form_without_with_exec() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data);
+
+        let err =
+            evaluate(r#"prefix {{ exec("/bin/echo", "hi") }} suffix"#, &vf, &ctx).unwrap_err();
+        assert!(
+            err.contains("exec() is disabled in this context"),
+            "unexpected error: {err}"
+        );
     }
 }
