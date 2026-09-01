@@ -957,7 +957,7 @@ fn render_table(
     // -----------------------------------------------------------------------
     const MIN_VALUE_WIDTH: usize = 8;
     const SEP_TOTAL: usize = 12; // 6 separators × 2 spaces
-    const MARGIN: usize = 2; // spaces applied to both the left and right edges
+    const MARGIN: usize = 2; // left margin, printed; right margin, reserved only
     const MARGIN_TOTAL: usize = MARGIN * 2;
 
     let value_cap: Option<usize> = trunc.map(|total_cap| {
@@ -1105,8 +1105,14 @@ fn render_table(
 
     let mut out = String::new();
 
+    // The right margin is reserved in the width budget above but never
+    // painted. Emitting it padded every row out to exactly `max_width` — i.e.
+    // exactly the terminal width — which viewers that reserve a column wrap:
+    // viddy paints a scrollbar in the last column, so a full-width row spilled
+    // its trailing space onto the next screen line and the whole table rendered
+    // double-spaced. Reserving without printing keeps the two columns of
+    // breathing room and leaves the rows free of trailing whitespace.
     let left_margin: String = " ".repeat(MARGIN);
-    let right_margin: String = " ".repeat(MARGIN);
     for (row_cells, row_vis) in cells.iter().zip(visible.iter()) {
         out.push_str(&left_margin);
         for (i, cell) in row_cells.iter().enumerate() {
@@ -1122,7 +1128,6 @@ fn render_table(
                 }
             }
         }
-        out.push_str(&right_margin);
         out.push('\n');
     }
 

@@ -1788,3 +1788,87 @@ fn human_preset_path_compaction_frees_width_for_value() {
         "without compaction the same width budget should truncate VALUE: {uncompacted}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// watch(1) / viddy safety: rows must not fill the terminal edge-to-edge, and
+// must carry no control characters other than the line terminator.
+// ---------------------------------------------------------------------------
+
+/// A row whose VALUE is long enough that the total-width budget is the binding
+/// constraint, so the rendered line is pushed to the cap.
+fn wide_value_row() -> CacheRow {
+    CacheRow {
+        provider: "mise".into(),
+        path: Some("/home/me/ws/foo".into()),
+        source: "global".into(),
+        field: "global".into(),
+        value: serde_json::json!("v".repeat(200)),
+        age_ms: 158_000,
+        stale: false,
+        kind: Some(beachcomber::cache::RowKind::Lifecycle {
+            decay: 0,
+            watches_files: true,
+        }),
+        poll_interval_secs: Some(60),
+        keep_alive_polls: Some(12),
+        fsevents_reinstate: Some(true),
+        polls_elapsed: Some(3),
+        next_poll_in_secs: Some(42),
+        failure: None,
+    }
+}
+
+#[test]
+fn human_rows_leave_the_right_margin_unpainted() {
+    // The right margin is reserved in the width budget but never printed.
+    // Painting it made every row exactly `max_width` — exactly the terminal
+    // width — which viddy wraps, because it reserves the last column for its
+    // scrollbar. Rows must stop short of the cap and end in no trailing space.
+    for cap in [80usize, 100, 120, 160] {
+        let opts = RenderOpts {
+            is_tty: false,
+            no_color: true,
+            max_width: Some(cap),
+            no_trunc: false,
+            ascii: true, // ascii so glyph char-counts are unambiguous
+        };
+        let out = render_preset("human", &[wide_value_row()], &opts);
+        for line in out.lines() {
+            assert!(
+                line.chars().count() <= cap - 2,
+                "line is {} chars, must leave the 2-col right margin free under cap {cap}: {line:?}",
+                line.chars().count()
+            );
+            assert!(
+                !line.ends_with(' '),
+                "line must not end in trailing whitespace: {line:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn human_output_has_no_control_chars_besides_newline() {
+    // Under `watch` / `viddy` stdout is a pipe, so colour resolves off. The
+    // bytes that reach the viewer must then be plain text: no ANSI escapes
+    // (ESC), no cursor movement, no tabs, no carriage returns.
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: false,
+    };
+    let mut rows = sample_rows();
+    rows.push(wide_value_row());
+    let out = render_preset("human", &rows, &opts);
+    assert!(!out.is_empty(), "expected rendered output");
+    for (i, c) in out.char_indices() {
+        assert!(
+            c == '\n' || !c.is_control(),
+            "control char {:?} (U+{:04X}) at byte {i} in human output",
+            c,
+            c as u32
+        );
+    }
+}
