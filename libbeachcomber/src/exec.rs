@@ -132,6 +132,9 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
     // holds no resource this function must wait on. If the child never
     // reads stdin, the write blocks until the process group dies (below),
     // at which point it fails with a broken pipe and the thread exits.
+    // `.to_string()` is required here, not just convenient: the thread is
+    // `'static` (unscoped, so it can outlive this call — see module doc on
+    // the join grace), so it can't borrow `req.stdin`.
     spawn_stdin_writer(stdin_pipe, req.stdin.map(str::to_string));
 
     // A pure boolean latch, never used to guard access to other memory, so
@@ -167,7 +170,15 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
     // must happen *before* any `wait()` below: `Child::wait()` blocks until
     // the child actually exits, so calling it first (with nothing having
     // signalled the child yet) would just wait out the child's natural
-    // runtime instead of the deadline.
+    // runtime instead of the deadline. `child.kill()` targets the pid
+    // directly, alongside `killpg` targeting the group it leads — belt and
+    // suspenders, so nothing here still depends on a single signal landing.
+    // Reusing `pgid` here is safe even though we may already have reaped
+    // the leader (in the `Exited` case, via `try_wait` above): POSIX keeps
+    // a process group id reserved for as long as any member process is
+    // still in it, so it cannot have been recycled for something unrelated
+    // in the handful of instructions since.
+    let _ = child.kill();
     let _ = unsafe { libc::killpg(pgid, libc::SIGKILL) };
     // `Exited` already reaped the child via the successful try_wait() above;
     // anything else leaves it (possibly still running) unreaped.
@@ -175,23 +186,35 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
         let _ = child.wait();
     }
 
-    let stdout_buf = recv_or_default(&stdout_rx, READER_JOIN_GRACE);
-    let stderr_buf = recv_or_default(&stderr_rx, READER_JOIN_GRACE);
+    // One shared grace budget for both receives (M1), not one full
+    // READER_JOIN_GRACE each — a stdout reader that eats the whole grace
+    // window leaves stderr's receive nothing to wait on, rather than a
+    // second full grace on top.
+    let recv_deadline = Instant::now() + READER_JOIN_GRACE;
+    let stdout_result =
+        stdout_rx.recv_timeout(recv_deadline.saturating_duration_since(Instant::now()));
+    let stderr_buf = stderr_rx
+        .recv_timeout(recv_deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_default();
 
     // Narrow race: the poll loop's cap check and the reader thread crossing
     // MAX_EXEC_STDOUT can interleave such that the child is observed to
-    // exit cleanly just before (or concurrently with) the cap being
-    // flagged. Re-check post-hoc so a successful exit can never mask an
+    // exit cleanly (or the deadline fires) just before, or concurrently
+    // with, the cap being flagged. Re-check post-hoc so neither a
+    // successful exit nor a slow oversized writer's timeout can mask an
     // oversized stdout.
     let outcome = match outcome {
         Outcome::Exited(status) if status.success() && stdout_capped.load(Ordering::Relaxed) => {
             Outcome::Capped
         }
+        Outcome::TimedOut if stdout_capped.load(Ordering::Relaxed) => Outcome::Capped,
         other => other,
     };
 
     match outcome {
-        Outcome::Exited(status) if status.success() => Ok(clean_stdout(&stdout_buf)),
+        Outcome::Exited(status) if status.success() => {
+            stdout_outcome(stdout_result, req.cmd, &stderr_buf)
+        }
         Outcome::Exited(status) => Err(failure_message(req.cmd, format!("{status}"), &stderr_buf)),
         Outcome::TimedOut => Err(failure_message(
             req.cmd,
@@ -211,12 +234,29 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
     }
 }
 
-/// Receive the final buffer from a reader thread, or give up after
-/// `timeout` and fall back to empty. See module doc: under normal
-/// operation (no escaped descendants) this returns essentially
-/// immediately, since the process group has already been killed.
-fn recv_or_default(rx: &mpsc::Receiver<Vec<u8>>, timeout: Duration) -> Vec<u8> {
-    rx.recv_timeout(timeout).unwrap_or_default()
+/// Turn the stdout reader's final receive into the success/failure result a
+/// clean exit reports. `Ok` means the reader actually sent its buffer back;
+/// a `Timeout` (abandoned after [`READER_JOIN_GRACE`]) or `Disconnected`
+/// (reader thread panicked) must still be a *failure*, not an empty
+/// success — a descendant that outlived the process-group kill may be
+/// holding real, unread output on the other end of that pipe. Split out of
+/// [`run`] so this failure path is unit-testable without spawning a
+/// process (see the `stdout_outcome_*` tests).
+fn stdout_outcome(
+    result: Result<Vec<u8>, mpsc::RecvTimeoutError>,
+    cmd: &str,
+    stderr: &[u8],
+) -> Result<String, String> {
+    match result {
+        Ok(buf) => Ok(clean_stdout(&buf)),
+        Err(e) => Err(failure_message(
+            cmd,
+            format!(
+                "output reader abandoned after grace ({e}); a descendant process may still hold the pipe"
+            ),
+            stderr,
+        )),
+    }
 }
 
 /// Write `data` (if any) to the child's stdin pipe on a dedicated thread,
@@ -543,6 +583,41 @@ mod tests {
     #[test]
     fn clean_stdout_leaves_text_without_trailing_newline_alone() {
         assert_eq!(clean_stdout(b"hello"), "hello");
+    }
+
+    #[test]
+    fn stdout_outcome_cleans_a_successful_receive() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        tx.send(b"hi\n".to_vec()).unwrap();
+        let result = rx.recv_timeout(Duration::from_millis(10));
+        assert_eq!(
+            stdout_outcome(result, "some-cmd", b""),
+            Ok("hi".to_string())
+        );
+    }
+
+    #[test]
+    fn stdout_outcome_reports_a_timed_out_reader_as_failure() {
+        // I3 repro (deterministic half): nothing is ever sent, so the
+        // receive times out — this must not collapse to `Ok("")`, since a
+        // descendant holding the pipe past the grace window may still have
+        // real output in flight.
+        let (_tx, rx) = mpsc::channel::<Vec<u8>>();
+        let result = rx.recv_timeout(Duration::from_millis(10));
+        let err = stdout_outcome(result, "some-cmd", b"").unwrap_err();
+        assert!(err.contains("abandoned"), "{err}");
+    }
+
+    #[test]
+    fn stdout_outcome_reports_a_disconnected_reader_as_failure() {
+        // I3 repro (deterministic half): the sender is dropped without
+        // sending (standing in for a reader thread that panicked) — this
+        // must not collapse to `Ok("")` either.
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        drop(tx);
+        let result = rx.recv_timeout(Duration::from_millis(10));
+        let err = stdout_outcome(result, "some-cmd", b"").unwrap_err();
+        assert!(err.contains("abandoned"), "{err}");
     }
 
     #[test]
