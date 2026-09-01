@@ -84,7 +84,7 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
     };
 
     let shell_env: HashMap<String, String> = std::env::vars().collect();
-    let ctx = EvalContext::new(&shell_env, &daemon_data);
+    let ctx = EvalContext::new(&shell_env, &daemon_data).with_exec();
 
     match eval::evaluate(template, &vf, &ctx) {
         Ok(value) => {

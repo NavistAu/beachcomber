@@ -342,7 +342,7 @@ fn evaluate_client_side(
         return format_virtual_value(&json_val, format);
     }
 
-    let ctx = EvalContext::new(&env_vars, daemon_data);
+    let ctx = EvalContext::new(&env_vars, daemon_data).with_exec();
     let json_val = vf.evaluate(provider, field, &ctx, &mut Default::default())?;
     format_virtual_value(&json_val, format)
 }
@@ -533,10 +533,11 @@ pub fn run_get(
                 HashMap::new()
             };
 
-            // Evaluate all virtual fields as a namespace object. Exec-off:
-            // Task 5 wires an exec-enabled context into this surface.
+            // Evaluate all virtual fields as a namespace object. The CLI user
+            // already has a shell, so this user-initiated evaluation opts
+            // into exec().
             let env_vars: HashMap<String, String> = std::env::vars().collect();
-            let ctx = EvalContext::new(&env_vars, &daemon_data);
+            let ctx = EvalContext::new(&env_vars, &daemon_data).with_exec();
             let ns_result = evaluate_namespace(key, &vf, &ctx);
 
             // Merge daemon provider fields with virtual fields (canon invariant 12).
