@@ -229,7 +229,8 @@ fn evaluate_namespace_returns_all_virtual_fields_as_object() {
         .collect();
     let daemon: HashMap<String, serde_json::Value> = HashMap::new();
 
-    let result = evaluate_namespace("terraform", &vf, &env, &daemon);
+    let ctx = EvalContext::new(&env, &daemon);
+    let result = evaluate_namespace("terraform", &vf, &ctx);
     let obj = result
         .as_object()
         .expect("evaluate_namespace must return an object");
@@ -255,7 +256,8 @@ fn evaluate_namespace_all_virtual_fields_present() {
     .collect();
 
     // "aws" namespace has profile, region, expiration virtual fields
-    let result = evaluate_namespace("aws", &vf, &env, &daemon);
+    let ctx = EvalContext::new(&env, &daemon);
+    let result = evaluate_namespace("aws", &vf, &ctx);
     let obj = result
         .as_object()
         .expect("evaluate_namespace must return an object");

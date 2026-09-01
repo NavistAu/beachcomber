@@ -322,19 +322,19 @@ impl VirtualFields {
 
 /// Evaluate all virtual fields for a provider and return them as a JSON object.
 ///
-/// Fields that fail to evaluate (e.g., cycle errors) are silently omitted.
-/// Callers may merge additional daemon-backed fields on top.
-pub fn evaluate_namespace(
-    provider: &str,
-    vf: &VirtualFields,
-    env_vars: &HashMap<String, String>,
-    daemon_data: &HashMap<String, JsonValue>,
-) -> JsonValue {
-    let ctx = EvalContext::new(env_vars, daemon_data);
+/// Fields that fail to evaluate (e.g., cycle errors, an exec-disabled or
+/// exec-failed field under an exec-off `ctx`) are silently omitted. Callers
+/// may merge additional daemon-backed fields on top.
+///
+/// `ctx` is caller-supplied rather than built internally, so a caller that
+/// wants `exec()` available across the whole namespace passes one built with
+/// [`EvalContext::with_exec`]; every production call site today passes an
+/// exec-off context.
+pub fn evaluate_namespace(provider: &str, vf: &VirtualFields, ctx: &EvalContext<'_>) -> JsonValue {
     let mut obj = serde_json::Map::new();
     for field in vf.fields_for(provider) {
         let mut stack = HashSet::new();
-        match vf.evaluate(provider, &field, &ctx, &mut stack) {
+        match vf.evaluate(provider, &field, ctx, &mut stack) {
             Ok(v) => {
                 obj.insert(field, v);
             }
@@ -781,6 +781,12 @@ mod tests {
         (HashMap::new(), HashMap::new())
     }
 
+    // Canon `field_resolution.md` invariant 14: bare, single-tag, and template
+    // are the same one expression syntax and must agree on whether exec() is
+    // available. This test pins the bare form (both modes); the single-tag
+    // pair immediately below pins that form, and the template-form pair near
+    // the end of this module (`exec_enabled_in_template_form_when_with_exec`
+    // / `exec_disabled_in_template_form_without_with_exec`) pins the third.
     #[test]
     fn exec_enabled_env_runs_command_with_scalar_args() {
         let vf = VirtualFields::defaults_only();
@@ -815,6 +821,32 @@ mod tests {
         // minijinja's Display prefixes the error kind, and `eval` adds its
         // own "expression eval error: " prefix — assert the substring, not
         // the whole message.
+        assert!(
+            err.contains("exec() is disabled in this context"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn exec_enabled_in_single_tag_form() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        // Exactly one `{{ }}` tag spanning the whole source: the typed path,
+        // same as the bare form above — natural-type result, not a string
+        // wrapping a rendered template.
+        let result = evaluate(r#"{{ exec("/bin/echo", "hi") }}"#, &vf, &ctx).unwrap();
+        assert_eq!(result, JsonValue::String("hi".to_string()));
+    }
+
+    #[test]
+    fn exec_disabled_in_single_tag_form() {
+        let vf = VirtualFields::defaults_only();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data);
+
+        let err = evaluate(r#"{{ exec("/bin/echo", "hi") }}"#, &vf, &ctx).unwrap_err();
         assert!(
             err.contains("exec() is disabled in this context"),
             "unexpected error: {err}"
@@ -953,5 +985,109 @@ mod tests {
             err.contains("exec() is disabled in this context"),
             "unexpected error: {err}"
         );
+    }
+
+    // ── evaluate_namespace + exec ────────────────────────────────────────────
+
+    /// A provider with one exec-backed virtual field and one plain sibling,
+    /// shared by the three `evaluate_namespace`/exec tests below.
+    fn exec_namespace_fields() -> VirtualFields {
+        VirtualFields::with_config_overrides([
+            (
+                ("exectest".to_string(), "greeting".to_string()),
+                r#"exec("/bin/echo", "hi")"#.to_string(),
+            ),
+            (
+                ("exectest".to_string(), "plain".to_string()),
+                r#""ok""#.to_string(),
+            ),
+        ])
+    }
+
+    #[test]
+    fn namespace_with_exec_enabled_context_includes_exec_backed_field() {
+        let vf = exec_namespace_fields();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        let result = evaluate_namespace("exectest", &vf, &ctx);
+        let obj = result.as_object().expect("must return object");
+        assert_eq!(
+            obj.get("greeting"),
+            Some(&JsonValue::String("hi".to_string())),
+            "exec-backed field must be present when exec is enabled: {obj:?}"
+        );
+        assert_eq!(
+            obj.get("plain"),
+            Some(&JsonValue::String("ok".to_string())),
+            "plain sibling field must still be present: {obj:?}"
+        );
+    }
+
+    #[test]
+    fn namespace_with_exec_off_context_silently_omits_exec_backed_field() {
+        let vf = exec_namespace_fields();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data);
+
+        let result = evaluate_namespace("exectest", &vf, &ctx);
+        let obj = result.as_object().expect("must return object");
+        assert!(
+            !obj.contains_key("greeting"),
+            "exec-backed field must be silently omitted (not an error key) when exec is off: {obj:?}"
+        );
+        assert_eq!(
+            obj.get("plain"),
+            Some(&JsonValue::String("ok".to_string())),
+            "plain sibling field must still be present: {obj:?}"
+        );
+    }
+
+    #[test]
+    fn single_field_evaluate_of_exec_backed_field_errors_loudly_when_exec_off() {
+        let vf = exec_namespace_fields();
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data);
+
+        // Same field `evaluate_namespace` silently drops above — evaluated
+        // directly (as `comb get exectest.greeting` would), it must surface
+        // the disabled-exec error rather than being swallowed.
+        let err = vf
+            .evaluate("exectest", "greeting", &ctx, &mut HashSet::new())
+            .unwrap_err();
+        assert!(
+            err.contains("exec() is disabled in this context"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ── exec() args referencing another virtual field ────────────────────────
+
+    #[test]
+    fn exec_arg_referencing_another_virtual_field_respects_chain_depth() {
+        // `chain.a`'s exec() argument references `chain.b`, a distinct virtual
+        // field — a two-level chain. `build_context_json` must resolve `chain.b`
+        // (threading the cycle-detection stack) before `exec()` ever runs, and
+        // the recursion must land within MAX_VIRTUAL_DEPTH same as any other
+        // virtual-field chain (`crate::eval`'s `deeply_nested_virtual_fields_*`
+        // tests pin the limit itself; this pins that exec() args are not a
+        // special case that bypasses it).
+        let vf = VirtualFields::with_config_overrides([
+            (
+                ("chain".to_string(), "b".to_string()),
+                r#""bee""#.to_string(),
+            ),
+            (
+                ("chain".to_string(), "a".to_string()),
+                r#"exec("/bin/echo", chain.b)"#.to_string(),
+            ),
+        ]);
+        let (env, data) = empty_maps();
+        let ctx = EvalContext::new(&env, &data).with_exec();
+
+        let result = vf
+            .evaluate("chain", "a", &ctx, &mut HashSet::new())
+            .unwrap();
+        assert_eq!(result, JsonValue::String("bee".to_string()));
     }
 }

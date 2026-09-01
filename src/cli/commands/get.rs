@@ -533,9 +533,11 @@ pub fn run_get(
                 HashMap::new()
             };
 
-            // Evaluate all virtual fields as a namespace object.
+            // Evaluate all virtual fields as a namespace object. Exec-off:
+            // Task 5 wires an exec-enabled context into this surface.
             let env_vars: HashMap<String, String> = std::env::vars().collect();
-            let ns_result = evaluate_namespace(key, &vf, &env_vars, &daemon_data);
+            let ctx = EvalContext::new(&env_vars, &daemon_data);
+            let ns_result = evaluate_namespace(key, &vf, &ctx);
 
             // Merge daemon provider fields with virtual fields (canon invariant 12).
             // fetch_daemon_deps_for_namespace unconditionally fetched the whole daemon

@@ -1,6 +1,6 @@
 //! Tests for evaluate_namespace (Step 1.4).
 
-use libbeachcomber::virtual_fields::{VirtualFields, evaluate_namespace};
+use libbeachcomber::virtual_fields::{EvalContext, VirtualFields, evaluate_namespace};
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -13,7 +13,8 @@ fn merge_daemon_and_virtual(
     env: &HashMap<String, String>,
     daemon_data: &HashMap<String, serde_json::Value>,
 ) -> serde_json::Map<String, serde_json::Value> {
-    let ns_result = evaluate_namespace(provider, vf, env, daemon_data);
+    let ctx = EvalContext::new(env, daemon_data);
+    let ns_result = evaluate_namespace(provider, vf, &ctx);
     let mut merged = serde_json::Map::new();
     // Daemon whole-provider object goes in first (fetch_daemon_deps_for_namespace stores
     // it as daemon_data[provider] — C-1 fix ensures this is always present).
@@ -114,7 +115,8 @@ fn evaluate_namespace_terraform_with_env() {
         .collect();
     let daemon: HashMap<String, serde_json::Value> = HashMap::new();
 
-    let result = evaluate_namespace("terraform", &vf, &env, &daemon);
+    let ctx = EvalContext::new(&env, &daemon);
+    let result = evaluate_namespace("terraform", &vf, &ctx);
     let obj = result.as_object().expect("must return object");
     assert_eq!(obj["workspace"], json!("prod"));
 }
@@ -126,7 +128,8 @@ fn evaluate_namespace_empty_provider_returns_empty_object() {
     let daemon: HashMap<String, serde_json::Value> = HashMap::new();
 
     // "git" has no virtual fields — should return an empty object
-    let result = evaluate_namespace("git", &vf, &env, &daemon);
+    let ctx = EvalContext::new(&env, &daemon);
+    let result = evaluate_namespace("git", &vf, &ctx);
     let obj = result
         .as_object()
         .expect("must return object even when empty");
@@ -144,7 +147,8 @@ fn evaluate_namespace_aws_uses_daemon_data() {
         .collect();
     let daemon: HashMap<String, serde_json::Value> = HashMap::new();
 
-    let result = evaluate_namespace("aws", &vf, &env, &daemon);
+    let ctx = EvalContext::new(&env, &daemon);
+    let result = evaluate_namespace("aws", &vf, &ctx);
     let obj = result.as_object().expect("must return object");
     assert_eq!(
         obj["region"],
