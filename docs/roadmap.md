@@ -50,6 +50,13 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       compile (`{{ }}` and bare), which removes the most common way to hit this, but the wart stands: the return
       type needs to distinguish "no path" from "bad expression", and every caller (`comb get`'s resolution layer,
       `bc_resolve`'s path-expression arm, the conformance runners) needs to surface it.
+- [ ] **Per-directory customization.** In tool-heavy directories the prompt drowns in `mise` tool/version output —
+      there's no way to shape what comb feeds a given project's prompt. Two candidate mechanisms: (a) a computed
+      field (e.g. `tools_prompt`) that filters `mise.project` through an allowlist and the prompt pulls instead of the
+      raw tool list — the env/cascade computed-fields work gives the expression machinery, but config is global today;
+      (b) a project config file (`.beachcomber.toml`?) carrying per-dir allowlists / virtual-field definitions — new
+      discovery and trust surface, since config would come from arbitrary repos. Cross-references the env/cascade item
+      above. The mise prompt-spam case is the acceptance test.
 - [ ] **Typed `EvalError` from `libbeachcomber::eval`.** `eval::evaluate` (and `VirtualFields::evaluate`) return a
       plain `String` on failure; `libbeachcomber-ffi`'s `eval_error_kind` classifies `parse_error` vs `server_error` by
       a substring check on `"compile error"`. Replace the `String` with a typed `EvalError { Compile, Eval, Render,
@@ -62,6 +69,12 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       at a time". Useful for "what does beachcomber know about this dir right now?" as a diagnostic, onboarding, and
       integration-authoring tool. Format-aware output (json/text/human). Naming bikeshed: `inspect`, `dump`, `snapshot`,
       `all`, `info`.
+- [ ] `comb ui` — live TUI as a sister binary. `watch comb status` works but can't render nested-object values and has
+      no interactivity; a proper TUI could add controls (force refresh, inspect lifecycle state, drill into a value).
+      Keep TUI dependencies out of `comb` itself: separate `comb-ui` binary, dispatched git-style (`comb ui` execs
+      `comb-ui` from PATH). Fits the dependency-audit / comb-paranoid goals. Open questions: workspace member vs
+      separate repo; what the control surface actually is. Related to `comb inspect` above — that's the one-shot form,
+      this is the live form.
 
 ### Additional Providers
 
