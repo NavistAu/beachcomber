@@ -614,13 +614,14 @@ fn ascii_flag_propagates_to_format_options() {
 #[test]
 fn color_resolution_matrix() {
     use beachcomber::cli::status_format::{ColorMode, resolve_color};
-    assert!(!resolve_color(ColorMode::Never, false, true, true));
-    assert!(!resolve_color(ColorMode::Always, true, true, true)); // NO_COLOR wins
-    assert!(!resolve_color(ColorMode::Auto, true, true, true)); // NO_COLOR wins
-    assert!(resolve_color(ColorMode::Always, false, false, false));
-    assert!(resolve_color(ColorMode::Auto, false, true, false)); // TTY
-    assert!(resolve_color(ColorMode::Auto, false, false, true)); // WATCH_INTERVAL
-    assert!(!resolve_color(ColorMode::Auto, false, false, false));
+    assert!(!resolve_color(ColorMode::Never, false, true));
+    assert!(!resolve_color(ColorMode::Always, true, true)); // NO_COLOR wins
+    assert!(!resolve_color(ColorMode::Auto, true, true)); // NO_COLOR wins
+    assert!(resolve_color(ColorMode::Always, false, false)); // explicit opt-in
+    assert!(resolve_color(ColorMode::Auto, false, true)); // TTY
+    // Pipe with no explicit --color: no colour. There is no environment
+    // escape hatch — `watch(1)` never exported WATCH_INTERVAL, it reads it.
+    assert!(!resolve_color(ColorMode::Auto, false, false));
 }
 
 // ---------------------------------------------------------------------------
@@ -1627,8 +1628,10 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
         next_poll_in_secs: None,
         failure: None,
     };
-    // Simulate the WATCH_INTERVAL case: caller resolved color=true even though
-    // stdout is a pipe (is_tty=false). The renderer must honour that decision.
+    // Simulate `--color=always` into a pipe: the caller resolved color=true
+    // even though stdout is not a TTY. The renderer must honour that decision
+    // rather than re-deriving it from is_tty — this is what makes
+    // `watch -c 'comb status --color=always'` work.
     let opts = RenderOpts {
         is_tty: false,
         no_color: false,

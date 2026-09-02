@@ -36,8 +36,7 @@ pub fn run_status(
         _ => ColorMode::Auto,
     };
     let no_color_env = std::env::var("NO_COLOR").is_ok();
-    let watch_env = std::env::var("WATCH_INTERVAL").is_ok();
-    let color = resolve_color(mode, no_color_env, is_tty, watch_env);
+    let color = resolve_color(mode, no_color_env, is_tty);
 
     let cols = terminal_size::terminal_size().map(|(w, _)| w.0 as usize);
     let resolved_max_width = resolve_max_width(max_width_arg, cols);

@@ -120,7 +120,14 @@ comb g git.branch:source         # → builtin (provider kind: builtin, script, 
 
 Show all warm cache entries as a table — one row per provider field. The `TTL` column encodes each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, keep-alive count, and whether filesystem events will reinstate the entry to Active (`◉`).
 
-`watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time.
+For a live view, ask for colour explicitly — under `watch` and `viddy` stdout is a pipe, so `--color=auto` (the default) resolves to no colour:
+
+```sh
+watch -c 'comb status --color=always'
+viddy 'comb status --color=always'
+```
+
+`watch` needs its own `-c` to interpret the colour it is handed; without it the escape sequences render as literal text.
 
 ```sh
 $ comb s
@@ -159,7 +166,7 @@ comb s -f json
 
 A `◉` trailing indicator means `fsevents_reinstate=true` — a filesystem event will reinstate the entry to Active even during decay. A `⚠` lead replaces `★` when the provider is in failure-suppress (row renders red).
 
-The default output preset is `human` (coloured table) regardless of whether stdout is a TTY. Scripts that want tab-separated data should pass `-f tsv` explicitly. The `WATCH_INTERVAL` environment variable (set automatically by `watch(1)`) also enables colour when stdout is not a TTY.
+The default output preset is `human` (coloured table) regardless of whether stdout is a TTY. Scripts that want tab-separated data should pass `-f tsv` explicitly. Colour follows `--color`: `auto` (the default) colours only a TTY, so piping into a pager or a live viewer needs `--color=always`.
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts, watch backend). The watch backend line reports `native fs events` when the startup self-test confirmed kernel event delivery, or a WARN with `polling` when it didn't — provider file-watching still works, invalidating on a 1s scan instead of kernel events.
 

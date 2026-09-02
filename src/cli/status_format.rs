@@ -267,13 +267,18 @@ pub enum ColorMode {
 /// 1. `Never` → always false.
 /// 2. `NO_COLOR` env var set → always false.
 /// 3. `Always` → always true.
-/// 4. `Auto` → true if is_tty or watch_interval_env.
-pub fn resolve_color(
-    mode: ColorMode,
-    no_color_env: bool,
-    is_tty: bool,
-    watch_interval_env: bool,
-) -> bool {
+/// 4. `Auto` → true if is_tty.
+///
+/// `auto` deliberately has no environment-based escape hatch for pipes. An
+/// earlier revision promoted `auto` to colour when `WATCH_INTERVAL` was set,
+/// on the belief that `watch(1)` exports it. It does not — procps-ng *reads*
+/// `WATCH_INTERVAL` to pick its own default interval and never passes it to
+/// the child. The promotion therefore never fired under `watch`, and when a
+/// user did export the variable for its documented purpose it fired at the
+/// worst time: plain `watch` (no `-c`) does not interpret SGR, so the table
+/// filled with literal escape text. Live viewers should ask for colour
+/// explicitly: `watch -c 'comb status --color=always'`.
+pub fn resolve_color(mode: ColorMode, no_color_env: bool, is_tty: bool) -> bool {
     if mode == ColorMode::Never {
         return false;
     }
@@ -283,7 +288,7 @@ pub fn resolve_color(
     if mode == ColorMode::Always {
         return true;
     }
-    is_tty || watch_interval_env
+    is_tty
 }
 
 /// Resolve the maximum **total table** width.
@@ -354,8 +359,8 @@ pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> Stri
         "human" => {
             let trunc = if opts.no_trunc { None } else { opts.max_width };
             // `no_color` is the resolved color decision from the caller (already
-            // accounts for NO_COLOR, TTY, WATCH_INTERVAL). Don't re-AND with is_tty
-            // here — that would undo the WATCH_INTERVAL color promotion.
+            // accounts for NO_COLOR, TTY and --color). Don't re-AND with is_tty
+            // here — that would override an explicit `--color=always`.
             let color = !opts.no_color;
             render_table(rows, color, trunc, true, opts.ascii, true)
         }

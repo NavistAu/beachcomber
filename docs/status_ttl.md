@@ -18,7 +18,7 @@ The five "Open micro-decisions" listed at the bottom of this document are resolv
 
 ## Goal
 
-Make `watch -c comb status` a first-class diagnostic view: you can open a pane, run watch, and see providers pulse through their lifecycle without any other tooling.
+Make `watch -c 'comb status --color=always'` a first-class diagnostic view: you can open a pane, run watch, and see providers pulse through their lifecycle without any other tooling.
 
 ## Columns
 
@@ -128,7 +128,7 @@ Today `comb status` gates the `human` preset on `stdout.is_terminal()`. Under `w
 Required changes:
 
 1. **Default preset → `human` unconditionally.** Scripts that want raw data opt in via `-f tsv` / `-f json`. This is a breaking change for anyone piping `comb status` to another tool; we're pre-1.0, document in CHANGELOG.
-2. **Color default:** on when stdout is a TTY **or** `WATCH_INTERVAL` env var is set (procps watch exports it). `NO_COLOR` disables unconditionally.
+2. **Color default:** on when stdout is a TTY. `NO_COLOR` disables unconditionally. There is no environment-based promotion for pipes — a live viewer asks for colour with `--color=always`. (An earlier revision promoted on `WATCH_INTERVAL`, believing procps `watch` exported it; it does not, it *reads* the variable to set its own default interval.)
 3. **Truncation:** always applied in `human` preset, regardless of TTY.
 4. **Stable default sort:** `(path, provider, field)` so rows don't reshuffle between refreshes and globals (path=None) group together at the top of the table.
 
@@ -163,7 +163,7 @@ Required changes:
 Touches:
 
 - `src/cli/status_format.rs` — column logic, color, new TTL formatter, `--ascii` handling.
-- `src/main.rs` — default preset change, `WATCH_INTERVAL` detection, `--ascii` flag.
+- `src/main.rs` — default preset change, `--ascii` flag.
 - `src/cache.rs::CacheRow` — needs `poll_interval_secs`, `keep_alive_polls`, `fsevents_reinstate` fields added (wired from the lifecycle registry via the same path already used for `decay`).
 - `src/server.rs::Request::Status` — populate the new CacheRow fields from `LifecycleRegistry::iter()` (same pattern as `get_lifecycle_decay_levels`).
 
