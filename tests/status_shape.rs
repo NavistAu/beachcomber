@@ -1939,6 +1939,11 @@ fn human_output_has_no_control_chars_besides_newline() {
     };
     let mut rows = sample_rows();
     rows.push(wide_value_row());
+    // A provider-supplied value carrying its own escape sequence must not
+    // reach the terminal intact.
+    let mut hostile = wide_value_row();
+    hostile.value = serde_json::json!("\x1b[31mred\x1b[0m");
+    rows.push(hostile);
     let out = render_preset("human", &rows, &opts);
     assert!(!out.is_empty(), "expected rendered output");
     for (i, c) in out.char_indices() {
@@ -2138,4 +2143,126 @@ fn destructured_rows_render_as_separate_table_rows() {
     assert!(out.contains("session.color"), "{out}");
     assert!(out.contains("session.inner.deep"), "{out}");
     assert!(out.contains("blue"), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// Sanitizing provider-controlled cell text
+// ---------------------------------------------------------------------------
+
+fn render_hostile(value: serde_json::Value, ascii: bool, no_color: bool) -> String {
+    let mut row = wide_value_row();
+    row.value = value;
+    row.path = Some("/repo".into());
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii,
+        depth: None,
+    };
+    render_preset("human", &[row], &opts)
+}
+
+#[test]
+fn control_chars_render_as_control_pictures() {
+    // ESC → ␛ (U+241B), BEL → ␇ (U+2407), TAB → ␉ (U+2409), DEL → ␡ (U+2421).
+    let out = render_hostile(
+        serde_json::json!("\x1b[31mred\x1b[0m\x07\x09\x7f"),
+        false,
+        true,
+    );
+    assert!(!out.contains('\x1b'), "raw ESC must not survive: {out:?}");
+    assert!(out.contains("\u{241b}[31mred"), "ESC picture: {out:?}");
+    assert!(out.contains('\u{2407}'), "BEL picture: {out:?}");
+    assert!(out.contains('\u{2409}'), "TAB picture: {out:?}");
+    assert!(out.contains('\u{2421}'), "DEL picture: {out:?}");
+}
+
+#[test]
+fn c1_controls_become_the_replacement_char() {
+    let out = render_hostile(serde_json::json!("a\u{0085}b"), false, true);
+    assert!(out.contains("a\u{fffd}b"), "C1 → U+FFFD: {out:?}");
+}
+
+#[test]
+fn ascii_mode_collapses_controls_to_question_marks() {
+    // The Control Pictures block is not ASCII, so --ascii cannot use it.
+    let out = render_hostile(serde_json::json!("\x1b[31mred"), true, true);
+    assert!(!out.contains('\x1b'), "raw ESC must not survive: {out:?}");
+    assert!(out.contains("?[31mred"), "controls → '?': {out:?}");
+    assert!(!out.contains('\u{241b}'), "no unicode pictures: {out:?}");
+}
+
+#[test]
+fn sanitized_rows_carry_a_marker() {
+    let out = render_hostile(serde_json::json!("\x1b[31mred"), false, true);
+    assert!(
+        out.contains("\u{203c} \u{241b}"),
+        "‼ marker on VALUE: {out}"
+    );
+
+    let ascii = render_hostile(serde_json::json!("\x1b[31mred"), true, true);
+    assert!(ascii.contains("! ?[31mred"), "ascii marker: {ascii}");
+
+    // Clean rows get no marker.
+    let clean = render_hostile(serde_json::json!("plain"), false, true);
+    assert!(!clean.contains('\u{203c}'), "no marker when clean: {clean}");
+}
+
+#[test]
+fn taint_marker_is_coloured_and_does_not_break_alignment() {
+    let out = render_hostile(serde_json::json!("\x1b[31mred"), false, false);
+    // The only ESC bytes present are the ones the renderer itself emitted.
+    assert!(
+        out.contains("\x1b[33m\u{203c} \x1b[0m"),
+        "marker wrapped in yellow: {out:?}"
+    );
+    // The sanitized payload sits after the marker, still picture-escaped.
+    assert!(out.contains("\u{241b}[31mred"), "{out:?}");
+    // Column alignment is computed on visible width, so the header's PATH
+    // column and the row's must still start at the same offset.
+    let lines: Vec<&str> = out.lines().collect();
+    let strip = |s: &str| -> String {
+        let mut o = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c2 in chars.by_ref() {
+                    if c2 == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                o.push(c);
+            }
+        }
+        o
+    };
+    let header = strip(lines[0]);
+    let row = strip(lines[1]);
+    // Char index, not byte offset — ‼ and ␛ are multibyte.
+    let col_of = |s: &str, needle: &str| {
+        s.find(needle)
+            .map(|b| s[..b].chars().count())
+            .unwrap_or_else(|| panic!("{needle:?} not found in {s:?}"))
+    };
+    assert_eq!(
+        col_of(&header, "PATH"),
+        col_of(&row, "/repo"),
+        "PATH column must line up:\n{header}\n{row}"
+    );
+}
+
+#[test]
+fn machine_presets_do_not_sanitize() {
+    // JSON escapes control characters itself; TSV/CSV/sh consumers want the
+    // bytes the provider actually produced.
+    let mut row = wide_value_row();
+    row.value = serde_json::json!("\x1b[31mred");
+    let json = render_preset("json", std::slice::from_ref(&row), &RenderOpts::default());
+    assert!(json.contains("\\u001b"), "JSON escapes it: {json}");
+    assert!(!json.contains('\u{241b}'), "no pictures in json: {json}");
+    let tsv = render_tsv(&[row]);
+    assert!(!tsv.contains('\u{241b}'), "no pictures in tsv: {tsv}");
 }

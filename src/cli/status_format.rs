@@ -938,6 +938,53 @@ pub fn render_human(rows: &[CacheRow], opts: &FormatOptions) -> String {
 /// match only — no symlink resolution, no partial-segment matches (e.g. a
 /// home of `/Users/joe` does not compact `/Users/joel/x`). Paths outside
 /// `$HOME`, and the pathless-global marker `-`, pass through unchanged.
+/// Visible width of the taint marker prefixed to a sanitized row's VALUE cell.
+const MARKER_WIDTH: usize = 2;
+
+/// Whether any provider-controlled text in this row contains a control
+/// character, and so will be rewritten by [`sanitize_cell`].
+fn row_is_tainted(row: &CacheRow, path: &str, value: &str) -> bool {
+    [row.provider.as_str(), row.field.as_str(), path, value]
+        .iter()
+        .any(|s| s.chars().any(char::is_control))
+}
+
+/// Replace control characters in provider-controlled cell text with visible
+/// stand-ins.
+///
+/// Cell text comes from providers, from `comb put`, and from paths — none of
+/// it is ours. Emitted verbatim, an escape sequence in a value is executed by
+/// the terminal: at best it breaks column alignment, at worst it repositions
+/// the cursor or recolours the rest of the screen from a string an unrelated
+/// process wrote into the cache.
+///
+/// C0 controls map to their Unicode Control Pictures (`ESC` → `␛`, `TAB` →
+/// `␉`), DEL to `␡`, and anything else `char::is_control` reports — the C1
+/// range — to the replacement character. Every stand-in is exactly one char
+/// wide, so sanitizing never shifts a column. `--ascii` collapses the lot to
+/// `?`, the pictures being non-ASCII themselves.
+fn sanitize_cell(s: &str, ascii: bool) -> String {
+    if !s.chars().any(char::is_control) {
+        return s.to_string();
+    }
+    s.chars()
+        .map(|c| {
+            if !c.is_control() {
+                return c;
+            }
+            if ascii {
+                return '?';
+            }
+            match c as u32 {
+                // The Control Pictures block mirrors C0 one-for-one at +0x2400.
+                cp @ 0x00..=0x1F => char::from_u32(0x2400 + cp).unwrap_or('\u{FFFD}'),
+                0x7F => '\u{2421}', // ␡
+                _ => '\u{FFFD}',
+            }
+        })
+        .collect()
+}
+
 fn compact_home_path(path: &str, home: Option<&str>) -> String {
     match home {
         Some(h) if !h.is_empty() && path == h => "~".to_string(),
@@ -993,10 +1040,18 @@ fn render_table(
 
     for row in rows {
         let path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
+        let value = value_to_string(&row.value);
+        // Sanitizing swaps one char for one char, so it never changes a
+        // natural width. Only the taint marker does.
+        let marker_width = if row_is_tainted(row, &path, &value) {
+            MARKER_WIDTH
+        } else {
+            0
+        };
         nat_provider = nat_provider.max(row.provider.chars().count());
         nat_path = nat_path.max(path.chars().count());
         nat_field = nat_field.max(row.field.chars().count());
-        nat_value = nat_value.max(value_to_string(&row.value).chars().count());
+        nat_value = nat_value.max(value.chars().count() + marker_width);
         nat_age = nat_age.max(
             format_age_with_polls(row.age_ms, row.polls_elapsed, ascii)
                 .chars()
@@ -1096,11 +1151,30 @@ fn render_table(
     }
 
     for row in rows {
-        let mut path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
+        // Provider-controlled text is sanitized first, then truncated — never
+        // the other way round, so a truncation can't leave half an escape
+        // sequence intact.
+        let path_raw = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
+        let value_raw = value_to_string(&row.value);
+        let tainted = row_is_tainted(row, &path_raw, &value_raw);
+
+        let provider_text = sanitize_cell(&row.provider, ascii);
+        let field_text = sanitize_cell(&row.field, ascii);
+        let mut path = sanitize_cell(&path_raw, ascii);
         if let Some(cap) = path_cap {
             path = truncate_path_tail(&path, cap);
         }
-        let mut value = value_to_string(&row.value);
+
+        // A sanitized row is flagged in its VALUE cell, so the eye can find
+        // the rows whose text was rewritten without diffing against the
+        // source. The marker is part of the cell, so it takes part in the
+        // width budget and truncates with everything else.
+        let marker = match (tainted, ascii) {
+            (false, _) => "",
+            (true, true) => "! ",
+            (true, false) => "\u{203c} ", // ‼
+        };
+        let mut value = format!("{marker}{}", sanitize_cell(&value_raw, ascii));
         if let Some(max) = value_cap {
             value = truncate(&value, max);
         }
@@ -1153,15 +1227,25 @@ fn render_table(
         );
         let poll_vis = poll_text.chars().count();
 
-        let provider_vis = row.provider.chars().count();
+        let provider_vis = provider_text.chars().count();
         let path_vis = path.chars().count();
-        let field_vis = row.field.chars().count();
+        let field_vis = field_text.chars().count();
         let value_vis = value.chars().count();
 
+        // VALUE cell — the taint marker carries its own colour so a rewritten
+        // row stands out; the body stays plain.
+        let value_cell = if color_enabled && !marker.is_empty() {
+            let head: String = value.chars().take(MARKER_WIDTH).collect();
+            let tail: String = value.chars().skip(MARKER_WIDTH).collect();
+            format!("{}{tail}", ansi::wrap(&head, ansi::Color::Yellow, true))
+        } else {
+            value
+        };
+
         let mut row_cells: [String; COLS] = [
-            row.provider.clone(),
-            row.field.clone(),
-            value,
+            provider_text,
+            field_text,
+            value_cell,
             path,
             age_cell,
             poll_text,
