@@ -243,6 +243,14 @@ fn preprocess_args() -> (Vec<String>, Option<String>) {
 }
 
 fn main() -> ExitCode {
+    // Rust's runtime ignores SIGPIPE, which turns `comb status | head` into
+    // a broken-pipe panic on the first write after the reader exits. Restore
+    // the default disposition so the process dies silently like any CLI.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let (args, fmt_template) = preprocess_args();
     let cli = Cli::parse_from(args);
     let config = Config::load();
