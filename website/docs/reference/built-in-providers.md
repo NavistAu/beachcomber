@@ -21,7 +21,8 @@ Each provider declares one or more **sources** — independent units of executio
 | `conda` | `env` | poll 30s | global | `env` |
 | `direnv` | `state` | fsevent | path | `status`, `allowed` |
 | `gcloud` | `config` | poll 60s | global | `project`, `account` |
-| `git` | `refs` | fsevent | path | `branch`, `commit`, `tag`, `ahead`, `behind`, `upstream`, `detached`, `state`, `stash` |
+| `git` | `head` | fsevent | path | `branch`, `detached` |
+| `git` | `refs` | fsevent | path | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
 | `git` | `diff` | poll 30s | path | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
 | `git` | `lineage` | poll 60s | path | `parent`, `parent_lines_added`, `parent_lines_removed`, `base`, `base_lines_added`, `base_lines_removed` |
 | `git` | `status` | fsevent_poll | path | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
