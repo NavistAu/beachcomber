@@ -15,6 +15,7 @@ mod ansi {
         Cyan,
         Magenta,
         Dim,
+        Bold,
     }
 
     impl Color {
@@ -27,6 +28,7 @@ mod ansi {
                 Color::Cyan => "\x1b[36m",
                 Color::Magenta => "\x1b[35m",
                 Color::Dim => "\x1b[2m",
+                Color::Bold => "\x1b[1m",
             }
         }
     }
@@ -1276,7 +1278,8 @@ fn render_table(
     let mut visible: Vec<[usize; COLS]> = Vec::new();
 
     if header {
-        let header_row: [String; COLS] = HEADERS.map(|h| h.to_string());
+        let header_row: [String; COLS] =
+            HEADERS.map(|h| ansi::wrap(h, ansi::Color::Bold, color_enabled));
         let header_vis: [usize; COLS] = HEADERS.map(|h| h.len());
         cells.push(header_row);
         visible.push(header_vis);
