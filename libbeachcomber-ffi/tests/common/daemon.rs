@@ -39,7 +39,7 @@ impl DaemonGuard {
 
         let thread = thread::spawn(move || {
             handle.block_on(async {
-                let join = daemon::start_in_process(sock_clone, Config::default());
+                let (join, _ready) = daemon::start_in_process(sock_clone, Config::default());
                 let _ = join.await;
             });
         });
