@@ -2535,11 +2535,14 @@ fn human_stripes_alternate_data_rows_when_colour_on() {
         ascii: false,
         depth: Some(1),
     };
-    let out = render_preset("human", &rows, &opts);
+    const BG: &str = "\x1b[48;5;234m"; // dark-terminal stripe
+    let out = temp_env::with_var("COLORFGBG", None::<&str>, || {
+        render_preset("human", &rows, &opts)
+    });
     let lines: Vec<&str> = out.lines().collect();
-    const BG: &str = "\x1b[48;5;236m";
     // Header and first data row unstriped; second data row striped and
-    // closed with a reset; third unstriped again.
+    // closed with a reset; third unstriped again. COLORFGBG unset defaults
+    // to the dark stripe.
     assert!(
         !lines[0].contains(BG),
         "header must not stripe: {:?}",
@@ -2579,6 +2582,45 @@ fn human_stripes_alternate_data_rows_when_colour_on() {
         !plain.contains(BG),
         "no stripes when colour is off: {plain}"
     );
+}
+
+#[test]
+fn stripe_polarity_follows_colorfgbg() {
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: false,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: false,
+        depth: Some(1),
+    };
+    const DARK: &str = "\x1b[48;5;234m";
+    const LIGHT: &str = "\x1b[48;5;254m";
+
+    // bg 0 = dark terminal → dark stripe.
+    let out = temp_env::with_var("COLORFGBG", Some("15;0"), || {
+        render_preset("human", &sample_rows(), &opts)
+    });
+    assert!(
+        out.contains(DARK) && !out.contains(LIGHT),
+        "bg 0 → dark stripe"
+    );
+
+    // bg 15 = light terminal → light stripe. Also exercises the
+    // "fg;default;bg" three-field form some terminals export.
+    let out = temp_env::with_var("COLORFGBG", Some("0;default;15"), || {
+        render_preset("human", &sample_rows(), &opts)
+    });
+    assert!(
+        out.contains(LIGHT) && !out.contains(DARK),
+        "bg 15 → light stripe"
+    );
+
+    // Garbage falls back to dark.
+    let out = temp_env::with_var("COLORFGBG", Some("nonsense"), || {
+        render_preset("human", &sample_rows(), &opts)
+    });
+    assert!(out.contains(DARK), "unparsable COLORFGBG → dark stripe");
 }
 
 #[test]

@@ -41,15 +41,26 @@ mod ansi {
     }
 
     pub const RESET: &str = "\x1b[0m";
-    /// A reset immediately followed by the row-stripe background, so a
-    /// cell's own reset doesn't punch a hole in the stripe.
-    pub const RESET_KEEP_STRIPE: &str = "\x1b[0m\x1b[48;5;236m";
 }
 
-/// Subtle background for alternating data rows. 256-colour dark grey —
-/// near-invisible on dark terminals, a light wash on light ones; killed
+/// Subtle background for alternating data rows: one step off the terminal's
+/// own background on the 256-colour grayscale ramp. The terminal's polarity
+/// comes from `COLORFGBG` ("fg;bg", sometimes "fg;default;bg" — some
+/// terminals export it, none guarantee it): a background index of 0–6 or 8
+/// is dark. Unset or unparsable defaults to dark, the common case. Killed
 /// entirely by --color=never / NO_COLOR / non-TTY.
-const STRIPE_BG: &str = "\x1b[48;5;236m";
+fn stripe_bg() -> &'static str {
+    const DARK: &str = "\x1b[48;5;234m"; // faint lift off black
+    const LIGHT: &str = "\x1b[48;5;254m"; // faint dip off white
+    match std::env::var("COLORFGBG") {
+        Ok(v) => match v.rsplit(';').next().and_then(|bg| bg.parse::<u8>().ok()) {
+            Some(bg) if bg <= 6 || bg == 8 => DARK,
+            Some(_) => LIGHT,
+            None => DARK,
+        },
+        Err(_) => DARK,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // TTL cell formatter
@@ -1470,6 +1481,7 @@ fn render_table(
     // breathing room and leaves the rows free of trailing whitespace.
     let left_margin: String = " ".repeat(MARGIN);
     let data_start = usize::from(header);
+    let stripe = stripe_bg();
     for (idx, (row_cells, row_vis)) in cells.iter().zip(visible.iter()).enumerate() {
         // Alternate a subtle background on every other data row so the eye
         // can track across long lines. Colour-on only, so watch/viddy
@@ -1499,8 +1511,8 @@ fn render_table(
             // Every cell's own colour wrap ends in a full reset, which would
             // clear the background mid-stripe — re-open it after each one.
             // Cell text is sanitized, so the only resets are our own.
-            out.push_str(STRIPE_BG);
-            out.push_str(&line.replace(ansi::RESET, ansi::RESET_KEEP_STRIPE));
+            out.push_str(stripe);
+            out.push_str(&line.replace(ansi::RESET, &format!("{}{stripe}", ansi::RESET)));
             out.push_str(ansi::RESET);
         } else {
             out.push_str(&line);
