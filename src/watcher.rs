@@ -139,15 +139,25 @@ pub async fn self_test_native_backend_at(base: &Path, timeout: Duration) -> Opti
         return None;
     }
     let delivered = async {
-        let (mut watcher, mut rx) = FsWatcher::new().ok()?;
-        watcher.watch(&dir).ok()?;
-        std::fs::write(dir.join("probe"), b"x").ok()?;
-        let started = std::time::Instant::now();
-        tokio::time::timeout(timeout, rx.recv())
+        // Kernel watch registration blocks — ~1.2s per `watch()` measured for
+        // FSEvents on a loaded host — so it runs on the blocking pool rather
+        // than on the async worker this task shares with the scheduler loop.
+        let probe_dir = dir.clone();
+        let (watcher, mut rx, started) = tokio::task::spawn_blocking(move || {
+            let (mut watcher, rx) = FsWatcher::new().ok()?;
+            watcher.watch(&probe_dir).ok()?;
+            std::fs::write(probe_dir.join("probe"), b"x").ok()?;
+            Some((watcher, rx, std::time::Instant::now()))
+        })
+        .await
+        .ok()??;
+        let delivered = tokio::time::timeout(timeout, rx.recv())
             .await
             .ok()
             .flatten()
-            .map(|_| started.elapsed())
+            .map(|_| started.elapsed());
+        drop(watcher);
+        delivered
     }
     .await;
     let _ = std::fs::remove_dir_all(&dir);
