@@ -12,6 +12,8 @@ mod ansi {
         Yellow,
         BrightYellow,
         Red,
+        Cyan,
+        Magenta,
         Dim,
     }
 
@@ -22,6 +24,8 @@ mod ansi {
                 Color::Yellow => "\x1b[33m",
                 Color::BrightYellow => "\x1b[93m",
                 Color::Red => "\x1b[31m",
+                Color::Cyan => "\x1b[36m",
+                Color::Magenta => "\x1b[35m",
                 Color::Dim => "\x1b[2m",
             }
         }
@@ -926,7 +930,7 @@ const H_POLL: usize = 5;
 /// Render rows as aligned columns for the `human` preset.
 ///
 /// - `color_enabled`: apply per-cell ANSI colour (AGE yellow/green by stale, TTL by decay,
-///   failure rows red on non-TTL cells).
+///   failure rows red on non-TTL cells, JSON syntax highlighting in structured VALUE cells).
 /// - `trunc`: maximum width for the VALUE column (in characters). `None` = no truncation.
 /// - `header`: prepend a PROVIDER / FIELD / VALUE / PATH / AGE / POLL / TTL header row.
 /// - `ascii`: use ASCII-only glyphs in the TTL cell instead of Unicode.
@@ -940,6 +944,114 @@ pub fn render_human(rows: &[CacheRow], opts: &FormatOptions) -> String {
 /// `$HOME`, and the pathless-global marker `-`, pass through unchanged.
 /// Visible width of the taint marker prefixed to a sanitized row's VALUE cell.
 const MARKER_WIDTH: usize = 2;
+
+/// Whether `chars[i..]` begins with `lit`.
+fn starts_with_at(chars: &[char], i: usize, lit: &str) -> bool {
+    lit.chars()
+        .enumerate()
+        .all(|(off, want)| chars.get(i + off) == Some(&want))
+}
+
+/// Colourize a compact-JSON string for the human preset's VALUE cell.
+///
+/// Object keys dim, string values green, numbers cyan, `true`/`false`/`null`
+/// magenta, punctuation left alone. Only ever *adds* escape sequences, so it
+/// must run **after** truncation — highlighting a cut string is safe, cutting
+/// a highlighted one would slice an escape sequence in half.
+///
+/// The input is a display string, so it may be truncated mid-token and may
+/// carry a trailing `...`. Every branch therefore tolerates running off the
+/// end: an unterminated string or number simply colours to the end of what is
+/// there.
+fn highlight_json(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + 32);
+    // Container stack, so a `,` knows whether the next string is an object key
+    // or an array element.
+    let mut stack: Vec<char> = Vec::new();
+    let mut expect_key = false;
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '"' => {
+                let start = i;
+                i += 1;
+                while i < chars.len() {
+                    match chars[i] {
+                        '\\' => i += 2, // escaped char — never ends the string
+                        '"' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                let end = i.min(chars.len());
+                let text: String = chars[start..end].iter().collect();
+                let color = if expect_key {
+                    ansi::Color::Dim
+                } else {
+                    ansi::Color::BrightGreen
+                };
+                out.push_str(&ansi::wrap(&text, color, true));
+            }
+            '{' | '[' => {
+                stack.push(c);
+                expect_key = c == '{';
+                out.push(c);
+                i += 1;
+            }
+            '}' | ']' => {
+                stack.pop();
+                expect_key = false;
+                out.push(c);
+                i += 1;
+            }
+            ',' => {
+                expect_key = stack.last() == Some(&'{');
+                out.push(c);
+                i += 1;
+            }
+            ':' => {
+                expect_key = false;
+                out.push(c);
+                i += 1;
+            }
+            '-' | '0'..='9' => {
+                let start = i;
+                i += 1;
+                while i < chars.len() && matches!(chars[i], '0'..='9' | '.' | 'e' | 'E' | '+' | '-')
+                {
+                    i += 1;
+                }
+                let text: String = chars[start..i].iter().collect();
+                out.push_str(&ansi::wrap(&text, ansi::Color::Cyan, true));
+            }
+            't' | 'f' | 'n' => {
+                match ["true", "false", "null"]
+                    .into_iter()
+                    .find(|lit| starts_with_at(&chars, i, lit))
+                {
+                    Some(lit) => {
+                        out.push_str(&ansi::wrap(lit, ansi::Color::Magenta, true));
+                        i += lit.len();
+                    }
+                    None => {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
 
 /// Whether any provider-controlled text in this row contains a control
 /// character, and so will be rewritten by [`sanitize_cell`].
@@ -1232,14 +1344,34 @@ fn render_table(
         let field_vis = field_text.chars().count();
         let value_vis = value.chars().count();
 
-        // VALUE cell — the taint marker carries its own colour so a rewritten
-        // row stands out; the body stays plain.
-        let value_cell = if color_enabled && !marker.is_empty() {
-            let head: String = value.chars().take(MARKER_WIDTH).collect();
-            let tail: String = value.chars().skip(MARKER_WIDTH).collect();
-            format!("{}{tail}", ansi::wrap(&head, ansi::Color::Yellow, true))
-        } else {
+        // VALUE cell. Truncation has already happened above, so the colouring
+        // here can only ever add escape sequences — it never slices one.
+        // The taint marker keeps its own yellow so a rewritten row stands out;
+        // a structured body gets JSON syntax highlighting.
+        let value_cell = if !color_enabled {
             value
+        } else {
+            let (marker_text, body): (String, String) = if marker.is_empty() {
+                (String::new(), value)
+            } else {
+                (
+                    value.chars().take(MARKER_WIDTH).collect(),
+                    value.chars().skip(MARKER_WIDTH).collect(),
+                )
+            };
+            let body = if body.starts_with(['{', '[']) {
+                highlight_json(&body)
+            } else {
+                body
+            };
+            if marker_text.is_empty() {
+                body
+            } else {
+                format!(
+                    "{}{body}",
+                    ansi::wrap(&marker_text, ansi::Color::Yellow, true)
+                )
+            }
         };
 
         let mut row_cells: [String; COLS] = [

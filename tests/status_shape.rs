@@ -2266,3 +2266,132 @@ fn machine_presets_do_not_sanitize() {
     let tsv = render_tsv(&[row]);
     assert!(!tsv.contains('\u{241b}'), "no pictures in tsv: {tsv}");
 }
+
+// ---------------------------------------------------------------------------
+// JSON syntax highlighting in the human preset's VALUE cell
+// ---------------------------------------------------------------------------
+
+/// Strip SGR sequences, returning the visible text.
+fn strip_sgr(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c2 in chars.by_ref() {
+                if c2 == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn render_structured(no_color: bool) -> String {
+    let mut row = wide_value_row();
+    row.value = serde_json::json!({"name": "claude", "ctx": 42, "on": true, "off": null});
+    row.path = Some("/repo".into());
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: true,
+        depth: Some(1), // keep the object whole so there is something to highlight
+    };
+    render_preset("human", &[row], &opts)
+}
+
+#[test]
+fn structured_values_are_highlighted_when_colour_is_on() {
+    let out = render_structured(false);
+    assert!(out.contains("\x1b[2m\"ctx\"\x1b[0m"), "keys dim: {out:?}");
+    assert!(
+        out.contains("\x1b[92m\"claude\"\x1b[0m"),
+        "string values green: {out:?}"
+    );
+    assert!(out.contains("\x1b[36m42\x1b[0m"), "numbers cyan: {out:?}");
+    assert!(
+        out.contains("\x1b[35mtrue\x1b[0m") && out.contains("\x1b[35mnull\x1b[0m"),
+        "literals magenta: {out:?}"
+    );
+    // Punctuation is left uncoloured.
+    assert!(strip_sgr(&out).contains(r#"{"ctx":42,"name":"claude","off":null,"on":true}"#));
+}
+
+#[test]
+fn highlighting_is_absent_when_colour_is_off() {
+    let out = render_structured(true);
+    assert!(!out.contains('\x1b'), "no escapes with colour off: {out:?}");
+}
+
+#[test]
+fn highlighting_does_not_disturb_column_alignment() {
+    // Visible widths drive padding, so the coloured and plain renders must
+    // agree once the escapes are stripped.
+    assert_eq!(
+        strip_sgr(&render_structured(false)),
+        render_structured(true)
+    );
+}
+
+#[test]
+fn scalar_values_are_not_highlighted() {
+    // Only object/array values get the treatment — a bare string must not be
+    // parsed as JSON.
+    let mut row = wide_value_row();
+    row.value = serde_json::json!("true");
+    row.path = Some("/repo".into());
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: false,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: true,
+        depth: None,
+    };
+    let out = render_preset("human", &[row], &opts);
+    assert!(
+        !out.contains("\x1b[35mtrue"),
+        "a scalar string must not be tokenized: {out:?}"
+    );
+}
+
+#[test]
+fn highlighting_survives_a_truncated_value() {
+    // Truncation runs first, so the tokenizer sees a string cut mid-token and
+    // must not panic or emit a half escape sequence.
+    let mut row = wide_value_row();
+    row.value = serde_json::json!({ "blob": "x".repeat(400), "n": 1 });
+    row.path = Some("/repo".into());
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: false,
+        max_width: Some(60),
+        no_trunc: false,
+        ascii: true,
+        depth: Some(1),
+    };
+    let out = render_preset("human", std::slice::from_ref(&row), &opts);
+    let visible = strip_sgr(&out);
+    assert!(visible.contains("..."), "value should be cut: {visible}");
+    // Highlighting a cut value must add escapes and nothing else: the visible
+    // text has to match what the same render produces with colour off.
+    let plain = render_preset(
+        "human",
+        &[row],
+        &RenderOpts {
+            no_color: true,
+            ..opts
+        },
+    );
+    assert_eq!(visible, plain, "highlighting changed the visible text");
+    // And every escape sequence it emitted is whole.
+    assert_eq!(
+        out.matches('\x1b').count(),
+        out.matches("\x1b[").count(),
+        "every ESC must open a complete SGR sequence: {out:?}"
+    );
+}
