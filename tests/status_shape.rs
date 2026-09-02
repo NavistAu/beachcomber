@@ -2116,8 +2116,10 @@ fn empty_object_stays_its_own_row() {
 #[test]
 fn default_depth_destructures_human_presets_only() {
     use beachcomber::cli::status_format::default_depth;
-    assert_eq!(default_depth("human"), 0);
-    assert_eq!(default_depth("table"), 0);
+    // Two levels: enough to see structure, short of dumping a deep API blob
+    // as thousands of rows. `--depth 0` still asks for everything.
+    assert_eq!(default_depth("human"), 2);
+    assert_eq!(default_depth("table"), 2);
     for machine in ["json", "tsv", "csv", "sh", "{{ provider }}"] {
         assert_eq!(
             default_depth(machine),

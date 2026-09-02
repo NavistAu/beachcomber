@@ -148,7 +148,7 @@ enum Commands {
         #[arg(long)]
         ascii: bool,
         /// Object destructuring depth: 0 unlimited, 1 top-level fields only, 2 one level down.
-        /// Default: 0 for human/table, 1 for json/tsv/csv/sh.
+        /// Default: 2 for human/table, 1 for json/tsv/csv/sh.
         #[arg(long)]
         depth: Option<usize>,
     },

@@ -358,14 +358,19 @@ impl Default for RenderOpts {
 
 /// Destructuring depth to use when `--depth` was not given.
 ///
-/// The human-facing presets destructure fully — a nested object is something
-/// to read, and `{"agent":"claude","color":"blue"}` crammed into one cell is
-/// not readable. The machine presets stay at 1 so existing consumers keep
-/// getting byte-identical output unless they ask for more. Custom minijinja
-/// templates count as machine output for the same reason.
+/// The human-facing presets go one level down: a nested object crammed into
+/// one cell is not readable, but unlimited recursion is worse — a provider
+/// holding a deep API blob expanded to thirteen thousand rows and pushed the
+/// FIELD column to 75 characters of mostly punctuation. Two levels is the
+/// depth at which structure becomes visible without the table becoming a
+/// dump; `--depth 0` still asks for everything.
+///
+/// The machine presets stay at 1 so existing consumers keep getting
+/// byte-identical output unless they ask for more. Custom minijinja templates
+/// count as machine output for the same reason.
 pub fn default_depth(preset: &str) -> usize {
     match preset {
-        "human" | "table" => 0,
+        "human" | "table" => 2,
         _ => 1,
     }
 }

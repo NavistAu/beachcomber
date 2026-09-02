@@ -153,7 +153,14 @@ comb s -f json
 
 **Flags:** `--format <preset>` (`human` (default), `tsv`, `json`, `csv`, `table`, `sh`), `--filter <key=value>` (keys: `provider`, `path`, `field`, `stale`, `lifecycle`, `fsevents_reinstate`; e.g. `--filter=lifecycle=active`, `--filter=provider=git`, `--filter=fsevents_reinstate=true`), `--sort <default|provider|path|field|value|age|stale>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
 
-**Destructuring (`--depth`):** object values expand into one row per key, recursively, with the parent's path, age and lifecycle metadata carried down. `--depth 0` is unlimited, `1` shows top-level fields only, `2` goes one level down. The default is `0` for `human` and `table` and `1` for the machine presets, so scripts reading `-f json` keep the output they have today unless they ask for more. Arrays are never expanded.
+**Destructuring (`--depth`):** object values expand into one row per key, recursively, with the parent's path, age and lifecycle metadata carried down. `--depth 0` is unlimited, `1` shows top-level fields only, `2` goes one level down, and so on.
+
+| Preset | Default depth |
+|--------|---------------|
+| `human`, `table` | `2` — one level down |
+| `json`, `tsv`, `csv`, `sh`, custom templates | `1` — no destructuring |
+
+The human default stops at 2 deliberately: a provider caching a deep API response expands to thousands of rows at unlimited depth, and the long dotted field names then crowd out the VALUE column. Pass `--depth 0` when you do want the whole tree. The machine presets stay at `1` so scripts reading `-f json` keep the output they have today unless they ask for more. Arrays are never expanded.
 
 ```sh
 $ comb p agent '{"session":{"name":"claude","ctx_pct":42}}'
