@@ -182,11 +182,12 @@ async fn rapid_refreshes_are_deduplicated() {
     .await;
 
     let count = exec_count.load(Ordering::SeqCst);
-    // Should execute significantly fewer than 10 times due to dedup
-    // At minimum 1, at most ~2-3 (one running + one queued rerun)
-    assert!(
-        count < 5,
-        "Expected deduplication to reduce 10 refreshes to fewer executions, got {count}"
+    // The first refresh started the execution parked on the gate; the other
+    // nine collapsed into one queued rerun, which ran once the gate opened.
+    // Exactly two executions: not ten, and not one.
+    assert_eq!(
+        count, 2,
+        "10 refreshes against an in-flight execution should run exactly twice, got {count}"
     );
 
     handle.send(SchedulerMessage::Shutdown).await;

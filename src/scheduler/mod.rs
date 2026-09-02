@@ -576,96 +576,111 @@ impl Scheduler {
         );
 
         tokio::spawn(async move {
-            let result = tokio::time::timeout(
-                Duration::from_secs(timeout_secs),
-                tokio::task::spawn_blocking(move || source_clone.execute(path_owned.as_deref())),
-            )
-            .await;
+            // One iteration per execution. A refresh that arrives while an
+            // execution is in flight queues exactly one more iteration.
+            loop {
+                let src = Arc::clone(&source_clone);
+                let exec_path = path_owned.clone();
+                let result = tokio::time::timeout(
+                    Duration::from_secs(timeout_secs),
+                    tokio::task::spawn_blocking(move || src.execute(exec_path.as_deref())),
+                )
+                .await;
 
-            // Record success or failure for backoff tracking.
-            match &result {
-                Ok(Ok(r)) if !r.fields.is_empty() => {
-                    failure_counts
-                        .lock()
-                        .unwrap()
-                        .entry(key_for_cleanup.clone())
-                        .or_insert_with(|| FailureState::new(failure_threshold, failure_backoff))
-                        .record_success();
+                // Record success or failure for backoff tracking.
+                match &result {
+                    Ok(Ok(r)) if !r.fields.is_empty() => {
+                        failure_counts
+                            .lock()
+                            .unwrap()
+                            .entry(key_for_cleanup.clone())
+                            .or_insert_with(|| {
+                                FailureState::new(failure_threshold, failure_backoff)
+                            })
+                            .record_success();
+                    }
+                    _ => {
+                        failure_counts
+                            .lock()
+                            .unwrap()
+                            .entry(key_for_cleanup.clone())
+                            .or_insert_with(|| {
+                                FailureState::new(failure_threshold, failure_backoff)
+                            })
+                            .record_failure();
+                    }
                 }
-                _ => {
-                    failure_counts
-                        .lock()
-                        .unwrap()
-                        .entry(key_for_cleanup.clone())
-                        .or_insert_with(|| FailureState::new(failure_threshold, failure_backoff))
-                        .record_failure();
-                }
-            }
 
-            let cache_path = key_for_cleanup.1.clone();
-            match result {
-                Ok(Ok(source_result)) if !source_result.fields.is_empty() => {
-                    cache.put_source(
-                        &provider_name_owned,
-                        cache_path.as_deref(),
-                        &source_name_owned,
-                        source_result.fields,
-                        expected_interval_secs,
-                    );
+                let cache_path = key_for_cleanup.1.clone();
+                match result {
+                    Ok(Ok(source_result)) if !source_result.fields.is_empty() => {
+                        cache.put_source(
+                            &provider_name_owned,
+                            cache_path.as_deref(),
+                            &source_name_owned,
+                            source_result.fields,
+                            expected_interval_secs,
+                        );
+                        debug!(
+                            "Executed source '{}.{}' path={:?}",
+                            provider_name_owned, source_name_owned, cache_path
+                        );
+                    }
+                    Ok(Ok(_)) => {
+                        debug!(
+                            "Source '{}.{}' returned empty for path={:?}",
+                            provider_name_owned, source_name_owned, cache_path
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        warn!(
+                            "Source '{}.{}' panicked: {}",
+                            provider_name_owned, source_name_owned, e
+                        );
+                    }
+                    Err(_) => {
+                        warn!(
+                            "Source '{}.{}' timed out after {}s",
+                            provider_name_owned, source_name_owned, timeout_secs
+                        );
+                    }
+                }
+
+                // Decide "done" or "run again" under the in_flight lock, in the
+                // dispatcher's lock order (in_flight, then pending_rerun). Releasing
+                // in_flight first would let a refresh landing in the gap start a
+                // second, concurrent execution of this key.
+                let rerun = {
+                    let mut in_flight = in_flight.lock().unwrap();
+                    let rerun = pending_rerun.lock().unwrap().remove(&key_for_cleanup);
+                    if !rerun {
+                        in_flight.remove(&key_for_cleanup);
+                    }
+                    rerun
+                };
+                if !rerun {
+                    break;
+                }
+                // The dispatcher's backoff check ran before this execution, not
+                // before the queued one; apply it here so a rerun cannot bypass
+                // suppression.
+                let suppressed = failure_counts
+                    .lock()
+                    .unwrap()
+                    .get(&key_for_cleanup)
+                    .is_some_and(|s| s.is_suppressed());
+                if suppressed {
                     debug!(
-                        "Executed source '{}.{}' path={:?}",
-                        provider_name_owned, source_name_owned, cache_path
-                    );
-                }
-                Ok(Ok(_)) => {
-                    debug!(
-                        "Source '{}.{}' returned empty for path={:?}",
-                        provider_name_owned, source_name_owned, cache_path
-                    );
-                }
-                Ok(Err(e)) => {
-                    warn!(
-                        "Source '{}.{}' panicked: {}",
-                        provider_name_owned, source_name_owned, e
-                    );
-                }
-                Err(_) => {
-                    warn!(
-                        "Source '{}.{}' timed out after {}s",
-                        provider_name_owned, source_name_owned, timeout_secs
-                    );
-                }
-            }
-
-            // Clear in-flight and check for pending reruns.
-            in_flight.lock().unwrap().remove(&key_for_cleanup);
-            let should_rerun = pending_rerun.lock().unwrap().remove(&key_for_cleanup);
-
-            if should_rerun {
-                debug!(
-                    "Re-running source '{}.{}' (was queued during previous execution)",
-                    key_for_cleanup.0, key_for_cleanup.2
-                );
-                // Re-dispatch via a new spawn rather than recursive call, preserving
-                // channel-driven dispatch ordering. Mark in-flight again for this rerun.
-                in_flight.lock().unwrap().insert(key_for_cleanup.clone());
-                let rerun_provider = key_for_cleanup.0.clone();
-                let rerun_source = key_for_cleanup.2.clone();
-                let rerun_path = key_for_cleanup.1.clone();
-                tokio::spawn(async move {
-                    // Note: we can't call execute_source() here (not &self), so we
-                    // inline the execution. The source was already Arc'd above but
-                    // we can't recover it from the key alone. This is a known
-                    // limitation for the rerun path — the source will be looked up
-                    // at the next demand/tick cycle instead.
-                    //
-                    // For now, just clear in-flight so the next poll/demand can proceed.
-                    debug!(
-                        "Rerun stub for '{}.{}' path={:?} — will re-execute on next poll",
-                        rerun_provider, rerun_source, rerun_path
+                        "Source '{}.{}' rerun dropped: suppressed by failure backoff",
+                        key_for_cleanup.0, key_for_cleanup.2
                     );
                     in_flight.lock().unwrap().remove(&key_for_cleanup);
-                });
+                    break;
+                }
+                debug!(
+                    "Re-running source '{}.{}' (refresh arrived during previous execution)",
+                    key_for_cleanup.0, key_for_cleanup.2
+                );
             }
         });
     }
