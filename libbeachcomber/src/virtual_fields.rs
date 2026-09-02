@@ -573,7 +573,7 @@ pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
 
 /// Build a minijinja `Environment` suitable for `compile_expression`.
 ///
-/// Registers the same filters as `build_env()` (truncate, basename), sets
+/// Registers the same filters as `build_env()`, sets
 /// chainable undefined behavior so missing refs are falsy, not errors, and
 /// registers the `exec()` jinja function: the real closure ([`exec_fn`])
 /// when `allow_exec` is true, a closure that always errors ([`exec_disabled_fn`])

@@ -8,12 +8,15 @@ pub fn build_env<'a>() -> Environment<'a> {
     let mut env = Environment::new();
     env.add_filter("truncate", truncate_filter);
     env.add_filter("basename", basename_filter);
-    // `fg`/`bg` are pure string transforms — no filesystem, network, or
-    // process access — so unlike `exec()` they need no `allow_exec` gating.
-    // Safe to register unconditionally on every surface this environment
-    // backs, including path expressions and formatting-only contexts.
+    // `fg`/`bg`/`bold`/`dim` are pure string transforms — no filesystem,
+    // network, or process access — so unlike `exec()` they need no
+    // `allow_exec` gating. Safe to register unconditionally on every surface
+    // this environment backs, including path expressions and formatting-only
+    // contexts.
     env.add_filter("fg", fg_filter);
     env.add_filter("bg", bg_filter);
+    env.add_filter("bold", bold_filter);
+    env.add_filter("dim", dim_filter);
     env
 }
 
@@ -78,6 +81,43 @@ fn sgr_wrap(value: String, color: &str, sgr_code: u8) -> Result<String, Error> {
     }
     let (r, g, b) = parse_hex_color(color)?;
     Ok(format!("\x1b[{sgr_code};2;{r};{g};{b}m{value}\x1b[0m"))
+}
+
+// ── bold/dim: SGR attributes ───────────────────────────────────────────────
+
+/// `{{ text | bold }}` — wrap `text` in the bold SGR pair
+/// (`\x1b[1m` ... `\x1b[0m`).
+///
+/// The attribute counterpart of [`fg_filter`]/[`bg_filter`]: a terminal
+/// consumer needs bold and dim as often as it needs colour, and neither is
+/// expressible as a colour argument. Kept as its own filter rather than a
+/// keyword on `fg` so bold text with no colour of its own — a session name,
+/// a heading — needs no placeholder colour, and so the four compose in any
+/// order: `{{ x | fg(c) | bg(d) | bold }}` nests to one cell style.
+///
+/// Empty input returns empty with no escapes at all, same as `fg`/`bg`, so
+/// a conditional segment contributes nothing rather than leaving a stray
+/// attribute escape that would bleed into whatever follows it.
+fn bold_filter(value: String) -> String {
+    sgr_attr(value, 1)
+}
+
+/// `{{ text | dim }}` — [`bold_filter`]'s sibling for the dim/faint SGR
+/// attribute (`2` instead of `1`). Same empty-input behaviour.
+fn dim_filter(value: String) -> String {
+    sgr_attr(value, 2)
+}
+
+/// Shared body of `bold`/`dim`: wrap non-empty `value` in the SGR pair for
+/// `code`. The closer is a full reset (`0`) rather than the attribute's own
+/// off-code (`22`), matching `fg`/`bg` — every one of these filters ends its
+/// segment by returning the terminal to a known default state, which is what
+/// makes them safe to concatenate in any order.
+fn sgr_attr(value: String, code: u8) -> String {
+    if value.is_empty() {
+        return String::new();
+    }
+    format!("\x1b[{code}m{value}\x1b[0m")
 }
 
 /// Parse a `#rrggbb` or bare `rrggbb` colour (case-insensitive — a stored
@@ -180,6 +220,31 @@ mod tests {
         assert_eq!(
             out.as_str().unwrap(),
             "\x1b[38;2;255;0;0ma\x1b[0m\x1b[38;2;0;255;0mb\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn bold_and_dim_wrap_with_their_sgr_attribute() {
+        assert_eq!(bold_filter("x".to_string()), "\x1b[1mx\x1b[0m");
+        assert_eq!(dim_filter("x".to_string()), "\x1b[2mx\x1b[0m");
+    }
+
+    #[test]
+    fn bold_and_dim_empty_text_emits_no_escapes() {
+        assert_eq!(bold_filter(String::new()), "");
+        assert_eq!(dim_filter(String::new()), "");
+    }
+
+    #[test]
+    fn bold_composes_over_fg() {
+        let env = build_env();
+        let expr = env
+            .compile_expression(r##""x" | fg("#ff0000") | bold"##)
+            .unwrap();
+        let out = expr.eval(minijinja::Value::UNDEFINED).unwrap();
+        assert_eq!(
+            out.as_str().unwrap(),
+            "\x1b[1m\x1b[38;2;255;0;0mx\x1b[0m\x1b[0m"
         );
     }
 
