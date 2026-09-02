@@ -8,6 +8,7 @@
 // These unit-level tests use the split_key / is_virtual path directly.
 
 use beachcomber::cli::commands::get::key_needs_daemon;
+use beachcomber::config::Config;
 use libbeachcomber::virtual_fields::VirtualFields;
 
 #[test]
@@ -74,13 +75,13 @@ fn get_env_star_succeeds_without_daemon_contact() {
 // ── Bug #4: dotless keys must need the daemon ─────────────────────────────────
 
 /// #4 unit: a dotless key (whole-provider query) is a daemon query.
-/// Before the fix: key_needs_daemon("hostname", &vf) returned false.
+/// Before the fix: key_needs_daemon("hostname", ...) returned false.
 /// After the fix: must return true.
 #[test]
 fn dotless_key_needs_daemon() {
     let vf = VirtualFields::defaults_only();
     assert!(
-        key_needs_daemon("hostname", &vf),
+        key_needs_daemon("hostname", &vf, &Config::default()),
         "a dotless 'comb get hostname' is a whole-provider daemon query and must need the daemon"
     );
 }
@@ -94,7 +95,7 @@ fn dotless_virtual_provider_name_still_needs_daemon() {
     // "terraform" is a virtual-namespace provider (handled client-side), but its
     // workspace field has a daemon ref (cache.terraform.workspace), so needs the daemon.
     assert!(
-        key_needs_daemon("terraform", &vf),
+        key_needs_daemon("terraform", &vf, &Config::default()),
         "bare 'terraform' has a virtual field with a daemon dep — must need the daemon"
     );
 }
@@ -104,7 +105,7 @@ fn dotless_virtual_provider_name_still_needs_daemon() {
 fn env_star_still_does_not_need_daemon() {
     let vf = VirtualFields::defaults_only();
     assert!(
-        !key_needs_daemon("env.PATH", &vf),
+        !key_needs_daemon("env.PATH", &vf, &Config::default()),
         "env.* keys must never need the daemon (canon invariant 15)"
     );
 }
@@ -200,7 +201,7 @@ fn virtual_field_with_daemon_ref_needs_daemon() {
     let vf = VirtualFields::defaults_only();
     // terraform.workspace has daemon ref cache.terraform.workspace — needs daemon.
     assert!(
-        key_needs_daemon("terraform.workspace", &vf),
+        key_needs_daemon("terraform.workspace", &vf, &Config::default()),
         "terraform.workspace has a daemon dep and must need the daemon for force/wait propagation"
     );
 }
@@ -212,12 +213,12 @@ fn virtual_field_env_only_does_not_need_daemon() {
     let vf = VirtualFields::defaults_only();
     // op.signed_in = env.OP_SERVICE_ACCOUNT_TOKEN != "" — pure env, no daemon dep.
     assert!(
-        !key_needs_daemon("op.signed_in", &vf),
+        !key_needs_daemon("op.signed_in", &vf, &Config::default()),
         "op.signed_in is pure env — must not need the daemon"
     );
     // aws.profile = env.AWS_PROFILE or ... — pure env.
     assert!(
-        !key_needs_daemon("aws.profile", &vf),
+        !key_needs_daemon("aws.profile", &vf, &Config::default()),
         "aws.profile is pure env — must not need the daemon"
     );
 }
@@ -234,12 +235,12 @@ fn bare_virtual_namespace_provider_env_only_does_not_need_daemon() {
     let vf = VirtualFields::defaults_only();
     // conda.env = env.CONDA_DEFAULT_ENV — pure env, no daemon dep.
     assert!(
-        !key_needs_daemon("conda", &vf),
+        !key_needs_daemon("conda", &vf, &Config::default()),
         "bare 'conda' is a virtual-namespace provider with only env refs — must not need the daemon"
     );
     // op: op.signed_in = env.OP_SERVICE_ACCOUNT_TOKEN != "" — pure env.
     assert!(
-        !key_needs_daemon("op", &vf),
+        !key_needs_daemon("op", &vf, &Config::default()),
         "bare 'op' is a virtual-namespace provider with only env refs — must not need the daemon"
     );
 }
@@ -253,7 +254,7 @@ fn bare_virtual_namespace_provider_env_only_does_not_need_daemon() {
 fn bare_virtual_namespace_provider_with_daemon_ref_needs_daemon() {
     let vf = VirtualFields::defaults_only();
     assert!(
-        key_needs_daemon("terraform", &vf),
+        key_needs_daemon("terraform", &vf, &Config::default()),
         "bare 'terraform' has a virtual field with a daemon dep — must need the daemon"
     );
 }
@@ -298,4 +299,166 @@ fn bare_daemon_only_provider_still_routes_to_daemon() {
         .args(["get", "git"]);
     // git has no virtual fields → routed to daemon → ensure_daemon fails → exit non-zero.
     cmd.assert().failure();
+}
+
+// ── Canon invariant 12: a bare provider resolves to its whole subtree ─────────
+
+/// Config used by the invariant-12 tests: `git` is a daemon provider that the
+/// user has additionally given one *pure-env* virtual field.
+fn git_with_pure_env_virtual_field() -> Config {
+    toml::from_str(
+        r#"
+[providers.git.virtual]
+note = "{{ env.COMB_TEST_NOTE }}"
+"#,
+    )
+    .expect("config parses")
+}
+
+/// A bare-provider query on a provider that IS a daemon provider must contact
+/// the daemon even when every one of its virtual fields is pure-env.
+///
+/// Regression: `key_needs_daemon` only asked whether some virtual field had a
+/// daemon ref. With `[providers.git.virtual] note = "{{ env.FOO }}"` in config,
+/// `comb get git` skipped the daemon entirely and returned `{note}` alone,
+/// dropping every cached git field — a violation of canon invariant 12, which
+/// says a bare provider resolves to its whole subtree (cached fields plus
+/// virtual fields, virtual winning on a clash).
+#[test]
+fn bare_daemon_provider_with_pure_env_virtual_field_needs_daemon() {
+    let config = git_with_pure_env_virtual_field();
+    let vf = VirtualFields::with_config_overrides(config.virtual_fields());
+    assert!(
+        vf.is_virtual("git", "note"),
+        "the config override must register git.note as a virtual field"
+    );
+    assert!(
+        key_needs_daemon("git", &vf, &config),
+        "bare 'git' is a daemon provider — its cached subtree needs the daemon \
+         even though its only virtual field is pure-env (canon invariant 12)"
+    );
+}
+
+/// The single-field path is unaffected: a pure-env virtual field on a daemon
+/// provider still resolves without the daemon.
+#[test]
+fn pure_env_virtual_field_on_daemon_provider_does_not_need_daemon() {
+    let config = git_with_pure_env_virtual_field();
+    let vf = VirtualFields::with_config_overrides(config.virtual_fields());
+    assert!(
+        !key_needs_daemon("git.note", &vf, &config),
+        "git.note is a pure-env virtual field — the single-field path must not \
+         need the daemon"
+    );
+}
+
+/// A config-declared external provider (script backend) counts as a daemon
+/// provider for the same reason a built-in does.
+#[test]
+fn bare_config_declared_script_provider_with_pure_env_virtual_needs_daemon() {
+    let config: Config = toml::from_str(
+        r#"
+[providers.weather]
+command = "curl -s wttr.in?format=j1"
+
+[providers.weather.virtual]
+note = "{{ env.COMB_TEST_NOTE }}"
+"#,
+    )
+    .expect("config parses");
+    let vf = VirtualFields::with_config_overrides(config.virtual_fields());
+    assert!(
+        key_needs_daemon("weather", &vf, &config),
+        "a [providers.weather] block declaring a command is a daemon provider — \
+         its cached subtree needs the daemon"
+    );
+}
+
+/// A namespace with virtual fields but no daemon provider behind it (`conda`,
+/// `op`) must still resolve without the daemon, even when the user adds more
+/// pure-env virtual fields to it.
+#[test]
+fn bare_pure_virtual_namespace_stays_daemon_free_with_config_virtuals() {
+    let config: Config = toml::from_str(
+        r#"
+[providers.conda.virtual]
+note = "{{ env.COMB_TEST_NOTE }}"
+"#,
+    )
+    .expect("config parses");
+    let vf = VirtualFields::with_config_overrides(config.virtual_fields());
+    assert!(
+        !key_needs_daemon("conda", &vf, &config),
+        "conda has no daemon provider behind it — a bare query must not start one"
+    );
+}
+
+/// End-to-end: with a daemon holding cached `git` fields and a pure-env virtual
+/// field configured on `git`, `comb get git` returns BOTH the cached field and
+/// the virtual one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bare_daemon_provider_query_returns_cached_and_virtual_fields() {
+    use beachcomber::cache::Cache;
+    use beachcomber::provider::Value;
+    use beachcomber::provider::registry::ProviderRegistry;
+    use beachcomber::server::Server;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("sock");
+    // The daemon keys `git` by the canonicalized query path.
+    let workdir = std::fs::canonicalize(dir.path()).unwrap();
+
+    let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+
+    // Seed a fresh (60s interval) git entry so the daemon serves it from cache
+    // without ever executing the provider.
+    let mut fields = HashMap::new();
+    fields.insert("branch".to_string(), Value::String("main".to_string()));
+    cache.put_source(
+        "git",
+        Some(&workdir.to_string_lossy()),
+        "head",
+        fields,
+        Some(60),
+    );
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    server.spawn().expect("server binds socket");
+
+    // Config: git gains one pure-env virtual field.
+    let cfg_dir = dir.path().join("cfg");
+    std::fs::create_dir_all(cfg_dir.join("beachcomber")).unwrap();
+    std::fs::write(
+        cfg_dir.join("beachcomber").join("config.toml"),
+        "[providers.git.virtual]\nnote = \"{{ env.COMB_TEST_NOTE }}\"\n",
+    )
+    .unwrap();
+
+    let workdir_arg = workdir.to_string_lossy().to_string();
+    let out = tokio::task::spawn_blocking(move || {
+        let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
+        cmd.env("BEACHCOMBER_SOCKET", &sock)
+            .env("RUST_LOG", "error")
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", &cfg_dir)
+            .env("COMB_TEST_NOTE", "hello-note")
+            .args(["get", "git", &workdir_arg]);
+        let assert = cmd.assert().success();
+        String::from_utf8(assert.get_output().stdout.clone()).unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        out.contains("branch=main"),
+        "the daemon-cached git field must survive the whole-provider query; got: {out:?}"
+    );
+    assert!(
+        out.contains("note=hello-note"),
+        "the config virtual field must be present too; got: {out:?}"
+    );
 }

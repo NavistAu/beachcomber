@@ -245,13 +245,69 @@ fn is_client_side_key(key: &str, vf: &VirtualFields) -> bool {
     provider == "env" || vf.is_virtual(provider, field)
 }
 
+/// Built-in daemon provider names — the compiled-in set
+/// `ProviderRegistry::with_config` registers, minus config-disabled ones.
+///
+/// Duplicated here rather than derived from the registry on purpose:
+/// `ProviderRegistry::with_config` dlopen's every `backend = "library"`
+/// provider through `libloading` while constructing, which is far too much
+/// work for `comb get`'s hot path. Keep in sync with `with_config`'s
+/// `add_builtin!` list.
+const BUILTIN_DAEMON_PROVIDERS: &[&str] = &[
+    "asdf",
+    "aws_profiles",
+    "battery",
+    "direnv",
+    "gcloud_configs",
+    "git",
+    "hostname",
+    "kubecontext",
+    "load",
+    "mise",
+    "network",
+    "python",
+    "sudo",
+    "talos",
+    "terraform",
+    "uname",
+    "uptime",
+    "user",
+];
+
+/// Returns true if `provider` has a daemon provider behind it — i.e. the
+/// daemon can hold cached fields under that name.
+///
+/// Presence is derived client-side from the built-in name list plus the
+/// `[providers.<name>]` sections that declare an external backend (`backend`,
+/// legacy `type`, or the keys those shapes require). Consulting the registry
+/// itself would mean loading shared libraries on every `comb get`.
+///
+/// `put`-created virtual providers are invisible here — they exist only in a
+/// running daemon's cache and are unknowable from config alone.
+fn is_daemon_provider(provider: &str, config: &Config) -> bool {
+    if config.is_provider_disabled(provider) {
+        return false;
+    }
+    if BUILTIN_DAEMON_PROVIDERS.contains(&provider) {
+        return true;
+    }
+    config.providers.get(provider).is_some_and(|val| {
+        ["backend", "type", "command", "library_path", "url"]
+            .iter()
+            .any(|k| val.get(k).is_some())
+    })
+}
+
 /// Returns true if the key requires the daemon to be running.
 ///
 /// env.* keys never need the daemon (canon invariant 6).
-/// Dotless keys that match a virtual-namespace provider (one with at least one
-/// virtual field) need the daemon only if any of their virtual field expressions
-/// reference daemon (non-env, non-virtual) fields; if all virtual fields are
-/// pure-env, the daemon is skipped.
+/// Dotless keys for a provider that has a daemon counterpart always need the
+/// daemon: canon invariant 12 says a bare provider resolves to its whole
+/// subtree, which is its cached fields merged under its virtual fields.
+/// Dotless keys for a namespace with no daemon provider behind it (`conda`,
+/// `op`) need the daemon only if one of its virtual field expressions
+/// references daemon (non-env, non-virtual) fields; pure-env namespaces are
+/// resolved entirely client-side and must never start a daemon.
 /// Dotless keys for daemon-only providers (no virtual fields) always need the daemon.
 /// Virtual fields need the daemon only if their expression references daemon
 /// (non-env, non-virtual) fields; pure-env virtuals never need the daemon.
@@ -260,7 +316,7 @@ fn is_client_side_key(key: &str, vf: &VirtualFields) -> bool {
 /// Bug #4 fix: dotless keys were returning false (no dot → early return false).
 /// They must return true: a bare provider name is a whole-provider daemon query
 /// (unless it is a virtual-namespace provider where all virtual fields are pure-env).
-pub fn key_needs_daemon(key: &str, vf: &VirtualFields) -> bool {
+pub fn key_needs_daemon(key: &str, vf: &VirtualFields, config: &Config) -> bool {
     let Some(dot) = key.find('.') else {
         // Dotless key: check if it's a virtual-namespace provider.
         // If it has virtual fields, need daemon only if any field has daemon refs.
@@ -270,9 +326,16 @@ pub fn key_needs_daemon(key: &str, vf: &VirtualFields) -> bool {
             // Daemon-only provider (e.g. `git`, `hostname`): whole-provider daemon query.
             return true;
         }
-        // Virtual-namespace provider: need daemon if any virtual field has daemon refs,
-        // or unconditionally because fetch_daemon_deps_for_namespace always fetches the
-        // whole provider object (for canon invariant 12 whole-subtree merge).
+        // Canon invariant 12: a bare provider resolves to its whole subtree. If a
+        // daemon provider stands behind this name, its cached fields belong in the
+        // answer even when every virtual field on it is pure-env — otherwise
+        // `[providers.git.virtual] note = "{{ env.FOO }}"` would reduce
+        // `comb get git` to `{note}` and silently drop the cached git fields.
+        if is_daemon_provider(key, config) {
+            return true;
+        }
+        // No daemon provider behind the name (`conda`, `op`): need the daemon only
+        // if a virtual field reaches into the cache for something else.
         return virtual_fields.iter().any(|field| {
             let expr = vf.expression(key, field).unwrap_or("");
             let refs = discover_refs(expr);
@@ -424,12 +487,12 @@ pub fn run_get(
     // original upfront any_needs_daemon → ensure_daemon logic.
     let is_single_virtual_with_daemon_refs = keys.len() == 1 && {
         let k = &keys[0];
-        is_client_side_key(k, &vf) && key_needs_daemon(k, &vf)
+        is_client_side_key(k, &vf) && key_needs_daemon(k, &vf, config)
     };
 
     if !is_single_virtual_with_daemon_refs {
         // Original path: ensure_daemon upfront if any key needs it.
-        let any_needs_daemon = keys.iter().any(|k| key_needs_daemon(k, &vf));
+        let any_needs_daemon = keys.iter().any(|k| key_needs_daemon(k, &vf, config));
         if any_needs_daemon
             && let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap)
         {
@@ -442,7 +505,7 @@ pub fn run_get(
     if keys.len() == 1 {
         let key = &keys[0];
         if is_client_side_key(key, &vf) {
-            if key_needs_daemon(key, &vf) {
+            if key_needs_daemon(key, &vf, config) {
                 // Bug #7: env-first lazy evaluation.
                 // Try with empty daemon_data: only env vars + virtual refs are consulted.
                 let empty_daemon_data = HashMap::new();
@@ -533,7 +596,7 @@ pub fn run_get(
         let key = &keys[0];
         if is_virtual_namespace_key(key, &vf) {
             // Fetch daemon deps for all virtual fields of this namespace.
-            let daemon_data = if key_needs_daemon(key, &vf) {
+            let daemon_data = if key_needs_daemon(key, &vf, config) {
                 let client = crate::client::Client::new(socket_path.clone());
                 match client.connect() {
                     Ok(mut session) => {
@@ -660,7 +723,7 @@ pub fn run_get(
     // Only connect to the daemon when at least one key actually requires it.
     // (any_needs_daemon was already satisfied by ensure_daemon above for the non-single-
     // virtual path; we re-derive it here for the session-open decision.)
-    let any_needs_daemon_for_session = keys.iter().any(|k| key_needs_daemon(k, &vf));
+    let any_needs_daemon_for_session = keys.iter().any(|k| key_needs_daemon(k, &vf, config));
     let client = crate::client::Client::new(socket_path.clone());
     let mut session_opt = if any_needs_daemon_for_session {
         match client.connect() {
@@ -689,7 +752,7 @@ pub fn run_get(
         for key in keys {
             if is_client_side_key(key, &vf) {
                 // Fetch daemon deps for this virtual key if needed (bug #6: pass force/wait).
-                let daemon_data = if key_needs_daemon(key, &vf) {
+                let daemon_data = if key_needs_daemon(key, &vf, config) {
                     fetch_daemon_deps(key, &vf, session_opt.as_mut(), force, wait)
                 } else {
                     HashMap::new()
@@ -750,7 +813,7 @@ pub fn run_get(
     for key in keys {
         if is_client_side_key(key, &vf) {
             // Fetch daemon deps if expression needs them (bug #6: pass force/wait).
-            let daemon_data = if key_needs_daemon(key, &vf) {
+            let daemon_data = if key_needs_daemon(key, &vf, config) {
                 fetch_daemon_deps(key, &vf, session_opt.as_mut(), force, wait)
             } else {
                 HashMap::new()
