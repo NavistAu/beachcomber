@@ -95,10 +95,15 @@ fn load_fixtures() -> Vec<Fixture> {
     out
 }
 
+/// `((provider, field), expression)` overrides from a fixture's `virtual` object.
+type FieldOverrides = Vec<((String, String), String)>;
+/// `provider → path expression` overrides from a fixture's `virtual` object.
+type PathOverrides = HashMap<String, String>;
+
 /// Split the fixture's `virtual` object into field-expression overrides
 /// (keyed "provider.field") and path-expression overrides (keyed by a bare
 /// provider name — no `.`).
-fn parse_virtual(v: &Value) -> (Vec<((String, String), String)>, HashMap<String, String>) {
+fn parse_virtual(v: &Value) -> (FieldOverrides, PathOverrides) {
     let mut field_overrides = Vec::new();
     let mut path_overrides = HashMap::new();
     if let Some(obj) = v.as_object() {

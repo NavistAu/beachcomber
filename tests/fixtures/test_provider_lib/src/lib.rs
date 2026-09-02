@@ -64,8 +64,13 @@ pub extern "C" fn bc_source_metadata(idx: usize) -> *const c_char {
 ///
 /// Source 0 ignores `path` and returns a fixed result.
 /// Source 1 echoes the path (or "none") in its output.
+///
+/// # Safety
+///
+/// `path` must be null or point to a valid NUL-terminated C string that
+/// stays alive for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn bc_source_execute(idx: usize, path: *const c_char) -> *const c_char {
+pub unsafe extern "C" fn bc_source_execute(idx: usize, path: *const c_char) -> *const c_char {
     match idx {
         0 => static_cstr!(r#"{"value":"hello","count":42}"#),
         1 => {
