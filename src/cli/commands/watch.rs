@@ -4,7 +4,8 @@
 //! server-side `text`/`sh` rendering: the daemon now streams JSON frames
 //! only, and every non-JSON output format is rendered locally from each
 //! frame's `data`, reusing `libbeachcomber::render::render_data` -- the same
-//! rendering `Client::get_formatted_with_flags` uses for `comb get`.
+//! rendering `Client::get_formatted_with_flags` uses for `comb get`, including
+//! the shell-quoting `-f sh` requires (canon `field_resolution.md` invariant 8).
 
 use crate::cli::format::render_fmt_template_json;
 use crate::cli::output_format::{OutputFormat, format_sv};
@@ -51,7 +52,10 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: OutputF
                     OutputFormat::Text | OutputFormat::Sh => {
                         println!(
                             "{}",
-                            libbeachcomber::render::render_data(response.data.as_ref())
+                            libbeachcomber::render::render_data(
+                                response.data.as_ref(),
+                                format.server_format()
+                            )
                         );
                     }
                     OutputFormat::Csv => {

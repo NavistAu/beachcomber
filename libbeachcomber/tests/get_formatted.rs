@@ -91,6 +91,56 @@ fn client_get_formatted_first_line_only_error_prefix_is_not_data_content() {
 }
 
 #[test]
+fn client_get_formatted_sh_shell_quotes_every_value() {
+    // Canon field_resolution.md invariant 8: `sh` shell-escapes. A value with
+    // a space, a single quote and a `$` must come back POSIX-single-quoted so
+    // the block is safe to `eval`; keys stay bare.
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
+
+    client
+        .put(
+            "fmt_sh_obj",
+            serde_json::json!({"a": "it's a $HOME env", "b": 42}),
+            None,
+            None,
+        )
+        .expect("put");
+
+    let sh = client
+        .get_formatted("fmt_sh_obj", None, "sh")
+        .expect("get_formatted");
+    assert_eq!(sh, "a='it'\\''s a $HOME env'\nb='42'");
+
+    // The same query under `text` is untouched.
+    let text = client
+        .get_formatted("fmt_sh_obj", None, "text")
+        .expect("get_formatted");
+    assert_eq!(text, "a=it's a $HOME env\nb=42");
+}
+
+#[test]
+fn session_get_formatted_sh_shell_quotes_scalar() {
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
+    let mut session = client.session().expect("session");
+
+    session
+        .put(
+            "fmt_sh_scalar",
+            serde_json::json!({"x": "two words"}),
+            None,
+            None,
+        )
+        .expect("put");
+
+    let sh = session
+        .get_formatted_with_flags("fmt_sh_scalar.x", None, "sh", false, false)
+        .expect("get_formatted_with_flags");
+    assert_eq!(sh, "'two words'");
+}
+
+#[test]
 fn client_get_formatted_reports_daemon_rejection() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);

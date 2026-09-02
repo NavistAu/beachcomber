@@ -6,6 +6,7 @@ use crate::cli::format::render_fmt_template_json;
 use crate::cli::output_format::{OutputFormat, format_sv, value_to_string};
 use crate::config::Config;
 use libbeachcomber::eval::discover_refs;
+use libbeachcomber::render::{render_data, shell_quote};
 use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, evaluate_namespace};
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -190,48 +191,25 @@ fn is_virtual_namespace_key(key: &str, vf: &VirtualFields) -> bool {
     !key.contains('.') && !vf.fields_for(key).is_empty()
 }
 
-/// POSIX single-quote a string: wrap in `'...'`, rewriting each internal `'`
-/// as `'\''`. The one shell-escaping helper for `--format sh` — scalars go
-/// through `format_virtual_value`, objects through `format_object_lines`.
-fn shell_quote(s: &str) -> String {
-    let escaped = s.replace('\'', r"'\''");
-    format!("'{escaped}'")
-}
-
-/// Format an object JSON value as `key=value` lines (sorted), matching the
-/// server-side text/sh convention for whole-provider object output.
+/// Format a client-side (virtual-namespace) object value as `key=value` lines,
+/// delegating to `libbeachcomber::render::render_data` — the very renderer the
+/// daemon-backed path uses — so the two `comb get` paths cannot drift on line
+/// shape, sort order, or `sh` quoting.
 ///
 /// `shell_escape` selects the `sh` variant: keys stay as dotted names, values
 /// are shell-quoted so a line is safe to `eval` (canon invariant 8). `text`
 /// passes `false` and emits values raw.
+///
+/// The trailing newline is this path's own: the daemon-backed path `print!`s
+/// `render_data`'s output bare, whereas these call sites expect a terminated
+/// block. Non-objects keep the unterminated form they have always had.
 fn format_object_lines(data: &serde_json::Value, shell_escape: bool) -> String {
-    let serde_json::Value::Object(map) = data else {
-        return value_to_string(data);
-    };
-    let render = |v: &serde_json::Value| {
-        let val = match v {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        if shell_escape { shell_quote(&val) } else { val }
-    };
-    let mut lines: Vec<String> = map
-        .iter()
-        .flat_map(|(k, v)| {
-            if let serde_json::Value::Object(inner) = v {
-                inner
-                    .iter()
-                    .map(|(ik, iv)| format!("{k}.{ik}={}", render(iv)))
-                    .collect::<Vec<_>>()
-            } else {
-                vec![format!("{k}={}", render(v))]
-            }
-        })
-        .collect();
-    lines.sort();
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
+    let rendered = render_data(Some(data), if shell_escape { "sh" } else { "text" });
+    if data.is_object() {
+        format!("{rendered}\n")
+    } else {
+        rendered
+    }
 }
 
 /// Returns true if a `provider.field` key should be resolved client-side

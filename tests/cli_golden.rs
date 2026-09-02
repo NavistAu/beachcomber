@@ -210,17 +210,19 @@ fn get_sh_finds_put_created_virtual_without_explicit_path() {
         .assert()
         .success();
 
+    // `sh` shell-quotes every value it renders (canon field_resolution.md
+    // invariant 8), so the expected forms carry their quotes.
     comb(&d)
         .args(["get", "-f", "sh", "shvirt.stdin"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("raw-blob"));
+        .stdout(predicates::str::contains("'raw-blob'"));
 
     comb(&d)
         .args(["get", "-f", "sh", "shvirt"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("context.pct=42"));
+        .stdout(predicates::str::contains("context.pct='42'"));
 }
 
 // ── multi_key_get_text_finds_put_created_virtual_without_explicit_path ───────

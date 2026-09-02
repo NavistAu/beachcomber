@@ -88,7 +88,10 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
 
     match eval::evaluate(template, &vf, &ctx) {
         Ok(value) => {
-            print!("{}", libbeachcomber::render::render_data(Some(&value)));
+            print!(
+                "{}",
+                libbeachcomber::render::render_data(Some(&value), "text")
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {

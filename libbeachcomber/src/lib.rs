@@ -656,12 +656,11 @@ impl Client {
     /// Query a single key with optional flags, rendered into `format`
     /// (`"text"` or `"sh"`) on the client side.
     ///
-    /// `format` is accepted for API compatibility but otherwise unused:
-    /// `text` and `sh` render identically (see [`render::render_data`]).
-    /// This performs a plain JSON `get` and renders the result locally
-    /// (Task 1.8 retired the server-rendered wire sub-protocol this used to
-    /// speak); a failed request surfaces as `CombError::ServerError`, never
-    /// as a rendered `error:` line.
+    /// `sh` shell-quotes every rendered value; `text` leaves them raw (see
+    /// [`render::render_data`]). This performs a plain JSON `get` and renders
+    /// the result locally (Task 1.8 retired the server-rendered wire
+    /// sub-protocol this used to speak); a failed request surfaces as
+    /// `CombError::ServerError`, never as a rendered `error:` line.
     pub fn get_formatted_with_flags(
         &self,
         key: &str,
@@ -670,10 +669,9 @@ impl Client {
         force: bool,
         wait: bool,
     ) -> Result<String, CombError> {
-        let _ = format;
         match self.get_with_flags(key, path, force, wait)? {
-            CombResult::Hit { data, .. } => Ok(render::render_data(Some(data.as_value()))),
-            CombResult::Miss => Ok(render::render_data(None)),
+            CombResult::Hit { data, .. } => Ok(render::render_data(Some(data.as_value()), format)),
+            CombResult::Miss => Ok(render::render_data(None, format)),
         }
     }
 
@@ -1009,12 +1007,11 @@ impl Session {
     /// Query a key with optional flags on this persistent connection,
     /// rendered into `format` (`"text"` or `"sh"`) on the client side.
     ///
-    /// `format` is accepted for API compatibility but otherwise unused:
-    /// `text` and `sh` render identically (see [`render::render_data`]).
-    /// This performs a plain JSON `get` and renders the result locally
-    /// (Task 1.8 retired the server-rendered wire sub-protocol this used to
-    /// speak); a failed request surfaces as `CombError::ServerError`, never
-    /// as a rendered `error:` line.
+    /// `sh` shell-quotes every rendered value; `text` leaves them raw (see
+    /// [`render::render_data`]). This performs a plain JSON `get` and renders
+    /// the result locally (Task 1.8 retired the server-rendered wire
+    /// sub-protocol this used to speak); a failed request surfaces as
+    /// `CombError::ServerError`, never as a rendered `error:` line.
     pub fn get_formatted_with_flags(
         &mut self,
         key: &str,
@@ -1023,10 +1020,9 @@ impl Session {
         force: bool,
         wait: bool,
     ) -> Result<String, CombError> {
-        let _ = format;
         match self.get_with_flags(key, path, force, wait)? {
-            CombResult::Hit { data, .. } => Ok(render::render_data(Some(data.as_value()))),
-            CombResult::Miss => Ok(render::render_data(None)),
+            CombResult::Hit { data, .. } => Ok(render::render_data(Some(data.as_value()), format)),
+            CombResult::Miss => Ok(render::render_data(None, format)),
         }
     }
 
