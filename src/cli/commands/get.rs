@@ -190,11 +190,30 @@ fn is_virtual_namespace_key(key: &str, vf: &VirtualFields) -> bool {
     !key.contains('.') && !vf.fields_for(key).is_empty()
 }
 
+/// POSIX single-quote a string: wrap in `'...'`, rewriting each internal `'`
+/// as `'\''`. The one shell-escaping helper for `--format sh` — scalars go
+/// through `format_virtual_value`, objects through `format_object_lines`.
+fn shell_quote(s: &str) -> String {
+    let escaped = s.replace('\'', r"'\''");
+    format!("'{escaped}'")
+}
+
 /// Format an object JSON value as `key=value` lines (sorted), matching the
 /// server-side text/sh convention for whole-provider object output.
-fn format_object_text(data: &serde_json::Value) -> String {
+///
+/// `shell_escape` selects the `sh` variant: keys stay as dotted names, values
+/// are shell-quoted so a line is safe to `eval` (canon invariant 8). `text`
+/// passes `false` and emits values raw.
+fn format_object_lines(data: &serde_json::Value, shell_escape: bool) -> String {
     let serde_json::Value::Object(map) = data else {
         return value_to_string(data);
+    };
+    let render = |v: &serde_json::Value| {
+        let val = match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        if shell_escape { shell_quote(&val) } else { val }
     };
     let mut lines: Vec<String> = map
         .iter()
@@ -202,20 +221,10 @@ fn format_object_text(data: &serde_json::Value) -> String {
             if let serde_json::Value::Object(inner) = v {
                 inner
                     .iter()
-                    .map(|(ik, iv)| {
-                        let val = match iv {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        format!("{k}.{ik}={val}")
-                    })
+                    .map(|(ik, iv)| format!("{k}.{ik}={}", render(iv)))
                     .collect::<Vec<_>>()
             } else {
-                let val = match v {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                vec![format!("{k}={val}")]
+                vec![format!("{k}={}", render(v))]
             }
         })
         .collect();
@@ -304,12 +313,7 @@ pub fn key_needs_daemon(key: &str, vf: &VirtualFields) -> bool {
 fn format_virtual_value(val: &serde_json::Value, format: &OutputFormat) -> Result<String, String> {
     match format {
         OutputFormat::Text => Ok(value_to_string(val)),
-        OutputFormat::Sh => {
-            // POSIX single-quote escape: wrap in single quotes, replace each ' with '\''
-            let s = value_to_string(val);
-            let escaped = s.replace('\'', r#"'\''"#);
-            Ok(format!("'{escaped}'"))
-        }
+        OutputFormat::Sh => Ok(shell_quote(&value_to_string(val))),
         OutputFormat::Json => {
             // For virtual fields, emit just the value (no age/stale wrapper).
             serde_json::to_string_pretty(val).map_err(|e| e.to_string())
@@ -578,8 +582,12 @@ pub fn run_get(
 
             // Render per format, matching the existing convention for object output.
             match &format {
-                OutputFormat::Text | OutputFormat::Sh => {
-                    print!("{}", format_object_text(&data));
+                OutputFormat::Text => {
+                    print!("{}", format_object_lines(&data, false));
+                    return ExitCode::SUCCESS;
+                }
+                OutputFormat::Sh => {
+                    print!("{}", format_object_lines(&data, true));
                     return ExitCode::SUCCESS;
                 }
                 OutputFormat::Json => {
