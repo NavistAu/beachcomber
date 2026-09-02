@@ -49,7 +49,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; `field → source` reverse map (`HashMap<(provider, field), source_name>`); built-in registration; validation at registration |
 | `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
 | `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, pure-watch global (`KeepAlive::Never`), `host` source |
-| `src/provider/git.rs` | `GitProvider`: three sources — `refs` (fsevent, `.git`), `diff` (poll, 30s), `status` (fsevent_poll, `.git/index`) |
+| `src/provider/git.rs` | `GitProvider`: five sources — `head` (fsevent, `.git`), `refs` (fsevent, `.git`), `diff` (poll, 30s), `lineage` (poll, 60s), `status` (fsevent_poll, `.git/index`) |
 | `src/provider/script.rs` | `ScriptProvider`: runs arbitrary shell commands; parses JSON or KV output; strategy built from config |
 | `src/provider/library.rs` | `LibraryProvider`: loads shared libraries (`.so`/`.dylib`) via `libloading`; C ABI contract with `bc_source_count/metadata/execute` symbols |
 | `src/provider/http.rs` | `HttpProvider`: in-process HTTP client for REST API providers; `extract` for JSON path navigation |
@@ -62,7 +62,7 @@ The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubeconte
 The Provider/Source/Field model has three layers:
 
 - **Provider** — a named namespace (e.g., `git`). Declares 1+ Sources. The cache key `provider\0path` is still at this level.
-- **Source** — one invalidation strategy, one set of fields, one lifecycle entry. Key for lifecycle, watches, and failure backoff is `(provider, path, source)`. Examples: git's `refs`, `diff`, `status` sources.
+- **Source** — one invalidation strategy, one set of fields, one lifecycle entry. Key for lifecycle, watches, and failure backoff is `(provider, path, source)`. Examples: git's `head`, `refs`, `diff`, `lineage`, `status` sources.
 - **Field** — a typed value. Belongs to exactly one Source within a Provider.
 
 The registry builds a `field → source` reverse map at registration so that a `get(provider.field)` query can be routed to the owning source without scanning.

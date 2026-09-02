@@ -831,7 +831,7 @@ beachcomber ships 19 built-in providers organized by category.
 
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | path | 24 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
+| `git` | path | 30 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
 
 **Fields:**
 
@@ -861,6 +861,12 @@ beachcomber ships 19 built-in providers organized by category.
 | `commit_summary` | string | First line of HEAD commit message |
 | `push_ahead` | int | Commits ahead of the push remote |
 | `push_behind` | int | Commits behind the push remote |
+| `branch_parent` | string | Branch this branch was forked from, per its reflog; the default branch when the reflog names none |
+| `lines_added_parent` | int | Lines added on this branch since it forked from `branch_parent` |
+| `lines_removed_parent` | int | Lines removed on this branch since it forked from `branch_parent` |
+| `branch_default` | string | Default branch, from `origin/HEAD` or a local `main`/`master` |
+| `lines_added_default` | int | Lines added on this branch since it diverged from `branch_default` |
+| `lines_removed_default` | int | Lines removed on this branch since it diverged from `branch_default` |
 
 **Example output:**
 

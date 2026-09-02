@@ -77,22 +77,30 @@ pub struct ProviderMetadata {
 
 ## Implementing a Source — worked example: git
 
-`git` decomposes into three sources with different strategies:
+`git` decomposes into five sources with different strategies:
 
 ```
-git.refs   → fsevent, path-scoped, watches .git/
-             fields: branch, commit, tag, ahead, behind, upstream, detached, state, stash
+git.head    → fsevent, path-scoped, watches .git/ (pure file read of HEAD, no subprocess)
+              fields: branch, detached
 
-git.diff   → poll 30s, path-scoped
-             fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
+git.refs    → fsevent, path-scoped, watches .git/
+              fields: commit, tag, ahead, behind, upstream, state, state_step, state_total,
+                      stash, last_commit_age_secs, commit_summary, push_ahead, push_behind
 
-git.status → fsevent_poll (watches .git/index + polls every 60s), path-scoped
-             fields: staged, unstaged, untracked, conflicted, dirty
+git.diff    → poll 30s, path-scoped
+              fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
+
+git.lineage → poll 60s, path-scoped
+              fields: branch_parent, lines_added_parent, lines_removed_parent,
+                      branch_default, lines_added_default, lines_removed_default
+
+git.status  → fsevent_poll (watches .git/index + polls every 60s), path-scoped
+              fields: staged, unstaged, untracked, conflicted, dirty
 ```
 
 This decomposition allows git branch lookups (hot path, fsevent-driven) to stay fresh without dragging along the slower diff computation.
 
-Consumers still use `comb get git.branch .` as before — the registry's `field → source` map routes the query to the `refs` source transparently.
+Consumers still use `comb get git.branch .` as before — the registry's `field → source` map routes the query to the `head` source transparently.
 
 ---
 

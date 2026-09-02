@@ -27,13 +27,15 @@ Different fields within a provider may need different refresh rates or different
 
 | Source | Strategy | Fields produced |
 |---|---|---|
-| `refs` | fsevent on `.git/` | `branch`, `commit`, `tag`, `ahead`, `behind`, `upstream`, `detached`, `state`, `stash` |
+| `head` | fsevent on `.git/` | `branch`, `detached` |
+| `refs` | fsevent on `.git/` | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
 | `diff` | poll 30s | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
+| `lineage` | poll 60s | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
 | `status` | fsevent on `.git/index` + poll 60s | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
 
 Branch information changes when `.git/HEAD` or `.git/refs/` is written — a filesystem event is the right trigger. Diff line counts need a subprocess call that is slower, so polling once every 30 seconds is a better fit.
 
-Splitting into sources means a branch lookup only demands the `refs` source lifecycle, not the slower `diff` source. The cache delivers `git.branch` from a filesystem-event-driven entry with millisecond freshness while `git.lines_added` waits for its poll cycle.
+Splitting into sources means a branch lookup only demands the `head` source lifecycle, not the slower `diff` source. The cache delivers `git.branch` from a filesystem-event-driven entry with millisecond freshness while `git.lines_added` waits for its poll cycle.
 
 ## Addressing
 
@@ -41,9 +43,9 @@ Consumers can address data at any layer:
 
 | Key form | What it returns | Demand effect |
 |---|---|---|
-| `git.branch` | The `branch` field value | Demand on the `refs` source only |
+| `git.branch` | The `branch` field value | Demand on the `head` source only |
 | `git.refs` | All fields from the `refs` source | Demand on `refs` only |
-| `git.refs.branch` | The `branch` field via explicit source | Demand on `refs` only |
+| `git.head.branch` | The `branch` field via explicit source | Demand on `head` only |
 | `git` | All fields from all sources (flattened) | Demand on all git sources |
 
 The registry resolves which source owns each field. The `provider.field` form is the most common and identical in usage to previous versions.

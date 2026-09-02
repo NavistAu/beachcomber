@@ -55,7 +55,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/provider/registry.rs` | `ProviderRegistry`: `sources: HashMap<(String, String), Arc<dyn Source>>` keyed by `(provider_name, source_name)` and `providers: HashMap<String, ProviderMetadata>` (metadata snapshot); `Box<dyn Provider>` objects are consumed at `register()` and not retained; `field → source` reverse map (`HashMap<(provider, field), source_name>`); built-in registration; validation at registration |
 | `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
 | `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, pure-watch global (`KeepAlive::Never`), `Watch { patterns: [], abs_paths: [...] }` — no `Once` strategy |
-| `src/provider/git.rs` | `GitProvider`: three sources — `refs` (Watch, `.git/`), `diff` (Poll, 30s), `status` (WatchAndPoll, `.git/index`, 60s) |
+| `src/provider/git.rs` | `GitProvider`: five sources — `head` (Watch, `.git/`), `refs` (Watch, `.git/`), `diff` (Poll, 30s), `lineage` (Poll, 60s), `status` (WatchAndPoll, `.git/index`, 60s) |
 | `src/provider/script.rs` | `ScriptProvider`: runs arbitrary shell commands; parses JSON or KV output; strategy built from config |
 | `src/provider/library.rs` | `LibraryProvider`: loads shared libraries (`.so`/`.dylib`) via `libloading`; detects ABI at load time — multi-source (`bc_source_count` / `bc_source_metadata` / `bc_source_execute`) or legacy (`beachcomber_provider_metadata` / `beachcomber_provider_execute` / `beachcomber_provider_free`) |
 | `src/provider/http.rs` | `HttpProvider`: in-process HTTP client for REST API providers; `extract` for JSON path navigation |
@@ -68,7 +68,7 @@ The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubeconte
 The Provider/Source/Field model has three layers:
 
 - **Provider** — a named namespace (e.g., `git`). Declares 1+ Sources. The cache key `provider\0path` is still at this level.
-- **Source** — one invalidation strategy, one set of fields, one lifecycle entry. Key for lifecycle, watches, and failure backoff is `(provider, path, source)`. Examples: git's `refs`, `diff`, `status` sources.
+- **Source** — one invalidation strategy, one set of fields, one lifecycle entry. Key for lifecycle, watches, and failure backoff is `(provider, path, source)`. Examples: git's `head`, `refs`, `diff`, `lineage`, `status` sources.
 - **Field** — a typed value. Belongs to exactly one Source within a Provider.
 
 The registry builds a `field → source` reverse map at registration so that a `get(provider.field)` query can be routed to the owning source without scanning.
@@ -119,7 +119,7 @@ and writes it as a single newline-terminated line.
 
 **Step 8: Field extraction**
 
-The handler looks up the `refs` source (via the `field → source` reverse map for `git.branch`) and accesses `entry.sources["refs"].fields.get("branch")`. It converts the `Value::String` to a `serde_json::Value` and packages it into `Response::ok(data, age_ms, stale)`.
+The handler looks up the `head` source (via the `field → source` reverse map for `git.branch`) and accesses `entry.sources["head"].fields.get("branch")`. It converts the `Value::String` to a `serde_json::Value` and packages it into `Response::ok(data, age_ms, stale)`.
 
 **Step 9: Response formatting**
 

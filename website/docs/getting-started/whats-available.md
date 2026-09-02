@@ -26,7 +26,7 @@ The table below gives a one-line summary of each. See the [Built-in Providers re
 
 | Provider | Scope | What it tells you | Example |
 |---|---|---|---|
-| `git` | path | Branch, dirty, staged, ahead/behind, stash, lines, state (24 fields) | `comb g git.branch .` |
+| `git` | path | Branch, dirty, staged, ahead/behind, stash, lines, state, lineage (30 fields) | `comb g git.branch .` |
 
 ## Cloud and DevOps
 
