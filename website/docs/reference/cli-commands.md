@@ -350,6 +350,8 @@ comb c procs             # 1-minute process snapshot, categorize against provide
 
 Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
 
+`--connect-timeout <DURATION>` bounds how long the check keeps trying to reach the daemon before reporting it unreachable (default `1s`; `0` for a single attempt, or e.g. `250ms`, `2s`). Retries start 5ms apart and double, so a daemon that is mid-restart is reached as soon as it binds. The option is accepted before or after the subcommand: `comb c --connect-timeout 0 daemon`.
+
 **Exit codes:** `0` if healthy, `1` if unhealthy, `2` on error.
 
 ## `comb d` (daemon) `[--socket <path>] [--no-reap]`

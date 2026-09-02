@@ -1,4 +1,4 @@
-use beachcomber::cli::commands::check::{CheckCommands, run_check};
+use beachcomber::cli::commands::check::{CheckCommands, parse_connect_timeout, run_check};
 use beachcomber::cli::commands::daemon::run_daemon;
 use beachcomber::cli::commands::get::{run_get, split_keys_and_path};
 use beachcomber::cli::commands::init::run_init;
@@ -199,6 +199,16 @@ enum Commands {
     /// Run health checks
     #[command(visible_alias = "c")]
     Check {
+        /// How long to keep trying to reach the daemon before reporting it
+        /// unreachable: `0` for a single attempt, or e.g. `250ms`, `2s`
+        #[arg(
+            long,
+            global = true,
+            value_name = "DURATION",
+            default_value = "1s",
+            value_parser = parse_connect_timeout
+        )]
+        connect_timeout: std::time::Duration,
         #[command(subcommand)]
         check_cmd: Option<CheckCommands>,
     },
@@ -337,7 +347,10 @@ fn main() -> ExitCode {
             beachcomber::cli::commands::eval::run_eval(&config, &template, path.as_deref())
         }
         Commands::Init { write_config } => run_init(write_config),
-        Commands::Check { check_cmd } => run_check(&config, check_cmd),
+        Commands::Check {
+            connect_timeout,
+            check_cmd,
+        } => run_check(&config, check_cmd, connect_timeout),
         Commands::Kill { timeout, socket } => {
             let socket_path = socket.unwrap_or_else(|| config.resolve_socket_path());
             run_kill(&socket_path, timeout)

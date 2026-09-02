@@ -456,7 +456,7 @@ fn check_daemon_unreachable_exits_two() {
     let output = std::process::Command::new(&exe)
         // Point BEACHCOMBER_SOCKET at a temp path with no daemon behind it.
         .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
-        .args(["check", "daemon"])
+        .args(["check", "--connect-timeout", "0", "daemon"])
         .output()
         .expect("run comb check daemon");
 
@@ -473,6 +473,35 @@ fn check_daemon_unreachable_exits_two() {
     assert!(
         stdout.contains("[FAIL]"),
         "expected [FAIL] in output, got: {stdout}"
+    );
+}
+
+/// `--connect-timeout` bounds the whole search: with nothing behind the socket
+/// the check keeps retrying until the budget is spent, then exits 2. The flag
+/// is placed after the subcommand here to cover its `global` placement.
+#[test]
+fn check_connect_timeout_bounds_the_search() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let exe = comb_binary();
+
+    let start = std::time::Instant::now();
+    let output = std::process::Command::new(&exe)
+        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
+        .args(["check", "daemon", "--connect-timeout", "300ms"])
+        .output()
+        .expect("run comb check daemon");
+    let elapsed = start.elapsed();
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(300),
+        "should keep trying for the whole budget; elapsed={elapsed:?}"
     );
 }
 

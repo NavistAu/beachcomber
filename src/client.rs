@@ -203,6 +203,8 @@ fn introspect_to_response(r: Result<IntrospectResponse, CombError>) -> std::io::
 
 pub struct Client {
     socket_path: PathBuf,
+    /// Total time a connect keeps retrying before giving up.
+    connect_timeout: Duration,
 }
 
 /// A persistent connection to the beachcomber daemon.
@@ -365,11 +367,20 @@ impl ClientSession {
 
 impl Client {
     pub fn new(socket_path: PathBuf) -> Self {
-        Self { socket_path }
+        Self::with_connect_timeout(socket_path, libbeachcomber::DEFAULT_CONNECT_TIMEOUT)
+    }
+
+    /// A client whose connects give up after `connect_timeout` in total.
+    /// Zero means a single attempt.
+    pub fn with_connect_timeout(socket_path: PathBuf, connect_timeout: Duration) -> Self {
+        Self {
+            socket_path,
+            connect_timeout,
+        }
     }
 
     fn inner(&self) -> libbeachcomber::Client {
-        build_client(&self.socket_path)
+        build_client(&self.socket_path).with_connect_timeout(self.connect_timeout)
     }
 
     /// Open a persistent session that reuses a single connection for multiple requests.

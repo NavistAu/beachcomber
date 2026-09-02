@@ -14,6 +14,20 @@ use crate::cli::introspect_types::{DaemonIntrospect, Verdict};
 use crate::config::Config;
 use clap::Subcommand;
 use std::process::ExitCode;
+use std::time::Duration;
+
+/// Parse `--connect-timeout`: `0`, `250ms`, `2s`, or a bare number of seconds.
+pub fn parse_connect_timeout(s: &str) -> Result<Duration, String> {
+    let s = s.trim();
+    let (num, unit_ms) = match s.strip_suffix("ms") {
+        Some(n) => (n, 1u64),
+        None => (s.strip_suffix('s').unwrap_or(s), 1000),
+    };
+    num.trim()
+        .parse::<u64>()
+        .map(|n| Duration::from_millis(n * unit_ms))
+        .map_err(|_| format!("expected a duration like `0`, `250ms` or `2s`, got `{s}`"))
+}
 
 /// Subcommands for `comb check`.
 #[derive(Subcommand)]
@@ -44,7 +58,11 @@ pub enum CheckCommands {
     },
 }
 
-pub fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode {
+pub fn run_check(
+    config: &Config,
+    check_cmd: Option<CheckCommands>,
+    connect_timeout: Duration,
+) -> ExitCode {
     const ALL_SUBJECTS: &[&str] = &[
         "daemon",
         "config",
@@ -70,13 +88,21 @@ pub fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode 
         Some(CheckCommands::Procs { duration }) => (vec!["procs"], Some(*duration)),
     };
 
-    let worst = run_check_subjects(config, &subjects, procs_duration);
+    let worst = run_check_subjects(config, &subjects, procs_duration, connect_timeout);
     ExitCode::from(worst)
 }
 
-pub fn run_check_subjects(config: &Config, subjects: &[&str], procs_duration: Option<u64>) -> u8 {
+/// `connect_timeout` bounds the whole search for a daemon: a check exists to
+/// report reachability, so it should not inherit the client's full restart-
+/// window retry budget unless asked to.
+pub fn run_check_subjects(
+    config: &Config,
+    subjects: &[&str],
+    procs_duration: Option<u64>,
+    connect_timeout: Duration,
+) -> u8 {
     let socket_path = config.resolve_socket_path();
-    let client = crate::client::Client::new(socket_path);
+    let client = crate::client::Client::with_connect_timeout(socket_path, connect_timeout);
     let mut worst = 0u8;
 
     for &subject in subjects {
