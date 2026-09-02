@@ -1848,6 +1848,64 @@ fn human_rows_leave_the_right_margin_unpainted() {
 }
 
 #[test]
+fn human_caps_path_column_keeping_the_tail() {
+    // A 150+ char session-keyed path (`/dir#session-id`) must not blow the
+    // table budget: uncapped, it padded the PATH column of every row past the
+    // cap, wrapping each line under watch/viddy. PATH is capped to the width
+    // the budget leaves and truncated from the left, keeping the
+    // discriminating tail (project dir + #session suffix).
+    let mut row = wide_value_row();
+    let long_path = format!(
+        "/private/tmp/{}/scratchpad/e2e/repo#e2e-session-0001",
+        "x".repeat(90)
+    );
+    row.path = Some(long_path);
+    let cap = 120usize;
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(cap),
+        no_trunc: false,
+        ascii: true,
+    };
+    let out = render_preset("human", &[row], &opts);
+    for line in out.lines() {
+        assert!(
+            line.chars().count() <= cap - 2,
+            "line is {} chars, exceeds cap {cap} minus reserved margin: {line:?}",
+            line.chars().count()
+        );
+    }
+    assert!(
+        out.contains("#e2e-session-0001"),
+        "path tail must survive truncation: {out}"
+    );
+    assert!(
+        !out.contains("/private/tmp/x"),
+        "path head should be truncated away: {out}"
+    );
+}
+
+#[test]
+fn no_trunc_keeps_full_path() {
+    let mut row = wide_value_row();
+    let long_path = format!("/private/tmp/{}/repo#session-1", "y".repeat(120));
+    row.path = Some(long_path.clone());
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(40),
+        no_trunc: true,
+        ascii: true,
+    };
+    let out = render_preset("human", &[row], &opts);
+    assert!(
+        out.contains(&long_path),
+        "--no-trunc must keep the full path: {out}"
+    );
+}
+
+#[test]
 fn human_output_has_no_control_chars_besides_newline() {
     // Under `watch` / `viddy` stdout is a pipe, so colour resolves off. The
     // bytes that reach the viewer must then be plain text: no ANSI escapes

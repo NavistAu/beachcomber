@@ -960,6 +960,28 @@ fn render_table(
     const MARGIN: usize = 2; // left margin, printed; right margin, reserved only
     const MARGIN_TOTAL: usize = MARGIN * 2;
 
+    // PATH is the one unbounded non-VALUE column: session-keyed cache paths
+    // (`/dir#session-id`) run past 150 chars, and an uncapped PATH pads every
+    // row far beyond the table budget — each line then wraps under watch/viddy.
+    // Cap it to whatever the budget leaves once the other columns take their
+    // natural widths and VALUE keeps its minimum, floored at MIN_PATH_WIDTH.
+    const MIN_PATH_WIDTH: usize = 16;
+    let path_cap: Option<usize> = trunc.and_then(|total_cap| {
+        let non_path = nat_provider
+            + nat_field
+            + nat_age
+            + nat_poll
+            + nat_ttl
+            + SEP_TOTAL
+            + MARGIN_TOTAL
+            + MIN_VALUE_WIDTH;
+        let budget = total_cap.saturating_sub(non_path).max(MIN_PATH_WIDTH);
+        (nat_path > budget).then_some(budget)
+    });
+    if let Some(cap) = path_cap {
+        nat_path = cap;
+    }
+
     let value_cap: Option<usize> = trunc.map(|total_cap| {
         let non_value = nat_provider
             + nat_path
@@ -995,7 +1017,10 @@ fn render_table(
     }
 
     for row in rows {
-        let path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
+        let mut path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
+        if let Some(cap) = path_cap {
+            path = truncate_path_tail(&path, cap);
+        }
         let mut value = value_to_string(&row.value);
         if let Some(max) = value_cap {
             value = truncate(&value, max);
@@ -1359,6 +1384,20 @@ fn format_age_with_polls(age_ms: u128, polls_elapsed: Option<u32>, ascii: bool) 
             format!("{base}{sep}{n}")
         }
         None => base,
+    }
+}
+
+/// Truncate a path to at most `max` characters, keeping the tail — the
+/// discriminating part of a cache path (project directory, `#session`
+/// suffix) is at the end.
+fn truncate_path_tail(s: &str, max: usize) -> String {
+    let count = s.chars().count();
+    if count <= max {
+        s.to_string()
+    } else {
+        let keep = max.saturating_sub(3);
+        let tail: String = s.chars().skip(count - keep).collect();
+        format!("...{tail}")
     }
 }
 
