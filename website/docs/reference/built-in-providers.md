@@ -23,6 +23,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `gcloud` | `config` | poll 60s | global | `project`, `account` |
 | `git` | `refs` | fsevent | path | `branch`, `commit`, `tag`, `ahead`, `behind`, `upstream`, `detached`, `state`, `stash` |
 | `git` | `diff` | poll 30s | path | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
+| `git` | `lineage` | poll 60s | path | `parent`, `parent_lines_added`, `parent_lines_removed`, `base`, `base_lines_added`, `base_lines_removed` |
 | `git` | `status` | fsevent_poll | path | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
 | `hostname` | `host` | fsevent (pure-watch global) | global | `name`, `short` |
 | `kubecontext` | `context` | poll 30s | global | `context`, `namespace` |
@@ -97,7 +98,7 @@ Each provider declares one or more **sources** — independent units of executio
 
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | path | 24 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
+| `git` | path | 30 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
 
 **Fields:**
 
@@ -127,6 +128,21 @@ Each provider declares one or more **sources** — independent units of executio
 | `commit_summary` | string | First line of the HEAD commit message |
 | `push_ahead` | int | Commits ahead of the push remote |
 | `push_behind` | int | Commits behind the push remote |
+| `parent` | string | Branch this branch was forked from, per its reflog; the default branch when the reflog names none |
+| `parent_lines_added` | int | Lines added on this branch since it forked from `parent` |
+| `parent_lines_removed` | int | Lines removed on this branch since it forked from `parent` |
+| `base` | string | Default branch, from `origin/HEAD` or a local `main`/`master` |
+| `base_lines_added` | int | Lines added on this branch since it diverged from `base` |
+| `base_lines_removed` | int | Lines removed on this branch since it diverged from `base` |
+
+The `parent` / `base` counts come from `git diff --numstat <merge-base>..HEAD`, so they
+describe committed divergence in the commit graph — not the working tree, which
+`lines_added` / `lines_removed` cover. The merge base is `git merge-base --fork-point`,
+falling back to a plain `git merge-base` when the reference branch's reflog has been
+pruned. When `base` is discovered through `origin/HEAD` the comparison is against
+`origin/<name>`, so a checkout sitting on the default branch still reports the work it
+has not pushed. All six fields are absent on a detached HEAD, and the `base` fields are
+absent when no default branch can be detected.
 
 **Example output:**
 
