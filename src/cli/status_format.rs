@@ -1223,6 +1223,18 @@ fn render_table(
         );
     }
 
+    // Under `watch`, AGE and POLL tick every refresh ("9s" → "12s" →
+    // "1m16s×1"), and a column sized to the snapshot's widest value shifts
+    // every boundary to its right as that value changes width. Floor both at
+    // a width covering the common forms and right-align the cells (POLL
+    // already is), so the digits stay put between refreshes. The floors are
+    // given back below if a tight cap can't afford them.
+    const AGE_MIN_WIDTH: usize = 8; // "3m54s×0"
+    const POLL_MIN_WIDTH: usize = 4;
+    let (nat_age_raw, nat_poll_raw) = (nat_age, nat_poll);
+    nat_age = nat_age.max(AGE_MIN_WIDTH);
+    nat_poll = nat_poll.max(POLL_MIN_WIDTH);
+
     // -----------------------------------------------------------------------
     // Split the total-table-width budget across the flexible columns.
     // Layout: MARGIN provider(2sp)field(2sp)value(2sp)path(2sp)age(2sp)poll(2sp)ttl MARGIN
@@ -1259,8 +1271,21 @@ fn render_table(
     let (field_cap, path_cap, value_cap) = match trunc {
         None => (None, None, None),
         Some(total_cap) => {
-            let fixed = nat_provider + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
-            let flex = total_cap.saturating_sub(fixed);
+            let mut fixed = nat_provider + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
+            let mut flex = total_cap.saturating_sub(fixed);
+            // A tight cap may not afford the AGE/POLL stability floors: if
+            // the flexible columns can't stand on their own floors, give the
+            // padding back — a stable column is pointless when the row
+            // overflows the cap.
+            let flex_floors = MIN_FIELD_WIDTH.min(nat_field)
+                + MIN_PATH_WIDTH.min(nat_path)
+                + MIN_VALUE_WIDTH.min(nat_value);
+            if flex < flex_floors && (nat_age > nat_age_raw || nat_poll > nat_poll_raw) {
+                nat_age = nat_age_raw;
+                nat_poll = nat_poll_raw;
+                fixed = nat_provider + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
+                flex = total_cap.saturating_sub(fixed);
+            }
             if nat_value + nat_field + nat_path <= flex {
                 // All three fit at their natural widths: nothing truncates.
                 (None, None, None)
@@ -1299,9 +1324,22 @@ fn render_table(
     let mut visible: Vec<[usize; COLS]> = Vec::new();
 
     if header {
+        // AGE and POLL cells are right-aligned; sit their headers over the
+        // digits by pre-padding them to the same width.
+        let mut header_texts: [String; COLS] = HEADERS.map(str::to_string);
+        header_texts[H_AGE] = format!("{:>nat_age$}", HEADERS[H_AGE]);
+        header_texts[H_POLL] = format!("{:>nat_poll$}", HEADERS[H_POLL]);
+        let header_vis: [usize; COLS] = [
+            header_texts[0].len(),
+            header_texts[1].len(),
+            header_texts[2].len(),
+            header_texts[3].len(),
+            header_texts[4].len(),
+            header_texts[5].len(),
+            header_texts[6].len(),
+        ];
         let header_row: [String; COLS] =
-            HEADERS.map(|h| ansi::wrap(h, ansi::Color::Bold, color_enabled));
-        let header_vis: [usize; COLS] = HEADERS.map(|h| h.len());
+            header_texts.map(|h| ansi::wrap(&h, ansi::Color::Bold, color_enabled));
         cells.push(header_row);
         visible.push(header_vis);
     }
@@ -1339,8 +1377,13 @@ fn render_table(
             value = truncate(&value, max, ell);
         }
 
-        // AGE cell — coloured by stale state.
-        let age_text = format_age_with_polls(row.age_ms, row.polls_elapsed, ascii);
+        // AGE cell — right-aligned against the floored column width (see the
+        // watch-jitter note above), coloured by stale state.
+        let age_text = format!(
+            "{:>width$}",
+            format_age_with_polls(row.age_ms, row.polls_elapsed, ascii),
+            width = nat_age
+        );
         let age_vis = age_text.chars().count();
         let age_cell = if color_enabled {
             if row.stale {

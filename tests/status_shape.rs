@@ -1947,6 +1947,38 @@ fn truncation_uses_single_char_ellipsis_outside_ascii_mode() {
 }
 
 #[test]
+fn age_column_is_right_aligned_with_a_stable_floor() {
+    // Under watch, AGE ticking "9s" → "12s" used to shift every boundary to
+    // its right. The column floors at 8 and right-aligns, so renders that
+    // differ only in age line up byte-for-byte in width.
+    let mk = |age_ms: u128| {
+        let mut r = sample_lifecycle_row();
+        r.age_ms = age_ms;
+        r
+    };
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: true,
+        depth: Some(1),
+    };
+    let short = render_preset("human", &[mk(5_000)], &opts);
+    let long = render_preset("human", &[mk(3_540_000)], &opts);
+    assert!(
+        short.contains("      5s"),
+        "5s right-aligns in an 8-wide AGE column: {short}"
+    );
+    let width = |s: &str, n: usize| s.lines().nth(n).map(|l| l.chars().count());
+    assert_eq!(
+        width(&short, 1),
+        width(&long, 1),
+        "age ticking must not change row width:\n{short}\n{long}"
+    );
+}
+
+#[test]
 fn no_trunc_keeps_full_path() {
     let mut row = wide_value_row();
     let long_path = format!("/private/tmp/{}/repo#session-1", "y".repeat(120));
