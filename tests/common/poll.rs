@@ -9,7 +9,8 @@
 //!
 //! This file holds the only sleeps permitted under `tests/`: each one is
 //! bounded by a deadline and ends the moment its condition holds. Anywhere
-//! else, a sleep is a guess about how long the system needs.
+//! else, a sleep is a guess about how long the system needs —
+//! `tests/no_sleep_in_tests.rs` enforces that.
 use std::time::{Duration, Instant};
 
 /// Poll `poll_fn` until `predicate` holds for its return value, or `timeout`
