@@ -228,14 +228,20 @@ fn response_headers_are_propagated() {
 /// When the server delays beyond the fetcher timeout, fetch must return Err.
 #[test]
 fn timeout_returns_err() {
+    // The handler withholds the body until the test releases it, rather than
+    // guessing at a delay long enough to outlast the client timeout: `recv`
+    // returns Err the moment `release` is dropped, so the server hangs for
+    // exactly as long as this test needs it to and not a millisecond more.
+    let (release, blocked) = std::sync::mpsc::channel::<()>();
+    let blocked = std::sync::Mutex::new(blocked);
+
     let mut server = Server::new();
     let _mock = server
         .mock("GET", "/slow")
         .with_status(200)
         .with_body("too late")
-        .with_chunked_body(|_| {
-            // Delay the response body by sleeping much longer than our timeout.
-            std::thread::sleep(Duration::from_millis(600));
+        .with_chunked_body(move |_| {
+            let _ = blocked.lock().unwrap().recv();
             Ok(())
         })
         .create();
@@ -248,6 +254,10 @@ fn timeout_returns_err() {
         None,
         Duration::from_millis(100),
     );
+
+    // Unblock before asserting: an unwinding assert would otherwise drop the
+    // server (which joins its handler) ahead of the sender.
+    drop(release);
 
     assert!(
         result.is_err(),

@@ -19,24 +19,32 @@ async fn gc_removes_keys_without_receivers_on_demand() {
     assert_eq!(registry.entry_count(), 0);
 }
 
-#[tokio::test]
+/// The GC tick itself has no observable of its own — `gc()` is a no-op on an
+/// already-clean map, which is exactly the invariant under test. So rather than
+/// sleeping and hoping ticks fired, run on the mock clock and drive them:
+/// `advance` is deterministic (the ticks provably fire) and costs no real time.
+#[tokio::test(start_paused = true)]
 async fn scheduler_periodically_gcs_watcher_registry() {
-    use tokio::time::sleep;
-
     let watchers = Arc::new(WatcherRegistry::new());
     let harness = beachcomber::scheduler::test_support::start_with_gc_interval(
         watchers.clone(),
         Duration::from_millis(50),
     );
+    // Let the harness task reach its first `tick().await` so the interval is
+    // armed before the clock moves.
+    tokio::task::yield_now().await;
 
     {
         let _sub = watchers.subscribe("git", Some("/tmp"));
     }
-    // Lifecycle hook fires on drop: entry is already gone before the sleep.
+    // Lifecycle hook fires on drop: entry is already gone before any GC tick.
     assert_eq!(watchers.entry_count(), 0);
 
-    sleep(Duration::from_millis(200)).await;
-    // Periodic GC tick runs; map is still empty — no change.
+    // Four 50ms GC periods on the mock clock.
+    tokio::time::advance(Duration::from_millis(200)).await;
+    tokio::task::yield_now().await;
+
+    // Periodic GC tick ran; map is still empty — no change.
     assert_eq!(watchers.entry_count(), 0);
 
     drop(harness);

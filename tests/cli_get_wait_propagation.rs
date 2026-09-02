@@ -31,32 +31,36 @@ async fn setup_stale() -> (TempDir, std::path::PathBuf) {
     fields.insert("short".to_string(), Value::String("stale".to_string()));
     cache.put_source("hostname", None, "main", fields, Some(0));
 
-    // Wait for elapsed().as_secs() > 0 on the seeded entry. This used to be a
-    // mocked-clock pause()/advance()/resume() to skip the real wall wait, but
-    // `Client` calls below are synchronous (blocking) now: this test's runtime
-    // must be multi-threaded so the server task (spawned onto it just below)
-    // keeps running while the test thread blocks on a socket read, and
-    // `tokio::time::pause` only works on the (single-threaded) current_thread
-    // runtime. So this is a real sleep now, not a mocked one.
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    // The entry must reach elapsed().as_secs() > 0 to count as stale, i.e. a
+    // full second of clock. Both tests run on a paused clock (`start_paused`):
+    // advance past the threshold and resume, and the seeded entry is a second
+    // old against a normal running clock without a second of wall time.
+    // Pausing needs the current-thread runtime, so the blocking `Client` calls
+    // in the tests go through `spawn_blocking` — that leaves this runtime's one
+    // thread free to drive the server task while a call is in flight.
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    tokio::time::resume();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // `spawn` binds the socket synchronously — it is connectable on return.
+    server.spawn().expect("server binds socket");
     (tmp, sock)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(start_paused = true)]
 async fn single_key_text_wait_true_re_executes_stale_entry() {
     // run_get's single-key server-side path (format=text, keys.len()==1) must
     // forward wait=true. If it does, the stale seeded value is evicted and the
     // live provider runs inline — the returned text must not contain the seed.
     let (_tmp, sock) = setup_stale().await;
-    let client = Client::new(sock);
 
-    let text = client
-        .get_formatted_with_flags("hostname.name", None, "text", false, true)
-        .unwrap();
+    let text = tokio::task::spawn_blocking(move || {
+        Client::new(sock)
+            .get_formatted_with_flags("hostname.name", None, "text", false, true)
+            .unwrap()
+    })
+    .await
+    .expect("client call");
 
     assert!(
         !text.contains("stale-seed"),
@@ -64,17 +68,21 @@ async fn single_key_text_wait_true_re_executes_stale_entry() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(start_paused = true)]
 async fn multi_key_client_side_wait_true_re_executes_stale_entry() {
     // run_get's multi-key client-side path (e.g. format=json) calls
     // session.get_with_flags per key. It must forward wait=true.
     let (_tmp, sock) = setup_stale().await;
-    let client = Client::new(sock);
-    let mut session = client.connect().unwrap();
 
-    let response = session
-        .get_with_flags("hostname.name", None, false, true)
-        .unwrap();
+    let response = tokio::task::spawn_blocking(move || {
+        let client = Client::new(sock);
+        let mut session = client.connect().unwrap();
+        session
+            .get_with_flags("hostname.name", None, false, true)
+            .unwrap()
+    })
+    .await
+    .expect("client call");
 
     assert!(response.ok);
     let data = response.data.expect("data present");

@@ -46,8 +46,7 @@ async fn wait_fresh_entry_is_served_from_cache() {
     );
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     stream
@@ -94,7 +93,6 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     cache.put_source("hostname", None, "main", fields, Some(0));
 
     // Advance mock clock by 2s so elapsed().as_secs() > 0 — avoids a real 1.1s wall wait.
-    // Resume before starting the server so the socket-bind sleep runs on real time.
     tokio::time::pause();
     tokio::time::advance(std::time::Duration::from_secs(2)).await;
     tokio::time::resume();
@@ -109,8 +107,7 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     );
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     stream
@@ -172,7 +169,6 @@ async fn wait_virtual_provider_returns_cached_ignoring_stale() {
     cache.put_source("mystore", None, "virtual", fields, Some(0));
 
     // Advance mock clock by 2s so elapsed().as_secs() > 0 — avoids a real 1.1s wall wait.
-    // Resume before starting the server so the socket-bind sleep runs on real time.
     tokio::time::pause();
     tokio::time::advance(std::time::Duration::from_secs(2)).await;
     tokio::time::resume();
@@ -186,8 +182,7 @@ async fn wait_virtual_provider_returns_cached_ignoring_stale() {
     );
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     stream
@@ -231,8 +226,7 @@ async fn force_wins_over_wait() {
     cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     stream

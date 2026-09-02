@@ -11,7 +11,7 @@ use beachcomber::cli::status_format::{
     RenderOpts, render_csv, render_preset, render_sh_env, render_tsv, row_context,
 };
 use common::git::GitRepoFixture;
-use common::poll::poll_until;
+use common::poll::{poll_until, poll_until_async};
 
 fn sample_rows() -> Vec<CacheRow> {
     vec![
@@ -541,10 +541,16 @@ async fn status_returns_rows_per_field() {
     // Warm up a global provider so at least something is in cache.
     let _ = client.get("hostname", None).expect("get hostname");
 
-    // Give the cache a moment to settle.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let status_rows = client.status().expect("status");
+    // Poll status until the warmed provider shows up, rather than sleeping and
+    // hoping the cache has settled.
+    let status_rows = poll_until(
+        "status rows after warming hostname",
+        "a row with provider=hostname",
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        || client.status().expect("status"),
+        |rows: &Vec<CacheRow>| rows.iter().any(|r| r.provider == "hostname"),
+    );
     let data = serde_json::to_value(&status_rows).expect("rows serialize");
     let rows = data.as_array().expect("status response is an array");
 
@@ -966,9 +972,18 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
         })
         .await;
 
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // Poll the snapshot map itself: the demand message is processed
+    // asynchronously and populates the lifecycle registry when it lands.
+    let snapshots = poll_until_async(
+        "lifecycle snapshots after demanding load",
+        "at least one entry",
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        async || handle.get_lifecycle_snapshots().await,
+        |snapshots| !snapshots.is_empty(),
+    )
+    .await;
 
-    let snapshots = handle.get_lifecycle_snapshots().await;
     let entry = snapshots.values().next().expect("at least one snapshot");
     assert!(entry.poll_interval_secs > 0);
     let _ = entry.fsevents_reinstate;
@@ -1135,16 +1150,29 @@ async fn status_response_once_row_has_kind_once() {
         .get("hostname.short", None)
         .expect("get hostname.short");
 
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    use beachcomber::cache::RowKind;
 
-    let rows = client.status().expect("status");
+    // The cache row lands with the `get`, but its kind only becomes Lifecycle
+    // once the scheduler has processed the demand for this source — poll the
+    // status response until that has happened.
+    let rows = poll_until(
+        "status rows after get hostname.short",
+        "a hostname row whose kind is Lifecycle",
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        || client.status().expect("status"),
+        |rows: &Vec<CacheRow>| {
+            rows.iter()
+                .find(|r| r.provider == "hostname")
+                .is_some_and(|r| matches!(r.kind, Some(RowKind::Lifecycle { .. })))
+        },
+    );
 
     let row = rows
         .iter()
         .find(|r| r.provider == "hostname")
         .expect("hostname row present");
 
-    use beachcomber::cache::RowKind;
     // hostname uses Watch + KeepAlive::Never — shown as Lifecycle (decay=0, watches_files=true)
     match row.kind.as_ref().expect("kind present") {
         RowKind::Lifecycle {
@@ -1178,9 +1206,16 @@ async fn status_response_virtual_row_has_kind_virtual() {
         .put("custom", serde_json::json!({"color": "blue"}), None, None)
         .expect("put custom");
 
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    let rows = client.status().expect("status");
+    // `put` writes the cache entry and registers the virtual provider before it
+    // answers, so the row is there — poll for it rather than assume a schedule.
+    let rows = poll_until(
+        "status rows after put custom",
+        "a row with provider=custom",
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        || client.status().expect("status"),
+        |rows: &Vec<CacheRow>| rows.iter().any(|r| r.provider == "custom"),
+    );
 
     let row = rows
         .iter()

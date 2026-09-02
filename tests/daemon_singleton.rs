@@ -1,6 +1,9 @@
 //! Integration tests for the daemon singleton property and socket-path resolution.
 
+mod common;
+
 use beachcomber::config::Config;
+use common::poll::poll_until;
 use std::path::PathBuf;
 
 #[test]
@@ -187,9 +190,16 @@ fn supersede_existing_kills_target_process() {
     // Reap the zombie.
     let _ = child.wait();
 
-    // After reaping, the kernel frees the PID slot.
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    let still_alive = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    // After reaping, the kernel frees the PID slot — not necessarily by the
+    // time wait() returns, so poll the slot rather than guess at the lag.
+    let still_alive = poll_until(
+        "kill(pid, 0) on the superseded process",
+        "a nonzero return (the PID slot is free)",
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || unsafe { libc::kill(pid as libc::pid_t, 0) },
+        |rc| *rc != 0,
+    );
     assert!(
         still_alive != 0,
         "process should be gone; kill(0) returned {still_alive}"

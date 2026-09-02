@@ -27,8 +27,7 @@ async fn setup_seeded() -> (TempDir, std::path::PathBuf) {
     cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    server.spawn().unwrap();
     (tmp, sock)
 }
 

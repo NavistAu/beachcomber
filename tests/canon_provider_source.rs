@@ -631,8 +631,11 @@ fn fsevents_reinstate_default_is_true_for_watch_and_poll_sources() {
 /// Given a cache entry with two Sources, Source A refreshed at t=0 and Source B
 /// refreshed at t=10s. When status is queried at t≈10s, Field from A shows age
 /// ~10s and Field from B shows age ~0s.
-#[test]
-fn field_freshness_reflects_owning_source_last_refresh() {
+/// `CacheSourceEntry::last_refreshed` is a `tokio::time::Instant`, so the gap
+/// between the two refreshes can be dialled in on the paused mock clock
+/// instead of waited out: `advance` makes it exactly 10ms, every run.
+#[tokio::test(start_paused = true)]
+async fn field_freshness_reflects_owning_source_last_refresh() {
     let cache = Cache::new();
 
     // Source A refreshes first.
@@ -644,8 +647,8 @@ fn field_freshness_reflects_owning_source_last_refresh() {
         None,
     );
 
-    // Simulate passage of ~10ms (small but measurable).
-    std::thread::sleep(Duration::from_millis(10));
+    // Simulate passage of 10ms (small but measurable).
+    tokio::time::advance(Duration::from_millis(10)).await;
 
     // Source B refreshes later.
     cache.put_source(

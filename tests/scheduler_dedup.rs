@@ -9,6 +9,39 @@ use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+
+mod common;
+use common::poll::poll_until_async;
+
+/// A latch the test opens when it wants the in-flight execution to finish.
+/// Holding it shut is what "an execution is still running" means here — no
+/// guess about how long the work takes.
+struct Gate {
+    released: std::sync::Mutex<bool>,
+    cv: std::sync::Condvar,
+}
+
+impl Gate {
+    fn new() -> Self {
+        Self {
+            released: std::sync::Mutex::new(false),
+            cv: std::sync::Condvar::new(),
+        }
+    }
+
+    fn wait(&self) {
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.cv.wait(released).unwrap();
+        }
+    }
+
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+}
 
 fn counter_source_meta() -> SourceMetadata {
     SourceMetadata {
@@ -30,6 +63,7 @@ fn counter_source_meta() -> SourceMetadata {
 
 struct CountingSourceImpl {
     counter: Arc<AtomicU32>,
+    gate: Arc<Gate>,
 }
 
 impl Source for CountingSourceImpl {
@@ -41,8 +75,10 @@ impl Source for CountingSourceImpl {
 
     fn execute(&self, _path: Option<&str>) -> SourceResult {
         let count = self.counter.fetch_add(1, Ordering::SeqCst);
-        // Simulate some work
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Stand in for work of unknown length: the test decides when this
+        // execution ends, so the window the deduplicated refreshes land in is
+        // exact rather than guessed.
+        self.gate.wait();
         let mut result = SourceResult::new();
         result.insert("count", Value::Int(count as i64));
         result
@@ -51,11 +87,12 @@ impl Source for CountingSourceImpl {
 
 struct CountingProvider {
     counter: Arc<AtomicU32>,
+    gate: Arc<Gate>,
 }
 
 impl CountingProvider {
-    fn new(counter: Arc<AtomicU32>) -> Self {
-        Self { counter }
+    fn new(counter: Arc<AtomicU32>, gate: Arc<Gate>) -> Self {
+        Self { counter, gate }
     }
 }
 
@@ -70,6 +107,7 @@ impl Provider for CountingProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(CountingSourceImpl {
             counter: Arc::clone(&self.counter),
+            gate: Arc::clone(&self.gate),
         })]
     }
 }
@@ -77,21 +115,26 @@ impl Provider for CountingProvider {
 #[tokio::test]
 async fn rapid_refreshes_are_deduplicated() {
     let exec_count = Arc::new(AtomicU32::new(0));
+    let gate = Arc::new(Gate::new());
 
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(CountingProvider::new(Arc::clone(&exec_count))))
+        .register(Box::new(CountingProvider::new(
+            Arc::clone(&exec_count),
+            Arc::clone(&gate),
+        )))
         .expect("counting");
     let registry = Arc::new(registry);
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(
+    let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
         registry,
         config,
         Arc::new(WatcherRegistry::new()),
     );
+    scheduler.use_polling_watcher(Duration::from_millis(50));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // Send 10 rapid refreshes
@@ -104,11 +147,39 @@ async fn rapid_refreshes_are_deduplicated() {
             .await;
     }
 
-    // Wait for execution to complete.
-    // TODO: needs scheduler clock injection — this sleep lets spawn_blocking workers
-    // (each sleeping 200 ms real time) complete. Mock clock cannot substitute for
-    // real OS-scheduled blocking-pool work, so this remains a real sleep.
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // All ten are now queued behind a FIFO channel; this round-trip proves every
+    // one of them has been handled. The first started an execution that is
+    // parked on the gate, so the other nine could only have taken the
+    // already-in-flight path — no sleep needed to "make them overlap".
+    let status = handle
+        .get_status()
+        .await
+        .expect("status should be available");
+    assert!(
+        status.in_flight.iter().any(|k| k == "counter:main"),
+        "counter.main should still be in flight; got {:?}",
+        status.in_flight
+    );
+
+    // Let the held execution finish, then wait for the scheduler to drain: once
+    // in_flight is empty (including the queued rerun's own bookkeeping), the
+    // execution count is final.
+    gate.release();
+    poll_until_async(
+        "scheduler in_flight",
+        "empty",
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        async || {
+            handle
+                .get_status()
+                .await
+                .expect("status available")
+                .in_flight
+        },
+        |f| f.is_empty(),
+    )
+    .await;
 
     let count = exec_count.load(Ordering::SeqCst);
     // Should execute significantly fewer than 10 times due to dedup

@@ -6,7 +6,7 @@ use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
 use common::git::GitRepoFixture;
-use common::poll::poll_until_eq;
+use common::poll::{poll_until, poll_until_async, poll_until_eq};
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -23,10 +23,14 @@ async fn setup_daemon() -> (
     let registry = Arc::new(ProviderRegistry::with_defaults());
     let config = Config::default();
 
-    let (handle, scheduler) =
+    let (handle, mut scheduler) =
         Scheduler::new(cache.clone(), registry.clone(), config, watchers.clone());
+    // These tests are about git data, not the watch backend: a kernel FSEvents
+    // registration costs ~1.2s per watch() on macOS and the runtime drop waits
+    // for it. `SchedulerHandle::send` buffers until `run()` receives, so there
+    // is nothing to wait for after spawning.
+    scheduler.use_polling_watcher(Duration::from_millis(50));
     tokio::spawn(async move { scheduler.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let server = Server::new(
         sock.clone(),
@@ -35,8 +39,8 @@ async fn setup_daemon() -> (
         Some(handle.clone()),
         watchers,
     );
-    tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // `spawn` binds the socket synchronously — it is connectable on return.
+    server.spawn().expect("server binds socket");
 
     (tmp, sock, handle)
 }
@@ -50,9 +54,14 @@ async fn refresh_git_provider() {
     let resp = client.refresh("git", Some(repo.path_str())).unwrap();
     assert!(resp.ok);
 
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-    let resp = client.get("git.branch", Some(repo.path_str())).unwrap();
+    let resp = poll_until(
+        "git.branch after refresh",
+        "a get response carrying a string branch",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        || client.get("git.branch", Some(repo.path_str())).unwrap(),
+        |r| r.ok && r.data.as_ref().is_some_and(|d| d.is_string()),
+    );
     assert!(resp.ok, "Should get git branch");
     let branch = resp.data.unwrap();
     assert!(branch.is_string(), "Branch should be a string");
@@ -92,13 +101,27 @@ async fn git_detects_dirty_state_via_refresh() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_returns_miss_for_non_repo() {
     let tmp = TempDir::new().unwrap();
-    let (_daemon_tmp, sock, _handle) = setup_daemon().await;
+    let (_daemon_tmp, sock, handle) = setup_daemon().await;
     let client = Client::new(sock);
 
     client
         .refresh("git", Some(tmp.path().to_str().unwrap()))
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // The refresh is asynchronous: the scheduler fans it out to every git
+    // source and each records its outcome once it finishes. A non-repo path
+    // makes every source return no fields, which the scheduler books as a
+    // failure — so a git key appearing in the failure map is the signal that
+    // the refresh ran to completion and wrote nothing.
+    poll_until_async(
+        "scheduler failure states after refreshing git on a non-repo",
+        "a git key, i.e. the refresh finished having produced no fields",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        async || handle.get_failure_states().await,
+        |states| states.keys().any(|(provider, _, _)| provider == "git"),
+    )
+    .await;
 
     let resp = client
         .get("git.branch", Some(tmp.path().to_str().unwrap()))

@@ -1,5 +1,9 @@
 //! Integration test: daemon gracefully shuts down when its binary is modified.
 
+mod common;
+
+use common::poll::poll_until;
+
 /// Canon §"Self-supervision": the mtime poll is the guarantee — it fires even
 /// when the fs-event backend delivers nothing (the silent-delivery failure
 /// mode that made leaked daemons immortal).
@@ -19,8 +23,11 @@ fn poll_catches_binary_replacement_when_fs_events_are_dead() {
         },
     );
 
-    // Bump mtime strictly past the watch's start time, immune to clock granularity.
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Bump mtime strictly past the watch's start time. The watch compares
+    // against the wall clock it recorded when its thread started, so a stamp
+    // two seconds in the future is newer than that baseline no matter which
+    // of the two ran first — no waiting for the thread to get going, and
+    // immune to clock granularity.
     let f = std::fs::OpenOptions::new()
         .write(true)
         .open(&fake_bin)
@@ -53,11 +60,14 @@ async fn daemon_shuts_down_when_binary_touched() {
         .expect("spawn daemon");
 
     // Wait for socket to exist.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !sock.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    assert!(sock.exists(), "daemon didn't bind socket in 5s");
+    poll_until(
+        &format!("daemon socket at {sock:?}"),
+        "the daemon to bind it",
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(50),
+        || sock.exists(),
+        |exists| *exists,
+    );
 
     // Touch the binary (changes mtime).
     std::process::Command::new("touch")
@@ -66,16 +76,22 @@ async fn daemon_shuts_down_when_binary_touched() {
         .expect("touch");
 
     // Daemon should exit within a few seconds (200ms debounce + drain).
-    let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < wait_deadline {
-        if let Ok(Some(_status)) = child.try_wait() {
-            let _ = child.wait();
-            return; // success
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-
+    // `catch_unwind` so the child is still reaped when the poll times out —
+    // this file's whole subject is daemons that outlive their business.
+    let exited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        poll_until(
+            "spawned daemon's exit status",
+            "the daemon to exit after its binary was touched",
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(100),
+            || child.try_wait().ok().flatten(),
+            Option::is_some,
+        )
+    }));
     let _ = child.kill();
     let _ = child.wait();
-    panic!("daemon did not exit after binary was touched");
+    assert!(
+        exited.is_ok(),
+        "daemon did not exit after binary was touched"
+    );
 }

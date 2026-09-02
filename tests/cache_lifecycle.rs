@@ -14,6 +14,10 @@ use beachcomber::scheduler::{Scheduler, SchedulerHandle, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+
+mod common;
+use common::poll::poll_until_async;
 
 fn lc_counter_source_meta() -> SourceMetadata {
     SourceMetadata {
@@ -94,12 +98,13 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
     let registry = Arc::new(registry);
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(
+    let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
         registry,
         config,
         Arc::new(WatcherRegistry::new()),
     );
+    scheduler.use_polling_watcher(Duration::from_millis(50));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // Before any query, the cache should be empty.
@@ -117,13 +122,21 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
         })
         .await;
 
-    // Allow time for async execution to complete.
-    // TODO: needs scheduler clock injection — waiting for spawn_blocking provider
-    // execution to finish. Mock clock cannot substitute for real blocking-pool work.
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    // Wait on the observable the sleep was standing in for: the cache slot the
+    // spawn_blocking execution writes. The counter is bumped inside execute(),
+    // before that write, so it is already final once the entry appears.
+    let entry = poll_until_async(
+        "lc_counter cache entry",
+        "Some(_)",
+        Duration::from_secs(5),
+        Duration::from_millis(10),
+        async || cache.get_entry("lc_counter", None),
+        |e| e.is_some(),
+    )
+    .await;
 
     assert!(
-        cache.get_entry("lc_counter", None).is_some(),
+        entry.is_some(),
         "cache should be populated after cold miss QueryActivity"
     );
     assert!(
@@ -150,12 +163,13 @@ async fn integration_active_entry_appears_in_status() {
     let registry = Arc::new(registry);
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(
+    let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
         registry,
         config,
         Arc::new(WatcherRegistry::new()),
     );
+    scheduler.use_polling_watcher(Duration::from_millis(50));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle
@@ -166,12 +180,18 @@ async fn integration_active_entry_appears_in_status() {
         })
         .await;
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let status = handle
-        .get_status()
-        .await
-        .expect("status should be available");
+    // The poll-timer entry is the positive event; demand/lifecycle are filled
+    // in the same build_status pass, so asserting on this same snapshot is
+    // sound.
+    let status = poll_until_async(
+        "scheduler status poll_timers",
+        "an entry for lc_counter",
+        Duration::from_secs(5),
+        Duration::from_millis(10),
+        async || handle.get_status().await.expect("status available"),
+        |s| s.poll_timers.iter().any(|t| t.provider == "lc_counter"),
+    )
+    .await;
 
     // The entry should appear in poll_timers (it's Active with a 5s poll interval).
     assert!(
@@ -211,12 +231,13 @@ async fn setup_lifecycle_scheduler(
     let registry = Arc::new(registry);
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(
+    let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
         registry,
         config,
         Arc::new(WatcherRegistry::new()),
     );
+    scheduler.use_polling_watcher(Duration::from_millis(50));
     let task = tokio::spawn(async move { scheduler.run().await });
     (cache, handle, task)
 }
@@ -236,13 +257,20 @@ async fn integration_status_response_reports_decay_level() {
         })
         .await;
 
-    // Allow async execution to complete and lifecycle to stabilise.
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    // The lifecycle entry is created while QueryActivity is handled, before the
+    // execution it dispatches writes the cache — so a warm cache entry is a
+    // fence for the lifecycle registry having the key too.
+    let entry = poll_until_async(
+        "lc_counter cache entry",
+        "Some(_)",
+        Duration::from_secs(5),
+        Duration::from_millis(10),
+        async || cache.get_entry("lc_counter", None),
+        |e| e.is_some(),
+    )
+    .await;
 
-    assert!(
-        cache.get_entry("lc_counter", None).is_some(),
-        "cache should be warm before status check"
-    );
+    assert!(entry.is_some(), "cache should be warm before status check");
 
     // Fetch the lifecycle snapshots from the scheduler.
     let snapshots = handle.get_lifecycle_snapshots().await;
@@ -278,12 +306,13 @@ async fn integration_repeated_queries_keep_data_warm() {
     let registry = Arc::new(registry);
     let config = Config::default();
 
-    let (handle, scheduler) = Scheduler::new(
+    let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
         registry,
         config,
         Arc::new(WatcherRegistry::new()),
     );
+    scheduler.use_polling_watcher(Duration::from_millis(50));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // First query populates cache.
@@ -295,7 +324,15 @@ async fn integration_repeated_queries_keep_data_warm() {
         })
         .await;
 
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    poll_until_async(
+        "lc_counter cache entry",
+        "Some(_)",
+        Duration::from_secs(5),
+        Duration::from_millis(10),
+        async || cache.get_entry("lc_counter", None),
+        |e| e.is_some(),
+    )
+    .await;
 
     let _entry_after_first = cache
         .get_entry("lc_counter", None)
@@ -303,6 +340,9 @@ async fn integration_repeated_queries_keep_data_warm() {
     let exec_after_first = poll_count.load(Ordering::SeqCst);
 
     // Subsequent queries should not re-execute (cache is warm, no inline miss).
+    // A warm cache means QueryActivity dispatches no work at all, so a status
+    // round-trip after each send (FIFO channel) is a complete fence: once it
+    // replies, everything that query was ever going to do has happened.
     for _ in 0..5 {
         handle
             .send(SchedulerMessage::QueryActivity {
@@ -311,10 +351,11 @@ async fn integration_repeated_queries_keep_data_warm() {
                 demand: SourceDemand::All,
             })
             .await;
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            handle.get_status().await.is_some(),
+            "scheduler should reply"
+        );
     }
-
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let exec_after_repeated = poll_count.load(Ordering::SeqCst);
     let _entry_after_repeated = cache

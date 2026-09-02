@@ -1,6 +1,10 @@
+mod common;
+
 use beachcomber::client::Client;
 use beachcomber::config::Config;
 use beachcomber::daemon;
+use common::poll::{poll_until, poll_until_eq};
+use std::time::Duration;
 use tempfile::TempDir;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -26,7 +30,14 @@ async fn e2e_all_builtin_providers_registered() {
     let load_refresh = client.refresh("load", None).unwrap();
     assert!(load_refresh.ok, "load refresh should succeed");
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    poll_until(
+        "load after refresh",
+        "a cached value",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        || client.get("load", None).unwrap().data,
+        |data| data.is_some(),
+    );
 
     let load = client.get("load", None).unwrap();
     assert!(
@@ -65,7 +76,13 @@ async fn e2e_script_provider_from_config() {
     let refresh = client.refresh("test_echo", None).unwrap();
     assert!(refresh.ok, "Refresh script provider should succeed");
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    poll_until_eq(
+        "test_echo.greeting after refresh",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        || client.get("test_echo.greeting", None).unwrap().data,
+        Some(serde_json::json!("hello")),
+    );
 
     let result = client.get("test_echo.greeting", None).unwrap();
     assert!(result.ok, "Should get script provider result");

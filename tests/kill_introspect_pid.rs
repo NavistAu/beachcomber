@@ -19,8 +19,7 @@ async fn introspect_daemon_returns_current_pid() {
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();
@@ -63,8 +62,7 @@ async fn status_op_does_not_contain_pid_field() {
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();

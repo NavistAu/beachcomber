@@ -1,6 +1,7 @@
+use crate::common::poll::poll_until;
 use crate::common::socket::IsolatedSocket;
 use std::process::{Child, Command};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[allow(dead_code)]
 pub struct TestDaemon {
@@ -25,14 +26,15 @@ impl TestDaemon {
             .spawn()
             .expect("spawn comb daemon");
 
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if socket.path.exists() {
-                return Self { socket, process };
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        panic!("daemon never created socket at {:?}", socket.path);
+        poll_until(
+            &format!("daemon socket at {:?}", socket.path),
+            "the daemon to bind it",
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            || socket.path.exists(),
+            |exists| *exists,
+        );
+        Self { socket, process }
     }
 }
 

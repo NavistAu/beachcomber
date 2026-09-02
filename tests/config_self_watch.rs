@@ -12,6 +12,12 @@ use std::time::Duration;
 
 /// Bump `path`'s mtime strictly into the future, immune to clock granularity
 /// (mirrors the trick in `tests/binary_self_watch.rs`).
+///
+/// It also removes the need to wait for the watch thread to get going: the
+/// thread records `now()` as its baseline when it starts, and the poll fires
+/// on any composed-set mtime newer than that baseline. A stamp two seconds
+/// ahead beats the baseline whichever of the two happened first, so these
+/// tests can write and stamp immediately after `spawn_*` returns.
 fn touch_future(path: &std::path::Path) {
     let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
     f.set_modified(std::time::SystemTime::now() + Duration::from_secs(2))
@@ -34,7 +40,6 @@ fn poll_restarts_on_valid_config_change_when_fs_events_are_dead() {
         },
     );
 
-    std::thread::sleep(Duration::from_millis(50));
     std::fs::write(&cfg, "[daemon]\nlog_level = \"debug\"\n").unwrap();
     touch_future(&cfg);
 
@@ -53,7 +58,6 @@ fn poll_ignores_invalid_config_change_and_keeps_running() {
         let _ = tx.send(());
     });
 
-    std::thread::sleep(Duration::from_millis(50));
     // Not valid TOML.
     std::fs::write(&cfg, "this is not [ valid toml").unwrap();
     touch_future(&cfg);
@@ -80,8 +84,8 @@ fn config_file_created_after_daemon_start_is_picked_up() {
         let _ = tx.send(());
     });
 
-    std::thread::sleep(Duration::from_millis(50));
     std::fs::write(&cfg, "[daemon]\n").unwrap();
+    touch_future(&cfg);
 
     rx.recv_timeout(Duration::from_secs(3))
         .expect("config file created after startup should be picked up");
@@ -121,7 +125,6 @@ fn conf_d_file_change_triggers_restart() {
         let _ = tx.send(());
     });
 
-    std::thread::sleep(Duration::from_millis(50));
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"trace\"\n").unwrap();
     touch_future(&drop_in);
 
@@ -144,7 +147,6 @@ fn conf_d_invalid_edit_does_not_restart() {
         let _ = tx.send(());
     });
 
-    std::thread::sleep(Duration::from_millis(50));
     std::fs::write(&drop_in, "this is not [ valid toml").unwrap();
     touch_future(&drop_in);
 
@@ -173,7 +175,6 @@ fn conf_d_only_change_restarts_without_a_main_config_file() {
         let _ = tx.send(());
     });
 
-    std::thread::sleep(Duration::from_millis(50));
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"trace\"\n").unwrap();
     touch_future(&drop_in);
 
@@ -194,7 +195,6 @@ fn new_file_appearing_in_conf_d_triggers_restart() {
         let _ = tx.send(());
     });
 
-    std::thread::sleep(Duration::from_millis(50));
     let new_file = conf_d.join("02-new.toml");
     std::fs::write(&new_file, "[daemon]\nlog_level = \"warn\"\n").unwrap();
     touch_future(&new_file);

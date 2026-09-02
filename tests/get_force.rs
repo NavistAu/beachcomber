@@ -44,8 +44,7 @@ async fn get_force_evicts_and_re_executes() {
     );
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     // Send a force=true get for hostname.
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -99,8 +98,7 @@ async fn get_without_force_returns_cached_entry() {
     cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op":"get","key":"hostname"}"#;
@@ -163,8 +161,7 @@ async fn force_on_virtual_provider_returns_error() {
     cache.put_source("mystore", None, "virtual", fields, None);
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op":"get","key":"mystore","force":true}"#;
@@ -203,8 +200,7 @@ async fn get_with_wait_field_is_accepted() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op":"get","key":"hostname","wait":true}"#;

@@ -7,8 +7,11 @@
 //! during the test-suite-health work. `--exit-with-parent` makes the daemon
 //! self-terminate when its spawner dies, even on SIGKILL.
 
+mod common;
+
+use common::poll::poll_until;
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// True while `pid` (as a decimal string) is a live process. `kill -0` checks
 /// existence without sending a real signal; avoids a libc dev-dependency.
@@ -42,11 +45,14 @@ fn daemon_exits_when_parent_dies() {
         .expect("spawn intermediate parent");
 
     // Wait for the daemon to come up (socket + recorded pid).
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline && !(sock.exists() && pidfile.exists()) {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(sock.exists(), "daemon never created its socket at {sock:?}");
+    poll_until(
+        &format!("(socket at {sock:?}, pidfile at {pidfile:?})"),
+        "both to exist",
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        || (sock.exists(), pidfile.exists()),
+        |(has_sock, has_pid)| *has_sock && *has_pid,
+    );
     let daemon_pid = std::fs::read_to_string(&pidfile)
         .expect("read daemon pidfile")
         .trim()
@@ -61,12 +67,16 @@ fn daemon_exits_when_parent_dies() {
     let _ = parent.wait();
 
     // The daemon must self-exit within a few poll intervals (it polls ppid @500ms).
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline && pid_alive(&daemon_pid) {
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let still_alive = poll_until(
+        &format!("liveness of daemon pid {daemon_pid}"),
+        "it to self-exit after its parent died (--exit-with-parent)",
+        Duration::from_secs(10),
+        Duration::from_millis(100),
+        || pid_alive(&daemon_pid),
+        |alive| !*alive,
+    );
     assert!(
-        !pid_alive(&daemon_pid),
+        !still_alive,
         "daemon (pid {daemon_pid}) must self-exit after its parent died (--exit-with-parent)"
     );
 }

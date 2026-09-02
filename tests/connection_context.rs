@@ -168,8 +168,7 @@ async fn context_sets_default_path_for_scoped_providers() {
     cache.put_source("pathprov", Some("/project/b"), "main", fields_b, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();
@@ -217,8 +216,7 @@ async fn explicit_path_overrides_context() {
     cache.put_source("pathprov", Some("/project/b"), "main", fields_b, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();
@@ -264,8 +262,7 @@ async fn global_provider_ignores_context() {
     cache.put_source("globalprov", None, "main", fields, None);
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();
@@ -325,8 +322,7 @@ async fn path_scoped_provider_has_no_global_fallback() {
     cache.put_source("pathprov", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();

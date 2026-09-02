@@ -2,8 +2,11 @@
 // and the `comb check` CLI aggregation behaviour.
 // Uses the in-process test daemon pattern from tests/put_null.rs.
 
+mod common;
+
 use beachcomber::client::Client;
 use beachcomber::config::Config;
+use common::poll::poll_until;
 
 async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<()>) {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -573,10 +576,14 @@ fn check_daemon_reports_watch_backend() {
         .spawn()
         .expect("spawn daemon");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !sock.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    poll_until(
+        "the spawned `comb daemon`'s socket path",
+        "the daemon to have bound its socket",
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        || sock.exists(),
+        |bound| *bound,
+    );
     assert!(sock.exists(), "daemon never bound socket");
 
     let output = std::process::Command::new(&exe)
@@ -745,10 +752,14 @@ async fn env_override_daemon_does_not_arm_reaper() {
         .spawn()
         .expect("spawn daemon");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !sock.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    poll_until(
+        "the spawned `comb daemon`'s socket path",
+        "the daemon to have bound its socket",
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        || sock.exists(),
+        |bound| *bound,
+    );
     assert!(sock.exists(), "daemon never bound socket");
 
     let client = Client::new(sock.clone());
@@ -779,25 +790,34 @@ fn daemon_exits_when_bind_fails() {
     let long = "x".repeat(120);
     let sock = tmp.path().join(long).join("sock");
 
-    let exe = comb_binary();
-    let mut daemon = std::process::Command::new(&exe)
-        .args(["daemon", "--socket"])
-        .arg(&sock)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn daemon");
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        match daemon.try_wait().expect("try_wait") {
-            Some(_) => break, // exited — the regression is fixed
-            None if std::time::Instant::now() > deadline => {
-                let _ = daemon.kill();
-                let _ = daemon.wait();
-                panic!("daemon lingered past 10s after bind failure");
-            }
-            None => std::thread::sleep(std::time::Duration::from_millis(100)),
+    // A regression here means the daemon never exits, and the poll below fails
+    // by panicking — kill it on the way out so no runaway process is left over.
+    struct KillOnDrop(std::process::Child);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
         }
     }
+
+    let exe = comb_binary();
+    let mut daemon = KillOnDrop(
+        std::process::Command::new(&exe)
+            .args(["daemon", "--socket"])
+            .arg(&sock)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn daemon"),
+    );
+
+    let exited = poll_until(
+        "the `comb daemon` process after a failed bind",
+        "the process to have exited rather than linger",
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_millis(20),
+        || daemon.0.try_wait().expect("try_wait").is_some(),
+        |exited| *exited,
+    );
+    assert!(exited, "daemon lingered past 10s after bind failure");
 }

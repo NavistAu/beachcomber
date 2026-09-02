@@ -39,8 +39,7 @@ async fn watch_receives_initial_value() {
     cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();
@@ -80,8 +79,7 @@ async fn watch_receives_updates() {
     let cache_writer = cache.clone();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();
@@ -143,8 +141,7 @@ async fn watch_filters_unchanged_field() {
     let cache_writer = cache.clone();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();
@@ -193,8 +190,7 @@ async fn watch_provider_level_gets_all_changes() {
     let cache_writer = cache.clone();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();
@@ -251,8 +247,7 @@ async fn watch_miss_then_update() {
     let cache_writer = cache.clone();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();

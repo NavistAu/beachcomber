@@ -48,38 +48,57 @@ async fn watcher_detects_file_modification() {
         FsWatcher::new_polling(POLL_INTERVAL).expect("Failed to create watcher");
     watcher.watch(&dir).expect("Failed to watch directory");
 
-    // PollWatcher compares each scan against the previous one to detect changes.
-    // To avoid racing the baseline scan with the modification write, write a
-    // recognisable distinct content + sleep past several poll intervals so that
-    // the scan-cycle that produces our assertion event must have observed the
-    // modification (not some earlier scan that merely snapshotted the file).
-    tokio::time::sleep(POLL_INTERVAL * 5).await;
-    while rx.try_recv().is_ok() {}
-
+    // PollWatcher compares each scan against the previous one to detect
+    // changes, and `watch()` takes that baseline snapshot synchronously before
+    // it returns — so "initial" is already recorded here and the rewrite below
+    // cannot race it. Nothing to wait for; wait on the event itself.
     fs::write(&file_path, "modified-distinct-content").unwrap();
 
-    let event = timeout(EVENT_TIMEOUT, rx.recv()).await;
-    assert!(event.is_ok(), "Should receive modification event");
+    let paths = timeout(EVENT_TIMEOUT, rx.recv())
+        .await
+        .expect("Should receive modification event")
+        .expect("watcher channel should stay open");
+    assert!(
+        paths.contains(&file_path),
+        "modification event should name the modified file, got {paths:?}"
+    );
 }
 
 #[tokio::test]
 async fn watcher_unwatch_stops_events() {
     let (_tmp, dir) = canonical_tempdir();
+    let (_fence_tmp, fence_dir) = canonical_tempdir();
     let (mut watcher, mut rx) =
         FsWatcher::new_polling(POLL_INTERVAL).expect("Failed to create watcher");
 
     watcher.watch(&dir).expect("Failed to watch directory");
     watcher.unwatch(&dir).expect("Failed to unwatch");
 
-    // Wait past a few poll intervals, drain any residual events enqueued
-    // before the unwatch took effect.
-    tokio::time::sleep(POLL_INTERVAL * 3).await;
-    while rx.try_recv().is_ok() {}
-
     fs::write(dir.join("test.txt"), "hello").unwrap();
 
-    let result = timeout(POLL_INTERVAL * 5, rx.recv()).await;
-    assert!(result.is_err(), "Should NOT receive events after unwatch");
+    // "No event ever arrives" has no condition to wait on, so fence it: one
+    // poll tick scans every watched path, so the tick that reports the fence
+    // dir's write is a tick that would already have reported `dir`'s — and
+    // that event, being older, would sit ahead of the fence's in the queue.
+    watcher
+        .watch(&fence_dir)
+        .expect("Failed to watch fence directory");
+    fs::write(fence_dir.join("fence.txt"), "fence").unwrap();
+
+    let paths = timeout(EVENT_TIMEOUT, rx.recv())
+        .await
+        .expect("fence event should arrive")
+        .expect("watcher channel should stay open");
+    assert!(
+        paths.iter().all(|p| p.starts_with(&fence_dir)),
+        "Should NOT receive events after unwatch; got {paths:?}"
+    );
+    while let Ok(paths) = rx.try_recv() {
+        assert!(
+            paths.iter().all(|p| p.starts_with(&fence_dir)),
+            "Should NOT receive events after unwatch; got {paths:?}"
+        );
+    }
 }
 
 #[tokio::test]

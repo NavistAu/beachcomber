@@ -29,9 +29,7 @@ async fn server_accepts_connection() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
 
-    let handle = tokio::spawn(async move { server.run().await });
-
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await;
     assert!(stream.is_ok(), "Should connect to server socket");
@@ -52,8 +50,7 @@ async fn server_handles_get_global_provider() {
     cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op": "get", "key": "hostname"}"#;
@@ -88,8 +85,7 @@ async fn server_handles_get_single_field() {
     cache.put_source("hostname", None, "main", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op": "get", "key": "hostname.short"}"#;
@@ -115,8 +111,7 @@ async fn server_handles_cache_miss_with_sync_execution() {
 
     // No cache populated — the server should execute the provider inline
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     // hostname is a global provider that always returns data
@@ -150,8 +145,7 @@ async fn server_handles_cache_miss_provider_returns_none() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     // git provider with no path — execute() returns None
@@ -186,8 +180,7 @@ async fn server_handles_cache_miss_virtual_provider() {
     registry.register_virtual("myvirtual");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op": "get", "key": "myvirtual"}"#;
@@ -215,8 +208,7 @@ async fn server_handles_unknown_provider() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op": "get", "key": "nonexistent"}"#;
@@ -241,8 +233,7 @@ async fn server_handles_refresh() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op": "refresh", "key": "hostname"}"#;
@@ -258,8 +249,6 @@ async fn server_handles_refresh() {
     let response: Response = serde_json::from_str(&line).unwrap();
     assert!(response.ok, "Refresh should return ok");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
     handle.abort();
 }
 
@@ -270,8 +259,7 @@ async fn daemon_introspect_includes_uptime_and_request_counters() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
@@ -351,8 +339,7 @@ async fn nested_key_walks_into_object_field() {
     registry.register_virtual("myproj");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op":"get","key":"myproj.project.rust"}"#;
@@ -385,8 +372,7 @@ async fn nested_key_missing_subkey_errors() {
     registry.register_virtual("myproj");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op":"get","key":"myproj.project.nonesuch"}"#;

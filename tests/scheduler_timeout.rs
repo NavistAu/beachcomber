@@ -8,6 +8,39 @@ use beachcomber::provider::{
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
+use std::time::Duration;
+
+mod common;
+use common::poll::poll_until_async;
+
+/// A latch the test opens when it is done. `execute()` parks on it instead of
+/// sleeping a guessed duration: "still running when the timeout fires" becomes
+/// a fact the test controls rather than a race against wall-clock time.
+struct Gate {
+    released: std::sync::Mutex<bool>,
+    cv: std::sync::Condvar,
+}
+
+impl Gate {
+    fn new() -> Self {
+        Self {
+            released: std::sync::Mutex::new(false),
+            cv: std::sync::Condvar::new(),
+        }
+    }
+
+    fn wait(&self) {
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.cv.wait(released).unwrap();
+        }
+    }
+
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+}
 
 fn slow_source_meta() -> SourceMetadata {
     SourceMetadata {
@@ -27,7 +60,9 @@ fn slow_source_meta() -> SourceMetadata {
     }
 }
 
-struct SlowSourceImpl;
+struct SlowSourceImpl {
+    gate: Arc<Gate>,
+}
 
 impl Source for SlowSourceImpl {
     fn metadata(&self) -> &SourceMetadata {
@@ -37,17 +72,20 @@ impl Source for SlowSourceImpl {
     }
 
     fn execute(&self, _path: Option<&str>) -> SourceResult {
-        // 2s is long enough to exceed the 1s scheduler timeout in this test but
-        // short enough that tokio's blocking-pool shutdown (which waits on in-flight
-        // spawn_blocking tasks) doesn't block the test-harness exit for 30s.
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        // Block until the test opens the gate. It stays shut across the whole
+        // timeout window, so the scheduler's timeout arm is guaranteed to be
+        // the one that fires; opening it afterwards lets this blocking-pool
+        // thread retire immediately instead of holding up runtime shutdown.
+        self.gate.wait();
         let mut result = SourceResult::new();
         result.insert("value", Value::String("done".to_string()));
         result
     }
 }
 
-struct SlowProvider;
+struct SlowProvider {
+    gate: Arc<Gate>,
+}
 
 impl Provider for SlowProvider {
     fn metadata(&self) -> ProviderMetadata {
@@ -58,36 +96,44 @@ impl Provider for SlowProvider {
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(SlowSourceImpl)]
+        vec![Box::new(SlowSourceImpl {
+            gate: Arc::clone(&self.gate),
+        })]
     }
 }
 
-/// Uses tokio mock clock to avoid the real 3 s wall-clock wait.
+/// Uses the tokio mock clock so no wall-clock time passes at all.
 ///
 /// The scheduler wraps the spawn_blocking execution with `tokio::time::timeout(1s)`.
-/// Under a paused clock, `advance(1.5s)` fires that timeout without waiting for the
-/// real 2 s thread sleep. A `yield_now` loop lets the scheduler task process the
-/// timeout result before we assert.
-///
-/// The spawn_blocking thread still sleeps 2 s real time in the background, but the
-/// test assertion finishes well before it completes — the join handle is simply dropped
-/// when the scheduler shuts down.
+/// The provider parks on a gate the test holds shut, so the only thing that can
+/// finish that execution is the timeout; `advance(1.5s)` fires it on the mock
+/// clock. `in_flight` is cleared by the same task that handles the timeout
+/// result, so waiting for it to empty is a positive observation that the
+/// `Err(_)` timeout arm ran — which is what makes the "cache is still empty"
+/// assertion below mean "timed out" rather than "hasn't got there yet".
 #[tokio::test(start_paused = true)]
 async fn slow_provider_times_out() {
+    let gate = Arc::new(Gate::new());
+
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(SlowProvider)).expect("slow");
+    registry
+        .register(Box::new(SlowProvider {
+            gate: Arc::clone(&gate),
+        }))
+        .expect("slow");
     let registry = Arc::new(registry);
 
     let mut config = Config::default();
     config.daemon.provider_timeout_secs = Some(1);
 
-    let (handle, scheduler) = Scheduler::new(
+    let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
         registry,
         config,
         Arc::new(WatcherRegistry::new()),
     );
+    scheduler.use_polling_watcher(Duration::from_millis(50));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle
@@ -97,21 +143,60 @@ async fn slow_provider_times_out() {
         })
         .await;
 
-    // Advance mock clock past the 1 s timeout. The tokio::time::timeout in the
-    // scheduler fires; the spawn_blocking thread keeps sleeping (real time) but
-    // the JoinHandle result is discarded via the Err(_) timeout arm.
-    tokio::time::advance(std::time::Duration::from_millis(1500)).await;
+    // `execute_source` inserts into `in_flight` while handling the Refresh, and
+    // the channel is FIFO — so this round-trip both proves the refresh was
+    // dispatched and shows the execution is live and parked on the gate.
+    let status = handle
+        .get_status()
+        .await
+        .expect("status should be available");
+    assert!(
+        status.in_flight.iter().any(|k| k == "slow:main"),
+        "slow.main should be in flight while the gate is held; got {:?}",
+        status.in_flight
+    );
 
-    // Yield a few times so the scheduler task can process the timeout result.
+    // Let the task spawned for this execution register its `timeout` on the
+    // mock clock: `advance` only fires timers that already exist.
     for _ in 0..10 {
         tokio::task::yield_now().await;
     }
+
+    // Advance the mock clock past the 1 s timeout. The tokio::time::timeout in
+    // the scheduler fires; the blocking thread stays parked on the gate and its
+    // JoinHandle result is discarded via the Err(_) timeout arm.
+    tokio::time::advance(Duration::from_millis(1500)).await;
+
+    // The timeout arm clears in_flight; the provider itself cannot, since the
+    // gate is still shut — so an empty in_flight proves the Err(_) arm ran.
+    // This waits by yielding rather than by `tokio::time::sleep`: with a
+    // blocking task outstanding the paused clock does not auto-advance, so a
+    // sleep-based poll would never wake.
+    let mut in_flight = status.in_flight;
+    for _ in 0..1000 {
+        tokio::task::yield_now().await;
+        in_flight = handle
+            .get_status()
+            .await
+            .expect("status available")
+            .in_flight;
+        if in_flight.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        in_flight.is_empty(),
+        "the timeout arm should have cleared in_flight; got {in_flight:?}"
+    );
 
     // Cache should NOT have the value (timed out)
     assert!(
         cache.get_entry("slow", None).is_none(),
         "Timed-out provider should not populate cache"
     );
+
+    // Let the parked blocking-pool thread retire before the runtime is torn down.
+    gate.release();
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;
@@ -125,12 +210,13 @@ async fn fast_provider_completes_within_timeout() {
     let mut config = Config::default();
     config.daemon.provider_timeout_secs = Some(5);
 
-    let (handle, scheduler) = Scheduler::new(
+    let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
         registry,
         config,
         Arc::new(WatcherRegistry::new()),
     );
+    scheduler.use_polling_watcher(Duration::from_millis(50));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     handle
@@ -140,10 +226,17 @@ async fn fast_provider_completes_within_timeout() {
         })
         .await;
 
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
+    let entry = poll_until_async(
+        "hostname cache entry",
+        "Some(_)",
+        Duration::from_secs(5),
+        Duration::from_millis(10),
+        async || cache.get_entry("hostname", None),
+        |e| e.is_some(),
+    )
+    .await;
     assert!(
-        cache.get_entry("hostname", None).is_some(),
+        entry.is_some(),
         "Fast provider should complete within timeout"
     );
 

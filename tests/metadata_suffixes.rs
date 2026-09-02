@@ -61,8 +61,7 @@ async fn send_many(sock: &std::path::Path, reqs: &[&str]) -> Vec<Response> {
 async fn source_returns_builtin_for_hostname() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let resp = send_one(&sock, r#"{"op":"get","key":"hostname:source"}"#).await;
 
@@ -78,8 +77,7 @@ async fn source_returns_builtin_for_hostname() {
 async fn source_returns_virtual_after_put() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     let resps = send_many(
         &sock,
@@ -103,8 +101,7 @@ async fn source_returns_virtual_after_put() {
 async fn cache_returns_true_after_warm_get() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     // Warm the cache with an initial get (sync-miss executes inline and stores).
     let warm = send_one(&sock, r#"{"op":"get","key":"hostname"}"#).await;
@@ -128,8 +125,7 @@ async fn cache_returns_true_after_warm_get() {
 async fn fresh_inverts_stale() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     // Warm first.
     let warm = send_one(&sock, r#"{"op":"get","key":"hostname"}"#).await;
@@ -160,15 +156,17 @@ async fn fresh_inverts_stale() {
 async fn age_returns_number() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     // Warm first.
     let warm = send_one(&sock, r#"{"op":"get","key":"hostname"}"#).await;
     assert!(warm.ok);
 
-    // Small sleep so age_ms > 0 on fast machines.
-    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    // The cache stamps entries with `tokio::time::Instant`, so advancing the
+    // paused clock ages the entry by exactly 5ms; the offset survives `resume`.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_millis(5)).await;
+    tokio::time::resume();
 
     let resp = send_one(&sock, r#"{"op":"get","key":"hostname:age"}"#).await;
     assert!(resp.ok, "age query should succeed");
@@ -186,8 +184,7 @@ async fn age_returns_number() {
 async fn unknown_suffix_is_passed_through_as_field() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = tokio::spawn(async move { server.run().await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let handle = server.spawn().unwrap();
 
     // Warm first so it's definitely in cache.
     let warm = send_one(&sock, r#"{"op":"get","key":"hostname"}"#).await;
