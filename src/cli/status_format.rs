@@ -847,14 +847,23 @@ const COLS: usize = 7;
 // one (its own warn-glyph + red already come from format_ttl_cell). POLL
 // (index 5) is a plain column and gets red-wrapped like the others.
 const TTL_COL_IDX: usize = 6;
-const HEADERS: [&str; COLS] = ["PROVIDER", "PATH", "FIELD", "VALUE", "AGE", "POLL", "TTL"];
+// PROVIDER and FIELD sit adjacent because together they are the cache key the
+// user typed (`git.branch`); PATH follows VALUE as the scope qualifier rather
+// than splitting the key. Human/table presets only — the machine presets
+// (json/tsv/csv/sh) keep their own established column order.
+const HEADERS: [&str; COLS] = ["PROVIDER", "FIELD", "VALUE", "PATH", "AGE", "POLL", "TTL"];
+const H_PROVIDER: usize = 0;
+const H_FIELD: usize = 1;
+const H_PATH: usize = 3;
+const H_AGE: usize = 4;
+const H_POLL: usize = 5;
 
 /// Render rows as aligned columns for the `human` preset.
 ///
 /// - `color_enabled`: apply per-cell ANSI colour (AGE yellow/green by stale, TTL by decay,
 ///   failure rows red on non-TTL cells).
 /// - `trunc`: maximum width for the VALUE column (in characters). `None` = no truncation.
-/// - `header`: prepend a PROVIDER / PATH / FIELD / VALUE / AGE / POLL / TTL header row.
+/// - `header`: prepend a PROVIDER / FIELD / VALUE / PATH / AGE / POLL / TTL header row.
 /// - `ascii`: use ASCII-only glyphs in the TTL cell instead of Unicode.
 pub fn render_human(rows: &[CacheRow], opts: &FormatOptions) -> String {
     render_table(rows, false, None, true, opts.ascii, true)
@@ -903,14 +912,14 @@ fn render_table(
 
     // -----------------------------------------------------------------------
     // Pass 1: measure natural widths of every column (no truncation).
-    // Columns: PROVIDER, PATH, FIELD, VALUE, AGE, POLL, TTL
+    // Columns: PROVIDER, FIELD, VALUE, PATH, AGE, POLL, TTL
     // -----------------------------------------------------------------------
-    let mut nat_provider = HEADERS[0].len();
-    let mut nat_path = HEADERS[1].len();
-    let mut nat_field = HEADERS[2].len();
-    let mut nat_age = HEADERS[4].len();
-    let mut nat_poll = HEADERS[5].len();
-    let mut nat_ttl = HEADERS[6].len();
+    let mut nat_provider = HEADERS[H_PROVIDER].len();
+    let mut nat_field = HEADERS[H_FIELD].len();
+    let mut nat_path = HEADERS[H_PATH].len();
+    let mut nat_age = HEADERS[H_AGE].len();
+    let mut nat_poll = HEADERS[H_POLL].len();
+    let mut nat_ttl = HEADERS[TTL_COL_IDX].len();
 
     // Auto-size the TTL cell's `{P}s×{KK} (total)` sub-fields to the widest
     // values in this snapshot, capped at TTL_P_WIDTH_MAX / TTL_TOTAL_WIDTH_MAX.
@@ -954,7 +963,7 @@ fn render_table(
 
     // -----------------------------------------------------------------------
     // Compute effective VALUE cap from the total-table-width budget.
-    // Layout: MARGIN provider(2sp)path(2sp)field(2sp)value(2sp)age(2sp)poll(2sp)ttl MARGIN
+    // Layout: MARGIN provider(2sp)field(2sp)value(2sp)path(2sp)age(2sp)poll(2sp)ttl MARGIN
     // Separators: 6 × 2 = 12
     // Margins: 2 spaces each side (breathing room so the table doesn't hug
     // the terminal edge).
@@ -1086,9 +1095,9 @@ fn render_table(
 
         let mut row_cells: [String; COLS] = [
             row.provider.clone(),
-            path,
             row.field.clone(),
             value,
+            path,
             age_cell,
             poll_text,
             ttl_cell,
@@ -1107,9 +1116,9 @@ fn render_table(
 
         let row_vis: [usize; COLS] = [
             provider_vis,
-            path_vis,
             field_vis,
             value_vis,
+            path_vis,
             age_vis,
             poll_vis,
             ttl_vis,

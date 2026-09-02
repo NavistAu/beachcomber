@@ -131,11 +131,11 @@ viddy 'comb status --color=always'
 
 ```sh
 $ comb s
-PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ◉
-git       /repo   dirty    true     14s   ★     60s×12 ◉
-battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  3h    ---
+PROVIDER  FIELD    VALUE    PATH    AGE   POLL  TTL
+git       branch   main     /repo   14s    46s  ★     60s×12 ◉
+git       dirty    true     /repo   14s    46s  ★     60s×12 ◉
+battery   percent  87       -        8s    22s  ★     30s×04
+hostname  short    artemis  -        3h      -  ---
 
 # Filter to entries in a specific lifecycle state
 comb s --filter=lifecycle=active
