@@ -1,4 +1,5 @@
 use crate::cache::CacheRow;
+use libbeachcomber::render::shell_quote;
 
 // ---------------------------------------------------------------------------
 // ANSI colour helper (basic-16 palette, fg-only, no external crate)
@@ -925,12 +926,6 @@ fn sanitize_ident(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
-}
-
-/// Shell single-quote a string. Wrap in `'...'`; internal single quotes become `'\''`.
-fn shell_quote(s: &str) -> String {
-    let escaped = s.replace('\'', r"'\''");
-    format!("'{escaped}'")
 }
 
 // ---------------------------------------------------------------------------
