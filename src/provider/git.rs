@@ -225,27 +225,27 @@ fn lineage_meta() -> SourceMetadata {
         name: "lineage".into(),
         fields: vec![
             FieldSchema {
-                name: "parent".into(),
+                name: "branch_parent".into(),
                 field_type: FieldType::String,
             },
             FieldSchema {
-                name: "parent_lines_added".into(),
+                name: "lines_added_parent".into(),
                 field_type: FieldType::Int,
             },
             FieldSchema {
-                name: "parent_lines_removed".into(),
+                name: "lines_removed_parent".into(),
                 field_type: FieldType::Int,
             },
             FieldSchema {
-                name: "base".into(),
+                name: "branch_default".into(),
                 field_type: FieldType::String,
             },
             FieldSchema {
-                name: "base_lines_added".into(),
+                name: "lines_added_default".into(),
                 field_type: FieldType::Int,
             },
             FieldSchema {
-                name: "base_lines_removed".into(),
+                name: "lines_removed_default".into(),
                 field_type: FieldType::Int,
             },
         ],
@@ -472,8 +472,8 @@ impl Source for GitDiff {
 }
 
 /// Branch-comparison line counts: how much the checked-out branch has diverged
-/// from the branch it was forked off (`parent`) and from the repository's
-/// default branch (`base`).
+/// from the branch it was forked off (`branch_parent`) and from the repository's
+/// default branch (`branch_default`).
 ///
 /// Both counts are taken from the commit DAG — `git diff --numstat <point>..HEAD`
 /// where `<point>` is a merge base — so they agree with what `git log --graph`
@@ -527,9 +527,9 @@ impl Source for GitLineage {
         let mut result = SourceResult::new();
 
         if let (Some((name, _)), Some((added, removed))) = (&parent, parent_counts) {
-            result.insert("parent", Value::String(name.clone()));
-            result.insert("parent_lines_added", Value::Int(added));
-            result.insert("parent_lines_removed", Value::Int(removed));
+            result.insert("branch_parent", Value::String(name.clone()));
+            result.insert("lines_added_parent", Value::Int(added));
+            result.insert("lines_removed_parent", Value::Int(removed));
         }
 
         if let Some((name, rev)) = &base {
@@ -541,9 +541,9 @@ impl Source for GitLineage {
                 (true, Some(counts)) => counts,
                 _ => lines_since(dir, rev, executor),
             };
-            result.insert("base", Value::String(name.clone()));
-            result.insert("base_lines_added", Value::Int(added));
-            result.insert("base_lines_removed", Value::Int(removed));
+            result.insert("branch_default", Value::String(name.clone()));
+            result.insert("lines_added_default", Value::Int(added));
+            result.insert("lines_removed_default", Value::Int(removed));
         }
 
         result

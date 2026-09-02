@@ -93,12 +93,12 @@ fn git_provider_metadata() {
     let lineage_src = meta.sources.iter().find(|s| s.name == "lineage").unwrap();
     assert_eq!(lineage_src.scope, SourceScope::PathScoped);
     let lineage_fields: Vec<&str> = lineage_src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(lineage_fields.contains(&"parent"));
-    assert!(lineage_fields.contains(&"parent_lines_added"));
-    assert!(lineage_fields.contains(&"parent_lines_removed"));
-    assert!(lineage_fields.contains(&"base"));
-    assert!(lineage_fields.contains(&"base_lines_added"));
-    assert!(lineage_fields.contains(&"base_lines_removed"));
+    assert!(lineage_fields.contains(&"branch_parent"));
+    assert!(lineage_fields.contains(&"lines_added_parent"));
+    assert!(lineage_fields.contains(&"lines_removed_parent"));
+    assert!(lineage_fields.contains(&"branch_default"));
+    assert!(lineage_fields.contains(&"lines_added_default"));
+    assert!(lineage_fields.contains(&"lines_removed_default"));
 
     let status_src = meta.sources.iter().find(|s| s.name == "status").unwrap();
     assert_eq!(status_src.scope, SourceScope::PathScoped);
@@ -584,21 +584,27 @@ fn git_lineage_parent_from_reflog_and_counts_match_known_diff() {
     let got = lineage_fields(repo.path_str());
 
     assert_eq!(
-        got.get("parent").map(String::as_str),
+        got.get("branch_parent").map(String::as_str),
         Some("devel"),
         "reflog records `Created from devel`; got {got:?}"
     );
     // feature adds g.txt (2 lines) on top of devel.
-    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("2"));
+    assert_eq!(got.get("lines_added_parent").map(String::as_str), Some("2"));
     assert_eq!(
-        got.get("parent_lines_removed").map(String::as_str),
+        got.get("lines_removed_parent").map(String::as_str),
         Some("0")
     );
 
-    assert_eq!(got.get("base").map(String::as_str), Some("main"));
+    assert_eq!(got.get("branch_default").map(String::as_str), Some("main"));
     // Against main, feature carries devel's f.txt (3 lines) plus g.txt (2).
-    assert_eq!(got.get("base_lines_added").map(String::as_str), Some("5"));
-    assert_eq!(got.get("base_lines_removed").map(String::as_str), Some("0"));
+    assert_eq!(
+        got.get("lines_added_default").map(String::as_str),
+        Some("5")
+    );
+    assert_eq!(
+        got.get("lines_removed_default").map(String::as_str),
+        Some("0")
+    );
 }
 
 #[test]
@@ -613,9 +619,9 @@ fn git_lineage_counts_removed_lines() {
         .with_commit("trim f.txt");
     let got = lineage_fields(repo.path_str());
 
-    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("2"));
+    assert_eq!(got.get("lines_added_parent").map(String::as_str), Some("2"));
     assert_eq!(
-        got.get("parent_lines_removed").map(String::as_str),
+        got.get("lines_removed_parent").map(String::as_str),
         Some("2"),
         "two lines removed from f.txt since devel; got {got:?}"
     );
@@ -633,14 +639,17 @@ fn git_lineage_missing_reflog_falls_back_to_default_branch() {
 
     let got = lineage_fields(repo.path_str());
     assert_eq!(
-        got.get("parent").map(String::as_str),
+        got.get("branch_parent").map(String::as_str),
         Some("main"),
         "with no reflog the parent falls back to the default branch; got {got:?}"
     );
-    assert_eq!(got.get("base").map(String::as_str), Some("main"));
+    assert_eq!(got.get("branch_default").map(String::as_str), Some("main"));
     // Falling back means both comparisons use the same rev.
-    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("5"));
-    assert_eq!(got.get("base_lines_added").map(String::as_str), Some("5"));
+    assert_eq!(got.get("lines_added_parent").map(String::as_str), Some("5"));
+    assert_eq!(
+        got.get("lines_added_default").map(String::as_str),
+        Some("5")
+    );
 }
 
 #[test]
@@ -654,11 +663,11 @@ fn git_lineage_deleted_parent_falls_back_to_default_branch() {
 
     let got = lineage_fields(repo.path_str());
     assert_eq!(
-        got.get("parent").map(String::as_str),
+        got.get("branch_parent").map(String::as_str),
         Some("main"),
         "a deleted parent falls back to the default branch; got {got:?}"
     );
-    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("5"));
+    assert_eq!(got.get("lines_added_parent").map(String::as_str), Some("5"));
 }
 
 #[test]
@@ -676,8 +685,8 @@ fn git_lineage_created_from_head_falls_back_to_default_branch() {
         .with_commit("solo work");
 
     let got = lineage_fields(repo.path_str());
-    assert_eq!(got.get("parent").map(String::as_str), Some("main"));
-    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("2"));
+    assert_eq!(got.get("branch_parent").map(String::as_str), Some("main"));
+    assert_eq!(got.get("lines_added_parent").map(String::as_str), Some("2"));
 }
 
 #[test]
@@ -691,11 +700,17 @@ fn git_lineage_on_default_branch_without_remote_reports_zero() {
     let got = lineage_fields(repo.path_str());
     // No origin/HEAD, so the default branch resolves to the local `main` — which
     // is HEAD. Deterministically zero rather than absent.
-    assert_eq!(got.get("base").map(String::as_str), Some("main"));
-    assert_eq!(got.get("base_lines_added").map(String::as_str), Some("0"));
-    assert_eq!(got.get("base_lines_removed").map(String::as_str), Some("0"));
-    assert_eq!(got.get("parent").map(String::as_str), Some("main"));
-    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("0"));
+    assert_eq!(got.get("branch_default").map(String::as_str), Some("main"));
+    assert_eq!(
+        got.get("lines_added_default").map(String::as_str),
+        Some("0")
+    );
+    assert_eq!(
+        got.get("lines_removed_default").map(String::as_str),
+        Some("0")
+    );
+    assert_eq!(got.get("branch_parent").map(String::as_str), Some("main"));
+    assert_eq!(got.get("lines_added_parent").map(String::as_str), Some("0"));
 }
 
 #[test]
@@ -726,12 +741,12 @@ fn git_lineage_default_branch_from_origin_head_measures_unpushed_work() {
 
     let got = lineage_fields(repo.path_str());
     assert_eq!(
-        got.get("base").map(String::as_str),
+        got.get("branch_default").map(String::as_str),
         Some("main"),
         "base is the branch name from origin/HEAD; got {got:?}"
     );
     assert_eq!(
-        got.get("base_lines_added").map(String::as_str),
+        got.get("lines_added_default").map(String::as_str),
         Some("2"),
         "on the default branch the counts measure work not yet on origin"
     );
@@ -783,17 +798,20 @@ fn git_lineage_parent_resolved_in_linked_worktree() {
 
     let got = lineage_fields(wt.to_str().unwrap());
     assert_eq!(
-        got.get("parent").map(String::as_str),
+        got.get("branch_parent").map(String::as_str),
         Some("devel"),
         "worktree branch reflog must be read from the commondir; got {got:?}"
     );
     assert_eq!(
-        got.get("parent_lines_added").map(String::as_str),
+        got.get("lines_added_parent").map(String::as_str),
         Some("0"),
         "wt-feature has no commits of its own yet"
     );
-    assert_eq!(got.get("base").map(String::as_str), Some("main"));
-    assert_eq!(got.get("base_lines_added").map(String::as_str), Some("3"));
+    assert_eq!(got.get("branch_default").map(String::as_str), Some("main"));
+    assert_eq!(
+        got.get("lines_added_default").map(String::as_str),
+        Some("3")
+    );
 }
 
 #[test]

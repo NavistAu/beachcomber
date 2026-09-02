@@ -24,7 +24,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `git` | `head` | fsevent | path | `branch`, `detached` |
 | `git` | `refs` | fsevent | path | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
 | `git` | `diff` | poll 30s | path | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
-| `git` | `lineage` | poll 60s | path | `parent`, `parent_lines_added`, `parent_lines_removed`, `base`, `base_lines_added`, `base_lines_removed` |
+| `git` | `lineage` | poll 60s | path | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
 | `git` | `status` | fsevent_poll | path | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
 | `hostname` | `host` | fsevent (pure-watch global) | global | `name`, `short` |
 | `kubecontext` | `context` | poll 30s | global | `context`, `namespace` |
@@ -129,20 +129,20 @@ Each provider declares one or more **sources** — independent units of executio
 | `commit_summary` | string | First line of the HEAD commit message |
 | `push_ahead` | int | Commits ahead of the push remote |
 | `push_behind` | int | Commits behind the push remote |
-| `parent` | string | Branch this branch was forked from, per its reflog; the default branch when the reflog names none |
-| `parent_lines_added` | int | Lines added on this branch since it forked from `parent` |
-| `parent_lines_removed` | int | Lines removed on this branch since it forked from `parent` |
-| `base` | string | Default branch, from `origin/HEAD` or a local `main`/`master` |
-| `base_lines_added` | int | Lines added on this branch since it diverged from `base` |
-| `base_lines_removed` | int | Lines removed on this branch since it diverged from `base` |
+| `branch_parent` | string | Branch this branch was forked from, per its reflog; the default branch when the reflog names none |
+| `lines_added_parent` | int | Lines added on this branch since it forked from `branch_parent` |
+| `lines_removed_parent` | int | Lines removed on this branch since it forked from `branch_parent` |
+| `branch_default` | string | Default branch, from `origin/HEAD` or a local `main`/`master` |
+| `lines_added_default` | int | Lines added on this branch since it diverged from `branch_default` |
+| `lines_removed_default` | int | Lines removed on this branch since it diverged from `branch_default` |
 
-The `parent` / `base` counts come from `git diff --numstat <merge-base>..HEAD`, so they
+The `*_parent` / `*_default` counts come from `git diff --numstat <merge-base>..HEAD`, so they
 describe committed divergence in the commit graph — not the working tree, which
 `lines_added` / `lines_removed` cover. The merge base is `git merge-base --fork-point`,
 falling back to a plain `git merge-base` when the reference branch's reflog has been
-pruned. When `base` is discovered through `origin/HEAD` the comparison is against
+pruned. When `branch_default` is discovered through `origin/HEAD` the comparison is against
 `origin/<name>`, so a checkout sitting on the default branch still reports the work it
-has not pushed. All six fields are absent on a detached HEAD, and the `base` fields are
+has not pushed. All six fields are absent on a detached HEAD, and the `*_default` fields are
 absent when no default branch can be detected.
 
 **Example output:**
