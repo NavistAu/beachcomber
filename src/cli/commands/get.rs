@@ -200,16 +200,10 @@ fn is_virtual_namespace_key(key: &str, vf: &VirtualFields) -> bool {
 /// are shell-quoted so a line is safe to `eval` (canon invariant 8). `text`
 /// passes `false` and emits values raw.
 ///
-/// The trailing newline is this path's own: the daemon-backed path `print!`s
-/// `render_data`'s output bare, whereas these call sites expect a terminated
-/// block. Non-objects keep the unterminated form they have always had.
+/// Output is bare — no trailing newline — like every other `text`/`sh` output
+/// of `comb get`, so a value can be embedded in a prompt string verbatim.
 fn format_object_lines(data: &serde_json::Value, shell_escape: bool) -> String {
-    let rendered = render_data(Some(data), if shell_escape { "sh" } else { "text" });
-    if data.is_object() {
-        format!("{rendered}\n")
-    } else {
-        rendered
-    }
+    render_data(Some(data), if shell_escape { "sh" } else { "text" })
 }
 
 /// Returns true if a `provider.field` key should be resolved client-side

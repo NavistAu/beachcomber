@@ -34,12 +34,14 @@ fn conda_output(format: &str, value: &str) -> String {
 }
 
 /// A value carrying a space, a single quote and a `$` must come back
-/// POSIX-single-quoted so the line is safe to `eval`.
+/// POSIX-single-quoted so the line is safe to `eval`. Bare, no trailing
+/// newline: every `text`/`sh` output of `comb get` is, whichever path
+/// rendered it, so a value embeds in a prompt string verbatim.
 #[test]
 fn sh_format_shell_escapes_object_values() {
     let out = conda_output("sh", "it's a $HOME env");
     assert_eq!(
-        out, "env='it'\\''s a $HOME env'\n",
+        out, "env='it'\\''s a $HOME env'",
         "-f sh must shell-escape each object value (canon invariant 8)"
     );
 }
@@ -68,10 +70,7 @@ fn sh_format_object_line_is_eval_safe() {
 #[test]
 fn text_format_leaves_object_values_raw() {
     let out = conda_output("text", "it's a $HOME env");
-    assert_eq!(
-        out, "env=it's a $HOME env\n",
-        "-f text must not shell-escape"
-    );
+    assert_eq!(out, "env=it's a $HOME env", "-f text must not shell-escape");
 }
 
 // ── daemon-backed path (`render::render_data`) ───────────────────────────────
