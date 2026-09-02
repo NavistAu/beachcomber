@@ -1868,9 +1868,8 @@ fn human_rows_leave_the_right_margin_unpainted() {
 fn human_caps_path_column_keeping_the_tail() {
     // A 150+ char session-keyed path (`/dir#session-id`) must not blow the
     // table budget: uncapped, it padded the PATH column of every row past the
-    // cap, wrapping each line under watch/viddy. PATH is capped to the width
-    // the budget leaves and truncated from the left, keeping the
-    // discriminating tail (project dir + #session suffix).
+    // cap, wrapping each line under watch/viddy. The session id compresses
+    // to its last 4 chars first, then the directory keeps its own tail.
     let mut row = wide_value_row();
     let long_path = format!(
         "/private/tmp/{}/scratchpad/e2e/repo#e2e-session-0001",
@@ -1895,12 +1894,55 @@ fn human_caps_path_column_keeping_the_tail() {
         );
     }
     assert!(
-        out.contains("#e2e-session-0001"),
-        "path tail must survive truncation: {out}"
+        out.contains("repo#...0001"),
+        "directory tail and compressed session id must survive: {out}"
     );
     assert!(
         !out.contains("/private/tmp/x"),
         "path head should be truncated away: {out}"
+    );
+}
+
+#[test]
+fn truncation_uses_single_char_ellipsis_outside_ascii_mode() {
+    // Truncation marks cost one column (…) unless --ascii, where the glyph
+    // can't be trusted and "..." is used instead.
+    let mut row = wide_value_row(); // 200-char value forces VALUE truncation
+    row.path = Some(format!("/private/tmp/{}/repo#session-42", "y".repeat(120)));
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(100),
+        no_trunc: false,
+        ascii: false,
+        depth: Some(1),
+    };
+    let out = render_preset("human", &[row.clone()], &opts);
+    assert!(out.contains('\u{2026}'), "unicode mode uses …: {out}");
+    assert!(
+        !out.contains("..."),
+        "unicode mode never spends 3 cols: {out}"
+    );
+    assert!(
+        out.contains("repo#\u{2026}n-42"),
+        "session id compresses to its last 4 chars: {out}"
+    );
+
+    let ascii_out = render_preset(
+        "human",
+        &[row],
+        &RenderOpts {
+            ascii: true,
+            ..opts
+        },
+    );
+    assert!(
+        ascii_out.contains("..."),
+        "ascii mode uses dots: {ascii_out}"
+    );
+    assert!(
+        !ascii_out.contains('\u{2026}'),
+        "no glyph under --ascii: {ascii_out}"
     );
 }
 
@@ -2006,10 +2048,11 @@ fn width_split_gives_value_priority_over_path() {
         "VALUE should get the surplus width, got {value_run} chars: {out}"
     );
 
-    // PATH floors at MIN_PATH_WIDTH and keeps its tail.
+    // PATH floors at MIN_PATH_WIDTH, keeping its directory tail and the
+    // compressed session id.
     let path_run = out
         .lines()
-        .filter_map(|l| l.split_whitespace().find(|w| w.ends_with("repo#sess-1")))
+        .filter_map(|l| l.split_whitespace().find(|w| w.ends_with("#...ss-1")))
         .map(|w| w.chars().count())
         .max()
         .expect("expected the long-path row to render");
@@ -2452,7 +2495,7 @@ fn three_flexible_columns_share_the_budget_by_priority() {
     // FIELD middle-truncates: the head names the owning field, the tail is
     // the discriminating leaf key.
     let field_cell = cell_text("new_status");
-    let path_cell = cell_text("repo#sess-1");
+    let path_cell = cell_text("repo#");
     assert!(
         field_cell.starts_with("api_status")
             && field_cell.contains("...")
@@ -2460,8 +2503,8 @@ fn three_flexible_columns_share_the_budget_by_priority() {
         "field must keep its head and leaf key: {field_cell:?}"
     );
     assert!(
-        path_cell.starts_with("...") && path_cell.ends_with("repo#sess-1"),
-        "path must keep its session tail: {path_cell:?}"
+        path_cell.starts_with("...") && path_cell.ends_with("#...ss-1"),
+        "path must keep its dir tail and compressed session id: {path_cell:?}"
     );
     // FIELD sits between its floor and its flex-relative ceiling — above the
     // floor (it outranks VALUE up to the ceiling) but well short of its
@@ -2471,7 +2514,7 @@ fn three_flexible_columns_share_the_budget_by_priority() {
         (20..=35).contains(&field_w),
         "FIELD should hold its ceiling, got {field_w}: {data:?}"
     );
-    assert_eq!(cell("repo#sess-1"), 20, "PATH floors at 20: {data:?}");
+    assert_eq!(cell("repo#"), 20, "PATH floors at 20: {data:?}");
 
     // VALUE keeps a readable share despite FIELD's ceiling.
     let value_w = cell("vvv");

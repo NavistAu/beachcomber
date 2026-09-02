@@ -1314,14 +1314,15 @@ fn render_table(
         let value_raw = value_to_string(&arrayify(&row.value));
         let tainted = row_is_tainted(row, &path_raw, &value_raw);
 
+        let ell = ellipsis(ascii);
         let provider_text = sanitize_cell(&row.provider, ascii);
         let mut field_text = sanitize_cell(&row.field, ascii);
         if let Some(cap) = field_cap {
-            field_text = truncate_middle(&field_text, cap);
+            field_text = truncate_middle(&field_text, cap, ell);
         }
         let mut path = sanitize_cell(&path_raw, ascii);
         if let Some(cap) = path_cap {
-            path = truncate_tail(&path, cap);
+            path = truncate_path(&path, cap, ell);
         }
 
         // A sanitized row is flagged in its VALUE cell, so the eye can find
@@ -1335,7 +1336,7 @@ fn render_table(
         };
         let mut value = format!("{marker}{}", sanitize_cell(&value_raw, ascii));
         if let Some(max) = value_cap {
-            value = truncate(&value, max);
+            value = truncate(&value, max, ell);
         }
 
         // AGE cell — coloured by stale state.
@@ -1753,18 +1754,50 @@ fn format_age_with_polls(age_ms: u128, polls_elapsed: Option<u32>, ascii: bool) 
 
 /// Truncate to at most `max` characters, keeping the **tail**.
 ///
-/// Used for PATH, whose discriminating part is at the end — the project
-/// directory and `#session` suffix — while its head is uniform `~/ws/…`
-/// noise that is safe to drop. FIELD uses [`truncate_middle`] instead.
-fn truncate_tail(s: &str, max: usize) -> String {
+/// Used for the directory part of PATH, whose discriminating part is at the
+/// end — the project directory — while its head is uniform `~/ws/…` noise
+/// that is safe to drop. FIELD uses [`truncate_middle`] instead.
+fn truncate_tail(s: &str, max: usize, ell: &str) -> String {
     let count = s.chars().count();
     if count <= max {
         s.to_string()
     } else {
-        let keep = max.saturating_sub(3);
+        let keep = max.saturating_sub(ell.chars().count());
         let tail: String = s.chars().skip(count - keep).collect();
-        format!("...{tail}")
+        format!("{ell}{tail}")
     }
+}
+
+/// The table's truncation mark: the one-column `…` glyph, or `...` under
+/// `--ascii` where the glyph can't be trusted.
+fn ellipsis(ascii: bool) -> &'static str {
+    if ascii { "..." } else { "\u{2026}" }
+}
+
+/// Truncate a cache path to at most `max` characters. A `#session` suffix
+/// compresses first — the directory locates the row, the session id only
+/// discriminates it, so the id keeps its last 4 chars (`~/ws/proj#…abcd`).
+/// If the directory alone still overflows, its own tail is kept. A path
+/// with no `#` falls back to plain tail truncation.
+fn truncate_path(s: &str, max: usize, ell: &str) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    if let Some((dir, sess)) = s.rsplit_once('#') {
+        let sess_len = sess.chars().count();
+        let compressed = if sess_len > 4 {
+            let tail: String = s.chars().skip(s.chars().count() - 4).collect();
+            format!("#{ell}{tail}")
+        } else {
+            format!("#{sess}")
+        };
+        let dir_budget = max.saturating_sub(compressed.chars().count());
+        let out = format!("{}{compressed}", truncate_tail(dir, dir_budget, ell));
+        if out.chars().count() <= max {
+            return out;
+        }
+    }
+    truncate_tail(s, max, ell)
 }
 
 /// Re-render index-keyed objects as JSON arrays, recursively. The daemon
@@ -1799,28 +1832,28 @@ fn arrayify(v: &serde_json::Value) -> serde_json::Value {
 /// the head names the owning field (`api_status.…`), the tail is the
 /// discriminating leaf key (`….new_status`) — a destructured name needs
 /// both, unlike a path, whose head is uniform `~/ws/…` noise.
-fn truncate_middle(s: &str, max: usize) -> String {
+fn truncate_middle(s: &str, max: usize, ell: &str) -> String {
     let count = s.chars().count();
     if count <= max {
         s.to_string()
     } else {
-        let keep = max.saturating_sub(3);
+        let keep = max.saturating_sub(ell.chars().count());
         let head_n = keep - keep / 2;
         let head: String = s.chars().take(head_n).collect();
         let tail: String = s.chars().skip(count - keep / 2).collect();
-        format!("{head}...{tail}")
+        format!("{head}{ell}{tail}")
     }
 }
 
-/// Truncate a string to at most `max` characters, appending `…` if trimmed.
-fn truncate(s: &str, max: usize) -> String {
+/// Truncate a string to at most `max` characters, appending `ell` if
+/// trimmed.
+fn truncate(s: &str, max: usize, ell: &str) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        // Reserve 3 chars for "...".
-        let take = max.saturating_sub(3);
+        let take = max.saturating_sub(ell.chars().count());
         let truncated: String = s.chars().take(take).collect();
-        format!("{truncated}...")
+        format!("{truncated}{ell}")
     }
 }
 
