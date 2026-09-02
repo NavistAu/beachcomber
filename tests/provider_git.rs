@@ -49,7 +49,7 @@ fn git_canonical_path_passes_none_through() {
 fn git_provider_metadata() {
     let meta = GitProvider.metadata();
     assert_eq!(meta.name, "git");
-    assert_eq!(meta.sources.len(), 4);
+    assert_eq!(meta.sources.len(), 5);
 
     let head_src = meta.sources.iter().find(|s| s.name == "head").unwrap();
     assert_eq!(head_src.scope, SourceScope::PathScoped);
@@ -90,6 +90,16 @@ fn git_provider_metadata() {
     assert!(diff_fields.contains(&"lines_staged_added"));
     assert!(diff_fields.contains(&"lines_staged_removed"));
 
+    let lineage_src = meta.sources.iter().find(|s| s.name == "lineage").unwrap();
+    assert_eq!(lineage_src.scope, SourceScope::PathScoped);
+    let lineage_fields: Vec<&str> = lineage_src.fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(lineage_fields.contains(&"parent"));
+    assert!(lineage_fields.contains(&"parent_lines_added"));
+    assert!(lineage_fields.contains(&"parent_lines_removed"));
+    assert!(lineage_fields.contains(&"base"));
+    assert!(lineage_fields.contains(&"base_lines_added"));
+    assert!(lineage_fields.contains(&"base_lines_removed"));
+
     let status_src = meta.sources.iter().find(|s| s.name == "status").unwrap();
     assert_eq!(status_src.scope, SourceScope::PathScoped);
     let status_fields: Vec<&str> = status_src.fields.iter().map(|f| f.name.as_str()).collect();
@@ -103,12 +113,32 @@ fn git_provider_metadata() {
 #[test]
 fn git_provider_source_names() {
     let sources = GitProvider.sources();
-    assert_eq!(sources.len(), 4);
+    assert_eq!(sources.len(), 5);
     let names: Vec<&str> = sources.iter().map(|s| s.metadata().name.as_str()).collect();
     assert!(names.contains(&"head"));
     assert!(names.contains(&"refs"));
     assert!(names.contains(&"diff"));
+    assert!(names.contains(&"lineage"));
     assert!(names.contains(&"status"));
+}
+
+#[test]
+fn git_source_names_never_shadow_field_names() {
+    // `query::parse_key` resolves `provider.x` as a SOURCE when `x` is a
+    // registered source name, taking precedence over a field of the same name.
+    // A source named after a field would silently break `comb get git.<field>`.
+    let meta = GitProvider.metadata();
+    let source_names: std::collections::HashSet<&str> =
+        meta.sources.iter().map(|s| s.name.as_str()).collect();
+    for src in &meta.sources {
+        for f in &src.fields {
+            assert!(
+                !source_names.contains(f.name.as_str()),
+                "field '{}' collides with a source name",
+                f.name
+            );
+        }
+    }
 }
 
 #[test]
@@ -511,6 +541,259 @@ fn git_refs_state_detected_in_linked_worktree() {
         "merge",
         "in-progress merge in a linked worktree must be detected via the resolved gitdir"
     );
+}
+
+// ── lineage source ────────────────────────────────────────────────────────────
+
+/// Build `main → devel (+3 lines) → feature (+2 lines)`, with `devel` and
+/// `feature` each created from an explicit start point so their reflogs record
+/// `branch: Created from <start>` rather than `HEAD`.
+///
+/// The initial branch is force-renamed to `main` because `git init`'s default
+/// branch name depends on the host's `init.defaultBranch`.
+fn lineage_fixture() -> GitRepoFixture {
+    let repo = GitRepoFixture::new();
+    repo.git_in(repo.path(), &["branch", "-M", "main"]);
+    repo.with_branch_from("devel", "main")
+        .with_staged_file("f.txt", "a\nb\nc\n")
+        .with_commit("devel work")
+        .with_branch_from("feature", "devel")
+        .with_staged_file("g.txt", "x\ny\n")
+        .with_commit("feature work")
+}
+
+fn lineage_fields(path: &str) -> std::collections::HashMap<String, String> {
+    let sources = GitProvider.sources();
+    let src = sources
+        .iter()
+        .find(|s| s.metadata().name == "lineage")
+        .unwrap();
+    src.execute(Some(path))
+        .fields
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_text()))
+        .collect()
+}
+
+#[test]
+fn git_lineage_parent_from_reflog_and_counts_match_known_diff() {
+    if !common::git::has_git() {
+        return;
+    }
+    let repo = lineage_fixture();
+    let got = lineage_fields(repo.path_str());
+
+    assert_eq!(
+        got.get("parent").map(String::as_str),
+        Some("devel"),
+        "reflog records `Created from devel`; got {got:?}"
+    );
+    // feature adds g.txt (2 lines) on top of devel.
+    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("2"));
+    assert_eq!(
+        got.get("parent_lines_removed").map(String::as_str),
+        Some("0")
+    );
+
+    assert_eq!(got.get("base").map(String::as_str), Some("main"));
+    // Against main, feature carries devel's f.txt (3 lines) plus g.txt (2).
+    assert_eq!(got.get("base_lines_added").map(String::as_str), Some("5"));
+    assert_eq!(got.get("base_lines_removed").map(String::as_str), Some("0"));
+}
+
+#[test]
+fn git_lineage_counts_removed_lines() {
+    if !common::git::has_git() {
+        return;
+    }
+    let repo = lineage_fixture();
+    // Delete two of f.txt's three lines and commit on feature.
+    let repo = repo
+        .with_staged_file("f.txt", "a\n")
+        .with_commit("trim f.txt");
+    let got = lineage_fields(repo.path_str());
+
+    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("2"));
+    assert_eq!(
+        got.get("parent_lines_removed").map(String::as_str),
+        Some("2"),
+        "two lines removed from f.txt since devel; got {got:?}"
+    );
+}
+
+#[test]
+fn git_lineage_missing_reflog_falls_back_to_default_branch() {
+    if !common::git::has_git() {
+        return;
+    }
+    let repo = lineage_fixture();
+    // Simulate a pruned/absent reflog for the checked-out branch.
+    std::fs::remove_file(repo.path().join(".git/logs/refs/heads/feature"))
+        .expect("remove feature reflog");
+
+    let got = lineage_fields(repo.path_str());
+    assert_eq!(
+        got.get("parent").map(String::as_str),
+        Some("main"),
+        "with no reflog the parent falls back to the default branch; got {got:?}"
+    );
+    assert_eq!(got.get("base").map(String::as_str), Some("main"));
+    // Falling back means both comparisons use the same rev.
+    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("5"));
+    assert_eq!(got.get("base_lines_added").map(String::as_str), Some("5"));
+}
+
+#[test]
+fn git_lineage_deleted_parent_falls_back_to_default_branch() {
+    if !common::git::has_git() {
+        return;
+    }
+    let repo = lineage_fixture();
+    // `devel` is still named by feature's reflog, but the branch is gone.
+    repo.git_in(repo.path(), &["branch", "-D", "devel"]);
+
+    let got = lineage_fields(repo.path_str());
+    assert_eq!(
+        got.get("parent").map(String::as_str),
+        Some("main"),
+        "a deleted parent falls back to the default branch; got {got:?}"
+    );
+    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("5"));
+}
+
+#[test]
+fn git_lineage_created_from_head_falls_back_to_default_branch() {
+    if !common::git::has_git() {
+        return;
+    }
+    // `git checkout -b <new>` with no start point records `Created from HEAD`,
+    // which names no branch.
+    let repo = GitRepoFixture::new();
+    repo.git_in(repo.path(), &["branch", "-M", "main"]);
+    let repo = repo
+        .with_branch("solo")
+        .with_staged_file("g.txt", "x\ny\n")
+        .with_commit("solo work");
+
+    let got = lineage_fields(repo.path_str());
+    assert_eq!(got.get("parent").map(String::as_str), Some("main"));
+    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("2"));
+}
+
+#[test]
+fn git_lineage_on_default_branch_without_remote_reports_zero() {
+    if !common::git::has_git() {
+        return;
+    }
+    let repo = GitRepoFixture::new();
+    repo.git_in(repo.path(), &["branch", "-M", "main"]);
+
+    let got = lineage_fields(repo.path_str());
+    // No origin/HEAD, so the default branch resolves to the local `main` — which
+    // is HEAD. Deterministically zero rather than absent.
+    assert_eq!(got.get("base").map(String::as_str), Some("main"));
+    assert_eq!(got.get("base_lines_added").map(String::as_str), Some("0"));
+    assert_eq!(got.get("base_lines_removed").map(String::as_str), Some("0"));
+    assert_eq!(got.get("parent").map(String::as_str), Some("main"));
+    assert_eq!(got.get("parent_lines_added").map(String::as_str), Some("0"));
+}
+
+#[test]
+fn git_lineage_default_branch_from_origin_head_measures_unpushed_work() {
+    if !common::git::has_git() {
+        return;
+    }
+    let repo = GitRepoFixture::new();
+    repo.git_in(repo.path(), &["branch", "-M", "main"]);
+    // Stand up what a clone would have: a remote-tracking ref plus the symref
+    // `refs/remotes/origin/HEAD -> refs/remotes/origin/main`.
+    repo.git_in(
+        repo.path(),
+        &["update-ref", "refs/remotes/origin/main", "main"],
+    );
+    repo.git_in(
+        repo.path(),
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    // Commit locally, ahead of origin/main.
+    let repo = repo
+        .with_staged_file("g.txt", "x\ny\n")
+        .with_commit("unpushed work");
+
+    let got = lineage_fields(repo.path_str());
+    assert_eq!(
+        got.get("base").map(String::as_str),
+        Some("main"),
+        "base is the branch name from origin/HEAD; got {got:?}"
+    );
+    assert_eq!(
+        got.get("base_lines_added").map(String::as_str),
+        Some("2"),
+        "on the default branch the counts measure work not yet on origin"
+    );
+}
+
+#[test]
+fn git_lineage_detached_head_emits_nothing() {
+    if !common::git::has_git() {
+        return;
+    }
+    let repo = lineage_fixture().with_detached_head();
+    let got = lineage_fields(repo.path_str());
+    assert!(
+        got.is_empty(),
+        "detached HEAD has no branch, so no lineage fields; got {got:?}"
+    );
+}
+
+#[test]
+fn git_lineage_returns_empty_for_non_repo() {
+    let tmp = TempDir::new().unwrap();
+    let got = lineage_fields(tmp.path().to_str().unwrap());
+    assert!(got.is_empty());
+}
+
+#[test]
+fn git_lineage_requires_path() {
+    let sources = GitProvider.sources();
+    let src = sources
+        .iter()
+        .find(|s| s.metadata().name == "lineage")
+        .unwrap();
+    assert!(src.execute(None).fields.is_empty());
+}
+
+#[test]
+fn git_lineage_parent_resolved_in_linked_worktree() {
+    if !common::git::has_git() {
+        return;
+    }
+    let repo = lineage_fixture();
+    // Branch reflogs live in the shared commondir, not <wt>/.git (a file), so a
+    // linked worktree must resolve its parent through commondir.
+    repo.git_in(
+        repo.path(),
+        &["worktree", "add", "wt", "-b", "wt-feature", "devel"],
+    );
+    let wt = repo.path().join("wt");
+
+    let got = lineage_fields(wt.to_str().unwrap());
+    assert_eq!(
+        got.get("parent").map(String::as_str),
+        Some("devel"),
+        "worktree branch reflog must be read from the commondir; got {got:?}"
+    );
+    assert_eq!(
+        got.get("parent_lines_added").map(String::as_str),
+        Some("0"),
+        "wt-feature has no commits of its own yet"
+    );
+    assert_eq!(got.get("base").map(String::as_str), Some("main"));
+    assert_eq!(got.get("base_lines_added").map(String::as_str), Some("3"));
 }
 
 #[test]

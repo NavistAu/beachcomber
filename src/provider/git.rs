@@ -220,6 +220,50 @@ fn diff_meta() -> SourceMetadata {
     }
 }
 
+fn lineage_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "lineage".into(),
+        fields: vec![
+            FieldSchema {
+                name: "parent".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "parent_lines_added".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "parent_lines_removed".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "base".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "base_lines_added".into(),
+                field_type: FieldType::Int,
+            },
+            FieldSchema {
+                name: "base_lines_removed".into(),
+                field_type: FieldType::Int,
+            },
+        ],
+        scope: SourceScope::PathScoped,
+        // Poll, like `diff`: the computation is a handful of subprocess spawns,
+        // far too costly to run on every `.git` event. The values only move when
+        // refs move, so 60s (twice `diff`'s interval) is ample; `Polls(2)` keeps
+        // the 120s keep-alive shared by every other git source.
+        invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
+        keep_alive: KeepAlive::Polls(2),
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
+        fsevents_reinstate: false,
+    }
+}
+
 fn status_meta() -> SourceMetadata {
     SourceMetadata {
         name: "status".into(),
@@ -427,6 +471,89 @@ impl Source for GitDiff {
     }
 }
 
+/// Branch-comparison line counts: how much the checked-out branch has diverged
+/// from the branch it was forked off (`parent`) and from the repository's
+/// default branch (`base`).
+///
+/// Both counts are taken from the commit DAG — `git diff --numstat <point>..HEAD`
+/// where `<point>` is a merge base — so they agree with what `git log --graph`
+/// shows. The reflog only refines *which* branch the parent is.
+struct GitLineage {
+    executor: Arc<dyn GitExecutor>,
+}
+
+impl GitLineage {
+    fn new(executor: Arc<dyn GitExecutor>) -> Self {
+        Self { executor }
+    }
+}
+
+impl Source for GitLineage {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(lineage_meta)
+    }
+
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        let Some(path) = path else {
+            return SourceResult::new();
+        };
+        let dir = Path::new(path);
+        let Some(dirs) = resolve_git_dir(dir) else {
+            return SourceResult::new();
+        };
+
+        // Detached HEAD has no branch, so it has neither a parent nor a
+        // meaningful position relative to one. Emit nothing.
+        let (branch, detached) = GitHead::parse_head(&dirs);
+        if detached || branch.is_empty() {
+            return SourceResult::new();
+        }
+
+        let executor = &*self.executor;
+        let base = detect_default_branch(&dirs, dir, executor);
+
+        // Parent: the reflog's recorded fork source when it names a local branch
+        // that still exists and is not this branch; otherwise the default branch.
+        let parent = read_reflog_parent(&dirs, &branch)
+            .filter(|p| p != &branch && local_branch_exists(dir, p, executor))
+            .map(|p| (p.clone(), p))
+            .or_else(|| base.clone());
+
+        let parent_counts = parent
+            .as_ref()
+            .map(|(_, rev)| lines_since(dir, rev, executor));
+
+        let mut result = SourceResult::new();
+
+        if let (Some((name, _)), Some((added, removed))) = (&parent, parent_counts) {
+            result.insert("parent", Value::String(name.clone()));
+            result.insert("parent_lines_added", Value::Int(added));
+            result.insert("parent_lines_removed", Value::Int(removed));
+        }
+
+        if let Some((name, rev)) = &base {
+            // Whenever the parent fell back to the default branch the two revs
+            // are identical — reuse the counts rather than spawning the same
+            // subprocesses twice.
+            let same_as_parent = parent.as_ref().is_some_and(|(_, p)| p == rev);
+            let (added, removed) = match (same_as_parent, parent_counts) {
+                (true, Some(counts)) => counts,
+                _ => lines_since(dir, rev, executor),
+            };
+            result.insert("base", Value::String(name.clone()));
+            result.insert("base_lines_added", Value::Int(added));
+            result.insert("base_lines_removed", Value::Int(removed));
+        }
+
+        result
+    }
+
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        walk_to_git(path)
+    }
+}
+
 struct GitStatus {
     executor: Arc<dyn GitExecutor>,
 }
@@ -486,7 +613,13 @@ impl Provider for GitProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "git".into(),
-            sources: vec![head_meta(), refs_meta(), diff_meta(), status_meta()],
+            sources: vec![
+                head_meta(),
+                refs_meta(),
+                diff_meta(),
+                lineage_meta(),
+                status_meta(),
+            ],
         }
     }
 
@@ -496,6 +629,7 @@ impl Provider for GitProvider {
             Box::new(GitHead),
             Box::new(GitRefs::new(Arc::clone(&exec))),
             Box::new(GitDiff::new(Arc::clone(&exec))),
+            Box::new(GitLineage::new(Arc::clone(&exec))),
             Box::new(GitStatus::new(exec)),
         ]
     }
@@ -513,7 +647,13 @@ pub fn git_provider_with_executor(executor: Arc<dyn GitExecutor>) -> impl Provid
         fn metadata(&self) -> ProviderMetadata {
             ProviderMetadata {
                 name: "git".into(),
-                sources: vec![head_meta(), refs_meta(), diff_meta(), status_meta()],
+                sources: vec![
+                    head_meta(),
+                    refs_meta(),
+                    diff_meta(),
+                    lineage_meta(),
+                    status_meta(),
+                ],
             }
         }
         fn sources(&self) -> Vec<Box<dyn Source>> {
@@ -521,6 +661,7 @@ pub fn git_provider_with_executor(executor: Arc<dyn GitExecutor>) -> impl Provid
                 Box::new(GitHead),
                 Box::new(GitRefs::new(Arc::clone(&self.executor))),
                 Box::new(GitDiff::new(Arc::clone(&self.executor))),
+                Box::new(GitLineage::new(Arc::clone(&self.executor))),
                 Box::new(GitStatus::new(Arc::clone(&self.executor))),
             ]
         }
@@ -675,6 +816,15 @@ fn diff_numstat_staged(dir: &Path, executor: &dyn GitExecutor) -> (i64, i64) {
     parse_numstat_output(output)
 }
 
+/// Runs `git diff --numstat <range>` and returns (lines_added, lines_removed) summed.
+fn diff_numstat_range(dir: &Path, range: &str, executor: &dyn GitExecutor) -> (i64, i64) {
+    let output = executor.run_git(
+        dir,
+        vec!["diff".into(), "--numstat".into(), range.to_string()],
+    );
+    parse_numstat_output(output)
+}
+
 fn parse_numstat_output(output: Result<std::process::Output, std::io::Error>) -> (i64, i64) {
     let output = match output {
         Ok(o) if o.status.success() => o,
@@ -787,6 +937,139 @@ fn get_push_divergence(dir: &Path, branch: &str, executor: &dyn GitExecutor) -> 
         (ahead, behind)
     } else {
         (0, 0)
+    }
+}
+
+// ── Lineage internals ─────────────────────────────────────────────────────────
+
+/// The branch a branch was forked from, per the oldest entry of its reflog.
+///
+/// Branch reflogs live in the **common** dir (`logs/refs/heads/<branch>`) — only
+/// `logs/HEAD` is per-worktree — so a linked worktree reads the same file as the
+/// main checkout. The oldest entry's message is `branch: Created from <X>`,
+/// where `<X>` is verbatim what the user passed as the start point. `git
+/// checkout -b <new>` with no start point records `HEAD`, and a raw revision
+/// records a hash; neither names a branch, so both yield `None` and the caller
+/// falls back to the default branch.
+fn read_reflog_parent(dirs: &GitDirs, branch: &str) -> Option<String> {
+    // `branch` comes from HEAD verbatim; keep a malformed one from walking out
+    // of the reflog directory. Git's own refname rules already forbid these.
+    if branch
+        .split('/')
+        .any(|c| c.is_empty() || c == "." || c == "..")
+    {
+        return None;
+    }
+    let mut reflog = dirs.commondir.join("logs").join("refs").join("heads");
+    for component in branch.split('/') {
+        reflog.push(component);
+    }
+    let contents = std::fs::read_to_string(&reflog).ok()?;
+
+    // `<old> <new> <name> <email> <ts> <tz>\t<message>`
+    let message = contents.lines().next()?.split_once('\t')?.1;
+    let candidate = message.strip_prefix("branch: Created from ")?.trim();
+
+    if candidate.is_empty() || candidate == "HEAD" || is_hex_oid(candidate) {
+        return None;
+    }
+    Some(candidate.to_string())
+}
+
+fn is_hex_oid(s: &str) -> bool {
+    (s.len() == 40 || s.len() == 64) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// The repository's default branch as (display name, revision to compare against).
+///
+/// Prefers `<commondir>/refs/remotes/origin/HEAD` — a loose symref file reading
+/// `ref: refs/remotes/origin/<name>` — in which case the comparison revision is
+/// the remote-tracking `origin/<name>`, so a checkout sitting *on* the default
+/// branch still measures the work it has not pushed. Without it, falls back to
+/// whichever of `main` / `master` resolves locally.
+fn detect_default_branch(
+    dirs: &GitDirs,
+    dir: &Path,
+    executor: &dyn GitExecutor,
+) -> Option<(String, String)> {
+    let origin_head = dirs
+        .commondir
+        .join("refs")
+        .join("remotes")
+        .join("origin")
+        .join("HEAD");
+    if let Ok(contents) = std::fs::read_to_string(&origin_head)
+        && let Some(name) = contents
+            .trim()
+            .strip_prefix("ref: refs/remotes/origin/")
+            .filter(|n| !n.is_empty())
+    {
+        return Some((name.to_string(), format!("origin/{name}")));
+    }
+
+    ["main", "master"]
+        .into_iter()
+        .find(|name| local_branch_exists(dir, name, executor))
+        .map(|name| (name.to_string(), name.to_string()))
+}
+
+/// Whether `refs/heads/<branch>` resolves. Asks git rather than stat-ing
+/// `refs/heads/` so packed refs — the normal state of a fresh clone — count.
+fn local_branch_exists(dir: &Path, branch: &str, executor: &dyn GitExecutor) -> bool {
+    let output = executor.run_git(
+        dir,
+        vec![
+            "rev-parse".into(),
+            "--verify".into(),
+            "--quiet".into(),
+            format!("refs/heads/{branch}"),
+        ],
+    );
+    matches!(output, Ok(o) if o.status.success())
+}
+
+/// Lines added/removed on HEAD since it diverged from `rev`.
+///
+/// The divergence point is `git merge-base --fork-point <rev> HEAD`, which uses
+/// `<rev>`'s reflog to pick the commit HEAD actually branched from even after
+/// `<rev>` has been rebased. A pruned reflog or a fresh clone leaves it with
+/// nothing to say (empty output), so plain `git merge-base` takes over.
+fn lines_since(dir: &Path, rev: &str, executor: &dyn GitExecutor) -> (i64, i64) {
+    let Some(point) = merge_base(dir, rev, executor) else {
+        return (0, 0);
+    };
+    diff_numstat_range(dir, &format!("{point}..HEAD"), executor)
+}
+
+fn merge_base(dir: &Path, rev: &str, executor: &dyn GitExecutor) -> Option<String> {
+    let fork_point = executor.run_git(
+        dir,
+        vec![
+            "merge-base".into(),
+            "--fork-point".into(),
+            rev.to_string(),
+            "HEAD".into(),
+        ],
+    );
+    if let Some(point) = first_line_if_success(fork_point) {
+        return Some(point);
+    }
+
+    let plain = executor.run_git(
+        dir,
+        vec!["merge-base".into(), rev.to_string(), "HEAD".into()],
+    );
+    first_line_if_success(plain)
+}
+
+fn first_line_if_success(output: Result<std::process::Output, std::io::Error>) -> Option<String> {
+    let output = output.ok().filter(|o| o.status.success())?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next()?.trim();
+    if line.is_empty() {
+        None
+    } else {
+        Some(line.to_string())
     }
 }
 

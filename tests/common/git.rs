@@ -95,6 +95,13 @@ impl GitRepoFixture {
         self
     }
 
+    /// Create and check out a new branch from an explicit start point, so the
+    /// branch's reflog records `branch: Created from <start>` rather than `HEAD`.
+    pub fn with_branch_from(self, name: &str, start: &str) -> Self {
+        git(self.path(), &["checkout", "-b", name, start]);
+        self
+    }
+
     /// Add an additional commit with a given message (commits all staged changes).
     pub fn with_commit(self, message: &str) -> Self {
         git(self.path(), &["commit", "--allow-empty", "-m", message]);
