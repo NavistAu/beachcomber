@@ -298,8 +298,9 @@ pub fn resolve_color(mode: ColorMode, no_color_env: bool, is_tty: bool) -> bool 
 /// - `Some(n)` → parse `n` as a `usize`, falling back to the default on error.
 ///
 /// The returned value is the cap for the **entire rendered row** (all columns +
-/// padding). The renderer shrinks the VALUE column as needed to stay within this
-/// budget, keeping all other columns at their natural widths.
+/// padding). The renderer shrinks the VALUE and PATH columns as needed to stay
+/// within this budget — VALUE first in line, PATH taking what is left — and
+/// keeps the other five columns at their natural widths.
 pub fn resolve_max_width(arg: Option<&str>, terminal_cols: Option<usize>) -> usize {
     const DEFAULT: usize = 120;
     match arg {
@@ -854,6 +855,7 @@ const TTL_COL_IDX: usize = 6;
 const HEADERS: [&str; COLS] = ["PROVIDER", "FIELD", "VALUE", "PATH", "AGE", "POLL", "TTL"];
 const H_PROVIDER: usize = 0;
 const H_FIELD: usize = 1;
+const H_VALUE: usize = 2;
 const H_PATH: usize = 3;
 const H_AGE: usize = 4;
 const H_POLL: usize = 5;
@@ -916,6 +918,7 @@ fn render_table(
     // -----------------------------------------------------------------------
     let mut nat_provider = HEADERS[H_PROVIDER].len();
     let mut nat_field = HEADERS[H_FIELD].len();
+    let mut nat_value = HEADERS[H_VALUE].len();
     let mut nat_path = HEADERS[H_PATH].len();
     let mut nat_age = HEADERS[H_AGE].len();
     let mut nat_poll = HEADERS[H_POLL].len();
@@ -930,6 +933,7 @@ fn render_table(
         nat_provider = nat_provider.max(row.provider.chars().count());
         nat_path = nat_path.max(path.chars().count());
         nat_field = nat_field.max(row.field.chars().count());
+        nat_value = nat_value.max(value_to_string(&row.value).chars().count());
         nat_age = nat_age.max(
             format_age_with_polls(row.age_ms, row.polls_elapsed, ascii)
                 .chars()
@@ -970,47 +974,45 @@ fn render_table(
     // Non-VALUE: nat_provider + nat_path + nat_field + nat_age + nat_poll + nat_ttl + 12 + 4
     // -----------------------------------------------------------------------
     const MIN_VALUE_WIDTH: usize = 8;
+    // Wide enough that a tail-truncated session path (`…/project#session-id`)
+    // still shows the directory that discriminates it.
+    const MIN_PATH_WIDTH: usize = 20;
     const SEP_TOTAL: usize = 12; // 6 separators × 2 spaces
     const MARGIN: usize = 2; // left margin, printed; right margin, reserved only
     const MARGIN_TOTAL: usize = MARGIN * 2;
 
-    // PATH is the one unbounded non-VALUE column: session-keyed cache paths
-    // (`/dir#session-id`) run past 150 chars, and an uncapped PATH pads every
-    // row far beyond the table budget — each line then wraps under watch/viddy.
-    // Cap it to whatever the budget leaves once the other columns take their
-    // natural widths and VALUE keeps its minimum, floored at MIN_PATH_WIDTH.
-    const MIN_PATH_WIDTH: usize = 16;
-    let path_cap: Option<usize> = trunc.and_then(|total_cap| {
-        let non_path = nat_provider
-            + nat_field
-            + nat_age
-            + nat_poll
-            + nat_ttl
-            + SEP_TOTAL
-            + MARGIN_TOTAL
-            + MIN_VALUE_WIDTH;
-        let budget = total_cap.saturating_sub(non_path).max(MIN_PATH_WIDTH);
-        (nat_path > budget).then_some(budget)
-    });
-    if let Some(cap) = path_cap {
-        nat_path = cap;
-    }
-
-    let value_cap: Option<usize> = trunc.map(|total_cap| {
-        let non_value = nat_provider
-            + nat_path
-            + nat_field
-            + nat_age
-            + nat_poll
-            + nat_ttl
-            + SEP_TOTAL
-            + MARGIN_TOTAL;
-        if total_cap > non_value + MIN_VALUE_WIDTH {
-            total_cap - non_value
-        } else {
-            MIN_VALUE_WIDTH
+    // VALUE and PATH are the two flexible columns; the other five always take
+    // their natural widths. Whatever the budget leaves after those is `flex`,
+    // and it is split VALUE-first.
+    //
+    // The previous split gave PATH its natural width first and handed VALUE
+    // the remainder, so a handful of long session-keyed paths pinned VALUE at
+    // its 8-char floor for the entire table while PATH sat mostly padding —
+    // the column the user is reading truncated to make room for the one they
+    // are not. VALUE now states its need first and PATH takes what is left,
+    // never dropping below MIN_PATH_WIDTH (or its own natural width, when
+    // that is already narrower).
+    let (path_cap, value_cap) = match trunc {
+        None => (None, None),
+        Some(total_cap) => {
+            let fixed =
+                nat_provider + nat_field + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
+            let flex = total_cap.saturating_sub(fixed);
+            if nat_value + nat_path <= flex {
+                // Both columns fit at their natural widths: nothing truncates.
+                (None, None)
+            } else {
+                let path_w = flex
+                    .saturating_sub(nat_value)
+                    .clamp(MIN_PATH_WIDTH.min(nat_path), nat_path);
+                let value_w = MIN_VALUE_WIDTH.max(flex.saturating_sub(path_w));
+                (
+                    (path_w < nat_path).then_some(path_w),
+                    (value_w < nat_value).then_some(value_w),
+                )
+            }
         }
-    });
+    };
 
     // -----------------------------------------------------------------------
     // Pass 2: build cells, applying VALUE cap only.

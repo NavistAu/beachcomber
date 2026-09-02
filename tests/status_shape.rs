@@ -1933,3 +1933,65 @@ fn human_output_has_no_control_chars_besides_newline() {
         );
     }
 }
+
+#[test]
+fn width_split_gives_value_priority_over_path() {
+    // Two flexible columns competing for one budget. PATH used to claim its
+    // natural width first, pinning VALUE at its 8-char floor across the whole
+    // table so a long session path could truncate away the data being read.
+    // VALUE now states its need first; PATH takes the remainder and floors at
+    // MIN_PATH_WIDTH (20), enough to keep a recognizable tail.
+    let mut long_value = wide_value_row(); // 200-char value
+    long_value.path = Some("/repo".into());
+    let mut long_path = wide_value_row();
+    long_path.value = serde_json::json!("short");
+    long_path.path = Some(format!("/private/tmp/{}/repo#sess-1", "p".repeat(125)));
+    assert_eq!(
+        long_path.path.as_deref().unwrap().chars().count(),
+        150,
+        "fixture should be a 150-char path"
+    );
+
+    let cap = 120usize;
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(cap),
+        no_trunc: false,
+        ascii: true,
+    };
+    let out = render_preset("human", &[long_value, long_path], &opts);
+
+    for line in out.lines() {
+        assert!(
+            line.chars().count() <= cap - 2,
+            "line is {} chars, exceeds cap {cap} minus the reserved margin: {line:?}",
+            line.chars().count()
+        );
+    }
+
+    // VALUE keeps well more than its floor — it should get the surplus the
+    // path no longer hogs.
+    let value_run = out
+        .lines()
+        .filter_map(|l| l.split_whitespace().find(|w| w.starts_with("vvv")))
+        .map(|w| w.chars().count())
+        .max()
+        .expect("expected the long-value row to render");
+    assert!(
+        value_run > 40,
+        "VALUE should get the surplus width, got {value_run} chars: {out}"
+    );
+
+    // PATH floors at MIN_PATH_WIDTH and keeps its tail.
+    let path_run = out
+        .lines()
+        .filter_map(|l| l.split_whitespace().find(|w| w.ends_with("repo#sess-1")))
+        .map(|w| w.chars().count())
+        .max()
+        .expect("expected the long-path row to render");
+    assert_eq!(
+        path_run, 20,
+        "PATH should floor at MIN_PATH_WIDTH: {path_run} chars in {out}"
+    );
+}
