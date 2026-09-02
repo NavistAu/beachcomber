@@ -31,7 +31,7 @@ impl GitRepoFixture {
         let dir = TempDir::new().expect("TempDir::new");
         let path = dir.path();
 
-        git(path, &["init"]);
+        git(path, &["init", "--initial-branch=main"]);
         git(path, &["config", "user.email", "test@test.com"]);
         git(path, &["config", "user.name", "Test"]);
         std::fs::write(path.join("README.md"), "# test").expect("write README.md");
@@ -130,9 +130,7 @@ impl GitRepoFixture {
     /// Like `git_in` but does NOT panic on non-zero exit. Use when the command
     /// is expected to "fail" (e.g. `git merge` that produces a conflict).
     pub fn git_in_allow_failure(&self, dir: &Path, args: &[&str]) {
-        Command::new("git")
-            .args(args)
-            .current_dir(dir)
+        git_cmd(dir, args)
             .output()
             .unwrap_or_else(|e| panic!("git {:?}: {e}", args));
         // non-zero exit is intentionally not checked — caller expects it
@@ -157,11 +155,23 @@ pub fn has_git() -> bool {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// `git` with the host's configuration shut out. A `commit.gpgsign = true` in
+/// the developer's global config turns every fixture commit into a signing
+/// round-trip — ~100ms each, serialised through the agent when tests run in
+/// parallel — and `init.defaultBranch` would make the initial branch name
+/// depend on the machine.
+fn git_cmd(dir: &Path, args: &[&str]) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd
+}
+
 #[allow(dead_code)]
 fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
+    let out = git_cmd(dir, args)
         .output()
         .unwrap_or_else(|e| panic!("git {:?}: {e}", args));
     if !out.status.success() {
@@ -176,9 +186,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 #[allow(dead_code)]
 fn git_output(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
+    let out = git_cmd(dir, args)
         .output()
         .unwrap_or_else(|e| panic!("git {:?}: {e}", args));
     if !out.status.success() {
