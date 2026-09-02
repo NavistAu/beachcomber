@@ -158,13 +158,13 @@ comb s -f json
 ```sh
 $ comb p agent '{"session":{"name":"claude","ctx_pct":42}}'
 $ comb s --filter=provider=agent
-PROVIDER  FIELD                VALUE   PATH  AGE  POLL  TTL
-agent     session.ctx_pct      42      -     0s      -  ---
-agent     session.name         claude  -     0s      -  ---
+PROVIDER  FIELD            VALUE   PATH  AGE  POLL  TTL
+agent     session.ctx_pct  42      -     0s      -  ---
+agent     session.name     claude  -     0s      -  ---
 
 $ comb s --filter=provider=agent --depth 1
-PROVIDER  FIELD    VALUE                            PATH  AGE  POLL  TTL
-agent     session  {"ctx_pct":42,"name":"claude"}   -     0s      -  ---
+PROVIDER  FIELD    VALUE                           PATH  AGE  POLL  TTL
+agent     session  {"ctx_pct":42,"name":"claude"}  -     0s      -  ---
 ```
 
 `--filter` and `--sort` see the destructured field names, so `--filter=field=session.name` works on the expanded rows.
