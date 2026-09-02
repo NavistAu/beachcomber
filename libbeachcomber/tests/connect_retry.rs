@@ -70,22 +70,43 @@ fn connect_retries_succeed_after_brief_outage() {
 }
 
 #[test]
-fn connect_retries_exhaust_after_three_attempts() {
+fn connect_retries_exhaust_at_the_budget() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("nosock");
 
     let start = Instant::now();
-    let result = libbeachcomber::connect_with_retry(&sock);
+    let result = libbeachcomber::connect_with_retry_for(&sock, Duration::from_millis(200));
     let elapsed = start.elapsed();
 
     assert!(
         result.is_err(),
-        "connect_with_retry should fail when nothing binds"
+        "connect_with_retry_for should fail when nothing binds"
     );
-    // 250 + 500 + 1000 = 1750ms minimum (backoffs before final attempt).
+    // The last sleep is clipped to the deadline, so the final attempt lands
+    // at the budget, not past the next doubling.
     assert!(
-        elapsed >= Duration::from_millis(1700),
-        "should wait through all retries; elapsed={:?}",
+        elapsed >= Duration::from_millis(200),
+        "should keep trying until the budget is spent; elapsed={:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn zero_budget_is_a_single_attempt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("nosock");
+
+    let start = Instant::now();
+    let result = libbeachcomber::connect_with_retry_for(&sock, Duration::ZERO);
+    let elapsed = start.elapsed();
+
+    assert_eq!(
+        result.err().map(|e| e.kind()),
+        Some(std::io::ErrorKind::NotFound)
+    );
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "no budget means no sleeping; elapsed={:?}",
         elapsed
     );
 }

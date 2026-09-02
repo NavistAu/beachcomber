@@ -34,7 +34,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Connect to a Unix socket with 3 retries (250ms / 500ms / 1s exponential backoff).
 ///
@@ -42,31 +42,39 @@ use std::time::Duration;
 /// immediately. Intended to cover the brief restart window when the old daemon
 /// has shut down and the new one hasn't bound yet.
 pub fn connect_with_retry(path: &Path) -> std::io::Result<UnixStream> {
-    const BACKOFFS: [Duration; 3] = [
-        Duration::from_millis(250),
-        Duration::from_millis(500),
-        Duration::from_millis(1000),
-    ];
+    connect_with_retry_for(path, DEFAULT_CONNECT_TIMEOUT)
+}
 
-    let mut last_err: Option<std::io::Error> = None;
-    for backoff in &BACKOFFS {
+/// Total time [`connect_with_retry`] keeps trying before giving up.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Like [`connect_with_retry`], but keeps trying for up to `budget`. The
+/// first retry waits 5ms and each later one doubles (5, 10, 20, 40, ... ms,
+/// the last clipped to the budget), so a daemon that binds early is reached
+/// within milliseconds while a restart window as long as `budget` is still
+/// covered. A zero budget is a single attempt.
+pub fn connect_with_retry_for(path: &Path, budget: Duration) -> std::io::Result<UnixStream> {
+    let deadline = Instant::now() + budget;
+    let mut delay = Duration::from_millis(5);
+    loop {
         match UnixStream::connect(path) {
             Ok(s) => return Ok(s),
             Err(e) => {
-                let kind = e.kind();
                 if !matches!(
-                    kind,
+                    e.kind(),
                     std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
                 ) {
                     return Err(e);
                 }
-                last_err = Some(e);
-                std::thread::sleep(*backoff);
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(e);
+                }
+                std::thread::sleep(delay.min(deadline - now));
+                delay *= 2;
             }
         }
     }
-    // Final attempt after all backoffs.
-    UnixStream::connect(path).map_err(|e| last_err.unwrap_or(e))
 }
 
 /// Result of a cache query.
@@ -525,6 +533,8 @@ impl Default for ClientConfig {
 pub struct Client {
     config: ClientConfig,
     socket_path_override: Option<PathBuf>,
+    /// How long `connect` keeps retrying before giving up.
+    connect_timeout: Duration,
     /// Version skew, if any, discovered via `hello` on this client's first
     /// connection. Checked once — later connections reuse this rather than
     /// probing again, so it is never a per-op cost.
@@ -537,6 +547,7 @@ impl Client {
         Self {
             config: ClientConfig::default(),
             socket_path_override: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             version_skew: OnceLock::new(),
         }
     }
@@ -546,6 +557,7 @@ impl Client {
         Self {
             config,
             socket_path_override: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             version_skew: OnceLock::new(),
         }
     }
@@ -577,6 +589,13 @@ impl Client {
     /// useful for tests that spawn a daemon on a custom socket.
     pub fn with_socket_path(mut self, path: PathBuf) -> Self {
         self.socket_path_override = Some(path);
+        self
+    }
+
+    /// How long connecting keeps retrying before giving up (default
+    /// [`DEFAULT_CONNECT_TIMEOUT`]). Zero means a single attempt.
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = timeout;
         self
     }
 
@@ -854,7 +873,8 @@ impl Client {
     }
 
     fn connect(&self, path: &Path) -> Result<UnixStream, CombError> {
-        let stream = connect_with_retry(path).map_err(CombError::ConnectionFailed)?;
+        let stream = connect_with_retry_for(path, self.connect_timeout)
+            .map_err(CombError::ConnectionFailed)?;
         stream.set_read_timeout(Some(self.config.timeout))?;
         stream.set_write_timeout(Some(self.config.timeout))?;
         Ok(stream)
