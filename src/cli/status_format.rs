@@ -1201,47 +1201,62 @@ fn render_table(
     }
 
     // -----------------------------------------------------------------------
-    // Compute effective VALUE cap from the total-table-width budget.
+    // Split the total-table-width budget across the flexible columns.
     // Layout: MARGIN provider(2sp)field(2sp)value(2sp)path(2sp)age(2sp)poll(2sp)ttl MARGIN
     // Separators: 6 × 2 = 12
     // Margins: 2 spaces each side (breathing room so the table doesn't hug
     // the terminal edge).
-    // Non-VALUE: nat_provider + nat_path + nat_field + nat_age + nat_poll + nat_ttl + 12 + 4
     // -----------------------------------------------------------------------
     const MIN_VALUE_WIDTH: usize = 8;
     // Wide enough that a tail-truncated session path (`…/project#session-id`)
-    // still shows the directory that discriminates it.
+    // or destructured field name (`…incident_updates.0.new_status`) still
+    // shows the leaf that discriminates it.
     const MIN_PATH_WIDTH: usize = 20;
+    const MIN_FIELD_WIDTH: usize = 20;
     const SEP_TOTAL: usize = 12; // 6 separators × 2 spaces
     const MARGIN: usize = 2; // left margin, printed; right margin, reserved only
     const MARGIN_TOTAL: usize = MARGIN * 2;
 
-    // VALUE and PATH are the two flexible columns; the other five always take
-    // their natural widths. Whatever the budget leaves after those is `flex`,
-    // and it is split VALUE-first.
+    // VALUE, FIELD and PATH are the three flexible columns; PROVIDER, AGE,
+    // POLL and TTL always take their natural widths. Whatever the budget
+    // leaves after those four is `flex`, split by priority: VALUE, then
+    // FIELD, then PATH.
     //
-    // The previous split gave PATH its natural width first and handed VALUE
-    // the remainder, so a handful of long session-keyed paths pinned VALUE at
-    // its 8-char floor for the entire table while PATH sat mostly padding —
-    // the column the user is reading truncated to make room for the one they
-    // are not. VALUE now states its need first and PATH takes what is left,
-    // never dropping below MIN_PATH_WIDTH (or its own natural width, when
-    // that is already narrower).
-    let (path_cap, value_cap) = match trunc {
-        None => (None, None),
+    // All three are unbounded in practice — values are arbitrary JSON, paths
+    // carry `#session` suffixes, and destructuring makes field names as deep
+    // as the data. Any one of them left uncapped pins the other two at their
+    // floors across the whole table: that is what an uncapped PATH did to
+    // VALUE before, and what an uncapped FIELD did once destructuring landed.
+    //
+    // So each column takes its natural width only insofar as the
+    // lower-priority ones can still stand on their floors, and what it
+    // declines passes down the chain.
+    let (field_cap, path_cap, value_cap) = match trunc {
+        None => (None, None, None),
         Some(total_cap) => {
-            let fixed =
-                nat_provider + nat_field + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
+            let fixed = nat_provider + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
             let flex = total_cap.saturating_sub(fixed);
-            if nat_value + nat_path <= flex {
-                // Both columns fit at their natural widths: nothing truncates.
-                (None, None)
+            if nat_value + nat_field + nat_path <= flex {
+                // All three fit at their natural widths: nothing truncates.
+                (None, None, None)
             } else {
-                let path_w = flex
-                    .saturating_sub(nat_value)
-                    .clamp(MIN_PATH_WIDTH.min(nat_path), nat_path);
-                let value_w = MIN_VALUE_WIDTH.max(flex.saturating_sub(path_w));
+                // A floor never widens a column past what it actually needs,
+                // hence the `.min(nat_*)` on each.
+                let field_floor = MIN_FIELD_WIDTH.min(nat_field);
+                let path_floor = MIN_PATH_WIDTH.min(nat_path);
+
+                let value_w = nat_value
+                    .min(flex.saturating_sub(field_floor + path_floor))
+                    .max(MIN_VALUE_WIDTH.min(nat_value));
+                let field_w = nat_field
+                    .min(flex.saturating_sub(value_w + path_floor))
+                    .max(field_floor);
+                let path_w = nat_path
+                    .min(flex.saturating_sub(value_w + field_w))
+                    .max(path_floor);
+
                 (
+                    (field_w < nat_field).then_some(field_w),
                     (path_w < nat_path).then_some(path_w),
                     (value_w < nat_value).then_some(value_w),
                 )
@@ -1250,7 +1265,7 @@ fn render_table(
     };
 
     // -----------------------------------------------------------------------
-    // Pass 2: build cells, applying VALUE cap only.
+    // Pass 2: build cells, applying the caps computed above.
     // -----------------------------------------------------------------------
 
     // Build string cells — each row is a fixed-length array of display strings.
@@ -1276,10 +1291,13 @@ fn render_table(
         let tainted = row_is_tainted(row, &path_raw, &value_raw);
 
         let provider_text = sanitize_cell(&row.provider, ascii);
-        let field_text = sanitize_cell(&row.field, ascii);
+        let mut field_text = sanitize_cell(&row.field, ascii);
+        if let Some(cap) = field_cap {
+            field_text = truncate_tail(&field_text, cap);
+        }
         let mut path = sanitize_cell(&path_raw, ascii);
         if let Some(cap) = path_cap {
-            path = truncate_path_tail(&path, cap);
+            path = truncate_tail(&path, cap);
         }
 
         // A sanitized row is flagged in its VALUE cell, so the eye can find
@@ -1687,10 +1705,14 @@ fn format_age_with_polls(age_ms: u128, polls_elapsed: Option<u32>, ascii: bool) 
     }
 }
 
-/// Truncate a path to at most `max` characters, keeping the tail — the
-/// discriminating part of a cache path (project directory, `#session`
-/// suffix) is at the end.
-fn truncate_path_tail(s: &str, max: usize) -> String {
+/// Truncate to at most `max` characters, keeping the **tail**.
+///
+/// Used for PATH and FIELD, both of which carry their discriminating part at
+/// the end: a cache path ends in the project directory and `#session` suffix,
+/// and a destructured field name ends in the leaf key
+/// (`api_status.incidents.10.…​.new_status`). Their shared prefixes are what
+/// makes them long, and are exactly what is safe to drop.
+fn truncate_tail(s: &str, max: usize) -> String {
     let count = s.chars().count();
     if count <= max {
         s.to_string()

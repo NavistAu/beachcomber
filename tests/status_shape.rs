@@ -2397,3 +2397,75 @@ fn highlighting_survives_a_truncated_value() {
         "every ESC must open a complete SGR sequence: {out:?}"
     );
 }
+
+#[test]
+fn three_flexible_columns_share_the_budget_by_priority() {
+    // All three flexible columns oversized at once: a 75-char destructured
+    // field name, a 150-char session path and a 200-char value, at cap 120.
+    // VALUE has priority, FIELD and PATH fall to their 20-char floors, and
+    // the row still fits the budget.
+    let mut row = wide_value_row(); // 200-char value
+    row.field =
+        "api_status.incidents.10.incident_updates.0.affected_components.0.new_status".into();
+    assert_eq!(row.field.chars().count(), 75, "fixture should be 75 chars");
+    row.path = Some(format!("/private/tmp/{}/repo#sess-1", "p".repeat(125)));
+    assert_eq!(
+        row.path.as_deref().unwrap().chars().count(),
+        150,
+        "fixture should be a 150-char path"
+    );
+
+    let cap = 120usize;
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(cap),
+        no_trunc: false,
+        ascii: true,
+        depth: Some(1),
+    };
+    let out = render_preset("human", &[row], &opts);
+
+    for line in out.lines() {
+        assert!(
+            line.chars().count() <= cap - 2,
+            "line is {} chars, exceeds cap {cap} minus the reserved margin: {line:?}",
+            line.chars().count()
+        );
+    }
+
+    let data = out.lines().nth(1).expect("expected a data row");
+    let cell = |needle: &str| {
+        data.split("  ")
+            .find(|c| c.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} not found in {data:?}"))
+            .chars()
+            .count()
+    };
+
+    // FIELD and PATH floor at MIN_*_WIDTH, keeping their discriminating tails.
+    let cell_text = |needle: &str| {
+        data.split("  ")
+            .find(|c| c.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} not found in {data:?}"))
+    };
+    let field_cell = cell_text("new_status");
+    let path_cell = cell_text("repo#sess-1");
+    assert!(
+        field_cell.starts_with("...") && field_cell.ends_with("new_status"),
+        "field must keep its leaf key: {field_cell:?}"
+    );
+    assert!(
+        path_cell.starts_with("...") && path_cell.ends_with("repo#sess-1"),
+        "path must keep its session tail: {path_cell:?}"
+    );
+    assert_eq!(cell("new_status"), 20, "FIELD floors at 20: {data:?}");
+    assert_eq!(cell("repo#sess-1"), 20, "PATH floors at 20: {data:?}");
+
+    // VALUE takes the surplus — strictly the largest of the three.
+    let value_w = cell("vvv");
+    assert!(
+        value_w > 20,
+        "VALUE should get the largest share, got {value_w}: {data:?}"
+    );
+}
