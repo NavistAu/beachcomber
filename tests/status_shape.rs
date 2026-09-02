@@ -2402,8 +2402,9 @@ fn highlighting_survives_a_truncated_value() {
 fn three_flexible_columns_share_the_budget_by_priority() {
     // All three flexible columns oversized at once: a 75-char destructured
     // field name, a 150-char session path and a 200-char value, at cap 120.
-    // VALUE has priority, FIELD and PATH fall to their 20-char floors, and
-    // the row still fits the budget.
+    // FIELD takes its flex-relative ceiling and middle-truncates (keeping
+    // head and leaf), PATH falls to its 20-char floor keeping its tail,
+    // VALUE takes what remains, and the row still fits the budget.
     let mut row = wide_value_row(); // 200-char value
     row.field =
         "api_status.incidents.10.incident_updates.0.affected_components.0.new_status".into();
@@ -2443,29 +2444,62 @@ fn three_flexible_columns_share_the_budget_by_priority() {
             .count()
     };
 
-    // FIELD and PATH floor at MIN_*_WIDTH, keeping their discriminating tails.
     let cell_text = |needle: &str| {
         data.split("  ")
             .find(|c| c.contains(needle))
             .unwrap_or_else(|| panic!("{needle:?} not found in {data:?}"))
     };
+    // FIELD middle-truncates: the head names the owning field, the tail is
+    // the discriminating leaf key.
     let field_cell = cell_text("new_status");
     let path_cell = cell_text("repo#sess-1");
     assert!(
-        field_cell.starts_with("...") && field_cell.ends_with("new_status"),
-        "field must keep its leaf key: {field_cell:?}"
+        field_cell.starts_with("api_status")
+            && field_cell.contains("...")
+            && field_cell.ends_with("new_status"),
+        "field must keep its head and leaf key: {field_cell:?}"
     );
     assert!(
         path_cell.starts_with("...") && path_cell.ends_with("repo#sess-1"),
         "path must keep its session tail: {path_cell:?}"
     );
-    assert_eq!(cell("new_status"), 20, "FIELD floors at 20: {data:?}");
+    // FIELD sits between its floor and its flex-relative ceiling — above the
+    // floor (it outranks VALUE up to the ceiling) but well short of its
+    // 75-char natural width.
+    let field_w = cell("new_status");
+    assert!(
+        (20..=35).contains(&field_w),
+        "FIELD should hold its ceiling, got {field_w}: {data:?}"
+    );
     assert_eq!(cell("repo#sess-1"), 20, "PATH floors at 20: {data:?}");
 
-    // VALUE takes the surplus — strictly the largest of the three.
+    // VALUE keeps a readable share despite FIELD's ceiling.
     let value_w = cell("vvv");
     assert!(
-        value_w > 20,
-        "VALUE should get the largest share, got {value_w}: {data:?}"
+        value_w >= 20,
+        "VALUE should keep a readable share, got {value_w}: {data:?}"
+    );
+}
+
+#[test]
+fn modest_field_names_are_not_truncated_by_a_wide_value() {
+    // A shallow destructured name (depth-2 scale, ~24 chars) outranks VALUE:
+    // it must render whole, eating from the blob, not be floored to 20
+    // because a JSON blob wants the width.
+    let mut row = wide_value_row(); // 200-char value
+    row.field = "api_status.components.0".into();
+    assert_eq!(row.field.chars().count(), 23);
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: true,
+        depth: Some(1),
+    };
+    let out = render_preset("human", &[row], &opts);
+    assert!(
+        out.contains("api_status.components.0"),
+        "modest field name must render untruncated: {out}"
     );
 }

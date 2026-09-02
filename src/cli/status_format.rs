@@ -1219,8 +1219,7 @@ fn render_table(
 
     // VALUE, FIELD and PATH are the three flexible columns; PROVIDER, AGE,
     // POLL and TTL always take their natural widths. Whatever the budget
-    // leaves after those four is `flex`, split by priority: VALUE, then
-    // FIELD, then PATH.
+    // leaves after those four is `flex`.
     //
     // All three are unbounded in practice — values are arbitrary JSON, paths
     // carry `#session` suffixes, and destructuring makes field names as deep
@@ -1228,9 +1227,12 @@ fn render_table(
     // floors across the whole table: that is what an uncapped PATH did to
     // VALUE before, and what an uncapped FIELD did once destructuring landed.
     //
-    // So each column takes its natural width only insofar as the
-    // lower-priority ones can still stand on their floors, and what it
-    // declines passes down the chain.
+    // Split: FIELD first, natural up to a flex-relative ceiling — losing a
+    // few chars of a field name hurts more than losing them from a JSON
+    // blob, so a modest name (shallow destructuring) eats from VALUE; the
+    // ceiling keeps a deep name (75+ chars at --depth 0) from starving
+    // VALUE outright. VALUE then takes what remains above PATH's floor;
+    // PATH takes what both decline.
     let (field_cap, path_cap, value_cap) = match trunc {
         None => (None, None, None),
         Some(total_cap) => {
@@ -1245,12 +1247,10 @@ fn render_table(
                 let field_floor = MIN_FIELD_WIDTH.min(nat_field);
                 let path_floor = MIN_PATH_WIDTH.min(nat_path);
 
+                let field_w = nat_field.min((flex * 2 / 5).max(field_floor));
                 let value_w = nat_value
-                    .min(flex.saturating_sub(field_floor + path_floor))
+                    .min(flex.saturating_sub(field_w + path_floor))
                     .max(MIN_VALUE_WIDTH.min(nat_value));
-                let field_w = nat_field
-                    .min(flex.saturating_sub(value_w + path_floor))
-                    .max(field_floor);
                 let path_w = nat_path
                     .min(flex.saturating_sub(value_w + field_w))
                     .max(path_floor);
@@ -1293,7 +1293,7 @@ fn render_table(
         let provider_text = sanitize_cell(&row.provider, ascii);
         let mut field_text = sanitize_cell(&row.field, ascii);
         if let Some(cap) = field_cap {
-            field_text = truncate_tail(&field_text, cap);
+            field_text = truncate_middle(&field_text, cap);
         }
         let mut path = sanitize_cell(&path_raw, ascii);
         if let Some(cap) = path_cap {
@@ -1707,11 +1707,9 @@ fn format_age_with_polls(age_ms: u128, polls_elapsed: Option<u32>, ascii: bool) 
 
 /// Truncate to at most `max` characters, keeping the **tail**.
 ///
-/// Used for PATH and FIELD, both of which carry their discriminating part at
-/// the end: a cache path ends in the project directory and `#session` suffix,
-/// and a destructured field name ends in the leaf key
-/// (`api_status.incidents.10.…​.new_status`). Their shared prefixes are what
-/// makes them long, and are exactly what is safe to drop.
+/// Used for PATH, whose discriminating part is at the end — the project
+/// directory and `#session` suffix — while its head is uniform `~/ws/…`
+/// noise that is safe to drop. FIELD uses [`truncate_middle`] instead.
 fn truncate_tail(s: &str, max: usize) -> String {
     let count = s.chars().count();
     if count <= max {
@@ -1720,6 +1718,23 @@ fn truncate_tail(s: &str, max: usize) -> String {
         let keep = max.saturating_sub(3);
         let tail: String = s.chars().skip(count - keep).collect();
         format!("...{tail}")
+    }
+}
+
+/// Truncate to at most `max` characters keeping both edges. Used for FIELD:
+/// the head names the owning field (`api_status.…`), the tail is the
+/// discriminating leaf key (`….new_status`) — a destructured name needs
+/// both, unlike a path, whose head is uniform `~/ws/…` noise.
+fn truncate_middle(s: &str, max: usize) -> String {
+    let count = s.chars().count();
+    if count <= max {
+        s.to_string()
+    } else {
+        let keep = max.saturating_sub(3);
+        let head_n = keep - keep / 2;
+        let head: String = s.chars().take(head_n).collect();
+        let tail: String = s.chars().skip(count - keep / 2).collect();
+        format!("{head}...{tail}")
     }
 }
 
