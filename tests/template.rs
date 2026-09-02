@@ -168,3 +168,10 @@ fn eval_template_accepts_tab_and_newline_whitespace_inside_braces() {
         vec![resolved("git", "branch")]
     );
 }
+
+#[test]
+fn render_template_fg_filter_wraps_in_truecolor_sgr() {
+    let ctx = serde_json::json!({"git": {"branch": "main"}});
+    let out = render_template("{{ git.branch | fg('#00ff00') }}", &ctx).unwrap();
+    assert_eq!(out, "\x1b[38;2;0;255;0mmain\x1b[0m");
+}

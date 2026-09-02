@@ -789,3 +789,18 @@ fn deeply_nested_virtual_fields_error_rather_than_recurse() {
         json!("bottom")
     );
 }
+
+// ── fg/bg filters (end-to-end through the typed expression path) ──────────────
+
+#[test]
+fn fg_filter_wraps_provider_field_in_truecolor_sgr() {
+    let vf = VirtualFields::defaults_only();
+    let env = HashMap::new();
+    let data = data_of(&[("git.branch", json!("main"))]);
+    let ctx = EvalContext::new(&env, &data);
+
+    assert_eq!(
+        evaluate("{{ cache.git.branch | fg('#00ff00') }}", &vf, &ctx).unwrap(),
+        Value::String("\x1b[38;2;0;255;0mmain\x1b[0m".into())
+    );
+}

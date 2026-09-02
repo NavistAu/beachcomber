@@ -50,3 +50,24 @@ fn eval_env_only_skips_daemon() {
         .success()
         .stdout(predicates::str::contains("hi"));
 }
+
+/// `comb eval`'s output goes through `render::render_data`, which is a bare
+/// passthrough for a string value — no ANSI/control-character stripping.
+/// The `fg` filter's ESC bytes must survive to stdout unmangled so a shell
+/// prompt piping `comb eval` output gets real colour, not a sanitized
+/// version of it.
+#[test]
+fn eval_fg_filter_escapes_pass_through_unstripped() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let bogus_sock = dir.path().join("nonexistent.sock");
+    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
+    cmd.env("BEACHCOMBER_SOCKET", &bogus_sock)
+        .env("RUST_LOG", "error")
+        .env("FOO", "hi")
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("cfg"))
+        .args(["eval", "{{ env.FOO | fg('#00ff00') }}"]);
+    cmd.assert()
+        .success()
+        .stdout(predicates::str::contains("\x1b[38;2;0;255;0mhi\x1b[0m"));
+}
