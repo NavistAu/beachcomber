@@ -2525,6 +2525,63 @@ fn human_renders_index_keyed_objects_as_arrays() {
 }
 
 #[test]
+fn human_stripes_alternate_data_rows_when_colour_on() {
+    let rows = sample_rows(); // 3 data rows
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: false,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: false,
+        depth: Some(1),
+    };
+    let out = render_preset("human", &rows, &opts);
+    let lines: Vec<&str> = out.lines().collect();
+    const BG: &str = "\x1b[48;5;236m";
+    // Header and first data row unstriped; second data row striped and
+    // closed with a reset; third unstriped again.
+    assert!(
+        !lines[0].contains(BG),
+        "header must not stripe: {:?}",
+        lines[0]
+    );
+    assert!(
+        !lines[1].contains(BG),
+        "row 1 must not stripe: {:?}",
+        lines[1]
+    );
+    assert!(lines[2].contains(BG), "row 2 must stripe: {:?}", lines[2]);
+    assert!(
+        lines[2].ends_with("\x1b[0m"),
+        "stripe must reset at line end: {:?}",
+        lines[2]
+    );
+    assert!(
+        !lines[3].contains(BG),
+        "row 3 must not stripe: {:?}",
+        lines[3]
+    );
+
+    // Colour off: no stripes anywhere.
+    let plain = render_preset(
+        "human",
+        &sample_rows(),
+        &RenderOpts {
+            is_tty: false,
+            no_color: true,
+            max_width: Some(120),
+            no_trunc: false,
+            ascii: false,
+            depth: Some(1),
+        },
+    );
+    assert!(
+        !plain.contains(BG),
+        "no stripes when colour is off: {plain}"
+    );
+}
+
+#[test]
 fn modest_field_names_are_not_truncated_by_a_wide_value() {
     // A shallow destructured name (depth-2 scale, ~24 chars) outranks VALUE:
     // it must render whole, eating from the blob, not be floored to 20

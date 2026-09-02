@@ -39,7 +39,17 @@ mod ansi {
         }
         format!("{}{}\x1b[0m", c.code(), s)
     }
+
+    pub const RESET: &str = "\x1b[0m";
+    /// A reset immediately followed by the row-stripe background, so a
+    /// cell's own reset doesn't punch a hole in the stripe.
+    pub const RESET_KEEP_STRIPE: &str = "\x1b[0m\x1b[48;5;236m";
 }
+
+/// Subtle background for alternating data rows. 256-colour dark grey —
+/// near-invisible on dark terminals, a light wash on light ones; killed
+/// entirely by --color=never / NO_COLOR / non-TTY.
+const STRIPE_BG: &str = "\x1b[48;5;236m";
 
 // ---------------------------------------------------------------------------
 // TTL cell formatter
@@ -1459,20 +1469,41 @@ fn render_table(
     // double-spaced. Reserving without printing keeps the two columns of
     // breathing room and leaves the rows free of trailing whitespace.
     let left_margin: String = " ".repeat(MARGIN);
-    for (row_cells, row_vis) in cells.iter().zip(visible.iter()) {
-        out.push_str(&left_margin);
+    let data_start = usize::from(header);
+    for (idx, (row_cells, row_vis)) in cells.iter().zip(visible.iter()).enumerate() {
+        // Alternate a subtle background on every other data row so the eye
+        // can track across long lines. Colour-on only, so watch/viddy
+        // without --color=always (and every machine consumer) see plain
+        // rows. Header excluded from the count.
+        let striped = color_enabled && idx >= data_start && (idx - data_start) % 2 == 1;
+
+        let mut line = String::new();
         for (i, cell) in row_cells.iter().enumerate() {
             if i > 0 {
-                out.push_str("  "); // 2-space separator
+                line.push_str("  "); // 2-space separator
             }
-            out.push_str(cell);
-            // Pad to column width on all but the last column.
-            if i < COLS - 1 {
+            line.push_str(cell);
+            // Pad to column width on all but the last column — and on the
+            // last too when striping, so the stripe is a rectangle rather
+            // than a ragged bar.
+            if i < COLS - 1 || striped {
                 let pad = col_widths[i].saturating_sub(row_vis[i]);
                 for _ in 0..pad {
-                    out.push(' ');
+                    line.push(' ');
                 }
             }
+        }
+
+        out.push_str(&left_margin);
+        if striped {
+            // Every cell's own colour wrap ends in a full reset, which would
+            // clear the background mid-stripe — re-open it after each one.
+            // Cell text is sanitized, so the only resets are our own.
+            out.push_str(STRIPE_BG);
+            out.push_str(&line.replace(ansi::RESET, ansi::RESET_KEEP_STRIPE));
+            out.push_str(ansi::RESET);
+        } else {
+            out.push_str(&line);
         }
         out.push('\n');
     }
