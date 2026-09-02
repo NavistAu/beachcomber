@@ -452,6 +452,10 @@ pub struct Scheduler {
     /// backend. Set by the daemon path via `self_test_watch_backend()`;
     /// defaults to false (assume native) for directly-constructed schedulers.
     run_watch_self_test: bool,
+    /// When set, `run()` serves provider file-watching from the polling
+    /// backend at this interval and skips the self-test. See
+    /// `use_polling_watcher`.
+    polling_watcher: Option<Duration>,
 }
 
 impl Scheduler {
@@ -475,6 +479,7 @@ impl Scheduler {
             heartbeat,
             watchers,
             run_watch_self_test: false,
+            polling_watcher: None,
         };
         (handle, scheduler)
     }
@@ -673,6 +678,15 @@ impl Scheduler {
         self.run_watch_self_test = true;
     }
 
+    /// Diagnostic/test seam: poll for file changes at `interval` instead of
+    /// registering kernel watches, and skip the watch self-test. Kernel
+    /// FSEvents registration costs ~1.2s per `watch()` call on macOS, paid by
+    /// every daemon start whether or not the caller is about file-watching.
+    pub fn use_polling_watcher(&mut self, interval: Duration) {
+        self.polling_watcher = Some(interval);
+        self.run_watch_self_test = false;
+    }
+
     pub async fn run(mut self) {
         // Provider file-watching starts on the kernel-native backend
         // immediately; the watch self-test (canon provider_source.md §"Watch
@@ -683,7 +697,11 @@ impl Scheduler {
         // watch path (a stream can be created without error and deliver
         // nothing — sandboxed CI hosts, degraded fseventsd; chosen blind,
         // watch-invalidated entries would silently never invalidate).
-        let (mut fs_watcher, mut fs_rx) = match FsWatcher::new() {
+        let watcher = match self.polling_watcher {
+            Some(interval) => FsWatcher::new_polling(interval),
+            None => FsWatcher::new(),
+        };
+        let (mut fs_watcher, mut fs_rx) = match watcher {
             Ok(pair) => pair,
             Err(e) => {
                 warn!(
@@ -696,7 +714,11 @@ impl Scheduler {
                 return self.run_without_watcher(rx).await;
             }
         };
-        let mut watch_backend = crate::watcher::WatchBackend::Native;
+        let mut watch_backend = if self.polling_watcher.is_some() {
+            crate::watcher::WatchBackend::Polling
+        } else {
+            crate::watcher::WatchBackend::Native
+        };
 
         let mut self_test_rx: Option<tokio::sync::oneshot::Receiver<bool>> =
             if self.run_watch_self_test {

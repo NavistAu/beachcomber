@@ -37,7 +37,16 @@ pub fn is_daemon_running(socket_path: &Path) -> bool {
 // OS-bound: in-process daemon startup (used by tests and embedded mode)
 // ---------------------------------------------------------------------------
 
-pub fn start_in_process(socket_path: PathBuf, config: Config) -> tokio::task::JoinHandle<()> {
+/// Resolves once the daemon's socket is bound and connectable. If the daemon
+/// refuses to start (config validation, bind failure) the sender is dropped and
+/// awaiting this yields `Err`, so a caller never waits on a daemon that is not
+/// coming.
+pub type DaemonReady = tokio::sync::oneshot::Receiver<()>;
+
+pub fn start_in_process(
+    socket_path: PathBuf,
+    config: Config,
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
     let cancel = CancellationToken::new();
     start_in_process_with_cancel(socket_path, config, cancel)
 }
@@ -46,7 +55,7 @@ pub fn start_in_process_with_cancel(
     socket_path: PathBuf,
     config: Config,
     cancel: CancellationToken,
-) -> tokio::task::JoinHandle<()> {
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
     start_in_process_with_reaper(socket_path, config, cancel, None)
 }
 
@@ -57,10 +66,52 @@ pub fn start_in_process_with_reaper(
     config: Config,
     cancel: CancellationToken,
     reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        run_daemon_with_cancel(socket_path, config, cancel, reaper).await;
-    })
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
+    start_in_process_inner(socket_path, config, cancel, reaper, None)
+}
+
+/// Test seam: an in-process daemon whose provider file-watching polls every
+/// 50ms instead of registering kernel watches, with the watch self-test
+/// skipped. Kernel FSEvents registration costs ~1.2s per `watch()` call on
+/// macOS — paid once by the self-test and again per watched path — so a test
+/// that is not about the native backend should not start one.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn start_in_process_polling(
+    socket_path: PathBuf,
+    config: Config,
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
+    start_in_process_polling_with(socket_path, config, CancellationToken::new(), None)
+}
+
+/// [`start_in_process_polling`] with a cancellation token and reaper health.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn start_in_process_polling_with(
+    socket_path: PathBuf,
+    config: Config,
+    cancel: CancellationToken,
+    reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
+    start_in_process_inner(
+        socket_path,
+        config,
+        cancel,
+        reaper,
+        Some(std::time::Duration::from_millis(50)),
+    )
+}
+
+fn start_in_process_inner(
+    socket_path: PathBuf,
+    config: Config,
+    cancel: CancellationToken,
+    reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
+    polling_watch: Option<std::time::Duration>,
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        run_daemon_with_cancel(socket_path, config, cancel, reaper, ready_tx, polling_watch).await;
+    });
+    (task, ready_rx)
 }
 
 async fn run_daemon_with_cancel(
@@ -68,6 +119,8 @@ async fn run_daemon_with_cancel(
     config: Config,
     cancel: CancellationToken,
     reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
+    ready: tokio::sync::oneshot::Sender<()>,
+    polling_watch: Option<std::time::Duration>,
 ) {
     // Load env file before anything else — providers need these vars
     let env_count = config.load_env_file();
@@ -113,9 +166,12 @@ async fn run_daemon_with_cancel(
         config.clone(),
         watchers.clone(),
     );
-    // Daemon path: probe fs-event delivery before trusting the native backend
-    // (canon provider_source.md §"Watch backend health").
-    scheduler.self_test_watch_backend();
+    match polling_watch {
+        // Daemon path: probe fs-event delivery before trusting the native
+        // backend (canon provider_source.md §"Watch backend health").
+        None => scheduler.self_test_watch_backend(),
+        Some(interval) => scheduler.use_polling_watcher(interval),
+    }
     let heartbeat = scheduler.heartbeat();
 
     let scheduler_handle = handle.clone();
@@ -136,8 +192,15 @@ async fn run_daemon_with_cancel(
         server = server.with_reaper_health(health);
     }
 
+    // Bind before serving so readiness can be signalled: whoever holds the
+    // `DaemonReady` connects the moment the socket is live instead of guessing.
+    let bound = server.bind();
+    if bound.is_ok() {
+        let _ = ready.send(());
+    }
+
     tokio::select! {
-        result = server.run() => {
+        result = async { server.serve(bound?).await } => {
             if let Err(e) = result {
                 tracing::error!("Server error: {}", e);
             }

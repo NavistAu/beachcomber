@@ -211,7 +211,7 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
             });
         }
 
-        let handle = crate::daemon::start_in_process_with_reaper(
+        let (handle, _ready) = crate::daemon::start_in_process_with_reaper(
             socket_path,
             config,
             cancel,

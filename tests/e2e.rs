@@ -9,8 +9,8 @@ async fn e2e_get_hostname_via_daemon() {
     let sock = tmp.path().join("sock");
     let config = Config::default();
 
-    let handle = daemon::start_in_process(sock.clone(), config);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
 
     let client = Client::new(sock.clone());
     let response = client.get("hostname", None).unwrap();
@@ -31,8 +31,8 @@ async fn e2e_get_hostname_single_field() {
     let sock = tmp.path().join("sock");
     let config = Config::default();
 
-    let handle = daemon::start_in_process(sock.clone(), config);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
 
     let client = Client::new(sock.clone());
     let response = client.get("hostname.short", None).unwrap();
@@ -52,8 +52,8 @@ async fn e2e_get_hostname_text_format() {
     let sock = tmp.path().join("sock");
     let config = Config::default();
 
-    let handle = daemon::start_in_process(sock.clone(), config);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
 
     let client = Client::new(sock.clone());
     let text = client.get_text("hostname.short", None).unwrap();
@@ -69,8 +69,8 @@ async fn e2e_get_user() {
     let sock = tmp.path().join("sock");
     let config = Config::default();
 
-    let handle = daemon::start_in_process(sock.clone(), config);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
 
     let client = Client::new(sock.clone());
     let response = client.get("user", None).unwrap();
@@ -88,8 +88,8 @@ async fn e2e_refresh_and_get() {
     let sock = tmp.path().join("sock");
     let config = Config::default();
 
-    let handle = daemon::start_in_process(sock.clone(), config);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
 
     let client = Client::new(sock.clone());
 
@@ -112,8 +112,8 @@ async fn e2e_unknown_provider() {
     let sock = tmp.path().join("sock");
     let config = Config::default();
 
-    let handle = daemon::start_in_process(sock.clone(), config);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
 
     let client = Client::new(sock.clone());
     let response = client.get("nonexistent", None).unwrap();
@@ -134,8 +134,8 @@ async fn e2e_multiple_concurrent_clients() {
     let sock = tmp.path().join("sock");
     let config = Config::default();
 
-    let handle = daemon::start_in_process(sock.clone(), config);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
 
     let mut handles = Vec::new();
     for _ in 0..10 {
@@ -171,8 +171,8 @@ async fn daemon_introspect_includes_pid_and_version() {
     let sock = tmp.path().join("sock");
     let config = Config::default();
 
-    let handle = daemon::start_in_process(sock.clone(), config);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
 
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let mut stream = tokio::net::UnixStream::connect(&sock).await.unwrap();

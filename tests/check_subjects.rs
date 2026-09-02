@@ -9,8 +9,8 @@ async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<(
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
     let config = Config::default();
-    let handle = beachcomber::daemon::start_in_process(sock.clone(), config);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (handle, ready) = beachcomber::daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
     let client = Client::new(sock);
     (tmp, client, handle)
 }
@@ -631,13 +631,13 @@ async fn introspect_daemon_reaper_confined_surfaces_warn_verdict() {
     health.visibility_ok.store(false, Relaxed); // confined
     health.kill_denied_total.store(2, Relaxed);
 
-    let handle = beachcomber::daemon::start_in_process_with_reaper(
+    let (handle, ready) = beachcomber::daemon::start_in_process_polling_with(
         sock.clone(),
         Config::default(),
         tokio_util::sync::CancellationToken::new(),
         Some(health),
     );
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    ready.await.expect("daemon ready");
     let client = Client::new(sock);
 
     let resp = client
@@ -690,13 +690,13 @@ async fn introspect_daemon_reaper_healthy_surfaces_pass_verdict() {
     health.armed.store(true, Relaxed);
     health.visibility_ok.store(true, Relaxed);
 
-    let handle = beachcomber::daemon::start_in_process_with_reaper(
+    let (handle, ready) = beachcomber::daemon::start_in_process_polling_with(
         sock.clone(),
         Config::default(),
         tokio_util::sync::CancellationToken::new(),
         Some(health),
     );
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    ready.await.expect("daemon ready");
     let client = Client::new(sock);
 
     let resp = client

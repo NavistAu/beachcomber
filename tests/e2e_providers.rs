@@ -9,8 +9,8 @@ async fn e2e_all_builtin_providers_registered() {
     let sock = tmp.path().join("sock");
     let config = Config::default();
 
-    let handle = daemon::start_in_process(sock.clone(), config);
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
 
     let client = Client::new(sock);
 
@@ -57,8 +57,8 @@ async fn e2e_script_provider_from_config() {
         .providers
         .insert("test_echo".to_string(), toml::Value::Table(table));
 
-    let handle = daemon::start_in_process(sock.clone(), config);
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
 
     let client = Client::new(sock);
 

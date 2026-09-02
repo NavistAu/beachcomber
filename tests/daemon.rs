@@ -25,9 +25,8 @@ async fn socket_activation_starts_daemon() {
     let sock = tmp.path().join("sock");
 
     let config = beachcomber::config::Config::default();
-    let handle = daemon::start_in_process(sock.clone(), config);
-
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
 
     let stream = UnixStream::connect(&sock).await;
     assert!(stream.is_ok(), "Should connect to daemon socket");

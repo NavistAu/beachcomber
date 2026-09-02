@@ -10,9 +10,9 @@ async fn daemon_shuts_down_on_cancel() {
     let config = Config::default();
 
     let token = tokio_util::sync::CancellationToken::new();
-    let handle = daemon::start_in_process_with_cancel(sock.clone(), config, token.clone());
-
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let (handle, ready) =
+        daemon::start_in_process_polling_with(sock.clone(), config, token.clone(), None);
+    ready.await.expect("daemon ready");
     assert!(
         UnixStream::connect(&sock).await.is_ok(),
         "Daemon should be running"

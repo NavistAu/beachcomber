@@ -80,6 +80,15 @@ impl Server {
     }
 
     pub async fn run(&self) -> std::io::Result<()> {
+        let listener = self.bind()?;
+        self.serve(listener).await
+    }
+
+    /// Bind the socket and start listening. Once this returns, clients can
+    /// connect — connections queue in the backlog until [`Server::serve`]
+    /// accepts them — so a caller that binds first never has to guess when the
+    /// socket is live.
+    pub fn bind(&self) -> std::io::Result<UnixListener> {
         if let Some(parent) = self.socket_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -103,7 +112,12 @@ impl Server {
 
         let listener = UnixListener::bind(&self.socket_path)?;
         info!("Listening on {:?}", self.socket_path);
+        Ok(listener)
+    }
 
+    /// Accept loop over a listener from [`Server::bind`]. Individual accept
+    /// errors are logged and the loop continues.
+    pub async fn serve(&self, listener: UnixListener) -> std::io::Result<()> {
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
@@ -140,6 +154,14 @@ impl Server {
                 }
             }
         }
+    }
+
+    /// Bind, then run the accept loop on its own task. The socket is
+    /// connectable when this returns, so a caller can connect immediately
+    /// rather than sleeping and hoping.
+    pub fn spawn(self) -> std::io::Result<tokio::task::JoinHandle<std::io::Result<()>>> {
+        let listener = self.bind()?;
+        Ok(tokio::spawn(async move { self.serve(listener).await }))
     }
 }
 
