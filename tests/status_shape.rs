@@ -166,6 +166,7 @@ fn human_preset_truncates_value_to_meet_total_cap() {
         max_width: Some(120),
         no_trunc: false,
         ascii: false,
+        depth: None,
     };
     let out = render_preset("human", &rows, &opts);
     // Output should contain truncated version, not the full 100 'a's.
@@ -204,6 +205,7 @@ fn human_preset_color_on_stale_rows() {
         max_width: Some(40),
         no_trunc: false,
         ascii: false,
+        depth: None,
     };
     let out = render_preset("human", &rows, &opts);
     assert!(
@@ -480,6 +482,7 @@ fn no_trunc_disables_truncation_in_human() {
         max_width: Some(40),
         no_trunc: true,
         ascii: false,
+        depth: None,
     };
     let out = render_preset("human", &rows, &opts);
     assert!(out.contains(&"x".repeat(100))); // at least 100 xs preserved
@@ -495,6 +498,7 @@ fn max_width_truncates_value() {
         max_width: Some(10),
         no_trunc: false,
         ascii: false,
+        depth: None,
     };
     let out = render_preset("human", &rows, &opts);
     assert!(!out.contains(&"x".repeat(50)));
@@ -510,6 +514,7 @@ fn no_color_disables_ansi() {
         max_width: Some(40),
         no_trunc: false,
         ascii: false,
+        depth: None,
     };
     let out = render_preset("human", &rows, &opts);
     assert!(!out.contains("\x1b["));
@@ -717,6 +722,7 @@ fn max_width_value_column_shrinks_not_others() {
         max_width: Some(60),
         no_trunc: false,
         ascii: false,
+        depth: None,
     };
     let out = render_preset("human", &[row], &opts);
     // The full 80-char value must not appear (it was shrunk).
@@ -764,6 +770,7 @@ fn max_width_total_row_width_does_not_exceed_cap() {
         max_width: Some(total_cap),
         no_trunc: false,
         ascii: true, // ascii so TTL glyph width is predictable
+        depth: None,
     };
     let out = render_preset("human", &[row], &opts);
     // Every data row (skip header) must fit within total_cap columns.
@@ -798,6 +805,7 @@ fn default_preset_is_human_regardless_of_tty() {
         max_width: Some(120),
         no_trunc: false,
         ascii: false,
+        depth: None,
     };
     let out = render_preset("human", &rows, &opts);
     assert!(
@@ -1539,6 +1547,7 @@ fn failure_state_renders_warn_and_red_row() {
         max_width: Some(120),
         no_trunc: false,
         ascii: false,
+        depth: None,
     };
     let out = render_preset("human", &[row], &opts);
     assert!(out.contains("\u{26a0}"), "warn glyph missing: {:?}", out);
@@ -1576,6 +1585,7 @@ fn render_preset_ascii_flag_swaps_glyphs() {
         max_width: Some(120),
         no_trunc: false,
         ascii: false,
+        depth: None,
     };
     let opts_ascii = RenderOpts {
         is_tty: true,
@@ -1583,6 +1593,7 @@ fn render_preset_ascii_flag_swaps_glyphs() {
         max_width: Some(120),
         no_trunc: false,
         ascii: true,
+        depth: None,
     };
     let out_unicode = render_preset("human", std::slice::from_ref(&row), &opts_unicode);
     let out_ascii = render_preset("human", &[row], &opts_ascii);
@@ -1638,6 +1649,7 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
         max_width: Some(120),
         no_trunc: false,
         ascii: false,
+        depth: None,
     };
     let out = render_preset("human", &[row], &opts);
     assert!(
@@ -1764,6 +1776,7 @@ fn human_preset_path_compaction_frees_width_for_value() {
         max_width: Some(70),
         no_trunc: false,
         ascii: false,
+        depth: None,
     };
 
     // HOME matches the row's path: compaction shrinks PATH from 16 to 3
@@ -1834,6 +1847,7 @@ fn human_rows_leave_the_right_margin_unpainted() {
             max_width: Some(cap),
             no_trunc: false,
             ascii: true, // ascii so glyph char-counts are unambiguous
+            depth: None,
         };
         let out = render_preset("human", &[wide_value_row()], &opts);
         for line in out.lines() {
@@ -1870,6 +1884,7 @@ fn human_caps_path_column_keeping_the_tail() {
         max_width: Some(cap),
         no_trunc: false,
         ascii: true,
+        depth: None,
     };
     let out = render_preset("human", &[row], &opts);
     for line in out.lines() {
@@ -1900,6 +1915,7 @@ fn no_trunc_keeps_full_path() {
         max_width: Some(40),
         no_trunc: true,
         ascii: true,
+        depth: None,
     };
     let out = render_preset("human", &[row], &opts);
     assert!(
@@ -1919,6 +1935,7 @@ fn human_output_has_no_control_chars_besides_newline() {
         max_width: Some(120),
         no_trunc: false,
         ascii: false,
+        depth: None,
     };
     let mut rows = sample_rows();
     rows.push(wide_value_row());
@@ -1959,6 +1976,7 @@ fn width_split_gives_value_priority_over_path() {
         max_width: Some(cap),
         no_trunc: false,
         ascii: true,
+        depth: None,
     };
     let out = render_preset("human", &[long_value, long_path], &opts);
 
@@ -1994,4 +2012,130 @@ fn width_split_gives_value_priority_over_path() {
         path_run, 20,
         "PATH should floor at MIN_PATH_WIDTH: {path_run} chars in {out}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Object destructuring (--depth)
+// ---------------------------------------------------------------------------
+
+fn nested_row() -> CacheRow {
+    CacheRow {
+        provider: "agent".into(),
+        path: Some("/repo".into()),
+        source: "put".into(),
+        field: "session".into(),
+        value: serde_json::json!({
+            "color": "blue",
+            "inner": {"deep": 1},
+            "list": [1, 2, 3],
+        }),
+        age_ms: 4_000,
+        stale: true,
+        kind: Some(beachcomber::cache::RowKind::Once),
+        poll_interval_secs: Some(30),
+        keep_alive_polls: Some(4),
+        fsevents_reinstate: Some(true),
+        polls_elapsed: Some(2),
+        next_poll_in_secs: Some(9),
+        failure: None,
+    }
+}
+
+fn fields_of(rows: &[CacheRow]) -> Vec<String> {
+    rows.iter().map(|r| r.field.clone()).collect()
+}
+
+#[test]
+fn depth_one_is_todays_behaviour() {
+    use beachcomber::cli::status_format::flatten_rows;
+    let rows = flatten_rows(vec![nested_row()], 1);
+    assert_eq!(fields_of(&rows), vec!["session"]);
+    assert!(rows[0].value.is_object(), "value untouched at depth 1");
+}
+
+#[test]
+fn depth_two_expands_exactly_one_level() {
+    use beachcomber::cli::status_format::flatten_rows;
+    let rows = flatten_rows(vec![nested_row()], 2);
+    assert_eq!(
+        fields_of(&rows),
+        vec!["session.color", "session.inner", "session.list"]
+    );
+    // The nested object stops here — it is a blob at depth 2.
+    let inner = rows.iter().find(|r| r.field == "session.inner").unwrap();
+    assert!(inner.value.is_object());
+}
+
+#[test]
+fn depth_zero_expands_fully_but_never_arrays() {
+    use beachcomber::cli::status_format::flatten_rows;
+    let rows = flatten_rows(vec![nested_row()], 0);
+    assert_eq!(
+        fields_of(&rows),
+        vec!["session.color", "session.inner.deep", "session.list"]
+    );
+    // Arrays stay whole — their indices are not field names.
+    let list = rows.iter().find(|r| r.field == "session.list").unwrap();
+    assert_eq!(list.value, serde_json::json!([1, 2, 3]));
+}
+
+#[test]
+fn destructured_children_inherit_parent_metadata() {
+    use beachcomber::cli::status_format::flatten_rows;
+    let parent = nested_row();
+    let rows = flatten_rows(vec![parent.clone()], 0);
+    for child in &rows {
+        assert_eq!(child.provider, parent.provider);
+        assert_eq!(child.path, parent.path);
+        assert_eq!(child.age_ms, parent.age_ms);
+        assert_eq!(child.stale, parent.stale);
+        assert_eq!(child.poll_interval_secs, parent.poll_interval_secs);
+        assert_eq!(child.keep_alive_polls, parent.keep_alive_polls);
+        assert_eq!(child.next_poll_in_secs, parent.next_poll_in_secs);
+        assert!(matches!(
+            child.kind,
+            Some(beachcomber::cache::RowKind::Once)
+        ));
+    }
+}
+
+#[test]
+fn empty_object_stays_its_own_row() {
+    use beachcomber::cli::status_format::flatten_rows;
+    let mut row = nested_row();
+    row.value = serde_json::json!({});
+    let rows = flatten_rows(vec![row], 0);
+    assert_eq!(fields_of(&rows), vec!["session"], "must not vanish");
+}
+
+#[test]
+fn default_depth_destructures_human_presets_only() {
+    use beachcomber::cli::status_format::default_depth;
+    assert_eq!(default_depth("human"), 0);
+    assert_eq!(default_depth("table"), 0);
+    for machine in ["json", "tsv", "csv", "sh", "{{ provider }}"] {
+        assert_eq!(
+            default_depth(machine),
+            1,
+            "machine preset {machine} must stay byte-identical by default"
+        );
+    }
+}
+
+#[test]
+fn destructured_rows_render_as_separate_table_rows() {
+    use beachcomber::cli::status_format::flatten_rows;
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: true,
+        depth: None,
+    };
+    let rows = flatten_rows(vec![nested_row()], 0);
+    let out = render_preset("human", &rows, &opts);
+    assert!(out.contains("session.color"), "{out}");
+    assert!(out.contains("session.inner.deep"), "{out}");
+    assert!(out.contains("blue"), "{out}");
 }

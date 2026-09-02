@@ -151,7 +151,23 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (`human` (default), `tsv`, `json`, `csv`, `table`, `sh`), `--filter <key=value>` (keys: `provider`, `path`, `field`, `stale`, `lifecycle`, `fsevents_reinstate`; e.g. `--filter=lifecycle=active`, `--filter=provider=git`, `--filter=fsevents_reinstate=true`), `--sort <default|provider|path|field|value|age|stale>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+**Flags:** `--format <preset>` (`human` (default), `tsv`, `json`, `csv`, `table`, `sh`), `--filter <key=value>` (keys: `provider`, `path`, `field`, `stale`, `lifecycle`, `fsevents_reinstate`; e.g. `--filter=lifecycle=active`, `--filter=provider=git`, `--filter=fsevents_reinstate=true`), `--sort <default|provider|path|field|value|age|stale>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
+
+**Destructuring (`--depth`):** object values expand into one row per key, recursively, with the parent's path, age and lifecycle metadata carried down. `--depth 0` is unlimited, `1` shows top-level fields only, `2` goes one level down. The default is `0` for `human` and `table` and `1` for the machine presets, so scripts reading `-f json` keep the output they have today unless they ask for more. Arrays are never expanded.
+
+```sh
+$ comb p agent '{"session":{"name":"claude","ctx_pct":42}}'
+$ comb s --filter=provider=agent
+PROVIDER  FIELD                VALUE   PATH  AGE  POLL  TTL
+agent     session.ctx_pct      42      -     0s      -  ---
+agent     session.name         claude  -     0s      -  ---
+
+$ comb s --filter=provider=agent --depth 1
+PROVIDER  FIELD    VALUE                            PATH  AGE  POLL  TTL
+agent     session  {"ctx_pct":42,"name":"claude"}   -     0s      -  ---
+```
+
+`--filter` and `--sort` see the destructured field names, so `--filter=field=session.name` works on the expanded rows.
 
 **TTL column key:**
 

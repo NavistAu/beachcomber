@@ -323,6 +323,9 @@ pub struct RenderOpts {
     pub no_trunc: bool,
     /// Use ASCII fallback glyphs in the human preset (e.g. `*` instead of `★`).
     pub ascii: bool,
+    /// Object-destructuring depth requested on the command line. `None` means
+    /// "use the preset's default" — see [`default_depth`].
+    pub depth: Option<usize>,
 }
 
 /// Options controlling CLI-level formatting choices (flags, not render state).
@@ -340,7 +343,67 @@ impl Default for RenderOpts {
             max_width: Some(120),
             no_trunc: false,
             ascii: false,
+            depth: None,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Object destructuring (`--depth`)
+// ---------------------------------------------------------------------------
+
+/// Destructuring depth to use when `--depth` was not given.
+///
+/// The human-facing presets destructure fully — a nested object is something
+/// to read, and `{"agent":"claude","color":"blue"}` crammed into one cell is
+/// not readable. The machine presets stay at 1 so existing consumers keep
+/// getting byte-identical output unless they ask for more. Custom minijinja
+/// templates count as machine output for the same reason.
+pub fn default_depth(preset: &str) -> usize {
+    match preset {
+        "human" | "table" => 0,
+        _ => 1,
+    }
+}
+
+/// Expand object-valued rows into one child row per key, recursively.
+///
+/// A row `(git, /repo, session, {"agent":"claude","color":"blue"})` becomes
+/// rows `session.agent` and `session.color`, each inheriting the parent's
+/// path, age, staleness and lifecycle metadata — they describe the same cache
+/// entry, just a deeper slice of it.
+///
+/// `depth` counts field-name segments: 1 is the un-destructured original, 2
+/// goes one level down, and 0 means unlimited. Arrays are never expanded —
+/// their indices are not field names and a list reads better whole — and an
+/// empty object stays as its own row rather than vanishing.
+pub fn flatten_rows(rows: Vec<CacheRow>, depth: usize) -> Vec<CacheRow> {
+    if depth == 1 {
+        return rows;
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        push_flattened(&mut out, row, depth, 1);
+    }
+    out
+}
+
+fn push_flattened(out: &mut Vec<CacheRow>, row: CacheRow, depth: usize, level: usize) {
+    let expandable = matches!(&row.value, serde_json::Value::Object(m) if !m.is_empty());
+    if !expandable || (depth != 0 && level >= depth) {
+        out.push(row);
+        return;
+    }
+    let serde_json::Value::Object(map) = &row.value else {
+        unreachable!("guarded by `expandable` above")
+    };
+    for (key, child_value) in map {
+        let child = CacheRow {
+            field: format!("{}.{}", row.field, key),
+            value: child_value.clone(),
+            ..row.clone()
+        };
+        push_flattened(out, child, depth, level + 1);
     }
 }
 

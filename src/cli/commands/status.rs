@@ -3,8 +3,8 @@
 //! Moved from `src/main.rs` in Task 2.3.
 
 use crate::cli::status_format::{
-    ColorMode, RenderOpts, apply_filters, apply_sort, render_preset, resolve_color,
-    resolve_max_width,
+    ColorMode, RenderOpts, apply_filters, apply_sort, default_depth, flatten_rows, render_preset,
+    resolve_color, resolve_max_width,
 };
 use crate::config::Config;
 use std::io::IsTerminal;
@@ -20,6 +20,7 @@ pub fn run_status(
     max_width_arg: Option<&str>,
     color_arg: &str,
     ascii: bool,
+    depth: Option<usize>,
 ) -> ExitCode {
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
@@ -52,11 +53,15 @@ pub fn run_status(
         },
         no_trunc,
         ascii,
+        depth,
     };
 
     let client = crate::client::Client::new(socket_path);
     match client.status() {
         Ok(rows) => {
+            // Destructure before filtering and sorting, so both operate on the
+            // field names the user can actually see in the output.
+            let rows = flatten_rows(rows, opts.depth.unwrap_or_else(|| default_depth(preset)));
             let rows = apply_filters(rows, filters).unwrap_or_else(|e| {
                 eprintln!("filter error: {e}");
                 std::process::exit(2);

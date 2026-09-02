@@ -147,6 +147,10 @@ enum Commands {
         /// Use ASCII-only output (no Unicode box-drawing or ellipsis)
         #[arg(long)]
         ascii: bool,
+        /// Object destructuring depth: 0 unlimited, 1 top-level fields only, 2 one level down.
+        /// Default: 0 for human/table, 1 for json/tsv/csv/sh.
+        #[arg(long)]
+        depth: Option<usize>,
     },
     /// Put data into a virtual provider
     #[command(visible_alias = "p")]
@@ -284,6 +288,7 @@ fn main() -> ExitCode {
             max_width,
             color,
             ascii,
+            depth,
         } => {
             let fmt = if format.is_empty() {
                 None
@@ -299,6 +304,7 @@ fn main() -> ExitCode {
                 max_width.as_deref(),
                 color.as_str(),
                 ascii,
+                depth,
             )
         }
         Commands::Put {
