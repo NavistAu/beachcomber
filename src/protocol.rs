@@ -110,9 +110,9 @@ impl Response {
 }
 
 /// Split a key on the FIRST dot only: `"git.branch"` → `("git", Some("branch"))`,
-/// `"battery"` → `("battery", None)`. This does NOT understand `provider.source`
-/// or `provider.source.field` addressing — use `crate::query::parse_key` for
-/// source-aware parsing. Retained for `Refresh`, which only needs the provider.
+/// `"battery"` → `("battery", None)`. `crate::query::parse_key` does the same
+/// split and returns a `KeyParse`; `split_key` is retained for `Refresh`,
+/// which needs only the provider segment.
 pub fn split_key(key: &str) -> (&str, Option<&str>) {
     match key.split_once('.') {
         Some((provider, field)) => (provider, Some(field)),
