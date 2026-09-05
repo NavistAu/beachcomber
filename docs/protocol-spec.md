@@ -450,7 +450,7 @@ Diagnostic queries into daemon internals. Subject determines shape.
 {"op": "introspect", "subject": "daemon"}
 ```
 
-Subjects: `daemon`, `providers`, `config`, `cache`, `backoff`, `watches`,
+Subjects: `daemon`, `providers`, `config`, `cache`, `lifecycle`, `watches`,
 `timers`, `demand`, `procs`.
 
 `procs` accepts an optional `duration_secs` integer for profiling.

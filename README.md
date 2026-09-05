@@ -258,7 +258,7 @@ graph TB
 
 **Providers are never re-executed on every query.** A git status is computed once when `.git` changes, then served from cache to every reader — whether that's one prompt or a hundred tmux panes. The filesystem watcher is registered once for all concurrent readers.
 
-**Connection context** means consumers can set a working directory once on connect. `comb g git.branch` without an explicit path uses the connection's context directory, making prompt integration natural.
+**The directory you are standing in is the default.** `comb g git.branch` with no path addresses the current working directory; `comb g --global git.branch` addresses the global entry, which is `$HOME`. An SDK session that holds one connection open can set its directory once with the `context` op and leave the path off every request after that.
 
 **Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a decay sequence after queries stop — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
 
@@ -359,18 +359,23 @@ The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 2. `BEACHCOMBER_SOCKET` environment variable, if set
 3. `/tmp/beachcomber-<uid>/sock` — stable per-user default; no session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell, sandbox, and container of one user reaches the same single daemon
 
-### `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--null]`
+### `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--global] [--replace] [--null]`
 
-Write static data into the cache. External processes can use this to expose state to prompt/statusline consumers without writing a script provider.
+Write static data at any node of the tree. The key is `namespace` or `namespace.node…`, the same dotted address `comb g` takes. External processes can use this to expose state to prompt/statusline consumers without writing a script provider.
 
 ```sh
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
+comb p myapp.deploy.count 3                                # any node, any JSON below the root
 comb p myapp '{"status":"healthy"}' --ttl 30s             # with TTL
-comb p myapp '{"status":"building"}' --path ~/project     # path-scoped
+comb p myapp '{"status":"building"}' --path ~/project     # a directory instead of the cwd
+comb p myapp '{"status":"ok"}' --global                    # the global entry ($HOME)
+comb p myapp '{"status":"ok"}' --replace                   # drop the subtree first
 comb p myapp --null                                        # clear the entry
 ```
 
-`--null` clears a previously written entry. Omitting `--null` requires a JSON object argument.
+A write **deep-merges** into whatever is already stored at that node. `--replace` drops the subtree there first; `--null` removes it and writes nothing. Both act on static records only — a `put` never removes a record a provider's Source produces, and a record one of them owns is refused per record (`cannot write <namespace>.<node>: owned by source <source>`). `data` at a namespace root must be a JSON object; below the root, any JSON. `--null` and `--replace` cannot be combined.
+
+Like `comb g`, a `put` defaults to the current working directory; `--global` addresses `$HOME` instead and cannot be combined with `--path`.
 
 Read back with `comb g`:
 
@@ -1877,7 +1882,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
 
-**`refresh`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
+**`refresh`:** Re-execute Sources out-of-band; does not return the new value. The key selects which Sources run, exactly as it selects which a `get` warms: `refresh git` re-executes every Source of `git`, `refresh git.branch` only the Source that owns `branch`. Each runs at the cache entry its own scope keys — the global entry for a `Global` Source whatever path the request carried, the addressed path for a `PathScoped` one — so `path` is optional and is only consulted by the path-scoped ones. A metadata suffix is stripped first: `refresh hostname:age` is `refresh hostname`. A key that names no Source has nothing to re-execute and is an error — a static namespace, a facet key, an unknown name, or a field no Source owns: `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`. Reading configuration afresh is not a refresh; the config watcher does that.
 
 **`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write deep-merges into whatever is already stored there. `"replace": true` drops the subtree at the node first; omitting `data` removes it. Both act on static records only — a `put` never removes a record a provider's Source produces. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success; a record one of the provider's Sources produces is refused per record, as `cannot write <namespace>.<node>: owned by source <source>`.
 

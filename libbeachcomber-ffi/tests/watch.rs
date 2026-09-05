@@ -39,14 +39,14 @@ fn read(ptr: *mut c_char) -> serde_json::Value {
     serde_json::from_str(&body).expect("envelope must be valid JSON")
 }
 
-/// Seeds a virtual provider `key` with `data` (a JSON object literal, e.g.
-/// `r#"{"field":"v1"}"#`). Virtual providers have no scheduler or poller
-/// attached — nothing updates them spontaneously — so a watch on one only
-/// ever emits an event when this (or another) `put` targets it, which is
-/// what makes the timeout/eof/cancel tests below deterministic: unlike a
-/// real provider such as `hostname`, there is no risk of an unplanned
+/// Seeds a static namespace `key` with `data` (a JSON object literal, e.g.
+/// `r#"{"field":"v1"}"#`). A namespace holding only static records has no
+/// Source behind it, so no scheduler or poller updates it spontaneously — a
+/// watch on one only ever emits an event when this (or another) `put` targets
+/// it, which is what makes the timeout/eof/cancel tests below deterministic:
+/// unlike a real provider such as `hostname`, there is no risk of an unplanned
 /// second broadcast racing the assertion.
-fn put_virtual(client: *mut BcClient, key: &str, data: &str) {
+fn put_static(client: *mut BcClient, key: &str, data: &str) {
     let v = read(unsafe {
         bc_put(
             client,
@@ -92,7 +92,7 @@ fn watch_next_first_call_yields_an_event_outcome() {
 fn watch_next_zero_timeout_polls_and_times_out_when_nothing_is_ready() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    put_virtual(client, "watch_timeout_test", r#"{"field":"v1"}"#);
+    put_static(client, "watch_timeout_test", r#"{"field":"v1"}"#);
     let key = cs("watch_timeout_test.field");
     let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null()) };
     assert!(!watch.is_null());
@@ -114,7 +114,7 @@ fn watch_next_zero_timeout_polls_and_times_out_when_nothing_is_ready() {
 fn watch_next_reports_eof_after_the_daemon_closes_the_connection() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    put_virtual(client, "watch_eof_test", r#"{"field":"v1"}"#);
+    put_static(client, "watch_eof_test", r#"{"field":"v1"}"#);
     let key = cs("watch_eof_test.field");
     let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null()) };
     assert!(!watch.is_null());
@@ -142,7 +142,7 @@ fn watch_next_on_an_invalid_key_yields_an_error_envelope() {
     // tests/conformance/put/nested_object_data.json), so it errors as the
     // stream's very first frame rather than the ordinary miss a wholly
     // unregistered provider would produce.
-    put_virtual(
+    put_static(
         client,
         "watch_error_test",
         r#"{"widget":{"kind":"renderable"}}"#,
@@ -164,7 +164,7 @@ fn watch_next_on_an_invalid_key_yields_an_error_envelope() {
 fn watch_cancel_from_another_thread_unblocks_a_pending_next() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    put_virtual(client, "watch_cancel_test", r#"{"field":"v1"}"#);
+    put_static(client, "watch_cancel_test", r#"{"field":"v1"}"#);
     let key = cs("watch_cancel_test.field");
     let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null()) };
     assert!(!watch.is_null());

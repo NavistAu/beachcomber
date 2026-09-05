@@ -88,8 +88,8 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
   - [ ] this could also be project path specific in the case of docker-compose files perhaps?
 - [ ] `brew` provider — count of outdated packages. Global, poll (daily). Extend pattern to other package managers:
       `apt`, `dnf`/`yum`, `apk`, `pacman`.
-- [ ] have claude-scanline make a virtual provider that injects the usage stats in as cached values every time it gets
-      hit.
+- [ ] have claude-scanline `put` the usage stats into a static namespace every time it gets hit, so they read back as
+      cached values.
 
 ### Performance Validation
 

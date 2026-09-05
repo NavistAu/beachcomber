@@ -675,7 +675,7 @@ impl Client {
         }
     }
 
-    /// Clear the cached entry for a virtual provider key without dropping the registry entry.
+    /// Clear the cached entry for a static-data key without dropping the registry entry.
     /// A subsequent `put` under the same key still works.
     pub fn put_null(&self, key: &str, path: Option<&str>) -> Result<(), CombError> {
         let socket_path = self.find_or_start_socket()?;
@@ -1056,7 +1056,7 @@ impl Session {
         Ok(())
     }
 
-    /// Clear the cached entry for a virtual provider key without dropping the registry entry.
+    /// Clear the cached entry for a static-data key without dropping the registry entry.
     pub fn put_null(&mut self, key: &str, path: Option<&str>) -> Result<(), CombError> {
         let mut request = serde_json::json!({ "op": "put", "key": key });
         if let Some(p) = path {

@@ -187,7 +187,7 @@ The default output preset is `human` (coloured table) regardless of whether stdo
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts, watch backend). The watch backend line reports `native fs events` when the startup self-test confirmed kernel event delivery, or a WARN with `polling` when it didn't — provider file-watching still works, invalidating on a 1s scan instead of kernel events.
 
-## `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--global] [--null]`
+## `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--global] [--replace] [--null]`
 
 Write static data into the cache. External processes use this to expose state to prompt/statusline consumers without writing a script provider.
 
@@ -204,11 +204,16 @@ comb p myapp '{"status":"building"}' --path /home/user/project
 # Put once for every directory
 comb p myapp '{"status":"healthy"}' --global
 
+# Replace the subtree at the node instead of merging into it
+comb p myapp '{"status":"healthy"}' --replace
+
 # Clear a previously written entry
 comb p myapp --null
 ```
 
-`--null` clears a previously written entry. Omitting `--null` requires a JSON object argument.
+**Merge or replace:** a write deep-merges into whatever is already stored at the node, so `comb p myapp '{"version":"1.2.4"}'` leaves a `status` written earlier in place. `--replace` drops the subtree at the node first, so only what this write carries remains there. Both act on static records only — a `put` never removes a record a provider's Source produces. `--null` removes the subtree and writes nothing in its place, and cannot be combined with `--replace`.
+
+`data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root any JSON is legal, so `comb p myapp.deploy.count 3` and `comb p myapp.status '"healthy"'` are both fine. `--null` is the one case that takes no data argument at all.
 
 **Path:** `put` defaults to the current working directory, exactly as `get` does, so a plain `comb p` followed by a plain `comb g` in the same directory round-trips. `--global` writes `$HOME`, the entry every directory's chain ends at, which is how you publish one value for the whole machine; it cannot be combined with `--path`.
 

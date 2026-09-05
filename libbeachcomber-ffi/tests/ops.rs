@@ -86,8 +86,8 @@ fn get_accepts_the_documented_flag_combination() {
 fn put_get_put_null_round_trip() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    // `put`'s key names the virtual provider; `data`'s top-level keys become
-    // its fields (see tests/conformance/put/nested_object_data.json).
+    // `put`'s key names the static namespace; `data`'s top-level keys become
+    // its records (see tests/conformance/put/nested_object_data.json).
     let provider_key = cs("myvirtual");
     let field_key = cs("myvirtual.field");
     let data = cs(r#"{"field":"hello"}"#);
