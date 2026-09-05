@@ -336,7 +336,12 @@ pub unsafe extern "C" fn bc_put_null(
     })
 }
 
-/// Trigger recomputation of a provider. `path` is nullable.
+/// Re-execute the Sources `key` demands — every Source of the namespace for
+/// a bare `provider`, only the one owning the field for `provider.field` —
+/// each at the cache entry its own scope keys. `path` is nullable. A key
+/// naming no Source (a static namespace, a facet, an unknown name, or a
+/// field no Source owns) is an error: `nothing to refresh: <key> has no
+/// sources`.
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `key` must be

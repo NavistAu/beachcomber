@@ -67,13 +67,16 @@ Returns a `CombResult`.
 
 #### `client.refresh(key, path?)`
 
-Force the daemon to recompute a provider. **FFI transport only** — see
-"Transports and their limits" below.
+Re-execute the Sources `key` demands, each at its own scope. A key naming no
+Source (a static namespace, a facet, an unknown name, a field no Source
+owns) rejects with `nothing to refresh: <key> has no sources`. **FFI
+transport only** — see "Transports and their limits" below.
 
 #### `client.put(key, data?, opts?)` / `client.putNull(key, path?)`
 
-Store data as static data, or clear its cached entry (keeping the
-registry entry) with `putNull`.
+Store data as static data, or clear a node's static records with `putNull` —
+the entry itself is dropped once no records, static or provider-produced,
+remain at it.
 
 #### `client.status()`
 
