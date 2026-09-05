@@ -681,11 +681,17 @@ async fn watch_follows_the_whole_chain() {
 
     // A global write the project record shadows changes nothing the watcher can
     // see, so no frame is emitted.
+    // The cancellation here is safe where the one in the refresh test was not:
+    // `frames` is a one-way watch stream this test never writes to, so a
+    // cancelled read strands no response — only, if a frame did arrive, a
+    // partial line, which the emptiness check below turns into a legible
+    // failure rather than a parse error on the next read.
     send_recv(&mut s, put("my", serde_json::json!({"b": 9}))).await;
     line.clear();
     let shadowed = tokio::time::timeout(Duration::from_millis(250), frames.read_line(&mut line));
+    let timed_out = shadowed.await.is_err();
     assert!(
-        shadowed.await.is_err(),
+        timed_out && line.is_empty(),
         "a shadowed change must not produce a frame, got {line:?}"
     );
 
@@ -796,23 +802,34 @@ async fn refresh_at_the_global_entry_writes_nothing_without_a_home_repository() 
     // The refresh executes asynchronously, so give it a window to produce a row
     // and require that none appears. The inner poll's own deadline is longer
     // than the outer one, so the outer timeout is what ends this.
-    let wrote = tokio::time::timeout(
-        Duration::from_millis(400),
-        common::poll::poll_until_async(
-            "git rows after a global refresh",
-            "any row",
-            Duration::from_secs(30),
-            Duration::from_millis(20),
-            async || git_rows(&mut s).await,
-            |rows| !rows.is_empty(),
-        ),
-    )
-    .await;
+    //
+    // The poll gets a connection of its own, which is then dropped: the timeout
+    // cancels `poll_until_async` wherever it happens to be, and if that is
+    // between a request's `write_all` and its `read_line` the response is left
+    // unread on the wire for whatever reads that connection next. On a shared
+    // connection the assertions below would then read the abandoned `status`
+    // reply instead of their own.
+    let wrote = {
+        let mut probe = UnixStream::connect(&sock).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_millis(400),
+            common::poll::poll_until_async(
+                "git rows after a global refresh",
+                "any row",
+                Duration::from_secs(30),
+                Duration::from_millis(20),
+                async || git_rows(&mut probe).await,
+                |rows| !rows.is_empty(),
+            ),
+        )
+        .await
+    };
     assert!(
         wrote.is_err(),
         "a refresh outside a work tree must write nothing, got {wrote:?}"
     );
 
+    let mut s = UnixStream::connect(&sock).await.unwrap();
     let resp = send_recv(&mut s, get("git")).await;
     assert!(resp.data.is_none(), "still a miss, got {:?}", resp.data);
     let resp = send_recv(&mut s, get("git.lines_added")).await;

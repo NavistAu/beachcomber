@@ -573,23 +573,13 @@ impl Cache {
         Ok(removed)
     }
 
-    /// The static records — those whose source is `put` or `config:<file>` —
-    /// visible at `path`: every static map on the chain from `path` up to the
-    /// global entry, deep-merged farthest-first so the nearest one wins.
-    pub fn resolve_static_chain(
-        &self,
-        namespace: &str,
-        path: Option<&str>,
-    ) -> HashMap<String, Value> {
-        let mut out = HashMap::new();
-        for layer in crate::query::path_chain(path).iter().rev() {
-            self.merge_static_records(namespace, layer.as_deref(), &mut out);
-        }
-        out
-    }
-
-    /// Merge the static maps of the entry at `layer` into `out`, in source-name
-    /// order. Returns whether anything merged.
+    /// Merge the static maps — those whose source is `put` or `config:<file>` —
+    /// of the entry at `layer` into `out`, in source-name order. Returns
+    /// whether anything merged.
+    ///
+    /// One layer at a time: [`Cache::read_merged`] walks the chain itself
+    /// because a layer's static maps have to land between its neighbours'
+    /// provider maps, not after all of them.
     fn merge_static_records(
         &self,
         namespace: &str,
