@@ -499,33 +499,56 @@ async fn inline_execute_source(
     true
 }
 
+/// How far a read goes to bring a Source up to date before it is read.
+#[derive(Clone, Copy)]
+enum Warm {
+    /// Execute only when the Source has nothing cached at its scope's entry (or
+    /// is read-always).
+    Cold,
+    /// Also re-execute when the Source's own map at its scope's entry is past
+    /// its interval (`--wait`).
+    Stale,
+    /// Always drop the Source's map and re-execute (`--force`, `refresh`).
+    Always,
+}
+
 /// Bring one Source up to date for a read addressed at `at`, and say whether it
 /// ran.
 ///
 /// The decision is per Source, never per provider: a warm sibling says nothing
 /// about this one, so a cold Source is executed even when the namespace already
-/// holds records. It runs when it is `read_always`, when `force` asks for it, or
+/// holds records. It runs when it is `read_always`, when `warm` asks for it, or
 /// when it has nothing cached at its own scope's entry — the entry
 /// [`source_scope_path`] names, which for a `Global` Source is the global one
 /// whatever path the request carried.
 ///
-/// `force` drops that Source's map first, so `--force` refreshes every record
-/// the read returns without evicting a whole entry: the static records sharing
-/// the entry survive, and a `Global` Source is refreshed where it actually
-/// lives rather than being missed because the request named a directory.
+/// The three modes differ only in when the Source's map is dropped first.
+/// [`Warm::Cold`] never drops it and runs only on a cold miss. [`Warm::Stale`]
+/// (`--wait`) drops it when it is past its own interval. [`Warm::Always`]
+/// (`--force`, `refresh`) drops it unconditionally.
+///
+/// Dropping that one map rather than the entry is what keeps a re-execution
+/// from taking its neighbours with it: the static records sharing the entry
+/// survive, and a `Global` Source is refreshed where it actually lives rather
+/// than being missed because the request named a directory.
 async fn warm_source(
     registry: &ProviderRegistry,
     cache: &Cache,
     provider: &str,
     source_name: &str,
     at: Option<&str>,
-    force: bool,
+    warm: Warm,
 ) -> bool {
     let Some(source) = registry.source(provider, source_name) else {
         return false;
     };
     let layer = source_scope_path(registry, provider, source_name, at);
-    if force {
+    let drop_first = match warm {
+        Warm::Always => true,
+        Warm::Stale => cache.source_is_stale(provider, layer, source_name),
+        Warm::Cold => false,
+    };
+    if drop_first {
         cache.remove_source(provider, layer, source_name);
     } else if !source.read_always() && cache.has_provider_records_for(provider, layer, source_name)
     {
@@ -906,20 +929,6 @@ async fn handle_request(
                 ));
             }
 
-            // Wait semantics: if the cached entry is stale, evict it so the normal
-            // miss path below re-executes the provider inline and returns fresh data.
-            // Skipped for static namespaces — they have no source to re-execute.
-            if *wait
-                && !*force
-                && !registry.is_static_namespace(provider_name)
-                && cache
-                    .get_entry(provider_name, effective_path.as_deref())
-                    .is_some_and(|e| e.is_stale())
-            {
-                cache.remove(provider_name, effective_path.as_deref());
-                // Fall through to the normal miss path, which executes inline.
-            }
-
             // Signal demand to scheduler — keeps only the queried Source(s) warm
             // (canon §150/§268: a field query demands only its owning Source).
             if let Some(sched) = scheduler {
@@ -971,9 +980,14 @@ async fn handle_request(
             // the same set `refresh` re-executes.
             let demanded =
                 crate::query::demanded_source_names(registry, provider_name, &plan.demand);
+            let how = match (*force, *wait) {
+                (true, _) => Warm::Always,
+                (false, true) => Warm::Stale,
+                (false, false) => Warm::Cold,
+            };
             let mut ran = false;
             for source_name in &demanded {
-                ran |= warm_source(registry, cache, provider_name, source_name, at, *force).await;
+                ran |= warm_source(registry, cache, provider_name, source_name, at, how).await;
             }
             let mut merged = cache.read_merged(provider_name, at, registry);
             // A source whose map exists without holding this address is still
@@ -1094,7 +1108,15 @@ async fn handle_request(
                 None => {
                     let at = plan.effective_path.as_deref();
                     for source_name in &demanded {
-                        warm_source(registry, cache, provider_name, source_name, at, true).await;
+                        warm_source(
+                            registry,
+                            cache,
+                            provider_name,
+                            source_name,
+                            at,
+                            Warm::Always,
+                        )
+                        .await;
                     }
                 }
             }

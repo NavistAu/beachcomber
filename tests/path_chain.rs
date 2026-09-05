@@ -397,6 +397,13 @@ fn get_forced(key: &str, path: Option<&str>) -> serde_json::Value {
     }
 }
 
+fn get_waited(key: &str, path: Option<&str>) -> serde_json::Value {
+    match path {
+        Some(p) => serde_json::json!({"op": "get", "key": key, "path": p, "wait": true}),
+        None => serde_json::json!({"op": "get", "key": key, "wait": true}),
+    }
+}
+
 /// A warm sibling is not evidence that this Source is warm. The `Global` source
 /// has records and the `PathScoped` one does not, so the read must run the one
 /// that is actually cold and return both.
@@ -496,6 +503,110 @@ async fn force_at_the_global_entry_re_executes_the_global_source() {
         "--force --global re-runs the global source"
     );
     assert_eq!(GLOB_RUNS.load(Ordering::SeqCst), 2);
+}
+
+// ── `--wait` is decided per source too ───────────────────────────────────────
+
+/// The sources of `counting_registry` declare a 60s poll interval, so a warm
+/// map is stale once the mock clock is past it. Advancing rather than sleeping
+/// keeps the test instant.
+async fn age_past_the_poll_interval() {
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::resume();
+}
+
+/// `--wait` re-executes the stale source and leaves everything else at the
+/// entry alone. Canon `cache-lifecycle.md` lets only `put --null` and daemon
+/// exit remove a static record; `--wait` used to evict the whole entry and take
+/// them with it.
+#[tokio::test]
+async fn wait_re_executes_a_stale_source_and_keeps_the_static_records() {
+    let f = Fixture::start(counting_registry());
+    let project = f.path("ws/project");
+    let mut s = f.connect().await;
+
+    let first = data(send_recv(&mut s, get_at("c", &project)).await, "first read");
+    assert_eq!(first["pv"], serde_json::json!(1));
+
+    let resp = send_recv(
+        &mut s,
+        put_at("c.note", serde_json::json!("keep"), &project),
+    )
+    .await;
+    assert!(resp.ok, "put beside the provider records: {:?}", resp.error);
+
+    age_past_the_poll_interval().await;
+
+    let waited = data(
+        send_recv(&mut s, get_waited("c", Some(&project))).await,
+        "waited read",
+    );
+    assert_eq!(
+        PROJ_RUNS.load(Ordering::SeqCst),
+        2,
+        "the stale path-scoped source ran again"
+    );
+    assert_eq!(waited["pv"], serde_json::json!(2));
+    assert_eq!(
+        waited["note"],
+        serde_json::json!("keep"),
+        "--wait refreshes a source's map, it does not evict the entry it shares"
+    );
+}
+
+/// A `Global` source is stale at the global entry, and the request names a
+/// directory. `--wait` used to look for staleness at the addressed entry — where
+/// that source keeps nothing — and so never refreshed it.
+#[tokio::test]
+async fn wait_re_executes_a_stale_global_source_from_a_directory_read() {
+    let f = Fixture::start(counting_registry());
+    let project = f.path("ws/project");
+    let mut s = f.connect().await;
+
+    let first = data(send_recv(&mut s, get_at("c", &project)).await, "first read");
+    assert_eq!(first["gv"], serde_json::json!(1));
+
+    age_past_the_poll_interval().await;
+
+    let waited = data(
+        send_recv(&mut s, get_waited("c", Some(&project))).await,
+        "waited read",
+    );
+    assert_eq!(
+        GLOB_RUNS.load(Ordering::SeqCst),
+        2,
+        "the global source ran again even though the request named a directory"
+    );
+    assert_eq!(waited["gv"], serde_json::json!(2));
+    assert_eq!(
+        f.cache
+            .get_source("c", None, "glob")
+            .expect("the global source keeps its map at the global entry")
+            .fields["gv"],
+        Value::Int(2),
+        "the refreshed records landed at the global entry, not the addressed one"
+    );
+}
+
+/// Freshness is what `--wait` waits on. A source still inside its interval is
+/// read, not re-run.
+#[tokio::test]
+async fn wait_leaves_a_fresh_source_alone() {
+    let f = Fixture::start(counting_registry());
+    let project = f.path("ws/project");
+    let mut s = f.connect().await;
+
+    data(send_recv(&mut s, get_at("c", &project)).await, "first read");
+
+    let waited = data(
+        send_recv(&mut s, get_waited("c", Some(&project))).await,
+        "waited read",
+    );
+    assert_eq!(waited["gv"], serde_json::json!(1));
+    assert_eq!(waited["pv"], serde_json::json!(1));
+    assert_eq!(GLOB_RUNS.load(Ordering::SeqCst), 1);
+    assert_eq!(PROJ_RUNS.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

@@ -1027,6 +1027,20 @@ impl Cache {
             .is_some_and(|e| e.sources.contains_key(source))
     }
 
+    /// Whether the map `source` wrote at `(provider, path)` is past its own
+    /// interval.
+    ///
+    /// Staleness is per Source for the same reason coldness is: each map
+    /// carries the interval its own Source declared, and a sibling that is
+    /// overdue says nothing about this one. False when the entry or the map is
+    /// absent — there is nothing stale about a map that was never written.
+    pub fn source_is_stale(&self, provider: &str, path: Option<&str>, source: &str) -> bool {
+        self.entries
+            .get(&make_cache_key(provider, path))
+            .and_then(|e| e.sources.get(source).map(|s| s.is_stale()))
+            .unwrap_or(false)
+    }
+
     pub fn remove(&self, provider: &str, path: Option<&str>) {
         let key = make_cache_key(provider, path);
         self.entries.remove(&key);
