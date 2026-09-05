@@ -139,12 +139,18 @@ pub fn run_check_subjects(
             Ok(resp) => {
                 let title = subject_title(subject);
                 let err = resp.error.as_deref().unwrap_or("unknown error");
-                println!("\n{title}\n{local_lines}  [FAIL] {err}");
+                let line = verdict_line("FAIL", daemon_view(&local), err);
+                print!("\n{title}\n{local_lines}{line}");
                 worst = worst.max(2);
             }
             Err(e) => {
                 let title = subject_title(subject);
-                println!("\n{title}\n{local_lines}  [FAIL] daemon not responding: {e}");
+                let line = verdict_line(
+                    "FAIL",
+                    daemon_view(&local),
+                    &format!("daemon not responding: {e}"),
+                );
+                print!("\n{title}\n{local_lines}{line}");
                 worst = worst.max(2);
                 // No point continuing if daemon is unreachable.
                 break;
@@ -640,6 +646,13 @@ fn render_verdicts(verdicts: &[serde_json::Value], tag: Option<&str>) -> (String
         out.push_str(&verdict_line(level, tag, msg));
     }
     (out, worst)
+}
+
+/// Tag a daemon-sourced line only when the block also carries client-sourced
+/// ones — a subject with a single view needs no column telling the reader which
+/// one it is.
+fn daemon_view(local: &[serde_json::Value]) -> Option<&'static str> {
+    (!local.is_empty()).then_some(DAEMON_VIEW)
 }
 
 /// Which view of a subject produced a line. Padded to one width so the message

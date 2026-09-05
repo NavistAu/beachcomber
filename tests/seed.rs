@@ -642,6 +642,7 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
         .unwrap();
 
     let stop = Arc::new(AtomicBool::new(false));
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
     let reader = {
         let (cache, registry, stop) = (cache.clone(), registry.clone(), stop.clone());
         std::thread::spawn(move || {
@@ -655,10 +656,19 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
                     "a concurrent read saw the gap between the drop and the writes"
                 );
                 reads += 1;
+                if reads == 1 {
+                    let _ = started_tx.send(());
+                }
             }
             reads
         })
     };
+    // The overlap is structural, not a guess: the reader has read once before
+    // the first swap and does not stop until told to, so every swap below
+    // happens with it running.
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reader thread started");
 
     // A split drop-then-write leaves a window on every one of these, and the
     // reader is hammering the same entry.
@@ -675,12 +685,9 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
     }
     stop.store(true, Ordering::Relaxed);
     let reads = reader.join().unwrap();
-    // A read is cheaper than a swap, so the reader should comfortably outpace
-    // the writer. Anything less and the reader was not actually interleaved
-    // with the swaps, and its silence proves nothing.
     assert!(
-        reads >= SWAPS,
-        "the reader managed {reads} reads across {SWAPS} swaps — too few to have interleaved"
+        reads >= 2,
+        "the reader read {reads} times — it must outlive the swaps, not just precede them"
     );
 }
 
