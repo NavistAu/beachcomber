@@ -14,7 +14,7 @@
 | **Field** | A named component of a provider's output. Each field has a declared type and scope (Global or PathScoped). |
 | **Provider** | Code that computes a set of fields on demand. A built-in `impl Provider` in Rust, a script, an HTTP endpoint, or a loaded shared library. |
 | **Consumer** | Any caller that issues a cache request: CLI command, shell prompt integration, SDK client. Consumers are anonymous and transient. |
-| **Cache entry** | One `(provider, path)` slot. Holds the union of all the provider's Sources' Field outputs at that key (each Source contributes a disjoint Field subset), plus per-Source timestamp and state metadata. See [`provider_source.md`](./provider_source.md) for the composition model. |
+| **Cache entry** | The records at one `(namespace, path)`. Holds the union of all the provider's Sources' Field outputs at that key (each Source contributes a disjoint Field subset), plus per-Source timestamp and state metadata. See [`provider_source.md`](./provider_source.md) for the composition model. |
 | **Demand signal** | An event that counts as activity for a cache entry. Two sources: (a) a consumer request, (b) an fsevent on a filesystem path watched by that entry's provider. Both reset the keep-alive timer. |
 | **Base poll interval (`P`)** | Polling rate used in the Active state. Provider-declared default, overridable per-provider. |
 | **Keep-alive count (`K`)** | Number of base-rate polls' worth of time the entry stays in Active after the last demand signal. Expressed as an integer count, not a duration. Keep-alive duration in seconds is `K × P`. |
@@ -398,7 +398,7 @@ Feature: Cache lifecycle
 ## Out of scope
 
 - **Failure backoff.** A separate mechanism suppresses provider execution after repeated failures. Orthogonal to decay. Configured independently via `failure_reattempts` / `failure_backoff_interval`. See `src/scheduler.rs` for `FailureState`.
-- **Static leaves.** Leaves labelled `put` or `config:<file>` belong to no Source and are not lifecycle-tracked: they never decay and are never evicted, whether the entry holds only static leaves or mixes them with Source-owned ones. Eviction removes a Source instance's own leaves and nothing else; an entry is removed only when no leaf remains. A `put` leaf is removed by `put --null` or by daemon exit; a `config:<file>` leaf is rewritten or removed when its file changes.
+- **Static records.** Records whose source is `put` or `config:<file>` belong to no Source and are not lifecycle-tracked: they never decay and are never evicted, whether the entry holds only static records or mixes them with Source-produced ones. Eviction removes a Source instance's own records and nothing else; an entry is removed only when no record remains. A `put` record is removed by `put --null` or by daemon exit; a `config:<file>` record is rewritten or removed when its file changes.
 - **`Once` providers.** Hostname, user, uname — computed at daemon startup, never again. They are not part of the decay cycle.
 - **`--force` and `--wait`.** Explicit consumer overrides that bypass or modify default read semantics. Not part of the lifecycle; documented on the request API.
 - **Demand signals from the wire protocol itself.** `comb refresh`, `comb watch`, and `comb get --force` all have distinct semantics covered in the protocol spec. This document treats them as varieties of demand signal; per-op nuances live in `docs/protocol-spec.md`.

@@ -10,11 +10,11 @@
 |---|---|
 | **Provider** | The public namespace for a related set of Fields (e.g., `git`, `mise`). A Provider declares 1+ Sources and emits no Fields directly outside of Sources. Identified by name. |
 | **Source** | The unit of refresh inside a Provider. Has its own invalidation strategy, scope, lifecycle, and computes a declared subset of the Provider's Fields. Identified by `(provider_name, source_name)`. |
-| **Field** | A named leaf, scalar or nested, produced by exactly one Source or carrying a static label (`put`, or `config:<file>` for a leaf seeded from that configuration file). Identified by `provider.path…` (e.g., `git.branch`, `scanline.widgets.foo`). |
-| **Source label** | Metadata on a leaf naming what wrote it: a Source name, `put`, or `config:<file>`. Never a level in the tree and never part of an address. |
-| **Cache entry** | The `(provider, path)` slot. Holds the union of all Sources' Field outputs for that key. Sources writing to the same cache entry contribute disjoint Field subsets; Field-name conflicts are not allowed. A static entry, one whose leaves all carry static labels, has no Source instances; `provider:facet` keys (see `field_resolution.md`) are always static. |
+| **Field** | A named leaf, scalar or nested, produced by exactly one Source or carrying a static label (`put`, or `config:<file>` for a leaf seeded from that configuration file). Identified by its key, `namespace.field…` (e.g., `git.branch`, `scanline:template.widgets.foo`). |
+| **Record** | One stored value at a key and a path. It carries exactly one source: a Source of its Provider, `put`, or `config:<file>`. The source is metadata on the record, never a level in the tree and never part of an address. |
+| **Cache entry** | The records at one `(namespace, path)`. Holds the union of all Sources' Field outputs for that key. Sources writing to the same cache entry contribute disjoint Field subsets; Field-name conflicts are not allowed. A static entry, one whose leaves all carry static labels, has no Source instances; `provider:facet` keys (see `field_resolution.md`) are always static. |
 | **Source instance** | The runtime per-Source state at `(provider_name, path, source_name)`. Owns the Source's lifecycle state, watch registrations, poll timer, keep-alive timer, and failure-backoff state. Instances at the same `(provider, path)` share a cache entry but have independent runtime state. |
-| **Source scope** | `Global` or `PathScoped`. Determines whether the Source's results live in the pathless cache slot or path-keyed slots. A single Provider may have Sources of either scope. |
+| **Source scope** | `Global` or `PathScoped`. Determines whether the Source's results live at the global path, `$HOME`, or at per-directory paths. A single Provider may have Sources of either scope. |
 | **Pure-watch Source** | A Source whose invalidation strategy is `Watch`. Refreshes only on filesystem events; never polls. |
 | **Failback** | Per-Source failure-backoff state. Distinct from cache lifecycle keep-alive; governs retries after refresh failures, not decay-on-idle. |
 
@@ -24,15 +24,15 @@
 
 ```mermaid
 graph TD
-    P[Provider: git] --> S1[Source: refs<br/>Watch .git]
-    P --> S2[Source: diff<br/>Poll 30s]
-    P --> S3[Source: status<br/>WatchAndPoll .git/index, 60s]
-    S1 --> F1[branch, commit, tag, ahead, ...]
-    S2 --> F2[lines_added, lines_removed, ...]
-    S3 --> F3[staged, unstaged, untracked, ...]
+    P[Provider: git] --> S1[Source A: Watch]
+    P --> S2[Source B: Poll]
+    P --> S3[Source C: WatchAndPoll]
+    S1 --> F1[its fields]
+    S2 --> F2[its fields]
+    S3 --> F3[its fields]
 ```
 
-Each Field belongs to exactly one Source. Field names are unique within a Provider. The Provider name plus the Field name resolves uniquely to a single Source.
+Every record has exactly one source: a Source of its Provider, or a static label. Field names are unique within a Provider. A key plus a path resolves to exactly one record.
 
 ### Source structure
 
@@ -81,8 +81,8 @@ There is no general "fallback poll on watch failure" mechanism. The strategy is 
 
 A Source declares one of:
 
-- **`Global`** — the Source's output lives in the pathless cache slot `(provider_name, None)`. The Source instance is keyed `(provider_name, None, source_name)`. Examples: `mise.global`, `battery.level`, `hostname.name`.
-- **`PathScoped`** — the Source's output lives in path-keyed cache slots. Source instances are created on demand per path: `(provider_name, Some(path), source_name)`. Examples: `mise.project`, `git.refs`, `python.venv`.
+- **`Global`** — the Source's output lives in the global path, `(provider_name, $HOME)`. The Source instance is keyed `(provider_name, None, source_name)`. Examples: `mise.global`, `battery.level`, `hostname.name`.
+- **`PathScoped`** — the Source's output lives in per-directory paths. Source instances are created on demand per path: `(provider_name, Some(path), source_name)`. Examples: `mise.project`, `git.refs`, `python.venv`.
 
 A Provider may declare Sources of either scope. The scope is per-Source, not per-Provider.
 
@@ -101,7 +101,7 @@ A cache entry at `(provider, path)` holds the union of all Source instances' Fie
 
 ```mermaid
 graph LR
-    SI1[Source instance: git.head at /repo] -->|writes branch, sha| CE[Cache entry: git, /repo]
+    SI1[Source instance: git.<source> at /repo] -->|writes its fields| CE[Cache entry: git, /repo]
     SI2[Source instance: git.diff at /repo] -->|writes lines_added, ...| CE
     SI3[Source instance: git.status at /repo] -->|writes staged, ...| CE
 ```
@@ -220,28 +220,25 @@ The `project` Source has one instance per visited project root. Each instance de
 ```
 Provider: git
 
-Source: refs
+Source: watched
   scope: PathScoped
   invalidation: Watch { patterns: [".git"], abs_paths: [] }
   keep_alive: Duration(120s)
-  fields: branch, commit, tag, ahead, behind, upstream, detached, state, state_step, state_total, stash
 
-Source: diff
+Source: polled
   scope: PathScoped
   invalidation: Poll { interval_secs: 30 }
   keep_alive: Polls(4)  (= 120s)
-  fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
 
-Source: status
+Source: watched-and-polled
   scope: PathScoped
   invalidation: WatchAndPoll { patterns: [".git/index"], abs_paths: [], interval_secs: 60 }
   keep_alive: Polls(2)  (= 120s)
-  fields: staged, unstaged, untracked, conflicted, dirty
 ```
 
-`git.branch` (in `head`) refreshes only on `.git` fs events — no polling overhead. `git.lines_added` (in `diff`) refreshes every 30s while the Source is Active — file-watching cannot cheaply observe working-tree edits. `git.staged` (in `status`) refreshes both on `.git/index` events and as a 60s backstop.
+A field in the watched Source refreshes only on `.git` fs events — no polling overhead. A field in the polled Source refreshes every 30s while the Source is Active — file-watching cannot cheaply observe working-tree edits. A field in the watched-and-polled Source refreshes both on `.git/index` events and as a 60s backstop.
 
-A consumer who queries `git.branch` repeatedly but never queries `git.lines_added` keeps `head` Active while `diff` decays and eventually evicts. Each Source's lifecycle is independent.
+A consumer who queries a field of the watched Source repeatedly but never a field of the polled one keeps the first Active while the second decays and eventually evicts. Each Source's lifecycle is independent.
 
 ### Example 3: Battery on Linux (two Sources, mixed-cost mechanisms)
 
@@ -273,7 +270,7 @@ The cache entry for a read-always Source is still written on every re-execution 
 
 ## Invariants
 
-1. Every leaf carries exactly one source label: a Source of its Provider, or a static label. Field names are unique within a Provider.
+1. Every record has exactly one source: a Source of its Provider, or a static label. Field names are unique within a Provider.
 2. A Source's invalidation strategy is exactly one of `Poll`, `Watch`, or `WatchAndPoll`.
 3. `Watch` Sources never poll. The poll timer for a `Watch` Source instance never fires; no execute occurs from the timer path.
 4. `Poll` Sources never register filesystem watches.

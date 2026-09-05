@@ -2,17 +2,21 @@
 
 **Status:** canonical. Describes how a consumer query for `provider.field` is resolved into a typed value from the daemon's cache, the calling shell's environment, and its working directory — and where each step happens (daemon vs client). Tests must match this document; disagreements mean the code is wrong.
 
-**Scope:** the client-side resolution layer — the field-type taxonomy, the `cache.*` and `env.*` namespaces, path resolution (which cached slot a query reads), value resolution (the per-field expression, cascades, selection), the value tree, and typed output. The daemon's Source refresh model — how cached values are produced and invalidated — is owned by [`provider_source.md`](./provider_source.md); the cache state machine by [`cache-lifecycle.md`](./cache-lifecycle.md). Out-of-scope items are listed at the end.
+**Scope:** the client-side resolution layer — the field-type taxonomy, the `cache.*` and `env.*` namespaces, path resolution (which cache entry a query reads), value resolution (the per-field expression, cascades, selection), the value tree, and typed output. The daemon's Source refresh model — how cached values are produced and invalidated — is owned by [`provider_source.md`](./provider_source.md); the cache state machine by [`cache-lifecycle.md`](./cache-lifecycle.md). Out-of-scope items are listed at the end.
 
 ## Glossary
 
 | Term | Meaning |
 |---|---|
 | **Consumer query** | A request for `provider.field` (e.g. `aws.region`). |
+| **Key** | `namespace.field…`, the dotted address of a node in the value tree. A field may be nested, so a key names any node. |
+| **Namespace** | The first segment of a key: a provider (`git`) or a facet of one (`git:template`). |
+| **Record** | One stored value at a (key, path). It carries exactly one source: a Source of its provider, `put`, or `config:<file>`. A record's identity is (key, path); its source is an attribute. |
+| **Path** | The directory in the cache tuple, and only that. `$HOME` is the global path. |
 | **Resolution** | Producing a typed value for a consumer query, client-side, from the cache + `env.*` + `cwd`. |
 | **Cache** | The daemon's store of values, keyed by `(provider, path, name)`. |
 | **Cached value** | A value held in the cache. Addressed in expressions as `cache.<provider>.<field>`, read at the resolved path. |
-| **Facet** | `provider:facet`, an ordinary slot-keyed cache entry holding data about the provider, resolved up the directory chain like any static leaf; `template` is the facet that holds value expressions. |
+| **Facet** | `provider:facet`, a namespace holding data about a provider; its records are static and resolve up the directory chain like any static record; `template` is the facet that holds value expressions. |
 | **Value expression** | The per-field expression that computes a field's resolved value. A cached field's default is the identity (its own cached value). |
 | **Virtual field** | A field whose value expression is non-default — selection/computation over `cache.*` and `env.*`. It may have no cached value of its own. |
 | **`env.*`** | The calling shell's environment, a value-only namespace; a miss yields `""`. |
@@ -27,7 +31,7 @@
 
 The daemon is a **cache** of values keyed by `(provider, path, name)`. It produces and invalidates those values (see `provider_source.md`) but does not decide what a *consumer* sees. Resolution — the client's job — answers a query in two phases:
 
-1. **Path resolution (identification)** — *which cached slot*: the cache-key path is the caller's directory, an explicit path, or the global slot. With the provider and field name from the query, this fixes the cache coordinate `(provider, path, name)`.
+1. **Path resolution (identification)** — *which cache entry*: the cache-key path is the caller's directory, an explicit path, or the global path, `$HOME`. With the provider and field name from the query, this fixes the cache coordinate `(provider, path, name)`.
 2. **Value resolution** — *what the value is*: evaluate the field's value expression, where `cache.*` reads cached values at the resolved path and `env.*` reads the shell.
 
 ```mermaid
@@ -80,13 +84,13 @@ For a cached field with the default identity expression the two coincide; they d
 
 ### Path resolution
 
-The cache-key path of a query is the caller's directory, an explicit path, or `$HOME`, which is the global slot. It is never computed by an expression.
+The cache-key path of a query is the caller's directory, an explicit path, or `$HOME`, the global path. It is never computed by an expression.
 
-A read at a path resolves **static leaves** — those labelled `put` or `config:<file>` — along the chain from the path up to `$HOME`: every slot on the chain that holds a leaf contributes it, the nearest winning per leaf. A path outside `$HOME` walks up to `/` and then `$HOME`. **Provider-produced leaves** keep their source's declared scope: a path-scoped source's fields are read at the addressed slot and a global-scoped source's at `$HOME`; neither walks the chain. `--global` reads `$HOME` alone. This is layering, not a fallback: a fallback picks one whole slot when another is empty; layering always merges the chain.
+A read at a path collects the **static records** for the key — those whose source is `put` or `config:<file>` — along the chain from the path up to `$HOME`, the nearest winning. **Provider-produced records** keep their source's declared scope: a path-scoped source's records are read at the addressed path and a global-scoped source's at `$HOME`; neither walks the chain. A path outside `$HOME` walks up to `/` and then `$HOME`. `--global` reads `$HOME` alone. This is layering, not a fallback: a fallback picks one whole path when another is empty; layering always merges the chain.
 
 ### Value resolution
 
-Every field has a **value expression**. A **template** — literal text around a tag, or more than one tag, e.g. `{{ git.branch }}{% if git.dirty %}*{% endif %}` — is a string-valued field: only a value expression written as exactly one tag keeps the expression's natural type. A value expression written as exactly one `{{ expr }}` evaluates to the expression's natural type; one with literal text or more than one tag evaluates to a string; one with no tags of any kind is its literal text.
+Every field has a **value expression**. A **template** — literal text around a tag, or more than one tag, e.g. `{{ git.branch }}{% if git.dirty %}*{% endif %}` — is a string-valued field. A value expression written as exactly one `{{ expr }}` evaluates to the expression's natural type; one with literal text or more than one tag evaluates to a string; one with no tags of any kind is its literal text.
 
 - A **cached** field's value expression defaults to the **identity** — its own cached value, `cache.<provider>.<field>`.
 - A **virtual** field's value expression is custom: selection or computation over `cache.*`, `env.*`, and other fields' resolved values. A virtual field **need not have a cached value of its own** — its value is entirely the expression.
@@ -120,7 +124,7 @@ python.version = {{ env.PYENV_VERSION or env.MISE_PYTHON_VERSION
 
 A selector is per-shell, so the daemon cannot apply it.
 
-**It designates a value within a slot → it drives the value phase.** All variants live where the daemon already looks (one file or directory), so the daemon publishes the whole set as a **data provider**: a provider whose cached fields are the variants, keyed by variant name (e.g. `aws_profiles.default`, `aws_profiles.staging`, each an object of per-variant values). The consumer field is a virtual field that **indexes** the set by the selector's value:
+**A selector picks one value out of a cached set.** All variants live where the daemon already looks (one file or directory), so the daemon publishes the whole set as a **data provider**: a provider whose cached fields are the variants, keyed by variant name (e.g. `aws_profiles.default`, `aws_profiles.staging`, each an object of per-variant values). The consumer field is a virtual field that **indexes** the set by the selector's value:
 
 ```
 <namespace>.<field> = {{ env.<DIRECT> or cache.<data_provider>[ env.<SELECTOR> or <default_key> ].<field> }}
@@ -128,7 +132,7 @@ A selector is per-shell, so the daemon cannot apply it.
 
 The daemon caches every variant regardless of the shell; the client does the indexing. `comb get <data_provider>` returns the whole set; `comb get <namespace>` returns the computed consumer fields.
 
-A selector designates a value within a slot and is applied in the value phase; the daemon never reads the selector.
+A selector designates a value within a cache entry and is applied in the value phase; the daemon never reads the selector.
 
 ### The value tree
 
@@ -139,7 +143,7 @@ Resolution produces a **tree of values**. A query addresses any node by its path
 
 Whether a node is **cached** (stored by the daemon) or **computed** (a virtual field's expression) does not change how it is addressed. `provider` is the root of that provider's subtree; `provider.field.subkey…` walks down it; an expression walks the cached tree the same way (`cache.aws_profiles[key].region`).
 
-A template tree may itself have interior nodes; each is addressable like any other node and resolves to the object of its rendered leaves. A template at the same path as a cached value wins on read.
+A template tree may itself have interior nodes; each is addressable like any other node and resolves to the object of its rendered records. A template at the same path as a cached value wins on read.
 
 ### Typed output
 
@@ -148,7 +152,7 @@ A resolved value keeps its natural type. `--format json` emits bool / number / s
 ## Invariants
 
 1. Resolution is client-side. The daemon never reads the calling shell's `env` or `cwd`; it receives only a concrete cache coordinate `(provider, path, name)`.
-2. A query's cache-key path is the caller's directory, an explicit path, or `$HOME`, the global slot; it is never computed. A read resolves static leaves up the directory chain to `$HOME`, nearest winning; provider leaves are read at their source's declared scope.
+2. A query's cache-key path is the caller's directory, an explicit path, or `$HOME`, the global path; it is never computed. A read collects static records up the directory chain to `$HOME`, nearest winning; provider-produced records are read at their source's declared scope.
 3. The daemon is a cache of values keyed by `(provider, path, name)`, exposed to expressions as `cache.<provider>.<field>` and read at the resolved path.
 4. Every field has a value expression. A cached field's default is the identity (its own cached value); a virtual field's is a custom expression and may have no cached value of its own.
 5. `cache.<provider>.<field>` returns the stored value, bypassing field expressions; `<provider>.<field>` evaluates that field's value expression (recursive, cycle-detected). A field may override its own cached value via `cache.<self>` without self-reference; cached values keep their own names.
@@ -156,7 +160,7 @@ A resolved value keeps its natural type. `--format json` emits bool / number / s
 7. A virtual field's *value* is rendered client-side and never cached; its *template* is data the daemon holds at `provider:template` and never evaluates.
 8. A resolved value keeps its natural type into `--format json`; `text`/`sh` stringify it. A missing reference is falsy.
 9. A cascade resolves to its first non-empty term; all-empty resolves to `""`. A reference cycle is a config error, not a panic.
-10. Value-phase env selection — the selector designates a value within a slot — publishes the whole set as a data provider keyed by variant; the client indexes it by the selector value; the daemon never reads the selector.
+10. Value-phase env selection — the selector designates a value within a cache entry — publishes the whole set as a data provider keyed by variant; the client indexes it by the selector value; the daemon never reads the selector.
 11. *(deleted — path-phase env selection no longer exists.)*
 12. A query may address any node of the value tree: a leaf resolves to a scalar, an interior node (a field whose value is an object, or a bare provider/namespace) to its subtree as an object. A consumer namespace's subtree is its evaluated virtual fields; a cached provider's, its cached fields. Addressing is independent of whether a node is cached or computed.
 13. Value expressions are configuration. Built-in ones ship as managed files under `<config-dir>/defaults/`; user configuration overrides them per provider and field; the daemon seeds them into the cache; a client holds none.
@@ -323,5 +327,5 @@ Feature: Field resolution
 
 ## See also
 
-- [`provider_source.md`](./provider_source.md) — the daemon Source refresh model that produces cached values and path-scoped slots.
-- [`cache-lifecycle.md`](./cache-lifecycle.md) — the Active/Decay/Evicted state machine of the slots this layer reads.
+- [`provider_source.md`](./provider_source.md) — the daemon Source refresh model that produces cached values and path-scoped cache entries.
+- [`cache-lifecycle.md`](./cache-lifecycle.md) — the Active/Decay/Evicted state machine of the cache entries this layer reads.
