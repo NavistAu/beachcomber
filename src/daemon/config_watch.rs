@@ -6,6 +6,15 @@
 //! covers binary freshness); the user-facing contract lives in the website
 //! configuration reference.
 //!
+//! Not every change is a restart. A change that touches only
+//! `[providers."<p>:<facet>"]` tables is reported as [`ChangeKind::FacetsOnly`]
+//! and the daemon re-seeds them in place; anything else is
+//! [`ChangeKind::Settings`] and the daemon restarts, because settings are read
+//! once at startup. The classifier is the composed TOML with the facet tables
+//! removed (`Config::settings_only`), compared before and after. Because the
+//! facet case leaves the process running, the watch re-arms after every call
+//! rather than firing once and exiting.
+//!
 //! The watch targets `Config::config_path()`: the deterministic XDG
 //! location, not gated on the file existing at daemon startup. Because the
 //! watch is against a *path* rather than an open file, a config file that
@@ -50,18 +59,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Config self-watch poll interval — same 5s guarantee as the binary watch.
 pub const CONFIG_WATCH_POLL_INTERVAL: Duration = crate::singleton::SELF_WATCH_POLL_INTERVAL;
 
-/// Spawn a thread that watches the daemon's resolved config file. When it
-/// changes and the new content parses as valid config, calls `on_change`
-/// once (after a 200ms debounce) and exits. When it changes but fails to
-/// parse, logs a warning naming the error and keeps watching — never
-/// restarts into a config that would fail startup.
-pub fn spawn_config_self_watch<F: FnOnce() + Send + 'static>(on_change: F) {
-    spawn_config_self_watch_with(
-        Config::config_path(),
-        CONFIG_WATCH_POLL_INTERVAL,
-        true,
-        on_change,
-    );
+/// What a configuration change turned out to be, decided by comparing the
+/// composed *settings* — the deep-merged TOML with every facet table removed
+/// (`Config::settings_only`) — before and after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    /// Only `[providers."<p>:<facet>"]` tables differ. The daemon re-seeds them
+    /// in place and keeps serving.
+    FacetsOnly,
+    /// Something outside the facet tables differs. The daemon restarts, because
+    /// settings are read once at startup.
+    Settings,
 }
 
 /// Rolling reference point for the mtime-poll backstop: `since_ms` is the
@@ -105,27 +113,39 @@ fn composed_changed(config_path: &Path, conf_d_dir: &Path, baseline: Baseline) -
     newest_ms > baseline.since_ms || count != baseline.count
 }
 
-/// Parameterised variant: explicit path, poll interval, and whether to
-/// attempt the fs-event fast path (`fs_events: false` is the degraded mode
-/// the mtime poll exists for). Tests use this seam directly; production goes
-/// through [`spawn_config_self_watch`].
-pub fn spawn_config_self_watch_with<F: FnOnce() + Send + 'static>(
+/// Spawn a thread watching `config_path` and its `conf.d`. Each time the
+/// composed set changes and parses as valid config, calls `on_change` with the
+/// kind of change (after a 200ms debounce on the fs-event path) and **keeps
+/// watching** — a facet-only change is handled in place, so there is no process
+/// exit to end the watch. A change that fails to parse logs a warning naming the
+/// error and changes nothing: the daemon never restarts into a config that would
+/// fail startup.
+///
+/// `poll_interval` and `fs_events` are the two knobs the caller picks:
+/// production takes [`CONFIG_WATCH_POLL_INTERVAL`] with the fs-event fast path
+/// on, and in-process daemons take a short interval with `fs_events: false` —
+/// the degraded mode the mtime poll exists for, and the mode the tests drive.
+pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
     config_path: PathBuf,
     poll_interval: Duration,
     fs_events: bool,
-    on_change: F,
+    mut on_change: F,
 ) {
     use notify::{EventKind, RecursiveMode, Watcher};
     use std::sync::mpsc;
 
-    std::thread::spawn(move || {
-        let conf_d_dir = Config::conf_d_dir_for(&config_path);
-        let (_, initial_count) = composed_state(&config_path, &conf_d_dir);
-        let mut baseline = Baseline {
-            since_ms: now_unix_ms(),
-            count: initial_count,
-        };
+    // The starting point is read on the caller's thread, not the watch's: a
+    // change landing between the spawn and the thread's first instruction would
+    // otherwise become the "before" state and classify itself as no change.
+    let conf_d_dir = Config::conf_d_dir_for(&config_path);
+    let (_, initial_count) = composed_state(&config_path, &conf_d_dir);
+    let mut baseline = Baseline {
+        since_ms: now_unix_ms(),
+        count: initial_count,
+    };
+    let mut settings = settings_snapshot(&config_path, &conf_d_dir);
 
+    std::thread::spawn(move || {
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
         let watcher = if fs_events {
             match (notify::recommended_watcher(tx), config_path.parent()) {
@@ -179,7 +199,8 @@ pub fn spawn_config_self_watch_with<F: FnOnce() + Send + 'static>(
                 &conf_d_dir,
                 poll_interval,
                 baseline,
-                on_change,
+                &mut settings,
+                &mut on_change,
             );
             return;
         }
@@ -188,7 +209,6 @@ pub fn spawn_config_self_watch_with<F: FnOnce() + Send + 'static>(
         let debounce = Duration::from_millis(200);
         let mut last_event: Option<Instant> = None;
         let mut next_poll = Instant::now() + poll_interval;
-        let mut on_change = Some(on_change);
 
         loop {
             let now = Instant::now();
@@ -239,27 +259,27 @@ pub fn spawn_config_self_watch_with<F: FnOnce() + Send + 'static>(
                         && Instant::now() >= d
                     {
                         last_event = None;
-                        if try_restart(&config_path, &mut on_change) {
-                            return; // one-shot
-                        }
+                        try_fire(&config_path, &conf_d_dir, &mut settings, &mut on_change);
                         baseline = fresh_baseline(&config_path, &conf_d_dir);
                     }
                     if Instant::now() >= next_poll {
                         next_poll = Instant::now() + poll_interval;
                         if composed_changed(&config_path, &conf_d_dir, baseline) {
-                            if try_restart(&config_path, &mut on_change) {
-                                return; // one-shot
-                            }
+                            try_fire(&config_path, &conf_d_dir, &mut settings, &mut on_change);
                             baseline = fresh_baseline(&config_path, &conf_d_dir);
                         }
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     // Event channel gone mid-run; the poll carries on alone.
-                    let Some(f) = on_change.take() else {
-                        return;
-                    };
-                    poll_loop(&config_path, &conf_d_dir, poll_interval, baseline, f);
+                    poll_loop(
+                        &config_path,
+                        &conf_d_dir,
+                        poll_interval,
+                        baseline,
+                        &mut settings,
+                        &mut on_change,
+                    );
                     return;
                 }
             }
@@ -268,64 +288,83 @@ pub fn spawn_config_self_watch_with<F: FnOnce() + Send + 'static>(
 }
 
 /// Poll fallback used both when the fs-event watcher couldn't be set up at
-/// all, and when its channel disconnects mid-run. Loops until a change is
-/// detected AND validates cleanly; an invalid change is logged and polling
-/// continues.
-fn poll_loop<F: FnOnce()>(
+/// all, and when its channel disconnects mid-run. Runs for the life of the
+/// process: each change that validates cleanly is reported and the watch
+/// re-arms; an invalid change is logged and polling continues.
+fn poll_loop<F: FnMut(ChangeKind)>(
     config_path: &Path,
     conf_d_dir: &Path,
     poll_interval: Duration,
     start_baseline: Baseline,
-    on_change: F,
+    settings: &mut toml::Value,
+    on_change: &mut F,
 ) {
-    let mut on_change = Some(on_change);
     let mut baseline = start_baseline;
     loop {
         std::thread::sleep(poll_interval);
         if composed_changed(config_path, conf_d_dir, baseline) {
-            if try_restart(config_path, &mut on_change) {
-                return;
-            }
+            try_fire(config_path, conf_d_dir, settings, on_change);
             baseline = fresh_baseline(config_path, conf_d_dir);
         }
     }
 }
 
-/// Recompute a `Baseline` from current disk state after a detected-but-not-
-/// restarted change, so the same (possibly still-invalid) state isn't
-/// re-flagged as "changed" on every subsequent tick.
+/// Recompute a `Baseline` from current disk state after a detected change, so
+/// the same state isn't re-flagged as "changed" on every subsequent tick.
+///
+/// The reference point is the newest mtime observed, not just "now": a file
+/// stamped into the future (clock skew across a network mount, a test stamping
+/// an mtime to beat filesystem granularity) would otherwise stay newer than
+/// every subsequent baseline and fire on every tick — which only became a hot
+/// loop once the watch started re-arming instead of firing once.
 fn fresh_baseline(config_path: &Path, conf_d_dir: &Path) -> Baseline {
-    let (_, count) = composed_state(config_path, conf_d_dir);
+    let (newest_ms, count) = composed_state(config_path, conf_d_dir);
     Baseline {
-        since_ms: now_unix_ms(),
+        since_ms: now_unix_ms().max(newest_ms),
         count,
     }
 }
 
 /// Validate the composed config at `config_path` (its conf.d dir included)
-/// and, if it parses cleanly, consume `on_change` and fire it (returns
-/// `true` — caller must stop watching). A missing main config file parses as
-/// empty content (see `validate_config_file`), not a failure. If the
-/// composed set fails to parse (any composed file being invalid, or the main
-/// file unreadable for a reason other than not existing), logs a warning
-/// naming the error and returns `false` — caller keeps watching.
-fn try_restart<F: FnOnce()>(config_path: &Path, on_change: &mut Option<F>) -> bool {
+/// and, if it parses cleanly, classify the change against `settings` and fire
+/// `on_change`, leaving `settings` holding the new snapshot. A missing main
+/// config file parses as empty content (see `validate_config_file`), not a
+/// failure. If the composed set fails to parse (any composed file being
+/// invalid, or the main file unreadable for a reason other than not existing),
+/// logs a warning naming the error and fires nothing.
+fn try_fire<F: FnMut(ChangeKind)>(
+    config_path: &Path,
+    conf_d_dir: &Path,
+    settings: &mut toml::Value,
+    on_change: &mut F,
+) {
     let result = validate_config_file(config_path);
-    if should_restart_for_config_change(&result) {
-        tracing::info!(
-            "config file changed and parses cleanly; initiating graceful shutdown for restart"
-        );
-        if let Some(f) = on_change.take() {
-            f();
-        }
-        true
-    } else {
+    if !should_restart_for_config_change(&result) {
         let e = result.unwrap_err();
         tracing::warn!(
             "config file changed but is not valid ({e}); keeping current config, not restarting"
         );
-        false
+        return;
     }
+    let next = settings_snapshot(config_path, conf_d_dir);
+    let kind = if next == *settings {
+        ChangeKind::FacetsOnly
+    } else {
+        ChangeKind::Settings
+    };
+    *settings = next;
+    tracing::info!("config file changed and parses cleanly ({kind:?})");
+    on_change(kind);
+}
+
+/// The composed configuration with every facet table removed — the half a
+/// change has to touch for a restart to be warranted.
+fn settings_snapshot(config_path: &Path, conf_d_dir: &Path) -> toml::Value {
+    let mut composed = toml::Value::Table(Default::default());
+    for (_, layer) in Config::layers(Some(config_path), conf_d_dir) {
+        crate::config::deep_merge_toml(&mut composed, layer);
+    }
+    Config::settings_only(&composed)
 }
 
 /// Validates the WHOLE composed set (main file + every conf.d/*.toml) — see

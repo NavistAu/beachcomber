@@ -685,6 +685,36 @@ impl Cache {
         Ok(removed)
     }
 
+    /// Remove every record whose source label starts with `prefix`, across
+    /// every entry, pruning the maps and entries it empties and notifying the
+    /// watchers of each entry it touched.
+    ///
+    /// The first half of a re-seed: `config:` records go and `put` records
+    /// stay, so a `put` survives — including one that shadows a config record
+    /// since deleted from its file.
+    pub fn drop_static_records_with_label_prefix(&self, prefix: &str) {
+        let mut touched: Vec<CacheKey> = Vec::new();
+        self.entries.retain(|key, entry| {
+            let before = entry.sources.len();
+            entry.sources.retain(|name, _| !name.starts_with(prefix));
+            if entry.sources.len() != before {
+                touched.push(key.clone());
+            }
+            !entry.sources.is_empty()
+        });
+        // Notified after `retain` returns: waking a watcher while a shard guard
+        // is held invites a reader on the same shard to deadlock behind it.
+        let Some(ref watchers) = self.watchers else {
+            return;
+        };
+        for key in touched {
+            match key.find('\0') {
+                Some(sep) => watchers.notify(&key[..sep], Some(&key[sep + 1..])),
+                None => watchers.notify(&key, None),
+            }
+        }
+    }
+
     /// Merge the static maps of `entry` — those whose source is `put` or
     /// `config:<file>` — into `out`, in source-name order. Returns whether
     /// anything merged.

@@ -242,6 +242,28 @@ JSON metadata:
 }
 ```
 
+### Template facets
+
+A **facet** is a namespace holding data *about* a provider, written `provider:facet`. The `template` facet holds the value expressions a `comb get` on that provider returns alongside the data. Declare one as a quoted provider key — the table maps 1:1 onto the tree, nested tables are groups, and string leaves are the expressions:
+
+```toml
+[providers."python:template"]
+venv_name = "{{ python.venv }}"
+
+[providers."python:template".widgets]
+version = "{{ python.version }}"
+```
+
+That is `python:template.venv_name` and `python:template.widgets.version`. A facet table holds data only, and three rules are enforced at daemon startup (and by `comb check config`):
+
+- The key must be valid facet syntax — exactly one colon, a facet name of letters, digits, `_` or `-`, and not one of the metadata suffix names (`age`, `stale`, `fresh`, `cache`, `source`). `[providers."a:b:c"]` and `[providers."x:age"]` are **errors**.
+- No settings keys. `enabled`, `backend`, `type`, `command`, `library_path`, `url`, `path`, and every per-source knob (`poll_*`, `fsevent_*`, `failback_*`) are **errors** inside a facet table — they belong in `[providers.<name>]`.
+- Under `:template`, nesting is tables only, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**; a leaf that is neither a string nor a table is a **warning** and is dropped from what gets loaded.
+
+Every leaf is loaded into the cache at daemon start, labelled with the file it came from — `comb status` shows its source as `config:~/.config/beachcomber/conf.d/10-mine.toml`. Layers are loaded in composition order, so a leaf two files set carries the later file's label and value, while a leaf only the earlier file set keeps its own.
+
+**Facet tables reload without a restart.** A configuration change that touches only facet tables is applied in place: every `config:`-labelled record is dropped and all layers are loaded again, so an edited leaf takes effect on the next read, a leaf deleted from its file disappears, and a `watch` on the affected key wakes. Records written by `comb put` are untouched. A change that touches anything else still restarts the daemon.
+
 ### Virtual fields
 
 A **virtual field** is a value expression computed client-side over `env.*`, `cache.*`, and other fields' resolved values — it need not have a cached value of its own. Declare one under `[providers.<name>]` as a dotted `virtual.<field>` key:
@@ -311,10 +333,12 @@ Composition rules:
   the file) rather than blocking daemon startup — the rest of the composed
   set still loads.
 - Config changes take effect via **automatic daemon restart** — no manual
-  restart, no in-place reload. Changes to `config.toml` or any `conf.d/*.toml`
-  file (including files added or removed) trigger the daemon's config
-  self-watch, which restarts only once the *whole* composed set parses
-  cleanly; an edit that doesn't parse is ignored with a logged warning.
+  restart. Changes to `config.toml` or any `conf.d/*.toml` file (including
+  files added or removed) trigger the daemon's config self-watch, which acts
+  only once the *whole* composed set parses cleanly; an edit that doesn't parse
+  is ignored with a logged warning. The one change that does **not** restart is
+  an edit confined to [template facets](#template-facets), which is applied in
+  place.
 
 ## Config field summary
 

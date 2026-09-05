@@ -81,6 +81,80 @@ const SOURCE_KNOB_KEYS: &[&str] = &[
     "poll_secs",
 ];
 
+/// Keys that configure a provider rather than carry data about one. A facet
+/// table holds data only, so any of these appearing in one is a config error —
+/// `[providers."git:template"] enabled = false` looks like it disables `git`
+/// and does nothing at all.
+const FACET_SETTINGS_KEYS: &[&str] = &[
+    "enabled",
+    "backend",
+    "type",
+    "command",
+    "library_path",
+    "url",
+    "path",
+];
+
+/// Validate one `[providers."<p>:<facet>"]` table: data only, and under
+/// `template` a tree of tables and value-expression strings.
+fn validate_facet_table(
+    namespace: &str,
+    facet: &str,
+    table: &toml::Table,
+    warnings: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    let provider = namespace.split(':').next().unwrap_or(namespace);
+    for key in table.keys() {
+        if FACET_SETTINGS_KEYS.contains(&key.as_str()) || SOURCE_KNOB_KEYS.contains(&key.as_str()) {
+            errors.push(format!(
+                "[providers.\"{namespace}\"] is a facet table and holds data only, \
+                 but '{key}' is a settings key. It belongs in [providers.{provider}]."
+            ));
+        }
+    }
+    if facet == "template" {
+        validate_template_tree(namespace, "", table, warnings, errors);
+    }
+}
+
+/// Walk a `template` facet's tree. Nesting is tables only, so a key with a `.`
+/// in it names one record while addressing another; and a leaf that is neither
+/// a string nor a table is not a value expression, so the seed drops it.
+fn validate_template_tree(
+    namespace: &str,
+    prefix: &str,
+    table: &toml::Table,
+    warnings: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for (key, value) in table {
+        let addressed = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        if key.contains('.') {
+            errors.push(format!(
+                "[providers.\"{namespace}\"] key '{addressed}' contains a '.': a template \
+                 nests with tables, and a dotted key names one record while addressing another."
+            ));
+            continue;
+        }
+        match value {
+            toml::Value::Table(sub) => {
+                validate_template_tree(namespace, &addressed, sub, warnings, errors)
+            }
+            toml::Value::String(_) => {}
+            other => warnings.push(format!(
+                "[providers.\"{namespace}\"] '{addressed}' is {}, not a value expression or a \
+                 group; it is dropped from the seed.",
+                other.type_str()
+            )),
+        }
+    }
+}
+
 /// Which resolution step supplied a socket path
 /// (canon singleton.md §"Canonical socket path resolution").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1230,6 +1304,23 @@ impl Config {
                 None => continue,
             };
 
+            // A provider key with a colon in it is a facet namespace: a data
+            // table, never a settings block and never a source-block parent.
+            // The check runs first and takes the whole block with it, so
+            // `[providers."git:template"]` is never read as a source block for
+            // `git`.
+            match crate::query::parse_facet(prov_name) {
+                Err(msg) => {
+                    errors.push(format!("[providers.\"{prov_name}\"]: {msg}"));
+                    continue;
+                }
+                Ok(Some(facet)) => {
+                    validate_facet_table(prov_name, facet, table, &mut warnings, &mut errors);
+                    continue;
+                }
+                Ok(None) => {}
+            }
+
             // Check for old flat source-knob keys at the provider level.
             // These are rejected for ALL providers (built-in and external).
             // Exception: script/library/http providers still use some of these
@@ -1429,22 +1520,86 @@ impl Config {
         if base.as_table().is_none() {
             base = toml::Value::Table(Default::default());
         }
-        for file in Self::conf_d_files(conf_d_dir) {
+        for (_, overlay) in Self::layers(None, conf_d_dir) {
+            deep_merge_toml(&mut base, overlay);
+        }
+        base
+    }
+
+    /// The configuration files that compose, in composition order — the main
+    /// config file (when `config_path` is given and readable), then every
+    /// `conf.d/*.toml` in lexical filename order — each parsed on its own. A
+    /// file that cannot be read or does not parse as a table is skipped with a
+    /// warning, the lenient posture `compose_value` folds over.
+    ///
+    /// Settings compose by deep merge, but facet tables are seeded per layer so
+    /// each record keeps the label of the file that set it — which is only
+    /// possible while the layers are still separable.
+    pub fn layers(config_path: Option<&Path>, conf_d: &Path) -> Vec<(PathBuf, toml::Value)> {
+        let mut out: Vec<(PathBuf, toml::Value)> = Vec::new();
+        let mut push = |file: PathBuf| {
             let content = match std::fs::read_to_string(&file) {
                 Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
                 Err(e) => {
-                    warn!("conf.d: could not read {}: {e}; skipping", file.display());
-                    continue;
+                    warn!("config: could not read {}: {e}; skipping", file.display());
+                    return;
                 }
             };
             match toml::from_str::<toml::Value>(&content) {
-                Ok(overlay) => deep_merge_toml(&mut base, overlay),
-                Err(e) => {
-                    warn!("conf.d: {} failed to parse ({e}); skipping", file.display());
-                }
+                Ok(v) if v.is_table() => out.push((file, v)),
+                Ok(_) => warn!(
+                    "config: {} top-level value is not a table; skipping",
+                    file.display()
+                ),
+                Err(e) => warn!("config: {} failed to parse ({e}); skipping", file.display()),
             }
+        };
+        if let Some(p) = config_path {
+            push(p.to_path_buf());
         }
-        base
+        for file in Self::conf_d_files(conf_d) {
+            push(file);
+        }
+        out
+    }
+
+    /// The facet tables of one layer: every `[providers."<p>:<facet>"]` block,
+    /// as (namespace, table). A key whose facet syntax is malformed is left out
+    /// — `validate_providers` reports it as an error and the daemon does not
+    /// start.
+    pub fn facet_tables(layer: &toml::Value) -> Vec<(String, toml::Table)> {
+        let Some(providers) = layer.get("providers").and_then(|v| v.as_table()) else {
+            return Vec::new();
+        };
+        providers
+            .iter()
+            .filter(|(name, _)| matches!(crate::query::parse_facet(name), Ok(Some(_))))
+            .filter_map(|(name, val)| Some((name.clone(), val.as_table()?.clone())))
+            .collect()
+    }
+
+    /// The composed value with every facet table removed: the half of
+    /// configuration a change has to touch for a restart to be warranted. The
+    /// config self-watch compares this before and after
+    /// (`crate::daemon::config_watch::ChangeKind`).
+    pub fn settings_only(composed: &toml::Value) -> toml::Value {
+        let mut out = composed.clone();
+        if let Some(providers) = out.get_mut("providers").and_then(|v| v.as_table_mut()) {
+            providers.retain(|name, _| !name.contains(':'));
+        }
+        out
+    }
+
+    /// The static source label for a record seeded from `path`: `config:` plus
+    /// the file's path with `$HOME` written as `~`
+    /// (`config:~/.config/beachcomber/conf.d/10-mine.toml`).
+    pub fn config_label(path: &Path) -> String {
+        let shown = crate::query::home_dir()
+            .and_then(|home| path.strip_prefix(&home).ok().map(|rest| rest.to_path_buf()))
+            .map(|rest| format!("~/{}", rest.display()))
+            .unwrap_or_else(|| path.display().to_string());
+        format!("{}{shown}", crate::cache::CONFIG_SOURCE_PREFIX)
     }
 
     /// Strict composed parse: `main_content` plus every `conf.d/*.toml` in

@@ -1,5 +1,6 @@
 pub mod config_watch;
 pub mod lifecycle;
+pub mod seed;
 
 use crate::boundaries::spawn::{DaemonSpawner, RealDaemonSpawner};
 use crate::cache::Cache;
@@ -135,16 +136,10 @@ async fn run_daemon_with_cancel(
     // Validate provider config blocks against registered sources.
     // Errors → refuse to start. Warnings → log and continue.
     {
-        let known_providers = registry.provider_names();
-        let known_sources: std::collections::HashMap<String, Vec<String>> = known_providers
-            .iter()
-            .filter_map(|p| {
-                registry
-                    .provider_sources(p)
-                    .map(|sources| (p.clone(), sources.iter().map(|s| s.name.clone()).collect()))
-            })
-            .collect();
-        let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
+        let (warnings, errors) = config.validate_providers(
+            &registry.provider_names(),
+            &registry.source_names_by_provider(),
+        );
         for w in &warnings {
             tracing::warn!("{}", w);
         }
@@ -158,6 +153,52 @@ async fn run_daemon_with_cancel(
             );
             return;
         }
+    }
+
+    // Facet tables seed their namespaces before the socket is served, so the
+    // first `get` already sees them. The layers are re-read here rather than
+    // taken from `config`: composition deep-merges them into one value, and the
+    // per-file provenance every seeded record carries would be gone.
+    let config_path = Config::config_path();
+    let conf_d_dir = Config::conf_d_dir_for(&config_path);
+    for w in seed::seed_facets(
+        &cache,
+        &registry,
+        &Config::layers(Some(&config_path), &conf_d_dir),
+    ) {
+        warn!("{}", w);
+    }
+
+    // Config self-watch. A change that touches only facet tables re-seeds them
+    // in place; anything else restarts the daemon, since settings are read once
+    // at startup. In-process daemons take the polling backstop on a short
+    // interval for the same reason they take a polling file watcher: registering
+    // a kernel fs-event watch costs about 1.2s per call on macOS, and a test
+    // that is not about the native backend should not pay it.
+    {
+        let cache = cache.clone();
+        let registry = registry.clone();
+        let cancel = cancel.clone();
+        let watched_path = config_path.clone();
+        let watched_conf_d = conf_d_dir.clone();
+        let (interval, fs_events) = match polling_watch {
+            None => (config_watch::CONFIG_WATCH_POLL_INTERVAL, true),
+            Some(_) => (std::time::Duration::from_millis(50), false),
+        };
+        config_watch::spawn_config_self_watch_with(config_path, interval, fs_events, move |kind| {
+            match kind {
+                config_watch::ChangeKind::FacetsOnly => {
+                    let layers = Config::layers(Some(&watched_path), &watched_conf_d);
+                    for w in seed::reseed_facets(&cache, &registry, &layers) {
+                        warn!("{}", w);
+                    }
+                }
+                config_watch::ChangeKind::Settings => {
+                    info!("configuration settings changed; shutting down for restart");
+                    cancel.cancel();
+                }
+            }
+        });
     }
 
     let (handle, mut scheduler) = Scheduler::new(

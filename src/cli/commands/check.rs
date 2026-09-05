@@ -112,6 +112,15 @@ pub fn run_check_subjects(
             None
         };
 
+        // The config file is validated here as well as by the daemon: a config
+        // the daemon refuses to start on is exactly the one there is no daemon
+        // left to ask about.
+        let local = (subject == "config").then(|| local_config_verdicts(config));
+        if let Some((_, code)) = &local {
+            worst = worst.max(*code);
+        }
+        let local_lines = local.map(|(lines, _)| lines).unwrap_or_default();
+
         match client.introspect(subject, duration) {
             Ok(resp) if resp.ok => {
                 let payload = resp
@@ -120,18 +129,18 @@ pub fn run_check_subjects(
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
                 let (text, code) = render_subject(subject, &payload);
-                print!("{text}");
+                print!("{text}{local_lines}");
                 worst = worst.max(code);
             }
             Ok(resp) => {
                 let title = subject_title(subject);
                 let err = resp.error.as_deref().unwrap_or("unknown error");
-                println!("\n{title}\n  [FAIL] {err}");
+                println!("\n{title}\n{local_lines}  [FAIL] {err}");
                 worst = worst.max(2);
             }
             Err(e) => {
                 let title = subject_title(subject);
-                println!("\n{title}\n  [FAIL] daemon not responding: {e}");
+                println!("\n{title}\n{local_lines}  [FAIL] daemon not responding: {e}");
                 worst = worst.max(2);
                 // No point continuing if daemon is unreachable.
                 break;
@@ -140,6 +149,39 @@ pub fn run_check_subjects(
     }
 
     worst
+}
+
+/// Validate the config file against the built-in providers, as
+/// `run_daemon_with_cancel` does at startup. Returns the verdict lines and the
+/// worst exit code they imply.
+///
+/// The registry here is the built-in set rather than
+/// `ProviderRegistry::with_config`: the only thing the registry contributes is
+/// the "unknown source name" warning for a built-in provider, and building the
+/// config-defined half would `dlopen` every library provider in the client
+/// process for a read-only check.
+fn local_config_verdicts(config: &Config) -> (String, u8) {
+    let registry = crate::provider::registry::ProviderRegistry::with_defaults();
+    let (warnings, errors) = config.validate_providers(
+        &registry.provider_names(),
+        &registry.source_names_by_provider(),
+    );
+
+    let mut lines = String::new();
+    for w in &warnings {
+        lines.push_str(&format!("  [WARN] config   {w}\n"));
+    }
+    for e in &errors {
+        lines.push_str(&format!("  [FAIL] config   {e}\n"));
+    }
+    let worst = if !errors.is_empty() {
+        2
+    } else if !warnings.is_empty() {
+        1
+    } else {
+        0
+    };
+    (lines, worst)
 }
 
 fn subject_title(subject: &str) -> &'static str {

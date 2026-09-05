@@ -1152,3 +1152,259 @@ path = "env.KUBECONFIG or '~/.kube/config'"
         warnings
     );
 }
+
+// ── Layers, facet tables, and the settings/facets split (Task 6) ─────────────
+
+fn write(dir: &std::path::Path, rel: &str, body: &str) -> std::path::PathBuf {
+    let path = dir.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
+#[test]
+fn layers_are_the_main_file_then_conf_d_in_lexical_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "config.toml",
+        "[daemon]\nlog_level = \"debug\"\n",
+    );
+    let b = write(
+        tmp.path(),
+        "conf.d/20-b.toml",
+        "[daemon]\nlog_level = \"warn\"\n",
+    );
+    let a = write(
+        tmp.path(),
+        "conf.d/10-a.toml",
+        "[daemon]\nlog_level = \"trace\"\n",
+    );
+
+    let layers = Config::layers(Some(&main), &tmp.path().join("conf.d"));
+    let paths: Vec<_> = layers.iter().map(|(p, _)| p.clone()).collect();
+    assert_eq!(
+        paths,
+        vec![main, a, b],
+        "layers compose main file first, then conf.d lexically"
+    );
+
+    // Each file is parsed on its own, not merged: the first layer still holds
+    // the value the later ones override.
+    assert_eq!(
+        layers[0].1["daemon"]["log_level"].as_str(),
+        Some("debug"),
+        "a layer keeps its own value; composition happens later"
+    );
+    assert_eq!(layers[2].1["daemon"]["log_level"].as_str(), Some("warn"));
+}
+
+#[test]
+fn layers_skip_a_file_that_does_not_parse() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "config.toml", "[daemon]\n");
+    write(
+        tmp.path(),
+        "conf.d/10-broken.toml",
+        "this is not [ valid toml",
+    );
+    let ok = write(tmp.path(), "conf.d/20-ok.toml", "[lifecycle]\n");
+
+    let paths: Vec<_> = Config::layers(Some(&main), &tmp.path().join("conf.d"))
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    assert_eq!(paths, vec![main, ok], "the broken drop-in is skipped");
+}
+
+#[test]
+fn layers_tolerate_a_missing_main_config_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let drop_in = write(tmp.path(), "conf.d/10-only.toml", "[daemon]\n");
+    let paths: Vec<_> = Config::layers(
+        Some(&tmp.path().join("config.toml")),
+        &tmp.path().join("conf.d"),
+    )
+    .into_iter()
+    .map(|(p, _)| p)
+    .collect();
+    assert_eq!(paths, vec![drop_in]);
+}
+
+#[test]
+fn facet_tables_extracts_only_valid_facet_namespaces() {
+    let layer: toml::Value = toml::from_str(
+        r#"
+[daemon]
+log_level = "debug"
+
+[providers.git]
+enabled = true
+
+[providers."python:template"]
+venv_name = "{{ python.venv }}"
+
+[providers."python:notes"]
+why = "here"
+
+[providers."a:b:c"]
+nope = "malformed, left to validation"
+"#,
+    )
+    .unwrap();
+
+    let mut found: Vec<String> = Config::facet_tables(&layer)
+        .into_iter()
+        .map(|(ns, _)| ns)
+        .collect();
+    found.sort();
+    assert_eq!(
+        found,
+        vec!["python:notes".to_string(), "python:template".to_string()],
+        "plain providers and malformed facet keys are not facet tables"
+    );
+
+    let table = Config::facet_tables(&layer)
+        .into_iter()
+        .find(|(ns, _)| ns == "python:template")
+        .map(|(_, t)| t)
+        .unwrap();
+    assert_eq!(table["venv_name"].as_str(), Some("{{ python.venv }}"));
+}
+
+#[test]
+fn settings_only_strips_exactly_the_facet_tables() {
+    let composed: toml::Value = toml::from_str(
+        r#"
+[daemon]
+log_level = "debug"
+
+[providers.git]
+enabled = true
+
+[providers."git:template"]
+branch = "{{ git.branch }}"
+"#,
+    )
+    .unwrap();
+
+    let settings = Config::settings_only(&composed);
+    assert!(
+        settings["providers"].get("git").is_some(),
+        "a plain provider block is a setting and survives"
+    );
+    assert!(
+        settings["providers"].get("git:template").is_none(),
+        "a facet table is not a setting and is stripped"
+    );
+    assert_eq!(settings["daemon"]["log_level"].as_str(), Some("debug"));
+}
+
+#[test]
+fn config_label_writes_home_as_tilde() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().canonicalize().unwrap();
+    // SAFETY: nextest gives every test its own process.
+    unsafe { std::env::set_var("HOME", &home) };
+
+    assert_eq!(
+        Config::config_label(&home.join(".config/beachcomber/conf.d/10-mine.toml")),
+        "config:~/.config/beachcomber/conf.d/10-mine.toml"
+    );
+    assert_eq!(
+        Config::config_label(std::path::Path::new("/etc/beachcomber/config.toml")),
+        "config:/etc/beachcomber/config.toml",
+        "a path outside $HOME is written in full"
+    );
+}
+
+// ── Facet-table validation ───────────────────────────────────────────────────
+
+fn facet_validation(toml_str: &str) -> (Vec<String>, Vec<String>) {
+    let config: Config = toml::from_str(toml_str).expect("valid toml");
+    config.validate_providers(&["git".to_string()], &std::collections::HashMap::new())
+}
+
+#[test]
+fn facet_key_with_two_colons_is_an_error() {
+    let (_, errors) = facet_validation("[providers.\"a:b:c\"]\nx = \"y\"\n");
+    assert!(
+        errors.iter().any(|e| e.contains("a:b:c")),
+        "expected an error naming the malformed key, got {errors:?}"
+    );
+}
+
+#[test]
+fn facet_named_after_a_metadata_suffix_is_an_error() {
+    let (_, errors) = facet_validation("[providers.\"x:age\"]\nn = \"1\"\n");
+    assert!(
+        errors.iter().any(|e| e.contains("x:age")),
+        "expected an error naming the reserved facet name, got {errors:?}"
+    );
+}
+
+#[test]
+fn a_settings_key_in_a_facet_table_is_an_error() {
+    let (_, errors) = facet_validation("[providers.\"x:template\"]\nenabled = false\n");
+    assert!(
+        errors.iter().any(|e| e.contains("enabled")),
+        "expected an error naming 'enabled', got {errors:?}"
+    );
+
+    let (_, errors) = facet_validation("[providers.\"x:template\"]\npoll_interval = \"30s\"\n");
+    assert!(
+        errors.iter().any(|e| e.contains("poll_interval")),
+        "a source knob is a settings key too, got {errors:?}"
+    );
+}
+
+#[test]
+fn a_dotted_key_under_a_template_facet_is_an_error() {
+    let (_, errors) = facet_validation("[providers.\"x:template\"]\n\"a.b\" = \"{{ y }}\"\n");
+    assert!(
+        errors.iter().any(|e| e.contains("a.b")),
+        "expected an error naming the dotted key, got {errors:?}"
+    );
+
+    let (_, errors) = facet_validation(
+        "[providers.\"x:template\"]\n[providers.\"x:template\".group]\n\"c.d\" = \"{{ y }}\"\n",
+    );
+    assert!(
+        errors.iter().any(|e| e.contains("group.c.d")),
+        "the check reaches nested tables, got {errors:?}"
+    );
+}
+
+#[test]
+fn a_non_string_leaf_under_a_template_facet_is_a_warning() {
+    let (warnings, errors) = facet_validation("[providers.\"x:template\"]\nwidth = 12\n");
+    assert!(
+        errors.is_empty(),
+        "a bad leaf does not stop the daemon: {errors:?}"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("width")),
+        "expected a warning naming the leaf, got {warnings:?}"
+    );
+}
+
+#[test]
+fn a_non_string_leaf_under_a_non_template_facet_is_data() {
+    let (warnings, errors) = facet_validation("[providers.\"x:notes\"]\nwidth = 12\n");
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(
+        warnings.is_empty(),
+        "only a template's leaves must be value expressions: {warnings:?}"
+    );
+}
+
+#[test]
+fn a_facet_table_is_not_read_as_a_source_block() {
+    // `[providers."git:template"]` must not be validated as `[providers.git.<source>]`
+    // — the facet check runs first and skips the per-source loop entirely.
+    let (warnings, errors) = facet_validation(
+        "[providers.\"git:template\"]\n[providers.\"git:template\".diff]\nsummary = \"{{ git.diff }}\"\n",
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(warnings.is_empty(), "{warnings:?}");
+}

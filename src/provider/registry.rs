@@ -107,6 +107,20 @@ impl ProviderRegistry {
         self.providers.keys().cloned().collect()
     }
 
+    /// Every provider's declared source names, keyed by provider — the shape
+    /// `Config::validate_providers` takes.
+    pub fn source_names_by_provider(&self) -> HashMap<String, Vec<String>> {
+        self.providers
+            .iter()
+            .map(|(name, meta)| {
+                (
+                    name.clone(),
+                    meta.sources.iter().map(|s| s.name.clone()).collect(),
+                )
+            })
+            .collect()
+    }
+
     // ── Static namespace support ─────────────────────────────────────────────
 
     /// Returns true if the provider name belongs to an already-registered
