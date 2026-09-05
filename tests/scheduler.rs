@@ -1,5 +1,6 @@
 use beachcomber::cache::Cache;
 use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::query::SourceDemand;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -27,6 +28,7 @@ async fn scheduler_refresh_populates_cache() {
         .send(SchedulerMessage::Refresh {
             provider: "hostname".to_string(),
             path: None,
+            demand: SourceDemand::All,
         })
         .await;
 
@@ -72,6 +74,7 @@ async fn scheduler_refresh_unknown_provider() {
         .send(SchedulerMessage::Refresh {
             provider: "nonexistent".to_string(),
             path: None,
+            demand: SourceDemand::All,
         })
         .await;
 

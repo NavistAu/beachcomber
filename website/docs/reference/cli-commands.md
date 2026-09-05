@@ -92,7 +92,7 @@ comb g git.branch:age            # → 1523 (age in ms)
 comb g git.branch:stale          # → false
 comb g git.branch:fresh          # → true (inverse of :stale)
 comb g git.branch:cache          # → true (served from cache vs freshly computed)
-comb g git.branch:source         # → builtin (provider kind: builtin, script, or virtual)
+comb g git.branch:source         # → head (the Source that wrote the record)
 ```
 
 **Metadata suffixes:**
@@ -103,7 +103,7 @@ comb g git.branch:source         # → builtin (provider kind: builtin, script, 
 | `:stale` | bool | Whether the value is past its expected refresh time |
 | `:fresh` | bool | Inverse of `:stale` — true when the value is within its refresh window |
 | `:cache` | bool | Whether the value was served from cache (`true`) or freshly computed (`false`) |
-| `:source` | string | Provider kind: `builtin`, `script`, or `virtual` |
+| `:source` | string | The record's writer: a Source of the provider (`head`, `refs`, …) or a static label (`put`, `config:<file>`). `null` for an object — a whole namespace, or a group of several records — and for a miss |
 
 **Exit codes:**
 - `0` — success, data returned

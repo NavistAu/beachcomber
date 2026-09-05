@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::protocol::{self, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::{InvalidationStrategy, SourceScope};
-use crate::query::{KeyParse, resolve_path};
+use crate::query::{KeyParse, SourceDemand};
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
 };
@@ -626,40 +626,49 @@ fn freshness(read: &MergedRead, rest: &str) -> Option<(u128, bool)> {
 }
 
 /// The template half of a `get` (spec §3.4): the node at `rest` in the merged
-/// tree of `provider:template` at the same address, and the part of `rest` the
-/// walk could not consume.
+/// tree of `provider:template` at the same address, the part of `rest` the walk
+/// could not consume, and the label of the record the walk landed on.
 ///
 /// A group (object) or a value expression (string) at the address is the
 /// template. A string reached with segments still to go is the template too,
 /// and the remainder comes back as `rest` for the client to apply to whatever
 /// the expression renders. Anything else — a miss, or a non-string scalar in
 /// the way — attaches nothing.
+///
+/// The third element is what `:source` reports when the template half answered
+/// alone. It is the provenance of the *record* at the address, so a group
+/// assembled from several records has none — there is no single writer to name.
 fn template_half(
     cache: &Cache,
     registry: &ProviderRegistry,
     provider: &str,
     rest: &str,
     path: Option<&str>,
-) -> (Option<serde_json::Value>, Option<String>) {
+) -> (Option<serde_json::Value>, Option<String>, Option<String>) {
     use crate::provider::Value;
-    let none = (None, None);
+    let none = (None, None, None);
     let Some(read) = cache.read_merged(&format!("{provider}:template"), path, registry) else {
         return none;
     };
+    let writer = |tail: &str| read.records.get(tail).map(|r| r.source.clone());
 
     if rest.is_empty() {
-        return (serde_json::to_value(&read.fields).ok(), None);
+        return (serde_json::to_value(&read.fields).ok(), None, writer(""));
     }
 
     let (head, mut left) = split_head(rest);
     let Some(mut current) = read.fields.get(head) else {
         return none;
     };
+    let mut tail = head.to_string();
     while let Some(remainder) = left {
         let (segment, below) = split_head(remainder);
         match current {
             Value::Object(map) => match map.get(segment) {
-                Some(v) => current = v,
+                Some(v) => {
+                    current = v;
+                    tail = format!("{tail}.{segment}");
+                }
                 None => return none,
             },
             // A value expression with the address unconsumed: the client
@@ -668,6 +677,7 @@ fn template_half(
                 return (
                     serde_json::to_value(current).ok(),
                     Some(remainder.to_string()),
+                    writer(&tail),
                 );
             }
             _ => return none,
@@ -675,7 +685,9 @@ fn template_half(
         left = below;
     }
     match current {
-        Value::Object(_) | Value::String(_) => (serde_json::to_value(current).ok(), None),
+        Value::Object(_) | Value::String(_) => {
+            (serde_json::to_value(current).ok(), None, writer(&tail))
+        }
         _ => none,
     }
 }
@@ -755,12 +767,12 @@ fn read_watch_value(
     // A watch frame carries the same two halves a `get` does. A facet key is
     // already inside a facet and never gets one. Read first: the template
     // decides whether an unresolvable sub-path is an error or a hit.
-    let (template, template_rest) = if crate::query::parse_facet(provider).ok().flatten().is_some()
-    {
-        (None, None)
-    } else {
-        template_half(cache, registry, provider, target.rest(), template_path)
-    };
+    let (template, template_rest, _) =
+        if crate::query::parse_facet(provider).ok().flatten().is_some() {
+            (None, None, None)
+        } else {
+            template_half(cache, registry, provider, target.rest(), template_path)
+        };
     let merged = cache.read_merged(provider, path, registry);
     resolve_halves(&merged, target, provider, template, template_rest)
 }
@@ -877,18 +889,6 @@ async fn handle_request(
                     .await;
             }
 
-            // :source short-circuits — no cache lookup needed.
-            if matches!(meta, Some("source")) {
-                let src = if registry.is_static_namespace(provider_name) {
-                    "static"
-                } else if registry.provider_metadata(provider_name).is_some() {
-                    "builtin"
-                } else {
-                    "unknown"
-                };
-                return Response::ok(serde_json::Value::String(src.to_string()), 0, false);
-            }
-
             // Cache lookup with cold-miss inline-execute, routed by key parse form.
             // Every read goes through `Cache::read_merged`, which resolves the
             // directory chain (canon §"Path resolution"); there is no slot to
@@ -905,8 +905,8 @@ async fn handle_request(
             // what an unresolvable sub-path means: `get box.widgets.foo` where
             // `box.widgets` is an object without a `foo` is only "unknown field"
             // when no template answers there either.
-            let (template, template_rest) = if facet.is_some() {
-                (None, None)
+            let (template, template_rest, template_source) = if facet.is_some() {
+                (None, None, None)
             } else {
                 template_half(
                     cache,
@@ -1007,66 +1007,100 @@ async fn handle_request(
                     false,
                 ),
                 Some("cache") => Response::ok(serde_json::Value::Bool(cache_hit), 0, false),
+                // The writer of the record that answered: a leaf's own record,
+                // or the template record when the template half answered alone.
+                // An object is several records and names none of them, and a
+                // miss has none to name — both are `null`, as `:age` is.
+                Some("source") => {
+                    let label = if cache_hit {
+                        merged
+                            .as_ref()
+                            .and_then(|m| m.records.get(plan.target.rest()))
+                            .map(|r| r.source.clone())
+                    } else {
+                        template_source
+                    };
+                    Response::ok(
+                        label.map_or(serde_json::Value::Null, serde_json::Value::String),
+                        0,
+                        false,
+                    )
+                }
                 Some(other) => Response::error(format!("unknown metadata suffix: :{other}")),
             }
         }
         Request::Refresh { key, path } => {
-            // Suffix-strip runs before the facet check, mirroring Get/Watch, so
-            // e.g. `refresh hostname:age` treats `age` as a metadata suffix on
-            // provider `hostname`, not a facet candidate.
-            let (stripped_key, _meta) = crate::query::split_metadata_suffix(key);
-            let (provider_name, _field) = protocol::split_key(stripped_key);
+            // The same plan every other op builds, so the metadata suffix is
+            // stripped and the path resolved exactly as for a `get`:
+            // `refresh hostname:age` is `refresh hostname`.
+            let requested = path.as_deref().or(context_path.as_deref());
+            let plan = crate::query::QueryPlan::build(key, requested, registry);
+            let provider_name = plan.provider.as_str();
             if let Err(msg) = crate::query::parse_facet(provider_name) {
                 return Response::error(msg);
             }
-            let requested =
-                crate::query::normalise_path(path.as_deref().or(context_path.as_deref()));
-            let effective_path = resolve_path(stripped_key, requested.as_deref(), registry);
 
-            if let Some(sched) = scheduler {
-                // Route through scheduler.
-                sched
-                    .send(SchedulerMessage::Refresh {
-                        provider: provider_name.to_string(),
-                        path: effective_path,
-                    })
-                    .await;
-                Response {
-                    ok: true,
-                    data: None,
-                    age_ms: None,
-                    stale: None,
-                    error: None,
-                    template: None,
-                    rest: None,
+            // A refresh re-executes Sources; a key that names none — a static
+            // namespace, a facet, an unknown name, or a field no Source owns —
+            // has nothing to re-execute, and saying ok would claim work that
+            // never happened. Reading configuration afresh is not a refresh:
+            // the config watcher does that.
+            let demanded: Vec<String> = registry
+                .provider_sources(provider_name)
+                .map(|sources| {
+                    sources
+                        .iter()
+                        .filter(|sm| match &plan.demand {
+                            SourceDemand::All => true,
+                            SourceDemand::Sources(names) => names.iter().any(|n| n == &sm.name),
+                        })
+                        .map(|sm| sm.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if demanded.is_empty() {
+                let addressed = match &plan.target {
+                    KeyParse::Provider(p) => p.clone(),
+                    KeyParse::Field(p, f) => format!("{p}.{f}"),
+                };
+                return Response::error(format!("nothing to refresh: {addressed} has no sources"));
+            }
+
+            // Each demanded Source runs at the entry its own scope keys — the
+            // same layering `--force` uses — whether the scheduler runs it or
+            // this connection does.
+            match scheduler {
+                Some(sched) => {
+                    sched
+                        .send(SchedulerMessage::Refresh {
+                            provider: provider_name.to_string(),
+                            path: plan.effective_path.clone(),
+                            demand: plan.demand.clone(),
+                        })
+                        .await;
                 }
-            } else {
-                // Fallback: scheduler not available. Static namespaces are a no-op.
-                if registry.is_static_namespace(provider_name) {
-                    return Response {
-                        ok: true,
-                        data: None,
-                        age_ms: None,
-                        stale: None,
-                        error: None,
-                        template: None,
-                        rest: None,
-                    };
+                None => {
+                    for source_name in &demanded {
+                        warm_source(
+                            registry,
+                            cache,
+                            provider_name,
+                            source_name,
+                            plan.effective_path.as_deref(),
+                            true,
+                        )
+                        .await;
+                    }
                 }
-                // No providers are registered yet (Section H); return ok anyway
-                // so callers don't see spurious errors during the build-up phase.
-                if registry.provider_metadata(provider_name).is_none() {
-                    return Response::error(format!("unknown provider: {provider_name}"));
-                }
-                Response {
-                    ok: true,
-                    data: None,
-                    age_ms: None,
-                    stale: None,
-                    error: None,
-                    template: None,
-                    rest: None,
-                }
+            }
+            Response {
+                ok: true,
+                data: None,
+                age_ms: None,
+                stale: None,
+                error: None,
+                template: None,
+                rest: None,
             }
         }
         Request::Context { path } => {

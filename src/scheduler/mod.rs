@@ -26,9 +26,14 @@ use crate::watcher_registry::WatcherRegistry;
 /// Messages sent from the Server to the Scheduler.
 #[derive(Debug)]
 pub enum SchedulerMessage {
+    /// An out-of-band re-execution. `demand` selects which Sources: `All` for a
+    /// whole-namespace refresh, `Sources(..)` for the Source owning a field.
+    /// Each runs at the entry its own scope keys, not at `path` whatever its
+    /// scope.
     Refresh {
         provider: String,
         path: Option<String>,
+        demand: SourceDemand,
     },
     FsEvent {
         paths: Vec<PathBuf>,
@@ -497,6 +502,37 @@ impl Scheduler {
         t
     }
 
+    /// Re-execute the Sources of `provider` that `demand` names, each at the
+    /// cache entry its own scope keys: the global entry for a `Global` Source
+    /// whatever path the refresh carried, `path` for a `PathScoped` one.
+    ///
+    /// The names are snapshotted so the registry borrow drops before the calls.
+    fn refresh_sources(&self, provider: &str, path: Option<&str>, demand: &SourceDemand) {
+        let targets: Vec<(String, Option<String>)> = self
+            .registry
+            .provider_sources(provider)
+            .map(|sources| {
+                sources
+                    .iter()
+                    .filter(|sm| match demand {
+                        SourceDemand::All => true,
+                        SourceDemand::Sources(names) => names.iter().any(|n| n == &sm.name),
+                    })
+                    .map(|sm| {
+                        let at = match sm.scope {
+                            SourceScope::Global => None,
+                            SourceScope::PathScoped => path.map(str::to_string),
+                        };
+                        (sm.name.clone(), at)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (name, at) in &targets {
+            self.execute_source(provider, name, at.as_deref());
+        }
+    }
+
     /// Execute a specific source on the blocking thread pool and write result to cache.
     /// This is fire-and-forget: returns immediately while the source runs in the background.
     /// Deduplicates concurrent executions via in_flight: if the (provider, path, source) triple
@@ -783,18 +819,9 @@ impl Scheduler {
                             info!("Scheduler shutting down.");
                             break;
                         }
-                        Some(SchedulerMessage::Refresh { provider, path }) => {
-                            debug!("Refresh: provider={} path={:?}", provider, path);
-                            // Fan out to all sources for this provider. Snapshot the
-                            // names so the registry borrow drops before the calls.
-                            let names: Vec<String> = self
-                                .registry
-                                .provider_sources(&provider)
-                                .map(|src| src.iter().map(|sm| sm.name.clone()).collect())
-                                .unwrap_or_default();
-                            for name in &names {
-                                self.execute_source(&provider, name, path.as_deref());
-                            }
+                        Some(SchedulerMessage::Refresh { provider, path, demand }) => {
+                            debug!("Refresh: provider={} path={:?} demand={:?}", provider, path, demand);
+                            self.refresh_sources(&provider, path.as_deref(), &demand);
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::FsEvent { paths }) => {
@@ -1111,15 +1138,8 @@ impl Scheduler {
                 msg = self.rx.recv() => {
                     match msg {
                         None | Some(SchedulerMessage::Shutdown) => break,
-                        Some(SchedulerMessage::Refresh { provider, path }) => {
-                            let names: Vec<String> = self
-                                .registry
-                                .provider_sources(&provider)
-                                .map(|src| src.iter().map(|sm| sm.name.clone()).collect())
-                                .unwrap_or_default();
-                            for name in &names {
-                                self.execute_source(&provider, name, path.as_deref());
-                            }
+                        Some(SchedulerMessage::Refresh { provider, path, demand }) => {
+                            self.refresh_sources(&provider, path.as_deref(), &demand);
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::FsEvent { .. }) => {

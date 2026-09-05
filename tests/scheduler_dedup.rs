@@ -5,6 +5,7 @@ use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
+use beachcomber::query::SourceDemand;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -143,6 +144,7 @@ async fn rapid_refreshes_are_deduplicated() {
             .send(SchedulerMessage::Refresh {
                 provider: "counter".to_string(),
                 path: None,
+                demand: SourceDemand::All,
             })
             .await;
     }

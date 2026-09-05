@@ -543,17 +543,28 @@ async fn put_adds_a_static_record_to_a_provider_namespace() {
     assert_eq!(all["branch"], serde_json::json!("main"));
     assert_eq!(all["note"], serde_json::json!(1));
 
-    // The namespace is still the git provider's — gaining a static record does
-    // not turn it into a static namespace.
-    let kind = data_of(
+    // Ownership stays per record: the static one names `put`, the Source's
+    // still names the Source. Gaining a static record does not make the
+    // namespace static.
+    let source_of_note = data_of(
         send_recv(
             &mut s,
-            &serde_json::json!({"op":"get","key":"git:source","path":p}),
+            &serde_json::json!({"op":"get","key":"git.note:source","path":p}),
         )
         .await,
-        "get git:source",
+        "get git.note:source",
     );
-    assert_eq!(kind, serde_json::json!("builtin"));
+    assert_eq!(source_of_note, serde_json::json!("put"));
+
+    let source_of_branch = data_of(
+        send_recv(
+            &mut s,
+            &serde_json::json!({"op":"get","key":"git.branch:source","path":p}),
+        )
+        .await,
+        "get git.branch:source",
+    );
+    assert_eq!(source_of_branch, serde_json::json!("head"));
 
     handle.abort();
 }

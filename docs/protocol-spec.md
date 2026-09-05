@@ -223,22 +223,43 @@ metadata suffixes:
 - `:stale` — returns `stale` as the `data` value.
 - `:fresh` — returns `!stale` as the `data` value.
 - `:cache` — returns `true` if the value was served from cache (no re-exec).
-- `:source` — returns `"builtin"`, `"script"`, or `"virtual"`.
+- `:source` — returns the **source label of the record that answered the key**:
+  a Source of the namespace's provider (`head`, `refs`, …), or a static label
+  (`put`, `config:<file>`). A leaf reports its own record's label; a
+  template-only hit reports the template record's; an object — a whole
+  namespace, or a group assembled from several records — has no single writer
+  and returns `null`, as does a miss.
 
 ### `Refresh`
 
-Trigger a provider re-execution out-of-band. Does not return the new value.
+Re-execute Sources out-of-band. Does not return the new value.
 
 **Request:**
 ```json
 {"op": "refresh", "key": "git", "path": "/some/path"}
 ```
 
-`path` is optional for path-scoped providers.
+The key selects which Sources run, exactly as it selects which a `get` warms:
+`refresh git` re-executes every Source of `git`, `refresh git.branch` only the
+Source that owns `branch`. Each runs at the cache entry its own scope keys — the
+global entry for a `Global` Source whatever path the request carried, the
+addressed path for a `PathScoped` one — so `path` is optional and is only
+consulted by the path-scoped ones. A metadata suffix is stripped first, as for a
+`get`: `refresh hostname:age` is `refresh hostname`.
+
+A key that names no Source has nothing to re-execute and is an **error**: a
+static namespace (one created by `put` or a config seed), a facet key, an
+unknown name, or a field no Source owns. Reading configuration afresh is not a
+refresh — the config watcher does that.
 
 **Response:**
 ```json
 {"ok": true}
+```
+
+**Response (error):**
+```json
+{"ok": false, "error": "nothing to refresh: my.a has no sources"}
 ```
 
 ### `Context`

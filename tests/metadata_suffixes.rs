@@ -1,7 +1,10 @@
+mod common;
+
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
+use common::git::GitRepoFixture;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -55,26 +58,27 @@ async fn send_many(sock: &std::path::Path, reqs: &[&str]) -> Vec<Response> {
     responses
 }
 
-// ── Test 1: :source returns "builtin" for a builtin provider ────────────────
+// ── :source names the writer of the record that answered ────────────────────
+//
+// Not the kind of the namespace: a record has exactly one source, and that
+// name — `host`, `head`, `put`, `config:<file>` — is what `:source` reports.
 
 #[tokio::test]
-async fn source_returns_builtin_for_hostname() {
+async fn source_names_the_owning_source() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
 
-    let resp = send_one(&sock, r#"{"op":"get","key":"hostname:source"}"#).await;
+    let resp = send_one(&sock, r#"{"op":"get","key":"hostname.name:source"}"#).await;
 
     assert!(resp.ok, "expected ok response");
-    assert_eq!(resp.data.unwrap(), "builtin");
+    assert_eq!(resp.data.unwrap(), "host");
 
     handle.abort();
 }
 
-// ── Test 2: :source returns "static" after a put ────────────────────────────
-
 #[tokio::test]
-async fn source_returns_static_after_put() {
+async fn source_names_put_for_a_put_record() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -82,15 +86,95 @@ async fn source_returns_static_after_put() {
     let resps = send_many(
         &sock,
         &[
-            r#"{"op":"put","key":"myvirt","data":{"status":"ok"}}"#,
-            r#"{"op":"get","key":"myvirt:source"}"#,
+            r#"{"op":"put","key":"myvirt","data":{"a":"ok"}}"#,
+            r#"{"op":"get","key":"myvirt.a:source"}"#,
         ],
     )
     .await;
 
     assert!(resps[0].ok, "put should succeed");
     assert!(resps[1].ok, "source query should succeed");
-    assert_eq!(resps[1].data.as_ref().unwrap(), "static");
+    assert_eq!(resps[1].data.as_ref().unwrap(), "put");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn source_is_null_for_an_object_and_for_a_miss() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    // A whole namespace is assembled from several records and names no one
+    // writer. `null` on the wire, which reads back as an absent `data` — the
+    // shape `:age` already has on a miss.
+    let resp = send_one(&sock, r#"{"op":"get","key":"hostname:source"}"#).await;
+    assert!(resp.ok, "expected ok response: {:?}", resp.error);
+    assert!(resp.data.is_none(), "got {:?}", resp.data);
+
+    // A miss has no record to name either.
+    let resp = send_one(&sock, r#"{"op":"get","key":"hostname.nonesuch:source"}"#).await;
+    assert!(resp.ok, "expected ok response: {:?}", resp.error);
+    assert!(resp.data.is_none(), "got {:?}", resp.data);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn source_names_the_template_record_on_a_template_only_hit() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    let resps = send_many(
+        &sock,
+        &[
+            r#"{"op":"put","key":"scanline:template","data":{"widgets":{"foo":"{{ bar }}"}}}"#,
+            r#"{"op":"get","key":"scanline.widgets.foo:source"}"#,
+        ],
+    )
+    .await;
+
+    assert!(resps[0].ok, "put should succeed: {:?}", resps[0].error);
+    assert!(resps[1].ok, "source query should succeed");
+    assert_eq!(
+        resps[1].data.as_ref().unwrap(),
+        "put",
+        "a template-only hit is answered by the template record, and names its writer"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn source_names_the_source_behind_a_warm_provider_field() {
+    if !common::git::has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let repo = GitRepoFixture::new();
+
+    let req = serde_json::json!({"op": "get", "key": "git.branch:source", "path": repo.path_str()})
+        .to_string();
+    let resp = send_one(&sock, &req).await;
+    assert!(resp.ok, "expected ok response: {:?}", resp.error);
+    assert_eq!(resp.data.unwrap(), "head");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn source_on_an_unknown_provider_is_the_plain_get_error() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    let resp = send_one(&sock, r#"{"op":"get","key":"nope.x:source"}"#).await;
+    assert!(!resp.ok, "an unknown provider is an error, suffix or not");
+    assert_eq!(resp.error.as_deref(), Some("unknown provider: nope"));
 
     handle.abort();
 }

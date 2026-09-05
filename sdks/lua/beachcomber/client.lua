@@ -11,8 +11,9 @@
 -- discover a 5ms-per-call transport in a profile.
 --
 -- A backend implements: name(), get(key,path,flags), put(key,data,ttl,path),
--- put_null(key,path), refresh(key,path), status(), close(), and optionally
--- introspect(subject,duration_secs), hello(), resolve(key,cwd,env,overrides),
+-- put_null(key,path), status(), close(), and optionally
+-- refresh(key,path), introspect(subject,duration_secs), hello(),
+-- resolve(key,cwd,env,overrides),
 -- eval(template,cwd,env,overrides), watch_open(key,path) — each returning a
 -- canonical response table `{ok, data, age_ms, stale, error={kind,message}}`.
 -- A backend that omits an optional method signals the capability doesn't
@@ -107,6 +108,9 @@ end
 -- @param path string?  Optional working-directory path
 -- @return true, or nil, Error
 function Client:refresh(key, path)
+  if not self._backend.refresh then
+    return nil, Error.unsupported("refresh", self:transport())
+  end
   local resp = self._backend:refresh(key, self:_path(path))
   if not resp.ok then return nil, Error.from(resp.error) end
   return true

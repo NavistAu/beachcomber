@@ -33,13 +33,13 @@ mysterious 5ms-per-call slowdown. Call `client:transport()` any time you
 need to know which one you got.
 
 **Capability ceiling of the subprocess transport.** `comb` has no CLI
-surface for `hello`, `introspect`, `resolve`, `eval`, or `watch` (the last
-was tried and rejected — see `beachcomber/subprocess_backend.lua`'s header
-comment: piped through `io.popen`, the CLI's stdout buffering means a
+surface for `hello`, `refresh`, `introspect`, `resolve`, `eval`, or `watch`
+(the last was tried and rejected — see `beachcomber/subprocess_backend.lua`'s
+header comment: piped through `io.popen`, the CLI's stdout buffering means a
 `read("*l")` blocks forever even though the daemon already sent the event).
 Those `Client` methods return `nil, err` with `err.kind == "unsupported"`
-over `subprocess`; get/put/put_null/refresh/status/context all work fully
-over either transport.
+over `subprocess`; get/put/put_null/status/context all work fully over
+either transport.
 
 ---
 
@@ -147,7 +147,10 @@ Like `get`, with `bc_get`'s `BC_GET_FORCE` / `BC_GET_WAIT` flags.
 
 ### `Client:refresh(key [, path])` → `true | nil, Error`
 
-Force the daemon to recompute `key`.
+Re-execute the Sources `key` demands — every Source of the namespace for a
+bare `provider`, the one Source owning the field for `provider.field`. A key
+that names no Source (a `put`-created namespace, a facet key, an unknown
+name, a field no Source owns) is an error. `ffi` transport only.
 
 ### `Client:set_context(path)` → `true`
 

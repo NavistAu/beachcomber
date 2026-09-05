@@ -211,6 +211,33 @@ async fn refresh_two_colons_is_invalid_facet() {
 }
 
 #[tokio::test]
+async fn refresh_on_a_facet_key_is_an_error() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    send_recv(
+        &mut stream,
+        r#"{"op":"put","key":"x:template","data":{"a":"{{ 1 }}"}}"#,
+    )
+    .await;
+
+    // A facet holds static records only. Reading configuration afresh is the
+    // config watcher's job, not a refresh's.
+    let resp = send_recv(&mut stream, r#"{"op":"refresh","key":"x:template"}"#).await;
+    assert!(!resp.ok, "refresh on a facet key should error");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("nothing to refresh: x:template has no sources"),
+        "got: {:?}",
+        resp.error
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn refresh_metadata_suffix_wins_over_facet_parsing() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);

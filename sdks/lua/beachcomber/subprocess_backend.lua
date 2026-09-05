@@ -12,10 +12,11 @@
 -- library call); `Client:transport()` reports "subprocess" so a caller can
 -- see this in a profile rather than discover it there.
 --
--- Capability ceiling: `comb` has no CLI surface for `hello`, `introspect`,
--- `resolve`, or `eval` (no subcommand exposes protocol/daemon version, a
--- structured introspection query, or the client-side expression evaluator
--- bc_resolve/bc_eval wrap). Those methods are simply absent from this
+-- Capability ceiling: `comb` has no CLI surface for `hello`, `refresh`,
+-- `introspect`, or `eval`/`resolve` (no subcommand exposes protocol/daemon
+-- version, a bare re-execution, a structured introspection query, or the
+-- client-side expression evaluator bc_resolve/bc_eval wrap). Those methods
+-- are simply absent from this
 -- backend table; beachcomber.client turns a missing method into an
 -- Error.unsupported() naming this transport, and a conformance runner
 -- skips (never silently passes) a fixture that needs one.
@@ -230,29 +231,6 @@ function Backend:put_null(key, path)
   return { ok = true }
 end
 
---- The wire `refresh` op is a lenient no-op on a static (put-created)
--- namespace (`{"ok":true}` observed directly over the socket). `comb get
--- --force` — the only CLI path to a re-execution — is stricter and
--- errors ("cannot --force static provider ... no source to re-execute
--- from"). Since a provider's row `source` (from `comb status`) already
--- says which case we're in, check that client-side first rather than
--- surface the CLI's stricter behaviour as a spurious failure.
-function Backend:refresh(key, path)
-  local provider = key:match("^([^.]+)")
-  local rows = status_rows(self._comb, provider)
-  for _, row in ipairs(rows) do
-    if row.source == "put" then
-      return { ok = true }
-    end
-  end
-  local cmd = self._comb .. " get --force " .. shell_escape(key) .. path_arg(path)
-  local out, ok = run(cmd)
-  if not ok then
-    return { ok = false, error = { kind = "server_error", message = (out or ""):gsub("%s+$", "") } }
-  end
-  return { ok = true }
-end
-
 function Backend:status()
   local rows = status_rows(self._comb, nil)
   return { ok = true, data = rows }
@@ -261,6 +239,13 @@ end
 -- hello / introspect / resolve / eval / watch_open intentionally absent.
 --
 -- hello / introspect / resolve / eval: no CLI surface exposes them.
+--
+-- refresh: `comb get --force` is not a stand-in. `refresh` selects the
+-- Sources its key demands and refuses a key that names none; `get --force`
+-- selects the same Sources but then *reads*, so it answers a sourceless key
+-- with its own, different refusal and answers an unowned field with a plain
+-- miss. There is no `comb refresh` to shell out to, so this backend does not
+-- pretend to have one. (The ffi tier calls `bc_refresh` and does.)
 --
 -- watch: `comb watch <key> -f json` was tried and rejected. Piped through
 -- `io.popen` (not a tty), the daemon-CLI process's stdout is block- rather

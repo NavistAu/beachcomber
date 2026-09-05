@@ -5,6 +5,7 @@ use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
+use beachcomber::query::SourceDemand;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -140,6 +141,7 @@ async fn slow_provider_times_out() {
         .send(SchedulerMessage::Refresh {
             provider: "slow".to_string(),
             path: None,
+            demand: SourceDemand::All,
         })
         .await;
 
@@ -223,6 +225,7 @@ async fn fast_provider_completes_within_timeout() {
         .send(SchedulerMessage::Refresh {
             provider: "hostname".to_string(),
             path: None,
+            demand: SourceDemand::All,
         })
         .await;
 

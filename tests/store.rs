@@ -164,23 +164,33 @@ async fn store_with_ttl_shows_staleness() {
 }
 
 #[tokio::test]
-async fn refresh_virtual_provider_is_noop() {
+async fn refresh_on_a_sourceless_namespace_is_an_error() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
-    send_recv(
-        &mut stream,
-        r#"{"op":"put","key":"myapp","data":{"v":"1"}}"#,
-    )
-    .await;
+    send_recv(&mut stream, r#"{"op":"put","key":"my","data":{"a":"1"}}"#).await;
 
-    let resp = send_recv(&mut stream, r#"{"op":"refresh","key":"myapp"}"#).await;
-    assert!(resp.ok);
+    // A static namespace has no Source to re-execute. Answering ok claimed
+    // work that never happened.
+    let resp = send_recv(&mut stream, r#"{"op":"refresh","key":"my"}"#).await;
+    assert!(!resp.ok, "refresh on a static namespace should error");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("nothing to refresh: my has no sources")
+    );
 
-    let resp = send_recv(&mut stream, r#"{"op":"get","key":"myapp.v"}"#).await;
+    let resp = send_recv(&mut stream, r#"{"op":"refresh","key":"my.a"}"#).await;
+    assert!(!resp.ok, "refresh on a static record should error");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("nothing to refresh: my.a has no sources")
+    );
+
+    // The record is where it was.
+    let resp = send_recv(&mut stream, r#"{"op":"get","key":"my.a"}"#).await;
     assert_eq!(resp.data.unwrap(), "1");
 
     handle.abort();

@@ -87,12 +87,16 @@ impl CacheSourceEntry {
     }
 }
 
-/// How fresh one record is: the source map it was read from, reduced to the two
-/// numbers a response reports. A record's freshness is its own — never the
-/// entry's, and never the chain's (canon `provider_source.md` §"Field
-/// freshness").
-#[derive(Debug, Clone, Copy)]
+/// Where one record came from: the name of the source map it was read from,
+/// and that map's freshness reduced to the two numbers a response reports. A
+/// record's freshness is its own — never the entry's, and never the chain's
+/// (canon `provider_source.md` §"Field freshness").
+#[derive(Debug, Clone)]
 pub struct RecordFreshness {
+    /// The record's one writer: a Source of the namespace's provider (`head`,
+    /// `refs`, …), or a static label (`put`, `config:<file>`). This is what
+    /// `get <key>:source` reports.
+    pub source: String,
     pub last_refreshed: Instant,
     pub expected_interval_secs: Option<u64>,
 }
@@ -429,7 +433,7 @@ fn merge_layer(
     fields: &mut HashMap<String, Value>,
     records: &mut HashMap<String, RecordFreshness>,
     overlay: &HashMap<String, Value>,
-    fresh: RecordFreshness,
+    fresh: &RecordFreshness,
     prefix: &str,
 ) {
     for (k, v) in overlay {
@@ -468,7 +472,7 @@ fn note_records(
     records: &mut HashMap<String, RecordFreshness>,
     tail: &str,
     value: &Value,
-    fresh: RecordFreshness,
+    fresh: &RecordFreshness,
 ) {
     match value {
         Value::Object(map) if !map.is_empty() => {
@@ -477,7 +481,7 @@ fn note_records(
             }
         }
         _ => {
-            records.insert(tail.to_string(), fresh);
+            records.insert(tail.to_string(), fresh.clone());
         }
     }
 }
@@ -870,10 +874,11 @@ impl Cache {
         for name in names {
             let src = &entry.sources[name];
             let fresh = RecordFreshness {
+                source: name.clone(),
                 last_refreshed: src.last_refreshed,
                 expected_interval_secs: src.expected_interval_secs,
             };
-            merge_layer(&mut out.fields, &mut out.records, &src.fields, fresh, "");
+            merge_layer(&mut out.fields, &mut out.records, &src.fields, &fresh, "");
             merged = true;
         }
         merged

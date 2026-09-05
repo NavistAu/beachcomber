@@ -5,6 +5,7 @@ use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
     ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope,
 };
+use beachcomber::query::SourceDemand;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -110,6 +111,7 @@ async fn repeated_failures_trigger_backoff() {
             .send(SchedulerMessage::Refresh {
                 provider: "failing".to_string(),
                 path: None,
+                demand: SourceDemand::All,
             })
             .await;
         poll_until_async(
