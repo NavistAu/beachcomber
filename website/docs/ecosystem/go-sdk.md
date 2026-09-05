@@ -96,7 +96,7 @@ Handshake — returns daemon version, protocol version, and build info.
 
 #### `c.Put(key string, data interface{}, ttl, path string) error`
 
-Write a value into the cache as a virtual provider.
+Write a value into the cache as static data.
 
 #### `c.Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)`
 
@@ -119,7 +119,7 @@ Open a persistent connection.
 | `SetContext(path string) error` | Set default path for subsequent queries |
 | `GetWithFlags(key, path string, force, wait bool) (*Result, error)` | Read with force/wait flags |
 | `Hello() (*HelloInfo, error)` | Handshake — returns daemon and protocol versions |
-| `Put(key string, data interface{}, ttl, path string) error` | Write a virtual provider entry |
+| `Put(key string, data interface{}, ttl, path string) error` | Write a static-data entry |
 | `Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)` | Inspect a daemon subsystem |
 | `Status() ([]CacheRow, error)` | Return typed cache rows |
 | `Close() error` | Close the connection |

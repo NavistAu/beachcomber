@@ -286,7 +286,7 @@ pub unsafe extern "C" fn bc_get(
     })
 }
 
-/// Store data into a virtual provider. `json_data` must parse as JSON.
+/// Store data into the cache as static data. `json_data` must parse as JSON.
 /// `ttl` and `path` are nullable.
 ///
 /// # Safety
@@ -315,7 +315,7 @@ pub unsafe extern "C" fn bc_put(
     })
 }
 
-/// Clear the cached entry for a virtual provider key without dropping the
+/// Clear the cached entry for a static-data key without dropping the
 /// registry entry. `path` is nullable.
 ///
 /// # Safety
@@ -754,7 +754,7 @@ pub unsafe extern "C" fn bc_session_get(
     })
 }
 
-/// Store data into a virtual provider on this session's persistent
+/// Store data into the cache as static data on this session's persistent
 /// connection. `json_data` must parse as JSON; `ttl` and `path` are
 /// nullable.
 ///

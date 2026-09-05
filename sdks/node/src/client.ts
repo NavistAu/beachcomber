@@ -427,7 +427,7 @@ export class Client {
   }
 
   /**
-   * Clear the cached entry for a virtual provider key without dropping the
+   * Clear the cached entry for a static-data key without dropping the
    * registry entry.
    */
   async putNull(key: string, path?: string): Promise<void> {

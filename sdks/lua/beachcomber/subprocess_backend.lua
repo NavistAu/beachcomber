@@ -153,7 +153,7 @@ end
 
 --- get() deliberately never calls `comb get -f json` for the reasons in
 -- this file's header comment: it primes the key (best-effort; ignored on
--- failure — an already-warm virtual provider or a genuinely-unknown one
+-- failure — an already-warm static namespace or a genuinely-unknown one
 -- both fall through cleanly) then reads the true value back from
 -- `comb status -f json`.
 function Backend:get(key, path, flags)

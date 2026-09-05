@@ -10,7 +10,7 @@ The five "Open micro-decisions" listed at the bottom of this document are resolv
 
 - **`◉` cell colouring:** the whole TTL cell shares the lifecycle colour, including the trailing indicator. (Overrides this doc's "Trailing `◉` / `F`: default color" line below.)
 - **Indicator capability gate:** `◉` renders only when `fsevents_reinstate=true` AND provider has Watch / WatchAndPoll capability.
-- **`CacheRow` discriminator:** new `Option<RowKind>` enum with `Lifecycle { decay, watches_files } | Once | Virtual | Transient`. The previous `decay: Option<u8>` field is removed (superseded; SDKs never exposed it).
+- **`CacheRow` discriminator:** new `Option<RowKind>` enum with `Lifecycle { decay, watches_files } | Once | Static | Transient`. The previous `decay: Option<u8>` field is removed (superseded; SDKs never exposed it).
 - **TSV/CSV/sh/minijinja:** mirror the data model — every `CacheRow` field is its own column/key; the synthesised `TTL` column is human-preset only.
 - **Failure indicator IN scope:** `★`→`⚠` swap when provider is in failure-suppress; row turns red. Cell *content* (P × K) unchanged. Backoff/retry data in cell content is roadmap-deferred.
 - **CLI:** `--no-color` removed in favour of `--color=auto|always|never`; `--max-width` default bumped 40→120, with new `auto` value (`terminal_size` crate); new `--filter=lifecycle:…`, `--filter=fsevents_reinstate:…`, `--sort=lifecycle`, `--sort=poll_interval`.
@@ -74,7 +74,7 @@ The glyph progression is visual: dot → dot with a ring around it (decoration =
 | Entry kind                              | TTL rendering |
 |-----------------------------------------|---------------|
 | `Once` providers (hostname/user/uname)  | `---`         |
-| Virtual / `comb put` entries            | `---`         |
+| Static / `comb put` entries            | `---`         |
 
 These still show a real `AGE`.
 
@@ -94,7 +94,7 @@ hostname  -          short    artemis    3h      ---
 Reading:
 - `★   60s×12 ◉` → active, polls every 60s, K=12, file events reinstate.
 - `1  480s×06 ◉` → Decay3 (one step before Decay4), currently polling at 480s (8×P for mise's P=300s — yes, that's a typo-free misalignment: mise P=300s, Decay3 P=300×8=2400s, not 480s. See implementation note below).
-- `---` → no lifecycle (Once / virtual).
+- `---` → no lifecycle (Once / static).
 
 **Implementation note on the mise example:** the sample row above uses 480 as illustrative; correct arithmetic for mise with P=300, Decay3 is P×2³=2400s. The implementation should compute the displayed P from the actual `PollTimer.interval` in the lifecycle registry — don't re-derive from base P + step.
 
@@ -119,7 +119,7 @@ Unchanged from today's rendering logic, plus color:
 - Humanized (`14s`, `2m`, `1h23m`) — keep current `format_age` output.
 - Color: green when fresh (`age_ms < expected_interval`), amber when stale.
 - No prefix (the earlier F/S proposal is dropped — countdown in TTL carries the "is this fading?" signal; stale color covers "poll overdue").
-- Age is shown unconditionally, including for `Once` and virtual entries.
+- Age is shown unconditionally, including for `Once` and static entries.
 
 ## Watch-friendly default behaviour
 
@@ -170,7 +170,7 @@ Touches:
 No protocol change — wire format is already JSON with extensible row structure. SDKs don't need to change (they already tolerate unknown fields).
 
 Tests:
-- Unit tests in `cli/status_format.rs` for TTL formatting (all 5 lifecycle states, reinstate on/off, Once, virtual, ASCII fallback).
+- Unit tests in `cli/status_format.rs` for TTL formatting (all 5 lifecycle states, reinstate on/off, Once, static, ASCII fallback).
 - Integration test in `tests/` that runs `comb status` via the client and asserts the new columns appear.
 - Snapshot tests (via `insta` or similar, or hand-maintained expected strings) for the human preset.
 

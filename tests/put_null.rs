@@ -12,7 +12,7 @@ async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<(
     (tmp, client, handle)
 }
 
-/// put --null clears a cache entry but the virtual provider registration survives,
+/// put --null clears a cache entry but the static namespace's registration survives,
 /// so a subsequent put under the same key still works.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn put_null_clears_entry_but_keeps_provider() {

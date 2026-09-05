@@ -17,7 +17,7 @@ import (
 
 func TestClient_GetWithFlags_Force(t *testing.T) {
 	c := requireClient(t)
-	// force evicts and re-executes a real source; a virtual provider has no
+	// force evicts and re-executes a real source; a static namespace has no
 	// source to re-execute from and rejects force outright, so this needs a
 	// builtin.
 	result, err := c.GetWithFlags("hostname.short", "", true, false)

@@ -742,14 +742,14 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
         other => panic!("expected Watch strategy, got {:?}", other),
     }
 
-    // Verify scope is Global (path=None cache slot).
+    // Verify scope is Global (path=None, the global entry).
     assert_eq!(source.metadata().scope, SourceScope::Global);
 
     // Simulate the cache write to (provider, None) after the Source's execute fires.
     let cache = Cache::new();
     cache.put_source(
         "mise",
-        None, // Global scope → pathless slot
+        None, // Global scope → the global entry (path=None)
         "global",
         make_fields(&[("rust", "1.80.0")]),
         None,
@@ -757,7 +757,7 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
 
     let (val, _) = cache
         .get_field("mise", None, "rust")
-        .expect("Global source must write to pathless cache slot");
+        .expect("Global source must write to the global entry (path=None)");
     assert_eq!(val.as_text(), "1.80.0");
 }
 

@@ -902,7 +902,7 @@ async fn handle_request(
             // and unrefreshed.
             if *force && registry.is_static_namespace(provider_name) {
                 return Response::error(format!(
-                    "cannot --force static provider '{provider_name}': no source to re-execute from"
+                    "cannot --force static namespace '{provider_name}': no source to re-execute from"
                 ));
             }
 
@@ -934,8 +934,8 @@ async fn handle_request(
 
             // Cache lookup with cold-miss inline-execute, routed by key parse form.
             // Every read goes through `Cache::read_merged`, which resolves the
-            // directory chain (canon §"Path resolution"); there is no slot to
-            // prefer and none to fall back to.
+            // directory chain (canon §"Path resolution"); this is layering, not
+            // a fallback, so there is no single entry to prefer or fall back to.
             // Canon §"Cold cache miss triggers inline fetch": on cache miss, synchronously
             // execute the relevant source(s), write to cache, then re-read.
             // Read-always sources are re-executed on every read, not just cold misses.

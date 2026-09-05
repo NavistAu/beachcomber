@@ -333,7 +333,7 @@ func (c *Client) Hello() (*HelloInfo, error) {
 	return parseHelloFromData(data)
 }
 
-// Put stores data into a virtual provider. data should be a JSON object.
+// Put stores data into the cache as static data. data should be a JSON object.
 // ttl and path are optional; pass "" to omit them.
 func (c *Client) Put(key string, data interface{}, ttl, path string) error {
 	if c.loadErr != nil {

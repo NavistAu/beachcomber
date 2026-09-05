@@ -16,9 +16,11 @@
  * equivalent:
  *
  *   - `comb` exposes no JSON-emitting subcommand for `hello`/`introspect`.
- *   - `get --force` is not a stand-in for `refresh`: `bc_refresh` on a
- *     virtual provider is a documented no-op success, while `comb get
- *     --force` on the same key errors ("no source to re-execute from").
+ *   - `get --force` is not a stand-in for `refresh`: `refresh` on a key
+ *     naming no Source is a documented error ("nothing to refresh: <key>
+ *     has no sources"), and `comb get --force` on the same key errors too
+ *     ("no source to re-execute from") — differently worded, but neither
+ *     is a silent no-op.
  *   - `resolve`'s path-expression case pins `cwd` to the CLI process's
  *     actual working directory rather than the caller-supplied one, which
  *     fixtures often set to a nonexistent path.
@@ -191,11 +193,12 @@ export function createSubprocessTransport(): Transport {
       return cliPut(handle as SubprocessClientHandle, key, null, undefined, path_, true);
     },
     async refresh(_handle, key) {
-      // `get --force` is not a faithful stand-in: bc_refresh is documented
-      // as a no-op success on a virtual provider (nothing to re-execute),
-      // while `comb get --force` on the same key actively errors
-      // ("cannot --force virtual provider: no source to re-execute from").
-      // There is no other `comb` CLI equivalent for a bare refresh.
+      // `get --force` is not a faithful stand-in: `refresh` on a key naming
+      // no Source is a documented error ("nothing to refresh: <key> has no
+      // sources"), while `comb get --force` on the same key errors
+      // differently ("cannot --force static namespace '<name>': no source
+      // to re-execute from"). There is no other `comb` CLI equivalent for a
+      // bare refresh.
       unsupported(`refresh(${key})`);
     },
     async status(handle) {

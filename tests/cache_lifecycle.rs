@@ -122,7 +122,7 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
         })
         .await;
 
-    // Wait on the observable the sleep was standing in for: the cache slot the
+    // Wait on the observable the sleep was standing in for: the cache entry the
     // spawn_blocking execution writes. The counter is bumped inside execute(),
     // before that write, so it is already final once the entry appears.
     let entry = poll_until_async(

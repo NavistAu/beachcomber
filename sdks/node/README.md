@@ -72,7 +72,7 @@ Force the daemon to recompute a provider. **FFI transport only** — see
 
 #### `client.put(key, data?, opts?)` / `client.putNull(key, path?)`
 
-Store data in a virtual provider, or clear its cached entry (keeping the
+Store data as static data, or clear its cached entry (keeping the
 registry entry) with `putNull`.
 
 #### `client.status()`

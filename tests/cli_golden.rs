@@ -15,9 +15,9 @@ fn daemon_fixture_starts_and_exits() {
 /// directly at the test daemon's socket path, so `Config::resolve_socket_path()`
 /// resolves to the isolated test socket.
 ///
-/// The current_dir is fixed to "/" so that path-scoped virtual keys written with
+/// The current_dir is fixed to "/" so that path-scoped static keys written with
 /// `--path /` are found by `get` (which always injects CWD as path context for
-/// virtual providers).
+/// static namespaces).
 fn comb(d: &TestDaemon) -> assert_cmd::Command {
     let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
     cmd.env("BEACHCOMBER_SOCKET", &d.socket.path);
@@ -116,7 +116,7 @@ fn get_json_finds_put_created_virtual_without_explicit_path() {
 /// no accompanying `eprintln!`, so the process exited 2 with zero bytes on
 /// both stdout and stderr — indistinguishable from a hang or a swallowed
 /// panic. This exercises a genuine miss (an unknown field on an existing
-/// virtual provider, path-matched on both ends) rather than the routing bug
+/// static namespace, path-matched on both ends) rather than the routing bug
 /// above, to isolate the "silent failure" defect from the "wrong routing"
 /// defect.
 #[test]

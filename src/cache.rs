@@ -518,7 +518,7 @@ impl Cache {
 
     /// Write a single source's result into the cache entry for (provider, path).
     /// Other sources at the same (provider, path) are not touched.
-    /// Creates the entry if absent; updates only `source_name`'s slot if present.
+    /// Creates the entry if absent; updates only `source_name`'s record if present.
     pub fn put_source(
         &self,
         provider: &str,
@@ -623,7 +623,7 @@ impl Cache {
             }
             dashmap::Entry::Vacant(vacant) => {
                 // Nothing cached, so only the registry can refuse — and
-                // dropping the vacant entry leaves the slot untouched.
+                // dropping the vacant entry inserts nothing.
                 if let Some(err) = refuse_owned(
                     registry,
                     namespace,
@@ -633,7 +633,7 @@ impl Cache {
                     return Err(err);
                 }
                 // A write with no leaves (`put ns '{}'`) has nothing to store
-                // and, on a slot this empty, nothing to drop either: it must
+                // and, with no entry here yet, nothing to drop either: it must
                 // not conjure an entry.
                 if leaves.is_empty() {
                     return Ok(());

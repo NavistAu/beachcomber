@@ -105,7 +105,7 @@ Handshake — returns a `HelloInfo` with daemon and protocol version strings.
 
 #### `client.put(key, data=None, ttl=None, path=None)`
 
-Write a value into the cache as a virtual provider. `data=None` clears the entry.
+Write a value into the cache as static data. `data=None` clears the entry.
 
 #### `client.introspect(subject, duration_secs=None)`
 

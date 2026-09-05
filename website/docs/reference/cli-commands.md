@@ -179,7 +179,7 @@ agent     session  {"ctx_pct":42,"name":"claude"}  -     0s      -  ---
 | `2`  | Decay2    | 2 remaining |
 | `1`  | Decay3    | 1 remaining |
 | `0`  | Decay4    | 0 remaining — next tick evicts |
-| `---` | Once / virtual | no lifecycle (hostname, put entries) |
+| `---` | Once / Static | no lifecycle (hostname, put entries) |
 
 A `◉` trailing indicator means `fsevents_reinstate=true` — a filesystem event will reinstate the entry to Active even during decay. A `⚠` lead replaces `★` when the provider is in failure-suppress (row renders red).
 
@@ -189,7 +189,7 @@ Use `comb check daemon` for daemon health (pid, uptime, version, active watchers
 
 ## `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--global] [--null]`
 
-Write data into the cache as a virtual provider. External processes use this to expose state to prompt/statusline consumers without writing a script provider.
+Write static data into the cache. External processes use this to expose state to prompt/statusline consumers without writing a script provider.
 
 ```sh
 # Put application status into cache — scoped to the current directory
@@ -208,18 +208,18 @@ comb p myapp '{"status":"healthy"}' --global
 comb p myapp --null
 ```
 
-`--null` clears a previously written virtual provider entry. Omitting `--null` requires a JSON object argument.
+`--null` clears a previously written entry. Omitting `--null` requires a JSON object argument.
 
 **Path:** `put` defaults to the current working directory, exactly as `get` does, so a plain `comb p` followed by a plain `comb g` in the same directory round-trips. `--global` writes `$HOME`, the entry every directory's chain ends at, which is how you publish one value for the whole machine; it cannot be combined with `--path`.
 
 ### Session-scoped entries
 
 The `--path` value is a cache coordinate, not a filesystem lookup — a path that doesn't exist on disk is stored
-verbatim. Appending a session discriminator to the directory gives each writer its own slot, so several agents
+verbatim. Appending a session discriminator to the directory gives each writer its own cache entry, so several agents
 working in the same directory can publish independent state:
 
 ```sh
-# Two agents in one project, each with its own slot
+# Two agents in one project, each with its own path
 comb p agent '{"context_pct":42}' --path "/home/user/project#session-a"
 comb p agent '{"context_pct":97}' --path "/home/user/project#session-b"
 
@@ -227,7 +227,7 @@ comb g agent.context_pct "/home/user/project#session-a"   # 42
 ```
 
 Reads must pass the exact path the writer used: `project#session-a` is a sibling name, not a child of `project`,
-so a session slot inherits from the parent directory (`/home/user`) and up — never from the plain project
+so a session-scoped path inherits from the parent directory (`/home/user`) and up — never from the plain project
 directory. Use absolute paths: a relative `--path` is resolved against the daemon's working directory, not the
 caller's.
 
@@ -237,7 +237,7 @@ Read back with standard `comb g`:
 comb g myapp.status        # healthy
 ```
 
-Namespace hierarchy: builtin > script > virtual. Storing to a name used by a built-in or script provider is rejected.
+Ownership is per record, not per namespace: storing to a field name a Source already produces is rejected (`cannot write <namespace>.<field>: owned by source <source>`), but a static record can sit beside that Source's own records in the same namespace.
 
 **Exit codes:** `0` on success, `2` on error.
 

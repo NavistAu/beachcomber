@@ -69,7 +69,7 @@ func (s *Session) Hello() (*HelloInfo, error) {
 	return s.client.Hello()
 }
 
-// Put stores data into a virtual provider on this session's persistent
+// Put stores data into the cache as static data on this session's persistent
 // connection. data should be a JSON object. ttl and path are optional; pass
 // "" to omit them.
 func (s *Session) Put(key string, data interface{}, ttl, path string) error {

@@ -310,7 +310,7 @@ class Client:
         ttl: Optional[str] = None,
         path: Optional[str] = None,
     ) -> None:
-        """Store data into a virtual provider. ``data=None`` clears the entry.
+        """Store data into the cache as static data. ``data=None`` clears the entry.
 
         Raises:
             CombError: subclass matching the failure kind.
@@ -538,7 +538,7 @@ class Session:
         ttl: Optional[str] = None,
         path: Optional[str] = None,
     ) -> None:
-        """Store data into a virtual provider via the persistent connection.
+        """Store data into the cache as static data via the persistent connection.
 
         Raises:
             CombError: subclass matching the failure kind.

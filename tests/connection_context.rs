@@ -294,22 +294,22 @@ async fn global_provider_ignores_context() {
     handle.abort();
 }
 
-/// Test 4: the global-slot fallback is for *static* namespaces only.
+/// Test 4: a PathScoped provider's records never walk the chain.
 ///
-/// A `get` at a path with no entry falls back to the global slot when the
-/// provider is a static namespace (see tests/store.rs). A PathScoped provider
-/// must not gain that: /project/a and /project/b holding different values is
-/// the whole point of path scoping, and a stray global entry must never leak
-/// into a path-scoped read. Here the path-keyed slot is cold, so the normal
-/// cold-miss inline execute answers with the requested path — not the global
-/// entry.
+/// Static records resolve up the directory chain to `$HOME`, nearest winning
+/// (see tests/store.rs), but a `PathScoped` source's records do not:
+/// `Cache::read_merged` merges a `PathScoped` provider map only at the
+/// addressed entry, never at an ancestor or the global entry. /project/a and
+/// /project/b holding different values is the whole point of path scoping,
+/// and a stray global record must never leak into a path-scoped read. Here
+/// the path-keyed entry is cold, so the normal cold-miss inline execute
+/// answers with the requested path — not the global one.
 ///
-/// This is the guard against dropping the `registry.is_static_namespace(..)`
-/// conjunct from `read_path` in src/server.rs: without it the seeded global
-/// entry would answer here and every path-scoped provider would silently
-/// collapse onto one slot. It passes either way today — nothing about the
-/// fallback's *static* half is exercised — so its whole value is failing if
-/// that conjunct goes.
+/// This is the guard against dropping that addressed-entry-only gate from
+/// `Cache::read_merged`: without it the seeded global entry would answer
+/// here and every path-scoped provider would silently collapse onto one
+/// entry. It passes either way today — nothing about static-record chaining
+/// is exercised here — so its whole value is failing if that gate goes.
 #[tokio::test]
 async fn path_scoped_provider_has_no_global_fallback() {
     let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();

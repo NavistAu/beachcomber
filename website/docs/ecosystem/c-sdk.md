@@ -156,8 +156,8 @@ so a binding can tell the cases apart without string matching:
 | Function | Description |
 |---|---|
 | `char *bc_get(BcClient *c, const char *key, const char *path, uint32_t flags)` | Read a cached value. `path` is nullable. `flags` is a bitmask of `BC_GET_FORCE` / `BC_GET_WAIT`; any other bit yields `kind: "bad_flags"`. |
-| `char *bc_put(BcClient *c, const char *key, const char *json_data, const char *ttl, const char *path)` | Write a value into the cache as a virtual provider. `json_data` must parse as JSON; `ttl` and `path` are nullable. |
-| `char *bc_put_null(BcClient *c, const char *key, const char *path)` | Clear the cached entry for a virtual provider key. `path` is nullable. |
+| `char *bc_put(BcClient *c, const char *key, const char *json_data, const char *ttl, const char *path)` | Write a value into the cache as static data. `json_data` must parse as JSON; `ttl` and `path` are nullable. |
+| `char *bc_put_null(BcClient *c, const char *key, const char *path)` | Clear the cached entry for a static-data key. `path` is nullable. |
 | `char *bc_refresh(BcClient *c, const char *key, const char *path)` | Force recomputation of a provider. `path` is nullable. |
 | `char *bc_status(BcClient *c)` | List all cache entries currently held by the daemon. |
 | `char *bc_introspect(BcClient *c, const char *subject, const char *options_json)` | Inspect a daemon subsystem. `options_json`'s only recognised key, `duration_secs`, is consulted by the `procs` subject only. |

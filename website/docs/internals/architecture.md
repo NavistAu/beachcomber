@@ -302,6 +302,6 @@ At most one daemon runs per user. Enforcement is a pid file held under exclusive
 
 `src/watcher_registry.rs` maintains a `tokio::sync::broadcast` channel per (provider, path) key. `Cache::put()` notifies the registry after every write. Watch connections subscribe to the relevant channel. Using broadcast rather than mpsc allows multiple simultaneous watchers on the same key without coordination between them.
 
-**Virtual providers via put**
+**Static records via put**
 
-External processes can write arbitrary data into the cache via the `put` protocol op. The server creates a virtual provider entry — a `CacheEntry` with no associated `Arc<dyn Source>` — and inserts it directly. Virtual providers have no `execute()` method and are never polled or evicted by the scheduler. Namespace hierarchy (builtin > script > virtual) prevents a `put` call from shadowing a real provider: if a built-in or script provider already owns the namespace, the put op is rejected.
+External processes can write arbitrary data into the cache via the `put` protocol op. A namespace no code or config registers is entirely static — a `CacheEntry` holding only `put`/`config:<file>` records, with no associated `Arc<dyn Source>` — and such records are never polled or evicted by the scheduler. Ownership is per record, not per namespace: a `put` can write into any namespace as long as it does not target a record a Source already produces; doing that is rejected with `cannot write <namespace>.<field>: owned by source <source>`, so a static record sits beside a Source's own records in the same cache entry.

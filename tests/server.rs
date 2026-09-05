@@ -328,7 +328,7 @@ async fn daemon_introspect_includes_uptime_and_request_counters() {
 
 /// Nested key lookup: `comb g provider.field.subkey` walks into an
 /// Object-valued field and returns the subkey's scalar value directly.
-/// Uses a virtual provider so there's no path canonicalisation walk to
+/// Uses a static namespace so there's no path canonicalisation walk to
 /// contend with.
 #[tokio::test]
 async fn nested_key_walks_into_object_field() {

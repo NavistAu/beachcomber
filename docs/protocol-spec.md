@@ -66,8 +66,8 @@ All responses are a single line of JSON:
 - `data` (any, optional) — response payload. Shape depends on the op.
 - `age_ms` (integer, optional) — for `Get` responses, milliseconds since the
   record answering the request was last refreshed. See "Freshness" under `Get`.
-- `stale` (bool, optional) — for `Get` responses, whether that record is older
-  than its Source's expected refresh interval.
+- `stale` (bool, optional) — for `Get` responses, whether the record is past
+  its expected refresh window. See "Freshness" under `Get`.
 - `error` (string, optional) — present when `ok=false`. A human-readable
   message; not stable enough to parse.
 - `template` (any, optional) — for `Get` responses, the template half. See
@@ -128,11 +128,14 @@ Read a cached value.
   declared scope — path-scoped at the addressed path, global at the global
   entry — and never walk the chain. See "Path resolution" in
   `docs/canon/field_resolution.md`.
-- `force` (bool, optional, default false) — evict the cache entry before
-  executing, guaranteeing a fresh value.
+- `force` (bool, optional, default false) — re-execute every Source the key
+  demands, each at the cache entry its own scope keys, whether or not it was
+  stale; guarantees a fresh value without evicting anything. A key naming no
+  Source (a static namespace, a facet) is an error: `cannot --force static
+  namespace '<name>': no source to re-execute from`.
 - `wait` (bool, optional, default false) — if the entry is stale, wait for
-  inline re-execution; if fresh, serve the cached value. Idempotent on
-  virtual providers.
+  inline re-execution; if fresh, serve the cached value. A no-op on a static
+  namespace — it has no Source to re-execute, so the entry is served as-is.
 
 **Response (hit):**
 ```json
@@ -216,8 +219,18 @@ editing a template alone delivers a frame with no new `data`.
 
 #### Keys
 
-Keys are `<provider>` or `<provider>.<field>`. Providers may also accept
-metadata suffixes:
+Keys are `<provider>`, `<provider>.<field>`, or a facet address —
+`<provider>:<facet>` or `<provider>:<facet>.<field>` — where a facet is a
+namespace holding data about a provider (e.g. `git:template`), addressed and
+read exactly like any other name once the colon syntax is admitted (one
+colon, facet name matching `[A-Za-z0-9_-]+`; anything else is `invalid facet
+key: <key>`). Any key may also carry a metadata suffix, the raw key's last
+`:name` segment, stripped before the rest is parsed as a provider/field/facet
+address — so `git.branch:source` is field `git.branch` plus the `:source`
+suffix, and `p:template:age` is facet `p:template` plus the `:age` suffix. A
+suffix strip always wins over facet parsing: the five suffix names below are
+not valid facet names, so `key:age` is provider `key` plus the `:age`
+suffix, never a facet `key:age`.
 
 - `:age` — returns `age_ms` as the `data` value.
 - `:stale` — returns `stale` as the `data` value.
@@ -245,7 +258,9 @@ Source that owns `branch`. Each runs at the cache entry its own scope keys — t
 global entry for a `Global` Source whatever path the request carried, the
 addressed path for a `PathScoped` one — so `path` is optional and is only
 consulted by the path-scoped ones. A metadata suffix is stripped first, as for a
-`get`: `refresh hostname:age` is `refresh hostname`.
+`get`: `refresh hostname:age` is `refresh hostname`. Invalid facet syntax on
+the key is the same error `get`/`put`/`watch` give: `{"ok": false, "error":
+"invalid facet key: <key>"}`.
 
 A key that names no Source has nothing to re-execute and is an **error**: a
 static namespace (one created by `put` or a config seed), a facet key, an
@@ -282,9 +297,11 @@ this default. Stateless per connection — fresh connections have no context.
 ### `Put`
 
 Store static data at any node of the tree. `key` is `namespace` or
-`namespace.node…` — the same dotted address `get` takes. The write
-deep-merges into whatever is already stored; `replace` drops the subtree at
-the addressed node first; omitting `data` removes it.
+`namespace.node…` — the same dotted address `get` takes, and `namespace` may
+itself be a facet address (`<provider>:<facet>`; invalid facet syntax is
+`invalid facet key: <key>`, the same check `get`/`refresh`/`watch` apply).
+The write deep-merges into whatever is already stored; `replace` drops the
+subtree at the addressed node first; omitting `data` removes it.
 
 Ownership is per **record**, not per namespace: a record one of the
 provider's Sources produces is refused, because the next refresh would
@@ -336,6 +353,7 @@ itself survives if a Source still contributes to it.)
 ```
 
 **Error cases:**
+- Invalid facet syntax on the namespace segment: `{"ok": false, "error": "invalid facet key: <key>"}`
 - Non-object `data` at a namespace root: `{"ok": false, "error": "put data at the root must be an object"}`
 - A record a Source produces: `{"ok": false, "error": "cannot write <namespace>.<node>: owned by source <source>"}`
 - An object key containing a `.`: `{"ok": false, "error": "put data keys may not contain '.': <key>"}`
@@ -357,11 +375,23 @@ List all cache entries currently held by the daemon.
   "data": [
     {
       "provider": "git",
-      "field": "branch",
       "path": "/Users/me/project",
+      "source": "head",
+      "field": "branch",
       "value": "main",
       "age_ms": 120,
-      "stale": false
+      "stale": false,
+      "kind": {"kind": "lifecycle", "decay": 0, "watches_files": true}
+    },
+    {
+      "provider": "myapp",
+      "path": null,
+      "source": "put",
+      "field": "status",
+      "value": "healthy",
+      "age_ms": 4200,
+      "stale": false,
+      "kind": {"kind": "static"}
     },
     ...
   ],
@@ -369,6 +399,17 @@ List all cache entries currently held by the daemon.
   "stale": false
 }
 ```
+
+`source` is the row's record's source label — a Source of the provider
+(`head`, `refs`, …), or a static label (`put`, `config:<file>`). `kind` is
+present when the row's lifecycle discriminator is known: `{"kind":
+"lifecycle", "decay": N, "watches_files": bool}` for a lifecycle-tracked row,
+`{"kind": "once"}` / `{"kind": "static"}` / `{"kind": "transient"}`
+otherwise; omitted when unknown. A handful of further optional fields
+(`poll_interval_secs`, `keep_alive_polls`, `fsevents_reinstate`,
+`polls_elapsed`, `next_poll_in_secs`, `failure`) are omitted here and carry
+diagnostic detail `comb status` renders as columns; see `src/cache.rs`'s
+`CacheRow` for the authoritative field list.
 
 **Note:** `data` is an array of cache rows, NOT a daemon-health object.
 Daemon-health information lives on `Introspect{daemon}`. This was a breaking
@@ -493,11 +534,27 @@ The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs
 
 ## Glossary
 
-- **Provider** — a source of data (e.g. `git`, `hostname`, `mise`). Produces
-  a `ProviderResult` — a map of field name → `Value`.
+- **Provider** — a source of data (e.g. `git`, `hostname`, `mise`), made up
+  of one or more Sources. Produces a `ProviderResult` — a map of field name →
+  `Value`.
+- **Source** — one of a provider's execution strategies (e.g. `git`'s `head`,
+  `refs`, `diff`, `lineage`, `status`), each owning a set of field names and
+  declaring its own scope (`Global` or `PathScoped`) and invalidation
+  strategy. What `Refresh` re-executes and demand-driven warming keeps warm.
 - **Field** — a named element of a provider's output (e.g. `branch` on `git`).
-- **Virtual provider** — a provider whose data is entirely injected via
-  `Put`. No execution.
-- **Cache row** — one line of `Status` output: `{provider, field, path, value, age_ms, stale}`.
-- **Invalidation strategy** — how a provider decides when to re-execute
+- **Namespace** — the `provider` or `provider:facet` a key's first segment
+  names.
+- **Record** — one stored value at (key, path), with exactly one source: a
+  provider's Source (`head`, `refs`, …), `put`, or `config:<file>`.
+- **Static record** — a record whose source is `put` or `config:<file>`; no
+  Source produces it, so it is never polled or evicted, and resolves up the
+  directory chain to `$HOME` (see "Path resolution" under `Get`).
+- **Static namespace** — a namespace no provider or config registers; every
+  record in it is static.
+- **Facet** — `provider:facet`, a namespace holding data about a provider
+  (e.g. `git:template`); always static. `template` is the facet a `Get`
+  resolves for its template half.
+- **Cache row** — one line of `Status` output: `{provider, path, source,
+  field, value, age_ms, stale, kind}`.
+- **Invalidation strategy** — how a Source decides when to re-execute
   (poll-based, watch-based, once-only). See `src/scheduler.rs`.

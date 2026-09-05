@@ -275,7 +275,7 @@ impl ClientSession {
         unit_to_response(self.session.put_with(key, data, ttl, path, replace))
     }
 
-    /// Clear the cached entry for a static provider key without dropping the registry entry.
+    /// Clear the cached entry for a static-data key without dropping the registry entry.
     /// A subsequent `put` under the same key still works.
     ///
     /// `ttl` is accepted for signature compatibility but, like the
@@ -466,7 +466,7 @@ impl Client {
         unit_to_response(self.inner().put_with(key, data, ttl, path, replace))
     }
 
-    /// Clear the cached entry for a static provider key without dropping the registry entry.
+    /// Clear the cached entry for a static-data key without dropping the registry entry.
     /// A subsequent `put` under the same key still works.
     ///
     /// See `ClientSession::put_null` -- `ttl` is inert on the null-put path

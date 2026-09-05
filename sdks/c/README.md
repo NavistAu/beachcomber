@@ -42,7 +42,7 @@ int main(void) {
     r = bc_get(c, "git.branch", "/path/to/repo", BC_GET_FORCE | BC_GET_WAIT);
     bc_string_free(r);
 
-    /* Put / clear a virtual provider entry */
+    /* Put / clear a static-data entry */
     r = bc_put(c, "myapp", "{\"theme\":\"dark\",\"version\":3}", NULL, NULL);
     bc_string_free(r);
     r = bc_put_null(c, "myapp", NULL);

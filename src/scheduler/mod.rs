@@ -885,7 +885,7 @@ impl Scheduler {
                                 // whole-provider query like `comb get mise` from
                                 // inside a project therefore warms BOTH the project
                                 // source at the resolved path AND the global one at
-                                // the pathless slot.
+                                // the global entry.
                                 let effective_key_path = match sm.scope {
                                     SourceScope::Global => None,
                                     SourceScope::PathScoped => path.clone(),
@@ -997,7 +997,7 @@ impl Scheduler {
                                 if matches!(outcome.transition, StateTransition::NewlyActive) {
                                     // Cold → Active: execute inline to populate cache. Use the
                                     // source's effective key path (None for Global, requested path
-                                    // for PathScoped) so the cache slot matches the lifecycle key.
+                                    // for PathScoped) so the cache entry matches the lifecycle key.
                                     if self.cache.get_source(&provider, effective_key_path.as_deref(), &sm.name).is_none() {
                                         self.execute_source(&provider, &sm.name, effective_key_path.as_deref());
                                     }

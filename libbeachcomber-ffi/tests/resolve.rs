@@ -39,10 +39,10 @@ fn read(ptr: *mut c_char) -> serde_json::Value {
 
 /// Case 1: a virtual field whose expression references a `cache.*` value
 /// resolves to that value. `otherprov` is `put` globally (no `path`) while
-/// the resolve runs at a `cwd`: a virtual provider declares no path
-/// expression, so the daemon's path-scoped read falls back to the global slot
-/// (canon `field_resolution.md` §"Path resolution" — the prose on virtual
-/// providers; invariant 2 is only about an empty/falsy path expression).
+/// the resolve runs at a `cwd`: a static namespace declares no path-scoped
+/// source, so the daemon's path-scoped read falls back to the global entry
+/// (canon `field_resolution.md` §"Path resolution" — the prose on static
+/// namespaces; invariant 2 is only about an empty/falsy path expression).
 /// `bc_eval_path_scoped_ref_resolves_at_cwd` covers the other
 /// half — a `put` at one directory is not visible at another.
 #[test]
@@ -302,7 +302,7 @@ fn bc_eval_bare_still_works() {
 /// the daemon's "unknown provider" rejection — a missing ref, not an
 /// error (see `bc_eval_unknown_provider_is_a_miss`) — and is never reached
 /// anyway once `b.y` resolves truthy. `d` is `put` globally and read at a
-/// `cwd`: a virtual provider falls back to the global slot (canon
+/// `cwd`: a static namespace falls back to the global entry (canon
 /// `field_resolution.md` §"Path resolution" prose, not invariant 2).
 #[test]
 fn bc_eval_nested_virtual_dependency_is_fetched() {
@@ -343,8 +343,8 @@ fn bc_eval_nested_virtual_dependency_is_fetched() {
 /// `bc_resolve` twin of `bc_eval_nested_virtual_dependency_is_fetched`:
 /// `eval::daemon_refs`'s transitive closure over virtual fields applies to
 /// a declared field's own expression too, not just a raw `bc_eval` source.
-/// `d` is `put` globally and read at a `cwd`: a virtual provider falls back
-/// to the global slot (canon `field_resolution.md` §"Path resolution" prose,
+/// `d` is `put` globally and read at a `cwd`: a static namespace falls back
+/// to the global entry (canon `field_resolution.md` §"Path resolution" prose,
 /// not invariant 2).
 #[test]
 fn bc_resolve_nested_virtual_dependency_is_fetched() {

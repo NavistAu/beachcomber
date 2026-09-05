@@ -165,7 +165,7 @@ Cache rows (one per warm cache entry): `provider`, `field`, `path`,
 ### `Client:put(key, data [, ttl [, path]])` → `true | false, Error`
 ### `Client:put_null(key [, path])` → `true | false, Error`
 
-Write to / clear a virtual provider's cached value.
+Write to / clear a static-data entry's cached value.
 
 ### `Client:hello()` → `table {protocol_version, daemon_version} | nil, Error`
 ### `Client:introspect(subject [, duration_secs])` → `table {subject, daemon, other} | nil, Error`

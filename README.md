@@ -262,7 +262,7 @@ graph TB
 
 **Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a decay sequence after queries stop — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
 
-**Virtual providers and streaming:** external processes can also write data into the cache via `comb p`, exposing arbitrary state to prompt and statusline consumers without writing a script provider. Long-lived connections can stream changes via `comb w`, receiving an NDJSON line each time a cache value is updated.
+**Put and streaming:** external processes can also write data into the cache via `comb p`, exposing arbitrary state to prompt and statusline consumers without writing a script provider. Long-lived connections can stream changes via `comb w`, receiving an NDJSON line each time a cache value is updated.
 
 ---
 
@@ -339,7 +339,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay1..4|once|static`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
 
@@ -361,7 +361,7 @@ The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 
 ### `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--null]`
 
-Write data into the cache as a virtual provider. External processes can use this to expose state to prompt/statusline consumers without writing a script provider.
+Write static data into the cache. External processes can use this to expose state to prompt/statusline consumers without writing a script provider.
 
 ```sh
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
@@ -370,7 +370,7 @@ comb p myapp '{"status":"building"}' --path ~/project     # path-scoped
 comb p myapp --null                                        # clear the entry
 ```
 
-`--null` clears a previously written virtual provider entry. Omitting `--null` requires a JSON object argument.
+`--null` clears a previously written entry. Omitting `--null` requires a JSON object argument.
 
 Read back with `comb g`:
 
@@ -379,7 +379,7 @@ comb g myapp.status        # → healthy
 comb g myapp                 # → full JSON
 ```
 
-Namespace hierarchy prevents shadowing built-in or script providers — `comb p git '...'` is rejected.
+Ownership is per record, not per namespace — `comb p git '{"note":1}'` is accepted and merges beside git's own fields, but `comb p git '{"branch":"x"}'` is rejected because a Source already owns `branch`.
 
 ### `comb w` (watch) `<key> [--path <path>]`
 

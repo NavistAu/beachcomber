@@ -95,7 +95,7 @@ Handshake — returns a `HelloInfo` with daemon and protocol version strings.
 
 #### `client.put(key, data, ttl, path)`
 
-Write a JSON value into the cache as a virtual provider. `ttl` and `path` are `Option<&str>`. Pass `None` for `data` (via `put_null`) to clear the entry.
+Write a JSON value into the cache as static data. `ttl` and `path` are `Option<&str>`. Pass `None` for `data` (via `put_null`) to clear the entry.
 
 #### `client.introspect(subject, duration_secs)`
 
@@ -136,7 +136,7 @@ match result {
 
 #### `client.put_null(key, path)`
 
-Clear a virtual provider entry (equivalent to `put` with no data).
+Clear a static-data entry (equivalent to `put` with no data).
 
 ## Socket discovery
 

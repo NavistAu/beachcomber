@@ -148,7 +148,7 @@ function Client:hello()
   }
 end
 
---- Store data into a virtual provider.
+--- Store data into the cache as static data.
 -- @param key  string   Provider key
 -- @param data any       Value to store
 -- @param ttl  string?  Optional TTL (e.g. "30s")
@@ -160,7 +160,7 @@ function Client:put(key, data, ttl, path)
   return true
 end
 
---- Clear a virtual provider entry's cached value.
+--- Clear a static-data entry's cached value.
 -- @param key  string
 -- @param path string?
 -- @return true, or false, Error

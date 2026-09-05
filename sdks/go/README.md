@@ -119,7 +119,7 @@ For latency-sensitive use, prefer `Session`.
 | `Get(key, path string) (*Result, error)` | Read a cached value. |
 | `GetWithFlags(key, path string, force, wait bool) (*Result, error)` | Read with the ABI's `force`/`wait` flags. |
 | `Refresh(key, path string) error` | Force recomputation. |
-| `Put(key string, data interface{}, ttl, path string) error` | Write a value into a virtual provider. `data` is marshalled to JSON. |
+| `Put(key string, data interface{}, ttl, path string) error` | Write a value into the cache as static data. `data` is marshalled to JSON. |
 | `Status() ([]CacheRow, error)` | Cache rows from the daemon. |
 | `Hello() (*HelloInfo, error)` | Protocol/daemon version handshake. |
 | `Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)` | Inspect a daemon subsystem. |
