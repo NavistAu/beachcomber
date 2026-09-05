@@ -21,6 +21,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio_util::sync::CancellationToken;
 
 // ── fixture ──────────────────────────────────────────────────────────────────
 
@@ -91,13 +92,10 @@ impl Env {
 }
 
 /// Rewrite a config file and stamp its mtime into the future, so the watch's
-/// poll sees the change whatever the clock's granularity (the trick
-/// `tests/config_self_watch.rs` uses).
+/// poll sees the change whatever the clock's granularity.
 fn rewrite(path: &Path, body: &str) {
     std::fs::write(path, body).unwrap();
-    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
-    f.set_modified(std::time::SystemTime::now() + Duration::from_secs(2))
-        .unwrap();
+    common::mtime::touch_future(path);
 }
 
 async fn send_recv(stream: &mut UnixStream, request: serde_json::Value) -> serde_json::Value {
@@ -137,6 +135,7 @@ async fn row(
     field: &str,
 ) -> Option<(String, serde_json::Value, serde_json::Value)> {
     let resp = send_recv(stream, json!({"op": "status"})).await;
+    assert_eq!(resp["ok"], json!(true), "status: {resp}");
     resp["data"].as_array()?.iter().find_map(|r| {
         (r["provider"] == json!(provider) && r["field"] == json!(field)).then(|| {
             (
@@ -249,38 +248,66 @@ async fn a_seeded_template_answers_a_get_on_a_namespace_with_no_provider() {
 
 // ── (c) validation ───────────────────────────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_dotted_key_stops_the_daemon_starting() {
-    let e = Env::new("[providers.\"x:template\"]\n\"a.b\" = \"{{ y }}\"\n", &[]);
+/// The errors `Config::load()` produces for the config `Env` just wrote — the
+/// same list `run_daemon_with_cancel` refuses to start on, and the same list
+/// `comb check config` prints.
+fn startup_errors() -> Vec<String> {
+    let registry = ProviderRegistry::with_defaults();
+    Config::load()
+        .validate_providers(
+            &registry.provider_names(),
+            &registry.source_names_by_provider(),
+        )
+        .1
+}
+
+/// Assert the message, then assert the wiring: the message is what an operator
+/// reads, and `ready` erroring is the only proof the daemon acts on it.
+async fn refuses_to_start(e: &Env, expected: &str) {
+    assert_eq!(
+        startup_errors(),
+        vec![expected.to_string()],
+        "validation must produce exactly this error"
+    );
     let (_h, ready) = e.start();
     assert!(
         ready.await.is_err(),
-        "a dotted key under a template facet is a config error"
+        "and the daemon must refuse to start on it"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dotted_key_stops_the_daemon_starting() {
+    let e = Env::new("[providers.\"x:template\"]\n\"a.b\" = \"{{ y }}\"\n", &[]);
+    refuses_to_start(
+        &e,
+        "[providers.\"x:template\"] key 'a.b' contains a '.': a facet table nests with tables, \
+         and a dotted key names one record while addressing another.",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_settings_key_in_a_facet_table_stops_the_daemon_starting() {
     let e = Env::new("[providers.\"x:template\"]\nenabled = false\n", &[]);
-    let (_h, ready) = e.start();
-    assert!(ready.await.is_err(), "a facet table holds data only");
+    refuses_to_start(
+        &e,
+        "[providers.\"x:template\"] is a facet table and holds data only, but 'enabled' is a \
+         settings key. It belongs in [providers.x].",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reserved_facet_name_stops_the_daemon_starting() {
     let e = Env::new("[providers.\"x:age\"]\nn = \"1\"\n", &[]);
-    let (_h, ready) = e.start();
-    assert!(
-        ready.await.is_err(),
-        "`age` is a metadata suffix, not a facet"
-    );
+    refuses_to_start(&e, "[providers.\"x:age\"]: invalid facet key: x:age").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_malformed_facet_key_stops_the_daemon_starting() {
     let e = Env::new("[providers.\"a:b:c\"]\nn = \"1\"\n", &[]);
-    let (_h, ready) = e.start();
-    assert!(ready.await.is_err(), "two colons is not facet syntax");
+    refuses_to_start(&e, "[providers.\"a:b:c\"]: invalid facet key: a:b:c").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -384,7 +411,10 @@ async fn a_watch_wakes_on_a_config_edit() {
         .await
         .unwrap();
     let mut reader = BufReader::new(&mut w);
-    reader.read_line(&mut line).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line))
+        .await
+        .expect("the watch sends an initial frame")
+        .unwrap();
     let first: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(first["template"], json!("t1"), "initial frame: {first}");
 
@@ -416,55 +446,166 @@ title = "t2"
 enabled = false
 "#;
 
+/// The re-seed's reaction to an invalid edit is that *nothing happens*, and a
+/// daemon-level test can only chase that with a negative window — a wait long
+/// enough to be convincing and short enough to be fast, which is neither.
+///
+/// So drive the watch directly, with the closure production uses, and wait on
+/// the call itself: once `reseed_facets` has run and returned, "nothing
+/// happened" is a settled fact rather than a guess about timing.
+#[test]
+fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    std::fs::write(&cfg, "").unwrap();
+    let conf_d = tmp.path().join("conf.d");
+    std::fs::create_dir(&conf_d).unwrap();
+    let drop_in = conf_d.join("10-mine.toml");
+    std::fs::write(&drop_in, RESEED_V1).unwrap();
+
+    let cache = Arc::new(Cache::new());
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let layers = || Config::layers(Some(&cfg), &conf_d);
+    beachcomber::daemon::seed::seed_facets(&cache, &registry, &layers());
+    let leaf = |name: &str| {
+        cache
+            .read_merged("scanline:template", None, &registry)
+            .and_then(|read| read.fields.get(name).cloned())
+    };
+    assert_eq!(leaf("title"), Some(CacheValue::String("t1".into())));
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (watch_cache, watch_registry) = (cache.clone(), registry.clone());
+    let (watch_cfg, watch_conf_d) = (cfg.clone(), conf_d.clone());
+    let stop = CancellationToken::new();
+    beachcomber::daemon::config_watch::spawn_config_self_watch_with(
+        cfg.clone(),
+        Duration::from_millis(20),
+        false,
+        stop.clone(),
+        move |kind| {
+            if kind == beachcomber::daemon::config_watch::ChangeKind::FacetsOnly {
+                let layers = Config::layers(Some(&watch_cfg), &watch_conf_d);
+                beachcomber::daemon::seed::reseed_facets(&watch_cache, &watch_registry, &layers);
+            }
+            let _ = tx.send(kind);
+        },
+    );
+
+    std::fs::write(&drop_in, RESEED_INVALID).unwrap();
+    common::mtime::touch_future(&drop_in);
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)),
+        Ok(beachcomber::daemon::config_watch::ChangeKind::FacetsOnly),
+        "the watch sees the edit"
+    );
+    assert_eq!(
+        leaf("title"),
+        Some(CacheValue::String("t1".into())),
+        "an invalid edit applies nothing — not even the leaves of it that are fine"
+    );
+    assert_eq!(
+        leaf("version"),
+        Some(CacheValue::String("v1".into())),
+        "and leaves the rest of the previous seed alone"
+    );
+
+    std::fs::write(&drop_in, RESEED_V2).unwrap();
+    common::mtime::touch_future(&drop_in);
+    rx.recv_timeout(Duration::from_secs(3))
+        .expect("the watch is still armed after rejecting an edit");
+    assert_eq!(
+        leaf("title"),
+        Some(CacheValue::String("t2".into())),
+        "the next valid edit is applied"
+    );
+    stop.cancel();
+}
+
+/// A namespace dropped from configuration entirely: its records go, and the
+/// entry with them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_invalid_edit_keeps_the_previous_seed() {
+async fn a_namespace_removed_from_config_disappears() {
+    let e = Env::new(
+        "",
+        &[(
+            "10-mine.toml",
+            "[providers.\"scanline:template\"]\nversion = \"v1\"\n\n\
+             [providers.\"other:template\"]\nkeeper = \"k1\"\n",
+        )],
+    );
+    let _h = e.serve().await;
+    let mut s = e.connect().await;
+    assert_eq!(data(&mut s, "scanline:template.version").await, json!("v1"));
+
+    rewrite(
+        &e.drop_in("10-mine.toml"),
+        "[providers.\"other:template\"]\nkeeper = \"k2\"\n",
+    );
+    common::poll::poll_until_async(
+        "other:template.keeper",
+        "the edit that proves the re-seed ran",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        async || data(&mut s, "other:template.keeper").await,
+        |v| *v == json!("k2"),
+    )
+    .await;
+
+    assert!(
+        data(&mut s, "scanline:template").await.is_null(),
+        "the whole namespace is gone, not just its leaves"
+    );
+    assert_eq!(
+        row(&mut s, "scanline:template", "version").await,
+        None,
+        "and its cache entry with it — no rows in status"
+    );
+}
+
+/// Spec §3.2: a re-seed never touches a `put` record, including at a leaf
+/// configuration also sets. Configuration seeds a default; a `put` is the
+/// operator saying otherwise.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_put_record_wins_over_config_on_re_seed() {
     let e = Env::new("", &[("10-mine.toml", RESEED_V1)]);
     let _h = e.serve().await;
     let mut s = e.connect().await;
 
-    // The re-seed applies nothing at all — not even the leaves of the same file
-    // that are still fine.
-    rewrite(&e.drop_in("10-mine.toml"), RESEED_INVALID);
+    let resp = send_recv(
+        &mut s,
+        json!({"op": "put", "key": "scanline:template.version", "data": "mine"}),
+    )
+    .await;
+    assert_eq!(resp["ok"], json!(true), "put: {resp}");
 
-    // The watch's poll interval plus its parse gate is well inside this window;
-    // the point is that nothing changes once it has run. A throwaway connection
-    // keeps the timeout from stranding a half-read response on the shared one.
-    let settled = {
-        let mut probe = e.connect().await;
-        tokio::time::timeout(
-            Duration::from_millis(600),
-            common::poll::poll_until_async(
-                "scanline:template.title",
-                "any change at all",
-                Duration::from_secs(30),
-                Duration::from_millis(20),
-                async || data(&mut probe, "scanline:template.title").await,
-                |v| *v != json!("t1"),
-            ),
-        )
-        .await
-    };
-    assert!(
-        settled.is_err(),
-        "an invalid edit must leave the previous seed in place, got {settled:?}"
-    );
-    assert_eq!(
-        data(&mut s, "scanline:template.version").await,
-        json!("v1"),
-        "and every other leaf of the previous seed too"
-    );
-
-    // The daemon is still watching: the next valid edit is applied.
+    // RESEED_V2 sets `version` too, and edits `title` so there is something to
+    // wait on that proves the re-seed ran.
     rewrite(&e.drop_in("10-mine.toml"), RESEED_V2);
     common::poll::poll_until_async(
         "scanline:template.title",
-        "the edited value, once the file is valid again",
+        "the edit that proves the re-seed ran",
         Duration::from_secs(5),
         Duration::from_millis(20),
         async || data(&mut s, "scanline:template.title").await,
         |v| *v == json!("t2"),
     )
     .await;
+
+    assert_eq!(
+        data(&mut s, "scanline:template.version").await,
+        json!("mine"),
+        "config must not overwrite the record the operator put there"
+    );
+    let (source, value, kind) = row(&mut s, "scanline:template", "version")
+        .await
+        .expect("the record is still in the cache");
+    assert_eq!(
+        source, "put",
+        "and it is still the put record, not relabelled"
+    );
+    assert_eq!(value, json!("mine"));
+    assert_eq!(kind, json!({"kind": "static"}));
 }
 
 // ── the swap is one guard ────────────────────────────────────────────────────
@@ -489,12 +630,13 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
     registry.register_static("scanline:template");
     let label = "config:/x/10-mine.toml".to_string();
 
+    const SWAPS: u64 = 500;
     cache
         .reseed_static(
             "scanline:template",
             None,
             "config:",
-            &[(label.clone(), template_tree("v1", "t1"))],
+            vec![(label.clone(), template_tree("v1", "t1"))],
             &registry,
         )
         .unwrap();
@@ -518,22 +660,28 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
         })
     };
 
-    // Thousands of swaps: a split drop-then-write leaves a window on every one
-    // of them, and the reader is hammering the same entry.
-    for i in 0..5000 {
+    // A split drop-then-write leaves a window on every one of these, and the
+    // reader is hammering the same entry.
+    for i in 0..SWAPS {
         cache
             .reseed_static(
                 "scanline:template",
                 None,
                 "config:",
-                &[(label.clone(), template_tree("v1", &format!("t{i}")))],
+                vec![(label.clone(), template_tree("v1", &format!("t{i}")))],
                 &registry,
             )
             .unwrap();
     }
     stop.store(true, Ordering::Relaxed);
     let reads = reader.join().unwrap();
-    assert!(reads > 0, "the reader thread never ran");
+    // A read is cheaper than a swap, so the reader should comfortably outpace
+    // the writer. Anything less and the reader was not actually interleaved
+    // with the swaps, and its silence proves nothing.
+    assert!(
+        reads >= SWAPS,
+        "the reader managed {reads} reads across {SWAPS} swaps — too few to have interleaved"
+    );
 }
 
 #[test]
@@ -551,7 +699,7 @@ fn a_refused_write_leaves_the_previous_seed_untouched() {
             "hostname",
             None,
             "config:",
-            &[(
+            vec![(
                 old.clone(),
                 CacheValue::Object(HashMap::from([(
                     "note".to_string(),
@@ -567,7 +715,7 @@ fn a_refused_write_leaves_the_previous_seed_untouched() {
             "hostname",
             None,
             "config:",
-            &[
+            vec![
                 (
                     "config:/x/new.toml".to_string(),
                     CacheValue::Object(HashMap::from([(
@@ -646,4 +794,49 @@ fn comb_check_config_reports_a_facet_error() {
         "`comb check config` must name the offending key, got:\n{stdout}"
     );
     assert_eq!(out.status.code(), Some(2), "a config error exits 2");
+}
+
+/// The Config block carries two views — the daemon's and the client's own
+/// reading of the file — as one verdict list under one count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn comb_check_config_renders_both_views_as_one_list() {
+    // `width = 12` is a warning, not an error: the daemon starts, and the
+    // client has exactly one thing to say that the daemon does not.
+    let e = Env::new("[providers.\"x:template\"]\nwidth = 12\n", &[]);
+    let _h = e.serve().await;
+
+    let out = tokio::task::spawn_blocking({
+        let (cfg_root, sock) = (e.cfg_dir.parent().unwrap().to_path_buf(), e.sock.clone());
+        move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
+                .env("XDG_CONFIG_HOME", cfg_root)
+                .env("BEACHCOMBER_SOCKET", sock)
+                .args(["check", "--connect-timeout", "2s", "config"])
+                .output()
+                .expect("run comb check config")
+        }
+    })
+    .await
+    .unwrap();
+
+    let expected = format!(
+        "Config\n\
+         \x20 [PASS] daemon   path {}\n\
+         \x20 [PASS] daemon   parsed ok — 1 provider definitions\n\
+         \x20 [PASS] daemon   config parsed\n\
+         \x20 [PASS] daemon   1 provider definitions loaded\n\
+         \x20 [WARN] local    [providers.\"x:template\"] 'width' is integer, not a value \
+         expression or a group; it is dropped from the seed.\n\
+         \n\
+         (1 warning(s))\n\
+         \n",
+        e.cfg_dir.join("config.toml").display()
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        expected,
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(1), "a warning exits 1");
 }

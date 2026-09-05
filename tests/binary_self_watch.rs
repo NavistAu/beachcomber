@@ -23,17 +23,7 @@ fn poll_catches_binary_replacement_when_fs_events_are_dead() {
         },
     );
 
-    // Bump mtime strictly past the watch's start time. The watch compares
-    // against the wall clock it recorded when its thread started, so a stamp
-    // two seconds in the future is newer than that baseline no matter which
-    // of the two ran first — no waiting for the thread to get going, and
-    // immune to clock granularity.
-    let f = std::fs::OpenOptions::new()
-        .write(true)
-        .open(&fake_bin)
-        .unwrap();
-    f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
-        .unwrap();
+    common::mtime::touch_future(&fake_bin);
 
     rx.recv_timeout(std::time::Duration::from_secs(3))
         .expect("mtime poll fired on_change");

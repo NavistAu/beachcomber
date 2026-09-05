@@ -1253,7 +1253,7 @@ nope = "malformed, left to validation"
     )
     .unwrap();
 
-    let mut found: Vec<String> = Config::facet_tables(&layer)
+    let mut found: Vec<&str> = Config::facet_tables(&layer)
         .into_iter()
         .map(|(ns, _)| ns)
         .collect();
@@ -1266,7 +1266,7 @@ nope = "malformed, left to validation"
 
     let table = Config::facet_tables(&layer)
         .into_iter()
-        .find(|(ns, _)| ns == "python:template")
+        .find(|(ns, _)| *ns == "python:template")
         .map(|(_, t)| t)
         .unwrap();
     assert_eq!(table["venv_name"].as_str(), Some("{{ python.venv }}"));
@@ -1288,7 +1288,7 @@ branch = "{{ git.branch }}"
     )
     .unwrap();
 
-    let settings = Config::settings_only(&composed);
+    let settings = Config::settings_only(composed);
     assert!(
         settings["providers"].get("git").is_some(),
         "a plain provider block is a setting and survives"

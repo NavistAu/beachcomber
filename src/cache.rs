@@ -64,14 +64,6 @@ fn make_cache_key(provider: &str, path: Option<&str>) -> CacheKey {
     }
 }
 
-/// The inverse of [`make_cache_key`].
-fn split_cache_key(key: &str) -> (String, Option<String>) {
-    match key.find('\0') {
-        Some(sep) => (key[..sep].to_string(), Some(key[sep + 1..].to_string())),
-        None => (key.to_string(), None),
-    }
-}
-
 /// One source's contribution to a cache entry. Tracks its own refresh timestamp
 /// and staleness independently from sibling sources.
 #[derive(Debug, Clone)]
@@ -722,10 +714,10 @@ impl Cache {
                     .keys()
                     .any(|name| is_static_label(name) && name.starts_with(prefix))
             })
-            .filter_map(|entry| match split_cache_key(entry.key()) {
-                (namespace, None) => Some(namespace),
-                (_, Some(_)) => None,
-            })
+            // A key with no null byte in it is the global entry
+            // ([`make_cache_key`]); anything else carries a path.
+            .filter(|entry| !entry.key().contains('\0'))
+            .map(|entry| entry.key().clone())
             .collect()
     }
 
@@ -740,6 +732,11 @@ impl Cache {
     /// touched (`prefix` only ever names static labels), and a record a Source
     /// owns refuses the whole swap before anything is mutated.
     ///
+    /// A record `put` wrote is never overwritten: once the config maps are
+    /// gone, any planned leaf the `put` map still occupies is dropped from the
+    /// plan. Configuration seeds a default; a `put` is the operator saying
+    /// otherwise, and a re-seed is not the moment to overrule them.
+    ///
     /// An empty `writes` is a removal: the namespace's config records go and
     /// nothing replaces them.
     pub fn reseed_static(
@@ -747,61 +744,57 @@ impl Cache {
         namespace: &str,
         path: Option<&str>,
         drop_label_prefix: &str,
-        writes: &[(String, Value)],
+        writes: Vec<(String, Value)>,
         registry: &ProviderRegistry,
     ) -> Result<(), PutError> {
         // Every write is validated and flattened before the guard is taken, so
         // a malformed one refuses without having held a lock.
-        let mut planned: Vec<(&str, Vec<(String, Value)>)> = Vec::with_capacity(writes.len());
+        let mut planned: Vec<(String, Vec<(String, Value)>)> = Vec::with_capacity(writes.len());
         for (label, value) in writes {
             if !matches!(value, Value::Object(_)) {
                 return Err(PutError::RootNotObject);
             }
-            if let Some(key) = dotted_key(value) {
+            if let Some(key) = dotted_key(&value) {
                 return Err(PutError::DottedKey {
                     key: key.to_string(),
                 });
             }
             let mut leaves = Vec::new();
-            walk_leaves("", value.clone(), &mut leaves);
-            planned.push((label.as_str(), leaves));
+            walk_leaves("", value, &mut leaves);
+            planned.push((label, leaves));
         }
-        let claimed = |planned: &Vec<(&str, Vec<(String, Value)>)>| -> Vec<String> {
+        fn claimed(planned: &[(String, Vec<(String, Value)>)]) -> impl Iterator<Item = &str> {
             planned
                 .iter()
-                .flat_map(|(_, leaves)| leaves.iter().map(|(tail, _)| tail.clone()))
-                .collect()
-        };
+                .flat_map(|(_, leaves)| leaves.iter().map(|(tail, _)| tail.as_str()))
+        }
 
         let key = make_cache_key(namespace, path);
         let now = Instant::now();
         let mut changed = false;
         match self.entries.entry(key) {
             dashmap::Entry::Occupied(mut occupied) => {
-                let tails = claimed(&planned);
-                if let Some(err) = refuse_owned(
-                    registry,
-                    namespace,
-                    Some(occupied.get()),
-                    tails.iter().map(String::as_str),
-                ) {
+                if let Some(err) =
+                    refuse_owned(registry, namespace, Some(occupied.get()), claimed(&planned))
+                {
                     return Err(err);
                 }
                 let entry = occupied.get_mut();
                 changed |= drop_labelled(entry, drop_label_prefix);
                 for (label, leaves) in planned {
+                    let leaves: Vec<(String, Value)> = leaves
+                        .into_iter()
+                        .filter(|(tail, _)| entry.owner_of(tail) != Some(PUT_SOURCE))
+                        .collect();
                     changed |= !leaves.is_empty();
-                    apply_static_write(entry, label, "", leaves, false, None, now);
+                    apply_static_write(entry, &label, "", leaves, false, None, now);
                 }
                 if occupied.get().sources.is_empty() {
                     occupied.remove();
                 }
             }
             dashmap::Entry::Vacant(vacant) => {
-                let tails = claimed(&planned);
-                if let Some(err) =
-                    refuse_owned(registry, namespace, None, tails.iter().map(String::as_str))
-                {
+                if let Some(err) = refuse_owned(registry, namespace, None, claimed(&planned)) {
                     return Err(err);
                 }
                 let mut fresh = CacheEntry {
@@ -810,7 +803,7 @@ impl Cache {
                 };
                 for (label, leaves) in planned {
                     changed |= !leaves.is_empty();
-                    apply_static_write(&mut fresh, label, "", leaves, false, None, now);
+                    apply_static_write(&mut fresh, &label, "", leaves, false, None, now);
                 }
                 if !fresh.sources.is_empty() {
                     vacant.insert(fresh);

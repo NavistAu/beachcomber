@@ -257,7 +257,7 @@ version = "{{ python.version }}"
 That is `python:template.venv_name` and `python:template.widgets.version`. A facet table holds data only, and four rules are enforced at daemon startup (and by `comb check config`):
 
 - The key must be valid facet syntax — exactly one colon, a facet name of letters, digits, `_` or `-`, and not one of the metadata suffix names (`age`, `stale`, `fresh`, `cache`, `source`). `[providers."a:b:c"]` and `[providers."x:age"]` are **errors**.
-- No settings keys. `enabled`, `backend`, `type`, `command`, `library_path`, `url` and `path` are **errors** inside a facet table, and so is any per-source knob — `poll_interval`, `poll_count`, `poll_secs`, `fsevent_patterns`, `fsevent_abs_paths`, `fsevent_lifespan`, `fsevent_reinstates`, `failback_count`, `failback_interval`, and the legacy spellings `poll_interval_secs`, `poll_live_count`, `fsevents_reinstate`, `failure_reattempts` and `failure_backoff_interval`. They belong in `[providers.<name>]`.
+- No settings keys. `enabled`, `backend`, `type`, `command`, `library_path`, `url` and `path` are **errors** at the top level of a facet table, and so is any per-source knob — `poll_interval`, `poll_count`, `poll_secs`, `fsevent_patterns`, `fsevent_abs_paths`, `fsevent_lifespan`, `fsevent_reinstates`, `failback_count`, `failback_interval`, and the legacy spellings `poll_interval_secs`, `poll_live_count`, `fsevents_reinstate`, `failure_reattempts` and `failure_backoff_interval`. They belong in `[providers.<name>]`.
 - Nesting is tables only, in **every** facet, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**.
 - Under `:template` a leaf that is neither a string nor a table is not a value expression: a **warning**, and the leaf is dropped from what gets loaded. Any other facet is plain data, so its leaves may be of any type.
 
@@ -340,8 +340,8 @@ Composition rules:
   files added or removed) trigger the daemon's config self-watch, which acts
   only once the *whole* composed set parses cleanly; an edit that doesn't parse
   is ignored with a logged warning. The one change that does **not** restart is
-  an edit confined to [template facets](#template-facets), which is applied in
-  place.
+  an edit confined to the [facet tables](#template-facets) themselves, which is
+  applied in place.
 
 ## Config field summary
 

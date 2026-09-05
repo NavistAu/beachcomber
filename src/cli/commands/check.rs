@@ -114,12 +114,16 @@ pub fn run_check_subjects(
 
         // The config file is validated here as well as by the daemon: a config
         // the daemon refuses to start on is exactly the one there is no daemon
-        // left to ask about.
-        let local = (subject == "config").then(|| local_config_verdicts(config));
-        if let Some((_, code)) = &local {
-            worst = worst.max(*code);
-        }
-        let local_lines = local.map(|(lines, _)| lines).unwrap_or_default();
+        // left to ask about. The two views join one verdict list, under one
+        // count, so a disagreement reads as information rather than as two
+        // unrelated blocks.
+        let local = if subject == "config" {
+            local_config_verdicts(config)
+        } else {
+            Vec::new()
+        };
+        let (local_lines, local_worst) = render_verdicts(&local, Some(LOCAL_VIEW));
+        worst = worst.max(local_worst);
 
         match client.introspect(subject, duration) {
             Ok(resp) if resp.ok => {
@@ -128,8 +132,8 @@ pub fn run_check_subjects(
                     .as_ref()
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
-                let (text, code) = render_subject(subject, &payload);
-                print!("{}", splice_before_separator(&text, &local_lines));
+                let (text, code) = render_subject(subject, &payload, &local);
+                print!("{text}");
                 worst = worst.max(code);
             }
             Ok(resp) => {
@@ -151,31 +155,6 @@ pub fn run_check_subjects(
     worst
 }
 
-/// Insert `extra` just before the blank line `render_subject` ends every block
-/// with, so appended verdicts stay inside the block instead of landing after
-/// the gap that separates it from the next subject.
-fn splice_before_separator(text: &str, extra: &str) -> String {
-    if extra.is_empty() {
-        return text.to_string();
-    }
-    match text.strip_suffix('\n') {
-        Some(head) => format!("{head}{extra}\n"),
-        None => format!("{text}{extra}"),
-    }
-}
-
-/// Re-tag already-rendered `  [LEVEL] message` lines with which view produced
-/// them, so the Config block's two halves are told apart at a glance.
-fn tag_verdicts(lines: &str, who: &str) -> String {
-    lines
-        .lines()
-        .map(|line| match line.split_once("] ") {
-            Some((level, msg)) => format!("{level}] {who}   {msg}\n"),
-            None => format!("{line}\n"),
-        })
-        .collect()
-}
-
 /// Validate the config file against the built-in providers, as
 /// `run_daemon_with_cancel` does at startup. Returns the verdict lines and the
 /// worst exit code they imply.
@@ -185,33 +164,28 @@ fn tag_verdicts(lines: &str, who: &str) -> String {
 /// the "unknown source name" warning for a built-in provider, and building the
 /// config-defined half would `dlopen` every library provider in the client
 /// process for a read-only check.
-fn local_config_verdicts(config: &Config) -> (String, u8) {
+fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
     let registry = crate::provider::registry::ProviderRegistry::with_defaults();
     let (warnings, errors) = config.validate_providers(
         &registry.provider_names(),
         &registry.source_names_by_provider(),
     );
 
-    let mut lines = String::new();
-    for w in &warnings {
-        lines.push_str(&format!("  [WARN] local   {w}\n"));
-    }
-    for e in &errors {
-        lines.push_str(&format!("  [FAIL] local   {e}\n"));
-    }
+    let mut out: Vec<serde_json::Value> = warnings
+        .into_iter()
+        .map(|w| serde_json::json!({"level": "WARN", "message": w}))
+        .chain(
+            errors
+                .into_iter()
+                .map(|e| serde_json::json!({"level": "FAIL", "message": e})),
+        )
+        .collect();
     // Silence would be ambiguous — a reader could not tell a clean config from
     // a check that never ran.
-    if lines.is_empty() {
-        lines.push_str("  [PASS] local   config file valid\n");
+    if out.is_empty() {
+        out.push(serde_json::json!({"level": "PASS", "message": "config file valid"}));
     }
-    let worst = if !errors.is_empty() {
-        2
-    } else if !warnings.is_empty() {
-        1
-    } else {
-        0
-    };
-    (lines, worst)
+    out
 }
 
 fn subject_title(subject: &str) -> &'static str {
@@ -231,7 +205,15 @@ fn subject_title(subject: &str) -> &'static str {
 
 /// Render a subject's introspect payload into a formatted block.
 /// Returns (text, worst_exit_code): PASS/INFO=0, WARN=1, FAIL=2.
-fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
+///
+/// `local` carries verdicts the client produced itself rather than reading off
+/// the daemon — only `config` has any. They join the block's own verdict list
+/// and the count beneath it, so one mistake is reported once.
+fn render_subject(
+    subject: &str,
+    payload: &serde_json::Value,
+    local: &[serde_json::Value],
+) -> (String, u8) {
     let verdicts = payload
         .get("verdicts")
         .and_then(|v| v.as_array())
@@ -291,7 +273,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .unwrap_or_default();
             let count = providers.len();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str(&format!("Providers ({count} registered)\n"));
@@ -358,33 +340,40 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, Some(DAEMON_VIEW));
             worst = worst.max(vworst);
+            let (local_lines, local_worst) = render_verdicts(local, Some(LOCAL_VIEW));
+            worst = worst.max(local_worst);
 
-            // Every line here is the *daemon's* view — the config it loaded at
-            // startup, which may predate the file on disk. The client's own
-            // reading of that file is appended by `local_config_verdicts` under
-            // the `local` tag, so a disagreement between the two reads as
-            // information rather than as a contradiction.
+            // Two views in one block: the config the *daemon* loaded at startup,
+            // which may predate the file on disk, and the client's own reading
+            // of that file. Tagged so a disagreement reads as information.
             lines.push_str("Config\n");
-            if let Some(p) = path {
-                lines.push_str(&format!("  [PASS] daemon   path {p}\n"));
-            } else {
-                lines.push_str("  [INFO] daemon   path (none — using defaults)\n");
+            let daemon = Some(DAEMON_VIEW);
+            match path {
+                Some(p) => lines.push_str(&verdict_line("PASS", daemon, &format!("path {p}"))),
+                None => lines.push_str(&verdict_line(
+                    "INFO",
+                    daemon,
+                    "path (none — using defaults)",
+                )),
             }
             if parsed {
-                lines.push_str(&format!(
-                    "  [PASS] daemon   parsed ok — {provider_count} provider definitions\n"
+                lines.push_str(&verdict_line(
+                    "PASS",
+                    daemon,
+                    &format!("parsed ok — {provider_count} provider definitions"),
                 ));
             } else {
-                lines.push_str("  [FAIL] daemon   parsed FAILED\n");
+                lines.push_str(&verdict_line("FAIL", daemon, "parsed FAILED"));
                 worst = worst.max(2);
             }
             for err in &errors {
-                lines.push_str(&format!("  [FAIL] daemon   {err}\n"));
+                lines.push_str(&verdict_line("FAIL", daemon, err));
                 worst = worst.max(2);
             }
-            lines.push_str(&tag_verdicts(&vlines, "daemon"));
+            lines.push_str(&vlines);
+            lines.push_str(&local_lines);
         }
         "cache" => {
             let total = payload
@@ -396,7 +385,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str("Cache\n");
@@ -416,7 +405,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .cloned()
                 .unwrap_or_default();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str("Lifecycle\n");
@@ -453,7 +442,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .cloned()
                 .unwrap_or_default();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str(&format!("Watches ({} paths)\n", paths.len()));
@@ -475,7 +464,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .cloned()
                 .unwrap_or_default();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str(&format!("Timers ({} poll timers)\n", timers.len()));
@@ -521,7 +510,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .cloned()
                 .unwrap_or_default();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str(&format!("Demand ({} active keys)\n", keys.len()));
@@ -554,7 +543,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .cloned()
                 .unwrap_or_default();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             let total: u64 = samples
@@ -608,13 +597,14 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
         }
     }
 
-    // Append aggregate summary if there are warnings or failures.
-    let warn_count = verdicts
-        .iter()
+    // Append aggregate summary if there are warnings or failures. `local` is
+    // empty for every subject but `config`, where its verdicts are part of the
+    // same list and so of the same count.
+    let counted = || verdicts.iter().chain(local.iter());
+    let warn_count = counted()
         .filter(|v| v.get("level").and_then(|l| l.as_str()) == Some("WARN"))
         .count();
-    let fail_count = verdicts
-        .iter()
+    let fail_count = counted()
         .filter(|v| v.get("level").and_then(|l| l.as_str()) == Some("FAIL"))
         .count();
     if worst >= 1 {
@@ -631,8 +621,9 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
 }
 
 /// Render verdicts array into formatted lines and the worst exit code.
-/// PASS/INFO = 0, WARN = 1, FAIL = 2.
-fn render_verdicts(verdicts: &[serde_json::Value]) -> (String, u8) {
+/// PASS/INFO = 0, WARN = 1, FAIL = 2. `tag` names the view that produced them,
+/// for a subject whose block carries more than one.
+fn render_verdicts(verdicts: &[serde_json::Value], tag: Option<&str>) -> (String, u8) {
     let mut out = String::new();
     let mut worst: u8 = 0;
     for v in verdicts {
@@ -646,9 +637,24 @@ fn render_verdicts(verdicts: &[serde_json::Value]) -> (String, u8) {
         worst = worst.max(code);
         // Only emit verdicts that aren't already captured by the per-subject rendering above.
         // We include them for completeness but callers may suppress if they prefer.
-        out.push_str(&format!("  [{level}] {msg}\n"));
+        out.push_str(&verdict_line(level, tag, msg));
     }
     (out, worst)
+}
+
+/// Which view of a subject produced a line. Padded to one width so the message
+/// column lines up whichever view it was.
+const DAEMON_VIEW: &str = "daemon";
+const LOCAL_VIEW: &str = "local";
+const VIEW_WIDTH: usize = 6;
+
+/// One `  [LEVEL] <view>   message` line, or `  [LEVEL] message` when the
+/// subject has only one view.
+fn verdict_line(level: &str, tag: Option<&str>, msg: &str) -> String {
+    match tag {
+        Some(t) => format!("  [{level}] {t:<VIEW_WIDTH$}   {msg}\n"),
+        None => format!("  [{level}] {msg}\n"),
+    }
 }
 
 /// Typed variant of render_verdicts for subjects parsed into structured types.

@@ -381,7 +381,7 @@ fn settings_snapshot(config_path: &Path, conf_d_dir: &Path) -> toml::Value {
     for (_, layer) in Config::layers(Some(config_path), conf_d_dir) {
         crate::config::deep_merge_toml(&mut composed, layer);
     }
-    Config::settings_only(&composed)
+    Config::settings_only(composed)
 }
 
 /// Validates the WHOLE composed set (main file + every conf.d/*.toml) — see

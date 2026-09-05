@@ -7,22 +7,48 @@
 //! under sandboxed hosts that can't use FSEvents / inotify, same convention
 //! as the watcher tests in `tests/`.
 
+mod common;
+
 use beachcomber::daemon::config_watch::{ChangeKind, spawn_config_self_watch_with};
+use common::mtime::touch_future;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-/// Bump `path`'s mtime strictly into the future, immune to clock granularity
-/// (mirrors the trick in `tests/binary_self_watch.rs`).
-///
-/// It also removes the need to wait for the watch thread to get going: the
-/// thread records `now()` as its baseline when it starts, and the poll fires
-/// on any composed-set mtime newer than that baseline. A stamp two seconds
-/// ahead beats the baseline whichever of the two happened first, so these
-/// tests can write and stamp immediately after `spawn_*` returns.
-fn touch_future(path: &std::path::Path) {
-    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
-    f.set_modified(std::time::SystemTime::now() + Duration::from_secs(2))
-        .unwrap();
+/// Spawn a watch over `cfg` polling every `ms` milliseconds with the fs-event
+/// fast path off, and hand back its thread plus a channel of the changes it
+/// reports. Every test here wants exactly this; only the two that pin the stop
+/// token or the change kind look past the receiver.
+fn watch(
+    cfg: PathBuf,
+    ms: u64,
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::mpsc::Receiver<ChangeKind>,
+) {
+    watch_until(cfg, ms, CancellationToken::new())
+}
+
+/// [`watch`] with a caller-owned stop token.
+fn watch_until(
+    cfg: PathBuf,
+    ms: u64,
+    stop: CancellationToken,
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::mpsc::Receiver<ChangeKind>,
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = spawn_config_self_watch_with(
+        cfg,
+        Duration::from_millis(ms),
+        false, // fs events off — the mtime poll is the mechanism under test
+        stop,
+        move |kind| {
+            let _ = tx.send(kind);
+        },
+    );
+    (handle, rx)
 }
 
 #[test]
@@ -31,16 +57,7 @@ fn poll_restarts_on_valid_config_change_when_fs_events_are_dead() {
     let cfg = tmp.path().join("config.toml");
     std::fs::write(&cfg, "[daemon]\n").unwrap();
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_config_self_watch_with(
-        cfg.clone(),
-        Duration::from_millis(100),
-        false, // fs events dead — the poll is the only mechanism
-        CancellationToken::new(),
-        move |_| {
-            let _ = tx.send(());
-        },
-    );
+    let (_watch, rx) = watch(cfg.clone(), 100);
 
     std::fs::write(&cfg, "[daemon]\nlog_level = \"debug\"\n").unwrap();
     touch_future(&cfg);
@@ -55,16 +72,7 @@ fn poll_ignores_invalid_config_change_and_keeps_running() {
     let cfg = tmp.path().join("config.toml");
     std::fs::write(&cfg, "[daemon]\n").unwrap();
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_config_self_watch_with(
-        cfg.clone(),
-        Duration::from_millis(100),
-        false,
-        CancellationToken::new(),
-        move |_| {
-            let _ = tx.send(());
-        },
-    );
+    let (_watch, rx) = watch(cfg.clone(), 100);
 
     // Not valid TOML.
     std::fs::write(&cfg, "this is not [ valid toml").unwrap();
@@ -87,16 +95,7 @@ fn config_file_created_after_daemon_start_is_picked_up() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = tmp.path().join("config.toml"); // does not exist yet
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_config_self_watch_with(
-        cfg.clone(),
-        Duration::from_millis(100),
-        false,
-        CancellationToken::new(),
-        move |_| {
-            let _ = tx.send(());
-        },
-    );
+    let (_watch, rx) = watch(cfg.clone(), 100);
 
     std::fs::write(&cfg, "[daemon]\n").unwrap();
     touch_future(&cfg);
@@ -110,16 +109,7 @@ fn config_file_that_never_appears_never_restarts() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = tmp.path().join("never-written.toml");
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_config_self_watch_with(
-        cfg,
-        Duration::from_millis(100),
-        false,
-        CancellationToken::new(),
-        move |_| {
-            let _ = tx.send(());
-        },
-    );
+    let (_watch, rx) = watch(cfg.clone(), 100);
 
     let result = rx.recv_timeout(Duration::from_millis(500));
     assert!(
@@ -140,16 +130,7 @@ fn conf_d_file_change_triggers_restart() {
     let drop_in = conf_d.join("01-drop-in.toml");
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"debug\"\n").unwrap();
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_config_self_watch_with(
-        cfg,
-        Duration::from_millis(100),
-        false,
-        CancellationToken::new(),
-        move |_| {
-            let _ = tx.send(());
-        },
-    );
+    let (_watch, rx) = watch(cfg.clone(), 100);
 
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"trace\"\n").unwrap();
     touch_future(&drop_in);
@@ -168,16 +149,7 @@ fn conf_d_invalid_edit_does_not_restart() {
     let drop_in = conf_d.join("01-drop-in.toml");
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"debug\"\n").unwrap();
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_config_self_watch_with(
-        cfg,
-        Duration::from_millis(100),
-        false,
-        CancellationToken::new(),
-        move |_| {
-            let _ = tx.send(());
-        },
-    );
+    let (_watch, rx) = watch(cfg.clone(), 100);
 
     std::fs::write(&drop_in, "this is not [ valid toml").unwrap();
     touch_future(&drop_in);
@@ -202,16 +174,7 @@ fn conf_d_only_change_restarts_without_a_main_config_file() {
     let drop_in = conf_d.join("01-drop-in.toml");
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"debug\"\n").unwrap();
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_config_self_watch_with(
-        cfg,
-        Duration::from_millis(100),
-        false,
-        CancellationToken::new(),
-        move |_| {
-            let _ = tx.send(());
-        },
-    );
+    let (_watch, rx) = watch(cfg.clone(), 100);
 
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"trace\"\n").unwrap();
     touch_future(&drop_in);
@@ -228,16 +191,7 @@ fn new_file_appearing_in_conf_d_triggers_restart() {
     let conf_d = tmp.path().join("conf.d");
     std::fs::create_dir(&conf_d).unwrap();
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_config_self_watch_with(
-        cfg,
-        Duration::from_millis(100),
-        false,
-        CancellationToken::new(),
-        move |_| {
-            let _ = tx.send(());
-        },
-    );
+    let (_watch, rx) = watch(cfg.clone(), 100);
 
     let new_file = conf_d.join("02-new.toml");
     std::fs::write(&new_file, "[daemon]\nlog_level = \"warn\"\n").unwrap();
@@ -255,16 +209,7 @@ fn the_watch_re_arms_and_reports_every_change() {
     let cfg = tmp.path().join("config.toml");
     std::fs::write(&cfg, "[daemon]\n").unwrap();
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_config_self_watch_with(
-        cfg.clone(),
-        Duration::from_millis(50),
-        false,
-        CancellationToken::new(),
-        move |kind| {
-            let _ = tx.send(kind);
-        },
-    );
+    let (_watch, rx) = watch(cfg.clone(), 50);
 
     std::fs::write(&cfg, "[daemon]\nlog_level = \"debug\"\n").unwrap();
     touch_future(&cfg);
@@ -293,16 +238,7 @@ fn a_facet_only_edit_classifies_as_facets_only() {
     )
     .unwrap();
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_config_self_watch_with(
-        cfg.clone(),
-        Duration::from_millis(50),
-        false,
-        CancellationToken::new(),
-        move |kind| {
-            let _ = tx.send(kind);
-        },
-    );
+    let (_watch, rx) = watch(cfg.clone(), 50);
 
     std::fs::write(
         &cfg,
@@ -341,16 +277,7 @@ fn an_edit_is_seen_behind_another_file_stamped_into_the_future() {
     let other = conf_d.join("02-other.toml");
     std::fs::write(&other, "[daemon]\nlog_level = \"debug\"\n").unwrap();
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_config_self_watch_with(
-        cfg,
-        Duration::from_millis(50),
-        false,
-        CancellationToken::new(),
-        move |kind| {
-            let _ = tx.send(kind);
-        },
-    );
+    let (_watch, rx) = watch(cfg.clone(), 50);
 
     std::fs::write(&other, "[daemon]\nlog_level = \"trace\"\n").unwrap();
     touch_future(&other);
@@ -375,16 +302,7 @@ fn cancelling_the_stop_token_ends_the_watch_thread() {
     std::fs::write(&cfg, "[daemon]\n").unwrap();
 
     let stop = CancellationToken::new();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let watch = spawn_config_self_watch_with(
-        cfg.clone(),
-        Duration::from_millis(50),
-        false,
-        stop.clone(),
-        move |kind| {
-            let _ = tx.send(kind);
-        },
-    );
+    let (thread, rx) = watch_until(cfg.clone(), 50, stop.clone());
 
     // Alive and reporting first, so the silence below means something.
     std::fs::write(&cfg, "[daemon]\nlog_level = \"debug\"\n").unwrap();
@@ -398,7 +316,7 @@ fn cancelling_the_stop_token_ends_the_watch_thread() {
     // so a watch that never exits fails the test instead of hanging it.
     let (joined_tx, joined_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = watch.join();
+        let _ = thread.join();
         let _ = joined_tx.send(());
     });
     joined_rx

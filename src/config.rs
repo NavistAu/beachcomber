@@ -198,16 +198,17 @@ pub struct Config {
     /// from nested per-source sub-tables.
     #[serde(default)]
     pub providers: HashMap<String, toml::Value>,
-    /// The directory this config was loaded from — `config.toml`'s parent, and
-    /// so `conf.d`'s too. `Some` only for a `Config::load()`; `None` for one
-    /// built in memory or parsed from a string, which corresponds to no
-    /// directory at all.
+    /// The `config.toml` this config was loaded from, whether or not the file
+    /// exists — `Config::conf_d_dir_for` gives the other half of the composed
+    /// set, so the filename is spelled in one place. `Some` only for a
+    /// `Config::load()`; `None` for one built in memory or parsed from a
+    /// string, which corresponds to no file at all.
     ///
     /// The daemon seeds facet tables and watches for changes only when this is
     /// `Some`, so an embedded or test daemon handed a hand-built `Config` reads
     /// nothing from the ambient `~/.config/beachcomber`.
     #[serde(skip)]
-    pub config_dir: Option<PathBuf>,
+    pub config_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1519,9 +1520,9 @@ impl Config {
             warn!("{}", warning);
         }
         let mut config = Self::load_composed(&main_content, &Self::conf_d_dir());
-        // Recorded even when no file exists there: the directory is where this
-        // config resolved to, and a conf.d-only installation is legitimate.
-        config.config_dir = Self::config_path().parent().map(Path::to_path_buf);
+        // Recorded even when no file exists there: it is where this config
+        // resolved to, and a conf.d-only installation is legitimate.
+        config.config_path = Some(Self::config_path());
         config
     }
 
@@ -1605,14 +1606,14 @@ impl Config {
     /// as (namespace, table). A key whose facet syntax is malformed is left out
     /// — `validate_providers` reports it as an error and the daemon does not
     /// start.
-    pub fn facet_tables(layer: &toml::Value) -> Vec<(String, toml::Table)> {
+    pub fn facet_tables(layer: &toml::Value) -> Vec<(&str, &toml::Table)> {
         let Some(providers) = layer.get("providers").and_then(|v| v.as_table()) else {
             return Vec::new();
         };
         providers
             .iter()
             .filter(|(name, _)| matches!(crate::query::parse_facet(name), Ok(Some(_))))
-            .filter_map(|(name, val)| Some((name.clone(), val.as_table()?.clone())))
+            .filter_map(|(name, val)| Some((name.as_str(), val.as_table()?)))
             .collect()
     }
 
@@ -1648,12 +1649,11 @@ impl Config {
     /// configuration a change has to touch for a restart to be warranted. The
     /// config self-watch compares this before and after
     /// (`crate::daemon::config_watch::ChangeKind`).
-    pub fn settings_only(composed: &toml::Value) -> toml::Value {
-        let mut out = composed.clone();
-        if let Some(providers) = out.get_mut("providers").and_then(|v| v.as_table_mut()) {
+    pub fn settings_only(mut composed: toml::Value) -> toml::Value {
+        if let Some(providers) = composed.get_mut("providers").and_then(|v| v.as_table_mut()) {
             providers.retain(|name, _| !name.contains(':'));
         }
-        out
+        composed
     }
 
     /// The static source label for a record seeded from `path`: `config:` plus
