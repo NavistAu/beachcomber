@@ -837,6 +837,18 @@ async fn handle_request(
                 return Response::error(msg);
             }
 
+            // A key arrives off the socket with no length bound of its own, and
+            // every segment of the node is one step of a tree walk. Cap the
+            // node at the depth JSON conversion is already capped at, so a
+            // pathological key cannot drive the daemon into a stack overflow
+            // here or on the next read of what it wrote.
+            if node.split('.').count() > crate::provider::MAX_JSON_DEPTH {
+                return Response::error(format!(
+                    "put key is nested too deeply (limit {} segments)",
+                    crate::provider::MAX_JSON_DEPTH
+                ));
+            }
+
             // Resolve optional path — canonicalize if provided.
             let effective_path: Option<String> = path.as_deref().map(|p| {
                 let path_obj = std::path::Path::new(p);
@@ -878,9 +890,9 @@ async fn handle_request(
             // namespace: at the root each top-level value is converted on its
             // own (as every other provider ingestion path does), and below the
             // root from the addressed node. A deep node's total tree depth can
-            // therefore exceed the bound by the node's own depth. Accepted: the
-            // bound exists to stop unbounded recursion on untrusted input, and
-            // the node prefix is bounded by the key the caller typed.
+            // therefore reach twice the bound — the node is capped at
+            // MAX_JSON_DEPTH segments above, the value at MAX_JSON_DEPTH below
+            // — which is what keeps the recursion bounded either way.
             //
             // The root's object check runs on the wire JSON, before conversion:
             // `Value::from_json` turns an array into an index-keyed object, so
@@ -912,11 +924,10 @@ async fn handle_request(
                 return Response::error(e.to_string());
             }
 
-            // A namespace no provider declares becomes a static one. A provider
-            // namespace that merely gained a static record is not.
-            if registry.provider_sources(namespace).is_none() {
-                registry.register_static(namespace);
-            }
+            // A namespace no provider declares becomes a static one; a provider
+            // namespace that merely gained a static record does not
+            // (`register_static` refuses a registered name).
+            registry.register_static(namespace);
 
             Response {
                 ok: true,

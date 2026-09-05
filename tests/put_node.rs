@@ -253,6 +253,143 @@ async fn put_scalar_at_the_root_is_rejected() {
     handle.abort();
 }
 
+// ── key depth is capped ─────────────────────────────────────────────────────
+
+/// A key comes off the socket with no length bound of its own and every
+/// segment is one step of a tree walk, so an absurd key must be refused rather
+/// than walked. Before the cap a 2000-segment key was accepted and the *next*
+/// `get` of the namespace overflowed the stack, taking the daemon and every
+/// watch on it down.
+#[tokio::test]
+async fn put_key_deeper_than_the_cap_is_rejected() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    const TOO_DEEP: &str = "put key is nested too deeply (limit 10 segments)";
+
+    send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"my","data":{"a":1}}),
+    )
+    .await;
+
+    let absurd = format!("my.{}", vec!["x"; 1999].join("."));
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":absurd,"data":1}),
+    )
+    .await;
+    assert!(!r.ok, "a 2000-segment key must be rejected");
+    assert_eq!(r.error.as_deref(), Some(TOO_DEEP));
+
+    // The daemon is still answering, and the rejected key wrote nothing.
+    let got = data_of(
+        send_recv(&mut s, &serde_json::json!({"op":"get","key":"my"})).await,
+        "get my",
+    );
+    assert_eq!(got, serde_json::json!({"a":1}));
+
+    // Eleven segments below the namespace is one too many; ten is fine.
+    let eleven = format!("deep.{}", ["s"; 11].join("."));
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":eleven,"data":1}),
+    )
+    .await;
+    assert!(!r.ok, "an 11-segment node must be rejected");
+    assert_eq!(r.error.as_deref(), Some(TOO_DEEP));
+
+    let ten = format!("deep.{}", ["s"; 10].join("."));
+    let r = send_recv(&mut s, &serde_json::json!({"op":"put","key":ten,"data":1})).await;
+    assert!(r.ok, "a 10-segment node must be accepted: {:?}", r.error);
+    let got = data_of(
+        send_recv(&mut s, &serde_json::json!({"op":"get","key":ten})).await,
+        "get the 10-segment node",
+    );
+    assert_eq!(got, serde_json::json!(1));
+
+    handle.abort();
+}
+
+// ── dotted keys in the data are refused ─────────────────────────────────────
+
+/// `{"a.b": 1}` names one record and addresses another: stored naively it
+/// becomes `a` → `{b: 1}`, unreachable under the name it was written with.
+#[tokio::test]
+async fn put_data_with_a_dotted_key_is_rejected() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"dk","data":{"a.b":1}}),
+    )
+    .await;
+    assert!(!r.ok, "a dotted data key must be rejected");
+    assert_eq!(
+        r.error.as_deref(),
+        Some("put data keys may not contain '.': a.b")
+    );
+
+    // Nested, and below the root, too.
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"dk.node","data":{"ok":{"x.y":1}}}),
+    )
+    .await;
+    assert!(!r.ok, "a nested dotted data key must be rejected");
+    assert_eq!(
+        r.error.as_deref(),
+        Some("put data keys may not contain '.': x.y")
+    );
+
+    // A refused put registers nothing either, so the namespace is still unknown.
+    let r = send_recv(&mut s, &serde_json::json!({"op":"get","key":"dk"})).await;
+    assert_eq!(r.error.as_deref(), Some("unknown provider: dk"));
+
+    handle.abort();
+}
+
+// ── a write with no leaves creates nothing ──────────────────────────────────
+
+/// `put e '{}'` has no records to store. It used to leave an entry carrying an
+/// empty `put` map, so `get e` answered `{}` for a namespace nothing had
+/// written to.
+#[tokio::test]
+async fn put_of_an_empty_object_creates_no_entry() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    let r = send_recv(&mut s, &serde_json::json!({"op":"put","key":"e","data":{}})).await;
+    assert!(r.ok, "an empty object is a valid no-op put: {:?}", r.error);
+
+    // The namespace is registered (the put named it) but holds nothing, so the
+    // read is a miss, not `{}`.
+    let r = send_recv(&mut s, &serde_json::json!({"op":"get","key":"e"})).await;
+    assert!(r.ok, "get e: {:?}", r.error);
+    assert!(r.data.is_none(), "expected a miss, got {:?}", r.data);
+
+    let rows = data_of(
+        send_recv(&mut s, &serde_json::json!({"op":"status"})).await,
+        "status",
+    );
+    let mine: Vec<&serde_json::Value> = rows
+        .as_array()
+        .expect("status data is an array")
+        .iter()
+        .filter(|r| r["provider"] == "e")
+        .collect();
+    assert!(mine.is_empty(), "no row for `e`, got {mine:?}");
+
+    handle.abort();
+}
+
 // ── (e) below the root, any JSON goes ───────────────────────────────────────
 
 #[tokio::test]

@@ -35,6 +35,8 @@ pub enum PutError {
     Owned { record: String, source: String },
     /// The root of a namespace is a map of records, not a single value.
     RootNotObject,
+    /// An object key with a `.` in it names one record but addresses another.
+    DottedKey { key: String },
 }
 
 impl std::fmt::Display for PutError {
@@ -44,6 +46,9 @@ impl std::fmt::Display for PutError {
                 write!(f, "cannot write {record}: owned by source {source}")
             }
             PutError::RootNotObject => write!(f, "put data at the root must be an object"),
+            PutError::DottedKey { key } => {
+                write!(f, "put data keys may not contain '.': {key}")
+            }
         }
     }
 }
@@ -141,6 +146,10 @@ impl CacheEntry {
 
 /// Whether this field map occupies the address `tail` — see [`CacheEntry::owner_of`].
 fn occupies(fields: &HashMap<String, Value>, tail: &str) -> bool {
+    // The literal-key probe mirrors `lookup_path`, which a Source's output may
+    // still need; `remove_path` has no matching case, but `put` cannot create a
+    // literal dotted key (see `PutError::DottedKey`), so the two never disagree
+    // about a static record.
     if fields.contains_key(tail) {
         return true;
     }
@@ -165,20 +174,58 @@ fn occupies(fields: &HashMap<String, Value>, tail: &str) -> bool {
 /// empty node rather than nothing). `prefix` is the node the value is written
 /// at — empty for the namespace root, where the value is always an object and
 /// its members are what get walked.
-fn walk_leaves(prefix: &str, value: &Value, out: &mut Vec<(String, Value)>) {
+fn walk_leaves(prefix: &str, value: Value, out: &mut Vec<(String, Value)>) {
     match value {
         Value::Object(map) if !map.is_empty() || prefix.is_empty() => {
             for (k, v) in map {
                 let child = if prefix.is_empty() {
-                    k.clone()
+                    k
                 } else {
                     format!("{prefix}.{k}")
                 };
                 walk_leaves(&child, v, out);
             }
         }
-        _ => out.push((prefix.to_string(), value.clone())),
+        other => out.push((prefix.to_string(), other)),
     }
+}
+
+/// The first object key containing a `.`, if any.
+///
+/// A dotted key names one record and addresses another: `{"a.b": 1}` would be
+/// stored as `a` → `{b: 1}`, indistinguishable from `put ns.a '{"b":1}'` and
+/// unreachable by the name it was written under. `put` refuses it rather than
+/// silently reinterpreting it.
+fn dotted_key(value: &Value) -> Option<&str> {
+    let Value::Object(map) = value else {
+        return None;
+    };
+    for (k, v) in map {
+        if k.contains('.') {
+            return Some(k);
+        }
+        if let Some(found) = dotted_key(v) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The Source that closes this whole namespace to `put`, if there is one.
+///
+/// A Source whose field names are only known once it runs declares a sentinel
+/// (`<tool>`, `<profile>`, `<field>` — see `ProviderMetadata::validate`) rather
+/// than a name a key could match, so no key can be shown *not* to belong to it:
+/// the namespace is closed to `put`. The rule has to hold on a cold entry too,
+/// or a `put` lands first and the Source's next refresh writes the same record
+/// into its own map, leaving two records at one (key, path). The first sentinel
+/// Source in declaration order names the error.
+fn sentinel_source<'a>(registry: &'a ProviderRegistry, namespace: &str) -> Option<&'a str> {
+    registry
+        .provider_sources(namespace)?
+        .iter()
+        .find(|sm| sm.fields.iter().any(|f| f.name.starts_with('<')))
+        .map(|sm| sm.name.as_str())
 }
 
 /// The Source that owns the record at `tail` under `namespace`, if any.
@@ -186,14 +233,15 @@ fn walk_leaves(prefix: &str, value: &Value, out: &mut Vec<(String, Value)>) {
 /// A record is Source-owned when the registry declares its head segment as a
 /// field of one of the provider's Sources — that is what the next refresh
 /// overwrites — when it currently sits in a source map the registry knows, or
-/// when the provider has a Source whose field names are resolved at run time.
-/// `put` and `config:<file>` are never in the registry, so a static record
-/// never comes back from here.
+/// when `sentinel` says the namespace is closed to `put` at all. `put` and
+/// `config:<file>` are never in the registry, so a static record never comes
+/// back from here.
 fn source_owner(
     registry: &ProviderRegistry,
     namespace: &str,
     entry: Option<&CacheEntry>,
     tail: &str,
+    sentinel: Option<&str>,
 ) -> Option<String> {
     let head = tail.split('.').next().unwrap_or(tail);
     if let Some(source) = registry.source_for_field(namespace, head) {
@@ -204,18 +252,98 @@ fn source_owner(
     {
         return Some(owner.to_string());
     }
-    // A Source with runtime-resolved field names declares a sentinel instead
-    // (`<tool>`, `<profile>`, `<field>` — see `ProviderMetadata::validate`), so
-    // there is no declared name for `head` to match. Such a Source owns every
-    // field name in the namespace: ownership has to hold on a cold entry too,
-    // or a `put` lands first and the Source's next refresh writes the same
-    // record into its own map, leaving two records at one (key, path). The
-    // first sentinel Source in declaration order names the error.
-    registry
-        .provider_sources(namespace)?
-        .iter()
-        .find(|sm| sm.fields.iter().any(|f| f.name.starts_with('<')))
-        .map(|sm| sm.name.clone())
+    sentinel.map(str::to_string)
+}
+
+/// The first of `tails` a Source owns, as the error refusing the write.
+fn refuse_owned<'t>(
+    registry: &ProviderRegistry,
+    namespace: &str,
+    entry: Option<&CacheEntry>,
+    tails: impl Iterator<Item = &'t str>,
+) -> Option<PutError> {
+    let sentinel = sentinel_source(registry, namespace);
+    for tail in tails {
+        if let Some(source) = source_owner(registry, namespace, entry, tail, sentinel) {
+            return Some(PutError::Owned {
+                record: format!("{namespace}.{tail}"),
+                source,
+            });
+        }
+    }
+    None
+}
+
+/// Drop the subtree at `node` (`""` for everything) from every static source
+/// map, pruning any map it empties except `keep` — the label a write is about
+/// to land in. Source maps are never touched: a `put` does not remove a record
+/// a Source produces. Returns whether anything was removed.
+fn drop_static_subtree(entry: &mut CacheEntry, node: &str, keep: Option<&str>) -> bool {
+    let mut removed = false;
+    entry.sources.retain(|name, src| {
+        if !is_static_label(name) {
+            return true;
+        }
+        if node.is_empty() {
+            removed |= !src.fields.is_empty();
+            src.fields.clear();
+        } else {
+            removed |= crate::provider::remove_path(&mut src.fields, node).is_some();
+        }
+        !src.fields.is_empty() || keep == Some(name.as_str())
+    });
+    removed
+}
+
+/// Apply one static write to an entry already under a write guard.
+fn apply_static_write(
+    entry: &mut CacheEntry,
+    label: &str,
+    node: &str,
+    leaves: Vec<(String, Value)>,
+    replace: bool,
+    interval_secs: Option<u64>,
+    now: Instant,
+) {
+    if replace {
+        drop_static_subtree(entry, node, Some(label));
+    }
+
+    // Rule 1: one record, one map. Only a static map ever gives a record up —
+    // the caller's ownership scan ran under this same guard, so no refresh can
+    // have slipped in behind it, and `is_static_label` makes that structural.
+    for (tail, _) in &leaves {
+        let owner = entry.owner_of(tail).map(str::to_string);
+        if let Some(owner) = owner
+            && owner != label
+            && is_static_label(&owner)
+            && let Some(src) = entry.sources.get_mut(&owner)
+        {
+            remove_occupant(&mut src.fields, tail);
+            if src.fields.is_empty() {
+                entry.sources.remove(&owner);
+            }
+        }
+    }
+
+    if leaves.is_empty() {
+        return;
+    }
+    let src = entry
+        .sources
+        .entry(label.to_string())
+        .or_insert_with(|| CacheSourceEntry {
+            fields: HashMap::new(),
+            last_refreshed: now,
+            expected_interval_secs: interval_secs,
+        });
+    for (tail, v) in leaves {
+        crate::provider::insert_path(&mut src.fields, &tail, v);
+    }
+    src.last_refreshed = now;
+    if interval_secs.is_some() {
+        src.expected_interval_secs = interval_secs;
+    }
 }
 
 /// Remove whatever occupies the address `tail` in this map: the node itself,
@@ -301,6 +429,11 @@ impl Cache {
     /// A record lives in exactly one source map, so a write first evicts the
     /// record from whichever map holds it. Reads therefore never need a
     /// precedence rule between labels.
+    ///
+    /// The ownership scan and the write run under one write guard. Scanning
+    /// under a read guard and mutating under a later one would let a Source
+    /// refresh land in between, so the eviction could drop a record the scan
+    /// had cleared as static.
     #[allow(clippy::too_many_arguments)]
     pub fn write_static(
         &self,
@@ -316,89 +449,67 @@ impl Cache {
         if node.is_empty() && !matches!(value, Value::Object(_)) {
             return Err(PutError::RootNotObject);
         }
+        if let Some(key) = dotted_key(&value) {
+            return Err(PutError::DottedKey {
+                key: key.to_string(),
+            });
+        }
         let mut leaves = Vec::new();
-        walk_leaves(node, &value, &mut leaves);
+        walk_leaves(node, value, &mut leaves);
         let key = make_cache_key(namespace, path);
+        let now = Instant::now();
 
         // The records this write claims are its own leaves. `replace` drops the
         // static subtree at `node` as well, but a Source's records under it are
-        // left where they are, so they are not part of the ownership scan —
-        // otherwise `put uptime {"note":2} --replace` on a warm namespace would
-        // be refused for records it never touches.
-        {
-            let entry = self.entries.get(&key);
-            for (tail, _) in &leaves {
-                if let Some(source) = source_owner(registry, namespace, entry.as_deref(), tail) {
-                    return Err(PutError::Owned {
-                        record: format!("{namespace}.{tail}"),
-                        source,
-                    });
+        // left where they are, so they are not part of the scan — otherwise
+        // `put uptime {"note":2} --replace` on a warm namespace would be
+        // refused for records it never touches.
+        match self.entries.entry(key) {
+            dashmap::Entry::Occupied(mut occupied) => {
+                if let Some(err) = refuse_owned(
+                    registry,
+                    namespace,
+                    Some(occupied.get()),
+                    leaves.iter().map(|(tail, _)| tail.as_str()),
+                ) {
+                    return Err(err);
+                }
+                apply_static_write(
+                    occupied.get_mut(),
+                    label,
+                    node,
+                    leaves,
+                    replace,
+                    interval_secs,
+                    now,
+                );
+                if occupied.get().sources.is_empty() {
+                    occupied.remove();
                 }
             }
-        }
-
-        let now = Instant::now();
-        {
-            let mut guard = self.entries.entry(key).or_insert_with(|| CacheEntry {
-                sources: HashMap::new(),
-                created_at: now,
-            });
-            let entry = guard.value_mut();
-
-            if replace {
-                let labels: Vec<String> = entry
-                    .sources
-                    .keys()
-                    .filter(|n| is_static_label(n))
-                    .cloned()
-                    .collect();
-                for name in labels {
-                    let Some(src) = entry.sources.get_mut(&name) else {
-                        continue;
-                    };
-                    if node.is_empty() {
-                        src.fields.clear();
-                    } else {
-                        crate::provider::remove_path(&mut src.fields, node);
-                    }
+            dashmap::Entry::Vacant(vacant) => {
+                // Nothing cached, so only the registry can refuse — and
+                // dropping the vacant entry leaves the slot untouched.
+                if let Some(err) = refuse_owned(
+                    registry,
+                    namespace,
+                    None,
+                    leaves.iter().map(|(tail, _)| tail.as_str()),
+                ) {
+                    return Err(err);
                 }
-                // A static map replace emptied carries nothing; drop it rather
-                // than leave a phantom source on the entry. Source maps are not
-                // this write's business, empty or not.
-                entry.sources.retain(|name, src| {
-                    name == label || !is_static_label(name) || !src.fields.is_empty()
-                });
-            }
-
-            // Rule 1: one record, one map. A static map the move empties is
-            // dropped, so an entry never carries a phantom source.
-            for (tail, _) in &leaves {
-                let owner = entry.owner_of(tail).map(str::to_string);
-                if let Some(owner) = owner
-                    && owner != label
-                    && let Some(src) = entry.sources.get_mut(&owner)
-                {
-                    remove_occupant(&mut src.fields, tail);
-                    if src.fields.is_empty() && is_static_label(&owner) {
-                        entry.sources.remove(&owner);
-                    }
+                // A write with no leaves (`put ns '{}'`) has nothing to store
+                // and, on a slot this empty, nothing to drop either: it must
+                // not conjure an entry.
+                if leaves.is_empty() {
+                    return Ok(());
                 }
-            }
-
-            let src = entry
-                .sources
-                .entry(label.to_string())
-                .or_insert_with(|| CacheSourceEntry {
-                    fields: HashMap::new(),
-                    last_refreshed: now,
-                    expected_interval_secs: interval_secs,
-                });
-            for (tail, v) in leaves {
-                crate::provider::insert_path(&mut src.fields, &tail, v);
-            }
-            src.last_refreshed = now;
-            if interval_secs.is_some() {
-                src.expected_interval_secs = interval_secs;
+                let mut fresh = CacheEntry {
+                    sources: HashMap::new(),
+                    created_at: now,
+                };
+                apply_static_write(&mut fresh, label, node, leaves, replace, interval_secs, now);
+                vacant.insert(fresh);
             }
         }
 
@@ -414,6 +525,8 @@ impl Cache {
     /// directly refuses the removal instead of silently doing nothing. The
     /// entry is dropped when no source remains.
     ///
+    /// One write guard covers the scan and the removal, as in `write_static`.
+    ///
     /// Returns whether anything was removed.
     pub fn remove_static_path(
         &self,
@@ -423,47 +536,33 @@ impl Cache {
         registry: &ProviderRegistry,
     ) -> Result<bool, PutError> {
         let key = make_cache_key(namespace, path);
-
         // Only the addressed node is scanned: a Source's records beneath it are
         // left in place, exactly as `replace` leaves them.
-        if !node.is_empty() {
-            let entry = self.entries.get(&key);
-            if let Some(source) = source_owner(registry, namespace, entry.as_deref(), node) {
-                return Err(PutError::Owned {
-                    record: format!("{namespace}.{node}"),
-                    source,
-                });
+        let scan = |entry: Option<&CacheEntry>| -> Option<PutError> {
+            if node.is_empty() {
+                return None;
+            }
+            refuse_owned(registry, namespace, entry, std::iter::once(node))
+        };
+
+        let mut removed = false;
+        match self.entries.entry(key) {
+            dashmap::Entry::Occupied(mut occupied) => {
+                if let Some(err) = scan(Some(occupied.get())) {
+                    return Err(err);
+                }
+                removed = drop_static_subtree(occupied.get_mut(), node, None);
+                if occupied.get().sources.is_empty() {
+                    occupied.remove();
+                }
+            }
+            dashmap::Entry::Vacant(_) => {
+                if let Some(err) = scan(None) {
+                    return Err(err);
+                }
             }
         }
 
-        let mut removed = false;
-        if let Some(mut guard) = self.entries.get_mut(&key) {
-            let entry = guard.value_mut();
-            let labels: Vec<String> = entry
-                .sources
-                .keys()
-                .filter(|n| is_static_label(n))
-                .cloned()
-                .collect();
-            for name in labels {
-                let Some(src) = entry.sources.get_mut(&name) else {
-                    continue;
-                };
-                if node.is_empty() {
-                    removed |= !src.fields.is_empty();
-                    src.fields.clear();
-                } else {
-                    removed |= crate::provider::remove_path(&mut src.fields, node).is_some();
-                }
-                if src.fields.is_empty() {
-                    entry.sources.remove(&name);
-                }
-            }
-        }
-        // The guard above must be released before `remove_if` or DashMap
-        // deadlocks on the same shard (see `remove_source`).
-        self.entries
-            .remove_if(&key, |_, entry| entry.sources.is_empty());
         if removed && let Some(ref watchers) = self.watchers {
             watchers.notify(namespace, path);
         }

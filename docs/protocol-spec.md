@@ -199,9 +199,13 @@ Ownership is per **record**, not per namespace: a record one of the
 provider's Sources produces is refused, because the next refresh would
 overwrite it. Everything else is fair game, so a static record can sit
 beside a provider's own records in the same entry. A Source whose field
-names are resolved at run time (it declares a sentinel such as `<tool>`,
-which every script, http and library provider does) owns every field name
-in its namespace, warm or cold.
+names are resolved at run time declares a sentinel such as `<tool>` instead
+— every http provider, and any script or library provider that does not
+declare its field names — and owns every field name in its namespace, warm
+or cold.
+
+An object key in `data` may not contain a `.`: it would name one record and
+address another. The node part of `key` is capped at ten segments.
 
 `replace` and omitting `data` act on **static records only** — a `put`
 never removes a record a Source produces.
@@ -239,6 +243,8 @@ itself survives if a Source still contributes to it.)
 **Error cases:**
 - Non-object `data` at a namespace root: `{"ok": false, "error": "put data at the root must be an object"}`
 - A record a Source produces: `{"ok": false, "error": "cannot write <namespace>.<node>: owned by source <source>"}`
+- An object key containing a `.`: `{"ok": false, "error": "put data keys may not contain '.': <key>"}`
+- More than ten node segments in `key`: `{"ok": false, "error": "put key is nested too deeply (limit 10 segments)"}`
 
 ### `Status`
 

@@ -156,42 +156,90 @@ pub fn lookup_path<'a>(fields: &'a HashMap<String, Value>, path: &str) -> Option
 /// the way is simply what currently occupies a prefix of it.
 ///
 /// An empty tail is a no-op: the root is a map, not a node.
+///
+/// Iterative: a tail's segment count is caller-supplied, so recursing once per
+/// segment would put the stack at its mercy.
 pub fn insert_path(fields: &mut HashMap<String, Value>, tail: &str, value: Value) {
-    let Some((head, rest)) = tail.split_once('.') else {
-        if !tail.is_empty() {
-            fields.insert(tail.to_string(), value);
-        }
+    if tail.is_empty() {
         return;
-    };
-    let slot = fields
-        .entry(head.to_string())
-        .or_insert_with(|| Value::Object(HashMap::new()));
-    if !matches!(slot, Value::Object(_)) {
-        *slot = Value::Object(HashMap::new());
     }
-    let Value::Object(map) = slot else {
-        unreachable!("slot was just forced to an Object")
-    };
-    insert_path(map, rest, value);
+    let mut cursor = fields;
+    let mut segments = tail.split('.').peekable();
+    while let Some(segment) = segments.next() {
+        if segments.peek().is_none() {
+            cursor.insert(segment.to_string(), value);
+            return;
+        }
+        let slot = cursor
+            .entry(segment.to_string())
+            .or_insert_with(|| Value::Object(HashMap::new()));
+        if !matches!(slot, Value::Object(_)) {
+            *slot = Value::Object(HashMap::new());
+        }
+        if let Value::Object(map) = slot {
+            cursor = map;
+        } else {
+            return;
+        }
+    }
 }
 
 /// Remove the node at a dotted tail, pruning intermediate objects the removal
 /// leaves empty. Returns the removed value, or `None` if nothing is stored
 /// there — including when a non-object sits on an intermediate segment, since
 /// then the addressed node does not exist.
+///
+/// Iterative, for the same reason [`insert_path`] is. Three linear passes: one
+/// to size each map on the path, one to take the node, one to drop the
+/// ancestors the removal emptied. A map empties only if it held exactly the
+/// one child on the path, so the sizes say up front how far the pruning
+/// reaches and a single removal there takes the whole empty chain.
 pub fn remove_path(fields: &mut HashMap<String, Value>, tail: &str) -> Option<Value> {
-    let Some((head, rest)) = tail.split_once('.') else {
-        if tail.is_empty() {
+    if tail.is_empty() {
+        return None;
+    }
+    let segments: Vec<&str> = tail.split('.').collect();
+    let (last, parents) = segments.split_last()?;
+
+    let mut sizes: Vec<usize> = Vec::with_capacity(segments.len());
+    {
+        let mut cursor = &*fields;
+        for segment in parents {
+            sizes.push(cursor.len());
+            match cursor.get(*segment) {
+                Some(Value::Object(map)) => cursor = map,
+                _ => return None,
+            }
+        }
+        sizes.push(cursor.len());
+        if !cursor.contains_key(*last) {
             return None;
         }
-        return fields.remove(tail);
-    };
-    let Some(Value::Object(map)) = fields.get_mut(head) else {
-        return None;
-    };
-    let removed = remove_path(map, rest)?;
-    if map.is_empty() {
-        fields.remove(head);
+    }
+
+    let mut cursor = &mut *fields;
+    for segment in parents {
+        let Some(Value::Object(map)) = cursor.get_mut(*segment) else {
+            return None;
+        };
+        cursor = map;
+    }
+    let removed = cursor.remove(*last)?;
+
+    // `cut` is the shallowest ancestor entry the removal empties out.
+    let mut cut = parents.len();
+    while cut > 0 && sizes[cut] == 1 {
+        cut -= 1;
+    }
+    if cut < parents.len() {
+        let mut cursor = &mut *fields;
+        for segment in &parents[..cut] {
+            let Some(Value::Object(map)) = cursor.get_mut(*segment) else {
+                return Some(removed);
+            };
+            cursor = map;
+        }
+        cursor.remove(parents[cut]);
     }
     Some(removed)
 }
