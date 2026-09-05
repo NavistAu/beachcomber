@@ -573,6 +573,118 @@ impl Cache {
         Ok(removed)
     }
 
+    /// The static records — those whose source is `put` or `config:<file>` —
+    /// visible at `path`: every static map on the chain from `path` up to the
+    /// global entry, deep-merged farthest-first so the nearest one wins.
+    pub fn resolve_static_chain(
+        &self,
+        namespace: &str,
+        path: Option<&str>,
+    ) -> HashMap<String, Value> {
+        let mut out = HashMap::new();
+        for layer in crate::query::path_chain(path).iter().rev() {
+            let Some(entry) = self
+                .entries
+                .get(&make_cache_key(namespace, layer.as_deref()))
+            else {
+                continue;
+            };
+            for (name, src) in &entry.sources {
+                if is_static_label(name) {
+                    crate::provider::deep_merge(&mut out, src.fields.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Merge the provider-produced maps of the entry at `layer` whose Source
+    /// declares one of `scopes`. A map whose source the registry does not
+    /// declare belongs to the entry it sits in, so it is read at whichever
+    /// layer holds it. Returns whether anything merged.
+    fn merge_provider_records(
+        &self,
+        namespace: &str,
+        layer: Option<&str>,
+        scopes: &[crate::provider::SourceScope],
+        registry: &ProviderRegistry,
+        out: &mut HashMap<String, Value>,
+    ) -> bool {
+        let Some(entry) = self.entries.get(&make_cache_key(namespace, layer)) else {
+            return false;
+        };
+        let declared = registry.provider_sources(namespace);
+        let mut merged = false;
+        for (name, src) in &entry.sources {
+            if is_static_label(name) {
+                continue;
+            }
+            let scope = declared
+                .and_then(|ss| ss.iter().find(|sm| &sm.name == name))
+                .map(|sm| sm.scope);
+            if scope.is_none_or(|s| scopes.contains(&s)) {
+                crate::provider::deep_merge(out, src.fields.clone());
+                merged = true;
+            }
+        }
+        merged
+    }
+
+    /// The value tree a read of `namespace` at `path` sees, plus the entry-level
+    /// age and staleness to report for it.
+    ///
+    /// Layers merge farthest-first, so the nearest record ends up on top: the
+    /// global entry's `Global`-scoped provider records, then the static records
+    /// of every entry on the chain (nearest winning, see
+    /// [`Cache::resolve_static_chain`]), then the addressed entry's
+    /// `PathScoped` provider records. A provider record never walks the chain —
+    /// it is read only from the entry its Source's declared scope keys — which
+    /// is what makes a provider declaring the same field in a `Global` and a
+    /// `PathScoped` source resolve to the path-scoped record at a path and the
+    /// global one under `--global`.
+    ///
+    /// `None` when no layer holds anything: a miss.
+    pub fn read_merged(
+        &self,
+        namespace: &str,
+        path: Option<&str>,
+        registry: &ProviderRegistry,
+    ) -> Option<(HashMap<String, Value>, u128, bool)> {
+        use crate::provider::SourceScope::{Global, PathScoped};
+        let mut out = HashMap::new();
+        // When the request addresses the global entry the two provider layers
+        // coincide, so that one entry contributes every map it holds.
+        let global_scopes: &[crate::provider::SourceScope] = match path {
+            Some(_) => &[Global],
+            None => &[Global, PathScoped],
+        };
+        let mut found =
+            self.merge_provider_records(namespace, None, global_scopes, registry, &mut out);
+
+        let statics = self.resolve_static_chain(namespace, path);
+        if !statics.is_empty() {
+            crate::provider::deep_merge(&mut out, statics);
+            found = true;
+        }
+
+        if path.is_some() {
+            found |=
+                self.merge_provider_records(namespace, path, &[PathScoped], registry, &mut out);
+        }
+
+        if !found {
+            return None;
+        }
+        // Entry-level freshness from the addressed entry, else the global one.
+        // Task 5 replaces this with a rule over the merged records themselves.
+        let (age_ms, stale) = self
+            .get_entry(namespace, path)
+            .or_else(|| self.get_entry(namespace, None))
+            .map(|e| (e.age_ms(), e.is_stale()))
+            .unwrap_or((0, false));
+        Some((out, age_ms, stale))
+    }
+
     /// Look up a specific field across all sources for (provider, path).
     /// Returns the field value from whichever source owns it, or `None` if not found.
     ///
@@ -621,6 +733,17 @@ impl Cache {
     /// Whether the `(provider, path)` slot holds an entry, without cloning it.
     pub fn has_entry(&self, provider: &str, path: Option<&str>) -> bool {
         self.entries.contains_key(&make_cache_key(provider, path))
+    }
+
+    /// Whether the entry at `(provider, path)` holds any provider-produced map.
+    ///
+    /// A static record is not the provider's own data — one inherited from up
+    /// the chain least of all — so it must not pass for a warm Source and
+    /// suppress a cold-miss execution.
+    pub fn has_provider_records(&self, provider: &str, path: Option<&str>) -> bool {
+        self.entries
+            .get(&make_cache_key(provider, path))
+            .is_some_and(|e| e.sources.keys().any(|name| !is_static_label(name)))
     }
 
     pub fn remove(&self, provider: &str, path: Option<&str>) {

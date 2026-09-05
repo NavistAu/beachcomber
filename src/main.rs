@@ -113,6 +113,9 @@ enum Commands {
         /// Path context for directory-scoped providers (overrides any trailing positional path)
         #[arg(long, short)]
         path: Option<String>,
+        /// Read the global entry ($HOME) instead of a directory
+        #[arg(long, conflicts_with = "path")]
+        global: bool,
         /// Output format (text, json, sh, csv, tsv, CSV, TSV, fmt)
         #[arg(short, long, default_value = "text")]
         format: String,
@@ -168,9 +171,12 @@ enum Commands {
         /// Expected refresh interval (e.g., "30s", "5m")
         #[arg(long)]
         ttl: Option<String>,
-        /// Path scope for directory-scoped data
+        /// Path scope for the data (defaults to the current working directory)
         #[arg(long)]
         path: Option<String>,
+        /// Write to the global entry ($HOME) instead of a directory
+        #[arg(long, conflicts_with = "path")]
+        global: bool,
     },
     /// Watch a key and stream changes to stdout
     #[command(visible_alias = "w")]
@@ -255,6 +261,20 @@ fn preprocess_args() -> (Vec<String>, Option<String>) {
     (args, fmt_template)
 }
 
+/// The path a `get` or `put` addresses: `None` for `--global` (the daemon's
+/// global entry, which is `$HOME`), otherwise the requested path, otherwise the
+/// current working directory.
+fn effective_cli_path(global: bool, requested: Option<String>) -> Option<String> {
+    if global {
+        return None;
+    }
+    requested.or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+    })
+}
+
 fn main() -> ExitCode {
     // Rust's runtime ignores SIGPIPE, which turns `comb status | head` into
     // a broken-pipe panic on the first write after the reader exits. Restore
@@ -281,17 +301,22 @@ fn main() -> ExitCode {
         Commands::Get {
             keys,
             path,
+            global,
             format,
             force,
             wait,
         } => {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
             let (keys, resolved_path) = split_keys_and_path(keys, path);
-            let effective_path: Option<String> = resolved_path.or_else(|| {
-                std::env::current_dir()
-                    .ok()
-                    .map(|p| p.to_string_lossy().into_owned())
-            });
+            // `--global` addresses $HOME, which the daemon keys as the pathless
+            // global entry, so it is sent as "no path" — and it cannot be
+            // combined with a path, whether that came from `--path` (clap
+            // refuses it) or from a trailing positional.
+            if global && resolved_path.is_some() {
+                eprintln!("cannot combine --global with a path");
+                return ExitCode::from(2);
+            }
+            let effective_path = effective_cli_path(global, resolved_path);
             run_get(
                 &config,
                 &keys,
@@ -335,21 +360,32 @@ fn main() -> ExitCode {
             replace,
             ttl,
             path,
-        } => run_put(
-            &config,
-            &key,
-            data.as_deref(),
-            null,
-            replace,
-            ttl.as_deref(),
-            path.as_deref(),
-        ),
+            global,
+        } => {
+            let effective_path = effective_cli_path(global, path);
+            run_put(
+                &config,
+                &key,
+                data.as_deref(),
+                null,
+                replace,
+                ttl.as_deref(),
+                effective_path.as_deref(),
+            )
+        }
         Commands::Watch { key, path, format } => {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
             run_watch(&config, &key, path.as_deref(), output_format)
         }
         Commands::Eval { template, path } => {
-            beachcomber::cli::commands::eval::run_eval(&config, &template, path.as_deref())
+            // `eval` is a query like `get`, so it addresses the same path: the
+            // one given, else the caller's directory.
+            let effective_path = effective_cli_path(false, path);
+            beachcomber::cli::commands::eval::run_eval(
+                &config,
+                &template,
+                effective_path.as_deref(),
+            )
         }
         Commands::Init { write_config } => run_init(write_config),
         Commands::Check {

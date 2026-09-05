@@ -654,8 +654,9 @@ fn fmt_missing_and_null_render_empty() {
         .stdout(predicates::str::diff("[]"));
 
     // Same rule in the status formatter: a global row's null `path` is empty.
+    // `put` defaults to the cwd like `get`, so the global entry needs asking for.
     comb(&d)
-        .args(["put", "globalfmt", r#"{"g":"v"}"#])
+        .args(["put", "--global", "globalfmt", r#"{"g":"v"}"#])
         .assert()
         .success();
     comb(&d)

@@ -60,17 +60,13 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
                 return ExitCode::from(2);
             }
         };
-        if let Some(p) = path
-            && let Err(e) = session.set_context(p)
-        {
-            eprintln!("Error: {e}");
-            return ExitCode::from(2);
-        }
         // A transport failure aborts the whole command; a cache miss is simply
-        // absent from the map and evaluates falsy.
+        // absent from the map and evaluates falsy. The path travels on every
+        // request rather than through a `context` op, so a path-scoped ref
+        // resolves at the caller's directory.
         let fetched = eval::fetch_daemon_data(&refs, |key| {
             session
-                .get(key, None)
+                .get(key, path)
                 .map(|resp| resp.data)
                 .map_err(|e| format!("Error querying {key}: {e}"))
         });

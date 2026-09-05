@@ -46,6 +46,18 @@ local function shell_escape(s)
   return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
 end
 
+--- The `--path`/`--global` argument for a call scoped to `path`.
+--
+-- An absent path means the global entry, exactly as it does on the wire
+-- (where the request simply carries no `path` field) — but `comb get` and
+-- `comb put` default to the calling process's cwd, so the global entry has
+-- to be asked for by name or this transport would silently scope every
+-- pathless call to wherever the SDK's host happens to be running.
+local function path_arg(path)
+  if path == nil then return " --global" end
+  return " --path " .. shell_escape(path)
+end
+
 --- Run a command, returning (stdout+stderr merged, exit_ok).
 --
 -- Exit status is read back via an appended `echo` marker rather than
@@ -150,8 +162,7 @@ function Backend:get(key, path, flags)
     return { ok = false, error = { kind = "parse_error", message = "empty key" } }
   end
 
-  local prime_cmd = self._comb .. " get " .. shell_escape(key)
-  if path then prime_cmd = prime_cmd .. " --path " .. shell_escape(path) end
+  local prime_cmd = self._comb .. " get " .. shell_escape(key) .. path_arg(path)
   if flags.force then prime_cmd = prime_cmd .. " --force" end
   if flags.wait then prime_cmd = prime_cmd .. " --wait" end
   local prime_out, prime_ok = run(prime_cmd)
@@ -201,9 +212,8 @@ function Backend:put(key, data, ttl, path)
   if not encoded then
     return { ok = false, error = { kind = "parse_error", message = "json encode error: " .. tostring(enc_err) } }
   end
-  local cmd = self._comb .. " put " .. shell_escape(key) .. " " .. shell_escape(encoded)
+  local cmd = self._comb .. " put " .. shell_escape(key) .. " " .. shell_escape(encoded) .. path_arg(path)
   if ttl then cmd = cmd .. " --ttl " .. shell_escape(ttl) end
-  if path then cmd = cmd .. " --path " .. shell_escape(path) end
   local out, ok = run(cmd)
   if not ok then
     return { ok = false, error = { kind = "server_error", message = (out or ""):gsub("%s+$", "") } }
@@ -212,8 +222,7 @@ function Backend:put(key, data, ttl, path)
 end
 
 function Backend:put_null(key, path)
-  local cmd = self._comb .. " put --null " .. shell_escape(key)
-  if path then cmd = cmd .. " --path " .. shell_escape(path) end
+  local cmd = self._comb .. " put --null " .. shell_escape(key) .. path_arg(path)
   local out, ok = run(cmd)
   if not ok then
     return { ok = false, error = { kind = "server_error", message = (out or ""):gsub("%s+$", "") } }
@@ -236,8 +245,7 @@ function Backend:refresh(key, path)
       return { ok = true }
     end
   end
-  local cmd = self._comb .. " get --force " .. shell_escape(key)
-  if path then cmd = cmd .. " --path " .. shell_escape(path) end
+  local cmd = self._comb .. " get --force " .. shell_escape(key) .. path_arg(path)
   local out, ok = run(cmd)
   if not ok then
     return { ok = false, error = { kind = "server_error", message = (out or ""):gsub("%s+$", "") } }

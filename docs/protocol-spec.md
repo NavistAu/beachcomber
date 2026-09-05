@@ -115,7 +115,15 @@ Read a cached value.
 ```
 
 - `key` (string, required) — `provider` or `provider.field`. See "Keys" below.
-- `path` (string, optional) — directory context for path-scoped providers.
+- `path` (string, optional) — the directory the read is addressed at. Omitting
+  it — or giving `$HOME`, which is the same address — reads the **global
+  entry**. A `path` returns the **chain-resolved tree**: static records (source
+  `put` or `config:<file>`) are collected from that path and every ancestor up
+  to `$HOME` (or to `/` for a path outside `$HOME`) and then the global entry,
+  the nearest winning; provider-produced records stay at their Source's
+  declared scope — path-scoped at the addressed path, global at the global
+  entry — and never walk the chain. See "Path resolution" in
+  `docs/canon/field_resolution.md`.
 - `force` (bool, optional, default false) — evict the cache entry before
   executing, guaranteeing a fresh value.
 - `wait` (bool, optional, default false) — if the entry is stale, wait for
@@ -226,6 +234,10 @@ never removes a record a Source produces.
 records, not a value. Below the root, any JSON: `{"op": "put", "key":
 "myapp.deploy.count", "data": 3}`.
 
+`path` addresses the entry the record is written to, canonicalised the same
+way `Get`'s is: omitted — or `$HOME` — writes the global entry, which every
+path's chain ends at.
+
 **Request (clear):**
 ```json
 {"op": "put", "key": "myapp"}
@@ -297,7 +309,10 @@ changes, and continue until the client disconnects.
 ```
 
 The daemon emits one initial event with the current value, then one
-response per subsequent change.
+response per subsequent change. The initial event and every later one are
+the same chain-resolved read `Get` returns, and the watch fires on a change
+to **any entry on the chain** — a `put` at an ancestor, or at the global
+entry, reaches a watch opened at a project path.
 
 ### `Introspect`
 

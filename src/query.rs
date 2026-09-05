@@ -7,6 +7,8 @@
 
 use crate::provider::SourceScope;
 use crate::provider::registry::ProviderRegistry;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// The set of metadata suffix names the server recognises. Keep this in sync
 /// with the `match meta` post-processing arms in `server::handle_request`.
@@ -75,76 +77,102 @@ pub fn parse_key(key: &str) -> KeyParse {
     }
 }
 
-/// Resolve the effective path for a request. If any source at this provider is
-/// PathScoped, the requested path is used (canonicalized). If all sources are
-/// Global (or the provider is unknown), returns None.
+/// The daemon's `$HOME`, canonicalised, read once per process.
 ///
-/// For path-scoped providers, also attempts canonical_path() via the first
-/// path-scoped source to walk to the project root.
+/// `$HOME` is the global path (canon `field_resolution.md` §"Path resolution"):
+/// a request addressing it addresses the global cache entry, which is keyed
+/// pathless internally.
+pub fn home_dir() -> Option<PathBuf> {
+    static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+    HOME.get_or_init(|| {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|p| p.canonicalize().unwrap_or(p))
+    })
+    .clone()
+}
+
+/// Canonicalise a requested path into the address a cache entry is keyed by.
+///
+/// A relative path resolves against the daemon's cwd; a path that cannot be
+/// canonicalised is kept verbatim rather than dropped. `$HOME` — and a request
+/// that carries no path at all — is the global entry, whose key is pathless.
+pub fn normalise_path(requested: Option<&str>) -> Option<String> {
+    let p = requested?;
+    let path = Path::new(p);
+    let absolute = if path.is_relative() {
+        std::env::current_dir()
+            .ok()
+            .and_then(|cwd| cwd.join(path).canonicalize().ok())
+            .map(|abs| abs.to_string_lossy().to_string())
+            .unwrap_or_else(|| p.to_string())
+    } else {
+        path.canonicalize()
+            .map(|abs| abs.to_string_lossy().to_string())
+            .unwrap_or_else(|_| p.to_string())
+    };
+    if home_dir().is_some_and(|home| home.as_os_str() == absolute.as_str()) {
+        return None;
+    }
+    Some(absolute)
+}
+
+/// The chain of cache-entry addresses a read at `path` consults, nearest first
+/// and always ending at the global entry.
+///
+/// `path` itself, then each ancestor up to and including `$HOME` when `path` is
+/// under `$HOME` and up to `/` when it is not, then `None` — the global entry.
+/// A pathless read has the one-link chain `[None]`.
+pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
+    let Some(p) = path else {
+        return vec![None];
+    };
+    let home = home_dir();
+    let mut out = Vec::new();
+    let mut current = Some(Path::new(p));
+    while let Some(dir) = current {
+        out.push(Some(dir.to_string_lossy().into_owned()));
+        if home.as_deref() == Some(dir) {
+            break;
+        }
+        current = dir.parent();
+    }
+    out.push(None);
+    out
+}
+
+/// Resolve the effective path for a request: the cache entry the request
+/// addresses, and the head of the chain a read walks.
+///
+/// The requested path is canonicalised the same way for every namespace
+/// ([`normalise_path`]). What differs is scope: a namespace that declares no
+/// sources — a static one, or an unknown name — has no scope of its own, so the
+/// requested path is its address; a provider whose sources are all `Global`
+/// declares that it has one answer, which lives at the global entry; and a
+/// provider with a `PathScoped` source may narrow the path further through that
+/// source's `canonical_path` (walking to a project root, say).
 pub fn resolve_path(
     key: &str,
     requested_path: Option<&str>,
     registry: &ProviderRegistry,
 ) -> Option<String> {
-    let parts: Vec<&str> = key.split('.').collect();
-    let provider = parts[0];
+    let provider = key.split('.').next().unwrap_or(key);
+    let raw = normalise_path(requested_path)?;
 
-    // Static namespaces don't declare sources, but they can be stored with a path.
-    // Pass the raw path through (canonicalized) so path-keyed static data is accessible.
-    if registry.is_static_namespace(provider) {
-        return requested_path.map(|p| {
-            let path = std::path::Path::new(p);
-            if path.is_relative() {
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|cwd| cwd.join(path).canonicalize().ok())
-                    .map(|abs| abs.to_string_lossy().to_string())
-                    .unwrap_or_else(|| p.to_string())
-            } else {
-                path.canonicalize()
-                    .map(|abs| abs.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| p.to_string())
-            }
-        });
-    }
-
-    let any_path_scoped = registry
-        .provider_sources(provider)
-        .map(|ss| ss.iter().any(|s| s.scope == SourceScope::PathScoped))
-        .unwrap_or(false);
-
-    if !any_path_scoped {
+    let Some(sources) = registry.provider_sources(provider) else {
+        return Some(raw);
+    };
+    if !sources.iter().any(|s| s.scope == SourceScope::PathScoped) {
         return None;
     }
-
-    let raw = requested_path.map(|p| {
-        let path = std::path::Path::new(p);
-        if path.is_relative() {
-            std::env::current_dir()
-                .ok()
-                .and_then(|cwd| cwd.join(path).canonicalize().ok())
-                .map(|abs| abs.to_string_lossy().to_string())
-                .unwrap_or_else(|| p.to_string())
-        } else {
-            path.canonicalize()
-                .map(|abs| abs.to_string_lossy().to_string())
-                .unwrap_or_else(|_| p.to_string())
-        }
-    })?;
-
-    // Provider-level canonicalization: find the first path-scoped source and
-    // ask it to canonicalize (walk to project root, etc.).
-    if let Some(sources) = registry.provider_sources(provider) {
-        for sm in sources {
-            if sm.scope == SourceScope::PathScoped
-                && let Some(src) = registry.source(provider, &sm.name)
-                && let Some(canonical) = src.canonical_path(Some(&raw))
-            {
-                return Some(canonical);
-            }
+    for sm in sources {
+        if sm.scope == SourceScope::PathScoped
+            && let Some(src) = registry.source(provider, &sm.name)
+            && let Some(canonical) = src.canonical_path(Some(&raw))
+        {
+            return Some(canonical);
         }
     }
-
     Some(raw)
 }
 
@@ -471,10 +499,93 @@ mod resolve_path_tests {
     }
 
     #[test]
-    fn unknown_provider_returns_none() {
+    fn a_namespace_with_no_sources_keeps_the_requested_path() {
         let reg = ProviderRegistry::new();
+        // A namespace that declares no sources — a static one, or an unknown
+        // name — has no scope of its own, so the requested path is its path and
+        // the chain resolves the rest.
         let result = resolve_path("nonexistent", Some("/tmp"), &reg);
-        // Unknown providers have no sources to declare PathScoped, so returns None.
-        assert_eq!(result, None);
+        assert_eq!(result, normalise_path(Some("/tmp")));
+        assert!(result.is_some(), "/tmp is not $HOME");
+    }
+
+    #[test]
+    fn a_request_addressing_home_resolves_to_the_global_entry() {
+        let reg = ProviderRegistry::new();
+        let home = home_dir().expect("$HOME is set");
+        assert_eq!(
+            resolve_path("anything", Some(&home.to_string_lossy()), &reg),
+            None,
+            "$HOME is the global path"
+        );
+    }
+}
+
+#[cfg(test)]
+mod path_chain_tests {
+    use super::*;
+
+    fn home() -> String {
+        home_dir()
+            .expect("$HOME is set")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn normalise_maps_home_to_the_global_entry() {
+        assert_eq!(normalise_path(Some(&home())), None);
+    }
+
+    #[test]
+    fn normalise_passes_a_missing_path_through() {
+        assert_eq!(normalise_path(None), None);
+        // A path that cannot be canonicalised is kept verbatim rather than dropped.
+        assert_eq!(
+            normalise_path(Some("/no/such/beachcomber/dir")),
+            Some("/no/such/beachcomber/dir".to_string())
+        );
+    }
+
+    #[test]
+    fn chain_of_the_global_entry_is_just_itself() {
+        assert_eq!(path_chain(None), vec![None]);
+    }
+
+    #[test]
+    fn chain_under_home_stops_at_home() {
+        let home = home();
+        let deep = format!("{home}/ws/project/foo");
+        assert_eq!(
+            path_chain(Some(&deep)),
+            vec![
+                Some(deep.clone()),
+                Some(format!("{home}/ws/project")),
+                Some(format!("{home}/ws")),
+                Some(home),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn chain_of_home_itself_is_home_then_the_global_entry() {
+        let home = home();
+        assert_eq!(path_chain(Some(&home)), vec![Some(home), None]);
+    }
+
+    #[test]
+    fn chain_outside_home_walks_to_the_root() {
+        // A top-level directory cannot be under $HOME unless $HOME is `/`.
+        let chain = path_chain(Some("/no-such-beachcomber-root/a"));
+        assert_eq!(
+            chain,
+            vec![
+                Some("/no-such-beachcomber-root/a".to_string()),
+                Some("/no-such-beachcomber-root".to_string()),
+                Some("/".to_string()),
+                None,
+            ]
+        );
     }
 }

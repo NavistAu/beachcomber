@@ -33,11 +33,13 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 | `comb d` | `comb daemon` | — |
 | `comb k` | `comb kill` | — |
 
-## `comb g` (get) `<key>... [path] [-f format]`
+## `comb g` (get) `<key>... [path] [--path <path>] [--global] [-f format]`
 
 Query a cached value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay.
 
-**Flags:** `--force` (trigger immediate recomputation before returning), `--wait` (block until a fresh value arrives). Multiple keys can be passed in a single connection (variadic).
+**Flags:** `--force` (trigger immediate recomputation before returning), `--wait` (block until a fresh value arrives), `--path <dir>` (query a directory other than the current one), `--global` (query the global entry, `$HOME`). Multiple keys can be passed in a single connection (variadic).
+
+**Path:** with no `--path` and no trailing path positional, `get` queries the current working directory. A read at a directory resolves data stored by `put` (and by config) up the directory chain to `$HOME`, the nearest write winning; a provider's own data stays where its source scope puts it. `--global` reads `$HOME` alone and cannot be combined with a path.
 
 **Key addressing forms:**
 
@@ -185,12 +187,12 @@ The default output preset is `human` (coloured table) regardless of whether stdo
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts, watch backend). The watch backend line reports `native fs events` when the startup self-test confirmed kernel event delivery, or a WARN with `polling` when it didn't — provider file-watching still works, invalidating on a 1s scan instead of kernel events.
 
-## `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--null]`
+## `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--global] [--null]`
 
 Write data into the cache as a virtual provider. External processes use this to expose state to prompt/statusline consumers without writing a script provider.
 
 ```sh
-# Put application status into cache
+# Put application status into cache — scoped to the current directory
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
 
 # Put with TTL — consumers see staleness if writer stops updating
@@ -199,11 +201,16 @@ comb p myapp '{"status":"healthy"}' --ttl 30s
 # Put with path scope
 comb p myapp '{"status":"building"}' --path /home/user/project
 
+# Put once for every directory
+comb p myapp '{"status":"healthy"}' --global
+
 # Clear a previously written entry
 comb p myapp --null
 ```
 
 `--null` clears a previously written virtual provider entry. Omitting `--null` requires a JSON object argument.
+
+**Path:** `put` defaults to the current working directory, exactly as `get` does, so a plain `comb p` followed by a plain `comb g` in the same directory round-trips. `--global` writes `$HOME`, the entry every directory's chain ends at, which is how you publish one value for the whole machine; it cannot be combined with `--path`.
 
 ### Session-scoped entries
 
@@ -219,9 +226,10 @@ comb p agent '{"context_pct":97}' --path "/home/user/project#session-b"
 comb g agent.context_pct "/home/user/project#session-a"   # 42
 ```
 
-Reads must pass the exact path the writer used. A `get` at a session path that holds no entry falls back to the
-global (pathless) slot — never to the plain directory's slot. Use absolute paths: a relative `--path` is resolved
-against the daemon's working directory, not the caller's.
+Reads must pass the exact path the writer used: `project#session-a` is a sibling name, not a child of `project`,
+so a session slot inherits from the parent directory (`/home/user`) and up — never from the plain project
+directory. Use absolute paths: a relative `--path` is resolved against the daemon's working directory, not the
+caller's.
 
 Read back with standard `comb g`:
 

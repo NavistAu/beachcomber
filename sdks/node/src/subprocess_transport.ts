@@ -28,15 +28,11 @@
  * `UnsupportedTransportError` naming the FFI transport as the
  * full-fidelity path.
  *
- * One more asymmetry worth knowing: `comb get`'s CLI defaults an omitted
- * `--path` to the *CLI process's own working directory* ("When no path is
- * given, the CLI's current working directory is used automatically"),
- * whereas `comb put` without `--path` means "global" (no path at all).
- * Round-tripping a pathless (global) provider through `get`/`put` without
- * an explicit path can therefore miss under this transport even though it
- * hits under FFI, where `path: NULL` means the same thing (absent) on both
- * ends. Pass an explicit `path` for global providers when running under
- * the subprocess transport.
+ * `comb get` and `comb put` both default an omitted `--path` to the CLI
+ * process's own working directory, while an absent `path` here means the
+ * global entry — the same thing `path: NULL` means under FFI, and the same
+ * thing a wire request with no `path` field means. So a pathless call asks
+ * for the global entry by name, with `--global`.
  */
 
 import { spawn, spawnSync } from 'child_process';
@@ -104,8 +100,13 @@ function envelopeFromFailure(stderr: string): Envelope {
   return { ok: false, error: { kind, message: text } };
 }
 
+/** `--path P`, or `--global` when the call is not scoped to a directory. */
+function pathArgs(path_: string | undefined): string[] {
+  return path_ === undefined ? ['--global'] : ['--path', path_];
+}
+
 /**
- * Run `comb get <key> [--path P] [--force] -f json` and parse its JSON
+ * Run `comb get <key> [--path P | --global] [--force] -f json` and parse its JSON
  * envelope, which matches the ABI's `bc_get` shape exactly
  * (`{"ok":true,"data":...,"age_ms":...,"stale":...}` with fields omitted
  * when absent, or a plain-text error on stderr with a non-zero exit).
@@ -117,7 +118,7 @@ function cliGet(
   force: boolean,
 ): Envelope {
   const args = ['get', key, '-f', 'json'];
-  if (path_ !== undefined) args.push('--path', path_);
+  args.push(...pathArgs(path_));
   if (force) args.push('--force');
   const { code, stdout, stderr } = runComb(handle.combBin, args, handle);
   if (code !== 0) return envelopeFromFailure(stderr);
@@ -141,7 +142,7 @@ function cliPut(
     args.push(jsonData as string);
   }
   if (ttl !== undefined) args.push('--ttl', ttl);
-  if (path_ !== undefined) args.push('--path', path_);
+  args.push(...pathArgs(path_));
   const { code, stderr } = runComb(handle.combBin, args, handle);
   if (code !== 0) return envelopeFromFailure(stderr);
   return { ok: true, data: null };

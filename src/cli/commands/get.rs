@@ -30,19 +30,6 @@ fn path_for_key(key: &str, config: &Config) -> Option<Option<String>> {
     Some(libbeachcomber::path_expr::evaluate_path(&expr, &cwd, &env))
 }
 
-/// Returns true if `path` is exactly the process's current directory, i.e. the
-/// implicit default `main.rs` fills in for `get` when the user passed neither
-/// `--path` nor a trailing positional path. Used to scope a global-fallback
-/// retry to that implicit case only — an explicit `--path` pointing elsewhere
-/// is a deliberate scoping request and must not be papered over by a global
-/// (unscoped) hit.
-fn is_ambient_cwd_path(path: Option<&str>) -> bool {
-    let Some(p) = path else { return false };
-    std::env::current_dir()
-        .map(|cwd| cwd.to_string_lossy() == p)
-        .unwrap_or(false)
-}
-
 /// Fetch the daemon-backed refs a virtual field's expression needs.
 ///
 /// Cascade semantics (non-strict undefined): a ref that fails to fetch or is
@@ -52,10 +39,15 @@ fn is_ambient_cwd_path(path: Option<&str>) -> bool {
 ///
 /// Bug #6 fix: `force` and `wait` are threaded through so dep fetches honor
 /// the same flags as the top-level `comb get --force`/`--wait` invocation.
+///
+/// `path` is the path the top-level query addresses, sent on every dep fetch:
+/// a dep of a path-scoped provider (`git`, say) is only findable at the caller's
+/// directory, and the daemon is never told a path any other way.
 fn fetch_daemon_deps(
     key: &str,
     vf: &VirtualFields,
     session: Option<&mut crate::client::ClientSession>,
+    path: Option<&str>,
     force: bool,
     wait: bool,
 ) -> HashMap<String, serde_json::Value> {
@@ -74,7 +66,7 @@ fn fetch_daemon_deps(
                 Ref::CacheField(p, f) => {
                     // Raw cached field: fetch "P.F" and store under "P.F".
                     let dep_key = format!("{p}.{f}");
-                    if let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait)
+                    if let Ok(resp) = session.get_with_flags(&dep_key, path, force, wait)
                         && let Some(data) = resp.data
                     {
                         dd.insert(dep_key, data);
@@ -82,7 +74,7 @@ fn fetch_daemon_deps(
                 }
                 Ref::CacheProvider(p) => {
                     // Whole provider object: fetch "P" and store under "P".
-                    if let Ok(resp) = session.get_with_flags(&p, None, force, wait)
+                    if let Ok(resp) = session.get_with_flags(&p, path, force, wait)
                         && let Some(data) = resp.data
                     {
                         dd.insert(p, data);
@@ -93,7 +85,7 @@ fn fetch_daemon_deps(
                     // Virtual resolved refs are evaluated client-side during expression eval.
                     if !vf.is_virtual(&p, &f) {
                         let dep_key = format!("{p}.{f}");
-                        if let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait)
+                        if let Ok(resp) = session.get_with_flags(&dep_key, path, force, wait)
                             && let Some(data) = resp.data
                         {
                             dd.insert(dep_key, data);
@@ -119,10 +111,14 @@ fn fetch_daemon_deps(
 /// additional individual field refs; these are fetched on top. The merge in
 /// `run_get` then combines daemon fields with virtual fields (virtual wins on
 /// key collision).
+///
+/// `path` is sent on every fetch, for the same reason as in
+/// [`fetch_daemon_deps`].
 fn fetch_daemon_deps_for_namespace(
     provider: &str,
     vf: &VirtualFields,
     session: Option<&mut crate::client::ClientSession>,
+    path: Option<&str>,
     force: bool,
     wait: bool,
 ) -> HashMap<String, serde_json::Value> {
@@ -134,7 +130,7 @@ fn fetch_daemon_deps_for_namespace(
     // daemon-cached fields are available for the merge step. If the provider
     // has no daemon counterpart (e.g. conda, op), this returns nothing and
     // the merge is a no-op — no error.
-    if let Ok(resp) = session.get_with_flags(provider, None, force, wait)
+    if let Ok(resp) = session.get_with_flags(provider, path, force, wait)
         && let Some(data) = resp.data
     {
         dd.insert(provider.to_string(), data);
@@ -152,7 +148,7 @@ fn fetch_daemon_deps_for_namespace(
                 Ref::CacheField(p, f) => {
                     let dep_key = format!("{p}.{f}");
                     if seen_keys.insert(dep_key.clone())
-                        && let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait)
+                        && let Ok(resp) = session.get_with_flags(&dep_key, path, force, wait)
                         && let Some(data) = resp.data
                     {
                         dd.insert(dep_key, data);
@@ -160,7 +156,7 @@ fn fetch_daemon_deps_for_namespace(
                 }
                 Ref::CacheProvider(p) => {
                     if seen_keys.insert(p.clone())
-                        && let Ok(resp) = session.get_with_flags(&p, None, force, wait)
+                        && let Ok(resp) = session.get_with_flags(&p, path, force, wait)
                         && let Some(data) = resp.data
                     {
                         dd.insert(p, data);
@@ -170,7 +166,7 @@ fn fetch_daemon_deps_for_namespace(
                     if !vf.is_virtual(&p, &f) {
                         let dep_key = format!("{p}.{f}");
                         if seen_keys.insert(dep_key.clone())
-                            && let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait)
+                            && let Ok(resp) = session.get_with_flags(&dep_key, path, force, wait)
                             && let Some(data) = resp.data
                         {
                             dd.insert(dep_key, data);
@@ -524,13 +520,8 @@ pub fn run_get(
                         return ExitCode::from(2);
                     }
                 };
-                if let Some(p) = path
-                    && let Err(e) = session.set_context(p)
-                {
-                    eprintln!("Error: {e}");
-                    return ExitCode::from(2);
-                }
-                let daemon_data = fetch_daemon_deps(key, &vf, Some(&mut session), force, wait);
+                let daemon_data =
+                    fetch_daemon_deps(key, &vf, Some(&mut session), path, force, wait);
                 match evaluate_client_side(key, &format, &daemon_data, &vf, true) {
                     Ok(text) => {
                         print!("{text}");
@@ -571,15 +562,14 @@ pub fn run_get(
             let daemon_data = if key_needs_daemon(key, &vf, config) {
                 let client = crate::client::Client::new(socket_path.clone());
                 match client.connect() {
-                    Ok(mut session) => {
-                        if let Some(p) = path
-                            && let Err(e) = session.set_context(p)
-                        {
-                            eprintln!("Error: {e}");
-                            return ExitCode::from(2);
-                        }
-                        fetch_daemon_deps_for_namespace(key, &vf, Some(&mut session), force, wait)
-                    }
+                    Ok(mut session) => fetch_daemon_deps_for_namespace(
+                        key,
+                        &vf,
+                        Some(&mut session),
+                        path,
+                        force,
+                        wait,
+                    ),
                     Err(e) => {
                         eprintln!("Error: {e}");
                         return ExitCode::from(2);
@@ -709,14 +699,6 @@ pub fn run_get(
         None
     };
 
-    if let Some(ref mut session) = session_opt
-        && let Some(p) = path
-        && let Err(e) = session.set_context(p)
-    {
-        eprintln!("Error: {e}");
-        return ExitCode::from(2);
-    }
-
     // Server-side formats (text / sh) for multi-key: emit each key's output on its own line.
     if format.is_server_side() {
         let wire_fmt = format.server_format();
@@ -725,7 +707,7 @@ pub fn run_get(
             if is_client_side_key(key, &vf) {
                 // Fetch daemon deps for this virtual key if needed (bug #6: pass force/wait).
                 let daemon_data = if key_needs_daemon(key, &vf, config) {
-                    fetch_daemon_deps(key, &vf, session_opt.as_mut(), force, wait)
+                    fetch_daemon_deps(key, &vf, session_opt.as_mut(), path, force, wait)
                 } else {
                     HashMap::new()
                 };
@@ -746,7 +728,7 @@ pub fn run_get(
                 let key_path: Option<Option<String>> = path_for_key(key, config);
                 let effective_key_path: Option<&str> = match key_path {
                     Some(ref computed) => computed.as_deref(),
-                    None => None,
+                    None => path,
                 };
                 match session.get_formatted_with_flags(
                     key,
@@ -786,7 +768,7 @@ pub fn run_get(
         if is_client_side_key(key, &vf) {
             // Fetch daemon deps if expression needs them (bug #6: pass force/wait).
             let daemon_data = if key_needs_daemon(key, &vf, config) {
-                fetch_daemon_deps(key, &vf, session_opt.as_mut(), force, wait)
+                fetch_daemon_deps(key, &vf, session_opt.as_mut(), path, force, wait)
             } else {
                 HashMap::new()
             };
@@ -818,7 +800,7 @@ pub fn run_get(
             let key_path: Option<Option<String>> = path_for_key(key, config);
             let effective_key_path: Option<&str> = match key_path {
                 Some(ref computed) => computed.as_deref(),
-                None => None,
+                None => path,
             };
             match session.get_with_flags(key, effective_key_path, force, wait) {
                 Ok(response) => {
@@ -828,24 +810,6 @@ pub fn run_get(
                             response.error.as_deref().unwrap_or("unknown error")
                         );
                         any_error = true;
-                    } else if response.data.is_none() && is_ambient_cwd_path(path) {
-                        // The session's path context is the CLI's implicit CWD default
-                        // (no --path was given), which scopes the lookup even for
-                        // `put`-created static entries that were stored globally (no
-                        // --path). Retry once on a fresh, context-free connection so
-                        // the global entry is still reachable, matching what a raw
-                        // request with no path field would find.
-                        let fallback = crate::client::Client::new(socket_path.clone())
-                            .connect()
-                            .and_then(|mut s| s.get_with_flags(key, None, force, wait));
-                        match fallback {
-                            Ok(fb) if fb.ok && fb.data.is_some() => {
-                                responses.push((key.clone(), fb));
-                            }
-                            _ => {
-                                responses.push((key.clone(), response));
-                            }
-                        }
                     } else {
                         responses.push((key.clone(), response));
                     }

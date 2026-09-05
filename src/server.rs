@@ -275,8 +275,30 @@ async fn handle_watch(
             .await;
     }
 
-    // Subscribe to notifications
-    let mut rx = watchers.subscribe(provider_name.as_str(), effective_path.as_deref());
+    // Subscribe to every entry on the chain the read walks, not just the
+    // addressed one: a `put` at an ancestor (or at the global entry) changes
+    // what this watch resolves to, so it has to wake the stream. One forwarder
+    // task per link funnels the per-key broadcasts into a single channel.
+    let mut rx = {
+        let (tx, rx) = tokio::sync::mpsc::channel::<()>(64);
+        let mut tasks = Vec::new();
+        for layer in crate::query::path_chain(effective_path.as_deref()) {
+            let mut sub = watchers.subscribe(provider_name.as_str(), layer.as_deref());
+            let tx = tx.clone();
+            tasks.push(tokio::spawn(async move {
+                // A lagged subscriber has missed notifications, but one
+                // "something changed" is all the stream loop needs.
+                while let Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) =
+                    sub.recv().await
+                {
+                    if tx.send(()).await.is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        ChainWatch { tasks, rx }
+    };
 
     // Re-execute any read-always source(s) for the initial snapshot so the
     // first value is fresh off disk, not stale cache.
@@ -313,7 +335,7 @@ async fn handle_watch(
     }
 
     // Send initial value
-    let initial = read_watch_value(cache, &plan.target, effective_path.as_deref());
+    let initial = read_watch_value(cache, registry, &plan.target, effective_path.as_deref());
     if write_watch_line(writer, &initial).await.is_err() {
         return;
     }
@@ -321,45 +343,43 @@ async fn handle_watch(
     let mut last_data = initial.data.clone();
 
     // Stream loop
-    loop {
-        match rx.recv().await {
-            Ok(()) => {
-                // Signal ongoing demand
-                if let Some(sched) = scheduler {
-                    sched
-                        .send(SchedulerMessage::QueryActivity {
-                            provider: provider_name.clone(),
-                            path: effective_path.clone(),
-                            demand: plan.demand.clone(),
-                        })
-                        .await;
-                }
+    while rx.rx.recv().await.is_some() {
+        // Signal ongoing demand
+        if let Some(sched) = scheduler {
+            sched
+                .send(SchedulerMessage::QueryActivity {
+                    provider: provider_name.clone(),
+                    path: effective_path.clone(),
+                    demand: plan.demand.clone(),
+                })
+                .await;
+        }
 
-                let response = read_watch_value(cache, &plan.target, effective_path.as_deref());
+        let response = read_watch_value(cache, registry, &plan.target, effective_path.as_deref());
 
-                // Field-level filtering: skip if value unchanged
-                if response.data == last_data {
-                    continue;
-                }
-                last_data = response.data.clone();
+        // Field-level filtering: skip if value unchanged
+        if response.data == last_data {
+            continue;
+        }
+        last_data = response.data.clone();
 
-                if write_watch_line(writer, &response).await.is_err() {
-                    break; // Client disconnected
-                }
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                debug!("Watch subscriber lagged by {n} messages, catching up");
-                let response = read_watch_value(cache, &plan.target, effective_path.as_deref());
-                if response.data != last_data {
-                    last_data = response.data.clone();
-                    if write_watch_line(writer, &response).await.is_err() {
-                        break;
-                    }
-                }
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                break;
-            }
+        if write_watch_line(writer, &response).await.is_err() {
+            break; // Client disconnected
+        }
+    }
+}
+
+/// The chain subscription a `watch` holds: one forwarder task per entry on the
+/// chain, funnelling into `rx`. Dropping it stops the forwarders.
+struct ChainWatch {
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    rx: tokio::sync::mpsc::Receiver<()>,
+}
+
+impl Drop for ChainWatch {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
         }
     }
 }
@@ -429,21 +449,58 @@ async fn maybe_read_always(
     }
 }
 
+/// The value at `field` in a merged read, as wire JSON.
+fn lookup_merged(
+    merged: &Option<(
+        std::collections::HashMap<String, crate::provider::Value>,
+        u128,
+        bool,
+    )>,
+    field: &str,
+) -> Option<serde_json::Value> {
+    let (map, _, _) = merged.as_ref()?;
+    let value = crate::provider::lookup_path(map, field)?;
+    Some(serde_json::to_value(value).unwrap_or(serde_json::Value::Null))
+}
+
+/// The cache-entry address a Source's own records live at: the global entry for
+/// a `Global` source whatever path the request carried, the addressed path for
+/// a `PathScoped` one.
+fn source_scope_path<'a>(
+    registry: &ProviderRegistry,
+    provider: &str,
+    source_name: &str,
+    path: Option<&'a str>,
+) -> Option<&'a str> {
+    let scope = registry
+        .provider_sources(provider)
+        .and_then(|ss| ss.iter().find(|sm| sm.name == source_name))
+        .map(|sm| sm.scope);
+    match scope {
+        Some(SourceScope::Global) => None,
+        _ => path,
+    }
+}
+
 // Watch reads only from cache — no inline-execute on cold miss (unlike Get).
 // A cache miss in a streaming context means the scheduler has not populated the
 // entry yet; the caller receives an update when it does. Routing by KeyParse
 // here mirrors Get's cache routing exactly so `watch X` resolves identically to
-// `get X` (the core parity goal of this change).
-fn read_watch_value(cache: &Cache, target: &KeyParse, path: Option<&str>) -> Response {
+// `get X` (the core parity goal of this change) — including the chain-resolved
+// merged read.
+fn read_watch_value(
+    cache: &Cache,
+    registry: &ProviderRegistry,
+    target: &KeyParse,
+    path: Option<&str>,
+) -> Response {
     match target {
         KeyParse::Field(provider, field) => {
-            // Field-targeted: surface the owning source's last_refreshed as age,
-            // not the entry-level oldest. Canon §"Field freshness".
-            match cache.get_field(provider, path, field) {
-                Some((value, last_refreshed)) => {
-                    let age_ms = last_refreshed.elapsed().as_millis();
-                    let data = serde_json::to_value(&value).unwrap_or(serde_json::Value::Null);
-                    Response::ok(data, age_ms, false)
+            let merged = cache.read_merged(provider, path, registry);
+            match lookup_merged(&merged, field) {
+                Some(data) => {
+                    let (_, age_ms, stale) = merged.expect("a hit came from a merged read");
+                    Response::ok(data, age_ms, stale)
                 }
                 // Mirror Get's Field-miss semantics exactly: a failed nested
                 // sub-path (e.g. `p.project.nonesuch` where `project` exists but
@@ -454,7 +511,7 @@ fn read_watch_value(cache: &Cache, target: &KeyParse, path: Option<&str>) -> Res
                         && field
                             .split('.')
                             .next()
-                            .is_some_and(|head| cache.get_field(provider, path, head).is_some());
+                            .is_some_and(|head| lookup_merged(&merged, head).is_some());
                     if nested_head_exists {
                         Response::error(format!("unknown field: {provider}.{field}"))
                     } else {
@@ -463,11 +520,8 @@ fn read_watch_value(cache: &Cache, target: &KeyParse, path: Option<&str>) -> Res
                 }
             }
         }
-        KeyParse::Provider(provider) => match cache.get_entry(provider, path) {
-            Some(entry) => {
-                let age_ms = entry.age_ms();
-                let stale = entry.is_stale();
-                let flat = entry.flatten_fields();
+        KeyParse::Provider(provider) => match cache.read_merged(provider, path, registry) {
+            Some((flat, age_ms, stale)) => {
                 let data = serde_json::to_value(&flat).unwrap_or(serde_json::Value::Null);
                 Response::ok(data, age_ms, stale)
             }
@@ -579,87 +633,45 @@ async fn handle_request(
                 return Response::ok(serde_json::Value::String(src.to_string()), 0, false);
             }
 
-            // Static namespaces fall back to the global slot. A static namespace
-            // (one `put` created) declares no sources and therefore no path
-            // expression, and `docs/canon/field_resolution.md` §"Path
-            // resolution" says such a provider is read by `get` from the
-            // requested path's slot if it holds an entry and the global one
-            // otherwise — so data stored globally must stay readable when the
-            // caller supplies a path or a context. (Invariant 2 is the narrower
-            // claim that an empty/falsy path *expression* selects the global
-            // slot; a static namespace has no path expression to evaluate at
-            // all, so the prose is what governs here.)
-            // `put --path` entries still win at their own path: the requested
-            // slot is preferred and the global one is only reached when that slot
-            // holds nothing. Providers backed by a real Source are untouched — a
-            // PathScoped source's whole point is that /a and /b differ.
-            //
-            // The fallback is slot-level, not field-level: whichever slot answers
-            // answers alone, so a path slot never merges with the global one (see
-            // canon, same section). `read_path` rather than a shadowed
-            // `effective_path` so a grep says which reads take the fallback —
-            // every use below is a cache read; `effective_path` still keeps the
-            // requested path for the force-evict, wait and demand paths above.
-            let read_path = match effective_path {
-                Some(p)
-                    if registry.is_static_namespace(provider_name)
-                        && !cache.has_entry(provider_name, Some(&p)) =>
-                {
-                    None
-                }
-                other => other,
-            };
-
             // Cache lookup with cold-miss inline-execute, routed by key parse form.
+            // Every read goes through `Cache::read_merged`, which resolves the
+            // directory chain (canon §"Path resolution"); there is no slot to
+            // prefer and none to fall back to.
             // Canon §"Cold cache miss triggers inline fetch": on cache miss, synchronously
             // execute the relevant source(s), write to cache, then re-read.
             // Read-always sources are re-executed on every read, not just cold misses.
+            //
+            // `at` is the entry the request addresses and the head of the chain
+            // the merged read walks.
+            let at = effective_path.as_deref();
             let (cache_hit, normal_response) = match &plan.target {
                 KeyParse::Field(provider, field) => {
                     // For read-always sources: re-execute before reading, even on a hit.
                     let head = field.split('.').next().unwrap_or(field.as_str());
                     if let Some(source_name) = registry.source_for_field(provider, head) {
-                        maybe_read_always(
-                            registry,
-                            cache,
-                            provider,
-                            source_name,
-                            read_path.as_deref(),
-                        )
-                        .await;
+                        maybe_read_always(registry, cache, provider, source_name, at).await;
                     }
                     // Cold-miss execute for non-read-always sources (read-always already ran above).
-                    let mut hit = cache.get_field(provider, read_path.as_deref(), field);
+                    let mut merged = cache.read_merged(provider, at, registry);
+                    let mut hit = lookup_merged(&merged, field);
                     if hit.is_none()
                         && let Some(source_name) = registry.source_for_field(provider, head)
                     {
                         let source_name = source_name.to_string();
-                        if inline_execute_source(
-                            registry,
-                            cache,
-                            provider,
-                            &source_name,
-                            read_path.as_deref(),
-                        )
-                        .await
+                        if inline_execute_source(registry, cache, provider, &source_name, at).await
                         {
-                            hit = cache.get_field(provider, read_path.as_deref(), field);
+                            merged = cache.read_merged(provider, at, registry);
+                            hit = lookup_merged(&merged, field);
                         }
                     }
                     match hit {
-                        Some((value, last_refreshed)) => {
-                            let age_ms = last_refreshed.elapsed().as_millis();
-                            let data =
-                                serde_json::to_value(&value).unwrap_or(serde_json::Value::Null);
-                            (true, Response::ok(data, age_ms, false))
+                        Some(data) => {
+                            let (_, age_ms, stale) = merged.expect("a hit came from a merged read");
+                            (true, Response::ok(data, age_ms, stale))
                         }
                         None => {
                             // Distinguish nested-path not-found from full miss.
-                            if field.contains('.')
-                                && cache
-                                    .get_field(provider, read_path.as_deref(), head)
-                                    .is_some()
-                            {
+                            if field.contains('.') && lookup_merged(&merged, head).is_some() {
                                 return Response::error(format!(
                                     "unknown field: {provider}.{field}"
                                 ));
@@ -670,50 +682,37 @@ async fn handle_request(
                 }
                 KeyParse::Provider(provider) => {
                     // Whole-provider read: re-execute read-always sources first,
-                    // then warm all applicable sources on cold miss.
-                    if let Some(sources) = registry.provider_sources(provider) {
-                        let source_names: Vec<String> = sources
-                            .iter()
-                            .filter(|sm| match sm.scope {
-                                SourceScope::Global => true,
-                                SourceScope::PathScoped => read_path.is_some(),
-                            })
-                            .map(|sm| sm.name.clone())
-                            .collect();
+                    // then warm every applicable source that has nothing cached.
+                    let source_names: Vec<String> = registry
+                        .provider_sources(provider)
+                        .map(|sources| {
+                            sources
+                                .iter()
+                                .filter(|sm| match sm.scope {
+                                    SourceScope::Global => true,
+                                    SourceScope::PathScoped => at.is_some(),
+                                })
+                                .map(|sm| sm.name.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    for sn in &source_names {
+                        maybe_read_always(registry, cache, provider, sn, at).await;
+                    }
+                    // Cold when no entry a Source of this provider writes to
+                    // holds anything of its own. A static record on the chain is
+                    // not this provider's data, so it must not pass for warm.
+                    let any_warm = source_names.iter().any(|sn| {
+                        let layer = source_scope_path(registry, provider, sn, at);
+                        cache.has_provider_records(provider, layer)
+                    });
+                    if !any_warm {
                         for sn in &source_names {
-                            maybe_read_always(registry, cache, provider, sn, read_path.as_deref())
-                                .await;
+                            inline_execute_source(registry, cache, provider, sn, at).await;
                         }
                     }
-                    let mut hit = cache.get_entry(provider, read_path.as_deref());
-                    if hit.is_none()
-                        && let Some(sources) = registry.provider_sources(provider)
-                    {
-                        let source_names: Vec<String> = sources
-                            .iter()
-                            .filter(|sm| match sm.scope {
-                                SourceScope::Global => true,
-                                SourceScope::PathScoped => read_path.is_some(),
-                            })
-                            .map(|sm| sm.name.clone())
-                            .collect();
-                        for sn in &source_names {
-                            inline_execute_source(
-                                registry,
-                                cache,
-                                provider,
-                                sn,
-                                read_path.as_deref(),
-                            )
-                            .await;
-                        }
-                        hit = cache.get_entry(provider, read_path.as_deref());
-                    }
-                    match hit {
-                        Some(entry) => {
-                            let age_ms = entry.age_ms();
-                            let stale = entry.is_stale();
-                            let flat = entry.flatten_fields();
+                    match cache.read_merged(provider, at, registry) {
+                        Some((flat, age_ms, stale)) => {
                             let data =
                                 serde_json::to_value(&flat).unwrap_or(serde_json::Value::Null);
                             (true, Response::ok(data, age_ms, stale))
@@ -849,22 +848,9 @@ async fn handle_request(
                 ));
             }
 
-            // Resolve optional path — canonicalize if provided.
-            let effective_path: Option<String> = path.as_deref().map(|p| {
-                let path_obj = std::path::Path::new(p);
-                if path_obj.is_relative() {
-                    std::env::current_dir()
-                        .ok()
-                        .and_then(|cwd| cwd.join(path_obj).canonicalize().ok())
-                        .map(|abs| abs.to_string_lossy().to_string())
-                        .unwrap_or_else(|| p.to_string())
-                } else {
-                    path_obj
-                        .canonicalize()
-                        .map(|abs| abs.to_string_lossy().to_string())
-                        .unwrap_or_else(|_| p.to_string())
-                }
-            });
+            // Resolve optional path — canonicalize if provided. `$HOME`, like a
+            // request carrying no path at all, is the global entry.
+            let effective_path: Option<String> = crate::query::normalise_path(path.as_deref());
 
             // data=None means "clear the addressed node" — the row goes, the
             // registry entry stays.
@@ -1583,8 +1569,9 @@ mod tests {
         refs_fields.insert("branch".to_string(), Value::String("main".to_string()));
         cache.put_source("git", Some("/repo"), "refs", refs_fields, None);
 
+        let registry = ProviderRegistry::with_defaults();
         let target = KeyParse::Field("git".to_string(), "branch".to_string());
-        let resp = read_watch_value(&cache, &target, Some("/repo"));
+        let resp = read_watch_value(&cache, &registry, &target, Some("/repo"));
         assert!(resp.ok);
         assert_eq!(
             resp.data.unwrap(),

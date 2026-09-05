@@ -86,12 +86,10 @@ fixture's `virtual`/`env`/`cwd` feed the resolver call directly (for the C
 ABI this is `overrides_json` / `env_json` / `cwd`).
 
 Daemon queries a `resolve` makes are scoped to the fixture's `cwd`. A
-pathless (global) `setup` `put` is still visible to them: a virtual provider
-declares no path expression, so a path-scoped `get` falls back to the global
-slot (canon `field_resolution.md` §"Path resolution" — the prose on virtual
-providers, not invariant 2, which is only about an empty/falsy path
-expression). Seed with `args.path` only when the fixture is about
-path-keyed data.
+pathless (global) `setup` `put` is still visible to them: a read at a path
+resolves static records up the directory chain, and the global entry is the
+last link of every chain (canon `field_resolution.md` §"Path resolution").
+Seed with `args.path` only when the fixture is about path-keyed data.
 
 ### The `eval` op
 
@@ -123,7 +121,7 @@ all evaluate falsy, so `{{ nope.field or "x" }}` is `"x"`.
 entries keyed `"provider.field"` define the field expressions a `provider.field`
 reference resolves through (transitively — a virtual field may reference
 another), `env` supplies `env.*`, and `cwd` scopes the daemon queries — with
-the same global-slot fallback `resolve` gets.
+the same chain resolution `resolve` gets.
 
 **Not every runner supports `resolve`/`eval`.** A runner whose binding
 doesn't implement them must **skip** those fixtures and report them as
