@@ -71,10 +71,10 @@ async fn source_returns_builtin_for_hostname() {
     handle.abort();
 }
 
-// ── Test 2: :source returns "dynamic" after a put ───────────────────────────
+// ── Test 2: :source returns "static" after a put ────────────────────────────
 
 #[tokio::test]
-async fn source_returns_dynamic_after_put() {
+async fn source_returns_static_after_put() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -90,7 +90,7 @@ async fn source_returns_dynamic_after_put() {
 
     assert!(resps[0].ok, "put should succeed");
     assert!(resps[1].ok, "source query should succeed");
-    assert_eq!(resps[1].data.as_ref().unwrap(), "dynamic");
+    assert_eq!(resps[1].data.as_ref().unwrap(), "static");
 
     handle.abort();
 }

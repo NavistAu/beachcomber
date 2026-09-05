@@ -554,18 +554,18 @@ async fn handle_request(
             let effective_path = plan.effective_path.clone();
             let meta = plan.meta.as_deref();
 
-            // Unknown provider check: dynamic providers are also valid.
+            // Unknown provider check: static namespaces are also valid.
             let is_known = registry.provider_metadata(provider_name).is_some()
-                || registry.is_dynamic(provider_name);
+                || registry.is_static_namespace(provider_name);
             if !is_known {
                 return Response::error(format!("unknown provider: {provider_name}"));
             }
 
             // Force evict: drop the cache entry so the normal miss path re-executes.
             if *force {
-                if registry.is_dynamic(provider_name) {
+                if registry.is_static_namespace(provider_name) {
                     return Response::error(format!(
-                        "cannot --force dynamic provider '{provider_name}': no source to re-execute from"
+                        "cannot --force static provider '{provider_name}': no source to re-execute from"
                     ));
                 }
                 cache.remove(provider_name, effective_path.as_deref());
@@ -573,10 +573,10 @@ async fn handle_request(
 
             // Wait semantics: if the cached entry is stale, evict it so the normal
             // miss path below re-executes the provider inline and returns fresh data.
-            // Skipped for dynamic providers — they have no source to re-execute.
+            // Skipped for static namespaces — they have no source to re-execute.
             if *wait
                 && !*force
-                && !registry.is_dynamic(provider_name)
+                && !registry.is_static_namespace(provider_name)
                 && cache
                     .get_entry(provider_name, effective_path.as_deref())
                     .is_some_and(|e| e.is_stale())
@@ -599,8 +599,8 @@ async fn handle_request(
 
             // :source short-circuits — no cache lookup needed.
             if matches!(meta, Some("source")) {
-                let src = if registry.is_dynamic(provider_name) {
-                    "dynamic"
+                let src = if registry.is_static_namespace(provider_name) {
+                    "static"
                 } else if registry.provider_metadata(provider_name).is_some() {
                     "builtin"
                 } else {
@@ -609,7 +609,7 @@ async fn handle_request(
                 return Response::ok(serde_json::Value::String(src.to_string()), 0, false);
             }
 
-            // Dynamic providers fall back to the global slot. A dynamic provider
+            // Static namespaces fall back to the global slot. A static namespace
             // (one `put` created) declares no sources and therefore no path
             // expression, and `docs/canon/field_resolution.md` §"Path
             // resolution" says such a provider is read by `get` from the
@@ -617,7 +617,7 @@ async fn handle_request(
             // otherwise — so data stored globally must stay readable when the
             // caller supplies a path or a context. (Invariant 2 is the narrower
             // claim that an empty/falsy path *expression* selects the global
-            // slot; a dynamic provider has no path expression to evaluate at
+            // slot; a static namespace has no path expression to evaluate at
             // all, so the prose is what governs here.)
             // `put --path` entries still win at their own path: the requested
             // slot is preferred and the global one is only reached when that slot
@@ -632,7 +632,7 @@ async fn handle_request(
             // requested path for the force-evict, wait and demand paths above.
             let read_path = match effective_path {
                 Some(p)
-                    if registry.is_dynamic(provider_name)
+                    if registry.is_static_namespace(provider_name)
                         && !cache.has_entry(provider_name, Some(&p)) =>
                 {
                     None
@@ -852,12 +852,16 @@ async fn handle_request(
             }
         }
         Request::Refresh { key, path } => {
-            let (provider_name, _field) = protocol::split_key(key);
+            // Suffix-strip runs before the facet check, mirroring Get/Watch, so
+            // e.g. `refresh hostname:age` treats `age` as a metadata suffix on
+            // provider `hostname`, not a facet candidate.
+            let (stripped_key, _meta) = crate::query::split_metadata_suffix(key);
+            let (provider_name, _field) = protocol::split_key(stripped_key);
             if let Err(msg) = crate::query::parse_facet(provider_name) {
                 return Response::error(msg);
             }
             let requested = path.as_deref().or(context_path.as_deref());
-            let effective_path = resolve_path(key, requested, registry);
+            let effective_path = resolve_path(stripped_key, requested, registry);
 
             if let Some(sched) = scheduler {
                 // Route through scheduler.
@@ -875,8 +879,8 @@ async fn handle_request(
                     error: None,
                 }
             } else {
-                // Fallback: scheduler not available. Dynamic providers are a no-op.
-                if registry.is_dynamic(provider_name) {
+                // Fallback: scheduler not available. Static namespaces are a no-op.
+                if registry.is_static_namespace(provider_name) {
                     return Response {
                         ok: true,
                         data: None,
@@ -989,8 +993,8 @@ async fn handle_request(
                 }
             });
 
-            // Register dynamic name (idempotent, safe under concurrent access).
-            registry.register_dynamic(key);
+            // Register static namespace (idempotent, safe under concurrent access).
+            registry.register_static(key);
 
             // Write to cache under the synthetic "put" source name.
             cache.put_source(
@@ -1272,13 +1276,13 @@ async fn handle_introspect_providers(
     names.sort();
 
     for name in &names {
-        let (is_dynamic, is_real) = (
-            registry.is_dynamic(name),
+        let (is_static, is_real) = (
+            registry.is_static_namespace(name),
             registry.provider_metadata(name).is_some(),
         );
 
-        let source_type = if is_dynamic {
-            "dynamic"
+        let source_type = if is_static {
+            "static"
         } else if is_real {
             "builtin"
         } else {

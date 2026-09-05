@@ -10,7 +10,7 @@ export interface HelloInfo {
 export type RowKind =
   | { kind: 'lifecycle'; decay: number; watches_files: boolean }
   | { kind: 'once' }
-  | { kind: 'virtual' }
+  | { kind: 'static' }
   | { kind: 'transient' };
 
 export interface CacheRow {

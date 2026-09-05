@@ -13,6 +13,11 @@ type CacheKey = String;
 /// for a leaf seeded from that configuration file)").
 pub const PUT_SOURCE: &str = "put";
 
+/// Prefix on a source label naming a leaf seeded from a configuration file
+/// (canon `provider_source.md` "Field"). A future task writes sources named
+/// `config:<file>`; this constant names the prefix `Cache::list_rows` checks.
+pub const CONFIG_SOURCE_PREFIX: &str = "config:";
+
 /// Build a compact cache key from a provider name and optional path.
 /// Uses a null byte as separator since it cannot appear in valid paths.
 fn make_cache_key(provider: &str, path: Option<&str>) -> CacheKey {
@@ -249,11 +254,12 @@ impl Cache {
                 // A row whose source is the synthetic `put` label or a
                 // `config:<file>` seed carries no Source instance — it is a
                 // static entry (canon `provider_source.md` "Cache entry").
-                let kind = if source_name == PUT_SOURCE || source_name.starts_with("config:") {
-                    Some(RowKind::Static)
-                } else {
-                    None
-                };
+                let kind =
+                    if source_name == PUT_SOURCE || source_name.starts_with(CONFIG_SOURCE_PREFIX) {
+                        Some(RowKind::Static)
+                    } else {
+                        None
+                    };
                 for (field, v) in &src.fields {
                     // Value implements Serialize with #[serde(untagged)] — to_value is lossless.
                     let value = serde_json::to_value(v).unwrap_or(serde_json::Value::Null);
@@ -550,6 +556,33 @@ mod tests {
                 .get_field("git", Some("/repo"), "nonexistent")
                 .is_none(),
             "get_field must return None for unknown field"
+        );
+    }
+
+    /// A row whose source is seeded from a config file (`config:<file>`)
+    /// carries no Source instance — `list_rows` must mark it `RowKind::Static`,
+    /// same as a `put`-written row.
+    #[test]
+    fn list_rows_marks_config_seeded_source_static() {
+        let cache = Cache::new();
+        cache.put_source(
+            "myapp",
+            None,
+            "config:x.toml",
+            make_fields(&[("greeting", "hello")]),
+            None,
+        );
+
+        let rows = cache.list_rows();
+        let row = rows
+            .iter()
+            .find(|r| r.provider == "myapp")
+            .expect("row for myapp must be present");
+        assert_eq!(
+            row.kind,
+            Some(RowKind::Static),
+            "config-seeded row must be RowKind::Static, got {:?}",
+            row.kind
         );
     }
 }

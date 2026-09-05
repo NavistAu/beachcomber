@@ -221,10 +221,10 @@ function Backend:put_null(key, path)
   return { ok = true }
 end
 
---- The wire `refresh` op is a lenient no-op on a virtual (put-created)
--- provider (`{"ok":true}` observed directly over the socket). `comb get
+--- The wire `refresh` op is a lenient no-op on a static (put-created)
+-- namespace (`{"ok":true}` observed directly over the socket). `comb get
 -- --force` — the only CLI path to a re-execution — is stricter and
--- errors ("cannot --force virtual provider ... no source to re-execute
+-- errors ("cannot --force static provider ... no source to re-execute
 -- from"). Since a provider's row `source` (from `comb status`) already
 -- says which case we're in, check that client-side first rather than
 -- surface the CLI's stricter behaviour as a spurious failure.
@@ -232,7 +232,7 @@ function Backend:refresh(key, path)
   local provider = key:match("^([^.]+)")
   local rows = status_rows(self._comb, provider)
   for _, row in ipairs(rows) do
-    if row.source == "virtual" then
+    if row.source == "put" then
       return { ok = true }
     end
   end

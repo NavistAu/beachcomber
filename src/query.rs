@@ -40,7 +40,6 @@ pub fn parse_facet(provider: &str) -> Result<Option<&str>, String> {
     let (base, facet) = provider.split_once(':').expect("checked contains(':')");
     let valid = !base.is_empty()
         && !facet.is_empty()
-        && !facet.contains(':')
         && facet
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
@@ -117,9 +116,9 @@ pub fn resolve_path(
     let parts: Vec<&str> = key.split('.').collect();
     let provider = parts[0];
 
-    // Dynamic providers don't declare sources, but they can be stored with a path.
-    // Pass the raw path through (canonicalized) so path-keyed dynamic data is accessible.
-    if registry.is_dynamic(provider) {
+    // Static namespaces don't declare sources, but they can be stored with a path.
+    // Pass the raw path through (canonicalized) so path-keyed static data is accessible.
+    if registry.is_static_namespace(provider) {
         return requested_path.map(|p| {
             let path = std::path::Path::new(p);
             if path.is_relative() {
@@ -362,6 +361,11 @@ mod tests {
     #[test]
     fn parse_facet_valid_single_colon() {
         assert_eq!(parse_facet("scanline:template"), Ok(Some("template")));
+    }
+
+    #[test]
+    fn parse_facet_allows_underscores_hyphens_and_digits() {
+        assert_eq!(parse_facet("a:my_facet-2"), Ok(Some("my_facet-2")));
     }
 
     #[test]

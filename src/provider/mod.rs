@@ -487,7 +487,7 @@ pub enum ProviderSource {
     #[default]
     Builtin,
     Script,
-    Dynamic,
+    Static,
 }
 
 /// A Provider is a namespace declaring one or more Sources.

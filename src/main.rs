@@ -152,7 +152,7 @@ enum Commands {
         #[arg(long)]
         depth: Option<usize>,
     },
-    /// Put data into a dynamic provider
+    /// Put data into a static namespace
     #[command(visible_alias = "p")]
     Put {
         /// Provider name (e.g., "myapp")

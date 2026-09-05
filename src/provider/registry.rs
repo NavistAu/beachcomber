@@ -11,8 +11,8 @@ pub struct ProviderRegistry {
     providers: HashMap<String, ProviderMetadata>,
     /// (provider_name, field_name) → source_name. Built once at registration.
     field_to_source: HashMap<(String, String), String>,
-    /// Dynamic provider names registered via `comb put`. Orthogonal to the source model.
-    dynamic_names: DashMap<String, ()>,
+    /// Static namespace names registered via `comb put`. Orthogonal to the source model.
+    static_names: DashMap<String, ()>,
 }
 
 impl Default for ProviderRegistry {
@@ -27,7 +27,7 @@ impl ProviderRegistry {
             sources: HashMap::new(),
             providers: HashMap::new(),
             field_to_source: HashMap::new(),
-            dynamic_names: DashMap::new(),
+            static_names: DashMap::new(),
         }
     }
 
@@ -102,12 +102,12 @@ impl ProviderRegistry {
         self.providers.get(provider).map(|m| m.sources.as_slice())
     }
 
-    /// Return the list of registered provider names (excluding dynamic ones).
+    /// Return the list of registered provider names (excluding static ones).
     pub fn provider_names(&self) -> Vec<String> {
         self.providers.keys().cloned().collect()
     }
 
-    // ── Dynamic provider support ─────────────────────────────────────────────
+    // ── Static namespace support ─────────────────────────────────────────────
 
     /// Returns true if the provider name belongs to an already-registered
     /// (builtin or script) provider.
@@ -115,25 +115,27 @@ impl ProviderRegistry {
         self.providers.contains_key(name)
     }
 
-    /// Returns true if the provider name was registered as dynamic.
-    pub fn is_dynamic(&self, name: &str) -> bool {
-        self.dynamic_names.contains_key(name)
+    /// Returns true if the name was registered as a static namespace.
+    pub fn is_static_namespace(&self, name: &str) -> bool {
+        self.static_names.contains_key(name)
     }
 
-    /// Register a dynamic provider name. Returns false if an already-registered
-    /// provider exists with this name.
-    pub fn register_dynamic(&self, name: &str) -> bool {
+    /// Register a static namespace: one no code or config registered, where
+    /// every record carries a static source (`put`, or later `config:<file>`)
+    /// and `comb status` shows its rows as kind `static`. Returns false if an
+    /// already-registered provider exists with this name.
+    pub fn register_static(&self, name: &str) -> bool {
         if self.is_registered(name) {
             return false;
         }
-        self.dynamic_names.insert(name.to_string(), ());
+        self.static_names.insert(name.to_string(), ());
         true
     }
 
-    /// Return all provider names, including dynamic names.
+    /// Return all provider names, including static namespace names.
     pub fn list(&self) -> Vec<String> {
         let mut names: Vec<String> = self.providers.keys().cloned().collect();
-        for entry in self.dynamic_names.iter() {
+        for entry in self.static_names.iter() {
             let name = entry.key().clone();
             if !names.contains(&name) {
                 names.push(name);
@@ -467,15 +469,15 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_registration_blocked_by_real_provider() {
+    fn static_registration_blocked_by_real_provider() {
         let mut reg = ProviderRegistry::new();
         let p = FakeProvider {
             name: "hostname".into(),
             sources: vec![ms("name", vec!["value"])],
         };
         reg.register(Box::new(p)).unwrap();
-        assert!(!reg.register_dynamic("hostname"));
-        assert!(reg.register_dynamic("myvar"));
-        assert!(reg.is_dynamic("myvar"));
+        assert!(!reg.register_static("hostname"));
+        assert!(reg.register_static("myvar"));
+        assert!(reg.is_static_namespace("myvar"));
     }
 }

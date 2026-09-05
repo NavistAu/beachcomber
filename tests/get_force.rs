@@ -148,13 +148,13 @@ fn cache_remove_targets_path_scope() {
     );
 }
 
-/// force=true on a dynamic provider must return an error without evicting the entry.
+/// force=true on a static namespace must return an error without evicting the entry.
 #[tokio::test]
-async fn force_on_dynamic_provider_returns_error() {
+async fn force_on_static_namespace_returns_error() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    // Register a dynamic provider via the put path (mirrors what Request::Put does).
-    registry.register_dynamic("mystore");
+    // Register a static namespace via the put path (mirrors what Request::Put does).
+    registry.register_static("mystore");
 
     let mut fields = HashMap::new();
     fields.insert("val".to_string(), Value::String("hello".to_string()));
@@ -177,18 +177,18 @@ async fn force_on_dynamic_provider_returns_error() {
     let response: Response = serde_json::from_str(&line).unwrap();
     assert!(
         !response.ok,
-        "force on dynamic provider should return error"
+        "force on static namespace should return error"
     );
     assert!(
-        response.error.as_deref().unwrap_or("").contains("dynamic"),
-        "error message should mention 'dynamic', got: {:?}",
+        response.error.as_deref().unwrap_or("").contains("static"),
+        "error message should mention 'static', got: {:?}",
         response.error
     );
 
     // The stored entry must still be present — the guard ran before eviction.
     assert!(
         cache.get_entry("mystore", None).is_some(),
-        "dynamic entry must not be evicted by a failed force"
+        "static entry must not be evicted by a failed force"
     );
 
     handle.abort();

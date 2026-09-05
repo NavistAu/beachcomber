@@ -1201,12 +1201,12 @@ async fn status_response_once_row_has_kind_once() {
 async fn status_response_put_row_has_kind_static() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    // Store a dynamic entry via put.
+    // Store a static entry via put.
     let _ = client
         .put("custom", serde_json::json!({"color": "blue"}), None, None)
         .expect("put custom");
 
-    // `put` writes the cache entry and registers the dynamic provider before it
+    // `put` writes the cache entry and registers the static namespace before it
     // answers, so the row is there — poll for it rather than assume a schedule.
     let rows = poll_until(
         "status rows after put custom",

@@ -294,20 +294,22 @@ async fn global_provider_ignores_context() {
     handle.abort();
 }
 
-/// Test 4: the global-slot fallback is for *dynamic* providers only.
+/// Test 4: the global-slot fallback is for *static* namespaces only.
 ///
 /// A `get` at a path with no entry falls back to the global slot when the
-/// provider is dynamic (see tests/store.rs). A PathScoped provider must not
-/// gain that: /project/a and /project/b holding different values is the whole
-/// point of path scoping, and a stray global entry must never leak into a
-/// path-scoped read. Here the path-keyed slot is cold, so the normal cold-miss
-/// inline execute answers with the requested path — not the global entry.
+/// provider is a static namespace (see tests/store.rs). A PathScoped provider
+/// must not gain that: /project/a and /project/b holding different values is
+/// the whole point of path scoping, and a stray global entry must never leak
+/// into a path-scoped read. Here the path-keyed slot is cold, so the normal
+/// cold-miss inline execute answers with the requested path — not the global
+/// entry.
 ///
-/// This is the guard against dropping the `registry.is_dynamic(..)` conjunct
-/// from `read_path` in src/server.rs: without it the seeded global entry would
-/// answer here and every path-scoped provider would silently collapse onto one
-/// slot. It passes either way today — nothing about the fallback's *dynamic*
-/// half is exercised — so its whole value is failing if that conjunct goes.
+/// This is the guard against dropping the `registry.is_static_namespace(..)`
+/// conjunct from `read_path` in src/server.rs: without it the seeded global
+/// entry would answer here and every path-scoped provider would silently
+/// collapse onto one slot. It passes either way today — nothing about the
+/// fallback's *static* half is exercised — so its whole value is failing if
+/// that conjunct goes.
 #[tokio::test]
 async fn path_scoped_provider_has_no_global_fallback() {
     let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();

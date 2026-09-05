@@ -101,5 +101,5 @@ fn provider_source_default_is_builtin() {
 fn provider_source_ordering() {
     use beachcomber::provider::ProviderSource;
     assert!(ProviderSource::Builtin < ProviderSource::Script);
-    assert!(ProviderSource::Script < ProviderSource::Dynamic);
+    assert!(ProviderSource::Script < ProviderSource::Static);
 }

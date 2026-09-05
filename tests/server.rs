@@ -173,17 +173,17 @@ async fn server_handles_cache_miss_provider_returns_none() {
 }
 
 #[tokio::test]
-async fn server_handles_cache_miss_virtual_provider() {
+async fn server_handles_cache_miss_static_namespace() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    // Register a virtual provider name but don't populate cache
-    registry.register_dynamic("myvirtual");
+    // Register a static namespace name but don't populate cache
+    registry.register_static("mystatic");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let request = r#"{"op": "get", "key": "myvirtual"}"#;
+    let request = r#"{"op": "get", "key": "mystatic"}"#;
     stream
         .write_all(format!("{request}\n").as_bytes())
         .await
@@ -197,7 +197,7 @@ async fn server_handles_cache_miss_virtual_provider() {
     assert!(response.ok);
     assert!(
         response.data.is_none(),
-        "Virtual provider with no cache data should return miss (no execute to call)"
+        "Static namespace with no cache data should return miss (no execute to call)"
     );
 
     handle.abort();
@@ -336,7 +336,7 @@ async fn nested_key_walks_into_object_field() {
     let mut fields = HashMap::new();
     fields.insert("project".to_string(), Value::Object(tools_map));
     cache.put_source("myproj", None, beachcomber::cache::PUT_SOURCE, fields, None);
-    registry.register_dynamic("myproj");
+    registry.register_static("myproj");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -369,7 +369,7 @@ async fn nested_key_missing_subkey_errors() {
     let mut fields = HashMap::new();
     fields.insert("project".to_string(), Value::Object(tools_map));
     cache.put_source("myproj", None, beachcomber::cache::PUT_SOURCE, fields, None);
-    registry.register_dynamic("myproj");
+    registry.register_static("myproj");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();

@@ -151,20 +151,17 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     handle.abort();
 }
 
-/// wait=true + virtual provider -> returns the cached value regardless of staleness.
-/// Virtual providers have no source to re-execute, so the entry is served as-is.
+/// wait=true + static namespace -> returns the cached value regardless of staleness.
+/// Static namespaces have no source to re-execute, so the entry is served as-is.
 #[tokio::test]
-async fn wait_virtual_provider_returns_cached_ignoring_stale() {
+async fn wait_static_namespace_returns_cached_ignoring_stale() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    // Register a dynamic provider and seed an entry that will appear stale.
-    registry.register_dynamic("mystore");
+    // Register a static namespace and seed an entry that will appear stale.
+    registry.register_static("mystore");
 
     let mut fields = HashMap::new();
-    fields.insert(
-        "val".to_string(),
-        Value::String("virtual-value".to_string()),
-    );
+    fields.insert("val".to_string(), Value::String("static-value".to_string()));
     // interval=0 will make it stale after 1 second.
     cache.put_source("mystore", None, PUT_SOURCE, fields, Some(0));
 
@@ -178,7 +175,7 @@ async fn wait_virtual_provider_returns_cached_ignoring_stale() {
         .expect("entry must be present");
     assert!(
         entry.is_stale(),
-        "virtual entry with interval=0 must be stale after clock advance"
+        "static entry with interval=0 must be stale after clock advance"
     );
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
@@ -195,18 +192,18 @@ async fn wait_virtual_provider_returns_cached_ignoring_stale() {
     reader.read_line(&mut line).await.unwrap();
 
     let response: Response = serde_json::from_str(&line).unwrap();
-    // Virtual provider: wait must not error and must return the cached value.
+    // Static namespace: wait must not error and must return the cached value.
     assert!(
         response.ok,
-        "wait on stale virtual provider must succeed (return cached, not error)"
+        "wait on stale static namespace must succeed (return cached, not error)"
     );
     let data = response
         .data
-        .expect("wait on virtual provider must return data");
+        .expect("wait on static namespace must return data");
     assert_eq!(
         data["val"].as_str(),
-        Some("virtual-value"),
-        "wait on virtual provider must return the cached value as-is"
+        Some("static-value"),
+        "wait on static namespace must return the cached value as-is"
     );
 
     handle.abort();
