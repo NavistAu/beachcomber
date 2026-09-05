@@ -220,13 +220,21 @@ async fn a_put_at_home_lands_in_the_global_entry() {
         serde_json::json!(3),
         "addressing $HOME explicitly reads the same entry"
     );
-    assert!(
-        f.cache.has_entry("my", None),
-        "the record is keyed pathless, not under $HOME"
+    let rows = data(
+        send_recv(&mut s, serde_json::json!({"op": "status"})).await,
+        "status",
     );
-    assert!(
-        !f.cache.has_entry("my", Some(&home)),
-        "no separate $HOME-keyed entry exists"
+    let paths: std::collections::BTreeSet<String> = rows
+        .as_array()
+        .expect("status returns an array")
+        .iter()
+        .filter(|row| row["provider"] == "my")
+        .map(|row| row["path"].to_string())
+        .collect();
+    assert_eq!(
+        paths,
+        std::collections::BTreeSet::from(["null".to_string()]),
+        "the record is keyed pathless — no separate $HOME-keyed entry exists"
     );
 }
 
@@ -421,6 +429,117 @@ async fn a_nested_repo_never_reads_the_outer_repos_branch() {
         inner_branch,
         serde_json::json!("innerbr"),
         "a path-scoped record is read at its own path — never inherited from an ancestor"
+    );
+}
+
+// ── a repository at $HOME is served from the global entry ────────────────────
+
+/// `git`, with the host's configuration shut out (see `common::git`).
+fn git_at(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// `$HOME` is the global path, so a repository rooted there is a path-scoped
+/// source addressed at the global entry: its records key the pathless entry and
+/// the source runs at `$HOME`. Addressing `$HOME`, addressing nothing, and
+/// standing in a plain subdirectory are all the same read of the same entry —
+/// there is never a second entry keyed `Some($HOME)`.
+#[tokio::test]
+async fn a_repository_at_home_is_served_from_the_global_entry() {
+    if !has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let f = Fixture::defaults();
+    git_at(&f.home, &["init", "--initial-branch=homebr"]);
+
+    let home = f.home.to_string_lossy().into_owned();
+    let mut s = f.connect().await;
+
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.branch", &home)).await,
+            "$HOME"
+        ),
+        serde_json::json!("homebr"),
+        "a path-scoped source addressed at $HOME runs there"
+    );
+    assert_eq!(
+        data(send_recv(&mut s, get("git.branch")).await, "--global"),
+        serde_json::json!("homebr"),
+        "--global reads the same entry, and the same directory"
+    );
+
+    // A plain subdirectory of the repository, not a repository itself: the
+    // scope walk lands on $HOME, which is the global entry.
+    let sub = f.path("ws/other");
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.branch", &sub)).await,
+            "subdirectory"
+        ),
+        serde_json::json!("homebr"),
+        "a subdirectory resolves to the repository root, which is $HOME"
+    );
+
+    let rows = data(
+        send_recv(&mut s, serde_json::json!({"op": "status"})).await,
+        "status",
+    );
+    let paths: std::collections::BTreeSet<String> = rows
+        .as_array()
+        .expect("status returns an array")
+        .iter()
+        .filter(|row| row["provider"] == "git")
+        .map(|row| row["path"].to_string())
+        .collect();
+    assert_eq!(
+        paths,
+        std::collections::BTreeSet::from(["null".to_string()]),
+        "one git entry, keyed pathless — never a second one at Some($HOME)"
+    );
+}
+
+/// A watch from a subdirectory of a repository rooted at `$HOME` subscribes to
+/// the global entry, which is on its chain, and its initial frame is the
+/// chain-resolved value.
+#[tokio::test]
+async fn watch_from_a_subdirectory_of_a_home_repository_reads_the_global_entry() {
+    if !has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let f = Fixture::defaults();
+    git_at(&f.home, &["init", "--initial-branch=homebr"]);
+
+    let sub = f.path("ws/other");
+    let mut w = f.connect().await;
+    let mut req = serde_json::json!({"op": "watch", "key": "git.branch", "path": sub}).to_string();
+    req.push('\n');
+    w.write_all(req.as_bytes()).await.unwrap();
+    let mut frames = BufReader::new(w);
+
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("the initial frame must arrive")
+        .unwrap();
+    let initial: Response = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        initial.data,
+        Some(serde_json::json!("homebr")),
+        "the initial frame resolves through the chain to the global entry"
     );
 }
 

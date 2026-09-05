@@ -95,8 +95,14 @@ pub fn home_dir() -> Option<PathBuf> {
 /// Canonicalise a requested path into the address a cache entry is keyed by.
 ///
 /// A relative path resolves against the daemon's cwd; a path that cannot be
-/// canonicalised is kept verbatim rather than dropped. `$HOME` — and a request
-/// that carries no path at all — is the global entry, whose key is pathless.
+/// canonicalised is kept verbatim rather than dropped.
+///
+/// **The global entry is `$HOME`: its address is `None`, its directory is
+/// `$HOME`.** A request naming `$HOME` and a request carrying no path at all
+/// are the same request, and both key the pathless entry — so `$HOME` never
+/// gets a cache entry of its own beside the global one. The directory half of
+/// that rule is [`source_dir`]: a `PathScoped` Source addressed at the global
+/// entry still has a real directory to read, and it is `$HOME`.
 pub fn normalise_path(requested: Option<&str>) -> Option<String> {
     let p = requested?;
     let path = Path::new(p);
@@ -115,6 +121,22 @@ pub fn normalise_path(requested: Option<&str>) -> Option<String> {
         return None;
     }
     Some(absolute)
+}
+
+/// The directory a Source runs in to produce the records at cache address
+/// `address` — the directory half of the rule at [`normalise_path`].
+///
+/// Everywhere but one case this is the address itself. The exception is a
+/// `PathScoped` Source at the global entry, whose address is `None` and whose
+/// directory is therefore `$HOME`: without it a repository at `$HOME` would be
+/// queried with no directory at all and answer nothing.
+pub fn source_dir(scope: SourceScope, address: Option<&str>) -> Option<String> {
+    match (scope, address) {
+        (SourceScope::PathScoped, None) => {
+            home_dir().map(|home| home.to_string_lossy().into_owned())
+        }
+        _ => address.map(str::to_string),
+    }
 }
 
 /// The chain of cache-entry addresses a read at `path` consults, nearest first
@@ -170,7 +192,12 @@ pub fn resolve_path(
             && let Some(src) = registry.source(provider, &sm.name)
             && let Some(canonical) = src.canonical_path(Some(&raw))
         {
-            return Some(canonical);
+            // The walk can land on `$HOME` — a repository rooted there, queried
+            // from a subdirectory — and `$HOME` is the global entry, so the
+            // result is normalised too. Otherwise the same directory would key
+            // two entries: `Some($HOME)` from the walk and `None` from a direct
+            // request.
+            return normalise_path(Some(&canonical));
         }
     }
     Some(raw)

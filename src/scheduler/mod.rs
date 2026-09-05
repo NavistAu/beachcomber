@@ -550,7 +550,11 @@ impl Scheduler {
         let in_flight = Arc::clone(&self.in_flight);
         let pending_rerun = Arc::clone(&self.pending_rerun);
         let failure_counts = Arc::clone(&self.failure_counts);
-        let path_owned = path.map(|s| s.to_string());
+        // `path` is the cache address; the directory the Source runs in is not
+        // always the same string. The global entry's address is `None` and its
+        // directory is `$HOME` (`query::normalise_path`), so a PathScoped
+        // Source scheduled there reads `$HOME` and writes the pathless entry.
+        let exec_dir = crate::query::source_dir(source.metadata().scope, path);
         let source_clone = Arc::clone(&source);
         let provider_name_owned = provider_name.to_string();
         let source_name_owned = source_name.to_string();
@@ -580,7 +584,7 @@ impl Scheduler {
             // execution is in flight queues exactly one more iteration.
             loop {
                 let src = Arc::clone(&source_clone);
-                let exec_path = path_owned.clone();
+                let exec_path = exec_dir.clone();
                 let result = tokio::time::timeout(
                     Duration::from_secs(timeout_secs),
                     tokio::task::spawn_blocking(move || src.execute(exec_path.as_deref())),
@@ -857,8 +861,13 @@ impl Scheduler {
                             };
                             for sm in &sources_vec {
                                 // Scope filter:
-                                //  - PathScoped sources: skip when no path was provided
-                                //    (they have nothing to attach to).
+                                //  - PathScoped sources: skip when no path was provided.
+                                //    A field query still reaches its owning Source at the
+                                //    global entry through the server's inline execute,
+                                //    which runs it at `$HOME` (`query::source_dir`);
+                                //    what is skipped here is warming every path-scoped
+                                //    Source of a provider at `$HOME` on a query that
+                                //    named no directory.
                                 //  - Global sources: always demand at (provider, None),
                                 //    regardless of whether the consumer query carried a
                                 //    path. A whole-provider query like `comb get mise`

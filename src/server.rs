@@ -392,6 +392,11 @@ impl Drop for ChainWatch {
 /// Path argument is the consumer-supplied path; for Global sources it is
 /// ignored and the cache write keys to (provider, None). Returns true if a
 /// non-empty result was written.
+///
+/// The cache *address* and the *directory* the Source runs in are two things:
+/// the global entry's address is `None` and its directory is `$HOME`
+/// (`query::normalise_path`), so a PathScoped Source addressed there runs at
+/// `$HOME` and its records land on the pathless entry.
 async fn inline_execute_source(
     registry: &ProviderRegistry,
     cache: &Cache,
@@ -403,7 +408,7 @@ async fn inline_execute_source(
         return false;
     };
     let scope = source.metadata().scope;
-    let effective_path = match scope {
+    let address = match scope {
         SourceScope::Global => None,
         SourceScope::PathScoped => path.map(|s| s.to_string()),
     };
@@ -412,19 +417,19 @@ async fn inline_execute_source(
         InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(interval_secs),
         InvalidationStrategy::Watch { .. } => None,
     };
-    let path_owned = effective_path.clone();
+    let dir = crate::query::source_dir(scope, address.as_deref());
     let src_clone = std::sync::Arc::clone(&source);
-    let result =
-        match tokio::task::spawn_blocking(move || src_clone.execute(path_owned.as_deref())).await {
-            Ok(r) => r,
-            Err(_) => return false,
-        };
+    let result = match tokio::task::spawn_blocking(move || src_clone.execute(dir.as_deref())).await
+    {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
     if result.fields.is_empty() {
         return false;
     }
     cache.put_source(
         provider,
-        effective_path.as_deref(),
+        address.as_deref(),
         source_name,
         result.fields,
         expected_interval_secs,
@@ -683,6 +688,12 @@ async fn handle_request(
                 KeyParse::Provider(provider) => {
                     // Whole-provider read: re-execute read-always sources first,
                     // then warm every applicable source that has nothing cached.
+                    // A path-scoped Source is warmed for a whole-namespace read
+                    // only at a directory the request named. A field read still
+                    // reaches its owning Source at the global entry — the
+                    // `Field` arm above executes it at `$HOME` — but warming
+                    // every path-scoped Source of a provider at `$HOME` on a
+                    // query that named no directory is not what was asked for.
                     let source_names: Vec<String> = registry
                         .provider_sources(provider)
                         .map(|sources| {
