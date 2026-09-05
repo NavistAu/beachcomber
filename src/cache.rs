@@ -583,30 +583,50 @@ impl Cache {
     ) -> HashMap<String, Value> {
         let mut out = HashMap::new();
         for layer in crate::query::path_chain(path).iter().rev() {
-            let Some(entry) = self
-                .entries
-                .get(&make_cache_key(namespace, layer.as_deref()))
-            else {
-                continue;
-            };
-            for (name, src) in &entry.sources {
-                if is_static_label(name) {
-                    crate::provider::deep_merge(&mut out, src.fields.clone());
-                }
-            }
+            self.merge_static_records(namespace, layer.as_deref(), &mut out);
         }
         out
     }
 
+    /// Merge the static maps of the entry at `layer` into `out`, in source-name
+    /// order. Returns whether anything merged.
+    fn merge_static_records(
+        &self,
+        namespace: &str,
+        layer: Option<&str>,
+        out: &mut HashMap<String, Value>,
+    ) -> bool {
+        let Some(entry) = self.entries.get(&make_cache_key(namespace, layer)) else {
+            return false;
+        };
+        let mut names: Vec<&String> = entry
+            .sources
+            .keys()
+            .filter(|n| is_static_label(n))
+            .collect();
+        names.sort();
+        let mut merged = false;
+        for name in names {
+            crate::provider::deep_merge(out, entry.sources[name].fields.clone());
+            merged = true;
+        }
+        merged
+    }
+
     /// Merge the provider-produced maps of the entry at `layer` whose Source
-    /// declares one of `scopes`. A map whose source the registry does not
-    /// declare belongs to the entry it sits in, so it is read at whichever
-    /// layer holds it. Returns whether anything merged.
+    /// declares scope `want`, into `out`, in source-name order. A map whose
+    /// source the registry does not declare belongs to the entry it sits in, so
+    /// it is read at whichever layer holds it. Returns whether anything merged.
+    ///
+    /// The name order matters because two maps of the same scope in one entry
+    /// can in principle hold the same key — two sentinel Sources, say, whose
+    /// field names the registry cannot check for overlap. Iterating
+    /// `entry.sources` directly would let a HashMap's order decide the value.
     fn merge_provider_records(
         &self,
         namespace: &str,
         layer: Option<&str>,
-        scopes: &[crate::provider::SourceScope],
+        want: crate::provider::SourceScope,
         registry: &ProviderRegistry,
         out: &mut HashMap<String, Value>,
     ) -> bool {
@@ -614,18 +634,22 @@ impl Cache {
             return false;
         };
         let declared = registry.provider_sources(namespace);
+        let mut names: Vec<&String> = entry
+            .sources
+            .keys()
+            .filter(|name| !is_static_label(name))
+            .filter(|name| {
+                declared
+                    .and_then(|ss| ss.iter().find(|sm| &&sm.name == name))
+                    .map(|sm| sm.scope)
+                    .is_none_or(|scope| scope == want)
+            })
+            .collect();
+        names.sort();
         let mut merged = false;
-        for (name, src) in &entry.sources {
-            if is_static_label(name) {
-                continue;
-            }
-            let scope = declared
-                .and_then(|ss| ss.iter().find(|sm| &sm.name == name))
-                .map(|sm| sm.scope);
-            if scope.is_none_or(|s| scopes.contains(&s)) {
-                crate::provider::deep_merge(out, src.fields.clone());
-                merged = true;
-            }
+        for name in names {
+            crate::provider::deep_merge(out, entry.sources[name].fields.clone());
+            merged = true;
         }
         merged
     }
@@ -633,15 +657,24 @@ impl Cache {
     /// The value tree a read of `namespace` at `path` sees, plus the entry-level
     /// age and staleness to report for it.
     ///
-    /// Layers merge farthest-first, so the nearest record ends up on top: the
-    /// global entry's `Global`-scoped provider records, then the static records
-    /// of every entry on the chain (nearest winning, see
-    /// [`Cache::resolve_static_chain`]), then the addressed entry's
-    /// `PathScoped` provider records. A provider record never walks the chain —
-    /// it is read only from the entry its Source's declared scope keys — which
-    /// is what makes a provider declaring the same field in a `Global` and a
-    /// `PathScoped` source resolve to the path-scoped record at a path and the
-    /// global one under `--global`.
+    /// Layers merge farthest-first, so the nearest record ends up on top, and
+    /// within a layer the order is fixed rather than left to a HashMap:
+    ///
+    /// - the **global entry** — its `PathScoped` provider maps (present only
+    ///   when the request addresses the global entry itself), then its `Global`
+    ///   provider maps over them, then its static maps;
+    /// - each **ancestor** of the addressed path, farthest first — static maps
+    ///   only;
+    /// - the **addressed entry** — its `PathScoped` provider maps, then its
+    ///   static maps over them.
+    ///
+    /// A provider record never walks the chain: it is read only from the entry
+    /// its Source's declared scope keys. So a provider declaring the same field
+    /// in a `Global` and a `PathScoped` source resolves to the path-scoped
+    /// record at a path — the path entry is nearer — and to the `Global`
+    /// record under `--global`, where both live at the one entry and the
+    /// `Global` map is merged second. Which is what `--global` means: the
+    /// answer that does not depend on where you are standing.
     ///
     /// `None` when no layer holds anything: a miss.
     pub fn read_merged(
@@ -651,25 +684,22 @@ impl Cache {
         registry: &ProviderRegistry,
     ) -> Option<(HashMap<String, Value>, u128, bool)> {
         use crate::provider::SourceScope::{Global, PathScoped};
+        let chain = crate::query::path_chain(path);
         let mut out = HashMap::new();
-        // When the request addresses the global entry the two provider layers
-        // coincide, so that one entry contributes every map it holds.
-        let global_scopes: &[crate::provider::SourceScope] = match path {
-            Some(_) => &[Global],
-            None => &[Global, PathScoped],
-        };
-        let mut found =
-            self.merge_provider_records(namespace, None, global_scopes, registry, &mut out);
-
-        let statics = self.resolve_static_chain(namespace, path);
-        if !statics.is_empty() {
-            crate::provider::deep_merge(&mut out, statics);
-            found = true;
-        }
-
-        if path.is_some() {
-            found |=
-                self.merge_provider_records(namespace, path, &[PathScoped], registry, &mut out);
+        let mut found = false;
+        for (depth, layer) in chain.iter().enumerate().rev() {
+            let layer = layer.as_deref();
+            // The addressed entry is the head of the chain; when the request
+            // addresses the global entry the two coincide and both arms run,
+            // PathScoped first.
+            if depth == 0 {
+                found |=
+                    self.merge_provider_records(namespace, layer, PathScoped, registry, &mut out);
+            }
+            if layer.is_none() {
+                found |= self.merge_provider_records(namespace, layer, Global, registry, &mut out);
+            }
+            found |= self.merge_static_records(namespace, layer, &mut out);
         }
 
         if !found {

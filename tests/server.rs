@@ -143,12 +143,19 @@ async fn server_handles_cache_miss_with_sync_execution() {
 #[tokio::test]
 async fn server_handles_cache_miss_provider_returns_none() {
     let (_tmp, sock, cache, registry, watchers) = setup();
+    // A pathless read addresses the global entry, whose directory is `$HOME`,
+    // so a path-scoped source runs there. Point `$HOME` at a plain temp
+    // directory: on a host whose real home sits inside a repository this test
+    // would otherwise be asserting a miss against a live git checkout.
+    // SAFETY: nextest gives every test its own process.
+    let home = tempfile::TempDir::new().unwrap();
+    unsafe { std::env::set_var("HOME", home.path()) };
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
-    // git provider with no path — execute() returns None
+    // git provider with nothing to read at $HOME — every source returns empty
     let request = r#"{"op": "get", "key": "git"}"#;
     stream
         .write_all(format!("{request}\n").as_bytes())

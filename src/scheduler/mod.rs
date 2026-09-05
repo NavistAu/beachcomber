@@ -860,26 +860,16 @@ impl Scheduler {
                                     .collect(),
                             };
                             for sm in &sources_vec {
-                                // Scope filter:
-                                //  - PathScoped sources: skip when no path was provided.
-                                //    A field query still reaches its owning Source at the
-                                //    global entry through the server's inline execute,
-                                //    which runs it at `$HOME` (`query::source_dir`);
-                                //    what is skipped here is warming every path-scoped
-                                //    Source of a provider at `$HOME` on a query that
-                                //    named no directory.
-                                //  - Global sources: always demand at (provider, None),
-                                //    regardless of whether the consumer query carried a
-                                //    path. A whole-provider query like `comb get mise`
-                                //    from inside a project should warm BOTH the project
-                                //    PathScoped source at the resolved path AND the
-                                //    Global source at the pathless slot.
-                                if matches!(sm.scope, SourceScope::PathScoped) && path.is_none() {
-                                    continue;
-                                }
-
-                                // Global sources always live at (provider, None) regardless
-                                // of the path carried by the QueryActivity message.
+                                // Every source is demanded, whatever path the query
+                                // carried. A Global source always lives at
+                                // (provider, None); a PathScoped one lives at the
+                                // requested path, or — when the query addressed the
+                                // global entry — at (provider, None) too, where it
+                                // runs at `$HOME` (`query::source_dir`). A
+                                // whole-provider query like `comb get mise` from
+                                // inside a project therefore warms BOTH the project
+                                // source at the resolved path AND the global one at
+                                // the pathless slot.
                                 let effective_key_path = match sm.scope {
                                     SourceScope::Global => None,
                                     SourceScope::PathScoped => path.clone(),
@@ -899,7 +889,12 @@ impl Scheduler {
 
                                 match outcome.watch_registration {
                                     WatchAction::Register | WatchAction::Reinstate => {
-                                        // Register fs watches for PathScoped sources.
+                                        // Register fs watches for PathScoped sources —
+                                        // but only at a directory the query named. A
+                                        // path-scoped source at the global entry runs at
+                                        // `$HOME`, and a recursive watch there is a
+                                        // firehose; it refreshes by poll, by demand, and
+                                        // (when read-always) on every read.
                                         if matches!(sm.scope, SourceScope::PathScoped)
                                             && let Some(ref path_str) = path
                                         {
@@ -1190,9 +1185,6 @@ impl Scheduler {
                                     .collect(),
                             };
                             for sm in &sources_vec {
-                                if matches!(sm.scope, SourceScope::PathScoped) && path.is_none() {
-                                    continue;
-                                }
                                 let effective_key_path = match sm.scope {
                                     SourceScope::Global => None,
                                     SourceScope::PathScoped => path.clone(),

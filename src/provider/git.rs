@@ -76,6 +76,22 @@ fn resolve_git_dir(root: &Path) -> Option<GitDirs> {
     Some(GitDirs { gitdir, commondir })
 }
 
+/// Whether `dir` is the root of a git work tree.
+///
+/// Every git Source must answer nothing outside one — a Source that reports
+/// defaults for a directory it knows nothing about turns a miss into a false
+/// hit, and the pathless global entry (whose directory is `$HOME`) is read by
+/// every consumer that names no directory at all. `GitHead` and `GitLineage`
+/// hold the same shape inline, since they need the `GitDirs` themselves.
+///
+/// A filesystem probe, not a `git rev-parse`, so the guard costs no process —
+/// and for `GitRefs`, `GitStatus` and `GitDiff` it saves the ones they would
+/// otherwise spawn only to watch fail. The root is the only directory a Source
+/// is ever handed: `canonical_path` walks to it before the daemon keys anything.
+fn is_work_tree_root(dir: &Path) -> bool {
+    resolve_git_dir(dir).is_some()
+}
+
 /// Join `raw` onto `base` unless `raw` is absolute, then normalise via
 /// `canonicalize` (falling back to the lexical join if it cannot be canonicalised).
 fn resolve_against(base: &Path, raw: &str) -> PathBuf {
@@ -387,6 +403,12 @@ impl Source for GitRefs {
             return SourceResult::new();
         };
         let dir = Path::new(path);
+        // Outside a work tree there is nothing to report: `git status` fails
+        // and the parse already turns that into a miss, but the filesystem
+        // probe says so without spawning anything.
+        if !is_work_tree_root(dir) {
+            return SourceResult::new();
+        }
 
         let Some(status) = parse_git_status(dir, &*self.executor) else {
             return SourceResult::new();
@@ -454,6 +476,12 @@ impl Source for GitDiff {
             return SourceResult::new();
         };
         let dir = Path::new(path);
+        // `git diff --numstat` fails outside a work tree and the parse turns a
+        // failure into `(0, 0)`, so without this guard every non-repository
+        // directory answers with four zeros — a hit, not the miss it is.
+        if !is_work_tree_root(dir) {
+            return SourceResult::new();
+        }
 
         let (lines_added, lines_removed) = diff_numstat(dir, &*self.executor);
         let (lines_staged_added, lines_staged_removed) = diff_numstat_staged(dir, &*self.executor);
@@ -575,6 +603,12 @@ impl Source for GitStatus {
             return SourceResult::new();
         };
         let dir = Path::new(path);
+        // Outside a work tree there is nothing to report: `git status` fails
+        // and the parse already turns that into a miss, but the filesystem
+        // probe says so without spawning anything.
+        if !is_work_tree_root(dir) {
+            return SourceResult::new();
+        }
 
         let Some(status) = parse_git_status(dir, &*self.executor) else {
             return SourceResult::new();

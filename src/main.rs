@@ -374,6 +374,8 @@ fn main() -> ExitCode {
             )
         }
         Commands::Watch { key, path, format } => {
+            // Known gap: `watch` has neither `get`/`put`'s cwd default nor
+            // `--global`; a later plan gives it the shared resolver.
             let output_format = parse_output_format(&format, fmt_template.as_deref());
             run_watch(&config, &key, path.as_deref(), output_format)
         }

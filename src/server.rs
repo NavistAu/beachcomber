@@ -318,14 +318,10 @@ async fn handle_watch(
         }
         crate::query::KeyParse::Provider(provider) => {
             if let Some(sources) = registry.provider_sources(provider) {
-                let source_names: Vec<String> = sources
-                    .iter()
-                    .filter(|sm| match sm.scope {
-                        SourceScope::Global => true,
-                        SourceScope::PathScoped => effective_path.is_some(),
-                    })
-                    .map(|sm| sm.name.clone())
-                    .collect();
+                // Every source applies, whatever the address: a path-scoped one
+                // at the global entry runs at `$HOME` like any other directory
+                // (`query::source_dir`).
+                let source_names: Vec<String> = sources.iter().map(|sm| sm.name.clone()).collect();
                 for sn in &source_names {
                     maybe_read_always(registry, cache, provider, sn, effective_path.as_deref())
                         .await;
@@ -688,24 +684,13 @@ async fn handle_request(
                 KeyParse::Provider(provider) => {
                     // Whole-provider read: re-execute read-always sources first,
                     // then warm every applicable source that has nothing cached.
-                    // A path-scoped Source is warmed for a whole-namespace read
-                    // only at a directory the request named. A field read still
-                    // reaches its owning Source at the global entry — the
-                    // `Field` arm above executes it at `$HOME` — but warming
-                    // every path-scoped Source of a provider at `$HOME` on a
-                    // query that named no directory is not what was asked for.
+                    // Every source applies, whatever the address: a path-scoped
+                    // one at the global entry runs at `$HOME` like any other
+                    // directory (`query::source_dir`), so a repository rooted
+                    // there answers a bare `--global` read.
                     let source_names: Vec<String> = registry
                         .provider_sources(provider)
-                        .map(|sources| {
-                            sources
-                                .iter()
-                                .filter(|sm| match sm.scope {
-                                    SourceScope::Global => true,
-                                    SourceScope::PathScoped => at.is_some(),
-                                })
-                                .map(|sm| sm.name.clone())
-                                .collect()
-                        })
+                        .map(|sources| sources.iter().map(|sm| sm.name.clone()).collect())
                         .unwrap_or_default();
                     for sn in &source_names {
                         maybe_read_always(registry, cache, provider, sn, at).await;

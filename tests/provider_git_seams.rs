@@ -72,9 +72,16 @@ impl GitExecutor for StubGitExecutor {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Create a temporary directory to use as a fake repo path.
-/// No real `.git` dir needed — the stub executor doesn't check the fs.
+///
+/// The stub executor never looks at the filesystem, but every git Source
+/// refuses to answer for a directory that is not a work-tree root — a Source
+/// reporting defaults for a directory it knows nothing about turns a miss into
+/// a false hit. An empty `.git` directory is enough to satisfy that guard while
+/// leaving the stubbed command output as the only thing under test.
 fn fake_repo() -> TempDir {
-    TempDir::new().expect("TempDir::new")
+    let dir = TempDir::new().expect("TempDir::new");
+    std::fs::create_dir(dir.path().join(".git")).expect("create .git");
+    dir
 }
 
 /// `git status --porcelain=v2 --branch` output for a clean repo on `main`.

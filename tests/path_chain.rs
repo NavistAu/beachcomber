@@ -368,6 +368,53 @@ async fn a_provider_record_is_read_at_its_sources_scope() {
     assert_eq!(whole["v"], serde_json::json!("project-v"));
 }
 
+/// Both scopes' maps can sit on the global entry at once — a path-scoped source
+/// runs at `$HOME` for that address, so its records land there beside the
+/// global source's. `--global` must answer with the `Global` source's record,
+/// and must answer the same way every time: the merge order inside a layer is
+/// fixed, not whatever a HashMap iterates.
+#[tokio::test]
+async fn the_global_source_wins_at_the_global_entry() {
+    let f = Fixture::start(two_scope_registry());
+    let project = f.path("ws/project");
+
+    f.cache.put_source(
+        "p",
+        None,
+        "proj",
+        fields(vec![("v", Value::String("path-scoped-at-home".into()))]),
+        None,
+    );
+    f.cache.put_source(
+        "p",
+        None,
+        "glob",
+        fields(vec![("v", Value::String("global-v".into()))]),
+        None,
+    );
+    f.cache.put_source(
+        "p",
+        Some(&project),
+        "proj",
+        fields(vec![("v", Value::String("project-v".into()))]),
+        None,
+    );
+
+    let mut s = f.connect().await;
+    for attempt in 1..=2 {
+        assert_eq!(
+            data(send_recv(&mut s, get("p.v")).await, "--global"),
+            serde_json::json!("global-v"),
+            "attempt {attempt}: --global resolves to the Global source's record"
+        );
+    }
+    assert_eq!(
+        data(send_recv(&mut s, get_at("p.v", &project)).await, "project"),
+        serde_json::json!("project-v"),
+        "at a project path the path-scoped record still wins"
+    );
+}
+
 /// A provider record and a static record inside the same object node: the read
 /// stitches them together instead of letting one map answer alone.
 #[tokio::test]
@@ -511,6 +558,63 @@ async fn a_repository_at_home_is_served_from_the_global_entry() {
     );
 }
 
+/// The bare-namespace read follows the field read: a cold cache, a repository
+/// at `$HOME`, and `get git --global` answers with the object rather than a
+/// miss, because a path-scoped source addressed at the global entry runs at
+/// `$HOME` like any other directory.
+#[tokio::test]
+async fn a_bare_global_read_of_a_home_repository_is_not_a_miss() {
+    if !has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let f = Fixture::defaults();
+    git_at(&f.home, &["init", "--initial-branch=homebr"]);
+
+    let mut s = f.connect().await;
+    let whole = data(send_recv(&mut s, get("git")).await, "bare --global");
+    assert_eq!(
+        whole["branch"],
+        serde_json::json!("homebr"),
+        "the whole-namespace read carries the repository's fields"
+    );
+    assert_eq!(
+        data(send_recv(&mut s, get("git.branch")).await, "field --global"),
+        serde_json::json!("homebr"),
+        "and the field read agrees with it"
+    );
+}
+
+/// The mirror image, and the reason every git source guards on being inside a
+/// work tree: with no repository at `$HOME` the same bare read is a clean miss,
+/// not an object of zeroes from a source that reports defaults for a directory
+/// it knows nothing about.
+#[tokio::test]
+async fn a_bare_global_read_without_a_home_repository_is_a_miss() {
+    if !has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let f = Fixture::defaults();
+    let mut s = f.connect().await;
+
+    let resp = send_recv(&mut s, get("git")).await;
+    assert!(resp.ok, "a miss is ok=true: {:?}", resp.error);
+    assert!(
+        resp.data.is_none(),
+        "no repository at $HOME means nothing to report, got {:?}",
+        resp.data
+    );
+
+    let resp = send_recv(&mut s, get("git.lines_added")).await;
+    assert!(resp.ok, "a miss is ok=true: {:?}", resp.error);
+    assert!(
+        resp.data.is_none(),
+        "git.lines_added must not answer 0 outside a work tree, got {:?}",
+        resp.data
+    );
+}
+
 /// A watch from a subdirectory of a repository rooted at `$HOME` subscribes to
 /// the global entry, which is on its chain, and its initial frame is the
 /// chain-resolved value.
@@ -564,7 +668,10 @@ async fn watch_follows_the_whole_chain() {
     let mut frames = BufReader::new(w);
 
     let mut line = String::new();
-    frames.read_line(&mut line).await.unwrap();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("the initial frame must arrive")
+        .unwrap();
     let initial: Response = serde_json::from_str(&line).unwrap();
     assert_eq!(
         initial.data,
@@ -598,6 +705,121 @@ async fn watch_follows_the_whole_chain() {
         uncovered.data,
         Some(serde_json::json!(9)),
         "the uncovered global value is streamed"
+    );
+}
+
+// ── refresh reaches the scheduler's execute path ─────────────────────────────
+
+/// A real daemon — scheduler included, so `refresh` reaches
+/// `Scheduler::execute_source` rather than the server's scheduler-less no-op —
+/// with `$HOME` a fresh temp root.
+async fn daemon_at_a_temp_home() -> (TempDir, TempDir, PathBuf, PathBuf) {
+    let home_dir = TempDir::new().unwrap();
+    let home = home_dir.path().canonicalize().unwrap();
+    // SAFETY: nextest gives every test its own process.
+    unsafe { std::env::set_var("HOME", &home) };
+
+    let sock_dir = TempDir::new().unwrap();
+    let sock = sock_dir.path().join("test.sock");
+    let (_handle, ready) = beachcomber::daemon::start_in_process_polling(
+        sock.clone(),
+        beachcomber::config::Config::default(),
+    );
+    ready.await.expect("daemon ready");
+    (home_dir, sock_dir, home, sock)
+}
+
+/// The cache rows `status` reports for `git`, as `(path, field)` pairs. Reads
+/// the cache without querying it, so it observes what `refresh` wrote rather
+/// than triggering an inline execute of its own.
+async fn git_rows(stream: &mut UnixStream) -> Vec<(String, String)> {
+    let rows = data(
+        send_recv(stream, serde_json::json!({"op": "status"})).await,
+        "status",
+    );
+    rows.as_array()
+        .expect("status returns an array")
+        .iter()
+        .filter(|row| row["provider"] == "git")
+        .map(|row| (row["path"].to_string(), row["field"].to_string()))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_at_the_global_entry_runs_the_home_repository() {
+    if !has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let (_home_dir, _sock_dir, home, sock) = daemon_at_a_temp_home().await;
+    git_at(&home, &["init", "--initial-branch=homebr"]);
+
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+    let resp = send_recv(&mut s, serde_json::json!({"op": "refresh", "key": "git"})).await;
+    assert!(resp.ok, "refresh: {:?}", resp.error);
+
+    // Every source fans out from one refresh and each writes when it finishes,
+    // so wait for the last one this test names rather than the first to land.
+    common::poll::poll_until_async(
+        "git rows after a global refresh",
+        "rows for both the head and the diff source",
+        Duration::from_secs(10),
+        Duration::from_millis(20),
+        async || git_rows(&mut s).await,
+        |rows| {
+            let has = |f: &str| rows.iter().any(|(_, field)| field == f);
+            has("\"branch\"") && has("\"lines_added\"")
+        },
+    )
+    .await;
+
+    let whole = data(send_recv(&mut s, get("git")).await, "--global");
+    assert_eq!(whole["branch"], serde_json::json!("homebr"));
+    assert!(
+        whole.get("lines_added").is_some(),
+        "the diff source ran too, got {whole}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_at_the_global_entry_writes_nothing_without_a_home_repository() {
+    if !has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let (_home_dir, _sock_dir, _home, sock) = daemon_at_a_temp_home().await;
+
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+    let resp = send_recv(&mut s, serde_json::json!({"op": "refresh", "key": "git"})).await;
+    assert!(resp.ok, "refresh: {:?}", resp.error);
+
+    // The refresh executes asynchronously, so give it a window to produce a row
+    // and require that none appears. The inner poll's own deadline is longer
+    // than the outer one, so the outer timeout is what ends this.
+    let wrote = tokio::time::timeout(
+        Duration::from_millis(400),
+        common::poll::poll_until_async(
+            "git rows after a global refresh",
+            "any row",
+            Duration::from_secs(30),
+            Duration::from_millis(20),
+            async || git_rows(&mut s).await,
+            |rows| !rows.is_empty(),
+        ),
+    )
+    .await;
+    assert!(
+        wrote.is_err(),
+        "a refresh outside a work tree must write nothing, got {wrote:?}"
+    );
+
+    let resp = send_recv(&mut s, get("git")).await;
+    assert!(resp.data.is_none(), "still a miss, got {:?}", resp.data);
+    let resp = send_recv(&mut s, get("git.lines_added")).await;
+    assert!(
+        resp.data.is_none(),
+        "git.lines_added must not answer 0, got {:?}",
+        resp.data
     );
 }
 
