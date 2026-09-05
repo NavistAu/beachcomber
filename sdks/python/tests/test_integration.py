@@ -46,9 +46,17 @@ def test_put_null_clears_entry(client: Client) -> None:
     assert not client.get("widget3.v").is_hit
 
 
-def test_refresh_does_not_raise(client: Client) -> None:
+def test_refresh_of_a_provider_does_not_raise(client: Client) -> None:
+    client.refresh("hostname")
+
+
+def test_refresh_of_a_put_namespace_raises(client: Client) -> None:
+    # A put-created namespace has no Source to re-execute, so the daemon
+    # refuses rather than answering ok and doing nothing.
     client.put("widget4", {"v": 1})
-    client.refresh("widget4")
+    with pytest.raises(ServerError) as excinfo:
+        client.refresh("widget4")
+    assert "has no sources" in excinfo.value.message
 
 
 def test_status_returns_cache_rows(client: Client) -> None:
