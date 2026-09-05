@@ -1,10 +1,11 @@
 //! The template half of `get`, and per-record freshness (spec §3.4).
 //!
-//! Every `get` on a non-facet key does two lookups at the requested path: the
-//! data at `rest` in the namespace's merged tree, and the node at `rest` in the
-//! merged tree of the `template` facet (`p:template`). Whichever exist come
-//! back — `data` with its own `age_ms`/`stale`, `template` (plus `rest` when the
-//! walk stopped on a string with segments left over) with none.
+//! Every `get` on a non-facet key does two lookups: the data at `rest` in the
+//! namespace's merged tree, where the provider's records live, and the node at
+//! `rest` in the merged tree of the `template` facet (`p:template`), read from
+//! the requested directory because a template is a static record. Whichever
+//! exist come back — `data` with its own `age_ms`/`stale`, `template` (plus
+//! `rest` when the walk stopped on a string with segments left over) with none.
 //!
 //! Freshness is per record: a leaf reports its own record's source entry, an
 //! object reports the largest age among the records under it and is stale if
@@ -358,6 +359,24 @@ async fn a_template_miss_attaches_nothing() {
     handle.abort();
 }
 
+/// Addressed directly, a non-string scalar is not a template — only a group or
+/// a value expression is. Contrast the pass-through below.
+#[tokio::test]
+async fn a_non_string_leaf_at_the_address_attaches_nothing() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+    put(&mut s, "p:template.n", serde_json::json!(7)).await;
+
+    assert_eq!(
+        without_age(get(&mut s, "p.n").await),
+        serde_json::json!({"ok": true})
+    );
+
+    handle.abort();
+}
+
 /// A non-string leaf inside a template group is passed through untouched — the
 /// client is what decides an expression is not one.
 #[tokio::test]
@@ -379,6 +398,188 @@ async fn a_non_string_leaf_inside_a_group_is_passed_through() {
                 "n": 7
             }
         })
+    );
+
+    handle.abort();
+}
+
+// ── the template half decides what an unresolvable sub-path means ───────────
+
+/// `box.widgets` is an object with no `foo` in it, so the data half calls the
+/// address a nested-not-found. A template answers there, so the key is not
+/// unknown at all: the loud error only wins when both halves are empty.
+async fn seed_box(s: &mut UnixStream) {
+    put(s, "box", serde_json::json!({"widgets": {"bar": 1}})).await;
+    put(
+        s,
+        "box:template",
+        serde_json::json!({"widgets": {"foo": "{{ env.FOO }}"}}),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_template_beats_the_unknown_field_error() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+    seed_box(&mut s).await;
+
+    assert_eq!(
+        without_age(get(&mut s, "box.widgets.foo").await),
+        serde_json::json!({"ok": true, "template": "{{ env.FOO }}"})
+    );
+
+    // Both halves at the group.
+    let both = get(&mut s, "box.widgets").await;
+    assert!(
+        both["age_ms"].is_number(),
+        "a data hit carries age_ms: {both}"
+    );
+    assert_eq!(
+        without_age(both),
+        serde_json::json!({
+            "ok": true,
+            "data": {"bar": 1},
+            "stale": false,
+            "template": {"foo": "{{ env.FOO }}"}
+        })
+    );
+
+    // Data only, where the template tree has nothing.
+    let data_only = get(&mut s, "box.widgets.bar").await;
+    assert_eq!(
+        without_age(data_only),
+        serde_json::json!({"ok": true, "data": 1, "stale": false})
+    );
+
+    // Still an error where neither half answers.
+    let neither = get(&mut s, "box.widgets.nope").await;
+    assert_eq!(neither["ok"], false, "got {neither}");
+    assert_eq!(neither["error"], "unknown field: box.widgets.nope");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_watch_frame_prefers_the_template_over_the_unknown_field_error() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+    seed_box(&mut s).await;
+
+    let mut w = UnixStream::connect(&sock).await.unwrap();
+    w.write_all(b"{\"op\":\"watch\",\"key\":\"box.widgets.foo\"}\n")
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(&mut w);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+    let frame: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+
+    assert_eq!(
+        without_age(frame),
+        serde_json::json!({"ok": true, "template": "{{ env.FOO }}"})
+    );
+
+    handle.abort();
+}
+
+// ── templates resolve from the requested directory ──────────────────────────
+
+/// A template is a static record, so it resolves up the chain from where the
+/// caller is standing. `hostname` has only `Global` sources, so `resolve_path`
+/// collapses the data half's address to the global entry — the template half
+/// must not follow it there.
+#[tokio::test]
+async fn a_template_resolves_from_the_requested_directory_not_the_scope() {
+    let dir = TempDir::new().unwrap();
+    let dir = dir.path().to_str().unwrap();
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    let r = send_raw(
+        &mut s,
+        &serde_json::json!({
+            "op": "put",
+            "key": "hostname:template",
+            "data": {"name": "{{ local }}"},
+            "path": dir,
+        }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "put: {r}");
+
+    let here = send_raw(
+        &mut s,
+        &serde_json::json!({"op":"get","key":"hostname.name","path": dir}),
+    )
+    .await;
+    assert_eq!(
+        here["template"], "{{ local }}",
+        "the template at the requested directory: {here}"
+    );
+
+    let global = get(&mut s, "hostname.name").await;
+    assert!(
+        global.get("template").is_none(),
+        "the global read is not under that directory: {global}"
+    );
+
+    handle.abort();
+}
+
+/// git narrows the data half's address to the repository root. A template put
+/// in a subdirectory belongs to that subdirectory, not to the whole repo.
+#[tokio::test]
+async fn a_template_below_the_repo_root_stays_below_it() {
+    if !has_git() {
+        return;
+    }
+    let repo = GitRepoFixture::new();
+    let sub = repo.create_subdir("sub");
+    let sub = sub.to_str().unwrap();
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    let r = send_raw(
+        &mut s,
+        &serde_json::json!({
+            "op": "put",
+            "key": "git:template",
+            "data": {"branch": "{{ sub }}"},
+            "path": sub,
+        }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "put: {r}");
+
+    let below = send_raw(
+        &mut s,
+        &serde_json::json!({"op":"get","key":"git.branch","path": sub}),
+    )
+    .await;
+    assert_eq!(
+        below["template"], "{{ sub }}",
+        "the subdirectory's own template: {below}"
+    );
+    assert_eq!(below["data"], "main", "the data half is git's, at the root");
+
+    let at_root = send_raw(
+        &mut s,
+        &serde_json::json!({"op":"get","key":"git.branch","path": repo.path_str()}),
+    )
+    .await;
+    assert!(
+        at_root.get("template").is_none(),
+        "the root is not under the subdirectory: {at_root}"
     );
 
     handle.abort();

@@ -427,6 +427,13 @@ fn merge_layer(
         let occupied = fields.contains_key(k);
         match (fields.get_mut(k), v) {
             (Some(Value::Object(existing)), Value::Object(incoming)) => {
+                // An empty object is a record at its own tail, so a farther
+                // layer's `{}` leaves provenance standing at a node this layer
+                // is about to fill: the records below it are the answer now,
+                // and the empty one is not among them.
+                if !incoming.is_empty() {
+                    records.remove(&tail);
+                }
                 merge_layer(existing, records, incoming, fresh, &tail);
             }
             (_, v) => {

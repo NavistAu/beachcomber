@@ -172,11 +172,20 @@ cache entry it lives in:
 
 #### Template half
 
-A `get` on a key whose namespace carries no facet does two lookups at the
-requested path: the data at the addressed node, and the same node in the merged
-tree of that namespace's `template` facet (`<provider>:template`). Whichever
-exist come back, so a response may carry the template half with no `data` at
-all — a namespace holding only templates is a hit, not `unknown provider`.
+A `get` on a key whose namespace carries no facet does two lookups: the data at
+the addressed node, and the same node in the merged tree of that namespace's
+`template` facet (`<provider>:template`). Whichever exist come back, so a
+response may carry the template half with no `data` at all — a namespace holding
+only templates is a hit, not `unknown provider`, and a sub-path the data half
+cannot resolve is `unknown field` only when no template answers there either.
+
+The two halves are addressed from different places. The data half sits where the
+provider's records live, which is the requested path narrowed by the provider's
+scope (global for a provider with no path-scoped source, the project root for
+one that walks to it). A template is a **static record**, so the template half is
+read from the requested directory itself and resolves up the chain from there:
+`get git.branch --path <repo>/sub` reads git's records at `<repo>` and its
+templates from `<repo>/sub`.
 
 `template` is a JSON tree whose string leaves are value expressions the
 **client** renders and whose objects are groups. The daemon never renders one.
@@ -186,7 +195,10 @@ Walking the key through that tree:
   `template`;
 - landing on a string with segments left over → that string is `template` and
   the unused remainder, rejoined with `.`, is `rest`;
-- a miss, or a non-string scalar in the way → neither field is attached.
+- a miss, or a non-string scalar — in the way, or *at* the address — → neither
+  field is attached. A non-string leaf **inside** a group is passed through
+  untouched as part of that group's object: only the client decides an
+  expression is not one.
 
 A `get` on a facet key (`<provider>:<facet>…`) is already inside a facet and
 never carries a template half; it reads the facet's own records as `data`.
