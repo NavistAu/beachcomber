@@ -239,6 +239,13 @@ async fn a_scheduler_backed_refresh_runs_the_demanded_source_alone() {
         eprintln!("skipping: git not available");
         return;
     }
+    // SAFETY: nextest gives every test its own process, so no other thread is
+    // reading the environment concurrently. A real scheduler runs behind this
+    // daemon and `$HOME` is the global path it polls, so it must not be the
+    // developer's own.
+    let home = TempDir::new().unwrap();
+    unsafe { std::env::set_var("HOME", home.path().canonicalize().unwrap()) };
+
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
     let (handle, ready) = beachcomber::daemon::start_in_process_polling(

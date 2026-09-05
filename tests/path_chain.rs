@@ -703,6 +703,10 @@ async fn the_global_source_wins_at_the_global_entry() {
 
 /// A provider record and a static record inside the same object node: the read
 /// stitches them together instead of letting one map answer alone.
+///
+/// The two halves live on different layers — the `Global` source's at the
+/// global entry, the static one at the project directory — so the stitching
+/// happens across the chain, not inside one entry.
 #[tokio::test]
 async fn a_static_record_merges_into_a_provider_produced_object() {
     let f = Fixture::start(two_scope_registry());
@@ -720,7 +724,7 @@ async fn a_static_record_merges_into_a_provider_produced_object() {
     );
 
     let mut s = f.connect().await;
-    let resp = send_recv(&mut s, put("p.tools.x", serde_json::json!(1))).await;
+    let resp = send_recv(&mut s, put_at("p.tools.x", serde_json::json!(1), &project)).await;
     assert!(resp.ok, "put beside a provider record: {:?}", resp.error);
 
     assert_eq!(
@@ -730,6 +734,12 @@ async fn a_static_record_merges_into_a_provider_produced_object() {
         ),
         serde_json::json!({"x": 1, "y": 2}),
         "the static and provider halves of one object node both show up"
+    );
+    assert_eq!(
+        data(send_recv(&mut s, get("p.tools")).await, "global read"),
+        serde_json::json!({"y": 2}),
+        "the static half really is a layer down — the global entry holds only \
+         the provider's half"
     );
 }
 

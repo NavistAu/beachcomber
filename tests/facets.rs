@@ -217,11 +217,22 @@ async fn refresh_on_a_facet_key_is_an_error() {
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
-    send_recv(
+    let resp = send_recv(
         &mut stream,
         r#"{"op":"put","key":"x:template","data":{"a":"{{ 1 }}"}}"#,
     )
     .await;
+    assert!(resp.ok, "put at the facet: {:?}", resp.error);
+
+    // The facet key really is registered — an unregistered one would give the
+    // same "no sources" message below and prove nothing about facets.
+    let resp = send_recv(&mut stream, r#"{"op":"get","key":"x:template.a"}"#).await;
+    assert_eq!(
+        resp.data,
+        Some(serde_json::json!("{{ 1 }}")),
+        "the put must have landed: {:?}",
+        resp.error
+    );
 
     // A facet holds static records only. Reading configuration afresh is the
     // config watcher's job, not a refresh's.
@@ -251,6 +262,19 @@ async fn refresh_metadata_suffix_wins_over_facet_parsing() {
         resp.error
     );
 
+    // `ok` alone would also be true of a refresh that did nothing. The suffix
+    // was stripped and `hostname` refreshed only if its source actually ran, so
+    // the cache — untouched until now — must hold its records.
+    let resp = send_recv(&mut stream, r#"{"op":"status"}"#).await;
+    let rows = resp.data.expect("status returns rows");
+    assert!(
+        rows.as_array()
+            .expect("status returns an array")
+            .iter()
+            .any(|row| row["provider"] == "hostname"),
+        "the refresh must have re-executed hostname's source, got {rows}"
+    );
+
     handle.abort();
 }
 
@@ -271,6 +295,13 @@ async fn get_metadata_suffix_wins_over_facet_parsing() {
         resp.ok,
         "hostname:age must be read as provider 'hostname' + suffix ':age', not a facet error: {:?}",
         resp.error
+    );
+    // A miss is `ok` too, and answers `:age` with `null`. An age in
+    // milliseconds is what says the suffix was read against a real namespace.
+    assert!(
+        resp.data.as_ref().is_some_and(|d| d.is_number()),
+        "an age in milliseconds, got {:?}",
+        resp.data
     );
 
     handle.abort();

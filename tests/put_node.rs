@@ -22,6 +22,7 @@ use beachcomber::provider::{
 use beachcomber::server::Server;
 use common::git::{GitRepoFixture, has_git};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -76,6 +77,59 @@ impl Source for SentinelSource {
         let mut result = SourceResult::new();
         result.insert("node", Value::String("22.0.0".to_string()));
         result
+    }
+}
+
+/// How many times [`CountingSource`] ran. Each test gets its own process under
+/// nextest, so it starts at zero for every one of them.
+static HOST_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// A Source that records how many times it ran, so a test can tell "was not
+/// re-executed" from "was re-executed to the same value". It declares its one
+/// field by name, so a `put` of any other name in the namespace is allowed.
+struct CountingSource;
+
+impl Source for CountingSource {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(|| SourceMetadata {
+            name: "host".into(),
+            fields: vec![FieldSchema {
+                name: "name".into(),
+                field_type: FieldType::String,
+            }],
+            scope: SourceScope::Global,
+            invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
+            keep_alive: KeepAlive::Polls(2),
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
+            fsevents_reinstate: false,
+        })
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
+        HOST_RUNS.fetch_add(1, Ordering::SeqCst);
+        let mut result = SourceResult::new();
+        result.insert("name", Value::String("counted-host".to_string()));
+        result
+    }
+}
+
+struct CountingProvider;
+
+impl Provider for CountingProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "counted".to_string(),
+            sources: vec![CountingSource.metadata().clone()],
+        }
+    }
+
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(CountingSource)]
     }
 }
 
@@ -684,51 +738,64 @@ async fn put_under_a_sentinel_source_is_refused_warm_or_cold() {
 /// `--replace` acts on static records only. A Source's records under the node
 /// are neither removed nor scanned for ownership, so a root `--replace` on a
 /// warm provider namespace works — and is symmetric with `--null` there.
+///
+/// A counting Source, because a value comparison cannot fail here: were
+/// `--replace` to wipe the `host` map, per-source coldness would re-execute it
+/// on the next `get` and hand back the same string. The run count is what tells
+/// "left alone" from "removed and rebuilt".
 #[tokio::test]
 async fn replace_at_a_provider_root_leaves_the_source_records_alone() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
+    let mut registry = ProviderRegistry::new();
+    registry.register(Box::new(CountingProvider)).unwrap();
+    let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
-    // `hostname` rather than `uptime`: it is a builtin whose source runs
-    // everywhere, including the sandboxed hosts CI skips `uptime` on.
     let name = data_of(
         send_recv(
             &mut s,
-            &serde_json::json!({"op":"get","key":"hostname.name"}),
+            &serde_json::json!({"op":"get","key":"counted.name"}),
         )
         .await,
-        "get hostname.name",
+        "get counted.name",
     );
+    assert_eq!(name, serde_json::json!("counted-host"));
+    assert_eq!(HOST_RUNS.load(Ordering::SeqCst), 1, "the cold read ran it");
 
     let r = send_recv(
         &mut s,
-        &serde_json::json!({"op":"put","key":"hostname","data":{"note":2},"replace":true}),
+        &serde_json::json!({"op":"put","key":"counted","data":{"note":2},"replace":true}),
     )
     .await;
     assert!(r.ok, "replace at a warm provider root: {:?}", r.error);
 
     let all = data_of(
-        send_recv(&mut s, &serde_json::json!({"op":"get","key":"hostname"})).await,
-        "get hostname",
+        send_recv(&mut s, &serde_json::json!({"op":"get","key":"counted"})).await,
+        "get counted",
     );
     assert_eq!(all["name"], name, "the source's record survives --replace");
     assert_eq!(all["note"], serde_json::json!(2));
+    assert_eq!(
+        HOST_RUNS.load(Ordering::SeqCst),
+        1,
+        "--replace left the source's map in place, so the read found it warm"
+    );
 
     // A plain put merges over it.
     let r = send_recv(
         &mut s,
-        &serde_json::json!({"op":"put","key":"hostname","data":{"note":3}}),
+        &serde_json::json!({"op":"put","key":"counted","data":{"note":3}}),
     )
     .await;
     assert!(r.ok, "merge put: {:?}", r.error);
     let all = data_of(
-        send_recv(&mut s, &serde_json::json!({"op":"get","key":"hostname"})).await,
-        "get hostname",
+        send_recv(&mut s, &serde_json::json!({"op":"get","key":"counted"})).await,
+        "get counted",
     );
     assert_eq!(all["name"], name);
     assert_eq!(all["note"], serde_json::json!(3));
+    assert_eq!(HOST_RUNS.load(Ordering::SeqCst), 1);
 
     handle.abort();
 }

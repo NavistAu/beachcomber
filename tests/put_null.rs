@@ -129,10 +129,17 @@ fn put_null_cli_validation_rejects_both() {
 /// removes it and puts nothing there. Combining them is an argument error,
 /// caught before any daemon contact — so this runs the real binary with no
 /// daemon around.
+///
+/// `$XDG_CONFIG_HOME` and `$BEACHCOMBER_SOCKET` both point into a temp dir:
+/// `Config::load()` would otherwise read the developer's own
+/// `~/.config/beachcomber`, and the socket path would be the real one.
 #[test]
 fn put_cli_rejects_replace_with_null() {
+    let tmp = tempfile::TempDir::new().unwrap();
     let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.args(["put", "myapp", "--null", "--replace"])
+    cmd.env("XDG_CONFIG_HOME", tmp.path().join("config"))
+        .env("BEACHCOMBER_SOCKET", tmp.path().join("test.sock"))
+        .args(["put", "myapp", "--null", "--replace"])
         .assert()
         .code(2)
         .stderr(predicates::str::contains(
