@@ -1408,3 +1408,32 @@ fn a_facet_table_is_not_read_as_a_source_block() {
     assert!(errors.is_empty(), "{errors:?}");
     assert!(warnings.is_empty(), "{warnings:?}");
 }
+
+#[test]
+fn a_dotted_key_is_an_error_in_every_facet_not_only_template() {
+    // The cache refuses a dotted key whatever the facet, so without this check
+    // a non-template facet would silently lose its whole layer.
+    let (_, errors) = facet_validation("[providers.\"x:notes\"]\n\"a.b\" = 1\n");
+    assert!(
+        errors.iter().any(|e| e.contains("a.b")),
+        "expected an error naming the dotted key, got {errors:?}"
+    );
+}
+
+#[test]
+fn a_settings_key_is_reported_once_not_twice() {
+    // `enabled = false` under `:template` is a settings key (an error) and a
+    // boolean leaf (a warning). Reporting both makes the same mistake look like
+    // two, and the second one is not actionable.
+    let (warnings, errors) = facet_validation("[providers.\"x:template\"]\nenabled = false\n");
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error, got {errors:?}"
+    );
+    assert!(errors[0].contains("enabled"), "{errors:?}");
+    assert!(
+        warnings.is_empty(),
+        "a key already reported as a settings key must not also warn: {warnings:?}"
+    );
+}

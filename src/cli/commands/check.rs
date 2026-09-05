@@ -129,7 +129,7 @@ pub fn run_check_subjects(
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
                 let (text, code) = render_subject(subject, &payload);
-                print!("{text}{local_lines}");
+                print!("{}", splice_before_separator(&text, &local_lines));
                 worst = worst.max(code);
             }
             Ok(resp) => {
@@ -149,6 +149,19 @@ pub fn run_check_subjects(
     }
 
     worst
+}
+
+/// Insert `extra` just before the blank line `render_subject` ends every block
+/// with, so appended verdicts stay inside the block instead of landing after
+/// the gap that separates it from the next subject.
+fn splice_before_separator(text: &str, extra: &str) -> String {
+    if extra.is_empty() {
+        return text.to_string();
+    }
+    match text.strip_suffix('\n') {
+        Some(head) => format!("{head}{extra}\n"),
+        None => format!("{text}{extra}"),
+    }
 }
 
 /// Re-tag already-rendered `  [LEVEL] message` lines with which view produced
@@ -185,6 +198,11 @@ fn local_config_verdicts(config: &Config) -> (String, u8) {
     }
     for e in &errors {
         lines.push_str(&format!("  [FAIL] local   {e}\n"));
+    }
+    // Silence would be ambiguous — a reader could not tell a clean config from
+    // a check that never ran.
+    if lines.is_empty() {
+        lines.push_str("  [PASS] local   config file valid\n");
     }
     let worst = if !errors.is_empty() {
         2

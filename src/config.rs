@@ -102,8 +102,13 @@ fn dedup_preserving_order(messages: &mut Vec<String>) {
     messages.retain(|m| seen.insert(m.clone()));
 }
 
-/// Validate one `[providers."<p>:<facet>"]` table: data only, and under
-/// `template` a tree of tables and value-expression strings.
+/// Whether a key configures a provider rather than carrying data about one.
+fn is_facet_settings_key(key: &str) -> bool {
+    FACET_SETTINGS_KEYS.contains(&key) || SOURCE_KNOB_KEYS.contains(&key)
+}
+
+/// Validate one `[providers."<p>:<facet>"]` table: data only, nested with
+/// tables, and under `template` a tree whose leaves are value expressions.
 fn validate_facet_table(
     namespace: &str,
     facet: &str,
@@ -113,29 +118,39 @@ fn validate_facet_table(
 ) {
     let provider = namespace.split(':').next().unwrap_or(namespace);
     for key in table.keys() {
-        if FACET_SETTINGS_KEYS.contains(&key.as_str()) || SOURCE_KNOB_KEYS.contains(&key.as_str()) {
+        if is_facet_settings_key(key) {
             errors.push(format!(
                 "[providers.\"{namespace}\"] is a facet table and holds data only, \
                  but '{key}' is a settings key. It belongs in [providers.{provider}]."
             ));
         }
     }
-    if facet == "template" {
-        validate_template_tree(namespace, "", table, warnings, errors);
-    }
+    validate_facet_tree(namespace, "", table, facet == "template", warnings, errors);
 }
 
-/// Walk a `template` facet's tree. Nesting is tables only, so a key with a `.`
-/// in it names one record while addressing another; and a leaf that is neither
-/// a string nor a table is not a value expression, so the seed drops it.
-fn validate_template_tree(
+/// Walk a facet's tree.
+///
+/// A dotted key is an error in **every** facet, not only `template`: nesting is
+/// tables, so `"a.b"` names one record while addressing another, and the cache
+/// refuses the write anyway — without the check the whole namespace would
+/// silently lose that layer.
+///
+/// The non-string-leaf warning is `template`-only, because only a template's
+/// leaves have to be value expressions; any other facet is plain data.
+fn validate_facet_tree(
     namespace: &str,
     prefix: &str,
     table: &toml::Table,
+    is_template: bool,
     warnings: &mut Vec<String>,
     errors: &mut Vec<String>,
 ) {
     for (key, value) in table {
+        // A settings key at the facet's root is already reported as an error;
+        // saying it is also not a value expression only adds noise.
+        if prefix.is_empty() && is_facet_settings_key(key) {
+            continue;
+        }
         let addressed = if prefix.is_empty() {
             key.clone()
         } else {
@@ -143,21 +158,22 @@ fn validate_template_tree(
         };
         if key.contains('.') {
             errors.push(format!(
-                "[providers.\"{namespace}\"] key '{addressed}' contains a '.': a template \
+                "[providers.\"{namespace}\"] key '{addressed}' contains a '.': a facet table \
                  nests with tables, and a dotted key names one record while addressing another."
             ));
             continue;
         }
         match value {
             toml::Value::Table(sub) => {
-                validate_template_tree(namespace, &addressed, sub, warnings, errors)
+                validate_facet_tree(namespace, &addressed, sub, is_template, warnings, errors)
             }
             toml::Value::String(_) => {}
-            other => warnings.push(format!(
+            other if is_template => warnings.push(format!(
                 "[providers.\"{namespace}\"] '{addressed}' is {}, not a value expression or a \
                  group; it is dropped from the seed.",
                 other.type_str()
             )),
+            _ => {}
         }
     }
 }

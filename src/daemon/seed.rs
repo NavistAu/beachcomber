@@ -53,14 +53,11 @@ pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, layers: &[(PathBu
 /// including one that shadows a config record since deleted from its file,
 /// because only `config:` labels are dropped. A `watch` wakes either way —
 /// `Cache::reseed_static` notifies every entry whose contents it changed.
-///
-/// Returns the validation errors that stopped it; empty when the re-seed was
-/// applied.
 pub fn reseed_facets(
     cache: &Cache,
     registry: &ProviderRegistry,
     layers: &[(PathBuf, toml::Value)],
-) -> Vec<String> {
+) {
     let (warnings, errors) = Config::validate_facet_layers(layers);
     for w in &warnings {
         tracing::warn!("{}", w);
@@ -74,24 +71,14 @@ pub fn reseed_facets(
              keeping the current seed",
             errors.len()
         );
-        return errors;
+        return;
     }
 
     let mut planned = plan(registry, layers);
     // A namespace the layers no longer mention still holds the records the last
     // seed left there: visit it with an empty write list so the drop happens.
-    for (namespace, path) in cache.entries_with_label_prefix(CONFIG_SOURCE_PREFIX) {
-        if path.is_none() {
-            planned.entry(namespace).or_default();
-        } else {
-            let _ = cache.reseed_static(
-                &namespace,
-                path.as_deref(),
-                CONFIG_SOURCE_PREFIX,
-                &[],
-                registry,
-            );
-        }
+    for namespace in cache.global_namespaces_with_label_prefix(CONFIG_SOURCE_PREFIX) {
+        planned.entry(namespace).or_default();
     }
 
     for (namespace, writes) in planned {
@@ -101,7 +88,6 @@ pub fn reseed_facets(
             tracing::warn!("could not re-seed {namespace}: {e}");
         }
     }
-    Vec::new()
 }
 
 /// The write list per facet namespace, in composition order, registering each

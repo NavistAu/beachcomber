@@ -850,3 +850,31 @@ fn daemon_exits_when_bind_fails() {
     );
     assert!(exited, "daemon lingered past 10s after bind failure");
 }
+
+/// `comb check config` validates the config file client-side and says so: a
+/// clean file gets a PASS line tagged `local`, so a reader can tell a valid
+/// config from a check that never ran.
+#[test]
+fn check_config_reports_its_own_local_verdict() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_dir = tmp.path().join("beachcomber");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "[daemon]\nlog_level = \"info\"\n",
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(comb_binary())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
+        .args(["check", "--connect-timeout", "0", "config"])
+        .output()
+        .expect("run comb check config");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("[PASS] local"),
+        "expected a local PASS line, got:\n{stdout}"
+    );
+}

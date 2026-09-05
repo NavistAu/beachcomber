@@ -15,14 +15,20 @@
 //! facet case leaves the process running, the watch re-arms after every call
 //! rather than firing once and exiting.
 //!
-//! The watch targets `Config::config_path()`: the deterministic XDG
-//! location, not gated on the file existing at daemon startup. Because the
-//! watch is against a *path* rather than an open file, a config file that
-//! doesn't exist yet when the daemon starts is picked up naturally once it's
-//! created — the mtime poll's `stat` starts succeeding once the file exists,
-//! and the fs-event watch (registered on the parent directory, same as the
-//! binary watch) delivers a Create event the same way it would for a binary
-//! replacement.
+//! The watch targets the config path its caller passes — the directory the
+//! running `Config` was loaded from (`Config::config_dir`), never a path
+//! re-resolved from the ambient environment — and is not gated on the file
+//! existing at daemon startup. Because the watch is against a *path* rather
+//! than an open file, a config file that doesn't exist yet when the daemon
+//! starts is picked up naturally once it's created — the mtime poll's `stat`
+//! starts succeeding once the file exists, and the fs-event watch (registered
+//! on the parent directory, same as the binary watch) delivers a Create event
+//! the same way it would for a binary replacement.
+//!
+//! The thread exits when the `stop` token its caller passes is cancelled. The
+//! daemon passes its own shutdown token, so the watch dies with the daemon
+//! instead of outliving it holding an `Arc<Cache>` — which for an in-process
+//! daemon (a test, an embedder) would be a leak rather than a process exit.
 //!
 //! Coverage also extends to the conf.d convention (`Config::conf_d_dir_for`,
 //! `docs/reference/configuration-reference.md` §"Composition / conf.d"): the
@@ -33,10 +39,11 @@
 //! conf.d is a subdirectory, not a sibling of the config file, it needs its
 //! own fs-event registration (the parent-dir watch is `NonRecursive` and
 //! doesn't see inside it) — registered separately, best-effort, when the
-//! directory exists at watch-registration time. The mtime-poll backstop
-//! checks the newest mtime across the whole composed file set, plus the
-//! file COUNT, so a drop-in's deletion (which doesn't bump any remaining
-//! file's mtime) is still noticed.
+//! directory exists at watch-registration time. The mtime-poll backstop holds
+//! a snapshot of the whole composed set — one mtime per file — and calls any
+//! difference a change, so an edit, an addition and a deletion are all noticed
+//! (a deletion bumps no remaining file's mtime) and an edit to one file is
+//! seen even while another carries a far-future mtime from clock skew.
 //!
 //! Known limitation: if the config *directory* doesn't exist yet at daemon
 //! startup, the fs-event watch can't be registered against a missing
@@ -55,6 +62,7 @@ use crate::config::Config;
 use crate::daemon::lifecycle::should_restart_for_config_change;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio_util::sync::CancellationToken;
 
 /// Config self-watch poll interval — same 5s guarantee as the binary watch.
 pub const CONFIG_WATCH_POLL_INTERVAL: Duration = crate::singleton::SELF_WATCH_POLL_INTERVAL;
@@ -72,45 +80,36 @@ pub enum ChangeKind {
     Settings,
 }
 
-/// Rolling reference point for the mtime-poll backstop: `since_ms` is the
-/// wall-clock instant beyond which a composed-set file's mtime counts as
-/// "changed" (same idea as the binary self-watch's baseline), and `count` is
-/// the last-observed total file count across the composed set (main config
-/// file, if present, plus every `conf.d/*.toml`) — tracked separately because
-/// a deletion doesn't bump any remaining file's mtime.
-#[derive(Debug, Clone, Copy)]
-struct Baseline {
-    since_ms: u64,
-    count: usize,
-}
+/// The mtime of every file in the composed set that exists, keyed by path:
+/// the main config file plus every `conf.d/*.toml`.
+///
+/// Per file rather than "newest mtime plus a count", which two things defeat.
+/// A file carrying a far-future mtime — clock skew across a network mount, an
+/// editor writing one, a test stamping one to beat filesystem granularity —
+/// stays newer than every later reference point, so with one timestamp an edit
+/// to any *other* file is invisible behind it and the watch either misses the
+/// change or fires on every tick forever. A map has neither failure: a change
+/// is any path whose mtime moved (in either direction) plus any path added or
+/// removed, and after each one the snapshot becomes the state just observed,
+/// so an unchanged set compares equal whatever the timestamps say.
+type Snapshot = std::collections::BTreeMap<PathBuf, u64>;
 
-/// Current on-disk state of the composed config set: the newest mtime among
-/// the main config file (if it exists) and every `conf.d/*.toml` (0 if none
-/// exist), and the total file count.
-fn composed_state(config_path: &Path, conf_d_dir: &Path) -> (u64, usize) {
-    let mut newest_ms = 0u64;
-    let mut count = 0usize;
-    let mut note = |p: &Path| {
-        if let Ok(meta) = std::fs::metadata(p) {
-            count += 1;
-            if let Ok(mtime) = meta.modified() {
-                newest_ms = newest_ms.max(mtime_to_unix_ms(mtime));
-            }
+/// Read the composed set's current [`Snapshot`]. A file whose mtime cannot be
+/// read is recorded as 0 rather than left out, so it does not read as a
+/// deletion on every tick.
+fn composed_snapshot(config_path: &Path, conf_d_dir: &Path) -> Snapshot {
+    let mut out = Snapshot::new();
+    let mut note = |p: PathBuf| {
+        if let Ok(meta) = std::fs::metadata(&p) {
+            let ms = meta.modified().map(mtime_to_unix_ms).unwrap_or(0);
+            out.insert(p, ms);
         }
     };
-    note(config_path);
+    note(config_path.to_path_buf());
     for f in Config::conf_d_files(conf_d_dir) {
-        note(&f);
+        note(f);
     }
-    (newest_ms, count)
-}
-
-/// True if the composed set has changed relative to `baseline`: some file's
-/// mtime is newer than `baseline.since_ms`, or the file count differs (a
-/// drop-in was added or removed).
-fn composed_changed(config_path: &Path, conf_d_dir: &Path, baseline: Baseline) -> bool {
-    let (newest_ms, count) = composed_state(config_path, conf_d_dir);
-    newest_ms > baseline.since_ms || count != baseline.count
+    out
 }
 
 /// Spawn a thread watching `config_path` and its `conf.d`. Each time the
@@ -125,12 +124,17 @@ fn composed_changed(config_path: &Path, conf_d_dir: &Path, baseline: Baseline) -
 /// production takes [`CONFIG_WATCH_POLL_INTERVAL`] with the fs-event fast path
 /// on, and in-process daemons take a short interval with `fs_events: false` —
 /// the degraded mode the mtime poll exists for, and the mode the tests drive.
+///
+/// Cancelling `stop` ends the thread, at the latest one `poll_interval` later.
+/// Returns its `JoinHandle` so a caller that needs to know it has gone can wait
+/// for it; the daemon does not, because its own exit is what cancels the token.
 pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
     config_path: PathBuf,
     poll_interval: Duration,
     fs_events: bool,
+    stop: CancellationToken,
     mut on_change: F,
-) {
+) -> std::thread::JoinHandle<()> {
     use notify::{EventKind, RecursiveMode, Watcher};
     use std::sync::mpsc;
 
@@ -138,11 +142,7 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
     // change landing between the spawn and the thread's first instruction would
     // otherwise become the "before" state and classify itself as no change.
     let conf_d_dir = Config::conf_d_dir_for(&config_path);
-    let (_, initial_count) = composed_state(&config_path, &conf_d_dir);
-    let mut baseline = Baseline {
-        since_ms: now_unix_ms(),
-        count: initial_count,
-    };
+    let mut snapshot = composed_snapshot(&config_path, &conf_d_dir);
     let mut settings = settings_snapshot(&config_path, &conf_d_dir);
 
     std::thread::spawn(move || {
@@ -198,7 +198,8 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
                 &config_path,
                 &conf_d_dir,
                 poll_interval,
-                baseline,
+                &stop,
+                &mut snapshot,
                 &mut settings,
                 &mut on_change,
             );
@@ -211,6 +212,10 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
         let mut next_poll = Instant::now() + poll_interval;
 
         loop {
+            if stop.is_cancelled() {
+                tracing::debug!("config-watch: stopped");
+                return;
+            }
             let now = Instant::now();
             let debounce_deadline = last_event.map(|t| t + debounce);
             let wake = match debounce_deadline {
@@ -259,15 +264,18 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
                         && Instant::now() >= d
                     {
                         last_event = None;
+                        snapshot = composed_snapshot(&config_path, &conf_d_dir);
                         try_fire(&config_path, &conf_d_dir, &mut settings, &mut on_change);
-                        baseline = fresh_baseline(&config_path, &conf_d_dir);
                     }
                     if Instant::now() >= next_poll {
                         next_poll = Instant::now() + poll_interval;
-                        if composed_changed(&config_path, &conf_d_dir, baseline) {
-                            try_fire(&config_path, &conf_d_dir, &mut settings, &mut on_change);
-                            baseline = fresh_baseline(&config_path, &conf_d_dir);
-                        }
+                        check_snapshot(
+                            &config_path,
+                            &conf_d_dir,
+                            &mut snapshot,
+                            &mut settings,
+                            &mut on_change,
+                        );
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -276,7 +284,8 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
                         &config_path,
                         &conf_d_dir,
                         poll_interval,
-                        baseline,
+                        &stop,
+                        &mut snapshot,
                         &mut settings,
                         &mut on_change,
                     );
@@ -284,45 +293,53 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
                 }
             }
         }
-    });
+    })
 }
 
 /// Poll fallback used both when the fs-event watcher couldn't be set up at
-/// all, and when its channel disconnects mid-run. Runs for the life of the
-/// process: each change that validates cleanly is reported and the watch
-/// re-arms; an invalid change is logged and polling continues.
+/// all, and when its channel disconnects mid-run. Each change that validates
+/// cleanly is reported and the watch re-arms; an invalid change is logged and
+/// polling continues. Ends when `stop` is cancelled.
+#[allow(clippy::too_many_arguments)]
 fn poll_loop<F: FnMut(ChangeKind)>(
     config_path: &Path,
     conf_d_dir: &Path,
     poll_interval: Duration,
-    start_baseline: Baseline,
+    stop: &CancellationToken,
+    snapshot: &mut Snapshot,
     settings: &mut toml::Value,
     on_change: &mut F,
 ) {
-    let mut baseline = start_baseline;
     loop {
         std::thread::sleep(poll_interval);
-        if composed_changed(config_path, conf_d_dir, baseline) {
-            try_fire(config_path, conf_d_dir, settings, on_change);
-            baseline = fresh_baseline(config_path, conf_d_dir);
+        if stop.is_cancelled() {
+            tracing::debug!("config-watch: stopped");
+            return;
         }
+        check_snapshot(config_path, conf_d_dir, snapshot, settings, on_change);
     }
 }
 
-/// Recompute a `Baseline` from current disk state after a detected change, so
-/// the same state isn't re-flagged as "changed" on every subsequent tick.
+/// Compare the composed set against `snapshot` and, if it moved, adopt what was
+/// observed and put the change through the parse gate.
 ///
-/// The reference point is the newest mtime observed, not just "now": a file
-/// stamped into the future (clock skew across a network mount, a test stamping
-/// an mtime to beat filesystem granularity) would otherwise stay newer than
-/// every subsequent baseline and fire on every tick — which only became a hot
-/// loop once the watch started re-arming instead of firing once.
-fn fresh_baseline(config_path: &Path, conf_d_dir: &Path) -> Baseline {
-    let (newest_ms, count) = composed_state(config_path, conf_d_dir);
-    Baseline {
-        since_ms: now_unix_ms().max(newest_ms),
-        count,
+/// The snapshot is replaced *before* firing, not after, for two reasons: a
+/// change that fails the parse gate must not be re-detected on every subsequent
+/// tick, and a further edit landing while the gate runs must still differ from
+/// the snapshot so it fires on the next one.
+fn check_snapshot<F: FnMut(ChangeKind)>(
+    config_path: &Path,
+    conf_d_dir: &Path,
+    snapshot: &mut Snapshot,
+    settings: &mut toml::Value,
+    on_change: &mut F,
+) {
+    let observed = composed_snapshot(config_path, conf_d_dir);
+    if observed == *snapshot {
+        return;
     }
+    *snapshot = observed;
+    try_fire(config_path, conf_d_dir, settings, on_change);
 }
 
 /// Validate the composed config at `config_path` (its conf.d dir included)
@@ -384,13 +401,6 @@ fn validate_config_file(config_path: &Path) -> Result<(), String> {
 
 fn mtime_to_unix_ms(mtime: SystemTime) -> u64 {
     mtime
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn now_unix_ms() -> u64 {
-    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)

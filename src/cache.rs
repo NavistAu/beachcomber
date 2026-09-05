@@ -705,10 +705,14 @@ impl Cache {
         Ok(removed)
     }
 
-    /// The (namespace, path) of every entry holding a record whose static
-    /// source label starts with `prefix` — the entries a re-seed has to visit
-    /// even when nothing writes to them any more.
-    pub fn entries_with_label_prefix(&self, prefix: &str) -> Vec<(String, Option<String>)> {
+    /// The namespaces at the **global entry** holding a record whose static
+    /// source label starts with `prefix` — the namespaces a re-seed has to
+    /// visit even when nothing writes to them any more.
+    ///
+    /// Global-only because the one writer of a `config:` label seeds at the
+    /// global path: a facet table in configuration is not addressed to a
+    /// directory. A path-scoped entry could not hold one to find.
+    pub fn global_namespaces_with_label_prefix(&self, prefix: &str) -> Vec<String> {
         self.entries
             .iter()
             .filter(|entry| {
@@ -718,7 +722,10 @@ impl Cache {
                     .keys()
                     .any(|name| is_static_label(name) && name.starts_with(prefix))
             })
-            .map(|entry| split_cache_key(entry.key()))
+            .filter_map(|entry| match split_cache_key(entry.key()) {
+                (namespace, None) => Some(namespace),
+                (_, Some(_)) => None,
+            })
             .collect()
     }
 

@@ -182,8 +182,14 @@ async fn run_daemon_with_cancel(
         // watcher: registering a kernel fs-event watch costs about 1.2s per
         // call on macOS, and a test that is not about the native backend should
         // not pay it.
+        //
+        // The watch stops on this daemon's own shutdown token — its closure
+        // holds the cache and the registry, so a watch outliving the daemon
+        // would keep both alive for the life of the process. A `Settings`
+        // change cancels that token, which is also what ends the watch.
         let cache = cache.clone();
         let registry = registry.clone();
+        let stop = cancel.clone();
         let cancel = cancel.clone();
         let watched_path = config_path.clone();
         let watched_conf_d = conf_d_dir.clone();
@@ -191,8 +197,12 @@ async fn run_daemon_with_cancel(
             None => (config_watch::CONFIG_WATCH_POLL_INTERVAL, true),
             Some(_) => (std::time::Duration::from_millis(50), false),
         };
-        config_watch::spawn_config_self_watch_with(config_path, interval, fs_events, move |kind| {
-            match kind {
+        config_watch::spawn_config_self_watch_with(
+            config_path,
+            interval,
+            fs_events,
+            stop,
+            move |kind| match kind {
                 config_watch::ChangeKind::FacetsOnly => {
                     let layers = Config::layers(Some(&watched_path), &watched_conf_d);
                     seed::reseed_facets(&cache, &registry, &layers);
@@ -201,8 +211,8 @@ async fn run_daemon_with_cancel(
                     info!("configuration settings changed; shutting down for restart");
                     cancel.cancel();
                 }
-            }
-        });
+            },
+        );
     }
 
     let (handle, mut scheduler) = Scheduler::new(

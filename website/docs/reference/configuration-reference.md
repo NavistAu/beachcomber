@@ -254,17 +254,18 @@ venv_name = "{{ python.venv }}"
 version = "{{ python.version }}"
 ```
 
-That is `python:template.venv_name` and `python:template.widgets.version`. A facet table holds data only, and three rules are enforced at daemon startup (and by `comb check config`):
+That is `python:template.venv_name` and `python:template.widgets.version`. A facet table holds data only, and four rules are enforced at daemon startup (and by `comb check config`):
 
 - The key must be valid facet syntax — exactly one colon, a facet name of letters, digits, `_` or `-`, and not one of the metadata suffix names (`age`, `stale`, `fresh`, `cache`, `source`). `[providers."a:b:c"]` and `[providers."x:age"]` are **errors**.
-- No settings keys. `enabled`, `backend`, `type`, `command`, `library_path`, `url`, `path`, and every per-source knob (`poll_*`, `fsevent_*`, `failback_*`) are **errors** inside a facet table — they belong in `[providers.<name>]`.
-- Under `:template`, nesting is tables only, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**; a leaf that is neither a string nor a table is a **warning** and is dropped from what gets loaded.
+- No settings keys. `enabled`, `backend`, `type`, `command`, `library_path`, `url` and `path` are **errors** inside a facet table, and so is any per-source knob — `poll_interval`, `poll_count`, `poll_secs`, `fsevent_patterns`, `fsevent_abs_paths`, `fsevent_lifespan`, `fsevent_reinstates`, `failback_count`, `failback_interval`, and the legacy spellings `poll_interval_secs`, `poll_live_count`, `fsevents_reinstate`, `failure_reattempts` and `failure_backoff_interval`. They belong in `[providers.<name>]`.
+- Nesting is tables only, in **every** facet, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**.
+- Under `:template` a leaf that is neither a string nor a table is not a value expression: a **warning**, and the leaf is dropped from what gets loaded. Any other facet is plain data, so its leaves may be of any type.
 
 Every leaf is loaded into the cache at daemon start, labelled with the file it came from — `comb status` shows its source as `config:~/.config/beachcomber/conf.d/10-mine.toml`. Layers are loaded in composition order, so a leaf two files set carries the later file's label and value, while a leaf only the earlier file set keeps its own.
 
 **Facet tables reload without a restart.** A configuration change that touches only facet tables is applied in place: every `config:`-labelled record is dropped and all layers are loaded again, so an edited leaf takes effect on the next read, a leaf deleted from its file disappears, and a `watch` on the affected key wakes. Records written by `comb put` are untouched. A change that touches anything else still restarts the daemon.
 
-The reload is all or nothing, twice over. The edited files are checked against the three rules above before anything is touched, so an edit that breaks one of them changes nothing at all — the previous values keep being served and the error is logged (and shown by `comb check config`) until the file is fixed. And each namespace's old and new records are swapped together, so a `comb get` running concurrently with the reload never sees a value momentarily missing.
+The reload is all or nothing, twice over. The edited files are checked against the four rules above before anything is touched, so an edit that breaks one of them changes nothing at all — the previous values keep being served and the error is logged (and shown by `comb check config`) until the file is fixed. And each namespace's old and new records are swapped together, so a `comb get` running concurrently with the reload never sees a value momentarily missing.
 
 ### Virtual fields
 
