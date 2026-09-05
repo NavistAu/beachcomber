@@ -398,7 +398,7 @@ Feature: Cache lifecycle
 ## Out of scope
 
 - **Failure backoff.** A separate mechanism suppresses provider execution after repeated failures. Orthogonal to decay. Configured independently via `failure_reattempts` / `failure_backoff_interval`. See `src/scheduler.rs` for `FailureState`.
-- **Virtual providers.** Entries created via `comb put` hold user-supplied data and have no `execute()`. Decay applies; reinstatement triggers nothing because there is nothing to re-execute. A stale virtual entry is served as-is; an evicted virtual entry is genuinely gone and a subsequent request misses.
+- **Static leaves.** Leaves labelled `put` or `config:<file>` belong to no Source and are not lifecycle-tracked: they never decay and are never evicted, whether the entry holds only static leaves or mixes them with Source-owned ones. Eviction removes a Source instance's own leaves and nothing else; an entry is removed only when no leaf remains. A `put` leaf is removed by `put --null` or by daemon exit; a `config:<file>` leaf is rewritten or removed when its file changes.
 - **`Once` providers.** Hostname, user, uname — computed at daemon startup, never again. They are not part of the decay cycle.
 - **`--force` and `--wait`.** Explicit consumer overrides that bypass or modify default read semantics. Not part of the lifecycle; documented on the request API.
 - **Demand signals from the wire protocol itself.** `comb refresh`, `comb watch`, and `comb get --force` all have distinct semantics covered in the protocol spec. This document treats them as varieties of demand signal; per-op nuances live in `docs/protocol-spec.md`.
