@@ -198,7 +198,13 @@ the addressed node first; omitting `data` removes it.
 Ownership is per **record**, not per namespace: a record one of the
 provider's Sources produces is refused, because the next refresh would
 overwrite it. Everything else is fair game, so a static record can sit
-beside a provider's own records in the same entry.
+beside a provider's own records in the same entry. A Source whose field
+names are resolved at run time (it declares a sentinel such as `<tool>`,
+which every script, http and library provider does) owns every field name
+in its namespace, warm or cold.
+
+`replace` and omitting `data` act on **static records only** — a `put`
+never removes a record a Source produces.
 
 **Request (set):**
 ```json

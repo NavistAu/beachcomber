@@ -99,16 +99,17 @@ Response:
 {"op":"introspect","subject":"watches"}
 ```
 
-**`put`:** Write data as a virtual provider. The `key` names the virtual provider, and `data` must be a JSON object. An optional `ttl` duration string (e.g. `"30s"`) marks entries stale if the writer stops updating. An optional `path` scopes the entry to a directory.
+**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…` — the same dotted address `get` takes — and the write deep-merges into whatever is already stored there. `"replace": true` drops the subtree at the node first, and omitting `data` removes it; both act on static records only, so a `put` never removes a record a provider's Source produces. `data` at a namespace root must be a JSON object; below the root, any JSON. An optional `ttl` duration string (e.g. `"30s"`) marks entries stale if the writer stops updating. An optional `path` scopes the entry to a directory.
 
 ```json
 {"op":"put","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}
+{"op":"put","key":"myapp.deploy.count","data":3}
 {"op":"put","key":"myapp","data":{"status":"ok"},"ttl":"30s","path":"/project"}
 ```
 
 Response: `{"ok":true}`
 
-Returns an error if the key conflicts with a built-in or script provider.
+Returns `put data at the root must be an object` for a non-object at a namespace root, and `cannot write <namespace>.<node>: owned by source <source>` for a record one of the provider's Sources produces — ownership is per record, so a static record may sit beside a provider's own.
 
 **`watch`:** Stream cache updates for a key. The server holds the connection open and emits a response line on each cache update for the watched key. An optional `path` scopes the watch to a directory.
 

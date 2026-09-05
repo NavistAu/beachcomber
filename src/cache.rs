@@ -181,27 +181,12 @@ fn walk_leaves(prefix: &str, value: &Value, out: &mut Vec<(String, Value)>) {
     }
 }
 
-/// Tails of every record already stored under `node`, across all source maps.
-fn records_under(entry: &CacheEntry, node: &str) -> Vec<String> {
-    let mut leaves = Vec::new();
-    for src in entry.sources.values() {
-        let subtree = if node.is_empty() {
-            Some(Value::Object(src.fields.clone()))
-        } else {
-            crate::provider::lookup_path(&src.fields, node).cloned()
-        };
-        if let Some(v) = subtree {
-            walk_leaves(node, &v, &mut leaves);
-        }
-    }
-    leaves.into_iter().map(|(tail, _)| tail).collect()
-}
-
 /// The Source that owns the record at `tail` under `namespace`, if any.
 ///
 /// A record is Source-owned when the registry declares its head segment as a
 /// field of one of the provider's Sources — that is what the next refresh
-/// overwrites — or when it currently sits in a source map the registry knows.
+/// overwrites — when it currently sits in a source map the registry knows, or
+/// when the provider has a Source whose field names are resolved at run time.
 /// `put` and `config:<file>` are never in the registry, so a static record
 /// never comes back from here.
 fn source_owner(
@@ -214,8 +199,23 @@ fn source_owner(
     if let Some(source) = registry.source_for_field(namespace, head) {
         return Some(source.to_string());
     }
-    let owner = entry?.owner_of(tail)?;
-    registry.source(namespace, owner).map(|_| owner.to_string())
+    if let Some(owner) = entry.and_then(|e| e.owner_of(tail))
+        && registry.source(namespace, owner).is_some()
+    {
+        return Some(owner.to_string());
+    }
+    // A Source with runtime-resolved field names declares a sentinel instead
+    // (`<tool>`, `<profile>`, `<field>` — see `ProviderMetadata::validate`), so
+    // there is no declared name for `head` to match. Such a Source owns every
+    // field name in the namespace: ownership has to hold on a cold entry too,
+    // or a `put` lands first and the Source's next refresh writes the same
+    // record into its own map, leaving two records at one (key, path). The
+    // first sentinel Source in declaration order names the error.
+    registry
+        .provider_sources(namespace)?
+        .iter()
+        .find(|sm| sm.fields.iter().any(|f| f.name.starts_with('<')))
+        .map(|sm| sm.name.clone())
 }
 
 /// Remove whatever occupies the address `tail` in this map: the node itself,
@@ -294,8 +294,9 @@ impl Cache {
     ///
     /// Every leaf of `value` becomes one record. Records deep-merge into
     /// whatever is already stored; `replace` first drops the whole subtree at
-    /// `node` from every static map. A record a Source produces is refused —
-    /// the next refresh would overwrite it — and nothing is written.
+    /// `node` from every *static* map — a Source's records are never removed by
+    /// a `put`. A record a Source produces is refused — the next refresh would
+    /// overwrite it — and nothing is written.
     ///
     /// A record lives in exactly one source map, so a write first evicts the
     /// record from whichever map holds it. Reads therefore never need a
@@ -319,15 +320,14 @@ impl Cache {
         walk_leaves(node, &value, &mut leaves);
         let key = make_cache_key(namespace, path);
 
-        // Records this write touches: every leaf, plus — under `replace` —
-        // everything already stored under `node`, which replace drops.
+        // The records this write claims are its own leaves. `replace` drops the
+        // static subtree at `node` as well, but a Source's records under it are
+        // left where they are, so they are not part of the ownership scan —
+        // otherwise `put uptime {"note":2} --replace` on a warm namespace would
+        // be refused for records it never touches.
         {
             let entry = self.entries.get(&key);
-            let mut touched: Vec<String> = leaves.iter().map(|(tail, _)| tail.clone()).collect();
-            if replace && let Some(ref e) = entry {
-                touched.extend(records_under(e, node));
-            }
-            for tail in &touched {
+            for (tail, _) in &leaves {
                 if let Some(source) = source_owner(registry, namespace, entry.as_deref(), tail) {
                     return Err(PutError::Owned {
                         record: format!("{namespace}.{tail}"),
@@ -370,7 +370,8 @@ impl Cache {
                 });
             }
 
-            // Rule 1: one record, one map.
+            // Rule 1: one record, one map. A static map the move empties is
+            // dropped, so an entry never carries a phantom source.
             for (tail, _) in &leaves {
                 let owner = entry.owner_of(tail).map(str::to_string);
                 if let Some(owner) = owner
@@ -378,6 +379,9 @@ impl Cache {
                     && let Some(src) = entry.sources.get_mut(&owner)
                 {
                     remove_occupant(&mut src.fields, tail);
+                    if src.fields.is_empty() && is_static_label(&owner) {
+                        entry.sources.remove(&owner);
+                    }
                 }
             }
 
@@ -406,8 +410,9 @@ impl Cache {
 
     /// Remove the static subtree at `node` — the dotted tail below `namespace`,
     /// `""` for the namespace root, where every static record of the entry
-    /// goes. Source-produced records are left alone; one under `node` refuses
-    /// the removal instead. The entry is dropped when no source remains.
+    /// goes. Source-produced records are never removed; addressing one
+    /// directly refuses the removal instead of silently doing nothing. The
+    /// entry is dropped when no source remains.
     ///
     /// Returns whether anything was removed.
     pub fn remove_static_path(
@@ -419,19 +424,15 @@ impl Cache {
     ) -> Result<bool, PutError> {
         let key = make_cache_key(namespace, path);
 
+        // Only the addressed node is scanned: a Source's records beneath it are
+        // left in place, exactly as `replace` leaves them.
         if !node.is_empty() {
             let entry = self.entries.get(&key);
-            let mut touched = vec![node.to_string()];
-            if let Some(ref e) = entry {
-                touched.extend(records_under(e, node));
-            }
-            for tail in &touched {
-                if let Some(source) = source_owner(registry, namespace, entry.as_deref(), tail) {
-                    return Err(PutError::Owned {
-                        record: format!("{namespace}.{tail}"),
-                        source,
-                    });
-                }
+            if let Some(source) = source_owner(registry, namespace, entry.as_deref(), node) {
+                return Err(PutError::Owned {
+                    record: format!("{namespace}.{node}"),
+                    source,
+                });
             }
         }
 

@@ -1879,10 +1879,11 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`refresh`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
 
-**`put`:** Write data into the cache as a virtual provider. The `data` field must be a JSON object. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success; rejected if the key conflicts with a built-in or script provider.
+**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write deep-merges into whatever is already stored there. `"replace": true` drops the subtree at the node first; omitting `data` removes it. Both act on static records only — a `put` never removes a record a provider's Source produces. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success; a record one of the provider's Sources produces is refused per record, as `cannot write <namespace>.<node>: owned by source <source>`.
 
 ```json
 {"op":"put","key":"myapp","data":{"status":"healthy"}}
+{"op":"put","key":"myapp.deploy.count","data":3}
 {"op":"put","key":"myapp","data":{"status":"ok"},"ttl":"30s","path":"/project"}
 ```
 

@@ -124,3 +124,18 @@ fn put_null_cli_validation_rejects_both() {
     let should_error = !null_flag && data_arg.is_none();
     assert!(!should_error, "expected data without --null to be valid");
 }
+
+/// `--replace` names what a write puts in place of the old subtree; `--null`
+/// removes it and puts nothing there. Combining them is an argument error,
+/// caught before any daemon contact — so this runs the real binary with no
+/// daemon around.
+#[test]
+fn put_cli_rejects_replace_with_null() {
+    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
+    cmd.args(["put", "myapp", "--null", "--replace"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "cannot combine --null with --replace",
+        ));
+}

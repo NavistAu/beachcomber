@@ -15,6 +15,10 @@ mod common;
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::provider::{
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
+    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+};
 use beachcomber::server::Server;
 use common::git::{GitRepoFixture, has_git};
 use std::sync::Arc;
@@ -22,19 +26,72 @@ use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-fn setup() -> (
+type Fixture = (
     TempDir,
     std::path::PathBuf,
     Arc<Cache>,
     Arc<ProviderRegistry>,
     Arc<beachcomber::watcher_registry::WatcherRegistry>,
-) {
+);
+
+fn setup() -> Fixture {
+    setup_with_registry(ProviderRegistry::with_defaults())
+}
+
+fn setup_with_registry(registry: ProviderRegistry) -> Fixture {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(ProviderRegistry::with_defaults());
-    (tmp, sock, cache, registry, watchers)
+    (tmp, sock, cache, Arc::new(registry), watchers)
+}
+
+/// A Source whose field names are only known once it runs, so it declares a
+/// sentinel (`<tool>`) instead — exactly the shape mise, asdf, aws, gcloud and
+/// every script/http/library provider have.
+struct SentinelSource;
+
+impl Source for SentinelSource {
+    fn metadata(&self) -> &SourceMetadata {
+        use std::sync::OnceLock;
+        static M: OnceLock<SourceMetadata> = OnceLock::new();
+        M.get_or_init(|| SourceMetadata {
+            name: "tools".into(),
+            fields: vec![FieldSchema {
+                name: "<tool>".into(),
+                field_type: FieldType::String,
+            }],
+            scope: SourceScope::Global,
+            invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
+            keep_alive: KeepAlive::Polls(2),
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
+            fsevents_reinstate: false,
+        })
+    }
+
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
+        let mut result = SourceResult::new();
+        result.insert("node", Value::String("22.0.0".to_string()));
+        result
+    }
+}
+
+struct SentinelProvider;
+
+impl Provider for SentinelProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "toolset".to_string(),
+            sources: vec![SentinelSource.metadata().clone()],
+        }
+    }
+
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(SentinelSource)]
+    }
 }
 
 async fn send_recv(stream: &mut UnixStream, request: &serde_json::Value) -> Response {
@@ -174,6 +231,20 @@ async fn put_scalar_at_the_root_is_rejected() {
     )
     .await;
     assert!(!r.ok, "a scalar at the root must be rejected");
+    assert_eq!(
+        r.error.as_deref(),
+        Some("put data at the root must be an object")
+    );
+
+    // An array is not an object either. The check runs on the wire JSON, before
+    // conversion — `Value::from_json` turns an array into an index-keyed object,
+    // so checking afterwards would let this through.
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"my","data":[1,2]}),
+    )
+    .await;
+    assert!(!r.ok, "an array at the root must be rejected");
     assert_eq!(
         r.error.as_deref(),
         Some("put data at the root must be an object")
@@ -348,6 +419,135 @@ async fn put_over_a_source_owned_record_is_refused() {
     let r = send_recv(&mut s, &serde_json::json!({"op":"put","key":"git.branch"})).await;
     assert!(!r.ok, "null put at git.branch must be refused");
     assert_eq!(r.error.as_deref(), Some(EXPECTED));
+
+    handle.abort();
+}
+
+/// A Source with runtime-resolved field names declares a sentinel, so no
+/// declared name matches a `put` key and ownership cannot come from
+/// `source_for_field`. Such a Source owns every field name in its namespace,
+/// warm or cold — otherwise a cold `put toolset.node` lands first and the
+/// source's next refresh writes `node` into its own map too, leaving two
+/// records at one (key, path) that `get toolset.node` and `get toolset`
+/// disagree about.
+#[tokio::test]
+async fn put_under_a_sentinel_source_is_refused_warm_or_cold() {
+    let mut registry = ProviderRegistry::new();
+    registry.register(Box::new(SentinelProvider)).unwrap();
+    let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    const EXPECTED: &str = "cannot write toolset.node: owned by source tools";
+
+    // Cold: nothing cached, and `node` is no declared field name.
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"toolset.node","data":"999"}),
+    )
+    .await;
+    assert!(!r.ok, "cold put under a sentinel source must be refused");
+    assert_eq!(r.error.as_deref(), Some(EXPECTED));
+
+    // Warm the source (a sentinel field triggers no cold-miss execute of its
+    // own, so the whole-namespace read is what runs it), then try again.
+    let all = data_of(
+        send_recv(&mut s, &serde_json::json!({"op":"get","key":"toolset"})).await,
+        "get toolset",
+    );
+    assert_eq!(all["node"], serde_json::json!("22.0.0"));
+
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"toolset.node","data":"999"}),
+    )
+    .await;
+    assert!(!r.ok, "warm put under a sentinel source must be refused");
+    assert_eq!(r.error.as_deref(), Some(EXPECTED));
+
+    // A name the source has never emitted is refused too — a sentinel claims
+    // every field name in the namespace, because any of them may show up.
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"toolset","data":{"note":1}}),
+    )
+    .await;
+    assert!(!r.ok, "a sentinel source owns every field name");
+    assert_eq!(
+        r.error.as_deref(),
+        Some("cannot write toolset.note: owned by source tools")
+    );
+
+    // One record, one map.
+    let rows = data_of(
+        send_recv(&mut s, &serde_json::json!({"op":"status"})).await,
+        "status",
+    );
+    let node_rows: Vec<&serde_json::Value> = rows
+        .as_array()
+        .expect("status data is an array")
+        .iter()
+        .filter(|r| r["provider"] == "toolset" && r["field"] == "node")
+        .collect();
+    assert_eq!(
+        node_rows.len(),
+        1,
+        "exactly one record for toolset.node, got {node_rows:?}"
+    );
+    assert_eq!(node_rows[0]["source"], serde_json::json!("tools"));
+
+    handle.abort();
+}
+
+/// `--replace` acts on static records only. A Source's records under the node
+/// are neither removed nor scanned for ownership, so a root `--replace` on a
+/// warm provider namespace works — and is symmetric with `--null` there.
+#[tokio::test]
+async fn replace_at_a_provider_root_leaves_the_source_records_alone() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    // `hostname` rather than `uptime`: it is a builtin whose source runs
+    // everywhere, including the sandboxed hosts CI skips `uptime` on.
+    let name = data_of(
+        send_recv(
+            &mut s,
+            &serde_json::json!({"op":"get","key":"hostname.name"}),
+        )
+        .await,
+        "get hostname.name",
+    );
+
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"hostname","data":{"note":2},"replace":true}),
+    )
+    .await;
+    assert!(r.ok, "replace at a warm provider root: {:?}", r.error);
+
+    let all = data_of(
+        send_recv(&mut s, &serde_json::json!({"op":"get","key":"hostname"})).await,
+        "get hostname",
+    );
+    assert_eq!(all["name"], name, "the source's record survives --replace");
+    assert_eq!(all["note"], serde_json::json!(2));
+
+    // A plain put merges over it.
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"hostname","data":{"note":3}}),
+    )
+    .await;
+    assert!(r.ok, "merge put: {:?}", r.error);
+    let all = data_of(
+        send_recv(&mut s, &serde_json::json!({"op":"get","key":"hostname"})).await,
+        "get hostname",
+    );
+    assert_eq!(all["name"], name);
+    assert_eq!(all["note"], serde_json::json!(3));
 
     handle.abort();
 }

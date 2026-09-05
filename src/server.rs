@@ -881,10 +881,17 @@ async fn handle_request(
             // therefore exceed the bound by the node's own depth. Accepted: the
             // bound exists to stop unbounded recursion on untrusted input, and
             // the node prefix is bounded by the key the caller typed.
+            //
+            // The root's object check runs on the wire JSON, before conversion:
+            // `Value::from_json` turns an array into an index-keyed object, so
+            // checking afterwards would let `put ns [1,2]` through.
             let value = match data.as_object() {
                 Some(obj) if node.is_empty() => crate::provider::Value::Object(
                     crate::provider::SourceResult::from_json_object(obj).fields,
                 ),
+                None if node.is_empty() => {
+                    return Response::error(crate::cache::PutError::RootNotObject.to_string());
+                }
                 _ => crate::provider::Value::from_json(data),
             };
 
