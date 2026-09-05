@@ -151,6 +151,18 @@ pub fn run_check_subjects(
     worst
 }
 
+/// Re-tag already-rendered `  [LEVEL] message` lines with which view produced
+/// them, so the Config block's two halves are told apart at a glance.
+fn tag_verdicts(lines: &str, who: &str) -> String {
+    lines
+        .lines()
+        .map(|line| match line.split_once("] ") {
+            Some((level, msg)) => format!("{level}] {who}   {msg}\n"),
+            None => format!("{line}\n"),
+        })
+        .collect()
+}
+
 /// Validate the config file against the built-in providers, as
 /// `run_daemon_with_cancel` does at startup. Returns the verdict lines and the
 /// worst exit code they imply.
@@ -169,10 +181,10 @@ fn local_config_verdicts(config: &Config) -> (String, u8) {
 
     let mut lines = String::new();
     for w in &warnings {
-        lines.push_str(&format!("  [WARN] config   {w}\n"));
+        lines.push_str(&format!("  [WARN] local   {w}\n"));
     }
     for e in &errors {
-        lines.push_str(&format!("  [FAIL] config   {e}\n"));
+        lines.push_str(&format!("  [FAIL] local   {e}\n"));
     }
     let worst = if !errors.is_empty() {
         2
@@ -331,25 +343,30 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
             let (vlines, vworst) = render_verdicts(&verdicts);
             worst = worst.max(vworst);
 
+            // Every line here is the *daemon's* view — the config it loaded at
+            // startup, which may predate the file on disk. The client's own
+            // reading of that file is appended by `local_config_verdicts` under
+            // the `local` tag, so a disagreement between the two reads as
+            // information rather than as a contradiction.
             lines.push_str("Config\n");
             if let Some(p) = path {
-                lines.push_str(&format!("  [PASS] path   {p}\n"));
+                lines.push_str(&format!("  [PASS] daemon   path {p}\n"));
             } else {
-                lines.push_str("  [INFO] path   (none — using defaults)\n");
+                lines.push_str("  [INFO] daemon   path (none — using defaults)\n");
             }
             if parsed {
                 lines.push_str(&format!(
-                    "  [PASS] parsed   ok — {provider_count} provider definitions\n"
+                    "  [PASS] daemon   parsed ok — {provider_count} provider definitions\n"
                 ));
             } else {
-                lines.push_str("  [FAIL] parsed   FAILED\n");
+                lines.push_str("  [FAIL] daemon   parsed FAILED\n");
                 worst = worst.max(2);
             }
             for err in &errors {
-                lines.push_str(&format!("  [FAIL] error   {err}\n"));
+                lines.push_str(&format!("  [FAIL] daemon   {err}\n"));
                 worst = worst.max(2);
             }
-            lines.push_str(&vlines);
+            lines.push_str(&tag_verdicts(&vlines, "daemon"));
         }
         "cache" => {
             let total = payload

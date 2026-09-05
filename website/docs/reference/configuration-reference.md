@@ -264,6 +264,8 @@ Every leaf is loaded into the cache at daemon start, labelled with the file it c
 
 **Facet tables reload without a restart.** A configuration change that touches only facet tables is applied in place: every `config:`-labelled record is dropped and all layers are loaded again, so an edited leaf takes effect on the next read, a leaf deleted from its file disappears, and a `watch` on the affected key wakes. Records written by `comb put` are untouched. A change that touches anything else still restarts the daemon.
 
+The reload is all or nothing, twice over. The edited files are checked against the three rules above before anything is touched, so an edit that breaks one of them changes nothing at all — the previous values keep being served and the error is logged (and shown by `comb check config`) until the file is fixed. And each namespace's old and new records are swapped together, so a `comb get` running concurrently with the reload never sees a value momentarily missing.
+
 ### Virtual fields
 
 A **virtual field** is a value expression computed client-side over `env.*`, `cache.*`, and other fields' resolved values — it need not have a cached value of its own. Declare one under `[providers.<name>]` as a dotted `virtual.<field>` key:

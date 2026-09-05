@@ -8,9 +8,15 @@
 
 mod common;
 
+use beachcomber::cache::Cache;
 use beachcomber::config::Config;
+use beachcomber::provider::Value as CacheValue;
+use beachcomber::provider::registry::ProviderRegistry;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -397,6 +403,203 @@ async fn a_watch_wakes_on_a_config_edit() {
     .await
     .expect("a config edit wakes the watch");
     assert_eq!(frame["template"], json!("t2"));
+}
+
+/// A settings key in a facet table, plus an edit that would otherwise apply.
+/// The settings key is an error the cache could not catch on its own — nothing
+/// about `enabled = false` is unwritable — so only the validation pass in front
+/// of the re-seed stops the `title` edit beside it from landing.
+const RESEED_INVALID: &str = r#"
+[providers."scanline:template"]
+version = "v1"
+title = "t2"
+enabled = false
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invalid_edit_keeps_the_previous_seed() {
+    let e = Env::new("", &[("10-mine.toml", RESEED_V1)]);
+    let _h = e.serve().await;
+    let mut s = e.connect().await;
+
+    // The re-seed applies nothing at all — not even the leaves of the same file
+    // that are still fine.
+    rewrite(&e.drop_in("10-mine.toml"), RESEED_INVALID);
+
+    // The watch's poll interval plus its parse gate is well inside this window;
+    // the point is that nothing changes once it has run. A throwaway connection
+    // keeps the timeout from stranding a half-read response on the shared one.
+    let settled = {
+        let mut probe = e.connect().await;
+        tokio::time::timeout(
+            Duration::from_millis(600),
+            common::poll::poll_until_async(
+                "scanline:template.title",
+                "any change at all",
+                Duration::from_secs(30),
+                Duration::from_millis(20),
+                async || data(&mut probe, "scanline:template.title").await,
+                |v| *v != json!("t1"),
+            ),
+        )
+        .await
+    };
+    assert!(
+        settled.is_err(),
+        "an invalid edit must leave the previous seed in place, got {settled:?}"
+    );
+    assert_eq!(
+        data(&mut s, "scanline:template.version").await,
+        json!("v1"),
+        "and every other leaf of the previous seed too"
+    );
+
+    // The daemon is still watching: the next valid edit is applied.
+    rewrite(&e.drop_in("10-mine.toml"), RESEED_V2);
+    common::poll::poll_until_async(
+        "scanline:template.title",
+        "the edited value, once the file is valid again",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        async || data(&mut s, "scanline:template.title").await,
+        |v| *v == json!("t2"),
+    )
+    .await;
+}
+
+// ── the swap is one guard ────────────────────────────────────────────────────
+//
+// Driven against `Cache::reseed_static` directly rather than through the
+// daemon: the window a split drop-then-write would open is nanoseconds wide,
+// and one re-seed behind a socket round trip never lands in it — a test at that
+// level passes whether or not the implementation is atomic, which is worse than
+// no test at all.
+
+fn template_tree(version: &str, title: &str) -> CacheValue {
+    CacheValue::Object(HashMap::from([
+        ("version".to_string(), CacheValue::String(version.into())),
+        ("title".to_string(), CacheValue::String(title.into())),
+    ]))
+}
+
+#[test]
+fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
+    let cache = Arc::new(Cache::new());
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+    registry.register_static("scanline:template");
+    let label = "config:/x/10-mine.toml".to_string();
+
+    cache
+        .reseed_static(
+            "scanline:template",
+            None,
+            "config:",
+            &[(label.clone(), template_tree("v1", "t1"))],
+            &registry,
+        )
+        .unwrap();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader = {
+        let (cache, registry, stop) = (cache.clone(), registry.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let mut reads = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                let read = cache
+                    .read_merged("scanline:template", None, &registry)
+                    .expect("the namespace is never empty");
+                assert!(
+                    read.fields.contains_key("version"),
+                    "a concurrent read saw the gap between the drop and the writes"
+                );
+                reads += 1;
+            }
+            reads
+        })
+    };
+
+    // Thousands of swaps: a split drop-then-write leaves a window on every one
+    // of them, and the reader is hammering the same entry.
+    for i in 0..5000 {
+        cache
+            .reseed_static(
+                "scanline:template",
+                None,
+                "config:",
+                &[(label.clone(), template_tree("v1", &format!("t{i}")))],
+                &registry,
+            )
+            .unwrap();
+    }
+    stop.store(true, Ordering::Relaxed);
+    let reads = reader.join().unwrap();
+    assert!(reads > 0, "the reader thread never ran");
+}
+
+#[test]
+fn a_refused_write_leaves_the_previous_seed_untouched() {
+    // The drop and the writes are one operation, so a write the cache refuses
+    // cannot leave the entry emptied behind it. `hostname.name` is produced by
+    // the provider's `host` source, so the second write is refused — and the
+    // first must not have landed, nor the previous seed have gone.
+    let cache = Cache::new();
+    let registry = ProviderRegistry::with_defaults();
+    let old = "config:/x/old.toml".to_string();
+
+    cache
+        .reseed_static(
+            "hostname",
+            None,
+            "config:",
+            &[(
+                old.clone(),
+                CacheValue::Object(HashMap::from([(
+                    "note".to_string(),
+                    CacheValue::String("kept".into()),
+                )])),
+            )],
+            &registry,
+        )
+        .unwrap();
+
+    let err = cache
+        .reseed_static(
+            "hostname",
+            None,
+            "config:",
+            &[
+                (
+                    "config:/x/new.toml".to_string(),
+                    CacheValue::Object(HashMap::from([(
+                        "other".to_string(),
+                        CacheValue::String("new".into()),
+                    )])),
+                ),
+                (
+                    "config:/x/new.toml".to_string(),
+                    CacheValue::Object(HashMap::from([(
+                        "name".to_string(),
+                        CacheValue::String("boom".into()),
+                    )])),
+                ),
+            ],
+            &registry,
+        )
+        .expect_err("a Source-owned record refuses the swap");
+    assert!(format!("{err}").contains("hostname.name"), "{err}");
+
+    let read = cache
+        .read_merged("hostname", None, &registry)
+        .expect("the previous seed is still there");
+    assert_eq!(
+        read.fields.get("note"),
+        Some(&CacheValue::String("kept".into())),
+        "the refusal happened before the drop"
+    );
+    assert!(
+        !read.fields.contains_key("other"),
+        "and before the first write of the batch too"
+    );
 }
 
 // ── (e) a settings change still restarts ─────────────────────────────────────

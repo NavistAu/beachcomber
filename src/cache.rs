@@ -64,6 +64,14 @@ fn make_cache_key(provider: &str, path: Option<&str>) -> CacheKey {
     }
 }
 
+/// The inverse of [`make_cache_key`].
+fn split_cache_key(key: &str) -> (String, Option<String>) {
+    match key.find('\0') {
+        Some(sep) => (key[..sep].to_string(), Some(key[sep + 1..].to_string())),
+        None => (key.to_string(), None),
+    }
+}
+
 /// One source's contribution to a cache entry. Tracks its own refresh timestamp
 /// and staleness independently from sibling sources.
 #[derive(Debug, Clone)]
@@ -330,6 +338,18 @@ fn drop_static_subtree(entry: &mut CacheEntry, node: &str, keep: Option<&str>) -
         !src.fields.is_empty() || keep == Some(name.as_str())
     });
     removed
+}
+
+/// Drop every static map whose label starts with `prefix`. The `is_static_label`
+/// half is not redundant: it makes it structurally impossible for a prefix that
+/// happens to match a Source's name to take that Source's records with it.
+/// Returns whether anything went.
+fn drop_labelled(entry: &mut CacheEntry, prefix: &str) -> bool {
+    let before = entry.sources.len();
+    entry
+        .sources
+        .retain(|name, _| !(is_static_label(name) && name.starts_with(prefix)));
+    entry.sources.len() != before
 }
 
 /// Apply one static write to an entry already under a write guard.
@@ -685,34 +705,118 @@ impl Cache {
         Ok(removed)
     }
 
-    /// Remove every record whose source label starts with `prefix`, across
-    /// every entry, pruning the maps and entries it empties and notifying the
-    /// watchers of each entry it touched.
+    /// The (namespace, path) of every entry holding a record whose static
+    /// source label starts with `prefix` — the entries a re-seed has to visit
+    /// even when nothing writes to them any more.
+    pub fn entries_with_label_prefix(&self, prefix: &str) -> Vec<(String, Option<String>)> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .value()
+                    .sources
+                    .keys()
+                    .any(|name| is_static_label(name) && name.starts_with(prefix))
+            })
+            .map(|entry| split_cache_key(entry.key()))
+            .collect()
+    }
+
+    /// Swap one entry's `prefix`-labelled static records for `writes`, under a
+    /// single write guard: every static map whose label starts with `prefix`
+    /// goes, then each `(label, value)` is deep-merged at the namespace root in
+    /// order, exactly as [`Cache::write_static`] would write it.
     ///
-    /// The first half of a re-seed: `config:` records go and `put` records
-    /// stay, so a `put` survives — including one that shadows a config record
-    /// since deleted from its file.
-    pub fn drop_static_records_with_label_prefix(&self, prefix: &str) {
-        let mut touched: Vec<CacheKey> = Vec::new();
-        self.entries.retain(|key, entry| {
-            let before = entry.sources.len();
-            entry.sources.retain(|name, _| !name.starts_with(prefix));
-            if entry.sources.len() != before {
-                touched.push(key.clone());
+    /// One guard is the point. A drop followed by a separate write leaves a
+    /// window in which a concurrent `get` sees neither — a re-seed would blink
+    /// every template off and on again. Records a Source produces are never
+    /// touched (`prefix` only ever names static labels), and a record a Source
+    /// owns refuses the whole swap before anything is mutated.
+    ///
+    /// An empty `writes` is a removal: the namespace's config records go and
+    /// nothing replaces them.
+    pub fn reseed_static(
+        &self,
+        namespace: &str,
+        path: Option<&str>,
+        drop_label_prefix: &str,
+        writes: &[(String, Value)],
+        registry: &ProviderRegistry,
+    ) -> Result<(), PutError> {
+        // Every write is validated and flattened before the guard is taken, so
+        // a malformed one refuses without having held a lock.
+        let mut planned: Vec<(&str, Vec<(String, Value)>)> = Vec::with_capacity(writes.len());
+        for (label, value) in writes {
+            if !matches!(value, Value::Object(_)) {
+                return Err(PutError::RootNotObject);
             }
-            !entry.sources.is_empty()
-        });
-        // Notified after `retain` returns: waking a watcher while a shard guard
-        // is held invites a reader on the same shard to deadlock behind it.
-        let Some(ref watchers) = self.watchers else {
-            return;
+            if let Some(key) = dotted_key(value) {
+                return Err(PutError::DottedKey {
+                    key: key.to_string(),
+                });
+            }
+            let mut leaves = Vec::new();
+            walk_leaves("", value.clone(), &mut leaves);
+            planned.push((label.as_str(), leaves));
+        }
+        let claimed = |planned: &Vec<(&str, Vec<(String, Value)>)>| -> Vec<String> {
+            planned
+                .iter()
+                .flat_map(|(_, leaves)| leaves.iter().map(|(tail, _)| tail.clone()))
+                .collect()
         };
-        for key in touched {
-            match key.find('\0') {
-                Some(sep) => watchers.notify(&key[..sep], Some(&key[sep + 1..])),
-                None => watchers.notify(&key, None),
+
+        let key = make_cache_key(namespace, path);
+        let now = Instant::now();
+        let mut changed = false;
+        match self.entries.entry(key) {
+            dashmap::Entry::Occupied(mut occupied) => {
+                let tails = claimed(&planned);
+                if let Some(err) = refuse_owned(
+                    registry,
+                    namespace,
+                    Some(occupied.get()),
+                    tails.iter().map(String::as_str),
+                ) {
+                    return Err(err);
+                }
+                let entry = occupied.get_mut();
+                changed |= drop_labelled(entry, drop_label_prefix);
+                for (label, leaves) in planned {
+                    changed |= !leaves.is_empty();
+                    apply_static_write(entry, label, "", leaves, false, None, now);
+                }
+                if occupied.get().sources.is_empty() {
+                    occupied.remove();
+                }
+            }
+            dashmap::Entry::Vacant(vacant) => {
+                let tails = claimed(&planned);
+                if let Some(err) =
+                    refuse_owned(registry, namespace, None, tails.iter().map(String::as_str))
+                {
+                    return Err(err);
+                }
+                let mut fresh = CacheEntry {
+                    sources: HashMap::new(),
+                    created_at: now,
+                };
+                for (label, leaves) in planned {
+                    changed |= !leaves.is_empty();
+                    apply_static_write(&mut fresh, label, "", leaves, false, None, now);
+                }
+                if !fresh.sources.is_empty() {
+                    vacant.insert(fresh);
+                }
             }
         }
+
+        // Notified after the guard is released: waking a watcher while holding
+        // a shard guard invites a reader on the same shard to deadlock behind it.
+        if changed && let Some(ref watchers) = self.watchers {
+            watchers.notify(namespace, path);
+        }
+        Ok(())
     }
 
     /// Merge the static maps of `entry` — those whose source is `put` or

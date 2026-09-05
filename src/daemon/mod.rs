@@ -156,26 +156,32 @@ async fn run_daemon_with_cancel(
     }
 
     // Facet tables seed their namespaces before the socket is served, so the
-    // first `get` already sees them. The layers are re-read here rather than
-    // taken from `config`: composition deep-merges them into one value, and the
-    // per-file provenance every seeded record carries would be gone.
-    let config_path = Config::config_path();
-    let conf_d_dir = Config::conf_d_dir_for(&config_path);
-    for w in seed::seed_facets(
-        &cache,
-        &registry,
-        &Config::layers(Some(&config_path), &conf_d_dir),
-    ) {
-        warn!("{}", w);
-    }
+    // first `get` already sees them, and the same files are watched for changes.
+    //
+    // Both are gated on `config_dir`, which only a `Config::load()` sets: a
+    // daemon handed a `Config` built in memory (an embedder, every test that
+    // does not want a config file) corresponds to no directory, so it reads and
+    // watches nothing rather than picking up the ambient
+    // `~/.config/beachcomber`. The layers are re-read from that directory
+    // rather than taken from `config`, because composition deep-merges them
+    // into one value and the per-file provenance every seeded record carries
+    // would be gone.
+    if let Some(config_dir) = config.config_dir.clone() {
+        let config_path = config_dir.join("config.toml");
+        let conf_d_dir = Config::conf_d_dir_for(&config_path);
+        seed::seed_facets(
+            &cache,
+            &registry,
+            &Config::layers(Some(&config_path), &conf_d_dir),
+        );
 
-    // Config self-watch. A change that touches only facet tables re-seeds them
-    // in place; anything else restarts the daemon, since settings are read once
-    // at startup. In-process daemons take the polling backstop on a short
-    // interval for the same reason they take a polling file watcher: registering
-    // a kernel fs-event watch costs about 1.2s per call on macOS, and a test
-    // that is not about the native backend should not pay it.
-    {
+        // Config self-watch. A change that touches only facet tables re-seeds
+        // them in place; anything else restarts the daemon, since settings are
+        // read once at startup. In-process daemons take the polling backstop on
+        // a short interval for the same reason they take a polling file
+        // watcher: registering a kernel fs-event watch costs about 1.2s per
+        // call on macOS, and a test that is not about the native backend should
+        // not pay it.
         let cache = cache.clone();
         let registry = registry.clone();
         let cancel = cancel.clone();
@@ -189,9 +195,7 @@ async fn run_daemon_with_cancel(
             match kind {
                 config_watch::ChangeKind::FacetsOnly => {
                     let layers = Config::layers(Some(&watched_path), &watched_conf_d);
-                    for w in seed::reseed_facets(&cache, &registry, &layers) {
-                        warn!("{}", w);
-                    }
+                    seed::reseed_facets(&cache, &registry, &layers);
                 }
                 config_watch::ChangeKind::Settings => {
                     info!("configuration settings changed; shutting down for restart");

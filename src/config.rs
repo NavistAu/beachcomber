@@ -95,6 +95,13 @@ const FACET_SETTINGS_KEYS: &[&str] = &[
     "path",
 ];
 
+/// Drop repeats, keeping the first of each. Two layers holding the same facet
+/// leaf produce the same message twice; the operator needs it once.
+fn dedup_preserving_order(messages: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    messages.retain(|m| seen.insert(m.clone()));
+}
+
 /// Validate one `[providers."<p>:<facet>"]` table: data only, and under
 /// `template` a tree of tables and value-expression strings.
 fn validate_facet_table(
@@ -175,6 +182,16 @@ pub struct Config {
     /// from nested per-source sub-tables.
     #[serde(default)]
     pub providers: HashMap<String, toml::Value>,
+    /// The directory this config was loaded from — `config.toml`'s parent, and
+    /// so `conf.d`'s too. `Some` only for a `Config::load()`; `None` for one
+    /// built in memory or parsed from a string, which corresponds to no
+    /// directory at all.
+    ///
+    /// The daemon seeds facet tables and watches for changes only when this is
+    /// `Some`, so an embedded or test daemon handed a hand-built `Config` reads
+    /// nothing from the ambient `~/.config/beachcomber`.
+    #[serde(skip)]
+    pub config_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1485,7 +1502,11 @@ impl Config {
         for warning in detect_deprecated_keys(&main_content) {
             warn!("{}", warning);
         }
-        Self::load_composed(&main_content, &Self::conf_d_dir())
+        let mut config = Self::load_composed(&main_content, &Self::conf_d_dir());
+        // Recorded even when no file exists there: the directory is where this
+        // config resolved to, and a conf.d-only installation is legitimate.
+        config.config_dir = Self::config_path().parent().map(Path::to_path_buf);
+        config
     }
 
     /// Parse TOML config text into a `Config`, surfacing the parse error
@@ -1577,6 +1598,34 @@ impl Config {
             .filter(|(name, _)| matches!(crate::query::parse_facet(name), Ok(Some(_))))
             .filter_map(|(name, val)| Some((name.clone(), val.as_table()?.clone())))
             .collect()
+    }
+
+    /// Run the facet rules over a set of layers rather than over a composed
+    /// `Config` — the same checks `validate_providers` applies at startup,
+    /// against the files a re-seed is about to write. Returns (warnings,
+    /// errors); an identical message from two layers is reported once.
+    pub fn validate_facet_layers(layers: &[(PathBuf, toml::Value)]) -> (Vec<String>, Vec<String>) {
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
+        for (_, layer) in layers {
+            let Some(providers) = layer.get("providers").and_then(|v| v.as_table()) else {
+                continue;
+            };
+            for (name, value) in providers {
+                match crate::query::parse_facet(name) {
+                    Err(msg) => errors.push(format!("[providers.\"{name}\"]: {msg}")),
+                    Ok(Some(facet)) => {
+                        if let Some(table) = value.as_table() {
+                            validate_facet_table(name, facet, table, &mut warnings, &mut errors);
+                        }
+                    }
+                    Ok(None) => {}
+                }
+            }
+        }
+        dedup_preserving_order(&mut warnings);
+        dedup_preserving_order(&mut errors);
+        (warnings, errors)
     }
 
     /// The composed value with every facet table removed: the half of
