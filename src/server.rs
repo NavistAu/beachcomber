@@ -8,7 +8,6 @@ use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
 };
 use crate::watcher_registry::WatcherRegistry;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -824,63 +823,19 @@ async fn handle_request(
             data,
             ttl,
             path,
+            replace,
         } => {
-            // Facet syntax is checked directly on the put key — `put` has no
+            // A put key addresses a node: `namespace` or `namespace.node…`.
+            let (namespace, node) = protocol::split_key(key);
+            let node = node.unwrap_or("");
+
+            // Facet syntax is checked on the namespace segment — `put` has no
             // metadata-suffix handling, so e.g. `a:age` is always a facet
             // candidate here (and rejected, since `age` is a metadata suffix
             // name).
-            if let Err(msg) = crate::query::parse_facet(key) {
+            if let Err(msg) = crate::query::parse_facet(namespace) {
                 return Response::error(msg);
             }
-
-            // Reject if an already-registered (builtin or script) provider owns this name.
-            if registry.is_registered(key) {
-                return Response::error(format!(
-                    "cannot store under '{key}': name is used by a builtin or script provider"
-                ));
-            }
-
-            // data=None means "clear the cache entry" — remove the row but keep the registry.
-            let Some(data) = data else {
-                let effective_path: Option<String> = path.as_deref().map(|p| {
-                    let path_obj = std::path::Path::new(p);
-                    if path_obj.is_relative() {
-                        std::env::current_dir()
-                            .ok()
-                            .and_then(|cwd| cwd.join(path_obj).canonicalize().ok())
-                            .map(|abs| abs.to_string_lossy().to_string())
-                            .unwrap_or_else(|| p.to_string())
-                    } else {
-                        path_obj
-                            .canonicalize()
-                            .map(|abs| abs.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| p.to_string())
-                    }
-                });
-                cache.remove(key, effective_path.as_deref());
-                return Response {
-                    ok: true,
-                    data: None,
-                    age_ms: None,
-                    stale: None,
-                    error: None,
-                };
-            };
-
-            // data must be a JSON object; its top-level keys become fields.
-            let obj = match data.as_object() {
-                Some(o) => o,
-                None => return Response::error("put data must be a JSON object"),
-            };
-
-            // Convert JSON object fields to provider Value map.
-            let fields: HashMap<String, crate::provider::Value> =
-                crate::provider::SourceResult::from_json_object(obj).fields;
-
-            // Parse optional TTL.
-            let interval_secs = ttl
-                .as_deref()
-                .and_then(crate::scheduler::parse_duration_secs_pub);
 
             // Resolve optional path — canonicalize if provided.
             let effective_path: Option<String> = path.as_deref().map(|p| {
@@ -899,17 +854,62 @@ async fn handle_request(
                 }
             });
 
-            // Register static namespace (idempotent, safe under concurrent access).
-            registry.register_static(key);
+            // data=None means "clear the addressed node" — the row goes, the
+            // registry entry stays.
+            let Some(data) = data else {
+                return match cache.remove_static_path(
+                    namespace,
+                    effective_path.as_deref(),
+                    node,
+                    registry,
+                ) {
+                    Ok(_) => Response {
+                        ok: true,
+                        data: None,
+                        age_ms: None,
+                        stale: None,
+                        error: None,
+                    },
+                    Err(e) => Response::error(e.to_string()),
+                };
+            };
 
-            // Write to cache under the synthetic "put" source name.
-            cache.put_source(
-                key,
+            // `MAX_JSON_DEPTH` is counted from the record, not from the
+            // namespace: at the root each top-level value is converted on its
+            // own (as every other provider ingestion path does), and below the
+            // root from the addressed node. A deep node's total tree depth can
+            // therefore exceed the bound by the node's own depth. Accepted: the
+            // bound exists to stop unbounded recursion on untrusted input, and
+            // the node prefix is bounded by the key the caller typed.
+            let value = match data.as_object() {
+                Some(obj) if node.is_empty() => crate::provider::Value::Object(
+                    crate::provider::SourceResult::from_json_object(obj).fields,
+                ),
+                _ => crate::provider::Value::from_json(data),
+            };
+
+            let interval_secs = ttl
+                .as_deref()
+                .and_then(crate::scheduler::parse_duration_secs_pub);
+
+            if let Err(e) = cache.write_static(
+                namespace,
                 effective_path.as_deref(),
                 crate::cache::PUT_SOURCE,
-                fields,
+                node,
+                value,
+                *replace,
                 interval_secs,
-            );
+                registry,
+            ) {
+                return Response::error(e.to_string());
+            }
+
+            // A namespace no provider declares becomes a static one. A provider
+            // namespace that merely gained a static record is not.
+            if registry.provider_sources(namespace).is_none() {
+                registry.register_static(namespace);
+            }
 
             Response {
                 ok: true,

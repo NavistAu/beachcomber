@@ -63,6 +63,36 @@ async fn put_null_clears_entry_but_keeps_provider() {
     handle.abort();
 }
 
+/// `--null` at a node clears only that subtree — sibling records at the same
+/// namespace survive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn put_null_at_a_node_clears_only_that_subtree() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .put(
+            "nulltree",
+            serde_json::json!({"keep": 1, "drop": {"x": 2}}),
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(resp.ok, "initial put failed: {:?}", resp.error);
+
+    let resp = client.put_null("nulltree.drop", None, None).unwrap();
+    assert!(resp.ok, "node null put failed: {:?}", resp.error);
+
+    let resp = client.get("nulltree", None).unwrap();
+    assert!(resp.ok, "get failed: {:?}", resp.error);
+    assert_eq!(
+        resp.data.unwrap(),
+        serde_json::json!({"keep": 1}),
+        "only the addressed subtree is removed"
+    );
+
+    handle.abort();
+}
+
 /// Sending a Put with both data and null=true (via raw JSON) should return an error
 /// from the server perspective — but the CLI-level validation is tested via the
 /// argument parsing logic in main.rs. Here we test the server rejects an ambiguous

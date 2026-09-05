@@ -74,11 +74,18 @@ fn registry_metadata() {
     assert_eq!(meta.name, "hostname");
 }
 
+/// `is_registered` no longer gates `put` — a namespace is never refused
+/// wholesale, only record by record. It survives as the guard that stops
+/// `register_static` shadowing a real provider name.
 #[test]
-fn registry_is_registered_blocks_store() {
+fn registry_is_registered_reports_provider_names() {
     let registry = ProviderRegistry::with_defaults();
     assert!(registry.is_registered("hostname"));
     assert!(!registry.is_registered("nonexistent"));
+    assert!(
+        !registry.register_static("hostname"),
+        "a builtin name cannot be claimed as a static namespace"
+    );
 }
 
 #[test]

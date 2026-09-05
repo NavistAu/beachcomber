@@ -152,16 +152,19 @@ enum Commands {
         #[arg(long)]
         depth: Option<usize>,
     },
-    /// Put data into a static namespace
+    /// Put data at any node, deep-merging into what is already there
     #[command(visible_alias = "p")]
     Put {
-        /// Provider name (e.g., "myapp")
+        /// Node to write (e.g., "myapp" or "myapp.deploy.status")
         key: String,
-        /// JSON data (e.g., '{"status":"healthy"}'); omit when using --null
+        /// JSON data (an object at the root, any JSON below it); omit when using --null
         data: Option<String>,
-        /// Clear the cached entry (removes the cache row; registry entry is kept)
+        /// Clear the addressed node (removes the cache row; registry entry is kept)
         #[arg(long)]
         null: bool,
+        /// Replace the subtree at the node instead of merging into it
+        #[arg(long)]
+        replace: bool,
         /// Expected refresh interval (e.g., "30s", "5m")
         #[arg(long)]
         ttl: Option<String>,
@@ -329,6 +332,7 @@ fn main() -> ExitCode {
             key,
             data,
             null,
+            replace,
             ttl,
             path,
         } => run_put(
@@ -336,6 +340,7 @@ fn main() -> ExitCode {
             &key,
             data.as_deref(),
             null,
+            replace,
             ttl.as_deref(),
             path.as_deref(),
         ),

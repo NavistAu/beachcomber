@@ -262,6 +262,19 @@ impl ClientSession {
         unit_to_response(self.session.put(key, data, ttl, path))
     }
 
+    /// `put`, with `replace` to drop the subtree at the addressed node instead
+    /// of merging into it.
+    pub fn put_with(
+        &mut self,
+        key: &str,
+        data: serde_json::Value,
+        ttl: Option<&str>,
+        path: Option<&str>,
+        replace: bool,
+    ) -> std::io::Result<Response> {
+        unit_to_response(self.session.put_with(key, data, ttl, path, replace))
+    }
+
     /// Clear the cached entry for a static provider key without dropping the registry entry.
     /// A subsequent `put` under the same key still works.
     ///
@@ -436,6 +449,19 @@ impl Client {
         path: Option<&str>,
     ) -> std::io::Result<Response> {
         unit_to_response(self.inner().put(key, data, ttl, path))
+    }
+
+    /// `put`, with `replace` to drop the subtree at the addressed node instead
+    /// of merging into it.
+    pub fn put_with(
+        &self,
+        key: &str,
+        data: serde_json::Value,
+        ttl: Option<&str>,
+        path: Option<&str>,
+        replace: bool,
+    ) -> std::io::Result<Response> {
+        unit_to_response(self.inner().put_with(key, data, ttl, path, replace))
     }
 
     /// Clear the cached entry for a static provider key without dropping the registry entry.

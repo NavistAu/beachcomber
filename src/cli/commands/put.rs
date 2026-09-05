@@ -5,17 +5,23 @@
 use crate::config::Config;
 use std::process::ExitCode;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_put(
     config: &Config,
     key: &str,
     data_str: Option<&str>,
     null: bool,
+    replace: bool,
     ttl: Option<&str>,
     path: Option<&str>,
 ) -> ExitCode {
     // Validate argument combinations.
     if null && data_str.is_some() {
         eprintln!("cannot combine --null with a data argument");
+        return ExitCode::from(2);
+    }
+    if null && replace {
+        eprintln!("cannot combine --null with --replace");
         return ExitCode::from(2);
     }
     if !null && data_str.is_none() {
@@ -58,12 +64,10 @@ pub fn run_put(
             }
         };
 
-        if !data.is_object() {
-            eprintln!("put data must be a JSON object");
-            return ExitCode::from(2);
-        }
-
-        match client.put(key, data, ttl, path) {
+        // Whether this JSON is legal here depends on the node the key
+        // addresses — an object at the root, anything below it — which only the
+        // daemon knows. It reports the mismatch.
+        match client.put_with(key, data, ttl, path, replace) {
             Ok(response) => {
                 if response.ok {
                     ExitCode::SUCCESS

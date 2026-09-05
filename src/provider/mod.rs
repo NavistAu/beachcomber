@@ -148,6 +148,73 @@ pub fn lookup_path<'a>(fields: &'a HashMap<String, Value>, path: &str) -> Option
     Some(current)
 }
 
+/// Write `value` at a dotted tail, creating intermediate [`Value::Object`]s.
+///
+/// The counterpart of [`lookup_path`] for writes. Whatever occupies the final
+/// segment is replaced. A non-object sitting on an intermediate segment is
+/// replaced by a fresh object too — the tail names an address, and a scalar in
+/// the way is simply what currently occupies a prefix of it.
+///
+/// An empty tail is a no-op: the root is a map, not a node.
+pub fn insert_path(fields: &mut HashMap<String, Value>, tail: &str, value: Value) {
+    let Some((head, rest)) = tail.split_once('.') else {
+        if !tail.is_empty() {
+            fields.insert(tail.to_string(), value);
+        }
+        return;
+    };
+    let slot = fields
+        .entry(head.to_string())
+        .or_insert_with(|| Value::Object(HashMap::new()));
+    if !matches!(slot, Value::Object(_)) {
+        *slot = Value::Object(HashMap::new());
+    }
+    let Value::Object(map) = slot else {
+        unreachable!("slot was just forced to an Object")
+    };
+    insert_path(map, rest, value);
+}
+
+/// Remove the node at a dotted tail, pruning intermediate objects the removal
+/// leaves empty. Returns the removed value, or `None` if nothing is stored
+/// there — including when a non-object sits on an intermediate segment, since
+/// then the addressed node does not exist.
+pub fn remove_path(fields: &mut HashMap<String, Value>, tail: &str) -> Option<Value> {
+    let Some((head, rest)) = tail.split_once('.') else {
+        if tail.is_empty() {
+            return None;
+        }
+        return fields.remove(tail);
+    };
+    let Some(Value::Object(map)) = fields.get_mut(head) else {
+        return None;
+    };
+    let removed = remove_path(map, rest)?;
+    if map.is_empty() {
+        fields.remove(head);
+    }
+    Some(removed)
+}
+
+/// Merge `overlay` into `base`, recursing into objects present on both sides.
+/// Any non-object on either side replaces what `base` holds.
+///
+/// This is how a cache entry's source maps combine on read: the maps hold
+/// disjoint records, so merge order never decides a value — only which
+/// intermediate objects get stitched together.
+pub fn deep_merge(base: &mut HashMap<String, Value>, overlay: HashMap<String, Value>) {
+    for (k, v) in overlay {
+        match (base.get_mut(&k), v) {
+            (Some(Value::Object(existing)), Value::Object(incoming)) => {
+                deep_merge(existing, incoming);
+            }
+            (_, v) => {
+                base.insert(k, v);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderResult {
     pub fields: HashMap<String, Value>,
@@ -779,5 +846,90 @@ mod tests {
     #[test]
     fn expand_abs_path_returns_none_for_relative() {
         assert!(expand_abs_path("relative/path").is_none());
+    }
+
+    // ── dotted-tail writes: insert_path / remove_path / deep_merge ───────────
+
+    fn obj(pairs: &[(&str, Value)]) -> Value {
+        Value::Object(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn insert_path_creates_intermediate_objects() {
+        let mut map = HashMap::new();
+        insert_path(&mut map, "some.value", Value::Int(5));
+        assert_eq!(map.get("some"), Some(&obj(&[("value", Value::Int(5))])));
+    }
+
+    #[test]
+    fn insert_path_replaces_a_scalar_in_the_way() {
+        let mut map = HashMap::new();
+        map.insert("some".to_string(), Value::Int(1));
+        insert_path(&mut map, "some.value", Value::Int(5));
+        assert_eq!(map.get("some"), Some(&obj(&[("value", Value::Int(5))])));
+    }
+
+    #[test]
+    fn insert_path_at_the_top_level_replaces_the_field() {
+        let mut map = HashMap::new();
+        map.insert("a".to_string(), Value::Int(1));
+        insert_path(&mut map, "a", Value::String("x".into()));
+        assert_eq!(map.get("a"), Some(&Value::String("x".into())));
+    }
+
+    #[test]
+    fn remove_path_prunes_now_empty_intermediates() {
+        let mut map = HashMap::new();
+        insert_path(&mut map, "some.value", Value::Int(5));
+        assert_eq!(remove_path(&mut map, "some.value"), Some(Value::Int(5)));
+        assert!(map.is_empty(), "empty `some` must be pruned, got {map:?}");
+    }
+
+    #[test]
+    fn remove_path_keeps_siblings() {
+        let mut map = HashMap::new();
+        insert_path(&mut map, "some.a", Value::Int(1));
+        insert_path(&mut map, "some.b", Value::Int(2));
+        assert_eq!(remove_path(&mut map, "some.a"), Some(Value::Int(1)));
+        assert_eq!(map.get("some"), Some(&obj(&[("b", Value::Int(2))])));
+    }
+
+    #[test]
+    fn remove_path_returns_none_on_a_miss() {
+        let mut map = HashMap::new();
+        insert_path(&mut map, "some.value", Value::Int(5));
+        assert_eq!(remove_path(&mut map, "some.nope"), None);
+        assert_eq!(remove_path(&mut map, "nope"), None);
+        // A scalar in the way is not the node addressed, so nothing is removed.
+        assert_eq!(remove_path(&mut map, "some.value.deeper"), None);
+        assert_eq!(map.get("some"), Some(&obj(&[("value", Value::Int(5))])));
+    }
+
+    #[test]
+    fn deep_merge_merges_nested_objects() {
+        let mut base = HashMap::new();
+        insert_path(&mut base, "some.a", Value::Int(1));
+        let mut overlay = HashMap::new();
+        insert_path(&mut overlay, "some.b", Value::Int(2));
+        deep_merge(&mut base, overlay);
+        assert_eq!(
+            base.get("some"),
+            Some(&obj(&[("a", Value::Int(1)), ("b", Value::Int(2))]))
+        );
+    }
+
+    #[test]
+    fn deep_merge_lets_a_scalar_replace_an_object() {
+        let mut base = HashMap::new();
+        insert_path(&mut base, "some.a", Value::Int(1));
+        let mut overlay = HashMap::new();
+        overlay.insert("some".to_string(), Value::Int(9));
+        deep_merge(&mut base, overlay);
+        assert_eq!(base.get("some"), Some(&Value::Int(9)));
     }
 }

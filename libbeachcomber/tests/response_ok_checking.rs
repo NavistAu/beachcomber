@@ -46,16 +46,18 @@ fn spawn_canned_responder(response: &'static str) -> (tempfile::TempDir, PathBuf
     (tmp, sock)
 }
 
+/// A provider's name is no longer refused wholesale — `hostname.name` is,
+/// because the `host` Source produces it.
 #[test]
-fn client_put_null_on_builtin_provider_returns_err() {
+fn client_put_null_on_a_source_owned_record_returns_err() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
 
-    let result = client.put_null("hostname", None);
+    let result = client.put_null("hostname.name", None);
 
     assert!(
         result.is_err(),
-        "put --null on a builtin provider should be rejected, got {result:?}"
+        "put --null on a Source-owned record should be rejected, got {result:?}"
     );
     assert!(
         matches!(result, Err(CombError::ServerError(_))),
@@ -64,16 +66,16 @@ fn client_put_null_on_builtin_provider_returns_err() {
 }
 
 #[test]
-fn session_put_null_on_builtin_provider_returns_err() {
+fn session_put_null_on_a_source_owned_record_returns_err() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
     let mut session = client.session().expect("session");
 
-    let result = session.put_null("hostname", None);
+    let result = session.put_null("hostname.name", None);
 
     assert!(
         result.is_err(),
-        "put --null on a builtin provider should be rejected, got {result:?}"
+        "put --null on a Source-owned record should be rejected, got {result:?}"
     );
     assert!(
         matches!(result, Err(CombError::ServerError(_))),

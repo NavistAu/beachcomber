@@ -190,9 +190,15 @@ this default. Stateless per connection — fresh connections have no context.
 
 ### `Put`
 
-Store data in a virtual provider. Virtual providers have no source code
-and are pure data containers. Namespace hierarchy (builtin > script > virtual)
-prevents accidentally shadowing a real provider.
+Store static data at any node of the tree. `key` is `namespace` or
+`namespace.node…` — the same dotted address `get` takes. The write
+deep-merges into whatever is already stored; `replace` drops the subtree at
+the addressed node first; omitting `data` removes it.
+
+Ownership is per **record**, not per namespace: a record one of the
+provider's Sources produces is refused, because the next refresh would
+overwrite it. Everything else is fair game, so a static record can sit
+beside a provider's own records in the same entry.
 
 **Request (set):**
 ```json
@@ -201,16 +207,23 @@ prevents accidentally shadowing a real provider.
   "key": "myapp",
   "data": {"status": "healthy", "last_deploy": "2026-04-22T10:00:00Z"},
   "ttl": "30s",
-  "path": "/optional/scope"
+  "path": "/optional/scope",
+  "replace": false
 }
 ```
+
+`data` at the root of a namespace must be an object — the root is a map of
+records, not a value. Below the root, any JSON: `{"op": "put", "key":
+"myapp.deploy.count", "data": 3}`.
 
 **Request (clear):**
 ```json
 {"op": "put", "key": "myapp"}
 ```
 
-(Omit `data` to clear the cache entry while keeping the registration.)
+(Omit `data` to clear the addressed node while keeping the registration. At
+the namespace root that is every static record of the entry; the entry
+itself survives if a Source still contributes to it.)
 
 **Response:**
 ```json
@@ -218,8 +231,8 @@ prevents accidentally shadowing a real provider.
 ```
 
 **Error cases:**
-- Non-object `data`: `{"ok": false, "error": "put data must be a JSON object"}`
-- Name collision with builtin/script provider: `{"ok": false, "error": "cannot store under '<name>': name is used by a builtin or script provider"}`
+- Non-object `data` at a namespace root: `{"ok": false, "error": "put data at the root must be an object"}`
+- A record a Source produces: `{"ok": false, "error": "cannot write <namespace>.<node>: owned by source <source>"}`
 
 ### `Status`
 

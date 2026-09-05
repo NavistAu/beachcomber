@@ -67,8 +67,11 @@ async fn store_and_get_roundtrip() {
     handle.abort();
 }
 
+/// A builtin provider's name is no longer refused wholesale — ownership is
+/// checked per record. `git.branch` belongs to the `head` Source, so writing it
+/// is refused by that record's name.
 #[tokio::test]
-async fn store_rejects_builtin_name() {
+async fn store_rejects_a_source_owned_record() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -77,43 +80,48 @@ async fn store_rejects_builtin_name() {
 
     let req = r#"{"op":"put","key":"git","data":{"branch":"main"}}"#;
     let resp = send_recv(&mut stream, req).await;
-    assert!(!resp.ok, "store under builtin name should fail");
-    let err = resp.error.unwrap();
-    assert!(
-        err.contains("builtin") || err.contains("script"),
-        "error should mention builtin or script, got: {err}"
+    assert!(!resp.ok, "storing over a Source-owned record should fail");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("cannot write git.branch: owned by source head")
     );
 
     handle.abort();
 }
 
+/// A second `put` merges into the first instead of replacing it. `--replace`
+/// (`"replace":true` on the wire) is how the old replace-everything behaviour
+/// is asked for now.
 #[tokio::test]
-async fn store_replaces_previous_data() {
+async fn store_merges_into_previous_data() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
-    // Store v1
     let v1 = r#"{"op":"put","key":"myapp","data":{"status":"starting","old_field":"yes"}}"#;
     let r = send_recv(&mut stream, v1).await;
     assert!(r.ok);
 
-    // Store v2 with different fields
     let v2 = r#"{"op":"put","key":"myapp","data":{"status":"ready","version":"2.0"}}"#;
     let r = send_recv(&mut stream, v2).await;
     assert!(r.ok);
 
-    // Get should return v2 data only
     let get = r#"{"op":"get","key":"myapp"}"#;
     let resp = send_recv(&mut stream, get).await;
     assert!(resp.ok);
     let data = resp.data.unwrap();
-    assert_eq!(data["status"], "ready");
+    assert_eq!(data["status"], "ready", "the second put wins per record");
     assert_eq!(data["version"], "2.0");
-    // old_field should be absent since we replaced the whole entry
-    assert!(data.get("old_field").is_none() || data["old_field"].is_null());
+    assert_eq!(data["old_field"], "yes", "untouched records survive");
+
+    // The same write with replace:true drops everything under the root first.
+    let v3 = r#"{"op":"put","key":"myapp","data":{"status":"done"},"replace":true}"#;
+    let r = send_recv(&mut stream, v3).await;
+    assert!(r.ok);
+    let resp = send_recv(&mut stream, get).await;
+    assert_eq!(resp.data.unwrap(), serde_json::json!({"status": "done"}));
 
     handle.abort();
 }
