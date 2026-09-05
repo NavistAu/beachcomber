@@ -46,7 +46,7 @@ Query a cached value. Returns cached data immediately. On a cold cache (first qu
 | `provider.field` | Single field — most common form |
 | `provider` | All fields from all sources (flattened) |
 
-The `provider.field` form automatically routes to the source that owns the field — a source name is metadata on that lookup, never a key you address directly. Unlike a field, a source has no address at all.
+The `provider.field` form automatically routes to the source that owns the field — a source name is metadata on the record, never a key you address directly. Unlike a field, a source has no address at all.
 
 ```sh
 # Query a specific field — text is the default

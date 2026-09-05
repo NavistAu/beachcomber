@@ -111,8 +111,8 @@ impl Response {
 
 /// Split a key on the FIRST dot only: `"git.branch"` → `("git", Some("branch"))`,
 /// `"battery"` → `("battery", None)`. `crate::query::parse_key` does the same
-/// split and returns a `KeyParse`; `split_key` is retained for `Refresh`,
-/// which needs only the provider segment.
+/// split and returns a `KeyParse`; `split_key` is retained as the wire-layer
+/// split, used by `Refresh` and by the protocol tests and bench.
 pub fn split_key(key: &str) -> (&str, Option<&str>) {
     match key.split_once('.') {
         Some((provider, field)) => (provider, Some(field)),

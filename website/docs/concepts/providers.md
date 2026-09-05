@@ -39,7 +39,7 @@ Splitting into sources means a branch lookup only demands the `head` source life
 
 ## Addressing
 
-A source name is metadata on a field — where it came from, how it's invalidated — never a level in the address. Consumers address only fields and providers:
+A source name is metadata on the record — where it came from, how it's invalidated — never a level in the address. Consumers address only fields and providers:
 
 | Key form | What it returns | Demand effect |
 |---|---|---|
