@@ -201,14 +201,18 @@ Walking the key through that tree:
   expression is not one.
 
 A `get` on a facet key (`<provider>:<facet>…`) is already inside a facet and
-never carries a template half; it reads the facet's own records as `data`.
+never carries a template half; it reads the facet's own records as `data`. Nor
+does a `get` carrying a metadata suffix (`:age`, `:stale`, `:fresh`, `:cache`) —
+each asks one question about the data half and is answered with that alone.
 
 ```json
 {"ok": true, "template": "{{ {'cpu': 40, 'mem': 12} }}", "rest": "cpu"}
 ```
 
-`Watch` frames carry the same two halves, so a streamed value renders exactly
-as a fetched one.
+`Watch` frames carry the same two halves, so a streamed value renders exactly as
+a fetched one. A watch subscribes both chains — the namespace's and its
+`template` facet's — and a frame is emitted whenever **either** half changes, so
+editing a template alone delivers a frame with no new `data`.
 
 #### Keys
 
@@ -368,9 +372,12 @@ changes, and continue until the client disconnects.
 
 The daemon emits one initial event with the current value, then one
 response per subsequent change. The initial event and every later one are
-the same chain-resolved read `Get` returns, and the watch fires on a change
-to **any entry on the chain** — a `put` at an ancestor, or at the global
-entry, reaches a watch opened at a project path.
+the same chain-resolved read `Get` returns — **both halves**, `data` and
+`template` — and the watch fires on a change to **any entry on either
+chain**: a `put` at an ancestor, or at the global entry, reaches a watch
+opened at a project path, and so does a write to the key's `template` facet.
+A frame is emitted whenever either half changes, so a template edited on its
+own delivers a frame carrying the new `template` and no new `data`.
 
 ### `Introspect`
 

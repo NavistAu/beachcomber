@@ -585,6 +585,52 @@ async fn a_template_below_the_repo_root_stays_below_it() {
     handle.abort();
 }
 
+/// Templates layer up the chain like any other static record: nearest wins,
+/// and a directory that is not below the near one still sees the far one.
+#[tokio::test]
+async fn a_nearer_template_shadows_a_farther_one() {
+    let parent = TempDir::new().unwrap();
+    let sub = parent.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let (parent, sub) = (
+        parent.path().to_str().unwrap().to_string(),
+        sub.to_str().unwrap().to_string(),
+    );
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    put(&mut s, "p:template.x", serde_json::json!("{{ far }}")).await;
+    let r = send_raw(
+        &mut s,
+        &serde_json::json!({
+            "op": "put", "key": "p:template.x", "data": "{{ near }}", "path": sub,
+        }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "put at the subdirectory: {r}");
+
+    let near = send_raw(
+        &mut s,
+        &serde_json::json!({"op":"get","key":"p.x","path": sub}),
+    )
+    .await;
+    assert_eq!(near["template"], "{{ near }}", "got {near}");
+
+    let far = send_raw(
+        &mut s,
+        &serde_json::json!({"op":"get","key":"p.x","path": parent}),
+    )
+    .await;
+    assert_eq!(
+        far["template"], "{{ far }}",
+        "the parent is not below the subdirectory: {far}"
+    );
+
+    handle.abort();
+}
+
 // ── (d) a namespace with templates only ─────────────────────────────────────
 
 /// `scanline` is not a registered provider and holds no data at all, only a
@@ -641,8 +687,14 @@ async fn a_template_only_response_carries_no_freshness() {
         "a response with no data carries neither age_ms nor stale: {resp}"
     );
 
+    // A metadata suffix asks one question about the data half, and is answered
+    // with that alone — never a template.
     let age = get(&mut s, "scanline.widgets.foo:age").await;
     assert_eq!(age["data"], serde_json::Value::Null, "got {age}");
+    assert!(
+        age.get("template").is_none(),
+        "a metadata-suffix response carries no template half: {age}"
+    );
     let stale = get(&mut s, "scanline.widgets.foo:stale").await;
     assert_eq!(stale["data"], serde_json::Value::Null, "got {stale}");
 
@@ -795,6 +847,58 @@ async fn a_watch_frame_carries_the_template() {
     assert_eq!(
         without_age(frame),
         serde_json::json!({"ok": true, "template": "{{ env.SCANLINE_FOO }}"})
+    );
+
+    handle.abort();
+}
+
+/// A watch subscribes the template chain as well as the data one, and dedups on
+/// both halves — so editing the template alone delivers a frame, and so does a
+/// value arriving under an unchanged template.
+#[tokio::test]
+async fn a_watch_wakes_on_a_template_change_and_on_a_value() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+    seed_scanline_template(&mut s).await;
+
+    let mut w = UnixStream::connect(&sock).await.unwrap();
+    w.write_all(b"{\"op\":\"watch\",\"key\":\"scanline.widgets.foo\"}\n")
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(&mut w);
+    let next_frame = async |reader: &mut BufReader<&mut UnixStream>| {
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let frame: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        without_age(frame)
+    };
+
+    assert_eq!(
+        next_frame(&mut reader).await,
+        serde_json::json!({"ok": true, "template": "{{ env.SCANLINE_FOO }}"}),
+        "the initial frame"
+    );
+
+    put(
+        &mut s,
+        "scanline:template.widgets.foo",
+        serde_json::json!("{{ 2 }}"),
+    )
+    .await;
+    assert_eq!(
+        next_frame(&mut reader).await,
+        serde_json::json!({"ok": true, "template": "{{ 2 }}"}),
+        "the template changed on its own"
+    );
+
+    put(&mut s, "scanline.widgets", serde_json::json!({"foo": 1})).await;
+    assert_eq!(
+        next_frame(&mut reader).await,
+        serde_json::json!({"ok": true, "data": 1, "stale": false, "template": "{{ 2 }}"}),
+        "a value arrived under the same template"
     );
 
     handle.abort();

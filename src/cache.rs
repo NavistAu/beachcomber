@@ -406,11 +406,13 @@ fn remove_occupant(fields: &mut HashMap<String, Value>, tail: &str) {
 /// Merge one source map into a [`MergedRead`], recording each record it lands
 /// as `fresh`. `prefix` is the dotted tail of the node `overlay` sits at.
 ///
-/// The overlay is borrowed, not consumed: only the values that survive the
-/// merge are cloned, so a layer whose records are all shadowed by a nearer one
-/// costs nothing to walk. Objects present on both sides are stitched together
-/// exactly as `provider::deep_merge` does; anything else replaces what is
-/// there, taking the shadowed records' provenance with it.
+/// The overlay is borrowed, not consumed: only the leaves that land are cloned.
+/// The chain is walked farthest-first, so a far layer's records are still
+/// cloned before a nearer one overwrites them — what the borrow saves is
+/// cloning a whole source map to merge a few leaves out of it, which every read
+/// used to pay for every contributing map. Objects present on both sides are
+/// stitched together exactly as `provider::deep_merge` does; anything else
+/// replaces what is there, taking the shadowed records' provenance with it.
 fn merge_layer(
     fields: &mut HashMap<String, Value>,
     records: &mut HashMap<String, RecordFreshness>,
@@ -424,7 +426,6 @@ fn merge_layer(
         } else {
             format!("{prefix}.{k}")
         };
-        let occupied = fields.contains_key(k);
         match (fields.get_mut(k), v) {
             (Some(Value::Object(existing)), Value::Object(incoming)) => {
                 // An empty object is a record at its own tail, so a farther
@@ -437,10 +438,11 @@ fn merge_layer(
                 merge_layer(existing, records, incoming, fresh, &tail);
             }
             (_, v) => {
-                if occupied {
+                // The insert's return value says whether anything was displaced,
+                // so the shadowing check costs no extra lookup.
+                if fields.insert(k.clone(), v.clone()).is_some() {
                     forget_records(records, &tail);
                 }
-                fields.insert(k.clone(), v.clone());
                 note_records(records, &tail, v, fresh);
             }
         }
@@ -803,8 +805,14 @@ impl Cache {
         found.then_some(out)
     }
 
-    /// Whether any entry on the chain from `path` to the global entry holds a
-    /// record for `namespace`.
+    /// Whether an entry exists for `namespace` anywhere on the chain from
+    /// `path` to the global entry.
+    ///
+    /// An entry existing *is* the answer to "does this namespace hold a
+    /// record?", because every write path prunes an entry the moment its last
+    /// source map goes ([`Cache::remove_source`], [`Cache::write_static`],
+    /// [`Cache::remove_static_path`]) — there are no empty entries to mistake
+    /// for populated ones.
     ///
     /// The cheap half of [`Cache::read_merged`] — no merge, no clone — for the
     /// one question that does not need the tree: whether a namespace exists at

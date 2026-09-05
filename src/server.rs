@@ -268,15 +268,18 @@ async fn handle_watch(
 
     // Facet syntax is checked on the provider segment, after the metadata-suffix
     // stripping QueryPlan::build already did (mirrors the Get path).
-    if let Err(msg) = crate::query::parse_facet(&provider_name) {
-        let _ = write_watch_line(writer, &Response::error(msg)).await;
-        return;
-    }
+    let facet = match crate::query::parse_facet(&provider_name) {
+        Ok(facet) => facet,
+        Err(msg) => {
+            let _ = write_watch_line(writer, &Response::error(msg)).await;
+            return;
+        }
+    };
 
     let effective_path = plan.effective_path.clone();
     // The template half reads from the directory the caller named, not the
     // scope-resolved one — see [`read_watch_value`].
-    let template_path = crate::query::normalise_path(requested);
+    let template_path = plan.requested_path.clone();
 
     // Signal demand (source-aware: canon §150/§268).
     if let Some(sched) = scheduler {
@@ -289,15 +292,31 @@ async fn handle_watch(
             .await;
     }
 
-    // Subscribe to every entry on the chain the read walks, not just the
+    // Subscribe to every entry both halves of the read walk, not just the
     // addressed one: a `put` at an ancestor (or at the global entry) changes
-    // what this watch resolves to, so it has to wake the stream. One forwarder
-    // task per link funnels the per-key broadcasts into a single channel.
+    // what this watch resolves to, so it has to wake the stream — and so does a
+    // write to the template facet, whose chain starts at the requested
+    // directory rather than the scope-resolved one. A facet key has no template
+    // half and subscribes only its own chain. One forwarder task per link
+    // funnels the per-key broadcasts into a single channel.
     let chain_watch = {
         let changed = Arc::new(tokio::sync::Notify::new());
         let mut tasks = Vec::new();
-        for layer in crate::query::path_chain(effective_path.as_deref()) {
-            let mut sub = watchers.subscribe(provider_name.as_str(), layer.as_deref());
+        let mut links: Vec<(String, Option<String>)> =
+            crate::query::path_chain(effective_path.as_deref())
+                .into_iter()
+                .map(|layer| (provider_name.clone(), layer))
+                .collect();
+        if facet.is_none() {
+            let facet_name = format!("{provider_name}:template");
+            links.extend(
+                crate::query::path_chain(template_path.as_deref())
+                    .into_iter()
+                    .map(|layer| (facet_name.clone(), layer)),
+            );
+        }
+        for (namespace, layer) in links {
+            let mut sub = watchers.subscribe(namespace.as_str(), layer.as_deref());
             let changed = Arc::clone(&changed);
             tasks.push(tokio::spawn(async move {
                 // A lagged subscriber has missed notifications, but one
@@ -356,7 +375,10 @@ async fn handle_watch(
         return;
     }
 
-    let mut last_data = initial.data.clone();
+    // Both halves decide whether a frame is new. A template edited on its own
+    // changes what the client renders just as much as a value does, so a frame
+    // whose only change is the template is still a frame.
+    let mut last = (initial.data.clone(), initial.template.clone());
 
     // Stream loop
     loop {
@@ -380,11 +402,12 @@ async fn handle_watch(
             template_path.as_deref(),
         );
 
-        // Field-level filtering: skip if value unchanged
-        if response.data == last_data {
+        // Field-level filtering: skip if neither half changed.
+        let current = (response.data.clone(), response.template.clone());
+        if current == last {
             continue;
         }
-        last_data = response.data.clone();
+        last = current;
 
         if write_watch_line(writer, &response).await.is_err() {
             break; // Client disconnected
@@ -534,9 +557,22 @@ async fn maybe_read_always(
 }
 
 /// The value at `field` in a merged read, as wire JSON.
+///
+/// `provider::Value` is `#[serde(untagged)]` over JSON-native shapes, so the
+/// conversion cannot fail; `.ok()` rather than a `Null` stand-in so that if it
+/// somehow did, the address reads as absent instead of as a stored null. Every
+/// conversion out of a merged tree takes that line.
 fn lookup_merged(merged: &Option<MergedRead>, field: &str) -> Option<serde_json::Value> {
     let value = crate::provider::lookup_path(&merged.as_ref()?.fields, field)?;
-    Some(serde_json::to_value(value).unwrap_or(serde_json::Value::Null))
+    serde_json::to_value(value).ok()
+}
+
+/// A dotted address split into its first segment and whatever follows it.
+fn split_head(address: &str) -> (&str, Option<&str>) {
+    match address.split_once('.') {
+        Some((head, rest)) => (head, Some(rest)),
+        None => (address, None),
+    }
 }
 
 /// A data hit, carrying the freshness [`freshness`] found for it.
@@ -615,14 +651,12 @@ fn template_half(
         return (serde_json::to_value(&read.fields).ok(), None);
     }
 
-    let mut segments = rest.split('.');
-    let Some(mut current) = read
-        .fields
-        .get(segments.next().expect("split is never empty"))
-    else {
+    let (head, mut left) = split_head(rest);
+    let Some(mut current) = read.fields.get(head) else {
         return none;
     };
-    while let Some(segment) = segments.next() {
+    while let Some(remainder) = left {
+        let (segment, below) = split_head(remainder);
         match current {
             Value::Object(map) => match map.get(segment) {
                 Some(v) => current = v,
@@ -631,11 +665,14 @@ fn template_half(
             // A value expression with the address unconsumed: the client
             // renders it and walks the remainder into the result.
             Value::String(_) => {
-                let left: Vec<&str> = std::iter::once(segment).chain(segments.by_ref()).collect();
-                return (serde_json::to_value(current).ok(), Some(left.join(".")));
+                return (
+                    serde_json::to_value(current).ok(),
+                    Some(remainder.to_string()),
+                );
             }
             _ => return none,
         }
+        left = below;
     }
     match current {
         Value::Object(_) | Value::String(_) => (serde_json::to_value(current).ok(), None),
@@ -662,12 +699,51 @@ fn source_scope_path<'a>(
     }
 }
 
+/// Assemble the response for a resolved read: the data half out of `merged`
+/// with its own freshness, and the template half attached to it — or the
+/// `unknown field` error, which a caller recognises by `ok: false`.
+///
+/// `get` and `watch` share this, so a streamed value and a fetched one cannot
+/// answer the same key differently. The only thing they do apart is warming:
+/// `get` runs sources on a cold miss, `watch` waits for the scheduler.
+///
+/// A sub-path whose head resolves but whose tail does not (`p.project.nonesuch`
+/// where `project` exists) is the loud error rather than a silent miss — but
+/// only when the template half is empty too, since otherwise the address is
+/// answered after all.
+fn resolve_halves(
+    merged: &Option<MergedRead>,
+    target: &KeyParse,
+    provider: &str,
+    template: Option<serde_json::Value>,
+    template_rest: Option<String>,
+) -> Response {
+    let rest = target.rest();
+    let response = match target {
+        KeyParse::Field(..) => match (lookup_merged(merged, rest), merged) {
+            (Some(data), Some(m)) => hit_response(data, freshness(m, rest)),
+            _ => {
+                let head_resolves =
+                    rest.contains('.') && lookup_merged(merged, split_head(rest).0).is_some();
+                if template.is_none() && head_resolves {
+                    return Response::error(format!("unknown field: {provider}.{rest}"));
+                }
+                Response::miss()
+            }
+        },
+        KeyParse::Provider(_) => match merged {
+            Some(m) => serde_json::to_value(&m.fields)
+                .ok()
+                .map_or_else(Response::miss, |data| hit_response(data, freshness(m, ""))),
+            None => Response::miss(),
+        },
+    };
+    response.with_template(template, template_rest)
+}
+
 // Watch reads only from cache — no inline-execute on cold miss (unlike Get).
 // A cache miss in a streaming context means the scheduler has not populated the
-// entry yet; the caller receives an update when it does. Routing by KeyParse
-// here mirrors Get's cache routing exactly so `watch X` resolves identically to
-// `get X` (the core parity goal of this change) — including the chain-resolved
-// merged read.
+// entry yet; the caller receives an update when it does.
 fn read_watch_value(
     cache: &Cache,
     registry: &ProviderRegistry,
@@ -675,51 +751,18 @@ fn read_watch_value(
     path: Option<&str>,
     template_path: Option<&str>,
 ) -> Response {
-    // `rest` is the address below the namespace — empty for a whole-namespace
-    // read, which is also how both halves address the root.
-    let (provider, rest) = match target {
-        KeyParse::Field(p, f) => (p.as_str(), f.as_str()),
-        KeyParse::Provider(p) => (p.as_str(), ""),
-    };
-    // A watch frame carries the same two halves a `get` does, so the client
-    // renders a streamed value exactly as it renders a fetched one. A facet key
-    // is already inside a facet and never gets one. Read first: the template
+    let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
+    // A watch frame carries the same two halves a `get` does. A facet key is
+    // already inside a facet and never gets one. Read first: the template
     // decides whether an unresolvable sub-path is an error or a hit.
     let (template, template_rest) = if crate::query::parse_facet(provider).ok().flatten().is_some()
     {
         (None, None)
     } else {
-        template_half(cache, registry, provider, rest, template_path)
+        template_half(cache, registry, provider, target.rest(), template_path)
     };
     let merged = cache.read_merged(provider, path, registry);
-    let response = match target {
-        KeyParse::Field(..) => match (lookup_merged(&merged, rest), &merged) {
-            (Some(data), Some(m)) => hit_response(data, freshness(m, rest)),
-            // Mirror Get's Field-miss semantics exactly: a failed nested
-            // sub-path (e.g. `p.project.nonesuch` where `project` exists but
-            // `nonesuch` doesn't) is a loud "unknown field" error; anything
-            // else is a plain miss.
-            _ => {
-                let nested_head_exists = rest.contains('.')
-                    && rest
-                        .split('.')
-                        .next()
-                        .is_some_and(|head| lookup_merged(&merged, head).is_some());
-                if template.is_none() && nested_head_exists {
-                    return Response::error(format!("unknown field: {provider}.{rest}"));
-                }
-                Response::miss()
-            }
-        },
-        KeyParse::Provider(_) => match &merged {
-            Some(m) => hit_response(
-                serde_json::to_value(&m.fields).unwrap_or(serde_json::Value::Null),
-                freshness(m, ""),
-            ),
-            None => Response::miss(),
-        },
-    };
-    response.with_template(template, template_rest)
+    resolve_halves(&merged, target, provider, template, template_rest)
 }
 
 async fn write_watch_line(
@@ -777,24 +820,22 @@ async fn handle_request(
             // sources, and walked it to the repository root for git. A template is
             // a static record, and static records resolve up the chain from the
             // directory the caller is standing in — so the template half reads from
-            // the requested path, canonicalised, and nothing else.
-            let template_path = crate::query::normalise_path(requested);
+            // the requested path, which the plan already canonicalised.
+            let template_path = plan.requested_path.as_deref();
 
             // Unknown provider check. A namespace is known when a provider
-            // declares it, when a `put` registered it as static, or when a
-            // record for it sits anywhere on the chain — including one under
-            // its `template` facet. A namespace that holds only templates
+            // declares it, when a `put` registered it as static, or when its
+            // `template` facet holds a record anywhere on the chain — the one
+            // case the first two miss, because a `put p:template …` registers
+            // `p:template`, not `p`. A namespace that holds only templates
             // (`scanline`, or an `aws` whose daemon provider was retired) still
             // answers a `get` with its template half. A facet key is already
             // inside a facet and has no template half to look for.
             let is_known = registry.provider_metadata(provider_name).is_some()
                 || registry.is_static_namespace(provider_name)
-                || cache.has_records_on_chain(provider_name, effective_path.as_deref())
                 || (facet.is_none()
-                    && cache.has_records_on_chain(
-                        &format!("{provider_name}:template"),
-                        template_path.as_deref(),
-                    ));
+                    && cache
+                        .has_records_on_chain(&format!("{provider_name}:template"), template_path));
             if !is_known {
                 return Response::error(format!("unknown provider: {provider_name}"));
             }
@@ -864,10 +905,6 @@ async fn handle_request(
             // what an unresolvable sub-path means: `get box.widgets.foo` where
             // `box.widgets` is an object without a `foo` is only "unknown field"
             // when no template answers there either.
-            let rest = match &plan.target {
-                KeyParse::Field(_, field) => field.as_str(),
-                KeyParse::Provider(_) => "",
-            };
             let (template, template_rest) = if facet.is_some() {
                 (None, None)
             } else {
@@ -875,14 +912,14 @@ async fn handle_request(
                     cache,
                     registry,
                     provider_name,
-                    rest,
-                    template_path.as_deref(),
+                    plan.target.rest(),
+                    template_path,
                 )
             };
 
-            let (cache_hit, normal_response) = match &plan.target {
+            let merged = match &plan.target {
                 KeyParse::Field(provider, field) => {
-                    let head = field.split('.').next().unwrap_or(field.as_str());
+                    let head = split_head(field).0;
                     let owner = registry.source_for_field(provider, head);
                     let ran = match owner {
                         Some(source_name) => {
@@ -894,32 +931,14 @@ async fn handle_request(
                     // still worth one attempt — `warm_source` only knows whether
                     // the source has *anything* cached.
                     let mut merged = cache.read_merged(provider, at, registry);
-                    let mut hit = lookup_merged(&merged, field);
-                    if hit.is_none()
+                    if lookup_merged(&merged, field).is_none()
                         && !ran
                         && let Some(source_name) = owner
                         && inline_execute_source(registry, cache, provider, source_name, at).await
                     {
                         merged = cache.read_merged(provider, at, registry);
-                        hit = lookup_merged(&merged, field);
                     }
-                    match (hit, &merged) {
-                        (Some(data), Some(m)) => (true, hit_response(data, freshness(m, field))),
-                        _ => {
-                            // Distinguish nested-path not-found from full miss —
-                            // unless a template answers the address, in which
-                            // case the key is not unknown at all.
-                            if template.is_none()
-                                && field.contains('.')
-                                && lookup_merged(&merged, head).is_some()
-                            {
-                                return Response::error(format!(
-                                    "unknown field: {provider}.{field}"
-                                ));
-                            }
-                            (false, Response::miss())
-                        }
-                    }
+                    merged
                 }
                 KeyParse::Provider(provider) => {
                     // Whole-namespace read: every source of the provider is
@@ -936,22 +955,30 @@ async fn handle_request(
                     for sn in &source_names {
                         warm_source(registry, cache, provider, sn, at, *force).await;
                     }
-                    match cache.read_merged(provider, at, registry) {
-                        Some(m) => {
-                            let data =
-                                serde_json::to_value(&m.fields).unwrap_or(serde_json::Value::Null);
-                            (true, hit_response(data, freshness(&m, "")))
-                        }
-                        None => (false, Response::miss()),
-                    }
+                    cache.read_merged(provider, at, registry)
                 }
             };
+
+            // Both halves, assembled the one way `watch` assembles them.
+            let normal_response = resolve_halves(
+                &merged,
+                &plan.target,
+                provider_name,
+                template,
+                template_rest,
+            );
+            // An address nothing answers is an error, and a metadata suffix has
+            // no question to ask about one.
+            if !normal_response.ok {
+                return normal_response;
+            }
+            let cache_hit = normal_response.data.is_some();
 
             match meta {
                 // Spec §3.4: a plain `get` carries both halves. A metadata
                 // suffix asks one question about the data half and is answered
-                // with that alone.
-                None => normal_response.with_template(template, template_rest),
+                // with that alone — never a template.
+                None => normal_response,
                 Some("age") => Response::ok(
                     normal_response
                         .age_ms
@@ -992,8 +1019,9 @@ async fn handle_request(
             if let Err(msg) = crate::query::parse_facet(provider_name) {
                 return Response::error(msg);
             }
-            let requested = path.as_deref().or(context_path.as_deref());
-            let effective_path = resolve_path(stripped_key, requested, registry);
+            let requested =
+                crate::query::normalise_path(path.as_deref().or(context_path.as_deref()));
+            let effective_path = resolve_path(stripped_key, requested.as_deref(), registry);
 
             if let Some(sched) = scheduler {
                 // Route through scheduler.

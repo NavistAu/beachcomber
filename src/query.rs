@@ -68,6 +68,18 @@ pub enum KeyParse {
     Field(String, String),
 }
 
+impl KeyParse {
+    /// The address below the namespace: the field, or `""` for a
+    /// whole-namespace read. Both halves of a read — the data and the template
+    /// — are addressed by it.
+    pub fn rest(&self) -> &str {
+        match self {
+            KeyParse::Field(_, field) => field.as_str(),
+            KeyParse::Provider(_) => "",
+        }
+    }
+}
+
 /// Splits a key on its first dot: `"provider"` -> `Provider`, anything with a
 /// dot -> `Field(provider, rest)`.
 pub fn parse_key(key: &str) -> KeyParse {
@@ -170,8 +182,12 @@ pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
 /// Resolve the effective path for a request: the cache entry the request
 /// addresses, and the head of the chain a read walks.
 ///
-/// The requested path is canonicalised the same way for every namespace
-/// ([`normalise_path`]). What differs is scope: a namespace that declares no
+/// `requested` is the request's own path, already canonicalised by
+/// [`normalise_path`] — the one canonicalisation a request pays for, since the
+/// caller keeps that value too (a template resolves from it, while the data
+/// half resolves from what this returns).
+///
+/// What differs between namespaces is scope: a namespace that declares no
 /// sources — a static one, or an unknown name — has no scope of its own, so the
 /// requested path is its address; a provider whose sources are all `Global`
 /// declares that it has one answer, which lives at the global entry; and a
@@ -179,14 +195,14 @@ pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
 /// source's `canonical_path` (walking to a project root, say).
 pub fn resolve_path(
     key: &str,
-    requested_path: Option<&str>,
+    requested: Option<&str>,
     registry: &ProviderRegistry,
 ) -> Option<String> {
     let provider = key.split('.').next().unwrap_or(key);
-    let raw = normalise_path(requested_path)?;
+    let raw = requested?;
 
     let Some(sources) = registry.provider_sources(provider) else {
-        return Some(raw);
+        return Some(raw.to_string());
     };
     if !sources.iter().any(|s| s.scope == SourceScope::PathScoped) {
         return None;
@@ -194,17 +210,22 @@ pub fn resolve_path(
     for sm in sources {
         if sm.scope == SourceScope::PathScoped
             && let Some(src) = registry.source(provider, &sm.name)
-            && let Some(canonical) = src.canonical_path(Some(&raw))
+            && let Some(canonical) = src.canonical_path(Some(raw))
         {
-            // The walk can land on `$HOME` — a repository rooted there, queried
-            // from a subdirectory — and `$HOME` is the global entry, so the
-            // result is normalised too. Otherwise the same directory would key
-            // two entries: `Some($HOME)` from the walk and `None` from a direct
-            // request.
-            return normalise_path(Some(&canonical));
+            // A walk that stayed put returns an already-canonical path. One
+            // that moved has to be normalised, because it can land on `$HOME`
+            // — a repository rooted there, queried from a subdirectory — and
+            // `$HOME` is the global entry. Otherwise the same directory would
+            // key two entries: `Some($HOME)` from the walk and `None` from a
+            // direct request.
+            return if canonical == raw {
+                Some(canonical)
+            } else {
+                normalise_path(Some(&canonical))
+            };
         }
     }
-    Some(raw)
+    Some(raw.to_string())
 }
 
 /// Which Sources a query demands warming for.
@@ -226,6 +247,14 @@ pub enum SourceDemand {
 #[derive(Debug, Clone)]
 pub struct QueryPlan {
     pub provider: String,
+    /// The request's own path, canonicalised ([`normalise_path`]) — where the
+    /// caller is standing. Static records, and so the template half of a read,
+    /// resolve up the chain from here.
+    pub requested_path: Option<String>,
+    /// Where the *provider's* records live: [`requested_path`] narrowed by the
+    /// namespace's scope. The data half of a read is addressed here.
+    ///
+    /// [`requested_path`]: QueryPlan::requested_path
     pub effective_path: Option<String>,
     pub target: KeyParse,
     pub meta: Option<String>,
@@ -237,7 +266,8 @@ impl QueryPlan {
     /// `raw_key` may carry a metadata suffix (e.g. `git.branch:fresh`).
     pub fn build(raw_key: &str, path_hint: Option<&str>, registry: &ProviderRegistry) -> QueryPlan {
         let (stripped_key, meta) = split_metadata_suffix(raw_key);
-        let effective_path = resolve_path(stripped_key, path_hint, registry);
+        let requested_path = normalise_path(path_hint);
+        let effective_path = resolve_path(stripped_key, requested_path.as_deref(), registry);
         let target = parse_key(stripped_key);
 
         let provider = match &target {
@@ -261,6 +291,7 @@ impl QueryPlan {
 
         QueryPlan {
             provider,
+            requested_path,
             effective_path,
             target,
             meta: meta.map(|s| s.to_string()),
@@ -511,7 +542,7 @@ mod resolve_path_tests {
             name: "hostname".into(),
             scope: SourceScope::Global,
         })]);
-        let result = resolve_path("hostname", Some("/tmp"), &reg);
+        let result = resolve_path("hostname", normalise_path(Some("/tmp")).as_deref(), &reg);
         assert_eq!(result, None, "global provider must ignore explicit path");
     }
 
@@ -521,7 +552,7 @@ mod resolve_path_tests {
             name: "git".into(),
             scope: SourceScope::PathScoped,
         })]);
-        let result = resolve_path("git", Some("/tmp"), &reg);
+        let result = resolve_path("git", normalise_path(Some("/tmp")).as_deref(), &reg);
         // /tmp should canonicalize to something (may differ by OS)
         assert!(
             result.is_some(),
@@ -535,7 +566,7 @@ mod resolve_path_tests {
         // A namespace that declares no sources — a static one, or an unknown
         // name — has no scope of its own, so the requested path is its path and
         // the chain resolves the rest.
-        let result = resolve_path("nonexistent", Some("/tmp"), &reg);
+        let result = resolve_path("nonexistent", normalise_path(Some("/tmp")).as_deref(), &reg);
         assert_eq!(result, normalise_path(Some("/tmp")));
         assert!(result.is_some(), "/tmp is not $HOME");
     }
@@ -545,7 +576,11 @@ mod resolve_path_tests {
         let reg = ProviderRegistry::new();
         let home = home_dir().expect("$HOME is set");
         assert_eq!(
-            resolve_path("anything", Some(&home.to_string_lossy()), &reg),
+            resolve_path(
+                "anything",
+                normalise_path(Some(&home.to_string_lossy())).as_deref(),
+                &reg
+            ),
             None,
             "$HOME is the global path"
         );
