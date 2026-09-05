@@ -65,11 +65,15 @@ All responses are a single line of JSON:
 - `ok` (bool, required) — `true` if the op succeeded, `false` on error.
 - `data` (any, optional) — response payload. Shape depends on the op.
 - `age_ms` (integer, optional) — for `Get` responses, milliseconds since the
-  cache entry was last refreshed.
-- `stale` (bool, optional) — for `Get` responses, whether the entry is older
-  than the provider's expected refresh interval.
+  record answering the request was last refreshed. See "Freshness" under `Get`.
+- `stale` (bool, optional) — for `Get` responses, whether that record is older
+  than its Source's expected refresh interval.
 - `error` (string, optional) — present when `ok=false`. A human-readable
   message; not stable enough to parse.
+- `template` (any, optional) — for `Get` responses, the template half. See
+  "Template half" under `Get`.
+- `rest` (string, optional) — for `Get` responses, the part of the key the
+  template walk could not consume.
 
 All optional fields are omitted (not set to null) when not applicable.
 
@@ -151,6 +155,48 @@ Read a cached value.
 ```json
 {"ok": false, "error": "unknown provider: foo"}
 ```
+
+#### Freshness
+
+`age_ms` and `stale` describe the *record* that answered the request, not the
+cache entry it lives in:
+
+- a leaf reports its own record's Source: how long since that Source last
+  refreshed, and whether that is past the Source's expected interval;
+- an object assembled from several records reports the largest of their ages,
+  and is stale if any one of them is;
+- a static record (source `put` or `config:<file>`) reports the time since it
+  was written, and is stale only if its `put` carried a `ttl`;
+- a response with no `data` carries **neither** field. `:age` and `:stale` on
+  such a response return `null`.
+
+#### Template half
+
+A `get` on a key whose namespace carries no facet does two lookups at the
+requested path: the data at the addressed node, and the same node in the merged
+tree of that namespace's `template` facet (`<provider>:template`). Whichever
+exist come back, so a response may carry the template half with no `data` at
+all — a namespace holding only templates is a hit, not `unknown provider`.
+
+`template` is a JSON tree whose string leaves are value expressions the
+**client** renders and whose objects are groups. The daemon never renders one.
+Walking the key through that tree:
+
+- landing on an object or a string with the key consumed → that node is
+  `template`;
+- landing on a string with segments left over → that string is `template` and
+  the unused remainder, rejoined with `.`, is `rest`;
+- a miss, or a non-string scalar in the way → neither field is attached.
+
+A `get` on a facet key (`<provider>:<facet>…`) is already inside a facet and
+never carries a template half; it reads the facet's own records as `data`.
+
+```json
+{"ok": true, "template": "{{ {'cpu': 40, 'mem': 12} }}", "rest": "cpu"}
+```
+
+`Watch` frames carry the same two halves, so a streamed value renders exactly
+as a fetched one.
 
 #### Keys
 

@@ -1456,3 +1456,30 @@ fn which_comb() -> Option<PathBuf> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `get` response carries a `template` half from Task 5 onward. The
+    /// client reads the fields it knows by name, so the extra ones are simply
+    /// not its business — the hit still parses.
+    ///
+    /// `template` reaching `CombResult` is Plan 3, not this.
+    #[test]
+    fn parse_response_ignores_the_template_half() {
+        let line = r#"{"ok":true,"data":"x","template":"t","rest":"r","age_ms":1,"stale":false}"#;
+        match parse_response(line, None).expect("a hit with a template still parses") {
+            CombResult::Hit {
+                data,
+                age_ms,
+                stale,
+            } => {
+                assert_eq!(data.as_value(), &serde_json::json!("x"));
+                assert_eq!(age_ms, 1);
+                assert!(!stale);
+            }
+            CombResult::Miss => panic!("expected a hit"),
+        }
+    }
+}

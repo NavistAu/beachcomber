@@ -370,6 +370,8 @@ impl ClientSession {
                 age_ms: Some(ev.age_ms as u128),
                 stale: Some(ev.stale),
                 error: None,
+                template: None,
+                rest: None,
             })),
             Ok(None) => Ok(None),
             Err(CombError::ServerError(msg)) => Ok(Some(Response::error(msg))),

@@ -87,14 +87,41 @@ impl CacheSourceEntry {
     }
 }
 
+/// How fresh one record is: the source map it was read from, reduced to the two
+/// numbers a response reports. A record's freshness is its own — never the
+/// entry's, and never the chain's (canon `provider_source.md` §"Field
+/// freshness").
+#[derive(Debug, Clone, Copy)]
+pub struct RecordFreshness {
+    pub last_refreshed: Instant,
+    pub expected_interval_secs: Option<u64>,
+}
+
+impl RecordFreshness {
+    pub fn age_ms(&self) -> u128 {
+        self.last_refreshed.elapsed().as_millis()
+    }
+
+    pub fn is_stale(&self) -> bool {
+        match self.expected_interval_secs {
+            Some(interval) => self.last_refreshed.elapsed().as_secs() > interval,
+            None => false,
+        }
+    }
+}
+
 /// What a chain-resolved read of one namespace found: see [`Cache::read_merged`],
 /// which is the only thing that builds one.
 #[derive(Debug, Clone)]
 pub struct MergedRead {
     /// The merged value tree — every record the read resolved, nearest first.
     pub fields: HashMap<String, Value>,
-    pub age_ms: u128,
-    pub stale: bool,
+    /// Provenance, one entry per record in `fields`, keyed by the record's
+    /// dotted tail below the namespace. Keying by the tail rather than by the
+    /// top-level field is what makes "which record answered this leaf" a single
+    /// map lookup even when two sources contribute leaves to one object — which
+    /// is exactly what the chain does, layer over layer.
+    pub records: HashMap<String, RecordFreshness>,
 }
 
 /// A complete cache entry for a (provider, path) key. Holds one `CacheSourceEntry`
@@ -376,6 +403,72 @@ fn remove_occupant(fields: &mut HashMap<String, Value>, tail: &str) {
     }
 }
 
+/// Merge one source map into a [`MergedRead`], recording each record it lands
+/// as `fresh`. `prefix` is the dotted tail of the node `overlay` sits at.
+///
+/// The overlay is borrowed, not consumed: only the values that survive the
+/// merge are cloned, so a layer whose records are all shadowed by a nearer one
+/// costs nothing to walk. Objects present on both sides are stitched together
+/// exactly as `provider::deep_merge` does; anything else replaces what is
+/// there, taking the shadowed records' provenance with it.
+fn merge_layer(
+    fields: &mut HashMap<String, Value>,
+    records: &mut HashMap<String, RecordFreshness>,
+    overlay: &HashMap<String, Value>,
+    fresh: RecordFreshness,
+    prefix: &str,
+) {
+    for (k, v) in overlay {
+        let tail = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{prefix}.{k}")
+        };
+        let occupied = fields.contains_key(k);
+        match (fields.get_mut(k), v) {
+            (Some(Value::Object(existing)), Value::Object(incoming)) => {
+                merge_layer(existing, records, incoming, fresh, &tail);
+            }
+            (_, v) => {
+                if occupied {
+                    forget_records(records, &tail);
+                }
+                fields.insert(k.clone(), v.clone());
+                note_records(records, &tail, v, fresh);
+            }
+        }
+    }
+}
+
+/// Record the freshness of every leaf of `value`, which sits at `tail`. A leaf
+/// is any non-object plus an empty object, mirroring [`walk_leaves`] — that is
+/// what a record is.
+fn note_records(
+    records: &mut HashMap<String, RecordFreshness>,
+    tail: &str,
+    value: &Value,
+    fresh: RecordFreshness,
+) {
+    match value {
+        Value::Object(map) if !map.is_empty() => {
+            for (k, v) in map {
+                note_records(records, &format!("{tail}.{k}"), v, fresh);
+            }
+        }
+        _ => {
+            records.insert(tail.to_string(), fresh);
+        }
+    }
+}
+
+/// Drop the provenance of the node at `tail` and everything below it — the
+/// records a nearer layer has just overwritten.
+fn forget_records(records: &mut HashMap<String, RecordFreshness>, tail: &str) {
+    records.remove(tail);
+    let below = format!("{tail}.");
+    records.retain(|k, _| !k.starts_with(&below));
+}
+
 pub struct Cache {
     entries: DashMap<CacheKey, CacheEntry>,
     watchers: Option<Arc<WatcherRegistry>>,
@@ -590,7 +683,7 @@ impl Cache {
     /// One layer at a time: [`Cache::read_merged`] walks the chain itself
     /// because a layer's static maps have to land between its neighbours'
     /// provider maps, not after all of them.
-    fn merge_static_records(entry: &CacheEntry, out: &mut HashMap<String, Value>) -> bool {
+    fn merge_static_records(entry: &CacheEntry, out: &mut MergedRead) -> bool {
         Self::merge_named(entry, out, |name| is_static_label(name))
     }
 
@@ -606,7 +699,7 @@ impl Cache {
         namespace: &str,
         want: crate::provider::SourceScope,
         registry: &ProviderRegistry,
-        out: &mut HashMap<String, Value>,
+        out: &mut MergedRead,
     ) -> bool {
         let declared = registry.provider_sources(namespace);
         Self::merge_named(entry, out, |name| {
@@ -625,21 +718,26 @@ impl Cache {
     /// would let a HashMap's order decide the value.
     fn merge_named(
         entry: &CacheEntry,
-        out: &mut HashMap<String, Value>,
+        out: &mut MergedRead,
         wanted: impl Fn(&String) -> bool,
     ) -> bool {
         let mut names: Vec<&String> = entry.sources.keys().filter(|n| wanted(n)).collect();
         names.sort();
         let mut merged = false;
         for name in names {
-            crate::provider::deep_merge(out, entry.sources[name].fields.clone());
+            let src = &entry.sources[name];
+            let fresh = RecordFreshness {
+                last_refreshed: src.last_refreshed,
+                expected_interval_secs: src.expected_interval_secs,
+            };
+            merge_layer(&mut out.fields, &mut out.records, &src.fields, fresh, "");
             merged = true;
         }
         merged
     }
 
-    /// The value tree a read of `namespace` at `path` sees, plus the entry-level
-    /// age and staleness to report for it.
+    /// The value tree a read of `namespace` at `path` sees, plus one freshness
+    /// reading per record in it.
     ///
     /// Layers merge farthest-first, so the nearest record ends up on top, and
     /// within a layer the order is fixed rather than left to a HashMap:
@@ -669,7 +767,10 @@ impl Cache {
     ) -> Option<MergedRead> {
         use crate::provider::SourceScope::{Global, PathScoped};
         let chain = crate::query::path_chain(path);
-        let mut fields = HashMap::new();
+        let mut out = MergedRead {
+            fields: HashMap::new(),
+            records: HashMap::new(),
+        };
         let mut found = false;
         for (depth, layer) in chain.iter().enumerate().rev() {
             let Some(entry) = self
@@ -682,35 +783,29 @@ impl Cache {
             // addresses the global entry the two coincide and both arms run,
             // PathScoped first.
             if depth == 0 {
-                found |= Self::merge_provider_records(
-                    &entry,
-                    namespace,
-                    PathScoped,
-                    registry,
-                    &mut fields,
-                );
+                found |=
+                    Self::merge_provider_records(&entry, namespace, PathScoped, registry, &mut out);
             }
             if layer.is_none() {
                 found |=
-                    Self::merge_provider_records(&entry, namespace, Global, registry, &mut fields);
+                    Self::merge_provider_records(&entry, namespace, Global, registry, &mut out);
             }
-            found |= Self::merge_static_records(&entry, &mut fields);
+            found |= Self::merge_static_records(&entry, &mut out);
         }
 
-        if !found {
-            return None;
-        }
-        // Entry-level freshness from the addressed entry, else the global one.
-        // Task 5 replaces this with a rule over the merged records themselves.
-        let (age_ms, stale) = self
-            .get_entry(namespace, path)
-            .or_else(|| self.get_entry(namespace, None))
-            .map(|e| (e.age_ms(), e.is_stale()))
-            .unwrap_or((0, false));
-        Some(MergedRead {
-            fields,
-            age_ms,
-            stale,
+        found.then_some(out)
+    }
+
+    /// Whether any entry on the chain from `path` to the global entry holds a
+    /// record for `namespace`.
+    ///
+    /// The cheap half of [`Cache::read_merged`] — no merge, no clone — for the
+    /// one question that does not need the tree: whether a namespace exists at
+    /// all.
+    pub fn has_records_on_chain(&self, namespace: &str, path: Option<&str>) -> bool {
+        crate::query::path_chain(path).iter().any(|layer| {
+            self.entries
+                .contains_key(&make_cache_key(namespace, layer.as_deref()))
         })
     }
 
@@ -1243,6 +1338,40 @@ mod tests {
         assert_eq!(entry.owner_of("some.nope"), None);
         // A scalar in the way owns the address below it.
         assert_eq!(entry.owner_of("branch.sub"), Some("head"));
+    }
+
+    /// `read_merged` records provenance per *record*, keyed by its dotted tail
+    /// — so two sources contributing leaves to one object are told apart, and a
+    /// record a nearer layer shadows takes its provenance with it.
+    #[tokio::test(start_paused = true)]
+    async fn read_merged_keeps_one_freshness_reading_per_record() {
+        let cache = Cache::new();
+        let registry = crate::provider::registry::ProviderRegistry::new();
+        let write = |label: &str, node: &str, value: Value| {
+            cache
+                .write_static("p", None, label, node, value, false, None, &registry)
+                .expect("no source owns anything under p");
+        };
+
+        write("config:a.toml", "tree.left", Value::Int(1));
+        tokio::time::advance(std::time::Duration::from_secs(7)).await;
+        write("put", "tree.right", Value::Int(2));
+
+        let read = cache.read_merged("p", None, &registry).expect("both maps");
+        assert_eq!(
+            read.records["tree.left"].age_ms(),
+            7000,
+            "the left leaf is the older map's record"
+        );
+        assert_eq!(
+            read.records["tree.right"].age_ms(),
+            0,
+            "the right leaf is the newer map's record"
+        );
+        assert!(
+            !read.records.contains_key("tree"),
+            "only leaves are records; the object they share is not one"
+        );
     }
 
     /// `flatten_fields` deep-merges, so two maps contributing to the same

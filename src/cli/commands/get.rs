@@ -786,6 +786,8 @@ pub fn run_get(
                         error: None,
                         age_ms: None,
                         stale: None,
+                        template: None,
+                        rest: None,
                     };
                     responses.push((key.clone(), response));
                 }

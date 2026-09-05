@@ -79,6 +79,17 @@ pub struct Response {
     pub stale: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The template half of a `get`: the node at the requested address in the
+    /// `template` facet of the same namespace. A JSON tree whose string leaves
+    /// are value expressions the *client* renders, and whose objects are
+    /// groups. Absent when the namespace has no template at that address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<serde_json::Value>,
+    /// The unused remainder of the key when the template walk stopped on a
+    /// string with segments left over — the address to apply to whatever that
+    /// expression renders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rest: Option<String>,
 }
 
 impl Response {
@@ -89,6 +100,8 @@ impl Response {
             age_ms: Some(age_ms),
             stale: Some(stale),
             error: None,
+            template: None,
+            rest: None,
         }
     }
 
@@ -99,6 +112,8 @@ impl Response {
             age_ms: None,
             stale: None,
             error: None,
+            template: None,
+            rest: None,
         }
     }
 
@@ -109,7 +124,22 @@ impl Response {
             age_ms: None,
             stale: None,
             error: Some(msg.into()),
+            template: None,
+            rest: None,
         }
+    }
+
+    /// Attach the template half. Both are `None` on a node with no template,
+    /// and `rest` is set only when the walk stopped on a string with segments
+    /// left over.
+    pub fn with_template(
+        mut self,
+        template: Option<serde_json::Value>,
+        rest: Option<String>,
+    ) -> Self {
+        self.template = template;
+        self.rest = rest;
+        self
     }
 }
 
