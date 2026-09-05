@@ -146,7 +146,7 @@ async fn source_names_the_template_record_on_a_template_only_hit() {
     handle.abort();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn source_names_the_source_behind_a_warm_provider_field() {
     if !common::git::has_git() {
         eprintln!("skipping: git not available");

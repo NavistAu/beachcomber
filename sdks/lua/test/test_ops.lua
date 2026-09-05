@@ -51,6 +51,19 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_true(tostring(err):find("mock", 1, true) ~= nil, "unsupported error should name the transport")
   end)
 
+  -- ── refresh ───────────────────────────────────────────────────────────────
+
+  suite("Client:refresh")
+
+  test("refresh returns Error.unsupported when the backend omits it", function()
+    -- The subprocess transport omits it: `comb` has no `refresh` subcommand,
+    -- and `get --force` is not the same op.
+    local ok, err = Client.new(make_backend({})):refresh("git")
+    assert_nil(ok)
+    assert_eq(err.kind, "unsupported")
+    assert_true(tostring(err):find("mock", 1, true) ~= nil, "unsupported error should name the transport")
+  end)
+
   -- ── put / put_null ────────────────────────────────────────────────────────
 
   suite("Client:put")

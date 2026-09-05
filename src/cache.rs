@@ -95,8 +95,10 @@ impl CacheSourceEntry {
 pub struct RecordFreshness {
     /// The record's one writer: a Source of the namespace's provider (`head`,
     /// `refs`, …), or a static label (`put`, `config:<file>`). This is what
-    /// `get <key>:source` reports.
-    pub source: String,
+    /// `get <key>:source` reports. Shared rather than owned: one source map
+    /// contributes many records and they all name it, so the label is
+    /// allocated once per map and refcounted per record.
+    pub source: Arc<str>,
     pub last_refreshed: Instant,
     pub expected_interval_secs: Option<u64>,
 }
@@ -874,7 +876,7 @@ impl Cache {
         for name in names {
             let src = &entry.sources[name];
             let fresh = RecordFreshness {
-                source: name.clone(),
+                source: Arc::from(name.as_str()),
                 last_refreshed: src.last_refreshed,
                 expected_interval_secs: src.expected_interval_secs,
             };

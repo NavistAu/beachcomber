@@ -92,7 +92,7 @@ Read a cached value. `key` is `"provider"` or `"provider.field"`. `path` overrid
 
 ### `Client:refresh(key [, path])` → `true | nil, error`
 
-Force the daemon to recompute `key`.
+Re-execute the Sources `key` demands — every Source of the namespace for a bare `provider`, the one Source owning the field for `provider.field`. A key that names no Source (a `put`-created namespace, a facet key, an unknown name, a field no Source owns) is an error. `ffi` transport only: `comb` has no `refresh` subcommand, so over `subprocess` this returns `nil, err` with `err.kind == "unsupported"`.
 
 ### `Client:set_context(path)` → `true | nil, error`
 

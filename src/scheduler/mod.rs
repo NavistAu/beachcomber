@@ -514,10 +514,7 @@ impl Scheduler {
             .map(|sources| {
                 sources
                     .iter()
-                    .filter(|sm| match demand {
-                        SourceDemand::All => true,
-                        SourceDemand::Sources(names) => names.iter().any(|n| n == &sm.name),
-                    })
+                    .filter(|sm| demand.selects(&sm.name))
                     .map(|sm| {
                         let at = match sm.scope {
                             SourceScope::Global => None,
@@ -878,15 +875,7 @@ impl Scheduler {
                             // loop below is unchanged and applies to whichever Sources
                             // survive this filter (canon §150/§268: a field demands only
                             // its owning Source).
-                            let sources_vec: Vec<_> = match &demand {
-                                SourceDemand::All => sources.to_vec(),
-                                SourceDemand::Sources(names) => sources
-                                    .iter()
-                                    .filter(|sm| names.iter().any(|n| n == &sm.name))
-                                    .cloned()
-                                    .collect(),
-                            };
-                            for sm in &sources_vec {
+                            for sm in sources.iter().filter(|sm| demand.selects(&sm.name)) {
                                 // Every source is demanded, whatever path the query
                                 // carried. A Global source always lives at
                                 // (provider, None); a PathScoped one lives at the
@@ -1196,15 +1185,7 @@ impl Scheduler {
                             // loop below is unchanged and applies to whichever Sources
                             // survive this filter (canon §150/§268: a field demands only
                             // its owning Source).
-                            let sources_vec: Vec<_> = match &demand {
-                                SourceDemand::All => sources.to_vec(),
-                                SourceDemand::Sources(names) => sources
-                                    .iter()
-                                    .filter(|sm| names.iter().any(|n| n == &sm.name))
-                                    .cloned()
-                                    .collect(),
-                            };
-                            for sm in &sources_vec {
+                            for sm in sources.iter().filter(|sm| demand.selects(&sm.name)) {
                                 let effective_key_path = match sm.scope {
                                     SourceScope::Global => None,
                                     SourceScope::PathScoped => path.clone(),

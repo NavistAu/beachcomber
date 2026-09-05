@@ -193,11 +193,7 @@ pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
 /// declares that it has one answer, which lives at the global entry; and a
 /// provider with a `PathScoped` source may narrow the path further through that
 /// source's `canonical_path` (walking to a project root, say).
-pub fn resolve_path(
-    key: &str,
-    requested: Option<&str>,
-    registry: &ProviderRegistry,
-) -> Option<String> {
+fn resolve_path(key: &str, requested: Option<&str>, registry: &ProviderRegistry) -> Option<String> {
     let provider = key.split('.').next().unwrap_or(key);
     let raw = requested?;
 
@@ -240,6 +236,43 @@ pub enum SourceDemand {
     All,
     /// Field/source query: warm only these named Sources.
     Sources(Vec<String>),
+}
+
+impl SourceDemand {
+    /// Whether the Source named `name` is one this query demands. The one
+    /// place the two variants are distinguished — every caller that filters a
+    /// provider's Sources goes through here, so `All` and `Sources` cannot
+    /// drift apart between the server and the scheduler.
+    pub fn selects(&self, name: &str) -> bool {
+        match self {
+            SourceDemand::All => true,
+            SourceDemand::Sources(names) => names.iter().any(|n| n == name),
+        }
+    }
+}
+
+/// The names of `provider`'s registered Sources that `demand` selects, in
+/// declaration order. Empty when the provider declares none — a static
+/// namespace, a facet, or an unknown name — and when no declared Source
+/// answers the demand, which is what a field no Source owns produces.
+///
+/// `get` warms this set and `refresh` re-executes it, so the two cannot select
+/// different Sources for the same key.
+pub fn demanded_source_names(
+    registry: &ProviderRegistry,
+    provider: &str,
+    demand: &SourceDemand,
+) -> Vec<String> {
+    registry
+        .provider_sources(provider)
+        .map(|sources| {
+            sources
+                .iter()
+                .filter(|sm| demand.selects(&sm.name))
+                .map(|sm| sm.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A resolved, source-aware request. Built once per request and consumed by

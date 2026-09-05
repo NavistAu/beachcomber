@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::protocol::{self, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::{InvalidationStrategy, SourceScope};
-use crate::query::{KeyParse, SourceDemand};
+use crate::query::KeyParse;
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
 };
@@ -625,6 +625,19 @@ fn freshness(read: &MergedRead, rest: &str) -> Option<(u128, bool)> {
     oldest.map(|age| (age, stale))
 }
 
+/// What the template half of a `get` found. `Default` is "nothing attached",
+/// which is every early return in [`template_half`].
+#[derive(Default)]
+struct TemplateHalf {
+    /// The node at the requested address in the `template` facet's merged tree.
+    template: Option<serde_json::Value>,
+    /// The part of the address the walk could not consume.
+    rest: Option<String>,
+    /// The label of the record the walk landed on — what `:source` reports
+    /// when this half answered alone.
+    source: Option<Arc<str>>,
+}
+
 /// The template half of a `get` (spec §3.4): the node at `rest` in the merged
 /// tree of `provider:template` at the same address, the part of `rest` the walk
 /// could not consume, and the label of the record the walk landed on.
@@ -635,30 +648,36 @@ fn freshness(read: &MergedRead, rest: &str) -> Option<(u128, bool)> {
 /// the expression renders. Anything else — a miss, or a non-string scalar in
 /// the way — attaches nothing.
 ///
-/// The third element is what `:source` reports when the template half answered
-/// alone. It is the provenance of the *record* at the address, so a group
-/// assembled from several records has none — there is no single writer to name.
+/// [`TemplateHalf::source`] is the provenance of the *record* at the address,
+/// so a group assembled from several records has none — there is no single
+/// writer to name.
 fn template_half(
     cache: &Cache,
     registry: &ProviderRegistry,
     provider: &str,
     rest: &str,
     path: Option<&str>,
-) -> (Option<serde_json::Value>, Option<String>, Option<String>) {
+) -> TemplateHalf {
     use crate::provider::Value;
-    let none = (None, None, None);
     let Some(read) = cache.read_merged(&format!("{provider}:template"), path, registry) else {
-        return none;
+        return TemplateHalf::default();
     };
-    let writer = |tail: &str| read.records.get(tail).map(|r| r.source.clone());
+    let writer = |tail: &str| read.records.get(tail).map(|r| Arc::clone(&r.source));
 
     if rest.is_empty() {
-        return (serde_json::to_value(&read.fields).ok(), None, writer(""));
+        // The whole facet tree is an object, and an object is never one
+        // record's tail — `merge_layer` keys every record by at least one
+        // segment — so `writer("")` is `None` by construction, not by accident.
+        return TemplateHalf {
+            template: serde_json::to_value(&read.fields).ok(),
+            rest: None,
+            source: writer(""),
+        };
     }
 
     let (head, mut left) = split_head(rest);
     let Some(mut current) = read.fields.get(head) else {
-        return none;
+        return TemplateHalf::default();
     };
     let mut tail = head.to_string();
     while let Some(remainder) = left {
@@ -669,26 +688,51 @@ fn template_half(
                     current = v;
                     tail = format!("{tail}.{segment}");
                 }
-                None => return none,
+                None => return TemplateHalf::default(),
             },
             // A value expression with the address unconsumed: the client
             // renders it and walks the remainder into the result.
             Value::String(_) => {
-                return (
-                    serde_json::to_value(current).ok(),
-                    Some(remainder.to_string()),
-                    writer(&tail),
-                );
+                return TemplateHalf {
+                    template: serde_json::to_value(current).ok(),
+                    rest: Some(remainder.to_string()),
+                    source: writer(&tail),
+                };
             }
-            _ => return none,
+            _ => return TemplateHalf::default(),
         }
         left = below;
     }
     match current {
-        Value::Object(_) | Value::String(_) => {
-            (serde_json::to_value(current).ok(), None, writer(&tail))
-        }
-        _ => none,
+        Value::Object(_) | Value::String(_) => TemplateHalf {
+            template: serde_json::to_value(current).ok(),
+            rest: None,
+            source: writer(&tail),
+        },
+        _ => TemplateHalf::default(),
+    }
+}
+
+/// The label `get <key>:source` reports: the writer of the record that answered.
+///
+/// A leaf's own record when the data half answered, the template record when
+/// the template half answered alone. An object — a whole namespace, or a group
+/// assembled from several records — resolves to `None`, because
+/// [`Cache::read_merged`] keys provenance by a record's own tail and an object
+/// node is not one: there is no single writer to name. A miss is `None` too.
+fn record_source(
+    merged: &Option<MergedRead>,
+    rest: &str,
+    cache_hit: bool,
+    template_source: Option<Arc<str>>,
+) -> Option<Arc<str>> {
+    if cache_hit {
+        merged
+            .as_ref()
+            .and_then(|m| m.records.get(rest))
+            .map(|r| Arc::clone(&r.source))
+    } else {
+        template_source
     }
 }
 
@@ -767,14 +811,13 @@ fn read_watch_value(
     // A watch frame carries the same two halves a `get` does. A facet key is
     // already inside a facet and never gets one. Read first: the template
     // decides whether an unresolvable sub-path is an error or a hit.
-    let (template, template_rest, _) =
-        if crate::query::parse_facet(provider).ok().flatten().is_some() {
-            (None, None, None)
-        } else {
-            template_half(cache, registry, provider, target.rest(), template_path)
-        };
+    let half = if crate::query::parse_facet(provider).ok().flatten().is_some() {
+        TemplateHalf::default()
+    } else {
+        template_half(cache, registry, provider, target.rest(), template_path)
+    };
     let merged = cache.read_merged(provider, path, registry);
-    resolve_halves(&merged, target, provider, template, template_rest)
+    resolve_halves(&merged, target, provider, half.template, half.rest)
 }
 
 async fn write_watch_line(
@@ -905,8 +948,8 @@ async fn handle_request(
             // what an unresolvable sub-path means: `get box.widgets.foo` where
             // `box.widgets` is an object without a `foo` is only "unknown field"
             // when no template answers there either.
-            let (template, template_rest, template_source) = if facet.is_some() {
-                (None, None, None)
+            let half = if facet.is_some() {
+                TemplateHalf::default()
             } else {
                 template_half(
                     cache,
@@ -917,55 +960,42 @@ async fn handle_request(
                 )
             };
 
-            let merged = match &plan.target {
-                KeyParse::Field(provider, field) => {
-                    let head = split_head(field).0;
-                    let owner = registry.source_for_field(provider, head);
-                    let ran = match owner {
-                        Some(source_name) => {
-                            warm_source(registry, cache, provider, source_name, at, *force).await
-                        }
-                        None => false,
-                    };
-                    // A source whose map exists without holding this address is
-                    // still worth one attempt — `warm_source` only knows whether
-                    // the source has *anything* cached.
-                    let mut merged = cache.read_merged(provider, at, registry);
-                    if lookup_merged(&merged, field).is_none()
-                        && !ran
-                        && let Some(source_name) = owner
-                        && inline_execute_source(registry, cache, provider, source_name, at).await
-                    {
-                        merged = cache.read_merged(provider, at, registry);
-                    }
-                    merged
-                }
-                KeyParse::Provider(provider) => {
-                    // Whole-namespace read: every source of the provider is
-                    // brought up to date on its own terms — one cold source is
-                    // no longer covered for by a warm sibling. Every source
-                    // applies, whatever the address: a path-scoped one at the
-                    // global entry runs at `$HOME` like any other directory
-                    // (`query::source_dir`), so a repository rooted there
-                    // answers a bare `--global` read.
-                    let source_names: Vec<String> = registry
-                        .provider_sources(provider)
-                        .map(|sources| sources.iter().map(|sm| sm.name.clone()).collect())
-                        .unwrap_or_default();
-                    for sn in &source_names {
-                        warm_source(registry, cache, provider, sn, at, *force).await;
-                    }
-                    cache.read_merged(provider, at, registry)
-                }
-            };
+            // Every Source the key demands is brought up to date on its own
+            // terms — one cold source is no longer covered for by a warm
+            // sibling — and each at the entry its own scope keys, so a
+            // path-scoped one at the global entry runs at `$HOME` like any
+            // other directory (`query::source_dir`) and a repository rooted
+            // there answers a bare `--global` read. `plan.demand` is every
+            // Source for a bare namespace and the owning Source for a field,
+            // which is what makes this one loop serve both — and what makes it
+            // the same set `refresh` re-executes.
+            let demanded =
+                crate::query::demanded_source_names(registry, provider_name, &plan.demand);
+            let mut ran = false;
+            for source_name in &demanded {
+                ran |= warm_source(registry, cache, provider_name, source_name, at, *force).await;
+            }
+            let mut merged = cache.read_merged(provider_name, at, registry);
+            // A source whose map exists without holding this address is still
+            // worth one attempt — `warm_source` only knows whether the source
+            // has *anything* cached. Only a field read can tell: a namespace
+            // read has no single address to miss.
+            if let KeyParse::Field(_, field) = &plan.target
+                && lookup_merged(&merged, field).is_none()
+                && !ran
+                && let Some(source_name) = demanded.first()
+                && inline_execute_source(registry, cache, provider_name, source_name, at).await
+            {
+                merged = cache.read_merged(provider_name, at, registry);
+            }
 
             // Both halves, assembled the one way `watch` assembles them.
             let normal_response = resolve_halves(
                 &merged,
                 &plan.target,
                 provider_name,
-                template,
-                template_rest,
+                half.template,
+                half.rest,
             );
             // An address nothing answers is an error, and a metadata suffix has
             // no question to ask about one.
@@ -1011,21 +1041,14 @@ async fn handle_request(
                 // or the template record when the template half answered alone.
                 // An object is several records and names none of them, and a
                 // miss has none to name — both are `null`, as `:age` is.
-                Some("source") => {
-                    let label = if cache_hit {
-                        merged
-                            .as_ref()
-                            .and_then(|m| m.records.get(plan.target.rest()))
-                            .map(|r| r.source.clone())
-                    } else {
-                        template_source
-                    };
-                    Response::ok(
-                        label.map_or(serde_json::Value::Null, serde_json::Value::String),
-                        0,
-                        false,
-                    )
-                }
+                Some("source") => Response::ok(
+                    record_source(&merged, plan.target.rest(), cache_hit, half.source)
+                        .map_or(serde_json::Value::Null, |s| {
+                            serde_json::Value::String(s.to_string())
+                        }),
+                    0,
+                    false,
+                ),
                 Some(other) => Response::error(format!("unknown metadata suffix: :{other}")),
             }
         }
@@ -1040,24 +1063,13 @@ async fn handle_request(
                 return Response::error(msg);
             }
 
-            // A refresh re-executes Sources; a key that names none — a static
-            // namespace, a facet, an unknown name, or a field no Source owns —
-            // has nothing to re-execute, and saying ok would claim work that
-            // never happened. Reading configuration afresh is not a refresh:
-            // the config watcher does that.
-            let demanded: Vec<String> = registry
-                .provider_sources(provider_name)
-                .map(|sources| {
-                    sources
-                        .iter()
-                        .filter(|sm| match &plan.demand {
-                            SourceDemand::All => true,
-                            SourceDemand::Sources(names) => names.iter().any(|n| n == &sm.name),
-                        })
-                        .map(|sm| sm.name.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
+            // The same set `get` warms, re-executed instead of read. A key that
+            // names none — a static namespace, a facet, an unknown name, or a
+            // field no Source owns — has nothing to re-execute, and saying ok
+            // would claim work that never happened. Reading configuration
+            // afresh is not a refresh: the config watcher does that.
+            let demanded =
+                crate::query::demanded_source_names(registry, provider_name, &plan.demand);
             if demanded.is_empty() {
                 let addressed = match &plan.target {
                     KeyParse::Provider(p) => p.clone(),
@@ -1080,16 +1092,9 @@ async fn handle_request(
                         .await;
                 }
                 None => {
+                    let at = plan.effective_path.as_deref();
                     for source_name in &demanded {
-                        warm_source(
-                            registry,
-                            cache,
-                            provider_name,
-                            source_name,
-                            plan.effective_path.as_deref(),
-                            true,
-                        )
-                        .await;
+                        warm_source(registry, cache, provider_name, source_name, at, true).await;
                     }
                 }
             }

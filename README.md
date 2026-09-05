@@ -491,14 +491,14 @@ Append a colon suffix to any key to retrieve metadata about the cached value rat
 | `:stale` | bool | Whether the value is past its expected refresh time |
 | `:fresh` | bool | Inverse of `:stale` — true when the value is within its refresh window |
 | `:cache` | bool | Whether the value was served from cache (`true`) or freshly computed (`false`) |
-| `:source` | string | Provider kind: `builtin`, `script`, or `virtual` |
+| `:source` | string | The record's source label — a Source of the provider (`head`, `refs`, …) or a static label (`put`, `config:<file>`). `null` for an object (a whole namespace, or a group of several records) and for a miss |
 
 ```sh
 comb g git.branch:age .       # → 1240 (ms since last computed)
 comb g battery.percent:stale  # → false
 comb g git.branch:fresh .     # → true
 comb g git.branch:cache .     # → true
-comb g git:source .           # → builtin
+comb g git.branch:source .    # → head
 ```
 
 ---

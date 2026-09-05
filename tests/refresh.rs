@@ -3,9 +3,11 @@
 //!
 //! Most servers here are built without a scheduler, so a refresh runs inline on
 //! the connection task and the response is written only once the Sources have
-//! run. That is what makes the age assertions exact rather than raced. The
-//! scheduler-backed case at the bottom fences on the scheduler's own
-//! `in_flight` count instead.
+//! run. That is what lets those cases advance the clock by a known amount and
+//! assert exact ages. The scheduler-backed case at the bottom cannot: it runs
+//! the refresh in the background on a multi-threaded runtime, so it lets the
+//! records age in real time and waits for `git.commit:age` to fall back below
+//! what it was.
 //!
 //! `git` is the fixture because it is the one built-in with several Sources
 //! over one namespace. The fields under test are `commit` (source `refs`) and
