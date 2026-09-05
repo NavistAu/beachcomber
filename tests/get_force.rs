@@ -1,4 +1,4 @@
-use beachcomber::cache::Cache;
+use beachcomber::cache::{Cache, PUT_SOURCE};
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -148,17 +148,17 @@ fn cache_remove_targets_path_scope() {
     );
 }
 
-/// force=true on a virtual provider must return an error without evicting the entry.
+/// force=true on a dynamic provider must return an error without evicting the entry.
 #[tokio::test]
-async fn force_on_virtual_provider_returns_error() {
+async fn force_on_dynamic_provider_returns_error() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    // Register a virtual provider via the put path (mirrors what Request::Put does).
-    registry.register_virtual("mystore");
+    // Register a dynamic provider via the put path (mirrors what Request::Put does).
+    registry.register_dynamic("mystore");
 
     let mut fields = HashMap::new();
     fields.insert("val".to_string(), Value::String("hello".to_string()));
-    cache.put_source("mystore", None, "virtual", fields, None);
+    cache.put_source("mystore", None, PUT_SOURCE, fields, None);
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -177,18 +177,18 @@ async fn force_on_virtual_provider_returns_error() {
     let response: Response = serde_json::from_str(&line).unwrap();
     assert!(
         !response.ok,
-        "force on virtual provider should return error"
+        "force on dynamic provider should return error"
     );
     assert!(
-        response.error.as_deref().unwrap_or("").contains("virtual"),
-        "error message should mention 'virtual', got: {:?}",
+        response.error.as_deref().unwrap_or("").contains("dynamic"),
+        "error message should mention 'dynamic', got: {:?}",
         response.error
     );
 
     // The stored entry must still be present — the guard ran before eviction.
     assert!(
         cache.get_entry("mystore", None).is_some(),
-        "virtual entry must not be evicted by a failed force"
+        "dynamic entry must not be evicted by a failed force"
     );
 
     handle.abort();

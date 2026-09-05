@@ -1,4 +1,4 @@
-use beachcomber::cache::Cache;
+use beachcomber::cache::{Cache, PUT_SOURCE};
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -157,8 +157,8 @@ async fn wait_stale_entry_evicts_and_re_executes() {
 async fn wait_virtual_provider_returns_cached_ignoring_stale() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    // Register a virtual provider and seed an entry that will appear stale.
-    registry.register_virtual("mystore");
+    // Register a dynamic provider and seed an entry that will appear stale.
+    registry.register_dynamic("mystore");
 
     let mut fields = HashMap::new();
     fields.insert(
@@ -166,7 +166,7 @@ async fn wait_virtual_provider_returns_cached_ignoring_stale() {
         Value::String("virtual-value".to_string()),
     );
     // interval=0 will make it stale after 1 second.
-    cache.put_source("mystore", None, "virtual", fields, Some(0));
+    cache.put_source("mystore", None, PUT_SOURCE, fields, Some(0));
 
     // Advance mock clock by 2s so elapsed().as_secs() > 0 — avoids a real 1.1s wall wait.
     tokio::time::pause();

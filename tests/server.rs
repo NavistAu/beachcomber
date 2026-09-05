@@ -177,7 +177,7 @@ async fn server_handles_cache_miss_virtual_provider() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     // Register a virtual provider name but don't populate cache
-    registry.register_virtual("myvirtual");
+    registry.register_dynamic("myvirtual");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -335,8 +335,8 @@ async fn nested_key_walks_into_object_field() {
     );
     let mut fields = HashMap::new();
     fields.insert("project".to_string(), Value::Object(tools_map));
-    cache.put_source("myproj", None, "virtual", fields, None);
-    registry.register_virtual("myproj");
+    cache.put_source("myproj", None, beachcomber::cache::PUT_SOURCE, fields, None);
+    registry.register_dynamic("myproj");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -368,8 +368,8 @@ async fn nested_key_missing_subkey_errors() {
     tools_map.insert("rust".to_string(), Value::String("1.94.0".to_string()));
     let mut fields = HashMap::new();
     fields.insert("project".to_string(), Value::Object(tools_map));
-    cache.put_source("myproj", None, "virtual", fields, None);
-    registry.register_virtual("myproj");
+    cache.put_source("myproj", None, beachcomber::cache::PUT_SOURCE, fields, None);
+    registry.register_dynamic("myproj");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();

@@ -254,7 +254,7 @@ const BUILTIN_DAEMON_PROVIDERS: &[&str] = &[
 /// legacy `type`, or the keys those shapes require). Consulting the registry
 /// itself would mean loading shared libraries on every `comb get`.
 ///
-/// `put`-created virtual providers are invisible here — they exist only in a
+/// `put`-created dynamic providers are invisible here — they exist only in a
 /// running daemon's cache and are unknowable from config alone.
 fn is_daemon_provider(provider: &str, config: &Config) -> bool {
     if config.is_provider_disabled(provider) {
@@ -831,7 +831,7 @@ pub fn run_get(
                     } else if response.data.is_none() && is_ambient_cwd_path(path) {
                         // The session's path context is the CLI's implicit CWD default
                         // (no --path was given), which scopes the lookup even for
-                        // `put`-created virtual entries that were stored globally (no
+                        // `put`-created dynamic entries that were stored globally (no
                         // --path). Retry once on a fresh, context-free connection so
                         // the global entry is still reachable, matching what a raw
                         // request with no path field would find.

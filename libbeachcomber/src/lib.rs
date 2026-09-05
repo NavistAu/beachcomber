@@ -215,7 +215,7 @@ fn probe_version_skew(stream: &mut UnixStream) -> Result<Option<VersionSkew>, Co
 pub enum RowKind {
     Lifecycle { decay: u8, watches_files: bool },
     Once,
-    Virtual,
+    Static,
     Transient,
 }
 

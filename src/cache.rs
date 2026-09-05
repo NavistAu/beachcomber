@@ -7,6 +7,12 @@ use tokio::time::Instant;
 
 type CacheKey = String;
 
+/// Source label written by the `put` op. A field carrying this label has no
+/// Source instance behind it — it is static, stored data (canon
+/// `provider_source.md` "Field": "a static label (`put`, or `config:<file>`
+/// for a leaf seeded from that configuration file)").
+pub const PUT_SOURCE: &str = "put";
+
 /// Build a compact cache key from a provider name and optional path.
 /// Uses a null byte as separator since it cannot appear in valid paths.
 fn make_cache_key(provider: &str, path: Option<&str>) -> CacheKey {
@@ -240,6 +246,14 @@ impl Cache {
             for (source_name, src) in &ce.sources {
                 let age = src.age_ms();
                 let stale = src.is_stale();
+                // A row whose source is the synthetic `put` label or a
+                // `config:<file>` seed carries no Source instance — it is a
+                // static entry (canon `provider_source.md` "Cache entry").
+                let kind = if source_name == PUT_SOURCE || source_name.starts_with("config:") {
+                    Some(RowKind::Static)
+                } else {
+                    None
+                };
                 for (field, v) in &src.fields {
                     // Value implements Serialize with #[serde(untagged)] — to_value is lossless.
                     let value = serde_json::to_value(v).unwrap_or(serde_json::Value::Null);
@@ -251,7 +265,7 @@ impl Cache {
                         value,
                         age_ms: age,
                         stale,
-                        kind: None,
+                        kind: kind.clone(),
                         poll_interval_secs: None,
                         keep_alive_polls: None,
                         fsevents_reinstate: None,
@@ -339,7 +353,7 @@ pub struct CacheRow {
 pub enum RowKind {
     Lifecycle { decay: u8, watches_files: bool },
     Once,
-    Virtual,
+    Static,
     Transient,
 }
 

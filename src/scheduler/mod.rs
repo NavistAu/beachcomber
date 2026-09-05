@@ -173,7 +173,7 @@ impl SchedulerHandle {
     }
 
     /// Return a full per-entry snapshot of every lifecycle-tracked key.
-    /// Missing keys are not in the lifecycle registry (e.g. virtual/put entries).
+    /// Missing keys are not in the lifecycle registry (e.g. dynamic/put entries).
     pub async fn get_lifecycle_snapshots(&self) -> HashMap<lifecycle::Key, LifecycleSnapshot> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self

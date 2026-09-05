@@ -106,7 +106,7 @@ fn row_kind_from_lib(k: libbeachcomber::RowKind) -> crate::cache::RowKind {
             watches_files,
         },
         libbeachcomber::RowKind::Once => crate::cache::RowKind::Once,
-        libbeachcomber::RowKind::Virtual => crate::cache::RowKind::Virtual,
+        libbeachcomber::RowKind::Static => crate::cache::RowKind::Static,
         libbeachcomber::RowKind::Transient => crate::cache::RowKind::Transient,
     }
 }
@@ -262,7 +262,7 @@ impl ClientSession {
         unit_to_response(self.session.put(key, data, ttl, path))
     }
 
-    /// Clear the cached entry for a virtual provider key without dropping the registry entry.
+    /// Clear the cached entry for a dynamic provider key without dropping the registry entry.
     /// A subsequent `put` under the same key still works.
     ///
     /// `ttl` is accepted for signature compatibility but, like the
@@ -438,7 +438,7 @@ impl Client {
         unit_to_response(self.inner().put(key, data, ttl, path))
     }
 
-    /// Clear the cached entry for a virtual provider key without dropping the registry entry.
+    /// Clear the cached entry for a dynamic provider key without dropping the registry entry.
     /// A subsequent `put` under the same key still works.
     ///
     /// See `ClientSession::put_null` -- `ttl` is inert on the null-put path

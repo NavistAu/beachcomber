@@ -112,7 +112,7 @@ pub struct TtlWidths {
 /// capped at `TTL_P_WIDTH_MAX` / `TTL_TOTAL_WIDTH_MAX`. No lower floor — the
 /// width auto-shrinks so narrow snapshots don't over-pad.
 ///
-/// Rows without a poll interval (Once/Virtual/Transient, or pure-Watch
+/// Rows without a poll interval (Once/Static/Transient, or pure-Watch
 /// Lifecycle rows) are ignored. Empty snapshots return 1 for both fields;
 /// the value is unused in that case (every cell renders as `---`), but avoid
 /// zero so `format!` can't panic.
@@ -194,7 +194,7 @@ pub fn format_ttl_cell(
     let dot_ring = if ascii { "+" } else { "\u{2299}" }; // ⊙
 
     match kind {
-        None | Some(RowKind::Once) | Some(RowKind::Virtual) | Some(RowKind::Transient) => TtlCell {
+        None | Some(RowKind::Once) | Some(RowKind::Static) | Some(RowKind::Transient) => TtlCell {
             text: "---".into(),
             color: None,
         },
@@ -260,7 +260,7 @@ pub fn format_ttl_cell(
 /// Format the POLL column: seconds until this source's next scheduled poll,
 /// or — for a failing source — seconds until its next retry attempt (POLL
 /// literally *is* the next attempt in that case). `-` for rows with no poll
-/// path: Once/Virtual/Transient/no-kind, and pure-Watch Lifecycle rows.
+/// path: Once/Static/Transient/no-kind, and pure-Watch Lifecycle rows.
 pub fn format_poll_cell(
     kind: Option<&crate::cache::RowKind>,
     next_poll_in_secs: Option<u64>,
@@ -595,7 +595,7 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
     let kind_str = match &r.kind {
         Some(RowKind::Lifecycle { .. }) => "lifecycle",
         Some(RowKind::Once) => "once",
-        Some(RowKind::Virtual) => "virtual",
+        Some(RowKind::Static) => "static",
         Some(RowKind::Transient) => "transient",
         None => "",
     };
@@ -698,7 +698,7 @@ pub fn render_tsv(rows: &[CacheRow]) -> String {
         let kind = match &row.kind {
             Some(RowKind::Lifecycle { .. }) => "lifecycle",
             Some(RowKind::Once) => "once",
-            Some(RowKind::Virtual) => "virtual",
+            Some(RowKind::Static) => "static",
             Some(RowKind::Transient) => "transient",
             None => "",
         };
@@ -768,7 +768,7 @@ pub fn render_csv(rows: &[CacheRow]) -> String {
         let kind = match &row.kind {
             Some(RowKind::Lifecycle { .. }) => "lifecycle",
             Some(RowKind::Once) => "once",
-            Some(RowKind::Virtual) => "virtual",
+            Some(RowKind::Static) => "static",
             Some(RowKind::Transient) => "transient",
             None => "",
         };
@@ -845,7 +845,7 @@ pub fn render_sh_env(rows: &[CacheRow]) -> String {
         let kind_str = match &row.kind {
             Some(RowKind::Lifecycle { .. }) => Some("lifecycle"),
             Some(RowKind::Once) => Some("once"),
-            Some(RowKind::Virtual) => Some("virtual"),
+            Some(RowKind::Static) => Some("static"),
             Some(RowKind::Transient) => Some("transient"),
             None => None,
         };
@@ -1593,8 +1593,8 @@ enum Predicate {
     LifecycleDecay(u8),
     /// Match Once rows.
     LifecycleOnce,
-    /// Match Virtual rows.
-    LifecycleVirtual,
+    /// Match Static rows.
+    LifecycleStatic,
     /// Match on fsevents_reinstate flag value.
     FseventsReinstate(bool),
 }
@@ -1631,9 +1631,9 @@ fn parse_filter(s: &str) -> Result<Predicate, String> {
             "decay3" => Ok(Predicate::LifecycleDecay(3)),
             "decay4" => Ok(Predicate::LifecycleDecay(4)),
             "once" => Ok(Predicate::LifecycleOnce),
-            "virtual" => Ok(Predicate::LifecycleVirtual),
+            "static" => Ok(Predicate::LifecycleStatic),
             other => Err(format!(
-                "lifecycle= must be active|decay1|decay2|decay3|decay4|once|virtual, got {other}"
+                "lifecycle= must be active|decay1|decay2|decay3|decay4|once|static, got {other}"
             )),
         },
         "fsevents_reinstate" => match v {
@@ -1664,7 +1664,7 @@ impl Predicate {
                 Some(RowKind::Lifecycle { decay, .. }) if decay == target
             ),
             Predicate::LifecycleOnce => matches!(&r.kind, Some(RowKind::Once)),
-            Predicate::LifecycleVirtual => matches!(&r.kind, Some(RowKind::Virtual)),
+            Predicate::LifecycleStatic => matches!(&r.kind, Some(RowKind::Static)),
             Predicate::FseventsReinstate(b) => r.fsevents_reinstate.unwrap_or(false) == *b,
         }
     }
@@ -1719,11 +1719,11 @@ pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, S
         "age" => rows.sort_by_key(|r| r.age_ms),
         "stale" => rows.sort_by_key(|r| r.stale),
         // Most-decayed first: Lifecycle{4} < Lifecycle{3} < ... < Lifecycle{0},
-        // then Once, Virtual, Transient, None.
+        // then Once, Static, Transient, None.
         "lifecycle" => rows.sort_by_key(|r| match &r.kind {
             Some(RowKind::Lifecycle { decay, .. }) => (0u8, 4u8 - *decay),
             Some(RowKind::Once) => (1, 0),
-            Some(RowKind::Virtual) => (2, 0),
+            Some(RowKind::Static) => (2, 0),
             Some(RowKind::Transient) => (3, 0),
             None => (4, 0),
         }),
@@ -2117,8 +2117,8 @@ mod ttl_cell_tests {
     }
 
     #[test]
-    fn virtual_renders_dashes() {
-        let cell = format_ttl_cell(Some(&RowKind::Virtual), None, None, None, None, false, &W6);
+    fn static_renders_dashes() {
+        let cell = format_ttl_cell(Some(&RowKind::Static), None, None, None, None, false, &W6);
         assert_eq!(cell.text, "---");
     }
 
@@ -2330,11 +2330,11 @@ mod poll_cell_tests {
     }
 
     #[test]
-    fn once_virtual_transient_and_no_kind_show_dash() {
+    fn once_static_transient_and_no_kind_show_dash() {
         for kind in [
             None,
             Some(RowKind::Once),
-            Some(RowKind::Virtual),
+            Some(RowKind::Static),
             Some(RowKind::Transient),
         ] {
             assert_eq!(

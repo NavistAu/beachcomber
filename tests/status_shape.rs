@@ -321,7 +321,7 @@ fn cache_row_kind_serde_round_trip() {
             json!({"kind": "lifecycle", "decay": 4, "watches_files": false}),
         ),
         (RowKind::Once, json!({"kind": "once"})),
-        (RowKind::Virtual, json!({"kind": "virtual"})),
+        (RowKind::Static, json!({"kind": "static"})),
         (RowKind::Transient, json!({"kind": "transient"})),
     ];
     for (variant, expected_json) in cases {
@@ -1181,7 +1181,7 @@ async fn status_response_once_row_has_kind_once() {
         } => {
             assert_eq!(*decay, 0, "freshly queried row should be Active (decay=0)");
             // Watch strategy with empty patterns — watches_files may be true or false;
-            // what matters is the Lifecycle variant is used (not Once/Transient/Virtual).
+            // what matters is the Lifecycle variant is used (not Once/Transient/Static).
             let _ = watches_files;
         }
         other => panic!("expected RowKind::Lifecycle for hostname, got {:?}", other),
@@ -1198,15 +1198,15 @@ async fn status_response_once_row_has_kind_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn status_response_virtual_row_has_kind_virtual() {
+async fn status_response_put_row_has_kind_static() {
     let (_tmp, client, handle) = setup_daemon().await;
 
-    // Store a virtual entry via put.
+    // Store a dynamic entry via put.
     let _ = client
         .put("custom", serde_json::json!({"color": "blue"}), None, None)
         .expect("put custom");
 
-    // `put` writes the cache entry and registers the virtual provider before it
+    // `put` writes the cache entry and registers the dynamic provider before it
     // answers, so the row is there — poll for it rather than assume a schedule.
     let rows = poll_until(
         "status rows after put custom",
@@ -1224,8 +1224,8 @@ async fn status_response_virtual_row_has_kind_virtual() {
 
     use beachcomber::cache::RowKind;
     assert!(
-        matches!(row.kind, Some(RowKind::Virtual)),
-        "expected RowKind::Virtual for put entry, got {:?}",
+        matches!(row.kind, Some(RowKind::Static)),
+        "expected RowKind::Static for put entry, got {:?}",
         row.kind
     );
 

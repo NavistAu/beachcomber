@@ -75,10 +75,10 @@ fn registry_metadata() {
 }
 
 #[test]
-fn registry_has_non_virtual_blocks_store() {
+fn registry_is_registered_blocks_store() {
     let registry = ProviderRegistry::with_defaults();
-    assert!(registry.has_non_virtual("hostname"));
-    assert!(!registry.has_non_virtual("nonexistent"));
+    assert!(registry.is_registered("hostname"));
+    assert!(!registry.is_registered("nonexistent"));
 }
 
 #[test]

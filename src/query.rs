@@ -25,6 +25,33 @@ pub fn split_metadata_suffix(key: &str) -> (&str, Option<&str>) {
     (key, None)
 }
 
+/// Parse the facet syntax of a provider segment. A provider name containing a
+/// colon is a facet key: `base:facet` (see `docs/canon/field_resolution.md`
+/// "Facet"). Returns `Ok(None)` for a plain provider name (no colon),
+/// `Ok(Some(facet))` for a syntactically valid facet key, or `Err` for a
+/// malformed one — more than one colon, an empty base or facet, invalid
+/// characters, or a facet name that collides with a metadata suffix (those
+/// five names are unreachable as facets; a suffix strip always claims them
+/// first).
+pub fn parse_facet(provider: &str) -> Result<Option<&str>, String> {
+    if !provider.contains(':') {
+        return Ok(None);
+    }
+    let (base, facet) = provider.split_once(':').expect("checked contains(':')");
+    let valid = !base.is_empty()
+        && !facet.is_empty()
+        && !facet.contains(':')
+        && facet
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && !KNOWN_METADATA_SUFFIXES.contains(&facet);
+    if valid {
+        Ok(Some(facet))
+    } else {
+        Err(format!("invalid facet key: {provider}"))
+    }
+}
+
 /// Parse a request key into one of four forms, disambiguating source vs field
 /// for 2-segment keys using the registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,9 +117,9 @@ pub fn resolve_path(
     let parts: Vec<&str> = key.split('.').collect();
     let provider = parts[0];
 
-    // Virtual providers don't declare sources, but they can be stored with a path.
-    // Pass the raw path through (canonicalized) so path-keyed virtual data is accessible.
-    if registry.is_virtual(provider) {
+    // Dynamic providers don't declare sources, but they can be stored with a path.
+    // Pass the raw path through (canonicalized) so path-keyed dynamic data is accessible.
+    if registry.is_dynamic(provider) {
         return requested_path.map(|p| {
             let path = std::path::Path::new(p);
             if path.is_relative() {
@@ -324,6 +351,42 @@ mod tests {
         match plan.demand {
             SourceDemand::Sources(v) => assert!(v.is_empty(), "unknown field warms nothing"),
             other => panic!("expected Sources([]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_facet_none_when_no_colon() {
+        assert_eq!(parse_facet("myapp"), Ok(None));
+    }
+
+    #[test]
+    fn parse_facet_valid_single_colon() {
+        assert_eq!(parse_facet("scanline:template"), Ok(Some("template")));
+    }
+
+    #[test]
+    fn parse_facet_rejects_two_colons() {
+        assert!(parse_facet("a:b:c").is_err());
+    }
+
+    #[test]
+    fn parse_facet_rejects_empty_base_or_facet() {
+        assert!(parse_facet(":facet").is_err());
+        assert!(parse_facet("base:").is_err());
+    }
+
+    #[test]
+    fn parse_facet_rejects_invalid_characters() {
+        assert!(parse_facet("a:b!").is_err());
+    }
+
+    #[test]
+    fn parse_facet_rejects_known_metadata_suffix_names() {
+        for suffix in KNOWN_METADATA_SUFFIXES {
+            assert!(
+                parse_facet(&format!("a:{suffix}")).is_err(),
+                "facet named after metadata suffix '{suffix}' must be rejected"
+            );
         }
     }
 

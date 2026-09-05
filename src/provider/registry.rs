@@ -11,8 +11,8 @@ pub struct ProviderRegistry {
     providers: HashMap<String, ProviderMetadata>,
     /// (provider_name, field_name) → source_name. Built once at registration.
     field_to_source: HashMap<(String, String), String>,
-    /// Virtual provider names registered via `comb put`. Orthogonal to the source model.
-    virtual_names: DashMap<String, ()>,
+    /// Dynamic provider names registered via `comb put`. Orthogonal to the source model.
+    dynamic_names: DashMap<String, ()>,
 }
 
 impl Default for ProviderRegistry {
@@ -27,7 +27,7 @@ impl ProviderRegistry {
             sources: HashMap::new(),
             providers: HashMap::new(),
             field_to_source: HashMap::new(),
-            virtual_names: DashMap::new(),
+            dynamic_names: DashMap::new(),
         }
     }
 
@@ -102,37 +102,38 @@ impl ProviderRegistry {
         self.providers.get(provider).map(|m| m.sources.as_slice())
     }
 
-    /// Return the list of registered provider names (excluding virtuals).
+    /// Return the list of registered provider names (excluding dynamic ones).
     pub fn provider_names(&self) -> Vec<String> {
         self.providers.keys().cloned().collect()
     }
 
-    // ── Virtual provider support ─────────────────────────────────────────────
+    // ── Dynamic provider support ─────────────────────────────────────────────
 
-    /// Returns true if the provider name belongs to a real (non-virtual) provider.
-    pub fn has_non_virtual(&self, name: &str) -> bool {
+    /// Returns true if the provider name belongs to an already-registered
+    /// (builtin or script) provider.
+    pub fn is_registered(&self, name: &str) -> bool {
         self.providers.contains_key(name)
     }
 
-    /// Returns true if the provider name was registered as virtual.
-    pub fn is_virtual(&self, name: &str) -> bool {
-        self.virtual_names.contains_key(name)
+    /// Returns true if the provider name was registered as dynamic.
+    pub fn is_dynamic(&self, name: &str) -> bool {
+        self.dynamic_names.contains_key(name)
     }
 
-    /// Register a virtual provider name. Returns false if a non-virtual provider
-    /// already exists with this name.
-    pub fn register_virtual(&self, name: &str) -> bool {
-        if self.has_non_virtual(name) {
+    /// Register a dynamic provider name. Returns false if an already-registered
+    /// provider exists with this name.
+    pub fn register_dynamic(&self, name: &str) -> bool {
+        if self.is_registered(name) {
             return false;
         }
-        self.virtual_names.insert(name.to_string(), ());
+        self.dynamic_names.insert(name.to_string(), ());
         true
     }
 
-    /// Return all provider names, including virtual names.
+    /// Return all provider names, including dynamic names.
     pub fn list(&self) -> Vec<String> {
         let mut names: Vec<String> = self.providers.keys().cloned().collect();
-        for entry in self.virtual_names.iter() {
+        for entry in self.dynamic_names.iter() {
             let name = entry.key().clone();
             if !names.contains(&name) {
                 names.push(name);
@@ -466,15 +467,15 @@ mod tests {
     }
 
     #[test]
-    fn virtual_registration_blocked_by_real_provider() {
+    fn dynamic_registration_blocked_by_real_provider() {
         let mut reg = ProviderRegistry::new();
         let p = FakeProvider {
             name: "hostname".into(),
             sources: vec![ms("name", vec!["value"])],
         };
         reg.register(Box::new(p)).unwrap();
-        assert!(!reg.register_virtual("hostname"));
-        assert!(reg.register_virtual("myvar"));
-        assert!(reg.is_virtual("myvar"));
+        assert!(!reg.register_dynamic("hostname"));
+        assert!(reg.register_dynamic("myvar"));
+        assert!(reg.is_dynamic("myvar"));
     }
 }

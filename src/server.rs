@@ -255,6 +255,14 @@ async fn handle_watch(
     let plan =
         crate::query::QueryPlan::build(&key, path.as_deref().or(context_path.as_deref()), registry);
     let provider_name = plan.provider.clone();
+
+    // Facet syntax is checked on the provider segment, after the metadata-suffix
+    // stripping QueryPlan::build already did (mirrors the Get path).
+    if let Err(msg) = crate::query::parse_facet(&provider_name) {
+        let _ = write_watch_line(writer, &Response::error(msg)).await;
+        return;
+    }
+
     let effective_path = plan.effective_path.clone();
 
     // Signal demand (source-aware: canon §150/§268).
@@ -535,21 +543,29 @@ async fn handle_request(
             let requested = path.as_deref().or(context_path.as_deref());
             let plan = crate::query::QueryPlan::build(key, requested, registry);
             let provider_name = plan.provider.as_str();
+
+            // Facet syntax is checked on the provider segment produced by the
+            // plan — after metadata-suffix stripping, so e.g. `a:age` is read
+            // as provider `a` with the `:age` suffix, not as a facet.
+            if let Err(msg) = crate::query::parse_facet(provider_name) {
+                return Response::error(msg);
+            }
+
             let effective_path = plan.effective_path.clone();
             let meta = plan.meta.as_deref();
 
-            // Unknown provider check: virtual providers are also valid.
+            // Unknown provider check: dynamic providers are also valid.
             let is_known = registry.provider_metadata(provider_name).is_some()
-                || registry.is_virtual(provider_name);
+                || registry.is_dynamic(provider_name);
             if !is_known {
                 return Response::error(format!("unknown provider: {provider_name}"));
             }
 
             // Force evict: drop the cache entry so the normal miss path re-executes.
             if *force {
-                if registry.is_virtual(provider_name) {
+                if registry.is_dynamic(provider_name) {
                     return Response::error(format!(
-                        "cannot --force virtual provider '{provider_name}': no source to re-execute from"
+                        "cannot --force dynamic provider '{provider_name}': no source to re-execute from"
                     ));
                 }
                 cache.remove(provider_name, effective_path.as_deref());
@@ -557,10 +573,10 @@ async fn handle_request(
 
             // Wait semantics: if the cached entry is stale, evict it so the normal
             // miss path below re-executes the provider inline and returns fresh data.
-            // Skipped for virtual providers — they have no source to re-execute.
+            // Skipped for dynamic providers — they have no source to re-execute.
             if *wait
                 && !*force
-                && !registry.is_virtual(provider_name)
+                && !registry.is_dynamic(provider_name)
                 && cache
                     .get_entry(provider_name, effective_path.as_deref())
                     .is_some_and(|e| e.is_stale())
@@ -583,8 +599,8 @@ async fn handle_request(
 
             // :source short-circuits — no cache lookup needed.
             if matches!(meta, Some("source")) {
-                let src = if registry.is_virtual(provider_name) {
-                    "virtual"
+                let src = if registry.is_dynamic(provider_name) {
+                    "dynamic"
                 } else if registry.provider_metadata(provider_name).is_some() {
                     "builtin"
                 } else {
@@ -593,7 +609,7 @@ async fn handle_request(
                 return Response::ok(serde_json::Value::String(src.to_string()), 0, false);
             }
 
-            // Virtual providers fall back to the global slot. A virtual provider
+            // Dynamic providers fall back to the global slot. A dynamic provider
             // (one `put` created) declares no sources and therefore no path
             // expression, and `docs/canon/field_resolution.md` §"Path
             // resolution" says such a provider is read by `get` from the
@@ -601,12 +617,12 @@ async fn handle_request(
             // otherwise — so data stored globally must stay readable when the
             // caller supplies a path or a context. (Invariant 2 is the narrower
             // claim that an empty/falsy path *expression* selects the global
-            // slot; a virtual provider has no path expression to evaluate at
+            // slot; a dynamic provider has no path expression to evaluate at
             // all, so the prose is what governs here.)
             // `put --path` entries still win at their own path: the requested
             // slot is preferred and the global one is only reached when that slot
-            // holds nothing. Non-virtual providers are untouched — a PathScoped
-            // source's whole point is that /a and /b differ.
+            // holds nothing. Providers backed by a real Source are untouched — a
+            // PathScoped source's whole point is that /a and /b differ.
             //
             // The fallback is slot-level, not field-level: whichever slot answers
             // answers alone, so a path slot never merges with the global one (see
@@ -616,7 +632,7 @@ async fn handle_request(
             // requested path for the force-evict, wait and demand paths above.
             let read_path = match effective_path {
                 Some(p)
-                    if registry.is_virtual(provider_name)
+                    if registry.is_dynamic(provider_name)
                         && !cache.has_entry(provider_name, Some(&p)) =>
                 {
                     None
@@ -837,6 +853,9 @@ async fn handle_request(
         }
         Request::Refresh { key, path } => {
             let (provider_name, _field) = protocol::split_key(key);
+            if let Err(msg) = crate::query::parse_facet(provider_name) {
+                return Response::error(msg);
+            }
             let requested = path.as_deref().or(context_path.as_deref());
             let effective_path = resolve_path(key, requested, registry);
 
@@ -856,8 +875,8 @@ async fn handle_request(
                     error: None,
                 }
             } else {
-                // Fallback: scheduler not available. Virtual providers are a no-op.
-                if registry.is_virtual(provider_name) {
+                // Fallback: scheduler not available. Dynamic providers are a no-op.
+                if registry.is_dynamic(provider_name) {
                     return Response {
                         ok: true,
                         data: None,
@@ -896,8 +915,16 @@ async fn handle_request(
             ttl,
             path,
         } => {
-            // Reject if a real (non-virtual) provider already owns this name.
-            if registry.has_non_virtual(key) {
+            // Facet syntax is checked directly on the put key — `put` has no
+            // metadata-suffix handling, so e.g. `a:age` is always a facet
+            // candidate here (and rejected, since `age` is a metadata suffix
+            // name).
+            if let Err(msg) = crate::query::parse_facet(key) {
+                return Response::error(msg);
+            }
+
+            // Reject if an already-registered (builtin or script) provider owns this name.
+            if registry.is_registered(key) {
                 return Response::error(format!(
                     "cannot store under '{key}': name is used by a builtin or script provider"
                 ));
@@ -962,14 +989,14 @@ async fn handle_request(
                 }
             });
 
-            // Register virtual name (idempotent, safe under concurrent access).
-            registry.register_virtual(key);
+            // Register dynamic name (idempotent, safe under concurrent access).
+            registry.register_dynamic(key);
 
-            // Write to cache under the synthetic "virtual" source name.
+            // Write to cache under the synthetic "put" source name.
             cache.put_source(
                 key,
                 effective_path.as_deref(),
-                "virtual",
+                crate::cache::PUT_SOURCE,
                 fields,
                 interval_secs,
             );
@@ -995,11 +1022,12 @@ async fn handle_request(
 
             use crate::cache::RowKind;
             for row in rows.iter_mut() {
-                let is_virtual = registry.is_virtual(&row.provider);
+                // `Cache::list_rows` already marked static rows (source ==
+                // PUT_SOURCE or "config:*") with RowKind::Static; only rows
+                // backed by a real Source need a lifecycle/transient lookup.
+                let is_static = row.kind == Some(RowKind::Static);
 
-                if is_virtual {
-                    row.kind = Some(RowKind::Virtual);
-                } else {
+                if !is_static {
                     // Look up the lifecycle snapshot for THIS row's owning source
                     // so glyphs and TTL columns reflect the source's strategy
                     // (refs vs diff vs status all differ within a single provider).
@@ -1244,13 +1272,13 @@ async fn handle_introspect_providers(
     names.sort();
 
     for name in &names {
-        let (is_virtual, is_real) = (
-            registry.is_virtual(name),
+        let (is_dynamic, is_real) = (
+            registry.is_dynamic(name),
             registry.provider_metadata(name).is_some(),
         );
 
-        let source_type = if is_virtual {
-            "virtual"
+        let source_type = if is_dynamic {
+            "dynamic"
         } else if is_real {
             "builtin"
         } else {
