@@ -306,7 +306,11 @@ fn apply_static_write(
     now: Instant,
 ) {
     if replace {
-        drop_static_subtree(entry, node, Some(label));
+        // The label's map is kept only when there is something to fill it with;
+        // otherwise it would survive the drop and never be written, leaving a
+        // phantom empty static map (and, at the root, an entry the caller's
+        // emptiness check would no longer remove).
+        drop_static_subtree(entry, node, (!leaves.is_empty()).then_some(label));
     }
 
     // Rule 1: one record, one map. Only a static map ever gives a record up —

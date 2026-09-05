@@ -387,6 +387,39 @@ async fn put_of_an_empty_object_creates_no_entry() {
         .collect();
     assert!(mine.is_empty(), "no row for `e`, got {mine:?}");
 
+    // The same write with `replace` over an existing entry empties it. The
+    // label's map is kept for the fill only when there is something to fill it
+    // with, so nothing is left behind and the entry goes with it — the write is
+    // `put r --null` by another name.
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"r","data":{"a":1}}),
+    )
+    .await;
+    assert!(r.ok, "seed put: {:?}", r.error);
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"r","data":{},"replace":true}),
+    )
+    .await;
+    assert!(r.ok, "empty replace put: {:?}", r.error);
+
+    let r = send_recv(&mut s, &serde_json::json!({"op":"get","key":"r"})).await;
+    assert!(r.ok, "get r: {:?}", r.error);
+    assert!(r.data.is_none(), "expected a miss, got {:?}", r.data);
+
+    let rows = data_of(
+        send_recv(&mut s, &serde_json::json!({"op":"status"})).await,
+        "status",
+    );
+    let mine: Vec<&serde_json::Value> = rows
+        .as_array()
+        .expect("status data is an array")
+        .iter()
+        .filter(|r| r["provider"] == "r")
+        .collect();
+    assert!(mine.is_empty(), "no row for `r`, got {mine:?}");
+
     handle.abort();
 }
 
