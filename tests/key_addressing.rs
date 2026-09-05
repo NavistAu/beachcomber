@@ -154,17 +154,6 @@ async fn whole_provider_flattening_has_no_key_named_for_a_source() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
-    // Warm the "refs" source first (git's `head` source is `read_always`, so
-    // a bare `git` cold-miss stops at the first source it re-executes and
-    // never reaches the rest — a pre-existing gap in whole-provider cold-miss
-    // unrelated to this task; querying the field first sidesteps it).
-    let resp = send_recv(
-        &mut stream,
-        &serde_json::json!({"op": "get", "key": "git.ahead", "path": path}),
-    )
-    .await;
-    assert!(resp.ok, "git.ahead should hit: {:?}", resp.error);
-
     let resp = send_recv(
         &mut stream,
         &serde_json::json!({"op": "get", "key": "git", "path": path}),

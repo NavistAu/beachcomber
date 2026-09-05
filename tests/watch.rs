@@ -299,3 +299,54 @@ async fn watch_miss_then_update() {
 
     handle.abort();
 }
+
+/// `active_watchers` counts open watch streams, one per client — not links of
+/// the watcher registry. A watch subscribes to every entry on its path's chain,
+/// so counting registry entries reported a single watch at depth six as six.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn introspect_counts_one_watch_once() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    // A watch at a nested path, so its chain has several links.
+    let deep = std::env::current_dir().unwrap().join("a/b/c/d/e/f");
+    let stream = UnixStream::connect(&sock).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let req = serde_json::json!({
+        "op": "watch", "key": "git.branch", "path": deep.to_string_lossy(),
+    });
+    writer
+        .write_all(format!("{req}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut line = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_millis(2000),
+        reader.read_line(&mut line),
+    )
+    .await
+    .expect("the watch must open")
+    .unwrap();
+
+    let mut probe = UnixStream::connect(&sock).await.unwrap();
+    probe
+        .write_all(b"{\"op\":\"introspect\",\"subject\":\"daemon\"}\n")
+        .await
+        .unwrap();
+    let mut probe_reader = BufReader::new(&mut probe);
+    let mut out = String::new();
+    probe_reader.read_line(&mut out).await.unwrap();
+    let resp: Response = serde_json::from_str(&out).unwrap();
+    let data = resp.data.expect("introspect returns data");
+
+    assert_eq!(
+        data["active_watchers"],
+        serde_json::json!(1),
+        "one open watch is one watcher, whatever its chain depth"
+    );
+
+    handle.abort();
+}

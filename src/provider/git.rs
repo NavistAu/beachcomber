@@ -78,16 +78,18 @@ fn resolve_git_dir(root: &Path) -> Option<GitDirs> {
 
 /// Whether `dir` is the root of a git work tree.
 ///
-/// Every git Source must answer nothing outside one — a Source that reports
-/// defaults for a directory it knows nothing about turns a miss into a false
-/// hit, and the pathless global entry (whose directory is `$HOME`) is read by
-/// every consumer that names no directory at all. `GitHead` and `GitLineage`
-/// hold the same shape inline, since they need the `GitDirs` themselves.
+/// Every git Source must answer nothing outside one. `GitDiff` was the one that
+/// did not: `git diff --numstat` fails outside a work tree and the parse turns
+/// that into `(0, 0)`, so it reported four zeroes for any directory at all —
+/// a miss dressed up as a hit, and the pathless global entry (whose directory
+/// is `$HOME`) is read by every consumer that names no directory.
 ///
 /// A filesystem probe, not a `git rev-parse`, so the guard costs no process —
-/// and for `GitRefs`, `GitStatus` and `GitDiff` it saves the ones they would
-/// otherwise spawn only to watch fail. The root is the only directory a Source
-/// is ever handed: `canonical_path` walks to it before the daemon keys anything.
+/// and for `GitStatus` it saves the `git status` it would otherwise spawn only
+/// to watch fail. `GitHead`, `GitRefs` and `GitLineage` hold the same shape
+/// inline, since they need the `GitDirs` themselves. The root is the only
+/// directory a Source is ever handed: `canonical_path` walks to it before the
+/// daemon keys anything.
 fn is_work_tree_root(dir: &Path) -> bool {
     resolve_git_dir(dir).is_some()
 }
@@ -403,22 +405,18 @@ impl Source for GitRefs {
             return SourceResult::new();
         };
         let dir = Path::new(path);
-        // Outside a work tree there is nothing to report: `git status` fails
-        // and the parse already turns that into a miss, but the filesystem
-        // probe says so without spawning anything.
-        if !is_work_tree_root(dir) {
+        // Outside a work tree there is nothing to report. Resolving the dirs is
+        // also the guard — this source needs them anyway, so it costs one stat
+        // rather than one plus a `git status` that could only fail.
+        let Some(dirs) = resolve_git_dir(dir) else {
             return SourceResult::new();
-        }
+        };
 
         let Some(status) = parse_git_status(dir, &*self.executor) else {
             return SourceResult::new();
         };
-        let dirs = resolve_git_dir(dir);
-        let stash_count = dirs.as_ref().map(count_stashes).unwrap_or(0);
-        let (state, state_step, state_total) = dirs
-            .as_ref()
-            .map(detect_repo_state)
-            .unwrap_or_else(|| ("clean".to_string(), 0, 0));
+        let stash_count = count_stashes(&dirs);
+        let (state, state_step, state_total) = detect_repo_state(&dirs);
         let (commit, last_commit_ts, commit_summary) = get_head_info(dir, &*self.executor);
         let tag = get_nearest_tag(dir, &*self.executor);
         let (push_ahead, push_behind) = get_push_divergence(dir, &status.branch, &*self.executor);

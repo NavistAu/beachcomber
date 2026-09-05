@@ -59,7 +59,7 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
     // Seed a hostname entry (global — no path).
     let mut hostname = HashMap::new();
     hostname.insert("name".to_string(), Value::String("myhost".to_string()));
-    cache.put_source("hostname", None, "main", hostname, Some(60));
+    cache.put_source("hostname", None, "host", hostname, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     server.spawn().unwrap();

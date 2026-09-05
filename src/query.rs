@@ -142,9 +142,13 @@ pub fn source_dir(scope: SourceScope, address: Option<&str>) -> Option<String> {
 /// The chain of cache-entry addresses a read at `path` consults, nearest first
 /// and always ending at the global entry.
 ///
-/// `path` itself, then each ancestor up to and including `$HOME` when `path` is
-/// under `$HOME` and up to `/` when it is not, then `None` — the global entry.
-/// A pathless read has the one-link chain `[None]`.
+/// `path` itself, then each ancestor below `$HOME` when `path` is under
+/// `$HOME` and every ancestor up to `/` when it is not, then `None` — the
+/// global entry. A pathless read has the one-link chain `[None]`.
+///
+/// `$HOME` itself is never a link: it *is* the global entry, and
+/// [`normalise_path`] turns every address naming it into `None`, so no writer
+/// can put anything at `Some($HOME)` for the walk to find.
 pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
     let Some(p) = path else {
         return vec![None];
@@ -153,10 +157,10 @@ pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
     let mut out = Vec::new();
     let mut current = Some(Path::new(p));
     while let Some(dir) = current {
-        out.push(Some(dir.to_string_lossy().into_owned()));
         if home.as_deref() == Some(dir) {
             break;
         }
+        out.push(Some(dir.to_string_lossy().into_owned()));
         current = dir.parent();
     }
     out.push(None);
@@ -580,7 +584,7 @@ mod path_chain_tests {
     }
 
     #[test]
-    fn chain_under_home_stops_at_home() {
+    fn chain_under_home_stops_below_home() {
         let home = home();
         let deep = format!("{home}/ws/project/foo");
         assert_eq!(
@@ -589,16 +593,15 @@ mod path_chain_tests {
                 Some(deep.clone()),
                 Some(format!("{home}/ws/project")),
                 Some(format!("{home}/ws")),
-                Some(home),
                 None,
-            ]
+            ],
+            "$HOME is the global entry, so it is the `None` link and not a `Some` one"
         );
     }
 
     #[test]
-    fn chain_of_home_itself_is_home_then_the_global_entry() {
-        let home = home();
-        assert_eq!(path_chain(Some(&home)), vec![Some(home), None]);
+    fn chain_of_home_itself_is_only_the_global_entry() {
+        assert_eq!(path_chain(Some(&home())), vec![None]);
     }
 
     #[test]

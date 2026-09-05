@@ -34,7 +34,7 @@ async fn wait_fresh_entry_is_served_from_cache() {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("cached-host".to_string()));
     fields.insert("short".to_string(), Value::String("cached".to_string()));
-    cache.put_source("hostname", None, "main", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Some(60));
 
     // Sanity-check the entry is not stale.
     let entry = cache
@@ -90,7 +90,7 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("stale-host".to_string()));
     fields.insert("short".to_string(), Value::String("stale".to_string()));
-    cache.put_source("hostname", None, "main", fields, Some(0));
+    cache.put_source("hostname", None, "host", fields, Some(0));
 
     // Advance mock clock by 2s so elapsed().as_secs() > 0 — avoids a real 1.1s wall wait.
     tokio::time::pause();
@@ -220,7 +220,7 @@ async fn force_wins_over_wait() {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("seeded-host".to_string()));
     fields.insert("short".to_string(), Value::String("seeded".to_string()));
-    cache.put_source("hostname", None, "main", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Some(60));
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = server.spawn().unwrap();

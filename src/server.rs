@@ -1,4 +1,4 @@
-use crate::cache::Cache;
+use crate::cache::{Cache, MergedRead};
 use crate::config::Config;
 use crate::protocol::{self, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
@@ -10,7 +10,7 @@ use crate::scheduler::{
 use crate::watcher_registry::WatcherRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -24,6 +24,11 @@ pub struct Server {
     watchers: Arc<WatcherRegistry>,
     start_instant: Instant,
     requests_total: Arc<AtomicU64>,
+    /// Open `watch` streams, one per client, counted while each is streaming.
+    /// Not the watcher registry's entry count: one watch subscribes to every
+    /// entry on its path's chain, so that would report a single watch at depth
+    /// six as six.
+    active_watches: Arc<AtomicUsize>,
     config: Arc<Config>,
     /// Reaper health, present only in the daemon path (canon invariant 13).
     /// None for embedded/test servers — introspect then omits the field.
@@ -46,6 +51,7 @@ impl Server {
             watchers,
             start_instant: Instant::now(),
             requests_total: Arc::new(AtomicU64::new(0)),
+            active_watches: Arc::new(AtomicUsize::new(0)),
             config: Arc::new(Config::load()),
             reaper: None,
         }
@@ -67,6 +73,7 @@ impl Server {
             watchers,
             start_instant: Instant::now(),
             requests_total: Arc::new(AtomicU64::new(0)),
+            active_watches: Arc::new(AtomicUsize::new(0)),
             config: Arc::new(config),
             reaper: None,
         }
@@ -126,6 +133,7 @@ impl Server {
                     let watchers = self.watchers.clone();
                     let start_instant = self.start_instant;
                     let requests_total = Arc::clone(&self.requests_total);
+                    let active_watches = Arc::clone(&self.active_watches);
                     let socket_path = self.socket_path.clone();
                     let config = Arc::clone(&self.config);
                     let reaper = self.reaper.clone();
@@ -138,6 +146,7 @@ impl Server {
                             watchers,
                             start_instant,
                             requests_total,
+                            active_watches,
                             socket_path,
                             config,
                             reaper,
@@ -173,6 +182,7 @@ async fn handle_connection(
     watchers: Arc<WatcherRegistry>,
     start_instant: Instant,
     requests_total: Arc<AtomicU64>,
+    active_watches: Arc<AtomicUsize>,
     socket_path: PathBuf,
     config: Arc<Config>,
     reaper: Option<Arc<crate::singleton::ReaperHealth>>,
@@ -194,6 +204,7 @@ async fn handle_connection(
             Ok(Request::Watch { key, path }) => {
                 requests_total.fetch_add(1, Ordering::Relaxed);
                 // Watch takes over the connection — enter streaming mode
+                let _open = WatchGuard::new(Arc::clone(&active_watches));
                 handle_watch(
                     key,
                     path,
@@ -216,8 +227,8 @@ async fn handle_connection(
                     scheduler.as_ref(),
                     &mut context_path,
                     start_instant,
-                    &watchers,
                     &requests_total,
+                    &active_watches,
                     &socket_path,
                     &config,
                     reaper.as_deref(),
@@ -279,25 +290,25 @@ async fn handle_watch(
     // addressed one: a `put` at an ancestor (or at the global entry) changes
     // what this watch resolves to, so it has to wake the stream. One forwarder
     // task per link funnels the per-key broadcasts into a single channel.
-    let mut rx = {
-        let (tx, rx) = tokio::sync::mpsc::channel::<()>(64);
+    let chain_watch = {
+        let changed = Arc::new(tokio::sync::Notify::new());
         let mut tasks = Vec::new();
         for layer in crate::query::path_chain(effective_path.as_deref()) {
             let mut sub = watchers.subscribe(provider_name.as_str(), layer.as_deref());
-            let tx = tx.clone();
+            let changed = Arc::clone(&changed);
             tasks.push(tokio::spawn(async move {
                 // A lagged subscriber has missed notifications, but one
-                // "something changed" is all the stream loop needs.
+                // "something changed" is all the stream loop needs — which is
+                // also why a burst across several links collapses into one
+                // wakeup rather than one re-read per notification.
                 while let Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) =
                     sub.recv().await
                 {
-                    if tx.send(()).await.is_err() {
-                        break;
-                    }
+                    changed.notify_one();
                 }
             }));
         }
-        ChainWatch { tasks, rx }
+        ChainWatch { tasks, changed }
     };
 
     // Re-execute any read-always source(s) for the initial snapshot so the
@@ -339,7 +350,8 @@ async fn handle_watch(
     let mut last_data = initial.data.clone();
 
     // Stream loop
-    while rx.rx.recv().await.is_some() {
+    loop {
+        chain_watch.changed.notified().await;
         // Signal ongoing demand
         if let Some(sched) = scheduler {
             sched
@@ -365,11 +377,27 @@ async fn handle_watch(
     }
 }
 
+/// Counts one open `watch` for as long as its stream is live.
+struct WatchGuard(Arc<AtomicUsize>);
+
+impl WatchGuard {
+    fn new(count: Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::Relaxed);
+        Self(count)
+    }
+}
+
+impl Drop for WatchGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// The chain subscription a `watch` holds: one forwarder task per entry on the
 /// chain, funnelling into `rx`. Dropping it stops the forwarders.
 struct ChainWatch {
     tasks: Vec<tokio::task::JoinHandle<()>>,
-    rx: tokio::sync::mpsc::Receiver<()>,
+    changed: Arc<tokio::sync::Notify>,
 }
 
 impl Drop for ChainWatch {
@@ -433,9 +461,49 @@ async fn inline_execute_source(
     true
 }
 
+/// Bring one Source up to date for a read addressed at `at`, and say whether it
+/// ran.
+///
+/// The decision is per Source, never per provider: a warm sibling says nothing
+/// about this one, so a cold Source is executed even when the namespace already
+/// holds records. It runs when it is `read_always`, when `force` asks for it, or
+/// when it has nothing cached at its own scope's entry — the entry
+/// [`source_scope_path`] names, which for a `Global` Source is the global one
+/// whatever path the request carried.
+///
+/// `force` drops that Source's map first, so `--force` refreshes every record
+/// the read returns without evicting a whole entry: the static records sharing
+/// the entry survive, and a `Global` Source is refreshed where it actually
+/// lives rather than being missed because the request named a directory.
+async fn warm_source(
+    registry: &ProviderRegistry,
+    cache: &Cache,
+    provider: &str,
+    source_name: &str,
+    at: Option<&str>,
+    force: bool,
+) -> bool {
+    let Some(source) = registry.source(provider, source_name) else {
+        return false;
+    };
+    let layer = source_scope_path(registry, provider, source_name, at);
+    if force {
+        cache.remove_source(provider, layer, source_name);
+    } else if !source.read_always() && cache.has_provider_records_for(provider, layer, source_name)
+    {
+        return false;
+    }
+    inline_execute_source(registry, cache, provider, source_name, at).await;
+    true
+}
+
 /// Re-execute a source inline if it is `read_always`, refreshing the cache
 /// before the caller reads from it. Reuses `inline_execute_source`. No-op if
 /// the source is not registered or does not have `read_always() == true`.
+///
+/// `watch`'s half of [`warm_source`]: a watch never executes on a cold miss —
+/// the scheduler will populate the entry and the stream carries the value then
+/// — so only the read-always case applies to it.
 async fn maybe_read_always(
     registry: &ProviderRegistry,
     cache: &Cache,
@@ -451,16 +519,8 @@ async fn maybe_read_always(
 }
 
 /// The value at `field` in a merged read, as wire JSON.
-fn lookup_merged(
-    merged: &Option<(
-        std::collections::HashMap<String, crate::provider::Value>,
-        u128,
-        bool,
-    )>,
-    field: &str,
-) -> Option<serde_json::Value> {
-    let (map, _, _) = merged.as_ref()?;
-    let value = crate::provider::lookup_path(map, field)?;
+fn lookup_merged(merged: &Option<MergedRead>, field: &str) -> Option<serde_json::Value> {
+    let value = crate::provider::lookup_path(&merged.as_ref()?.fields, field)?;
     Some(serde_json::to_value(value).unwrap_or(serde_json::Value::Null))
 }
 
@@ -498,16 +558,13 @@ fn read_watch_value(
     match target {
         KeyParse::Field(provider, field) => {
             let merged = cache.read_merged(provider, path, registry);
-            match lookup_merged(&merged, field) {
-                Some(data) => {
-                    let (_, age_ms, stale) = merged.expect("a hit came from a merged read");
-                    Response::ok(data, age_ms, stale)
-                }
+            match (lookup_merged(&merged, field), &merged) {
+                (Some(data), Some(m)) => Response::ok(data, m.age_ms, m.stale),
                 // Mirror Get's Field-miss semantics exactly: a failed nested
                 // sub-path (e.g. `p.project.nonesuch` where `project` exists but
                 // `nonesuch` doesn't) is a loud "unknown field" error; anything
                 // else is a plain miss.
-                None => {
+                _ => {
                     let nested_head_exists = field.contains('.')
                         && field
                             .split('.')
@@ -522,9 +579,9 @@ fn read_watch_value(
             }
         }
         KeyParse::Provider(provider) => match cache.read_merged(provider, path, registry) {
-            Some((flat, age_ms, stale)) => {
-                let data = serde_json::to_value(&flat).unwrap_or(serde_json::Value::Null);
-                Response::ok(data, age_ms, stale)
+            Some(m) => {
+                let data = serde_json::to_value(&m.fields).unwrap_or(serde_json::Value::Null);
+                Response::ok(data, m.age_ms, m.stale)
             }
             None => Response::miss(),
         },
@@ -548,8 +605,8 @@ async fn handle_request(
     scheduler: Option<&SchedulerHandle>,
     context_path: &mut Option<String>,
     start_instant: Instant,
-    watchers: &WatcherRegistry,
     requests_total: &AtomicU64,
+    active_watches: &AtomicUsize,
     socket_path: &std::path::Path,
     config: &Config,
     reaper: Option<&crate::singleton::ReaperHealth>,
@@ -586,14 +643,15 @@ async fn handle_request(
                 return Response::error(format!("unknown provider: {provider_name}"));
             }
 
-            // Force evict: drop the cache entry so the normal miss path re-executes.
-            if *force {
-                if registry.is_static_namespace(provider_name) {
-                    return Response::error(format!(
-                        "cannot --force static provider '{provider_name}': no source to re-execute from"
-                    ));
-                }
-                cache.remove(provider_name, effective_path.as_deref());
+            // `--force` re-executes below, per source and at each source's own
+            // scope; nothing is evicted here. Evicting the addressed entry
+            // wholesale used to take the static records with it and left a
+            // Global source's records — which live at another entry — untouched
+            // and unrefreshed.
+            if *force && registry.is_static_namespace(provider_name) {
+                return Response::error(format!(
+                    "cannot --force static provider '{provider_name}': no source to re-execute from"
+                ));
             }
 
             // Wait semantics: if the cached entry is stale, evict it so the normal
@@ -647,30 +705,30 @@ async fn handle_request(
             let at = effective_path.as_deref();
             let (cache_hit, normal_response) = match &plan.target {
                 KeyParse::Field(provider, field) => {
-                    // For read-always sources: re-execute before reading, even on a hit.
                     let head = field.split('.').next().unwrap_or(field.as_str());
-                    if let Some(source_name) = registry.source_for_field(provider, head) {
-                        maybe_read_always(registry, cache, provider, source_name, at).await;
-                    }
-                    // Cold-miss execute for non-read-always sources (read-always already ran above).
+                    let owner = registry.source_for_field(provider, head);
+                    let ran = match owner {
+                        Some(source_name) => {
+                            warm_source(registry, cache, provider, source_name, at, *force).await
+                        }
+                        None => false,
+                    };
+                    // A source whose map exists without holding this address is
+                    // still worth one attempt — `warm_source` only knows whether
+                    // the source has *anything* cached.
                     let mut merged = cache.read_merged(provider, at, registry);
                     let mut hit = lookup_merged(&merged, field);
                     if hit.is_none()
-                        && let Some(source_name) = registry.source_for_field(provider, head)
+                        && !ran
+                        && let Some(source_name) = owner
+                        && inline_execute_source(registry, cache, provider, source_name, at).await
                     {
-                        let source_name = source_name.to_string();
-                        if inline_execute_source(registry, cache, provider, &source_name, at).await
-                        {
-                            merged = cache.read_merged(provider, at, registry);
-                            hit = lookup_merged(&merged, field);
-                        }
+                        merged = cache.read_merged(provider, at, registry);
+                        hit = lookup_merged(&merged, field);
                     }
-                    match hit {
-                        Some(data) => {
-                            let (_, age_ms, stale) = merged.expect("a hit came from a merged read");
-                            (true, Response::ok(data, age_ms, stale))
-                        }
-                        None => {
+                    match (hit, &merged) {
+                        (Some(data), Some(m)) => (true, Response::ok(data, m.age_ms, m.stale)),
+                        _ => {
                             // Distinguish nested-path not-found from full miss.
                             if field.contains('.') && lookup_merged(&merged, head).is_some() {
                                 return Response::error(format!(
@@ -682,36 +740,25 @@ async fn handle_request(
                     }
                 }
                 KeyParse::Provider(provider) => {
-                    // Whole-provider read: re-execute read-always sources first,
-                    // then warm every applicable source that has nothing cached.
-                    // Every source applies, whatever the address: a path-scoped
-                    // one at the global entry runs at `$HOME` like any other
-                    // directory (`query::source_dir`), so a repository rooted
-                    // there answers a bare `--global` read.
+                    // Whole-namespace read: every source of the provider is
+                    // brought up to date on its own terms — one cold source is
+                    // no longer covered for by a warm sibling. Every source
+                    // applies, whatever the address: a path-scoped one at the
+                    // global entry runs at `$HOME` like any other directory
+                    // (`query::source_dir`), so a repository rooted there
+                    // answers a bare `--global` read.
                     let source_names: Vec<String> = registry
                         .provider_sources(provider)
                         .map(|sources| sources.iter().map(|sm| sm.name.clone()).collect())
                         .unwrap_or_default();
                     for sn in &source_names {
-                        maybe_read_always(registry, cache, provider, sn, at).await;
-                    }
-                    // Cold when no entry a Source of this provider writes to
-                    // holds anything of its own. A static record on the chain is
-                    // not this provider's data, so it must not pass for warm.
-                    let any_warm = source_names.iter().any(|sn| {
-                        let layer = source_scope_path(registry, provider, sn, at);
-                        cache.has_provider_records(provider, layer)
-                    });
-                    if !any_warm {
-                        for sn in &source_names {
-                            inline_execute_source(registry, cache, provider, sn, at).await;
-                        }
+                        warm_source(registry, cache, provider, sn, at, *force).await;
                     }
                     match cache.read_merged(provider, at, registry) {
-                        Some((flat, age_ms, stale)) => {
+                        Some(m) => {
                             let data =
-                                serde_json::to_value(&flat).unwrap_or(serde_json::Value::Null);
-                            (true, Response::ok(data, age_ms, stale))
+                                serde_json::to_value(&m.fields).unwrap_or(serde_json::Value::Null);
+                            (true, Response::ok(data, m.age_ms, m.stale))
                         }
                         None => (false, Response::miss()),
                     }
@@ -991,7 +1038,7 @@ async fn handle_request(
                 } else {
                     (0, "unknown".to_string())
                 };
-                let active_watchers = watchers.entry_count() as u64;
+                let active_watchers = active_watches.load(Ordering::Relaxed) as u64;
                 let cache_entries = cache.len() as u64;
                 handle_introspect_daemon(
                     socket_path,

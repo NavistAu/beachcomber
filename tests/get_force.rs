@@ -31,11 +31,13 @@ async fn get_force_evicts_and_re_executes() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     // Pre-seed the cache with a value for the hostname provider so a normal
-    // get would return a hit with age > 0.
+    // get would return a hit with age > 0. The map has to be named for the
+    // Source that owns it — `host` — because coldness is decided per Source: a
+    // map under any other name leaves `host` cold and the read executes it.
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("stale-host".to_string()));
     fields.insert("short".to_string(), Value::String("stale".to_string()));
-    cache.put_source("hostname", None, "main", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Some(60));
 
     // Confirm the cache has the stale entry.
     assert!(
@@ -95,7 +97,7 @@ async fn get_without_force_returns_cached_entry() {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("cached-host".to_string()));
     fields.insert("short".to_string(), Value::String("cached".to_string()));
-    cache.put_source("hostname", None, "main", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Some(60));
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = server.spawn().unwrap();

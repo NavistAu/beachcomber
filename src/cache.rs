@@ -87,6 +87,16 @@ impl CacheSourceEntry {
     }
 }
 
+/// What a chain-resolved read of one namespace found: see [`Cache::read_merged`],
+/// which is the only thing that builds one.
+#[derive(Debug, Clone)]
+pub struct MergedRead {
+    /// The merged value tree — every record the read resolved, nearest first.
+    pub fields: HashMap<String, Value>,
+    pub age_ms: u128,
+    pub stale: bool,
+}
+
 /// A complete cache entry for a (provider, path) key. Holds one `CacheSourceEntry`
 /// per named source. Sources are disjoint by field name — validated at registration time.
 #[derive(Debug, Clone)]
@@ -573,68 +583,52 @@ impl Cache {
         Ok(removed)
     }
 
-    /// Merge the static maps — those whose source is `put` or `config:<file>` —
-    /// of the entry at `layer` into `out`, in source-name order. Returns
-    /// whether anything merged.
+    /// Merge the static maps of `entry` — those whose source is `put` or
+    /// `config:<file>` — into `out`, in source-name order. Returns whether
+    /// anything merged.
     ///
     /// One layer at a time: [`Cache::read_merged`] walks the chain itself
     /// because a layer's static maps have to land between its neighbours'
     /// provider maps, not after all of them.
-    fn merge_static_records(
-        &self,
-        namespace: &str,
-        layer: Option<&str>,
-        out: &mut HashMap<String, Value>,
-    ) -> bool {
-        let Some(entry) = self.entries.get(&make_cache_key(namespace, layer)) else {
-            return false;
-        };
-        let mut names: Vec<&String> = entry
-            .sources
-            .keys()
-            .filter(|n| is_static_label(n))
-            .collect();
-        names.sort();
-        let mut merged = false;
-        for name in names {
-            crate::provider::deep_merge(out, entry.sources[name].fields.clone());
-            merged = true;
-        }
-        merged
+    fn merge_static_records(entry: &CacheEntry, out: &mut HashMap<String, Value>) -> bool {
+        Self::merge_named(entry, out, |name| is_static_label(name))
     }
 
-    /// Merge the provider-produced maps of the entry at `layer` whose Source
-    /// declares scope `want`, into `out`, in source-name order. A map whose
-    /// source the registry does not declare belongs to the entry it sits in, so
-    /// it is read at whichever layer holds it. Returns whether anything merged.
+    /// Merge the provider-produced maps of `entry` whose Source the registry
+    /// declares with scope `want`, into `out`, in source-name order. Returns
+    /// whether anything merged.
     ///
-    /// The name order matters because two maps of the same scope in one entry
-    /// can in principle hold the same key — two sentinel Sources, say, whose
-    /// field names the registry cannot check for overlap. Iterating
-    /// `entry.sources` directly would let a HashMap's order decide the value.
+    /// A map whose source the registry does not declare — a source dropped from
+    /// config since it last ran — matches no scope and is not read at all,
+    /// rather than being read at every scope and merged more than once.
     fn merge_provider_records(
-        &self,
+        entry: &CacheEntry,
         namespace: &str,
-        layer: Option<&str>,
         want: crate::provider::SourceScope,
         registry: &ProviderRegistry,
         out: &mut HashMap<String, Value>,
     ) -> bool {
-        let Some(entry) = self.entries.get(&make_cache_key(namespace, layer)) else {
-            return false;
-        };
         let declared = registry.provider_sources(namespace);
-        let mut names: Vec<&String> = entry
-            .sources
-            .keys()
-            .filter(|name| !is_static_label(name))
-            .filter(|name| {
-                declared
-                    .and_then(|ss| ss.iter().find(|sm| &&sm.name == name))
-                    .map(|sm| sm.scope)
-                    .is_none_or(|scope| scope == want)
-            })
-            .collect();
+        Self::merge_named(entry, out, |name| {
+            !is_static_label(name)
+                && declared
+                    .is_some_and(|ss| ss.iter().any(|sm| sm.name == *name && sm.scope == want))
+        })
+    }
+
+    /// Deep-merge the maps of `entry` whose name `wanted` accepts, in
+    /// source-name order. Returns whether anything merged.
+    ///
+    /// The name order matters because two maps in one entry can in principle
+    /// hold the same key — two sentinel Sources, say, whose field names the
+    /// registry cannot check for overlap. Iterating `entry.sources` directly
+    /// would let a HashMap's order decide the value.
+    fn merge_named(
+        entry: &CacheEntry,
+        out: &mut HashMap<String, Value>,
+        wanted: impl Fn(&String) -> bool,
+    ) -> bool {
+        let mut names: Vec<&String> = entry.sources.keys().filter(|n| wanted(n)).collect();
         names.sort();
         let mut merged = false;
         for name in names {
@@ -672,24 +666,35 @@ impl Cache {
         namespace: &str,
         path: Option<&str>,
         registry: &ProviderRegistry,
-    ) -> Option<(HashMap<String, Value>, u128, bool)> {
+    ) -> Option<MergedRead> {
         use crate::provider::SourceScope::{Global, PathScoped};
         let chain = crate::query::path_chain(path);
-        let mut out = HashMap::new();
+        let mut fields = HashMap::new();
         let mut found = false;
         for (depth, layer) in chain.iter().enumerate().rev() {
-            let layer = layer.as_deref();
+            let Some(entry) = self
+                .entries
+                .get(&make_cache_key(namespace, layer.as_deref()))
+            else {
+                continue;
+            };
             // The addressed entry is the head of the chain; when the request
             // addresses the global entry the two coincide and both arms run,
             // PathScoped first.
             if depth == 0 {
-                found |=
-                    self.merge_provider_records(namespace, layer, PathScoped, registry, &mut out);
+                found |= Self::merge_provider_records(
+                    &entry,
+                    namespace,
+                    PathScoped,
+                    registry,
+                    &mut fields,
+                );
             }
             if layer.is_none() {
-                found |= self.merge_provider_records(namespace, layer, Global, registry, &mut out);
+                found |=
+                    Self::merge_provider_records(&entry, namespace, Global, registry, &mut fields);
             }
-            found |= self.merge_static_records(namespace, layer, &mut out);
+            found |= Self::merge_static_records(&entry, &mut fields);
         }
 
         if !found {
@@ -702,7 +707,11 @@ impl Cache {
             .or_else(|| self.get_entry(namespace, None))
             .map(|e| (e.age_ms(), e.is_stale()))
             .unwrap_or((0, false));
-        Some((out, age_ms, stale))
+        Some(MergedRead {
+            fields,
+            age_ms,
+            stale,
+        })
     }
 
     /// Look up a specific field across all sources for (provider, path).
@@ -750,15 +759,21 @@ impl Cache {
         self.entries.get(&key).map(|e| e.clone())
     }
 
-    /// Whether the entry at `(provider, path)` holds any provider-produced map.
+    /// Whether the entry at `(provider, path)` holds a map written by `source`.
     ///
-    /// A static record is not the provider's own data — one inherited from up
-    /// the chain least of all — so it must not pass for a warm Source and
-    /// suppress a cold-miss execution.
-    pub fn has_provider_records(&self, provider: &str, path: Option<&str>) -> bool {
+    /// Coldness is per Source, not per provider: a sibling Source being warm
+    /// says nothing about this one, and neither does a static record — that is
+    /// not the provider's own data, one inherited from up the chain least of
+    /// all.
+    pub fn has_provider_records_for(
+        &self,
+        provider: &str,
+        path: Option<&str>,
+        source: &str,
+    ) -> bool {
         self.entries
             .get(&make_cache_key(provider, path))
-            .is_some_and(|e| e.sources.keys().any(|name| !is_static_label(name)))
+            .is_some_and(|e| e.sources.contains_key(source))
     }
 
     pub fn remove(&self, provider: &str, path: Option<&str>) {

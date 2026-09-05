@@ -24,7 +24,7 @@ async fn setup_seeded() -> (TempDir, std::path::PathBuf) {
         Value::String("seeded-value".to_string()),
     );
     fields.insert("short".to_string(), Value::String("seeded".to_string()));
-    cache.put_source("hostname", None, "main", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     server.spawn().unwrap();

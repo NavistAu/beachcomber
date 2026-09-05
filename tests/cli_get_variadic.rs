@@ -16,11 +16,11 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
 
     let mut hostname_fields = HashMap::new();
     hostname_fields.insert("value".to_string(), Value::String("myhost".to_string()));
-    cache.put_source("hostname", None, "main", hostname_fields, Some(60));
+    cache.put_source("hostname", None, "host", hostname_fields, Some(60));
 
     let mut user_fields = HashMap::new();
     user_fields.insert("value".to_string(), Value::String("alice".to_string()));
-    cache.put_source("user", None, "main", user_fields, Some(60));
+    cache.put_source("user", None, "name", user_fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     server.spawn().unwrap();

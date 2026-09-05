@@ -1,15 +1,18 @@
 //! `$HOME` is the global path, and a read resolves static records up the
 //! directory chain (canon `field_resolution.md` §"Path resolution").
 //!
-//! The chain for a path `P` is `P`, each ancestor up to `$HOME` (or to `/` when
-//! `P` is outside `$HOME`), then the global entry. Static records — those whose
+//! The chain for a path `P` is `P`, each ancestor below `$HOME` (or every one
+//! up to `/` when `P` is outside `$HOME`), then the global entry — which is
+//! `$HOME`, so `$HOME` is never a link of its own. Static records — those whose
 //! source is `put` or `config:<file>` — are collected from every entry on the
 //! chain, the nearest winning. Provider-produced records keep their Source's
 //! declared scope: a `Global` source is read at the global entry, a
 //! `PathScoped` one at the addressed path; neither walks the chain.
 //!
 //! Each test owns its `$HOME`: nextest runs every test in its own process, so
-//! `set_var("HOME", …)` here is process-local.
+//! `set_var("HOME", …)` here is process-local. That assumption is nextest's,
+//! not cargo's — under `NEXTEST=1 cargo test` these share one process and one
+//! `$HOME`, and `query::home_dir`'s `OnceLock` freezes whichever won the race.
 
 mod common;
 
@@ -25,6 +28,7 @@ use common::git::{GitRepoFixture, has_git};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -321,6 +325,177 @@ fn two_scope_registry() -> ProviderRegistry {
 
 fn fields(pairs: Vec<(&str, Value)>) -> HashMap<String, Value> {
     pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+}
+
+// ── coldness and `--force` are decided per source ────────────────────────────
+
+// One counter per source. Each test runs in its own process, so these start at
+// zero for every one of them.
+static GLOB_RUNS: AtomicUsize = AtomicUsize::new(0);
+static PROJ_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// A Source that records how many times it ran and reports the count, so a test
+/// can tell "was not re-executed" from "was re-executed to the same value".
+struct CountingSource {
+    meta: SourceMetadata,
+    runs: &'static AtomicUsize,
+    field: &'static str,
+}
+
+impl Source for CountingSource {
+    fn metadata(&self) -> &SourceMetadata {
+        &self.meta
+    }
+    fn execute(&self, _path: Option<&str>) -> SourceResult {
+        let n = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut result = SourceResult::new();
+        result.insert(self.field, Value::Int(n as i64));
+        result
+    }
+}
+
+/// `c` has the same two-scope shape as `p`, with sources that actually produce
+/// records — so they go warm, and a second execution is observable.
+struct CountingProvider;
+
+impl Provider for CountingProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "c".to_string(),
+            sources: vec![
+                source_meta("glob", "gv", SourceScope::Global),
+                source_meta("proj", "pv", SourceScope::PathScoped),
+            ],
+        }
+    }
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![
+            Box::new(CountingSource {
+                meta: source_meta("glob", "gv", SourceScope::Global),
+                runs: &GLOB_RUNS,
+                field: "gv",
+            }),
+            Box::new(CountingSource {
+                meta: source_meta("proj", "pv", SourceScope::PathScoped),
+                runs: &PROJ_RUNS,
+                field: "pv",
+            }),
+        ]
+    }
+}
+
+fn counting_registry() -> ProviderRegistry {
+    let mut reg = ProviderRegistry::new();
+    reg.register(Box::new(CountingProvider)).unwrap();
+    reg
+}
+
+fn get_forced(key: &str, path: Option<&str>) -> serde_json::Value {
+    match path {
+        Some(p) => serde_json::json!({"op": "get", "key": key, "path": p, "force": true}),
+        None => serde_json::json!({"op": "get", "key": key, "force": true}),
+    }
+}
+
+/// A warm sibling is not evidence that this Source is warm. The `Global` source
+/// has records and the `PathScoped` one does not, so the read must run the one
+/// that is actually cold and return both.
+#[tokio::test]
+async fn a_cold_source_runs_even_when_its_sibling_is_warm() {
+    let f = Fixture::start(counting_registry());
+    let project = f.path("ws/project");
+    f.cache
+        .put_source("c", None, "glob", fields(vec![("gv", Value::Int(0))]), None);
+
+    let mut s = f.connect().await;
+    let whole = data(send_recv(&mut s, get_at("c", &project)).await, "cold path");
+
+    assert_eq!(
+        whole["gv"],
+        serde_json::json!(0),
+        "the warm global source was left alone"
+    );
+    assert_eq!(
+        whole["pv"],
+        serde_json::json!(1),
+        "the cold path-scoped source ran"
+    );
+    assert_eq!(GLOB_RUNS.load(Ordering::SeqCst), 0);
+    assert_eq!(PROJ_RUNS.load(Ordering::SeqCst), 1);
+}
+
+/// `--force` re-runs every source the read returns, each at its own scope's
+/// entry, and evicts none of them wholesale — the static records sharing the
+/// addressed entry are still there afterwards.
+#[tokio::test]
+async fn force_re_executes_every_source_and_keeps_the_static_records() {
+    let f = Fixture::start(counting_registry());
+    let project = f.path("ws/project");
+    let mut s = f.connect().await;
+
+    let first = data(send_recv(&mut s, get_at("c", &project)).await, "first read");
+    assert_eq!(first["gv"], serde_json::json!(1));
+    assert_eq!(first["pv"], serde_json::json!(1));
+
+    let resp = send_recv(
+        &mut s,
+        put_at("c.note", serde_json::json!("keep"), &project),
+    )
+    .await;
+    assert!(resp.ok, "put beside the provider records: {:?}", resp.error);
+
+    let forced = data(
+        send_recv(&mut s, get_forced("c", Some(&project))).await,
+        "forced read",
+    );
+    assert_eq!(
+        forced["gv"],
+        serde_json::json!(2),
+        "the global source re-ran at the global entry, which the request did not name"
+    );
+    assert_eq!(
+        forced["pv"],
+        serde_json::json!(2),
+        "the path-scoped source re-ran at the addressed entry"
+    );
+    assert_eq!(
+        forced["note"],
+        serde_json::json!("keep"),
+        "--force refreshes records, it does not evict the entry they share"
+    );
+
+    // A field read forces its owning source only.
+    let pv = data(
+        send_recv(&mut s, get_forced("c.pv", Some(&project))).await,
+        "forced field",
+    );
+    assert_eq!(pv, serde_json::json!(3));
+    assert_eq!(
+        GLOB_RUNS.load(Ordering::SeqCst),
+        2,
+        "the global source is untouched by a forced read of a path-scoped field"
+    );
+}
+
+/// `--force --global` reaches the global source at the entry it lives at.
+#[tokio::test]
+async fn force_at_the_global_entry_re_executes_the_global_source() {
+    let f = Fixture::start(counting_registry());
+    let mut s = f.connect().await;
+
+    let first = data(send_recv(&mut s, get("c")).await, "first --global read");
+    assert_eq!(first["gv"], serde_json::json!(1));
+
+    let forced = data(
+        send_recv(&mut s, get_forced("c", None)).await,
+        "forced --global read",
+    );
+    assert_eq!(
+        forced["gv"],
+        serde_json::json!(2),
+        "--force --global re-runs the global source"
+    );
+    assert_eq!(GLOB_RUNS.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

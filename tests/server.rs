@@ -47,7 +47,7 @@ async fn server_handles_get_global_provider() {
         Value::String("testhost.local".to_string()),
     );
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
-    cache.put_source("hostname", None, "main", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -82,7 +82,7 @@ async fn server_handles_get_single_field() {
         Value::String("testhost.local".to_string()),
     );
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
-    cache.put_source("hostname", None, "main", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Some(60));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
