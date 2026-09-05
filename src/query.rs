@@ -51,54 +51,27 @@ pub fn parse_facet(provider: &str) -> Result<Option<&str>, String> {
     }
 }
 
-/// Parse a request key into one of four forms, disambiguating source vs field
-/// for 2-segment keys using the registry.
+/// Parse a request key into one of two forms. A source name is metadata on a
+/// record, never a level in the key tree (`docs/canon/provider_source.md`
+/// "Record") — the second-and-later segments are always the field, however
+/// many dots it contains.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyParse {
     /// "provider"
     Provider(String),
-    /// "provider.field" — x is a field name (not a registered source)
+    /// "provider.field" — everything after the first dot, verbatim. May
+    /// itself contain dots: `provider.field.a.b.c` is a legitimate address
+    /// once a field's value is a nested Object (field_resolution.md
+    /// invariant 12); `provider::lookup_path` walks the remainder.
     Field(String, String),
-    /// "provider.source" — x is a registered source name
-    Source(String, String),
-    /// "provider.source.field"
-    SourceField(String, String, String),
 }
 
-/// Disambiguates between Field and Source forms for 2-segment keys.
-/// Source name takes precedence over field name when both could match.
-/// For 3-part keys `p.s.f`: if `s` is a registered source name for `p`, this
-/// is a SourceField lookup; otherwise `p.s` is a field whose value is an Object
-/// and `f` is a key within that object (nested field path).
-pub fn parse_key(key: &str, registry: &ProviderRegistry) -> KeyParse {
-    let parts: Vec<&str> = key.split('.').collect();
-    match parts.as_slice() {
-        // `split` always yields at least one element, so this is unreachable in
-        // practice; kept because the match is otherwise non-exhaustive.
-        [] => KeyParse::Provider(String::new()),
-        [p] => KeyParse::Provider(p.to_string()),
-        [p, x] => {
-            if registry.source(p, x).is_some() {
-                KeyParse::Source(p.to_string(), x.to_string())
-            } else {
-                KeyParse::Field(p.to_string(), x.to_string())
-            }
-        }
-        [p, s, rest @ ..] => {
-            // Three or more segments. `rest` is at least one segment, and may be
-            // a nested sub-path of arbitrary depth — `provider.field.a.b.c` is a
-            // legitimate address once a field's value is a nested Object
-            // (field_resolution.md invariant 12). Both branches carry the whole
-            // remainder as a dotted path; `provider::lookup_path` walks it.
-            let sub_path = rest.join(".");
-            if registry.source(p, s).is_some() {
-                KeyParse::SourceField(p.to_string(), s.to_string(), sub_path)
-            } else {
-                // s is a field name whose value is an Object; rest addresses
-                // within it.
-                KeyParse::Field(p.to_string(), format!("{s}.{sub_path}"))
-            }
-        }
+/// Splits a key on its first dot: `"provider"` -> `Provider`, anything with a
+/// dot -> `Field(provider, rest)`.
+pub fn parse_key(key: &str) -> KeyParse {
+    match key.split_once('.') {
+        Some((p, rest)) => KeyParse::Field(p.to_string(), rest.to_string()),
+        None => KeyParse::Provider(key.to_string()),
     }
 }
 
@@ -206,19 +179,15 @@ impl QueryPlan {
     pub fn build(raw_key: &str, path_hint: Option<&str>, registry: &ProviderRegistry) -> QueryPlan {
         let (stripped_key, meta) = split_metadata_suffix(raw_key);
         let effective_path = resolve_path(stripped_key, path_hint, registry);
-        let target = parse_key(stripped_key, registry);
+        let target = parse_key(stripped_key);
 
         let provider = match &target {
             KeyParse::Provider(p) => p.clone(),
             KeyParse::Field(p, _) => p.clone(),
-            KeyParse::Source(p, _) => p.clone(),
-            KeyParse::SourceField(p, _, _) => p.clone(),
         };
 
         let demand = match &target {
             KeyParse::Provider(_) => SourceDemand::All,
-            KeyParse::Source(_, s) => SourceDemand::Sources(vec![s.clone()]),
-            KeyParse::SourceField(_, s, _) => SourceDemand::Sources(vec![s.clone()]),
             KeyParse::Field(p, f) => {
                 // A field's demand is its owning Source only (canon §150/§268).
                 // The owning source is matched on the top-level field name (nested
@@ -248,40 +217,39 @@ mod tests {
 
     #[test]
     fn parse_key_recognises_provider() {
-        let reg = ProviderRegistry::with_defaults();
-        assert!(matches!(parse_key("git", &reg), KeyParse::Provider(p) if p == "git"));
+        assert!(matches!(parse_key("git"), KeyParse::Provider(p) if p == "git"));
     }
 
     #[test]
-    fn parse_key_recognises_source_when_registered() {
-        let reg = ProviderRegistry::with_defaults();
-        // git has a "refs" source.
+    fn parse_key_source_name_is_just_a_field() {
+        // "refs" is a registered source name for git, but a source name is
+        // never part of an address (docs/canon/provider_source.md "Record"):
+        // git.refs parses as a field like any other.
         assert!(
-            matches!(parse_key("git.refs", &reg), KeyParse::Source(p, s) if p == "git" && s == "refs")
+            matches!(parse_key("git.refs"), KeyParse::Field(p, f) if p == "git" && f == "refs")
         );
     }
 
     #[test]
-    fn parse_key_falls_back_to_field_when_no_such_source() {
-        let reg = ProviderRegistry::with_defaults();
+    fn parse_key_recognises_field() {
         assert!(
-            matches!(parse_key("git.branch", &reg), KeyParse::Field(p, f) if p == "git" && f == "branch")
+            matches!(parse_key("git.branch"), KeyParse::Field(p, f) if p == "git" && f == "branch")
         );
     }
 
     #[test]
-    fn parse_key_recognises_source_field() {
-        let reg = ProviderRegistry::with_defaults();
+    fn parse_key_source_name_prefix_is_a_dotted_field() {
+        // Same rule for three segments: "refs" is not consulted as a source
+        // name, so the whole remainder is the field.
         assert!(
-            matches!(parse_key("git.refs.branch", &reg), KeyParse::SourceField(p, s, f) if p == "git" && s == "refs" && f == "branch")
+            matches!(parse_key("git.refs.branch"), KeyParse::Field(p, f) if p == "git" && f == "refs.branch")
         );
     }
 
     #[test]
     fn parse_key_unknown_provider_yields_field() {
-        let reg = ProviderRegistry::with_defaults();
         assert!(
-            matches!(parse_key("nope.field", &reg), KeyParse::Field(p, f) if p == "nope" && f == "field")
+            matches!(parse_key("nope.field"), KeyParse::Field(p, f) if p == "nope" && f == "field")
         );
     }
 
@@ -321,25 +289,25 @@ mod tests {
     }
 
     #[test]
-    fn build_source_demands_that_source() {
+    fn build_source_name_as_field_demands_nothing() {
         let reg = ProviderRegistry::with_defaults();
+        // "refs" is a source name, not a field: git.refs parses as Field, and
+        // no field owns it, so it demands nothing (same as any unknown field).
         let plan = QueryPlan::build("git.refs", None, &reg);
-        // Disambiguation: git.refs must parse as a Source target, not a Field,
-        // since refs is a registered source. This pins the path, not just the outcome.
-        assert!(matches!(plan.target, KeyParse::Source(_, ref s) if s == "refs"));
+        assert!(matches!(plan.target, KeyParse::Field(_, ref f) if f == "refs"));
         match plan.demand {
-            SourceDemand::Sources(v) => assert_eq!(v, vec!["refs".to_string()]),
-            other => panic!("expected Sources([refs]), got {other:?}"),
+            SourceDemand::Sources(v) => assert!(v.is_empty(), "git.refs is not a field"),
+            other => panic!("expected Sources([]), got {other:?}"),
         }
     }
 
     #[test]
-    fn build_source_field_demands_that_source() {
+    fn build_source_name_prefixed_field_demands_nothing() {
         let reg = ProviderRegistry::with_defaults();
         let plan = QueryPlan::build("git.refs.branch", None, &reg);
         match plan.demand {
-            SourceDemand::Sources(v) => assert_eq!(v, vec!["refs".to_string()]),
-            other => panic!("expected Sources([refs]), got {other:?}"),
+            SourceDemand::Sources(v) => assert!(v.is_empty(), "git.refs.branch addresses no field"),
+            other => panic!("expected Sources([]), got {other:?}"),
         }
     }
 

@@ -123,25 +123,6 @@ fn git_provider_source_names() {
 }
 
 #[test]
-fn git_source_names_never_shadow_field_names() {
-    // `query::parse_key` resolves `provider.x` as a SOURCE when `x` is a
-    // registered source name, taking precedence over a field of the same name.
-    // A source named after a field would silently break `comb get git.<field>`.
-    let meta = GitProvider.metadata();
-    let source_names: std::collections::HashSet<&str> =
-        meta.sources.iter().map(|s| s.name.as_str()).collect();
-    for src in &meta.sources {
-        for f in &src.fields {
-            assert!(
-                !source_names.contains(f.name.as_str()),
-                "field '{}' collides with a source name",
-                f.name
-            );
-        }
-    }
-}
-
-#[test]
 fn git_refs_returns_empty_for_non_repo() {
     let tmp = TempDir::new().unwrap();
     let sources = GitProvider.sources();

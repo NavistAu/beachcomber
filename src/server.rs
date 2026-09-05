@@ -295,12 +295,6 @@ async fn handle_watch(
                 .await;
             }
         }
-        crate::query::KeyParse::Source(provider, source) => {
-            maybe_read_always(registry, cache, provider, source, effective_path.as_deref()).await;
-        }
-        crate::query::KeyParse::SourceField(provider, source, _field) => {
-            maybe_read_always(registry, cache, provider, source, effective_path.as_deref()).await;
-        }
         crate::query::KeyParse::Provider(provider) => {
             if let Some(sources) = registry.provider_sources(provider) {
                 let source_names: Vec<String> = sources
@@ -468,29 +462,6 @@ fn read_watch_value(cache: &Cache, target: &KeyParse, path: Option<&str>) -> Res
                         Response::miss()
                     }
                 }
-            }
-        }
-        KeyParse::Source(provider, source) => match cache.get_source(provider, path, source) {
-            Some(src) => {
-                let age_ms = src.age_ms();
-                let stale = src.is_stale();
-                let data = serde_json::to_value(&src.fields).unwrap_or(serde_json::Value::Null);
-                Response::ok(data, age_ms, stale)
-            }
-            None => Response::miss(),
-        },
-        KeyParse::SourceField(provider, source, field) => {
-            match cache.get_source(provider, path, source) {
-                Some(src) => match src.fields.get(field.as_str()) {
-                    Some(value) => {
-                        let age_ms = src.age_ms();
-                        let stale = src.is_stale();
-                        let data = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-                        Response::ok(data, age_ms, stale)
-                    }
-                    None => Response::error(format!("unknown field: {provider}.{source}.{field}")),
-                },
-                None => Response::miss(),
             }
         }
         KeyParse::Provider(provider) => match cache.get_entry(provider, path) {
@@ -696,71 +667,6 @@ async fn handle_request(
                             }
                             (false, Response::miss())
                         }
-                    }
-                }
-                KeyParse::Source(provider, source) => {
-                    // Re-execute read-always sources before reading.
-                    maybe_read_always(registry, cache, provider, source, read_path.as_deref())
-                        .await;
-                    let mut hit = cache.get_source(provider, read_path.as_deref(), source);
-                    if hit.is_none()
-                        && inline_execute_source(
-                            registry,
-                            cache,
-                            provider,
-                            source,
-                            read_path.as_deref(),
-                        )
-                        .await
-                    {
-                        hit = cache.get_source(provider, read_path.as_deref(), source);
-                    }
-                    match hit {
-                        Some(src_entry) => {
-                            let age_ms = src_entry.age_ms();
-                            let stale = src_entry.is_stale();
-                            let data = serde_json::to_value(&src_entry.fields)
-                                .unwrap_or(serde_json::Value::Null);
-                            (true, Response::ok(data, age_ms, stale))
-                        }
-                        None => (false, Response::miss()),
-                    }
-                }
-                KeyParse::SourceField(provider, source, field) => {
-                    // Re-execute read-always sources before reading.
-                    maybe_read_always(registry, cache, provider, source, read_path.as_deref())
-                        .await;
-                    let mut hit = cache.get_source(provider, read_path.as_deref(), source);
-                    if hit.is_none()
-                        && inline_execute_source(
-                            registry,
-                            cache,
-                            provider,
-                            source,
-                            read_path.as_deref(),
-                        )
-                        .await
-                    {
-                        hit = cache.get_source(provider, read_path.as_deref(), source);
-                    }
-                    match hit {
-                        Some(src_entry) => {
-                            match crate::provider::lookup_path(&src_entry.fields, field.as_str()) {
-                                Some(value) => {
-                                    let age_ms = src_entry.age_ms();
-                                    let stale = src_entry.is_stale();
-                                    let data = serde_json::to_value(value)
-                                        .unwrap_or(serde_json::Value::Null);
-                                    (true, Response::ok(data, age_ms, stale))
-                                }
-                                None => {
-                                    return Response::error(format!(
-                                        "unknown field: {provider}.{source}.{field}"
-                                    ));
-                                }
-                            }
-                        }
-                        None => (false, Response::miss()),
                     }
                 }
                 KeyParse::Provider(provider) => {
@@ -1646,34 +1552,6 @@ fn handle_introspect_procs(duration_secs: Option<u64>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn read_watch_value_routes_source_target() {
-        use crate::cache::Cache;
-        use crate::provider::Value;
-        use crate::query::KeyParse;
-        use std::collections::HashMap;
-
-        let cache = Cache::new();
-        let mut refs_fields = HashMap::new();
-        refs_fields.insert("branch".to_string(), Value::String("main".to_string()));
-        cache.put_source("git", Some("/repo"), "refs", refs_fields, None);
-        let mut diff_fields = HashMap::new();
-        diff_fields.insert("lines_added".to_string(), Value::String("3".to_string()));
-        cache.put_source("git", Some("/repo"), "diff", diff_fields, None);
-
-        // Source target returns ONLY that source's fields.
-        let target = KeyParse::Source("git".to_string(), "refs".to_string());
-        let resp = read_watch_value(&cache, &target, Some("/repo"));
-        assert!(resp.ok);
-        let data = resp.data.expect("source data");
-        let obj = data.as_object().expect("object");
-        assert!(obj.contains_key("branch"), "refs.branch present");
-        assert!(
-            !obj.contains_key("lines_added"),
-            "diff field absent from refs source"
-        );
-    }
 
     #[test]
     fn read_watch_value_field_target_finds_field() {

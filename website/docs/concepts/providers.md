@@ -39,16 +39,14 @@ Splitting into sources means a branch lookup only demands the `head` source life
 
 ## Addressing
 
-Consumers can address data at any layer:
+A source name is metadata on a field — where it came from, how it's invalidated — never a level in the address. Consumers address only fields and providers:
 
 | Key form | What it returns | Demand effect |
 |---|---|---|
 | `git.branch` | The `branch` field value | Demand on the `head` source only |
-| `git.refs` | All fields from the `refs` source | Demand on `refs` only |
-| `git.head.branch` | The `branch` field via explicit source | Demand on `head` only |
 | `git` | All fields from all sources (flattened) | Demand on all git sources |
 
-The registry resolves which source owns each field. The `provider.field` form is the most common and identical in usage to previous versions.
+The registry resolves which source owns each field, so `git.branch` demands only the `head` source's lifecycle, not the whole provider's. `git.refs` is not an address for the `refs` source — `refs` is a source name, not a field, so it misses like any other unknown field.
 
 ## Invalidation strategies
 

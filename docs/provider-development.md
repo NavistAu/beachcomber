@@ -234,8 +234,6 @@ use crate::provider::dockercontext::DockerContextProvider;
 ```bash
 comb get dockercontext.name
 comb get dockercontext.endpoint
-# Source-level addressing (Phase 5+):
-comb get dockercontext.config
 ```
 
 ### 2.5 Write a test

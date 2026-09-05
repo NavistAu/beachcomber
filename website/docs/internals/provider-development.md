@@ -282,8 +282,6 @@ registry
 ```bash
 comb get dockercontext.name
 comb get dockercontext.endpoint
-# Source-level addressing:
-comb get dockercontext.config
 ```
 
 ### 2.5 Write a test

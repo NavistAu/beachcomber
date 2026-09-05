@@ -44,11 +44,9 @@ Query a cached value. Returns cached data immediately. On a cold cache (first qu
 | Form | What it selects |
 |---|---|
 | `provider.field` | Single field — most common form |
-| `provider.source` | All fields from a named source |
-| `provider.source.field` | Single field via explicit source |
 | `provider` | All fields from all sources (flattened) |
 
-The `provider.field` form automatically routes to the source that owns the field. The explicit source forms are useful when you want to demand a specific source's data or check its age independently.
+The `provider.field` form automatically routes to the source that owns the field — a source name is metadata on that lookup, never a key you address directly. Unlike a field, a source has no address at all.
 
 ```sh
 # Query a specific field — text is the default
@@ -58,12 +56,6 @@ comb get git.branch .            # equivalent long form
 # Query a field from a global provider (no path needed)
 comb g battery.percent           # → 87
 comb g hostname.short            # → myhost
-
-# Source-level addressing (new in Phase 5)
-comb g git.refs .                # → all fields from the refs source
-comb g git.refs.branch .         # → branch via explicit source routing
-comb g mise.global               # → global tool versions only
-comb g mise.project .            # → project tool versions only
 
 # Query the entire provider (all fields from all sources) — alternate formats
 comb g git .                     # → values only, one per line (text default)
