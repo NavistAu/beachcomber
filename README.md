@@ -402,14 +402,14 @@ Field-level filtering: watching `git.branch` only emits when the branch value ch
 
 ### `comb e` (eval) `<template> [path]`
 
-Evaluate a value expression against cached provider data, resolving all referenced keys in a single connection. Three forms: **bare** (`git.branch`, backward compatible), a **single `{{ expr }}` tag** (keeps the expression's natural type), or **literal text and/or several tags** (always string-valued). Plain text with no tags at all is a bare expression, not literal text — write `{{ }}` for text.
+Evaluate a value expression against cached provider data, resolving all referenced keys in a single connection. Two forms: a **single `{{ expr }}` tag** (keeps the expression's natural type), or **literal text and/or several tags** (always string-valued). A source with no tags at all is its own literal text — `comb e hello` prints `hello`; write `{{ }}` to evaluate an expression.
 
 ```sh
 comb e "{{ git.branch }} | {{ battery.percent }}%" .     # → main | 82%
 PS1="$(comb e '{{ git.branch }} \$ ' . 2>/dev/null)"
 
-# Bare expression — equivalent to {{ git.dirty }}, keeps its bool type
-comb e 'git.dirty' .
+# Single tag — keeps its bool type
+comb e '{{ git.dirty }}' .
 
 # Conditionals and filters
 comb e '{% if git.dirty %}*{{ git.branch }}{% else %}{{ git.branch }}{% endif %}' .
