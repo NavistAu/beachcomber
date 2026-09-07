@@ -193,7 +193,7 @@ enum Commands {
     /// Evaluate a value expression against cached values
     #[command(visible_alias = "e")]
     Eval {
-        /// Template or expression: `{{ provider.field }}`, a bare expression, or text with several tags
+        /// Template or expression: `{{ provider.field }}`, or text with several tags
         template: String,
         /// Path context for directory-scoped providers
         path: Option<String>,

@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 fn virtual_field_resolves_cache_reference() {
     let vf = VirtualFields::with_config_overrides([(
         ("myprov".to_string(), "myfield".to_string()),
-        "cache.otherprov.otherfield".to_string(),
+        "{{ cache.otherprov.otherfield }}".to_string(),
     )]);
 
     let env_vars: HashMap<String, String> = HashMap::new();
@@ -77,7 +77,7 @@ fn path_expression_over_cwd_selects_cache_coordinate() {
     let mut overrides: HashMap<String, String> = HashMap::new();
     overrides.insert(
         "myproject".to_string(),
-        "'workspace-a' if cwd == '/Users/x/repo-a' else 'workspace-b'".to_string(),
+        "{{ 'workspace-a' if cwd == '/Users/x/repo-a' else 'workspace-b' }}".to_string(),
     );
 
     let expr = path_expression_for("myproject", &overrides).expect("path expression declared");
@@ -91,30 +91,22 @@ fn path_expression_over_cwd_selects_cache_coordinate() {
     assert_eq!(coord_b, Some("workspace-b".to_string()));
 }
 
-/// Case 3a: a path expression written as a single `{{ }}` tag is the same
-/// expression as the bare form — canon `field_resolution.md` §"`env.*`
-/// namespace" says `env.*` is available "in path expressions (`{{ env.X }}`)",
-/// so the tagged form has to compile rather than fail and collapse the
-/// provider to the global slot.
+/// Case 3a: a path expression written as a single `{{ }}` tag compiles and
+/// resolves — canon `field_resolution.md` §"`env.*` namespace" says `env.*`
+/// is available "in path expressions (`{{ env.X }}`)".
 #[test]
-fn path_expression_single_tag_equals_bare_form() {
+fn path_expression_single_tag_form_resolves() {
     let mut env_vars: HashMap<String, String> = HashMap::new();
     env_vars.insert("HOME".to_string(), "/home/tester".to_string());
 
-    let bare = evaluate_path(
-        "env.KUBECONFIG or '~/.kube/config'",
-        "/Users/x/repo-a",
-        &env_vars,
-    );
     let tagged = evaluate_path(
         "{{ env.KUBECONFIG or '~/.kube/config' }}",
         "/Users/x/repo-a",
         &env_vars,
     );
-    assert_eq!(bare, Some("/home/tester/.kube/config".to_string()));
-    assert_eq!(tagged, bare);
+    assert_eq!(tagged, Some("/home/tester/.kube/config".to_string()));
 
-    // The env term wins in both forms too — not just the literal fallback.
+    // The env term wins too — not just the literal fallback.
     env_vars.insert("KUBECONFIG".to_string(), "/etc/kube.yaml".to_string());
     assert_eq!(
         evaluate_path(
@@ -164,9 +156,9 @@ fn truncate_and_basename_filters_resolve() {
     let daemon_data: HashMap<String, serde_json::Value> = HashMap::new();
     let ctx = EvalContext::new(&env_vars, &daemon_data);
 
-    let truncated = eval::evaluate("env.LONGVAR | truncate(5)", &vf, &ctx).expect("truncate");
+    let truncated = eval::evaluate("{{ env.LONGVAR | truncate(5) }}", &vf, &ctx).expect("truncate");
     assert_eq!(truncated, json!("abcde..."));
 
-    let based = eval::evaluate("env.PYVAR | basename", &vf, &ctx).expect("basename");
+    let based = eval::evaluate("{{ env.PYVAR | basename }}", &vf, &ctx).expect("basename");
     assert_eq!(based, json!("baz"));
 }

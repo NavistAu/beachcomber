@@ -1,13 +1,14 @@
 //! Client-side virtual field evaluator.
 //!
-//! A virtual field's value expression is written bare (`env.A or cache.x.y`),
-//! as a single tag (`{{ env.A or cache.x.y }}`), or as a template
-//! (`{{ git.branch }}{% if git.dirty %}*{% endif %}`). The first two evaluate
-//! to a typed `serde_json::Value`; a template is string-valued. [`crate::eval`]
-//! owns that classification and the evaluation itself; this module owns the
-//! registry, the reference taxonomy, and the context the refs bind to. Ref
-//! discovery uses minijinja's `undeclared_variables(true)` meta-analysis to
-//! enumerate all `provider.field` and `env.*` refs — no byte-level scanning.
+//! A virtual field's value expression is written as a single tag
+//! (`{{ env.A or cache.x.y }}`) or as a template
+//! (`{{ git.branch }}{% if git.dirty %}*{% endif %}`). The former evaluates
+//! to a typed `serde_json::Value`; a template is string-valued (a source with
+//! no tags at all is literal text). [`crate::eval`] owns that classification
+//! and the evaluation itself; this module owns the registry, the reference
+//! taxonomy, and the context the refs bind to. Ref discovery uses minijinja's
+//! `undeclared_variables(true)` meta-analysis to enumerate all
+//! `provider.field` and `env.*` refs — no byte-level scanning.
 //!
 //! Built-in default virtual fields are compiled into `libbeachcomber`; no
 //! config file is required. Config may override or extend them. Any binary
@@ -33,50 +34,54 @@ const BUILTIN_DEFAULTS: &[(&str, &str, &str)] = &[
     (
         "terraform",
         "workspace",
-        "env.TF_WORKSPACE or cache.terraform.workspace",
+        "{{ env.TF_WORKSPACE or cache.terraform.workspace }}",
     ),
     // python
     (
         "python",
         "version",
-        "env.PYENV_VERSION or env.MISE_PYTHON_VERSION or cache.mise.python or cache.asdf.python or cache.python.venv_version",
+        "{{ env.PYENV_VERSION or env.MISE_PYTHON_VERSION or cache.mise.python or cache.asdf.python or cache.python.venv_version }}",
     ),
     (
         "python",
         "venv_name",
-        r#"cache.python.local_venv_name or (env.VIRTUAL_ENV | basename)"#,
+        r#"{{ cache.python.local_venv_name or (env.VIRTUAL_ENV | basename) }}"#,
     ),
     // conda (daemon provider removed; virtual from env only)
-    ("conda", "env", "env.CONDA_DEFAULT_ENV"),
+    ("conda", "env", "{{ env.CONDA_DEFAULT_ENV }}"),
     // op (daemon provider removed; virtual from env only)
     // Security: expression returns a bool, NOT the token string.
-    ("op", "signed_in", r#"env.OP_SERVICE_ACCOUNT_TOKEN != """#),
+    (
+        "op",
+        "signed_in",
+        r#"{{ env.OP_SERVICE_ACCOUNT_TOKEN != "" }}"#,
+    ),
     // aws
     (
         "aws",
         "profile",
-        r#"env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default""#,
+        r#"{{ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" }}"#,
     ),
     (
         "aws",
         "region",
-        r#"env.AWS_REGION or env.AWS_DEFAULT_REGION or cache.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" ].region"#,
+        r#"{{ env.AWS_REGION or env.AWS_DEFAULT_REGION or cache.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" ].region }}"#,
     ),
     (
         "aws",
         "expiration",
-        "env.AWS_CREDENTIAL_EXPIRATION or env.AWS_SESSION_EXPIRATION",
+        "{{ env.AWS_CREDENTIAL_EXPIRATION or env.AWS_SESSION_EXPIRATION }}",
     ),
     // gcloud
     (
         "gcloud",
         "project",
-        "env.CLOUDSDK_CORE_PROJECT or cache.gcloud_configs[ env.CLOUDSDK_ACTIVE_CONFIG_NAME or cache.gcloud_configs.active_config ].project",
+        "{{ env.CLOUDSDK_CORE_PROJECT or cache.gcloud_configs[ env.CLOUDSDK_ACTIVE_CONFIG_NAME or cache.gcloud_configs.active_config ].project }}",
     ),
     (
         "gcloud",
         "account",
-        "cache.gcloud_configs[ env.CLOUDSDK_ACTIVE_CONFIG_NAME or cache.gcloud_configs.active_config ].account",
+        "{{ cache.gcloud_configs[ env.CLOUDSDK_ACTIVE_CONFIG_NAME or cache.gcloud_configs.active_config ].account }}",
     ),
 ];
 
@@ -204,10 +209,12 @@ impl VirtualFields {
     /// `virtual.<field> = "{{ expression }}"` keys.
     /// Uses TOML's dotted-key form: `virtual.<field>` under `[providers.<name>]`.
     ///
-    /// Expressions are written in the documented single-tag form (canon
-    /// `field_resolution.md` invariant 14), which reads back as the same typed
-    /// field the bare form would. `BUILTIN_DEFAULTS` stay bare in the source:
-    /// they are internal, and the bare form remains accepted permanently.
+    /// Every expression is emitted exactly as stored — `BUILTIN_DEFAULTS` are
+    /// already written in the documented single-tag form (canon
+    /// `field_resolution.md` invariant 14), and a config override is written
+    /// back in whatever form it was read in. Rewriting a tagless override
+    /// would silently turn its literal text into an expression, so nothing
+    /// here wraps a source that lacks tags.
     pub fn to_config_toml(&self) -> String {
         use std::collections::BTreeMap;
 
@@ -229,17 +236,9 @@ impl VirtualFields {
             fields.sort_by_key(|(f, _)| *f);
             out.push_str(&format!("[providers.{}]\n", provider));
             for (field, expr) in fields {
-                // TOML dotted-key form: virtual.<field> = "{{ <expression> }}"
+                // TOML dotted-key form: virtual.<field> = "<expression, as stored>"
                 // "virtual" is read as a string key in TOML — no Rust keyword collision.
-                // A bare expression is wrapped in the documented single-tag
-                // form; a source that already carries tags is emitted as-is, so
-                // a config override round-trips instead of being double-wrapped.
-                let value = if crate::eval::classify(expr) == crate::eval::Form::Expression {
-                    format!("{{{{ {expr} }}}}")
-                } else {
-                    expr.to_string()
-                };
-                let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+                let escaped = expr.replace('\\', "\\\\").replace('"', "\\\"");
                 out.push_str(&format!("virtual.{field} = \"{escaped}\"\n"));
             }
             out.push('\n');
@@ -294,9 +293,9 @@ impl VirtualFields {
 
     /// Evaluate an arbitrary value expression against the given context.
     ///
-    /// Accepts all three forms (canon `field_resolution.md` invariant 14) —
-    /// bare, a single `{{ }}` tag, or a template — via [`crate::eval`]. Refs
-    /// are discovered per form, then bound:
+    /// Accepts both forms (canon `field_resolution.md` invariant 14) — a
+    /// single `{{ }}` tag, or a template — via [`crate::eval`]. Refs are
+    /// discovered per form, then bound:
     ///
     /// - `Env(X)` refs → `ctx.env_vars.get(X)` (empty string on miss).
     /// - `CacheField(P, F)` refs → `ctx.daemon_data["P.F"]` (raw cached value).
@@ -782,19 +781,20 @@ mod tests {
         (HashMap::new(), HashMap::new())
     }
 
-    // Canon `field_resolution.md` invariant 14: bare, single-tag, and template
-    // are the same one expression syntax and must agree on whether exec() is
-    // available. This test pins the bare form (both modes); the single-tag
-    // pair immediately below pins that form, and the template-form pair near
-    // the end of this module (`exec_enabled_in_template_form_when_with_exec`
-    // / `exec_disabled_in_template_form_without_with_exec`) pins the third.
+    // Canon `field_resolution.md` invariant 14: the single-tag and template
+    // forms are the same one expression syntax and must agree on whether
+    // exec() is available. This test and the pair immediately below pin the
+    // single-tag form (this one with multiple scalar argument types); the
+    // template-form pair near the end of this module
+    // (`exec_enabled_in_template_form_when_with_exec` /
+    // `exec_disabled_in_template_form_without_with_exec`) pins the other.
     #[test]
     fn exec_enabled_env_runs_command_with_scalar_args() {
         let vf = VirtualFields::defaults_only();
         let (env, data) = empty_maps();
         let ctx = EvalContext::new(&env, &data).with_exec();
 
-        let result = evaluate(r#"exec("/bin/echo", "hi", 42)"#, &vf, &ctx).unwrap();
+        let result = evaluate(r#"{{ exec("/bin/echo", "hi", 42) }}"#, &vf, &ctx).unwrap();
         assert_eq!(result, JsonValue::String("hi 42".to_string()));
     }
 
@@ -808,7 +808,12 @@ mod tests {
         // $1/$2 are "x"/"y" — $# must be 2, not 3, pinning that `cmd` +
         // remaining positionals map onto argv exactly (no accidental $0
         // duplication or off-by-one).
-        let result = evaluate(r#"exec("sh", "-c", "echo $#", "_", "x", "y")"#, &vf, &ctx).unwrap();
+        let result = evaluate(
+            r#"{{ exec("sh", "-c", "echo $#", "_", "x", "y") }}"#,
+            &vf,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(result, JsonValue::String("2".to_string()));
     }
 
@@ -818,7 +823,7 @@ mod tests {
         let (env, data) = empty_maps();
         let ctx = EvalContext::new(&env, &data);
 
-        let err = evaluate(r#"exec("/bin/echo", "hi")"#, &vf, &ctx).unwrap_err();
+        let err = evaluate(r#"{{ exec("/bin/echo", "hi") }}"#, &vf, &ctx).unwrap_err();
         // minijinja's Display prefixes the error kind, and `eval` adds its
         // own "expression eval error: " prefix — assert the substring, not
         // the whole message.
@@ -834,9 +839,8 @@ mod tests {
         let (env, data) = empty_maps();
         let ctx = EvalContext::new(&env, &data).with_exec();
 
-        // Exactly one `{{ }}` tag spanning the whole source: the typed path,
-        // same as the bare form above — natural-type result, not a string
-        // wrapping a rendered template.
+        // Exactly one `{{ }}` tag spanning the whole source: the typed path —
+        // natural-type result, not a string wrapping a rendered template.
         let result = evaluate(r#"{{ exec("/bin/echo", "hi") }}"#, &vf, &ctx).unwrap();
         assert_eq!(result, JsonValue::String("hi".to_string()));
     }
@@ -863,7 +867,8 @@ mod tests {
         // `cache.missing.value` is a daemon ref that never got fetched (not
         // in `data`), so it binds to nothing and evaluates as chainable
         // undefined — landing as exec()'s 2nd positional (1-based).
-        let err = evaluate(r#"exec("/bin/echo", cache.missing.value)"#, &vf, &ctx).unwrap_err();
+        let err =
+            evaluate(r#"{{ exec("/bin/echo", cache.missing.value) }}"#, &vf, &ctx).unwrap_err();
         assert!(err.contains("argument 2"), "unexpected error: {err}");
     }
 
@@ -873,7 +878,7 @@ mod tests {
         let (env, data) = empty_maps();
         let ctx = EvalContext::new(&env, &data).with_exec();
 
-        let result = evaluate(r#"exec("cat", stdin="round trip")"#, &vf, &ctx).unwrap();
+        let result = evaluate(r#"{{ exec("cat", stdin="round trip") }}"#, &vf, &ctx).unwrap();
         assert_eq!(result, JsonValue::String("round trip".to_string()));
     }
 
@@ -883,7 +888,7 @@ mod tests {
         let (env, data) = empty_maps();
         let ctx = EvalContext::new(&env, &data).with_exec();
 
-        let err = evaluate(r#"exec("/bin/echo", "hi", bogus=1)"#, &vf, &ctx).unwrap_err();
+        let err = evaluate(r#"{{ exec("/bin/echo", "hi", bogus=1) }}"#, &vf, &ctx).unwrap_err();
         assert!(err.contains("bogus"), "unexpected error: {err}");
     }
 
@@ -895,7 +900,7 @@ mod tests {
 
         // minijinja's own `Display` for a bool prints "True"/"False"
         // (Python-style); exec() must emit the canonical "true"/"false".
-        let result = evaluate(r#"exec("/bin/echo", true, false)"#, &vf, &ctx).unwrap();
+        let result = evaluate(r#"{{ exec("/bin/echo", true, false) }}"#, &vf, &ctx).unwrap();
         assert_eq!(result, JsonValue::String("true false".to_string()));
     }
 
@@ -908,7 +913,7 @@ mod tests {
         // A bool (or a map/seq) must not silently stringify through
         // minijinja's `Display` — symmetric with argv coercion, which
         // rejects the same shapes outright.
-        let err = evaluate(r#"exec("cat", stdin=true)"#, &vf, &ctx).unwrap_err();
+        let err = evaluate(r#"{{ exec("cat", stdin=true) }}"#, &vf, &ctx).unwrap_err();
         assert!(err.contains("stdin"), "unexpected error: {err}");
         assert!(err.contains("tojson"), "unexpected error: {err}");
     }
@@ -919,7 +924,12 @@ mod tests {
         let (env, data) = empty_maps();
         let ctx = EvalContext::new(&env, &data).with_exec();
 
-        let err = evaluate(r#"exec("/bin/echo", "hi", timeout_ms="x")"#, &vf, &ctx).unwrap_err();
+        let err = evaluate(
+            r#"{{ exec("/bin/echo", "hi", timeout_ms="x") }}"#,
+            &vf,
+            &ctx,
+        )
+        .unwrap_err();
         assert!(err.contains("timeout_ms"), "unexpected error: {err}");
     }
 
@@ -929,7 +939,7 @@ mod tests {
         let (env, data) = empty_maps();
         let ctx = EvalContext::new(&env, &data).with_exec();
 
-        let err = evaluate(r#"exec("/bin/echo", "hi", [1, 2])"#, &vf, &ctx).unwrap_err();
+        let err = evaluate(r#"{{ exec("/bin/echo", "hi", [1, 2]) }}"#, &vf, &ctx).unwrap_err();
         assert!(err.contains("argument 3"), "unexpected error: {err}");
         assert!(err.contains("stdin="), "unexpected error: {err}");
     }
@@ -940,7 +950,7 @@ mod tests {
         let (env, data) = empty_maps();
         let ctx = EvalContext::new(&env, &data).with_exec();
 
-        let err = evaluate(r#"exec(42)"#, &vf, &ctx).unwrap_err();
+        let err = evaluate(r#"{{ exec(42) }}"#, &vf, &ctx).unwrap_err();
         assert!(err.contains("argument 1"), "unexpected error: {err}");
     }
 
@@ -953,7 +963,7 @@ mod tests {
         // `libbeachcomber-ffi::eval_error_kind` matches the substring
         // "compile error" to classify a failure as the caller's own source
         // being malformed; a real command failure must never read as one.
-        let err = evaluate(r#"exec("sh", "-c", "exit 3")"#, &vf, &ctx).unwrap_err();
+        let err = evaluate(r#"{{ exec("sh", "-c", "exit 3") }}"#, &vf, &ctx).unwrap_err();
         assert!(
             err.starts_with("expression eval error: "),
             "unexpected error: {err}"
@@ -996,11 +1006,11 @@ mod tests {
         VirtualFields::with_config_overrides([
             (
                 ("exectest".to_string(), "greeting".to_string()),
-                r#"exec("/bin/echo", "hi")"#.to_string(),
+                r#"{{ exec("/bin/echo", "hi") }}"#.to_string(),
             ),
             (
                 ("exectest".to_string(), "plain".to_string()),
-                r#""ok""#.to_string(),
+                r#"{{ "ok" }}"#.to_string(),
             ),
         ])
     }
@@ -1076,11 +1086,11 @@ mod tests {
         let vf = VirtualFields::with_config_overrides([
             (
                 ("chain".to_string(), "b".to_string()),
-                r#""bee""#.to_string(),
+                r#"{{ "bee" }}"#.to_string(),
             ),
             (
                 ("chain".to_string(), "a".to_string()),
-                r#"exec("/bin/echo", chain.b)"#.to_string(),
+                r#"{{ exec("/bin/echo", chain.b) }}"#.to_string(),
             ),
         ]);
         let (env, data) = empty_maps();

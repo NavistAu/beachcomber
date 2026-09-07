@@ -44,7 +44,7 @@ fn discover_refs_finds_daemon_dep_in_cascade() {
     use libbeachcomber::eval::discover_refs;
     use libbeachcomber::virtual_fields::Ref;
     // The cascade "env.TF_WORKSPACE or cache.terraform.workspace" has a daemon dep (CacheField).
-    let refs = discover_refs("env.TF_WORKSPACE or cache.terraform.workspace");
+    let refs = discover_refs("{{ env.TF_WORKSPACE or cache.terraform.workspace }}");
     let has_daemon_dep = refs.contains(&Ref::CacheField("terraform".into(), "workspace".into()));
     assert!(
         has_daemon_dep,

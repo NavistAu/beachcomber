@@ -1,14 +1,12 @@
-//! Evaluation of all three value-expression forms.
+//! Evaluation of both value-expression forms.
 //!
 //! Pins canon `field_resolution.md` invariant 14 on the evaluating side: a
 //! value expression written as exactly one `{{ expr }}` evaluates to the
 //! expression's natural type; one written with literal text or more than one
-//! tag evaluates to a string; a bare expression is equivalent to the
-//! single-tag form.
+//! tag evaluates to a string; a source with no tags at all is its literal
+//! text.
 
-use libbeachcomber::eval::{
-    Form, classify, daemon_refs, discover_refs, evaluate, render_template, single_tag_expression,
-};
+use libbeachcomber::eval::{Form, classify, daemon_refs, discover_refs, evaluate, render_template};
 use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -51,11 +49,6 @@ fn single_tag_keeps_bool() {
         evaluate(r#"{{ env.T != "" }}"#, &vf, &ctx).unwrap(),
         Value::Bool(true)
     );
-    // The bare form is equivalent.
-    assert_eq!(
-        evaluate(r#"env.T != """#, &vf, &ctx).unwrap(),
-        Value::Bool(true)
-    );
     // Surrounding whitespace is not literal text (canon: "whitespace around a
     // single tag is not literal text").
     assert_eq!(
@@ -76,9 +69,8 @@ fn single_tag_keeps_number_and_object() {
     let data = data_of(&[("n.v", json!(42)), ("p", json!({"a": 1, "b": "two"}))]);
     let ctx = EvalContext::new(&env, &data);
 
-    // A number stays a number in the single-tag form, exactly as bare.
+    // A number stays a number in the single-tag form.
     assert_eq!(evaluate("{{ cache.n.v }}", &vf, &ctx).unwrap(), json!(42));
-    assert_eq!(evaluate("cache.n.v", &vf, &ctx).unwrap(), json!(42));
     // …and a template stringifies it.
     assert_eq!(
         evaluate("v={{ cache.n.v }}", &vf, &ctx).unwrap(),
@@ -87,12 +79,9 @@ fn single_tag_keeps_number_and_object() {
 
     // A whole-provider ref (`cache.p`) is an interior node, and an interior node
     // resolves to its subtree as an object (canon invariant 12). The single-tag
-    // form takes the same typed path as the bare form — it is never re-rendered
-    // as a template — so the two are identical.
-    let bare = evaluate("cache.p", &vf, &ctx).unwrap();
+    // form takes the typed path — it is never re-rendered as a template.
     let tagged = evaluate("{{ cache.p }}", &vf, &ctx).unwrap();
     assert_eq!(tagged, json!({"a": 1, "b": "two"}));
-    assert_eq!(tagged, bare, "the single-tag form must take the typed path");
     // A sequence keeps its shape too, and nesting survives.
     assert_eq!(
         evaluate("{{ [1, cache.p] }}", &vf, &ctx).unwrap(),
@@ -166,7 +155,7 @@ fn empty_source_renders_empty() {
 fn template_with_if_over_virtual_field() {
     // git.branch is virtual; git.dirty is daemon-backed. The statement tag makes
     // the whole thing a template.
-    let vf = vfields(&[("git", "branch", "env.BRANCH or cache.git.branch")]);
+    let vf = vfields(&[("git", "branch", "{{ env.BRANCH or cache.git.branch }}")]);
     let env = HashMap::new();
     let src = "{{ git.branch }}{% if git.dirty %}*{% endif %}";
 
@@ -193,7 +182,7 @@ fn template_with_if_over_virtual_field() {
     );
 }
 
-// ── The bare form is exactly the single-tag form ──────────────────────────────
+// ── Built-in defaults are well-formed single-tag expressions ──────────────────
 
 /// Providers the built-in defaults declare, read back off the generated config's
 /// `[providers.<name>]` headers. `VirtualFields` enumerates fields per provider
@@ -246,7 +235,7 @@ fn context_for(expr: &str, with_env: bool) -> (HashMap<String, String>, HashMap<
 }
 
 #[test]
-fn bare_and_single_tag_agree() {
+fn every_builtin_default_is_a_single_tag_that_evaluates() {
     let vf = VirtualFields::defaults_only();
     let mut checked = 0;
     for provider in default_providers() {
@@ -254,22 +243,19 @@ fn bare_and_single_tag_agree() {
         assert!(!fields.is_empty(), "{provider} declares no default fields");
         for field in fields {
             let expr = vf.expression(&provider, &field).unwrap().to_string();
-            let tagged = format!("{{{{ {expr} }}}}");
-            assert_eq!(classify(&expr), Form::Expression);
-            assert_eq!(classify(&tagged), Form::SingleTag);
+            assert_eq!(
+                classify(&expr),
+                Form::SingleTag,
+                "{provider}.{field} must be written as a single `{{{{ }}}}` tag: {expr}"
+            );
 
             for with_env in [true, false] {
                 let (env, data) = context_for(&expr, with_env);
                 let ctx = EvalContext::new(&env, &data);
-                let bare = evaluate(&expr, &vf, &ctx);
-                let single = evaluate(&tagged, &vf, &ctx);
+                let result = evaluate(&expr, &vf, &ctx);
                 assert!(
-                    bare.is_ok(),
-                    "{provider}.{field} (env={with_env}) failed: {bare:?}"
-                );
-                assert_eq!(
-                    bare, single,
-                    "{provider}.{field} (env={with_env}) differs between forms"
+                    result.is_ok(),
+                    "{provider}.{field} (env={with_env}) failed: {result:?}"
                 );
             }
             checked += 1;
@@ -282,10 +268,7 @@ fn bare_and_single_tag_agree() {
 
 #[test]
 fn virtual_field_defined_with_tags_is_typed() {
-    let vf = vfields(&[
-        ("x", "tagged", "{{ env.A or cache.x.y }}"),
-        ("x", "bare", "env.A or cache.x.y"),
-    ]);
+    let vf = vfields(&[("x", "tagged", "{{ env.A or cache.x.y }}")]);
     let env = HashMap::new();
     let data = data_of(&[("x.y", json!(7))]);
     let ctx = EvalContext::new(&env, &data);
@@ -300,13 +283,10 @@ fn virtual_field_defined_with_tags_is_typed() {
     let tagged = vf
         .evaluate("x", "tagged", &ctx, &mut HashSet::new())
         .unwrap();
-    let bare = vf.evaluate("x", "bare", &ctx, &mut HashSet::new()).unwrap();
     assert_eq!(tagged, json!(7), "the tag form must keep the number");
-    assert_eq!(tagged, bare);
 
     // …and the same through a reference to the field.
     assert_eq!(evaluate("{{ x.tagged }}", &vf, &ctx).unwrap(), json!(7));
-    assert_eq!(evaluate("x.tagged", &vf, &ctx).unwrap(), json!(7));
 }
 
 #[test]
@@ -414,9 +394,9 @@ fn to_config_toml_writes_tags() {
                 "{provider}.{field} did not read back as a single tag: {read_back:?}"
             );
             assert_eq!(
-                single_tag_expression(read_back),
+                Some(read_back),
                 vf.expression(&provider, &field),
-                "{provider}.{field} tag body differs from the built-in expression"
+                "{provider}.{field} did not round-trip"
             );
             checked += 1;
         }
@@ -425,10 +405,10 @@ fn to_config_toml_writes_tags() {
 }
 
 #[test]
-fn to_config_toml_leaves_an_override_that_already_has_tags_alone() {
-    // Only a bare expression is wrapped. A source that already carries tags —
-    // single-tag or template — is emitted as written, so an override survives a
-    // regenerate instead of becoming `{{ {{ x }} }}`.
+fn to_config_toml_leaves_the_source_expression_alone() {
+    // Every override is emitted exactly as written — single-tag, template, or
+    // tagless literal text — never rewritten, since wrapping a tagless source
+    // in `{{ }}` would silently turn its literal text into an expression.
     let vf = vfields(&[
         ("x", "single", "{{ env.A or cache.x.y }}"),
         (
@@ -449,10 +429,9 @@ fn to_config_toml_leaves_an_override_that_already_has_tags_alone() {
         "got:\n{toml_str}"
     );
     assert!(
-        toml_str.contains(r#"virtual.plain = "{{ env.A }}""#),
+        toml_str.contains(r#"virtual.plain = "env.A""#),
         "got:\n{toml_str}"
     );
-    assert!(!toml_str.contains("{{ {{"), "double-wrapped:\n{toml_str}");
 }
 
 // ── Context assembly ──────────────────────────────────────────────────────────
@@ -507,11 +486,7 @@ fn undefined_ref_renders_empty_in_both_forms() {
     let data = HashMap::new();
     let ctx = EvalContext::new(&env, &data);
 
-    // Typed path: a missing ref is the empty string, bare and tagged alike.
-    assert_eq!(
-        evaluate("missing.field", &vf, &ctx).unwrap(),
-        Value::String(String::new())
-    );
+    // Typed path: a missing ref is the empty string.
     assert_eq!(
         evaluate("{{ missing.field }}", &vf, &ctx).unwrap(),
         Value::String(String::new())
@@ -528,11 +503,7 @@ fn undefined_ref_renders_empty_in_both_forms() {
     );
 
     // Lenient undefined behaviour is shared, so a cascade over a missing ref
-    // agrees across all three forms.
-    assert_eq!(
-        evaluate(r#"env.MISSING or "x""#, &vf, &ctx).unwrap(),
-        Value::String("x".into())
-    );
+    // agrees across both forms.
     assert_eq!(
         evaluate(r#"{{ env.MISSING or "x" }}"#, &vf, &ctx).unwrap(),
         Value::String("x".into())
@@ -604,16 +575,10 @@ fn missing_ref_leaves_key_undefined_so_default_fires() {
     let data = HashMap::new();
     let ctx = EvalContext::new(&env, &data);
 
-    for src in [
-        r#"{{ probe.missing | default("FB") }}"#,
-        r#"probe.missing | default("FB")"#,
-    ] {
-        assert_eq!(
-            evaluate(src, &vf, &ctx).unwrap(),
-            Value::String("FB".into()),
-            "src: {src}"
-        );
-    }
+    assert_eq!(
+        evaluate(r#"{{ probe.missing | default("FB") }}"#, &vf, &ctx).unwrap(),
+        Value::String("FB".into())
+    );
     // The template form too, and for a `cache.*` ref and a whole-provider ref.
     assert_eq!(
         evaluate(r#"[{{ probe.missing | default("FB") }}]"#, &vf, &ctx).unwrap(),
@@ -716,7 +681,7 @@ fn provider_miss_with_sibling_field_ref_still_lets_default_fire() {
 fn virtual_field_error_names_the_field() {
     // A broken expression in a config virtual field has to say which field is
     // broken — a bare "expression compile error: ..." points at nothing.
-    let vf = vfields(&[("bad", "oops", "this is ? not an expression")]);
+    let vf = vfields(&[("bad", "oops", "{{ this is ? not an expression }}")]);
     let env = HashMap::new();
     let data = HashMap::new();
     let ctx = EvalContext::new(&env, &data);
@@ -726,7 +691,7 @@ fn virtual_field_error_names_the_field() {
     assert!(err.contains("expression compile error"), "got: {err}");
 
     // The self-cycle error already names the field; it is not prefixed twice.
-    let vf = vfields(&[("loop", "self", "loop.self")]);
+    let vf = vfields(&[("loop", "self", "{{ loop.self }}")]);
     let err = evaluate("{{ loop.self }}", &vf, &ctx).unwrap_err();
     assert_eq!(
         err,

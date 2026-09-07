@@ -3,11 +3,11 @@
 //! Canon `field_resolution.md` §"Value resolution" (invariant 14): `{{ }}`
 //! everywhere. A value expression written as exactly one `{{ expr }}` evaluates
 //! to the expression's natural type; one written with literal text or more than
-//! one tag evaluates to a string. A bare expression (no tags) is still accepted
-//! and is equivalent to the single-tag form.
+//! one tag evaluates to a string. A source with no tags at all is its literal
+//! text — there is no bare-expression form.
 //!
 //! This module answers the two questions a caller has before evaluating — which
-//! of the three forms is this ([`classify`]), and what does it reference
+//! of the two forms is this ([`classify`]), and what does it reference
 //! ([`discover_refs`], [`daemon_refs`], [`fetch_daemon_data`]) — and then
 //! evaluates it ([`evaluate`]). [`render_template`] is the workspace's one
 //! template render, for callers that have already assembled a context.
@@ -28,37 +28,33 @@ use std::collections::{HashMap, HashSet};
 /// How a value expression is written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Form {
-    /// No tag markers at all — the whole source is the expression (backward
-    /// compatible).
-    Expression,
     /// Exactly one `{{ }}` tag spanning the whole source — keeps its natural type.
     SingleTag,
     /// Literal text, more than one tag, any non-expression tag, an
-    /// unterminated tag marker, or an empty source — string-valued, and the
-    /// template compiler owns any syntax diagnostic.
+    /// unterminated tag marker, no tags at all, or an empty source —
+    /// string-valued, and the template compiler owns any syntax diagnostic.
     ///
-    /// An empty (or whitespace-only) source is a template of no tags: it
-    /// renders to `""`. Reading it as an expression instead would make it a
-    /// compile error, and `-f ''` is a legitimate thing to ask for.
+    /// A source with no tags at all (empty, whitespace-only, or plain text)
+    /// is a template of no tags: it renders to its own literal text (`""` for
+    /// an empty source). There is no bare-expression form — `-f ''` and
+    /// `comb eval hello` are both legitimate things to ask for.
     Template,
 }
 
 // ── Classification ────────────────────────────────────────────────────────────
 
-/// Classify a value expression into one of the three [`Form`]s.
+/// Classify a value expression into one of the two [`Form`]s.
 ///
 /// Surrounding whitespace is not literal text: it is trimmed before the tag
 /// spans are compared against the source.
 ///
-/// `{{` always opens a tag, in every form — so a bare expression whose *string
-/// literal* contains `{{` (`"a {{ b"`) is read as an unterminated tag and
-/// classified [`Form::Template`], not as the expression it was before one
-/// syntax. That is the cost of one unambiguous rule for where a tag starts;
-/// write such a literal inside a tag (`{{ "a {{ b" }}`) — the scanner tracks
-/// string literals within a tag, so it stays one tag.
+/// `{{` always opens a tag, in every form — so literal text containing `{{`
+/// (`"a {{ b"`) is read as an unterminated tag and classified
+/// [`Form::Template`]. That is the cost of one unambiguous rule for where a
+/// tag starts; write such a literal inside a tag (`{{ "a {{ b" }}`) — the
+/// scanner tracks string literals within a tag, so it stays one tag.
 pub fn classify(src: &str) -> Form {
     match analyze(src) {
-        Analysis::Expression => Form::Expression,
         Analysis::SingleTag(_) => Form::SingleTag,
         Analysis::Template => Form::Template,
     }
@@ -71,31 +67,31 @@ pub fn classify(src: &str) -> Form {
 pub fn single_tag_expression(src: &str) -> Option<&str> {
     match analyze(src) {
         Analysis::SingleTag(expr) => Some(expr),
-        Analysis::Expression | Analysis::Template => None,
+        Analysis::Template => None,
     }
 }
 
 /// The form of `src`, carrying the inner expression for the single-tag form.
 ///
 /// [`Form`] is the public shape of this; `Analysis` is the internal one, so
-/// every consumer matches exhaustively on the three cases and none has to
+/// every consumer matches exhaustively on the two cases and none has to
 /// handle a "single tag with no expression" that cannot occur.
 ///
 /// One scan, one place the single-tag rule is written down, so [`classify`],
 /// [`single_tag_expression`], [`discover_refs`] and [`evaluate`] can never
 /// disagree about what the single-tag form is.
 enum Analysis<'a> {
-    /// No tag markers at all — the whole (untrimmed) source is the expression.
-    Expression,
     /// Exactly one `{{ }}` tag spanning the whole source, with its trimmed body.
     SingleTag(&'a str),
-    /// Everything else, an empty source included.
+    /// Everything else: no tags at all, literal text, more than one tag, an
+    /// unterminated tag marker, or an empty source.
     Template,
 }
 
 fn analyze(src: &str) -> Analysis<'_> {
     let trimmed = src.trim_ascii();
-    // Nothing to compile; a template of no tags renders to "".
+    // Nothing to compile; a template of no tags renders to its own text
+    // ("" when empty).
     if trimmed.is_empty() {
         return Analysis::Template;
     }
@@ -104,7 +100,6 @@ fn analyze(src: &str) -> Analysis<'_> {
         return Analysis::Template;
     }
     match scan.tags.as_slice() {
-        [] => Analysis::Expression,
         [tag] if tag.kind == TagKind::Expression && tag.start == 0 && tag.end == trimmed.len() => {
             Analysis::SingleTag(tag.body)
         }
@@ -114,13 +109,13 @@ fn analyze(src: &str) -> Analysis<'_> {
 
 // ── Reference discovery ───────────────────────────────────────────────────────
 
-/// Every reference in `src`, for all three forms, deduplicated and sorted.
+/// Every reference in `src`, for both forms, deduplicated and sorted.
 ///
-/// `Expression` and `SingleTag` sources go through MiniJinja's expression
-/// meta-analysis; `Template` sources through the template's. Both run on the
-/// same environment and classify the dotted names they find identically. A
-/// source that fails to compile yields no refs — the compile error surfaces at
-/// evaluation time.
+/// A `SingleTag` source goes through MiniJinja's expression meta-analysis; a
+/// `Template` source through the template's. Both run on the same environment
+/// and classify the dotted names they find identically. A source that fails to
+/// compile yields no refs — the compile error surfaces at evaluation time. A
+/// tagless source is literal text, so it references nothing.
 ///
 /// Both analyses hand back a `HashSet`, whose iteration order varies run to
 /// run, so **every discovery path in this crate returns its refs sorted** —
@@ -131,7 +126,6 @@ fn analyze(src: &str) -> Analysis<'_> {
 pub fn discover_refs(src: &str) -> Vec<Ref> {
     match analyze(src) {
         // Already sorted by `discover_expression_refs`.
-        Analysis::Expression => discover_expression_refs(src),
         Analysis::SingleTag(expr) => discover_expression_refs(expr),
         Analysis::Template => {
             // Ref discovery never evaluates anything, so `allow_exec`
@@ -287,11 +281,11 @@ pub fn fetch_daemon_data<E>(
 // `bc_eval_runtime_error_is_server_error_kind`). `docs/roadmap.md` carries the
 // proper fix: a typed `EvalError` the FFI can match on instead.
 
-/// Evaluate a value expression in any of the three [`Form`]s.
+/// Evaluate a value expression in either of the two [`Form`]s.
 ///
-/// `Expression` and `SingleTag` take the typed path — the expression is
-/// compiled and evaluated, and the result keeps its natural type. `Template`
-/// renders and yields a `Value::String`.
+/// `SingleTag` takes the typed path — the expression is compiled and
+/// evaluated, and the result keeps its natural type. `Template` renders and
+/// yields a `Value::String` (literal text included).
 ///
 /// `ctx` must already hold every value [`daemon_refs`] asked for; a ref with no
 /// value is falsy rather than an error.
@@ -306,8 +300,8 @@ pub fn evaluate(
 /// [`evaluate`], threading the caller's virtual-field evaluation stack.
 ///
 /// Cycle detection lives in [`VirtualFields::evaluate`], which owns the stack;
-/// this is the entry point it and [`evaluate`] share, so a virtual field
-/// written with tags is cycle-checked exactly like a bare one.
+/// this is the entry point it and [`evaluate`] share, so a single-tag and a
+/// template virtual field are cycle-checked exactly the same way.
 pub(crate) fn evaluate_with_stack(
     src: &str,
     vf: &VirtualFields,
@@ -315,7 +309,6 @@ pub(crate) fn evaluate_with_stack(
     stack: &mut HashSet<(String, String)>,
 ) -> Result<serde_json::Value, String> {
     match analyze(src) {
-        Analysis::Expression => evaluate_expression(src, vf, ctx, stack),
         Analysis::SingleTag(expr) => evaluate_expression(expr, vf, ctx, stack),
         Analysis::Template => {
             let context = build_context_json(&discover_refs(src), ctx, vf, stack)?;

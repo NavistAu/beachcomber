@@ -93,10 +93,10 @@ Seed with `args.path` only when the fixture is about path-keyed data.
 
 ### The `eval` op
 
-`eval` is not a wire op either. It evaluates one **value expression** in any
-of the three forms canon `field_resolution.md` (invariant 14) defines, against
-the same client-side context `resolve` uses. `args.template` is the only
-argument:
+`eval` is not a wire op either. It evaluates one **value expression** in
+either of the two forms canon `field_resolution.md` (invariant 14) defines,
+against the same client-side context `resolve` uses. `args.template` is the
+only argument:
 
 ```json
 { "op": "eval", "args": { "template": "{{ env.A or cache.p.f }}" } }
@@ -104,14 +104,13 @@ argument:
 
 The type rule the fixtures pin down:
 
-- **bare expression** (no tag markers) — evaluated as an expression, keeping
-  its natural type. `env.A != ""` yields a bool.
-- **exactly one `{{ expr }}`** spanning the whole source — identical to the
-  bare form, natural type preserved. Surrounding whitespace is not literal
-  text.
-- **anything else** — literal text, more than one tag, a `{% %}` statement
-  tag, an unterminated marker, or an empty source — is a template and yields
-  a **string**. `{{ 1 + 1 }} apples` is `"2 apples"`, not a number.
+- **exactly one `{{ expr }}`** spanning the whole source — evaluated as an
+  expression, keeping its natural type. `{{ env.A != "" }}` yields a bool.
+  Surrounding whitespace is not literal text.
+- **anything else** — literal text, no tags at all, more than one tag, a
+  `{% %}` statement tag, an unterminated marker, or an empty source — is a
+  template and yields a **string**. `{{ 1 + 1 }} apples` is `"2 apples"`, not
+  a number, and a source with no tags at all is its own literal text.
 
 A missing or unknown ref is falsy at any depth, never an error: an absent
 `env.*`, a cache miss, and a daemon-rejected key (an unregistered provider)

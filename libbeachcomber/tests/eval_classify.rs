@@ -2,8 +2,9 @@
 //!
 //! Pins canon `field_resolution.md` invariant 14: a value expression written as
 //! exactly one `{{ expr }}` keeps the expression's natural type; one written
-//! with literal text or more than one tag is a string-valued template. A bare
-//! expression (no tags) is equivalent to the single-tag form.
+//! with literal text or more than one tag is a string-valued template. A
+//! source with no tags at all is its own literal text — there is no
+//! bare-expression form.
 
 use libbeachcomber::eval::{
     Form, TagKind, classify, daemon_refs, discover_refs, fetch_daemon_data, scan_tags,
@@ -25,12 +26,13 @@ fn vfields(entries: &[(&str, &str, &str)]) -> VirtualFields {
 }
 
 #[test]
-fn classify_bare_is_expression() {
-    assert_eq!(classify("git.branch"), Form::Expression);
-    assert_eq!(classify("env.A or cache.x.y"), Form::Expression);
-    assert_eq!(classify("  git.branch  "), Form::Expression);
+fn classify_no_tags_is_template() {
+    assert_eq!(classify("hello"), Form::Template);
+    assert_eq!(classify("env.A or 'x'"), Form::Template);
+    assert_eq!(classify("  git.branch  "), Form::Template);
 
-    assert_eq!(single_tag_expression("git.branch"), None);
+    assert_eq!(single_tag_expression("hello"), None);
+    assert_eq!(discover_refs("env.A or cache.git.branch"), vec![]);
 }
 
 #[test]
@@ -120,8 +122,9 @@ fn classify_unterminated_marker_is_template() {
     assert_eq!(single_tag_expression("{{ x"), None);
     assert!(scan_tags("on {{ git.branch").is_empty());
 
-    // A lone `{` opens no tag and is left to the expression compiler.
-    assert_eq!(classify("a { b"), Form::Expression);
+    // A lone `{` opens no tag, and with no tags at all the source is literal
+    // text.
+    assert_eq!(classify("a { b"), Form::Template);
 
     // A stray closer drives the scanner's bracket depth negative, and a negative
     // depth never closes: the `}}` two bytes on is a close MiniJinja does not
@@ -173,13 +176,12 @@ fn classify_template_variants() {
 }
 
 #[test]
-fn discover_refs_template_matches_expression_form() {
+fn discover_refs_template_matches_single_tag_form() {
     let expected: HashSet<Ref> = [Ref::Resolved("git".into(), "branch".into())]
         .into_iter()
         .collect();
-    assert_eq!(refs_set("git.branch"), expected);
     assert_eq!(refs_set("{{ git.branch }}"), expected);
-    // The template form finds the same refs as the two single-expression forms.
+    // The template form finds the same refs as the single-tag form.
     assert_eq!(refs_set("on {{ git.branch }}"), expected);
 }
 
@@ -214,7 +216,6 @@ fn discover_refs_order_is_deterministic() {
         Ref::Resolved("e".into(), "f".into()),
     ];
     assert_eq!(discover_refs("{{ a.b or c.d or e.f }}"), expected);
-    assert_eq!(discover_refs("a.b or c.d or e.f"), expected);
 
     // Variants sort in declaration order: Env < CacheField < CacheProvider < Resolved.
     assert_eq!(
@@ -232,7 +233,6 @@ fn discover_refs_order_is_deterministic() {
 fn discover_refs_uncompilable_template_yields_no_refs() {
     // The compile error surfaces at evaluation time, not from discovery.
     assert_eq!(discover_refs("on {{ nonsense ??? }}"), vec![]);
-    assert_eq!(discover_refs("nonsense ???"), vec![]);
 }
 
 #[test]
@@ -252,7 +252,10 @@ fn discover_refs_deduplicates_across_tags() {
 
 #[test]
 fn daemon_refs_follows_nested_virtual_fields() {
-    let vf = vfields(&[("a", "x", "b.y or cache.c.z"), ("b", "y", "cache.d.w")]);
+    let vf = vfields(&[
+        ("a", "x", "{{ b.y or cache.c.z }}"),
+        ("b", "y", "{{ cache.d.w }}"),
+    ]);
 
     let refs: HashSet<Ref> = daemon_refs("{{ a.x }}", &vf).unwrap().into_iter().collect();
     let expected: HashSet<Ref> = [
@@ -281,7 +284,7 @@ fn daemon_refs_is_sorted_after_expansion() {
     // Expansion splices a virtual field's own refs into the walk at the point
     // it is reached, so a sorted input does not stay sorted: `cache.z.q` is
     // discovered first, but `cache.a.b` — reached through a.x — sorts ahead.
-    let vf = vfields(&[("a", "x", "cache.a.b")]);
+    let vf = vfields(&[("a", "x", "{{ cache.a.b }}")]);
     assert_eq!(
         daemon_refs("{{ cache.z.q or a.x }}", &vf).unwrap(),
         vec![
@@ -293,13 +296,13 @@ fn daemon_refs_is_sorted_after_expansion() {
 
 #[test]
 fn daemon_refs_cycle_terminates() {
-    let vf = vfields(&[("a", "x", "b.y"), ("b", "y", "a.x")]);
+    let vf = vfields(&[("a", "x", "{{ b.y }}"), ("b", "y", "{{ a.x }}")]);
     assert_eq!(daemon_refs("{{ a.x }}", &vf).unwrap(), vec![]);
 
     // A self-cycle with a real dependency still yields that dependency.
-    let vf = vfields(&[("a", "x", "a.x or cache.c.z")]);
+    let vf = vfields(&[("a", "x", "{{ a.x or cache.c.z }}")]);
     assert_eq!(
-        daemon_refs("a.x", &vf).unwrap(),
+        daemon_refs("{{ a.x }}", &vf).unwrap(),
         vec![Ref::CacheField("c".into(), "z".into())]
     );
 }

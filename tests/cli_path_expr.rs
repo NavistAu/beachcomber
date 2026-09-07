@@ -9,13 +9,13 @@ fn env(p: &[(&str, &str)]) -> HashMap<String, String> {
 
 #[test]
 fn empty_is_global() {
-    assert_eq!(evaluate_path("\"\"", "/work", &env(&[])), None);
+    assert_eq!(evaluate_path("{{ \"\" }}", "/work", &env(&[])), None);
 }
 
 #[test]
 fn cwd_returns_cwd() {
     assert_eq!(
-        evaluate_path("cwd", "/work/p", &env(&[])),
+        evaluate_path("{{ cwd }}", "/work/p", &env(&[])),
         Some("/work/p".to_string())
     );
 }
@@ -23,7 +23,11 @@ fn cwd_returns_cwd() {
 #[test]
 fn env_default_when_unset() {
     assert_eq!(
-        evaluate_path("env.KUBECONFIG or '/home/u/.kube/config'", "/w", &env(&[])),
+        evaluate_path(
+            "{{ env.KUBECONFIG or '/home/u/.kube/config' }}",
+            "/w",
+            &env(&[])
+        ),
         Some("/home/u/.kube/config".to_string())
     );
 }
@@ -32,7 +36,7 @@ fn env_default_when_unset() {
 fn env_used_when_set() {
     assert_eq!(
         evaluate_path(
-            "env.KUBECONFIG or '/home/u/.kube/config'",
+            "{{ env.KUBECONFIG or '/home/u/.kube/config' }}",
             "/w",
             &env(&[("KUBECONFIG", "/a:/b")])
         ),
@@ -42,7 +46,7 @@ fn env_used_when_set() {
 
 #[test]
 fn cascade_to_global() {
-    assert_eq!(evaluate_path("env.NOPE or ''", "/w", &env(&[])), None);
+    assert_eq!(evaluate_path("{{ env.NOPE or '' }}", "/w", &env(&[])), None);
 }
 
 #[test]
@@ -50,7 +54,7 @@ fn tilde_expansion_with_home() {
     // env.KUBECONFIG is unset → falls back to '~/.kube/config' → tilde expanded with HOME
     assert_eq!(
         evaluate_path(
-            "env.KUBECONFIG or '~/.kube/config'",
+            "{{ env.KUBECONFIG or '~/.kube/config' }}",
             "/w",
             &env(&[("HOME", "/home/u")])
         ),

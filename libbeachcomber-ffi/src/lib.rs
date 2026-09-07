@@ -614,13 +614,13 @@ pub unsafe extern "C" fn bc_resolve(
     })
 }
 
-/// Evaluate a value expression in any of the three forms canon
-/// `field_resolution.md` (invariant 14) defines: a bare expression, exactly
-/// one `{{ expr }}` tag (keeps the expression's natural type), or literal
-/// text and/or several tags (string-valued) — the same evaluator
-/// `bc_resolve` uses for a declared virtual field, but for a raw expression
-/// that need not be registered anywhere. Every reference the source makes
-/// is threaded in: `env.*` from `env_json`, and `cache.*` / plain
+/// Evaluate a value expression in either of the two forms canon
+/// `field_resolution.md` (invariant 14) defines: exactly one `{{ expr }}` tag
+/// (keeps the expression's natural type), or literal text and/or several
+/// tags (string-valued — a source with no tags at all is its literal text) —
+/// the same evaluator `bc_resolve` uses for a declared virtual field, but for
+/// a raw expression that need not be registered anywhere. Every reference the
+/// source makes is threaded in: `env.*` from `env_json`, and `cache.*` / plain
 /// `provider.field` refs fetched from the daemon scoped to `cwd`, following
 /// virtual fields transitively — the same closure `bc_resolve` uses. A
 /// missing or unknown ref (an absent `env.*`, a daemon miss, or a

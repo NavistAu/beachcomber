@@ -1,14 +1,13 @@
 //! Path expressions: compute a query's cache-key path from a client-side jinja
 //! expression over `cwd` and `env.*`. Empty/falsy result ⇒ global (no path).
 //!
-//! A path expression is written in the same three forms a value expression is
+//! A path expression is written in the same two forms a value expression is
 //! (canon `field_resolution.md` §"Path resolution" and §"`env.*` namespace",
 //! which says `env.*` is available "in path expressions (`{{ env.X }}`)"):
-//! bare, exactly one `{{ }}` tag, or a template. [`crate::eval`] owns the
-//! classification, so `path = "env.KUBECONFIG or '~/.kube/config'"` and
-//! `path = "{{ env.KUBECONFIG or '~/.kube/config' }}"` are the same expression.
-//! The result is always a path string (or none), so the single-tag form's
-//! type preservation is not observable here — only that both compile.
+//! exactly one `{{ }}` tag, or a template. [`crate::eval`] owns the
+//! classification. The result is always a path string (or none), so the
+//! single-tag form's type preservation is not observable here — only that it
+//! compiles.
 
 use crate::eval::{Form, classify, render_template, single_tag_expression};
 use crate::virtual_fields::build_expression_env;
@@ -16,8 +15,8 @@ use minijinja::value::Value as MjValue;
 use std::collections::HashMap;
 
 const PATH_EXPRESSIONS: &[(&str, &str)] = &[
-    ("kubecontext", "env.KUBECONFIG or '~/.kube/config'"),
-    ("talos", "env.TALOSCONFIG or '~/.talos/config'"),
+    ("kubecontext", "{{ env.KUBECONFIG or '~/.kube/config' }}"),
+    ("talos", "{{ env.TALOSCONFIG or '~/.talos/config' }}"),
 ];
 
 /// Config override wins over built-in default. None ⇒ provider declares none.
@@ -31,12 +30,12 @@ pub fn path_expression_for(provider: &str, overrides: &HashMap<String, String>) 
         .map(|(_, e)| e.to_string())
 }
 
-/// Evaluate a path expression in any of the three [`Form`]s. `cwd` + `env.*`
+/// Evaluate a path expression in either of the two [`Form`]s. `cwd` + `env.*`
 /// in scope. Empty/falsy ⇒ None.
 /// A leading `~` in each ':'-separated component is expanded against $HOME.
 ///
-/// The bare and single-tag forms compile as an expression and are stringified;
-/// a template renders through [`render_template`]. Either way an empty or falsy
+/// The single-tag form compiles as an expression and is stringified; a
+/// template renders through [`render_template`]. Either way an empty or falsy
 /// result is `None` — the global slot.
 ///
 /// A source that fails to compile is `None` too, indistinguishable from a
@@ -53,10 +52,8 @@ pub fn evaluate_path(expr: &str, cwd: &str, env_vars: &HashMap<String, String>) 
     let ctx = serde_json::Value::Object(ctx);
 
     let s = match classify(expr) {
-        // `single_tag_expression` yields the tag body for the single-tag form
-        // and `None` for the bare one, where the whole source is the expression.
-        Form::Expression | Form::SingleTag => {
-            let inner = single_tag_expression(expr).unwrap_or(expr);
+        Form::SingleTag => {
+            let inner = single_tag_expression(expr).unwrap();
             // `exec()` is never available in path expressions, per the
             // `exec()` design spec — only value expressions may spawn.
             let env = build_expression_env(false);

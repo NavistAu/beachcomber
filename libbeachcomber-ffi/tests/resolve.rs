@@ -65,7 +65,7 @@ fn resolve_cache_ref_virtual_field() {
     assert_eq!(put_v["ok"], serde_json::json!(true));
 
     let key = cs("myprov.myfield");
-    let overrides = cs(r#"{"myprov.myfield":"cache.otherprov.otherfield"}"#);
+    let overrides = cs(r#"{"myprov.myfield":"{{ cache.otherprov.otherfield }}"}"#);
     let v = read(unsafe {
         bc_resolve(
             client,
@@ -121,7 +121,7 @@ fn resolve_path_expression_over_supplied_cwd() {
     let client = client_for(&daemon.path);
     let key = cs("myproject");
     let overrides =
-        cs(r#"{"myproject":"'workspace-a' if cwd == '/Users/x/repo-a' else 'workspace-b'"}"#);
+        cs(r#"{"myproject":"{{ 'workspace-a' if cwd == '/Users/x/repo-a' else 'workspace-b' }}"}"#);
 
     let cwd_a = cs("/Users/x/repo-a");
     let v = read(unsafe {
@@ -162,7 +162,7 @@ fn eval_truncate_and_basename_filters() {
     let cwd = cs("/tmp");
     let env = cs(r#"{"LONGVAR":"abcdefghij","PYVAR":"/foo/bar/baz"}"#);
 
-    let truncate_expr = cs("env.LONGVAR | truncate(5)");
+    let truncate_expr = cs("{{ env.LONGVAR | truncate(5) }}");
     let v = read(unsafe {
         bc_eval(
             client,
@@ -175,7 +175,7 @@ fn eval_truncate_and_basename_filters() {
     assert_eq!(v["ok"], serde_json::json!(true), "{v}");
     assert_eq!(v["data"], serde_json::json!("abcde..."));
 
-    let basename_expr = cs("env.PYVAR | basename");
+    let basename_expr = cs("{{ env.PYVAR | basename }}");
     let v = read(unsafe {
         bc_eval(
             client,
@@ -210,7 +210,7 @@ fn resolve_null_cwd_is_an_error_envelope() {
 fn eval_null_cwd_is_an_error_envelope() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    let expr = cs("env.LONGVAR | truncate(5)");
+    let expr = cs("{{ env.LONGVAR | truncate(5) }}");
 
     let v = read(unsafe { bc_eval(client, expr.as_ptr(), ptr::null(), ptr::null(), ptr::null()) });
     assert_eq!(v["ok"], serde_json::json!(false));
@@ -267,31 +267,6 @@ fn bc_eval_template_string() {
     unsafe { bc_client_free(client) };
 }
 
-/// A bare expression (no tags) is still accepted and equivalent to the
-/// single-tag form.
-#[test]
-fn bc_eval_bare_still_works() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
-    let env = cs(r#"{"T":"x"}"#);
-    let expr = cs("env.T");
-
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            expr.as_ptr(),
-            cwd.as_ptr(),
-            env.as_ptr(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("x"));
-
-    unsafe { bc_client_free(client) };
-}
-
 /// What `eval::daemon_refs`'s transitive closure over virtual fields buys
 /// over the old one-level `fetch_cache_refs`: `a.x` references virtual
 /// `b.y`, which itself references `cache.d.w` — a daemon key two hops away
@@ -324,7 +299,7 @@ fn bc_eval_nested_virtual_dependency_is_fetched() {
     assert_eq!(put_v["ok"], serde_json::json!(true), "{put_v}");
 
     let overrides = cs(r#"{"a.x":"{{ b.y or cache.c.z }}","b.y":"{{ cache.d.w }}"}"#);
-    let expr = cs("a.x");
+    let expr = cs("{{ a.x }}");
     let v = read(unsafe {
         bc_eval(
             client,
@@ -674,7 +649,7 @@ fn bc_resolve_path_scoped_ref_resolves_at_cwd() {
     assert_eq!(put_v["ok"], serde_json::json!(true), "{put_v}");
 
     let resolve_key = cs("myprov.myfield");
-    let overrides = cs(r#"{"myprov.myfield":"cache.pp.f"}"#);
+    let overrides = cs(r#"{"myprov.myfield":"{{ cache.pp.f }}"}"#);
     let v = read(unsafe {
         bc_resolve(
             client,

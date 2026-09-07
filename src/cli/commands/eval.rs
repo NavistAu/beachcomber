@@ -1,11 +1,12 @@
 //! Handler for the `eval` subcommand.
 //!
-//! `eval` evaluates a value expression in any of the three forms canon
-//! `field_resolution.md` (invariant 14) defines: a bare expression, exactly one
-//! `{{ expr }}` (which keeps the expression's natural type), or literal text
-//! and/or several tags (which is string-valued). `libbeachcomber::eval` owns
-//! all three; this handler only supplies what the library cannot reach on its
-//! own — the calling shell's environment and the daemon.
+//! `eval` evaluates a value expression in either of the two forms canon
+//! `field_resolution.md` (invariant 14) defines: exactly one `{{ expr }}`
+//! (which keeps the expression's natural type), or literal text and/or
+//! several tags (which is string-valued — a source with no tags at all is its
+//! literal text). `libbeachcomber::eval` owns both; this handler only
+//! supplies what the library cannot reach on its own — the calling shell's
+//! environment and the daemon.
 //!
 //! Resolution mirrors `comb get`'s layering:
 //!

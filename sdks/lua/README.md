@@ -183,9 +183,9 @@ never has to reimplement it. `opts.cwd` (default: the context path, then
 `tests/conformance/README.md`'s `resolve` fixture shape). ffi transport
 only.
 
-`template_str` accepts a bare expression, a single `{{ expr }}` tag, or
-literal text/several tags — the first two keep the expression's natural
-type, the third is always a string.
+`template_str` accepts a single `{{ expr }}` tag, or literal text/several
+tags — the former keeps the expression's natural type, the latter is
+always a string (a source with no tags at all is its literal text).
 
 ### `Client:watch(key [, path])` → `WatchStream | nil, Error`
 

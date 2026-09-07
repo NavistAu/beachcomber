@@ -66,9 +66,10 @@ with client.session() as session:
 `client.resolve(key, cwd, env=None, overrides=None)` evaluates a declared
 virtual field client-side; `client.eval(template_str, cwd, env=None,
 overrides=None)` evaluates a raw expression the same way. Both `cwd`
-arguments are required. The expression itself accepts a bare expression, a
-single `{{ expr }}` tag, or literal text/several tags — the first two keep
-the expression's natural type, the third is always a string.
+arguments are required. The expression itself accepts a single `{{ expr }}`
+tag, or literal text/several tags — the former keeps the expression's
+natural type, the latter is always a string (a source with no tags at all
+is its literal text).
 
 ## Custom socket path
 

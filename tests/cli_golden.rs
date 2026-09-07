@@ -278,12 +278,8 @@ fn golden_eval_renders_template() {
     let d = TestDaemon::spawn();
 
     // A template with no provider.field references is rendered directly without
-    // touching the daemon — cheapest golden path.
-    //
-    // The source needs at least one tag to be a *template*: canon invariant 14
-    // makes a source with no tags a bare expression, so the pre-Task-3
-    // `"hello world"` is now two identifiers juxtaposed — an expression syntax
-    // error, not literal text. `{{ }}` is how you say "this is text".
+    // touching the daemon — cheapest golden path. This source carries a tag so
+    // it also exercises the template-render path, not just literal text.
     comb(&d)
         .args(["eval", "hello {{ 'world' }}"])
         .assert()
@@ -343,11 +339,11 @@ fn golden_init_prints_or_writes_config() {
     comb(&d).args(["init"]).assert().success();
 }
 
-// ── one expression syntax: `comb eval` over all three forms ──────────────────
+// ── one expression syntax: `comb eval` over both forms ────────────────────────
 //
-// Task 3 routed `run_eval` through `libbeachcomber::eval`, so `comb eval`
-// accepts every form canon `field_resolution.md` invariant 14 defines: a bare
-// expression, exactly one `{{ expr }}` (natural type), and a template (string).
+// `comb eval` accepts both forms canon `field_resolution.md` invariant 14
+// defines: exactly one `{{ expr }}` tag (natural type) or literal text and/or
+// several tags (string) — a source with no tags at all is its literal text.
 // A typed result prints through `libbeachcomber::render::render_data` — the
 // same renderer `comb get -f text` uses — so `comb eval '{{ p.f }}'` and
 // `comb get p.f` agree on how a value looks.
@@ -389,7 +385,7 @@ fn eval_single_tag_prints_raw_string() {
 }
 
 #[test]
-fn eval_bare_expression_prints_value() {
+fn eval_text_with_no_tags_prints_itself_even_when_it_looks_like_a_key() {
     let d = TestDaemon::spawn();
 
     comb(&d)
@@ -397,13 +393,14 @@ fn eval_bare_expression_prints_value() {
         .assert()
         .success();
 
-    // No tags at all → the whole source is the expression. Before Task 3 this
-    // printed the literal text `evalbare.s`.
+    // No tags at all → literal text, not the expression `evalbare.s` — it
+    // prints itself even though a matching field exists. `{{ }}` is how you
+    // say "evaluate this".
     comb(&d)
         .args(["eval", "evalbare.s"])
         .assert()
         .success()
-        .stdout(predicates::str::diff("hello"));
+        .stdout(predicates::str::diff("evalbare.s"));
 }
 
 #[test]
@@ -604,13 +601,6 @@ fn eval_default_filter_fires_on_daemon_miss() {
         .success()
         .stdout(predicates::str::diff("FB"));
 
-    // The bare and template forms agree.
-    comb(&d)
-        .args(["eval", r#"probe.missing | default("FB")"#])
-        .assert()
-        .success()
-        .stdout(predicates::str::diff("FB"));
-
     comb(&d)
         .args(["eval", r#"[{{ probe.missing | default("FB") }}]"#])
         .assert()
@@ -672,19 +662,17 @@ fn fmt_missing_and_null_render_empty() {
         .stdout(predicates::str::diff("[]\n"));
 }
 
-// ── eval_plain_text_without_tags_is_an_expression_error ──────────────────────
+// ── eval_plain_text_without_tags_prints_itself ────────────────────────────────
 
 #[test]
-fn eval_plain_text_without_tags_is_an_expression_error() {
+fn eval_plain_text_without_tags_prints_itself() {
     let d = TestDaemon::spawn();
 
-    // Canon invariant 14: a source with no tags is a bare *expression*, so
-    // plain prose is two identifiers juxtaposed — a syntax error, not literal
-    // text. `{{ }}` is how you say "this is text".
+    // Canon invariant 14: a source with no tags at all is its own literal
+    // text. `{{ }}` is how you say "evaluate this".
     comb(&d)
         .args(["eval", "hello world"])
         .assert()
-        .failure()
-        .code(2)
-        .stderr(predicates::str::contains("expression compile error"));
+        .success()
+        .stdout(predicates::str::diff("hello world"));
 }

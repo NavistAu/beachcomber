@@ -99,15 +99,15 @@ back to the process's own working directory, and refs are fetched scoped
 to it. `opts.env` and `opts.overrides` are optional. **FFI transport
 only**.
 
-`templateStr` accepts a bare expression, a single `{{ expr }}` tag (keeps
-the expression's natural type), or literal text/several tags (always a
-string).
+`templateStr` accepts a single `{{ expr }}` tag (keeps the expression's
+natural type), or literal text/several tags (always a string — a source
+with no tags at all is its literal text).
 
 ```typescript
 const value = await client.resolve('myapp.workspace', {
   cwd: '/some/repo',
   env: { MYAPP_ENV: 'prod' },
-  overrides: { 'myapp.workspace': 'env.MYAPP_ENV or cache.myappcache.workspace' },
+  overrides: { 'myapp.workspace': '{{ env.MYAPP_ENV or cache.myappcache.workspace }}' },
 });
 ```
 
