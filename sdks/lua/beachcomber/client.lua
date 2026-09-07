@@ -204,9 +204,9 @@ function Client:resolve(key, opts)
 end
 
 --- Evaluate a value expression client-side (via bc_eval). template_str
--- accepts a bare expression, a single "{{ expr }}" tag, or literal
--- text/several tags — the first two keep the expression's natural type,
--- the third is always a string.
+-- accepts a single "{{ expr }}" tag, or literal text/several tags — the
+-- former keeps the expression's natural type, the latter is always a
+-- string (a source with no tags at all is its literal text).
 -- @param template_str string
 -- @param opts table?  Same shape as Client:resolve's opts.
 -- @return value, or nil, Error

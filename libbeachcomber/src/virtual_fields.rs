@@ -307,7 +307,7 @@ impl VirtualFields {
     /// evaluating a value expression, and this is only the thread-the-stack
     /// variant [`Self::evaluate`] needs. Demoted in the same release as
     /// [`discover_expression_refs`], for the same reason — two public spellings
-    /// of one operation, where only one of them handles all three forms
+    /// of one operation, where only one of them handles both forms
     /// correctly by name.
     pub(crate) fn evaluate_expression(
         &self,
@@ -551,7 +551,7 @@ pub(crate) fn refs_from_names(names: impl IntoIterator<Item = String>) -> Vec<Re
 ///
 /// Takes an expression, not a value expression: a source written with `{{ }}`
 /// fails to compile here and yields nothing. [`crate::eval::discover_refs`] is
-/// the entry point that handles all three forms, and is what callers outside
+/// the entry point that handles both forms, and is what callers outside
 /// this module use.
 pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
     // Ref discovery never evaluates anything, so `allow_exec` doesn't

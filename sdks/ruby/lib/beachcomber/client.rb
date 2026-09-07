@@ -336,9 +336,10 @@ module Beachcomber
     # Evaluates a value expression against `env.*`/`cache.*` refs, using the
     # same evaluator {#resolve} uses for a declared field.
     #
-    # +template+ accepts a bare expression, a single <tt>{{ expr }}</tt>
-    # tag, or literal text/several tags — the first two keep the
-    # expression's natural type, the third is always a string.
+    # +template+ accepts a single <tt>{{ expr }}</tt> tag, or literal
+    # text/several tags — the former keeps the expression's natural type,
+    # the latter is always a string (a source with no tags at all is its
+    # literal text).
     #
     # @param template [String]
     # @param cwd [String] required, matching {#resolve}

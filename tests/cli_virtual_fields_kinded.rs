@@ -65,8 +65,10 @@ fn discovers_cache_provider_without_field() {
 
 #[test]
 fn bare_name_is_ignored() {
-    // A bare name with no dot is not a provider.field ref — must be ignored.
-    let refs = discover_refs("somename");
+    // A single-segment name with no dot is not a provider.field ref — must be
+    // ignored. Wrapped in a tag so this reaches `classify_dotted` (a tagless
+    // "somename" is literal text and would find nothing regardless).
+    let refs = discover_refs("{{ somename }}");
     assert!(refs.is_empty(), "bare name must be ignored; got: {refs:?}");
 }
 

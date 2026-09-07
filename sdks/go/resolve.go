@@ -36,9 +36,9 @@ func (c *Client) Resolve(key, cwd string, env, overrides map[string]string) (*Re
 // registered anywhere. See Resolve for cwd/env/overrides semantics, which
 // this shares.
 //
-// templateStr accepts a bare expression, a single "{{ expr }}" tag, or
-// literal text/several tags — the first two keep the expression's natural
-// type, the third is always a string.
+// templateStr accepts a single "{{ expr }}" tag, or literal text/several
+// tags — the former keeps the expression's natural type, the latter is
+// always a string (a source with no tags at all is its literal text).
 func (c *Client) Eval(templateStr, cwd string, env, overrides map[string]string) (*Result, error) {
 	if c.loadErr != nil {
 		return nil, c.loadErr

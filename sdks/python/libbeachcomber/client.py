@@ -398,9 +398,10 @@ class Client:
         uses for a declared virtual field, but for a raw expression that
         need not be registered anywhere.
 
-        ``template_str`` accepts a bare expression, a single ``{{ expr }}``
-        tag, or literal text/several tags — the first two keep the
-        expression's natural type, the third is always a string.
+        ``template_str`` accepts a single ``{{ expr }}`` tag, or literal
+        text/several tags — the former keeps the expression's natural
+        type, the latter is always a string (a source with no tags at all
+        is its literal text).
 
         Args:
             template_str: The expression to evaluate.
