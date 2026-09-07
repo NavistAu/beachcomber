@@ -119,7 +119,7 @@ enum Commands {
         /// Output format (text, json, sh, csv, tsv, CSV, TSV, fmt)
         #[arg(short, long, default_value = "text")]
         format: String,
-        /// Evict cache entry, re-execute provider, return fresh value
+        /// Re-execute every source the key demands, each at its own scope; static records survive
         #[arg(long)]
         force: bool,
         /// Block until a fresh value is available
@@ -162,7 +162,7 @@ enum Commands {
         key: String,
         /// JSON data (an object at the root, any JSON below it); omit when using --null
         data: Option<String>,
-        /// Clear the addressed node (removes the cache row; registry entry is kept)
+        /// Remove the node's static records, dropping the entry when none remain; provider records are untouched
         #[arg(long)]
         null: bool,
         /// Replace the subtree at the node instead of merging into it
