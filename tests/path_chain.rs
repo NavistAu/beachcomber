@@ -747,7 +747,9 @@ async fn a_static_record_merges_into_a_provider_produced_object() {
 
 /// A `PathScoped` source that walks up to the nearest ancestor holding a
 /// `.root` marker — git's shape (`walk_to_git`) without needing a repository.
-/// It reports the directory it ran in, so a read proves where the record lives.
+/// It reports the directory it ran in, so a read proves where the record lives,
+/// and the marker's text as `tag` when there is any, so two roots can produce
+/// different field sets.
 struct RootedSource(SourceMetadata);
 
 impl Source for RootedSource {
@@ -756,7 +758,13 @@ impl Source for RootedSource {
     }
     fn execute(&self, path: Option<&str>) -> SourceResult {
         let mut result = SourceResult::new();
-        result.insert("field", Value::String(path.unwrap_or_default().to_string()));
+        let dir = path.unwrap_or_default();
+        result.insert("field", Value::String(dir.to_string()));
+        if let Ok(tag) = std::fs::read_to_string(Path::new(dir).join(".root"))
+            && !tag.is_empty()
+        {
+            result.insert("tag", Value::String(tag));
+        }
         result
     }
     fn canonical_path(&self, path: Option<&str>) -> Option<String> {
@@ -937,6 +945,42 @@ async fn a_watch_fires_for_a_static_record_below_the_provider_entry() {
         .unwrap();
     let update: Response = serde_json::from_str(&line).unwrap();
     assert_eq!(update.data, Some(serde_json::json!("kept")));
+}
+
+/// The merge takes a provider's records from one entry — the one its source
+/// resolves to — never from an ancestor that also holds records of the same
+/// namespace. Nearest-wins hides such a leak for a field both entries produce,
+/// so the field here exists at the outer root and not at the inner one.
+#[tokio::test]
+async fn an_ancestor_entrys_provider_records_never_leak_into_a_nested_root() {
+    let f = rooted_fixture();
+    let outer = f.path("ws/project");
+    std::fs::write(f.home.join("ws/project/.root"), "outer").unwrap();
+    std::fs::create_dir_all(f.home.join("ws/project/inner")).unwrap();
+    std::fs::write(f.home.join("ws/project/inner/.root"), "").unwrap();
+    let inner = f.path("ws/project/inner");
+    let mut s = f.connect().await;
+
+    let at_outer = data(send_recv(&mut s, get_at("r", &outer)).await, "outer read");
+    assert_eq!(
+        at_outer,
+        serde_json::json!({ "field": outer, "tag": "outer" }),
+        "the outer root produces `tag`"
+    );
+
+    let at_inner = data(send_recv(&mut s, get_at("r", &inner)).await, "inner read");
+    assert_eq!(
+        at_inner,
+        serde_json::json!({ "field": inner }),
+        "the inner root's entry is the only one the merge reads provider records from"
+    );
+
+    let leaked = send_recv(&mut s, get_at("r.tag", &inner)).await;
+    assert!(
+        leaked.data.is_none(),
+        "a field the inner root never produces must not arrive from the outer entry, got {:?}",
+        leaked.data
+    );
 }
 
 // ── (f) a nested repo never inherits its parent's records ────────────────────
