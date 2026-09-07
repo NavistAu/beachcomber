@@ -277,9 +277,10 @@ async fn handle_watch(
     };
 
     let effective_path = plan.effective_path.clone();
-    // The template half reads from the directory the caller named, not the
-    // scope-resolved one — see [`read_watch_value`].
-    let template_path = plan.requested_path.clone();
+    // Both halves resolve up the chain from the directory the caller named; only
+    // the provider's own records sit at the scope-resolved one — see
+    // [`read_watch_value`].
+    let requested_path = plan.requested_path.clone();
 
     // Signal demand (source-aware: canon §150/§268).
     if let Some(sched) = scheduler {
@@ -293,24 +294,26 @@ async fn handle_watch(
     }
 
     // Subscribe to every entry both halves of the read walk, not just the
-    // addressed one: a `put` at an ancestor (or at the global entry) changes
-    // what this watch resolves to, so it has to wake the stream — and so does a
-    // write to the template facet, whose chain starts at the requested
-    // directory rather than the scope-resolved one. A facet key has no template
-    // half and subscribes only its own chain. One forwarder task per link
-    // funnels the per-key broadcasts into a single channel.
+    // addressed one: a `put` at an ancestor, at a directory below the provider's
+    // scope entry, or at the global entry changes what this watch resolves to,
+    // so it has to wake the stream — and so does a write to the template facet.
+    // The data half subscribes exactly what [`Cache::read_merged`] walks
+    // (`query::read_chain`); the template half is a static namespace, so its
+    // chain is the requested directory's. A facet key has no template half and
+    // subscribes only its own chain. One forwarder task per link funnels the
+    // per-key broadcasts into a single channel.
     let chain_watch = {
         let changed = Arc::new(tokio::sync::Notify::new());
         let mut tasks = Vec::new();
         let mut links: Vec<(String, Option<String>)> =
-            crate::query::path_chain(effective_path.as_deref())
+            crate::query::read_chain(requested_path.as_deref(), effective_path.as_deref())
                 .into_iter()
                 .map(|layer| (provider_name.clone(), layer))
                 .collect();
         if facet.is_none() {
             let facet_name = format!("{provider_name}:template");
             links.extend(
-                crate::query::path_chain(template_path.as_deref())
+                crate::query::path_chain(requested_path.as_deref())
                     .into_iter()
                     .map(|layer| (facet_name.clone(), layer)),
             );
@@ -368,8 +371,8 @@ async fn handle_watch(
         cache,
         registry,
         &plan.target,
+        requested_path.as_deref(),
         effective_path.as_deref(),
-        template_path.as_deref(),
     );
     if write_watch_line(writer, &initial).await.is_err() {
         return;
@@ -398,8 +401,8 @@ async fn handle_watch(
             cache,
             registry,
             &plan.target,
+            requested_path.as_deref(),
             effective_path.as_deref(),
-            template_path.as_deref(),
         );
 
         // Field-level filtering: skip if neither half changed.
@@ -682,7 +685,10 @@ fn template_half(
     path: Option<&str>,
 ) -> TemplateHalf {
     use crate::provider::Value;
-    let Some(read) = cache.read_merged(&format!("{provider}:template"), path, registry) else {
+    // A facet's records are static, so its chain head and its record scope are
+    // the one path the caller named.
+    let Some(read) = cache.read_merged(&format!("{provider}:template"), path, path, registry)
+    else {
         return TemplateHalf::default();
     };
     let writer = |tail: &str| read.records.get(tail).map(|r| Arc::clone(&r.source));
@@ -827,8 +833,8 @@ fn read_watch_value(
     cache: &Cache,
     registry: &ProviderRegistry,
     target: &KeyParse,
-    path: Option<&str>,
-    template_path: Option<&str>,
+    requested: Option<&str>,
+    provider_entry: Option<&str>,
 ) -> Response {
     let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
     // A watch frame carries the same two halves a `get` does. A facet key is
@@ -837,9 +843,11 @@ fn read_watch_value(
     let half = if crate::query::parse_facet(provider).ok().flatten().is_some() {
         TemplateHalf::default()
     } else {
-        template_half(cache, registry, provider, target.rest(), template_path)
+        // Templates are static records, so the template half resolves up the
+        // chain from the directory the caller named, not the scope-resolved one.
+        template_half(cache, registry, provider, target.rest(), requested)
     };
-    let merged = cache.read_merged(provider, path, registry);
+    let merged = cache.read_merged(provider, requested, provider_entry, registry);
     resolve_halves(&merged, target, provider, half.template, half.rest)
 }
 
@@ -949,8 +957,9 @@ async fn handle_request(
             // execute the relevant source(s), write to cache, then re-read.
             // Read-always sources are re-executed on every read, not just cold misses.
             //
-            // `at` is the entry the request addresses and the head of the chain
-            // the merged read walks.
+            // `at` is where the provider's records live and where its sources
+            // run; the chain the merged read walks starts at the requested
+            // path, so a static record written below `at` is still visible.
             let at = effective_path.as_deref();
 
             // The template half is read before the data half, because it decides
@@ -989,7 +998,8 @@ async fn handle_request(
             for source_name in &demanded {
                 ran |= warm_source(registry, cache, provider_name, source_name, at, how).await;
             }
-            let mut merged = cache.read_merged(provider_name, at, registry);
+            let mut merged =
+                cache.read_merged(provider_name, plan.requested_path.as_deref(), at, registry);
             // A source whose map exists without holding this address is still
             // worth one attempt — `warm_source` only knows whether the source
             // has *anything* cached. Only a field read can tell: a namespace
@@ -1000,7 +1010,8 @@ async fn handle_request(
                 && let Some(source_name) = demanded.first()
                 && inline_execute_source(registry, cache, provider_name, source_name, at).await
             {
-                merged = cache.read_merged(provider_name, at, registry);
+                merged =
+                    cache.read_merged(provider_name, plan.requested_path.as_deref(), at, registry);
             }
 
             // Both halves, assembled the one way `watch` assembles them.
@@ -1949,7 +1960,9 @@ mod tests {
             )
             .expect("no source owns p.y");
 
-        let read = cache.read_merged("p", None, &registry).expect("both maps");
+        let read = cache
+            .read_merged("p", None, None, &registry)
+            .expect("both maps");
 
         assert_eq!(
             freshness(&read, "x"),
@@ -2010,7 +2023,7 @@ mod tests {
             .expect("no source owns p.tree.left");
 
         let read = cache
-            .read_merged("p", Some("/x/y"), &registry)
+            .read_merged("p", Some("/x/y"), Some("/x/y"), &registry)
             .expect("both layers");
 
         assert_eq!(

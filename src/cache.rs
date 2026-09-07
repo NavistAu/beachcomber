@@ -886,19 +886,32 @@ impl Cache {
         merged
     }
 
-    /// The value tree a read of `namespace` at `path` sees, plus one freshness
-    /// reading per record in it.
+    /// The value tree a read of `namespace` from `requested` sees, plus one
+    /// freshness reading per record in it.
+    ///
+    /// The two paths are the two halves of a [`QueryPlan`]. `requested` is
+    /// where the caller is standing ([`QueryPlan::requested_path`]) and fixes
+    /// the chain this walks; `provider_entry` is where the namespace's own
+    /// records live ([`QueryPlan::effective_path`]) — `requested` narrowed by a
+    /// `PathScoped` source's `canonical_path`, so it can sit above `requested`
+    /// (a git work-tree root read from a subdirectory). They differ exactly
+    /// when a namespace narrows the path, and the chain must still start at
+    /// `requested` or a static record written below `provider_entry` — where a
+    /// bare `put` lands — would be unreachable.
     ///
     /// Layers merge farthest-first, so the nearest record ends up on top, and
     /// within a layer the order is fixed rather than left to a HashMap:
     ///
     /// - the **global entry** — its `PathScoped` provider maps (present only
-    ///   when the request addresses the global entry itself), then its `Global`
+    ///   when `provider_entry` is the global entry itself), then its `Global`
     ///   provider maps over them, then its static maps;
-    /// - each **ancestor** of the addressed path, farthest first — static maps
-    ///   only;
-    /// - the **addressed entry** — its `PathScoped` provider maps, then its
-    ///   static maps over them.
+    /// - each **ancestor** of `requested`, farthest first — static maps, plus
+    ///   the `PathScoped` provider maps of the one that is `provider_entry`;
+    /// - the **requested entry** — its `PathScoped` provider maps when it is
+    ///   `provider_entry`, then its static maps over them;
+    /// - `provider_entry` itself, last, in the one case where it is *not* a
+    ///   link of the chain — see [`crate::query::read_chain`], which builds the
+    ///   walk order.
     ///
     /// A provider record never walks the chain: it is read only from the entry
     /// its Source's declared scope keys. So a provider declaring the same field
@@ -909,30 +922,33 @@ impl Cache {
     /// answer that does not depend on where you are standing.
     ///
     /// `None` when no layer holds anything: a miss.
+    ///
+    /// [`QueryPlan`]: crate::query::QueryPlan
+    /// [`QueryPlan::requested_path`]: crate::query::QueryPlan::requested_path
+    /// [`QueryPlan::effective_path`]: crate::query::QueryPlan::effective_path
     pub fn read_merged(
         &self,
         namespace: &str,
-        path: Option<&str>,
+        requested: Option<&str>,
+        provider_entry: Option<&str>,
         registry: &ProviderRegistry,
     ) -> Option<MergedRead> {
         use crate::provider::SourceScope::{Global, PathScoped};
-        let chain = crate::query::path_chain(path);
+        let chain = crate::query::read_chain(requested, provider_entry);
         let mut out = MergedRead {
             fields: HashMap::new(),
             records: HashMap::new(),
         };
         let mut found = false;
-        for (depth, layer) in chain.iter().enumerate().rev() {
+        for layer in chain.iter().rev() {
             let Some(entry) = self
                 .entries
                 .get(&make_cache_key(namespace, layer.as_deref()))
             else {
                 continue;
             };
-            // The addressed entry is the head of the chain; when the request
-            // addresses the global entry the two coincide and both arms run,
-            // PathScoped first.
-            if depth == 0 {
+            // At the global link both arms run, PathScoped first.
+            if layer.as_deref() == provider_entry {
                 found |=
                     Self::merge_provider_records(&entry, namespace, PathScoped, registry, &mut out);
             }
@@ -1527,7 +1543,9 @@ mod tests {
         tokio::time::advance(std::time::Duration::from_secs(7)).await;
         write("put", "tree.right", Value::Int(2));
 
-        let read = cache.read_merged("p", None, &registry).expect("both maps");
+        let read = cache
+            .read_merged("p", None, None, &registry)
+            .expect("both maps");
         assert_eq!(
             read.records["tree.left"].age_ms(),
             7000,

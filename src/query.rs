@@ -179,6 +179,30 @@ pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
     out
 }
 
+/// Every cache-entry address one read of a namespace consults, nearest first:
+/// [`path_chain`] from the requested path, plus `provider_entry` as the head
+/// when it is not already a link.
+///
+/// `provider_entry` — [`QueryPlan::effective_path`] — is normally on that chain
+/// already: a `canonical_path` that walks to a project root returns an
+/// ancestor-or-self of the requested path, or `$HOME`, which [`normalise_path`]
+/// turns into the global link. An env-selected file source (`kubecontext`,
+/// `talos`) is the exception: its address is a `:`-joined list of files, no
+/// directory and no ancestor of one.
+///
+/// [`Cache::read_merged`] walks this, and `watch` subscribes it, so a write to
+/// any entry a frame is assembled from wakes the stream.
+///
+/// [`Cache::read_merged`]: crate::cache::Cache::read_merged
+/// [`QueryPlan::effective_path`]: QueryPlan::effective_path
+pub fn read_chain(requested: Option<&str>, provider_entry: Option<&str>) -> Vec<Option<String>> {
+    let mut chain = path_chain(requested);
+    if !chain.iter().any(|layer| layer.as_deref() == provider_entry) {
+        chain.insert(0, provider_entry.map(str::to_string));
+    }
+    chain
+}
+
 /// Resolve the effective path for a request: the cache entry the request
 /// addresses, and the head of the chain a read walks.
 ///

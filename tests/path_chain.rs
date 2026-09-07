@@ -743,6 +743,202 @@ async fn a_static_record_merges_into_a_provider_produced_object() {
     );
 }
 
+// ── a narrowing provider still reads static records below its entry ──────────
+
+/// A `PathScoped` source that walks up to the nearest ancestor holding a
+/// `.root` marker — git's shape (`walk_to_git`) without needing a repository.
+/// It reports the directory it ran in, so a read proves where the record lives.
+struct RootedSource(SourceMetadata);
+
+impl Source for RootedSource {
+    fn metadata(&self) -> &SourceMetadata {
+        &self.0
+    }
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        let mut result = SourceResult::new();
+        result.insert("field", Value::String(path.unwrap_or_default().to_string()));
+        result
+    }
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        let mut cur = Some(Path::new(path?));
+        while let Some(dir) = cur {
+            if dir.join(".root").exists() {
+                return Some(dir.to_string_lossy().into_owned());
+            }
+            cur = dir.parent();
+        }
+        None
+    }
+}
+
+/// `r` narrows the requested path to the marker directory, so its records sit
+/// above where a bare `put` from a subdirectory lands.
+struct RootedProvider;
+
+impl Provider for RootedProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "r".to_string(),
+            sources: vec![source_meta("tree", "field", SourceScope::PathScoped)],
+        }
+    }
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(RootedSource(source_meta(
+            "tree",
+            "field",
+            SourceScope::PathScoped,
+        )))]
+    }
+}
+
+/// `$HOME/ws/project` holds the marker; `$HOME/ws/project/foo` is a
+/// subdirectory of it, below the entry the provider narrows to.
+fn rooted_fixture() -> Fixture {
+    let mut reg = ProviderRegistry::new();
+    reg.register(Box::new(RootedProvider)).unwrap();
+    let f = Fixture::start(reg);
+    std::fs::write(f.home.join("ws/project/.root"), "").unwrap();
+    f
+}
+
+/// `put` defaults to the caller's directory and `get` defaults to the same one,
+/// so a record written from a subdirectory of a narrowing provider's scope has
+/// to be readable from there. It used to be unreachable: the merged read
+/// started at the *narrowed* entry, one or more links above the record.
+#[tokio::test]
+async fn a_static_record_below_the_provider_entry_is_read_from_the_requested_path() {
+    let f = rooted_fixture();
+    let root = f.path("ws/project");
+    let sub = f.path("ws/project/foo");
+    let mut s = f.connect().await;
+
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.field", &sub)).await,
+            "provider record"
+        ),
+        serde_json::json!(root),
+        "the path-scoped source runs at the marker directory, not the requested one"
+    );
+    assert!(
+        f.cache.get_entry("r", Some(&root)).is_some(),
+        "and its entry is keyed there"
+    );
+    assert!(
+        f.cache.get_entry("r", Some(&sub)).is_none(),
+        "nothing of the provider's lands at the requested directory"
+    );
+
+    let resp = send_recv(&mut s, put_at("r.note", serde_json::json!("kept"), &sub)).await;
+    assert!(resp.ok, "put below the provider entry: {:?}", resp.error);
+
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.note", &sub)).await,
+            "static record below the entry"
+        ),
+        serde_json::json!("kept"),
+        "the chain starts at the requested path, so the record put there is visible"
+    );
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.note:source", &sub)).await,
+            "provenance"
+        ),
+        serde_json::json!("put"),
+        "it is a static record, written by `put`"
+    );
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.field", &sub)).await,
+            "provider record again"
+        ),
+        serde_json::json!(root),
+        "and the provider's own record still answers from its narrowed entry"
+    );
+
+    let above = send_recv(&mut s, get_at("r.note", &root)).await;
+    assert!(above.ok, "a miss is ok=true: {:?}", above.error);
+    assert!(
+        above.data.is_none(),
+        "a record below the requested path is never visible from above, got {:?}",
+        above.data
+    );
+}
+
+/// The chain does not stop at the provider's entry: links below it layer like
+/// any other, nearest winning.
+#[tokio::test]
+async fn the_nearest_static_record_wins_across_the_provider_entry() {
+    let f = rooted_fixture();
+    let root = f.path("ws/project");
+    let sub = f.path("ws/project/foo");
+    let other = f.path("ws/project/other");
+    std::fs::create_dir_all(&other).unwrap();
+    let mut s = f.connect().await;
+
+    send_recv(&mut s, put_at("r.note", serde_json::json!("root"), &root)).await;
+    send_recv(&mut s, put_at("r.note", serde_json::json!("sub"), &sub)).await;
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("r.note", &sub)).await, "at sub"),
+        serde_json::json!("sub"),
+        "the nearest record wins"
+    );
+    assert_eq!(
+        data(send_recv(&mut s, get_at("r.note", &root)).await, "at root"),
+        serde_json::json!("root"),
+        "the record a link down is not visible from the provider entry"
+    );
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.note", &other)).await,
+            "at other"
+        ),
+        serde_json::json!("root"),
+        "a sibling of the deeper directory resolves to the entry's record"
+    );
+}
+
+/// A watch subscribes the chain from the requested path too — otherwise a `put`
+/// below the provider's entry changes what the watch resolves to without ever
+/// waking it.
+#[tokio::test]
+async fn a_watch_fires_for_a_static_record_below_the_provider_entry() {
+    let f = rooted_fixture();
+    let sub = f.path("ws/project/foo");
+
+    let mut w = f.connect().await;
+    let mut req = serde_json::json!({"op": "watch", "key": "r.note", "path": sub}).to_string();
+    req.push('\n');
+    w.write_all(req.as_bytes()).await.unwrap();
+    let mut frames = BufReader::new(w);
+
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("the initial frame must arrive")
+        .unwrap();
+    let initial: Response = serde_json::from_str(&line).unwrap();
+    assert!(
+        initial.data.is_none(),
+        "nothing is written yet, got {:?}",
+        initial.data
+    );
+
+    let mut s = f.connect().await;
+    let resp = send_recv(&mut s, put_at("r.note", serde_json::json!("kept"), &sub)).await;
+    assert!(resp.ok, "put below the provider entry: {:?}", resp.error);
+
+    line.clear();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("a frame must arrive for a record put below the provider entry")
+        .unwrap();
+    let update: Response = serde_json::from_str(&line).unwrap();
+    assert_eq!(update.data, Some(serde_json::json!("kept")));
+}
+
 // ── (f) a nested repo never inherits its parent's records ────────────────────
 
 #[tokio::test]
