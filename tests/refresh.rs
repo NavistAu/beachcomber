@@ -82,11 +82,15 @@ async fn age(stream: &mut UnixStream, key: &str, path: &str) -> u64 {
         .unwrap_or_else(|| panic!("{key}:age should be a number, got {:?}", resp.data))
 }
 
-/// Age every record in the cache by 100ms. The cache stamps records with
-/// `tokio::time::Instant`, so the offset survives `resume`.
-async fn advance_100ms() {
+/// Age every record in the cache by 10 s. The cache stamps records with
+/// `tokio::time::Instant`, so the offset survives `resume`. The margin is
+/// what the "re-executed" assertions below lean on: a re-executed record's
+/// age is the real time between its write and the next `:age` read, and
+/// under a loaded suite that gap can pass 100 ms. Ten seconds is below every
+/// git source's poll interval, so nothing turns stale.
+async fn advance_10s() {
     tokio::time::pause();
-    tokio::time::advance(Duration::from_millis(100)).await;
+    tokio::time::advance(Duration::from_secs(10)).await;
     tokio::time::resume();
 }
 
@@ -105,12 +109,12 @@ async fn refreshing_a_field_re_executes_only_its_owning_source() {
 
     warm(&mut s, "git.commit", path).await;
     warm(&mut s, "git.lines_added", path).await;
-    advance_100ms().await;
+    advance_10s().await;
 
     let refs_before = age(&mut s, "git.commit", path).await;
     let diff_before = age(&mut s, "git.lines_added", path).await;
     assert!(
-        refs_before >= 100 && diff_before >= 100,
+        refs_before >= 10_000 && diff_before >= 10_000,
         "both records should carry the advanced clock, got refs={refs_before} diff={diff_before}"
     );
 
@@ -152,7 +156,7 @@ async fn refreshing_a_namespace_re_executes_every_source() {
 
     warm(&mut s, "git.commit", path).await;
     warm(&mut s, "git.lines_added", path).await;
-    advance_100ms().await;
+    advance_10s().await;
 
     let refs_before = age(&mut s, "git.commit", path).await;
     let diff_before = age(&mut s, "git.lines_added", path).await;
