@@ -382,7 +382,7 @@ pub(crate) fn render_template_exec(
     render_template_with(src, context, true)
 }
 
-fn render_template_with(
+pub(crate) fn render_template_with(
     src: &str,
     context: &serde_json::Value,
     allow_exec: bool,

@@ -22,6 +22,7 @@ mod exec;
 pub mod filters;
 pub mod path_expr;
 pub mod render;
+pub mod resolve;
 pub mod virtual_fields;
 
 /// This crate's build identity, derived by `build.rs` from `CARGO_PKG_VERSION`
@@ -637,6 +638,51 @@ impl Client {
         self.send_recv(&mut stream, &request)
     }
 
+    /// Query one node and return both halves of the daemon's answer — the
+    /// cached `data` and the `template` in effect at the address — as the
+    /// [`resolve`] module's [`Fetch`](resolve::Fetch) needs them. The same
+    /// `get` request as [`get_with_flags`](Self::get_with_flags); a miss is
+    /// `Got::default()`, a rejected key `CombError::ServerError`.
+    pub fn get_node(
+        &self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: bool,
+    ) -> Result<resolve::Got, CombError> {
+        let socket_path = self.find_or_start_socket()?;
+        let mut stream = self.connect(&socket_path)?;
+
+        let mut request = serde_json::json!({ "op": "get", "key": key });
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        if force {
+            request["force"] = serde_json::json!(true);
+        }
+        if wait {
+            request["wait"] = serde_json::json!(true);
+        }
+
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        stream.write_all(msg.as_bytes())?;
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut
+            {
+                CombError::Timeout
+            } else {
+                CombError::IoError(e)
+            }
+        })?;
+        self.probe_skew_after(reader.get_mut());
+
+        parse_node(&line, self.skew_ref())
+    }
+
     /// Query a single key, rendered by the daemon as plain text.
     /// Shorthand for `get_formatted(key, path, "text")`.
     pub fn get_text(&self, key: &str, path: Option<&str>) -> Result<String, CombError> {
@@ -1004,6 +1050,36 @@ impl Session {
         parse_response(&line, self.version_skew.as_ref())
     }
 
+    /// Query one node on this persistent connection and return both halves
+    /// of the daemon's answer — see [`Client::get_node`].
+    pub fn get_node(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: bool,
+    ) -> Result<resolve::Got, CombError> {
+        let mut request = serde_json::json!({ "op": "get", "key": key });
+        if let Some(p) = path {
+            request["path"] = serde_json::json!(p);
+        }
+        if force {
+            request["force"] = serde_json::json!(true);
+        }
+        if wait {
+            request["wait"] = serde_json::json!(true);
+        }
+
+        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+        self.reader.get_mut().write_all(msg.as_bytes())?;
+
+        let mut line = String::new();
+        self.reader.read_line(&mut line)?;
+        self.probe_skew_after();
+
+        parse_node(&line, self.version_skew.as_ref())
+    }
+
     /// Query a single key on this persistent connection, rendered by the
     /// daemon as plain text. Shorthand for `get_formatted(key, path, "text")`.
     pub fn get_text(&mut self, key: &str, path: Option<&str>) -> Result<String, CombError> {
@@ -1226,6 +1302,27 @@ fn parse_response(line: &str, skew: Option<&VersionSkew>) -> Result<CombResult, 
             })
         }
     }
+}
+
+/// Parse a `get` response into both halves the daemon returned. Every field
+/// is copied when present and left `None` when absent, so a miss is
+/// `Got::default()`; `ok:false` is `ServerError` via [`check_ok`].
+fn parse_node(line: &str, skew: Option<&VersionSkew>) -> Result<resolve::Got, CombError> {
+    let resp = check_ok(line, skew)?;
+    let present = |name: &str| resp.get(name).filter(|v| !v.is_null()).cloned();
+    Ok(resolve::Got {
+        data: present("data"),
+        template: present("template"),
+        rest: resp
+            .get("rest")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        age_ms: resp
+            .get("age_ms")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u128),
+        stale: resp.get("stale").and_then(|v| v.as_bool()),
+    })
 }
 
 fn parse_cache_rows(line: &str, skew: Option<&VersionSkew>) -> Result<Vec<CacheRow>, CombError> {
@@ -1480,6 +1577,80 @@ mod tests {
                 assert!(!stale);
             }
             CombResult::Miss => panic!("expected a hit"),
+        }
+    }
+
+    /// `parse_node` keeps both halves: the eight response shapes of the
+    /// one-tree design §3.4 — a template leaf, a template group, data plus a
+    /// tree, data plus a template, data alone, a template plus `rest`, a
+    /// miss, and a rejected key.
+    #[test]
+    fn parse_node_reads_every_response_shape() {
+        use resolve::Got;
+        use serde_json::json;
+
+        let node = |line: &str| parse_node(line, None).expect("an ok response parses");
+
+        assert_eq!(
+            node(r#"{"ok":true,"template":"{{ env.SCANLINE_FOO }}"}"#),
+            Got {
+                template: Some(json!("{{ env.SCANLINE_FOO }}")),
+                ..Got::default()
+            }
+        );
+        assert_eq!(
+            node(r#"{"ok":true,"template":{"foo":"{{ a }}","bar":"{{ b }}"}}"#),
+            Got {
+                template: Some(json!({"foo": "{{ a }}", "bar": "{{ b }}"})),
+                ..Got::default()
+            }
+        );
+        assert_eq!(
+            node(
+                r#"{"ok":true,"data":{"lit":1},"age_ms":30,"stale":false,"template":{"theme":"t","widgets":{"foo":"f"}}}"#
+            ),
+            Got {
+                data: Some(json!({"lit": 1})),
+                template: Some(json!({"theme": "t", "widgets": {"foo": "f"}})),
+                rest: None,
+                age_ms: Some(30),
+                stale: Some(false),
+            }
+        );
+        assert_eq!(
+            node(
+                r#"{"ok":true,"data":"default","age_ms":812,"stale":false,"template":"{{ env.TF_WORKSPACE or cache.terraform.workspace }}"}"#
+            ),
+            Got {
+                data: Some(json!("default")),
+                template: Some(json!("{{ env.TF_WORKSPACE or cache.terraform.workspace }}")),
+                rest: None,
+                age_ms: Some(812),
+                stale: Some(false),
+            }
+        );
+        assert_eq!(
+            node(r#"{"ok":true,"data":"feature/x","age_ms":812,"stale":true}"#),
+            Got {
+                data: Some(json!("feature/x")),
+                template: None,
+                rest: None,
+                age_ms: Some(812),
+                stale: Some(true),
+            }
+        );
+        assert_eq!(
+            node(r#"{"ok":true,"template":"{{ {'cpu': 40, 'mem': 12} }}","rest":"cpu"}"#),
+            Got {
+                template: Some(json!("{{ {'cpu': 40, 'mem': 12} }}")),
+                rest: Some("cpu".to_string()),
+                ..Got::default()
+            }
+        );
+        assert_eq!(node(r#"{"ok":true}"#), Got::default());
+        match parse_node(r#"{"ok":false,"error":"invalid key"}"#, None) {
+            Err(CombError::ServerError(m)) => assert_eq!(m, "invalid key"),
+            other => panic!("a rejected key must be a server error, got {other:?}"),
         }
     }
 }
