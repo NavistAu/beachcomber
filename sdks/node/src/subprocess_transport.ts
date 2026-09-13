@@ -31,15 +31,29 @@
  * `UnsupportedTransportError` naming the FFI transport as the
  * full-fidelity path.
  *
- * `get` does not read its value from `comb get` either: that command
- * *resolves* — it prints the rendered value, not the raw node `bc_get`
- * returns — so the raw value comes from the `comb status -f json` rows for
- * the key's provider instead, the way the Lua subprocess backend reads it
- * (`sdks/lua/beachcomber/subprocess_backend.lua`). Those rows are the
- * `<p>` provider's cached values, not its `<p>:template` tree, so this tier
- * never sees the template half: a result from here never carries
- * `template` or `rest`, and a template-only node reads as a miss. A caller
- * that needs the template half needs the FFI transport.
+ * `get` is one spawn: `comb get -f json <key> <key>:age <key>:stale
+ * [--path P | --global] [--force] [--wait]`. Multi-key `-f json` prints a
+ * JSON array in key order, `null` in a missed key's slot, so the three
+ * slots are the value, its age and its staleness — the resolver's own
+ * answer, with everything the daemon does for a `get`: the directory chain
+ * up to `$HOME`, `$HOME` itself as the global entry, metadata suffixes,
+ * `--force`/`--wait` and the daemon's refusals. A key that already carries
+ * a metadata suffix (`:age`, `:stale`, `:fresh`, `:cache`, `:source`) is
+ * asked for alone and answers with age 0 and not stale, as the daemon
+ * answers one over the wire. The same code drives both subprocess tiers
+ * (`sdks/lua/beachcomber/subprocess_backend.lua` is the Lua half).
+ *
+ * The one divergence from the FFI tier: `comb get` *resolves*, so a
+ * template-backed key returns its **rendered** value here where `bc_get`
+ * returns the raw template half. A result from this tier never carries
+ * `template` or `rest`, and a template-only node is a hit holding the
+ * rendered value rather than the "neither hit nor miss" the FFI tier
+ * reports. The CLI renders with `exec()` on, so the client's `exec` option
+ * has no effect on this tier; a caller that must not spawn processes from
+ * a template, or that needs the raw template half, needs the FFI
+ * transport. A rendered value has no cached freshness of its own (its
+ * `:age`/`:stale` are misses), so it reports age 0 and not stale, as
+ * libbeachcomber does for a hit whose freshness is absent.
  *
  * `comb get` and `comb put` both default an omitted `--path` to the CLI
  * process's own working directory, while an absent `path` here means the
@@ -49,7 +63,6 @@
  */
 
 import { spawn, spawnSync } from 'child_process';
-import { realpathSync } from 'fs';
 import { ServerError, UnsupportedTransportError } from './errors.js';
 import type { Envelope, WatchNextResult } from './envelope.js';
 import type { NewClientOptions, Transport } from './transport.js';
@@ -119,98 +132,58 @@ function pathArgs(path_: string | undefined): string[] {
   return path_ === undefined ? ['--global'] : ['--path', path_];
 }
 
-/** The fields of a `comb status -f json` row this transport reads. */
-interface StatusRow {
-  provider: string;
-  path: string | null;
-  field: string;
-  value: unknown;
-  age_ms: number;
-  stale: boolean;
-}
+const META_SUFFIXES = new Set(['age', 'stale', 'fresh', 'cache', 'source']);
 
-/** `p` canonicalized as the daemon does it, or `p` itself when that fails. */
-function canonicalPath(p: string): string {
-  try {
-    return realpathSync.native(p);
-  } catch {
-    return p;
-  }
+/** True when `key` ends in one of the daemon's metadata suffixes. */
+function hasMetaSuffix(key: string): boolean {
+  const m = /:([\w-]+)$/.exec(key);
+  return m !== null && META_SUFFIXES.has(m[1] as string);
 }
 
 /**
- * Walk `segments` (the dotted address below a top-level field) into
- * `value`, the daemon's own drilling: object keys, and array elements by
- * decimal-string index. `undefined` when the address is not there.
- */
-function drill(value: unknown, segments: string[]): unknown {
-  for (const seg of segments) {
-    if (typeof value !== 'object' || value === null) return undefined;
-    value = (value as Record<string, unknown>)[seg];
-  }
-  return value;
-}
-
-/**
- * The raw node at `key`, shaped as `bc_get`'s envelope
+ * The node at `key`, shaped as `bc_get`'s envelope
  * (`{"ok":true,"data":{"data":...,"age_ms":...,"stale":...}}`, the three
- * null on a miss).
- *
- * `comb get <key> [--path P | --global] [--force]` primes the key — a cold
- * Source is executed, `--force` re-executes — but its output is the
- * *resolved* value and is never read. The value comes from the `comb status
- * -f json` rows for the key's provider at the same path (a global entry's
- * row has a null `path`): a bare provider is every field merged, an
- * address below one is that field's row drilled to the rest, with the row's
- * own `age_ms`/`stale` — a whole namespace reports the oldest age and is
- * stale if any field is, as the daemon does. Nothing there is a miss,
- * unless the priming call was a daemon rejection (`Error querying <key>:
- * <the daemon's words>`), which is reported as the error instead.
+ * null on a miss), from one `comb get -f json` for the value, its age and
+ * its staleness (the file header). Exit 0 is a hit. Exit 2 with the CLI's
+ * miss line for `key` (`Error querying <key>: no data (cache miss)`) is a
+ * miss; with another line for `key` it is that refusal, in the daemon's
+ * words. A rendered value's `:age`/`:stale` companions miss on their own —
+ * the value slot is filled and only they fail — and that is a hit with age 0.
  */
 function cliGet(
   handle: SubprocessClientHandle,
   key: string,
   path_: string | undefined,
   force: boolean,
+  wait: boolean,
 ): Envelope {
-  const args = ['get', key, ...pathArgs(path_)];
+  const meta = hasMetaSuffix(key);
+  const args = ['get', '-f', 'json', key];
+  if (!meta) args.push(`${key}:age`, `${key}:stale`);
+  args.push(...pathArgs(path_));
   if (force) args.push('--force');
-  const prime = runComb(handle.combBin, args, handle);
+  if (wait) args.push('--wait');
+  const { code, stdout, stderr } = runComb(handle.combBin, args, handle);
 
-  const status = cliStatus(handle);
-  if (!status.ok) return status;
-  const [provider, ...segments] = key.split('.');
-  // The daemon addresses an entry by the canonical form of the path it was
-  // given (`query::normalise_path`), so a row's `path` is canonical too —
-  // `/private/tmp` for a `--path /tmp` on macOS.
-  const rowPath = path_ === undefined ? null : canonicalPath(path_);
-  const rows = (status.data as StatusRow[]).filter((row) => row.provider === provider && row.path === rowPath);
-
-  if (segments.length === 0) {
-    if (rows.length > 0) {
-      const merged: Record<string, unknown> = {};
-      let ageMs = 0;
-      let stale = false;
-      for (const row of rows) {
-        merged[row.field] = row.value;
-        ageMs = Math.max(ageMs, row.age_ms);
-        stale ||= row.stale;
-      }
-      return { ok: true, data: { data: merged, age_ms: ageMs, stale } };
+  const trimmed = stdout.trim();
+  const decoded: unknown = trimmed === '' ? undefined : JSON.parse(trimmed);
+  if (code !== 0) {
+    // The CLI prints one `Error querying <k>: <msg>` line per failed key; the
+    // `<key>:age` line starts `Error querying <key>:age: `, so the trailing
+    // `: ` keeps it from matching `<key>`.
+    const prefix = `Error querying ${key}: `;
+    const own = stderr.split('\n').find((line) => line.startsWith(prefix));
+    if (own === `${prefix}no data (cache miss)`) {
+      return { ok: true, data: { data: null, age_ms: null, stale: null } };
     }
-  } else {
-    const [field, ...below] = segments;
-    const row = rows.find((r) => r.field === field);
-    if (row) {
-      const value = drill(row.value, below);
-      if (value !== undefined) {
-        return { ok: true, data: { data: value, age_ms: row.age_ms, stale: row.stale } };
-      }
-    }
+    // The daemon refused `key`, or the CLI failed before answering at all
+    // (no daemon, a bad argument) — either way the message is the CLI's.
+    if (own !== undefined || decoded === undefined) return envelopeFromFailure(own ?? stderr);
+    // Only the `:age`/`:stale` companions missed: `key` itself rendered.
   }
-
-  if (prime.code !== 0 && prime.stderr.trim() !== '') return envelopeFromFailure(prime.stderr);
-  return { ok: true, data: { data: null, age_ms: null, stale: null } };
+  if (meta) return { ok: true, data: { data: decoded, age_ms: 0, stale: false } };
+  const [data, ageMs, stale] = decoded as [unknown, number | null, boolean | null];
+  return { ok: true, data: { data, age_ms: ageMs ?? 0, stale: stale ?? false } };
 }
 
 function cliPut(
@@ -267,8 +240,7 @@ export function createSubprocessTransport(): Transport {
 
     async get(handle, key, path_, flags) {
       const h = handle as SubprocessClientHandle;
-      const force = (flags & 0x1) !== 0;
-      return cliGet(h, key, path_, force);
+      return cliGet(h, key, path_, (flags & 0x1) !== 0, (flags & 0x2) !== 0);
     },
     async put(handle, key, jsonData, ttl, path_) {
       return cliPut(handle as SubprocessClientHandle, key, jsonData, ttl, path_, false);
@@ -309,8 +281,7 @@ export function createSubprocessTransport(): Transport {
     },
     async sessionGet(session, key, path_, flags) {
       const s = session as SubprocessSessionHandle;
-      const force = (flags & 0x1) !== 0;
-      return cliGet(s.client, key, path_ ?? s.contextPath, force);
+      return cliGet(s.client, key, path_ ?? s.contextPath, (flags & 0x1) !== 0, (flags & 0x2) !== 0);
     },
     async sessionPut(session, key, jsonData, ttl, path_) {
       const s = session as SubprocessSessionHandle;

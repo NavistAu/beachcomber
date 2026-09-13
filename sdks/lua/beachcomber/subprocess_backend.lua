@@ -24,27 +24,28 @@
 -- conformance runner skips (never silently passes) a fixture that needs
 -- one.
 --
--- `get` on a virtual (put-created) provider does not go through `comb get`:
--- as of this writing that CLI path silently drops the value for entries
--- created via `comb put` (confirmed against a fresh daemon: the wire
--- protocol itself returns the value correctly — `{"op":"get",...}` sent
--- directly over the socket works — but `comb get <virtual>.<field>`
--- returns exit 2 with empty stdout *and* empty stderr). That is a
--- pre-existing bug in src/cli/commands/get.rs, out of scope for this SDK
--- (sdks/lua/** only) and untouched here. This backend works around it
--- entirely client-side by reading `comb status -f json` instead, which
--- reports the same cache rows correctly for both virtual and built-in
--- providers; it walks the requested key's remaining dotted path into the
--- row's `value` itself (matching the daemon's own path-drilling) rather
--- than depending on the buggy code path at all.
+-- `get` is one spawn: `comb get -f json <key> <key>:age <key>:stale
+-- [--path P | --global] [--force] [--wait]`. Multi-key `-f json` prints a
+-- JSON array in key order, `null` in a missed key's slot, so the three
+-- slots are the value, its age and its staleness — the resolver's own
+-- answer, with everything the daemon does for a `get`: the directory chain
+-- up to `$HOME`, `$HOME` itself as the global entry, metadata suffixes,
+-- `--force`/`--wait` and the daemon's refusals. A key that already carries
+-- a metadata suffix (`:age`, `:stale`, `:fresh`, `:cache`, `:source`) is
+-- asked for alone and answers with age 0 and not stale, as the daemon
+-- answers one over the wire.
 --
--- The template half is ffi-tier only. `get` over this tier never sees the
--- template in effect at an address: `comb get -f json` prints the bare
--- resolved value, and the `comb status` rows read here are the `<p>`
--- provider's cached values, not its `<p>:template` tree. So a Result from
--- this backend always has `template = nil` and `rest = nil`, and a
--- template-only node reads as a miss here. A caller that needs the raw
--- template half needs the ffi transport.
+-- The one divergence from the ffi tier: `comb get` *resolves*, so a
+-- template-backed key returns its **rendered** value here where `bc_get`
+-- returns the raw template half. A Result from this backend never carries
+-- `template` or `rest`, and a template-only node is a hit holding the
+-- rendered value rather than the "neither hit nor miss" the ffi tier
+-- reports. The CLI renders with `exec()` on, so the client's `exec` option
+-- has no effect on this tier; a caller that must not spawn processes from
+-- a template, or that needs the raw template half, needs the ffi
+-- transport. A rendered value has no cached freshness of its own (its
+-- `:age`/`:stale` are misses), so it reports age 0 and not stale, as
+-- libbeachcomber does for a hit whose freshness is absent.
 
 local json = require("beachcomber.json")
 local discovery = require("beachcomber.discovery")
@@ -70,42 +71,62 @@ local function path_arg(path)
   return " --path " .. shell_escape(path)
 end
 
---- Run a command, returning (stdout+stderr merged, exit_ok).
+--- Run a command, returning (stdout, exit_ok, stderr).
 --
 -- Exit status is read back via an appended `echo` marker rather than
 -- `pipe:close()`'s return value: LuaJIT's `io.popen():close()` has been
 -- observed to return `true` regardless of the child's actual exit code on
--- this platform, so it cannot be trusted to detect failure.
+-- this platform, so it cannot be trusted to detect failure. stderr goes to
+-- a temporary file so `get` can read the CLI's per-key `Error querying`
+-- lines apart from the JSON on stdout.
 local function run(cmd)
-  local pipe = io.popen(cmd .. " 2>&1; echo BC_EXIT:$?", "r")
+  local errfile = os.tmpname()
+  local pipe = io.popen(cmd .. " 2>" .. shell_escape(errfile) .. "; echo BC_EXIT:$?", "r")
   if not pipe then
+    os.remove(errfile)
     return nil, false, "failed to spawn: " .. cmd
   end
   local out = pipe:read("*a") or ""
   pipe:close()
+  local err = ""
+  local ef = io.open(errfile, "r")
+  if ef then
+    err = ef:read("*a") or ""
+    ef:close()
+  end
+  os.remove(errfile)
   local body, code = out:match("^(.-)\n?BC_EXIT:(%d+)%s*$")
   if not body then
-    return out, false
+    return out, false, err
   end
-  return body, code == "0"
+  return body, code == "0", err
+end
+
+--- The CLI's own line for `key` on a `comb get` failure — `Error querying
+-- <key>: <msg>`, one per failed key — or nil when it printed none for it.
+-- The `<key>:age` line starts `Error querying <key>:age: `, so the trailing
+-- `: ` keeps it from matching `<key>`.
+local function own_line(stderr, key)
+  local prefix = "Error querying " .. key .. ": "
+  for line in stderr:gmatch("[^\n]+") do
+    if line:sub(1, #prefix) == prefix then
+      return line
+    end
+  end
+  return nil
 end
 
 --- Parse `comb status -f json` output (one JSON object per line) into an
--- array of row tables, optionally filtered to a single provider.
+-- array of row tables.
 --
 -- Each row's `path` field is JSON null (not omitted) for a globally-scoped
 -- entry — confirmed directly against a live daemon (`comb status -f json`
--- emits `"path":null,...`). json.decode now turns that into the json.NULL
+-- emits `"path":null,...`). json.decode turns that into the json.NULL
 -- sentinel rather than Lua nil (see beachcomber.json's M.NULL doc comment),
--- so it is collapsed back to nil right here: path_matches() below (and any
--- future path comparison) needs plain nil to mean "no path scope", the same
--- way it always has.
-local function status_rows(comb_bin, provider)
-  local cmd = comb_bin .. " status -f json"
-  if provider then
-    cmd = cmd .. " --filter " .. shell_escape("provider=" .. provider)
-  end
-  local out, ok = run(cmd)
+-- so it is collapsed back to nil right here: plain nil means "no path
+-- scope", the same way it always has.
+local function status_rows(comb_bin)
+  local out, ok = run(comb_bin .. " status -f json")
   if not ok then
     return {}
   end
@@ -120,18 +141,12 @@ local function status_rows(comb_bin, provider)
   return rows
 end
 
---- Walk `segments` (dotted path components below the top-level field) into
--- `value`, matching the daemon's own field-drilling (object keys, and
--- array elements addressed by decimal-string index).
-local function drill(value, segments, i)
-  i = i or 1
-  if i > #segments then
-    return value
-  end
-  if type(value) ~= "table" then
-    return nil
-  end
-  return drill(value[segments[i]], segments, i + 1)
+local META_SUFFIXES = { age = true, stale = true, fresh = true, cache = true, source = true }
+
+--- True when `key` ends in one of the daemon's metadata suffixes.
+local function has_meta_suffix(key)
+  local suffix = key:match(":([%w_-]+)$")
+  return suffix ~= nil and META_SUFFIXES[suffix] == true
 end
 
 local M = {}
@@ -162,61 +177,52 @@ function Backend:name()
   return "subprocess"
 end
 
---- get() deliberately never calls `comb get -f json` for the reasons in
--- this file's header comment: it primes the key (best-effort; ignored on
--- failure — an already-warm static namespace or a genuinely-unknown one
--- both fall through cleanly) then reads the true value back from
--- `comb status -f json`.
+--- One `comb get -f json` for the value, its age and its staleness (the
+-- header comment): exit 0 is a hit; exit 2 with the CLI's miss line for
+-- `key` (`Error querying <key>: no data (cache miss)`) is a miss; exit 2
+-- with another line for `key` is that refusal, in the daemon's words. A
+-- rendered value's `:age`/`:stale` companions miss on their own — the
+-- value slot is filled and only they fail — and that is a hit with age 0.
 function Backend:get(key, path, flags)
   flags = flags or {}
-  local provider, rest = key:match("^([^.]+)%.?(.*)$")
-  if not provider then
-    return { ok = false, error = { kind = "parse_error", message = "empty key" } }
+  local meta = has_meta_suffix(key)
+  local cmd = self._comb .. " get -f json " .. shell_escape(key)
+  if not meta then
+    cmd = cmd .. " " .. shell_escape(key .. ":age") .. " " .. shell_escape(key .. ":stale")
   end
+  cmd = cmd .. path_arg(path)
+  if flags.force then cmd = cmd .. " --force" end
+  if flags.wait then cmd = cmd .. " --wait" end
+  local out, ok, err = run(cmd)
+  local decoded = json.decode(out or "")
 
-  local prime_cmd = self._comb .. " get " .. shell_escape(key) .. path_arg(path)
-  if flags.force then prime_cmd = prime_cmd .. " --force" end
-  if flags.wait then prime_cmd = prime_cmd .. " --wait" end
-  local prime_out, prime_ok = run(prime_cmd)
-
-  local rows = status_rows(self._comb, provider)
-  -- Match this key's path scope: nil/absent path on both sides, or equal.
-  local function path_matches(row_path)
-    if path == nil then return row_path == nil end
-    return row_path == path
-  end
-
-  if rest == "" then
-    -- Bare provider: merge every matching field into one object.
-    local merged, found = {}, false
-    for _, row in ipairs(rows) do
-      if path_matches(row.path) then
-        merged[row.field] = row.value
-        found = true
-      end
+  if not ok then
+    local own = own_line(err or "", key)
+    if own == "Error querying " .. key .. ": no data (cache miss)" then
+      return { ok = true, data = nil } -- miss
     end
-    if found then
-      return { ok = true, data = merged }
+    if own or decoded == nil then
+      -- The daemon refused `key`, or the CLI failed before answering at all
+      -- (no daemon, a bad argument) — either way the message is the CLI's.
+      return { ok = false, error = { kind = "server_error", message = own or (err or ""):gsub("%s+$", "") } }
     end
-  else
-    local segments = {}
-    for seg in rest:gmatch("[^.]+") do segments[#segments + 1] = seg end
-    local field = segments[1]
-    for _, row in ipairs(rows) do
-      if row.field == field and path_matches(row.path) then
-        local sub = {}
-        for j = 2, #segments do sub[#sub + 1] = segments[j] end
-        return { ok = true, data = drill(row.value, sub), age_ms = row.age_ms, stale = row.stale }
-      end
-    end
+    -- Only the `:age`/`:stale` companions missed: `key` itself rendered.
   end
 
-  if not prime_ok and prime_out and prime_out ~= "" then
-    -- The priming call itself produced a real error message (e.g. "unknown
-    -- provider: X") and status has nothing for this provider either.
-    return { ok = false, error = { kind = "server_error", message = prime_out:gsub("%s+$", "") } }
+  if meta then
+    -- A suffix the daemon answers with null (`:age` of a node with no
+    -- freshness) is nil here, as the ffi backend collapses it.
+    if decoded == json.NULL then decoded = nil end
+    return { ok = true, data = decoded, age_ms = 0, stale = false }
   end
-  return { ok = true, data = nil } -- miss
+  if type(decoded) ~= "table" then
+    return { ok = false, error = { kind = "parse_error", message = "malformed comb get output: " .. tostring(out) } }
+  end
+  local data, age_ms, stale = decoded[1], decoded[2], decoded[3]
+  if data == json.NULL then data = nil end
+  if age_ms == json.NULL or age_ms == nil then age_ms = 0 end
+  if stale == json.NULL or stale == nil then stale = false end
+  return { ok = true, data = data, age_ms = age_ms, stale = stale }
 end
 
 function Backend:put(key, data, ttl, path)
@@ -226,24 +232,24 @@ function Backend:put(key, data, ttl, path)
   end
   local cmd = self._comb .. " put " .. shell_escape(key) .. " " .. shell_escape(encoded) .. path_arg(path)
   if ttl then cmd = cmd .. " --ttl " .. shell_escape(ttl) end
-  local out, ok = run(cmd)
+  local _, ok, err = run(cmd)
   if not ok then
-    return { ok = false, error = { kind = "server_error", message = (out or ""):gsub("%s+$", "") } }
+    return { ok = false, error = { kind = "server_error", message = (err or ""):gsub("%s+$", "") } }
   end
   return { ok = true }
 end
 
 function Backend:put_null(key, path)
   local cmd = self._comb .. " put --null " .. shell_escape(key) .. path_arg(path)
-  local out, ok = run(cmd)
+  local _, ok, err = run(cmd)
   if not ok then
-    return { ok = false, error = { kind = "server_error", message = (out or ""):gsub("%s+$", "") } }
+    return { ok = false, error = { kind = "server_error", message = (err or ""):gsub("%s+$", "") } }
   end
   return { ok = true }
 end
 
 function Backend:status()
-  local rows = status_rows(self._comb, nil)
+  local rows = status_rows(self._comb)
   return { ok = true, data = rows }
 end
 

@@ -38,10 +38,20 @@ surface for `hello`, `refresh`, `introspect`, `resolve`, `eval`, or `watch`
 header comment: piped through `io.popen`, the CLI's stdout buffering means a
 `read("*l")` blocks forever even though the daemon already sent the event).
 Those `Client` methods return `nil, err` with `err.kind == "unsupported"`
-over `subprocess`; get/put/put_null/status/context all work fully over
-either transport — except that the template half of a `get` (`Result.template`
-and `Result.rest`, see `Result` below) is ffi-tier only: over `subprocess` both
-are always `nil`, and a template-only node reads as a miss.
+over `subprocess`; get/put/put_null/status/context all work over either
+transport. `get` over `subprocess` is one `comb get -f json <key> <key>:age
+<key>:stale`, so its answer is the resolver's — the directory chain up to
+`$HOME`, `$HOME` as the global entry, metadata suffixes, force/wait, the
+daemon's refusals — with one divergence: `comb get` *resolves*, so a
+template-backed key returns its **rendered** value where the ffi tier
+returns the raw template half. The template half of a `get`
+(`Result.template` and `Result.rest`, see `Result` below) is therefore
+ffi-tier only: over `subprocess` both are always `nil`, and a template-only
+node is a hit holding the rendered value (age 0, not stale — it has no
+cached freshness of its own). The CLI renders with `exec()` on, so the
+`exec` option has no effect over `subprocess`; a caller that must not spawn
+processes from a template, or that needs the raw template half, needs the
+ffi transport.
 
 ---
 
@@ -293,11 +303,13 @@ beachcomber/
 ```sh
 cd sdks/lua
 luajit test/test_runner.lua   # exercises the ffi transport's supporting code
-lua test/test_runner.lua      # PUC Lua — same suite, mock-backend tests only
+lua test/test_runner.lua      # PUC Lua — same suite; the ffi-only tests skip
 ```
 
-Unit tests run against a mock backend (no live daemon required). For the
-full protocol conformance suite against a real daemon:
+Unit tests run against a mock backend (no live daemon required); the
+subprocess backend's `get` tests spawn a `comb daemon` from `$COMB_BIN` or
+the workspace's debug build, under both interpreters. For the full
+protocol conformance suite against a real daemon:
 
 ```sh
 TMPDIR=/tmp COMB_BIN=/path/to/comb luajit sdks/lua/conformance_runner.lua   # ffi

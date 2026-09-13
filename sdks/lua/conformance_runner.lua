@@ -412,15 +412,16 @@ local function run_fixture(fixture)
     end
   end
 
-  -- The subprocess transport cannot see the template half of a node (see
-  -- beachcomber.subprocess_backend's header): its `get` is not
-  -- unsupported — it answers, with `template = nil` — so a fixture that
-  -- asserts the template half is skipped here explicitly rather than
-  -- failing on a transport limit or passing vacuously.
+  -- The subprocess transport renders the template half of a node instead
+  -- of returning it (see beachcomber.subprocess_backend's header): its
+  -- `get` is not unsupported — it answers, with the rendered value and
+  -- `template = nil` — so a fixture that asserts the template half is
+  -- skipped here explicitly rather than failing on a documented divergence
+  -- or passing vacuously.
   if fixture.test.op == "get" and asserts_template_half(fixture.expect) and client:transport() == "subprocess" then
     client:close()
     stop_daemon(guard)
-    return "skip", "the subprocess transport cannot see the template half of a get"
+    return "skip", "the subprocess transport renders the template half of a get instead of returning it"
   end
 
   local resp = run_op(client, fixture.test, resolve_ctx)

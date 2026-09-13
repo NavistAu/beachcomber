@@ -209,21 +209,24 @@ programmatic handling.
 and watch — all with exact envelope fidelity.
 
 **Subprocess (`comb` CLI fallback)** covers `get`, `put`, `putNull`,
-`status`, `watch`, and session context. `get` reads the raw node from the
-`comb status -f json` rows for the key's provider (after a `comb get` has
-primed it) rather than from `comb get`'s own output, which is the
-*resolved* value; those rows are the provider's cached values, not its
-`:template` tree, so a result from this tier never carries `template` or
-`rest`, and a template-only node reads as a miss here — a caller that
-needs the template half needs the FFI transport. It does **not** implement
-`hello`, `introspect`, `refresh`, `resolve`, or `eval` — `comb`'s CLI has
-no faithful JSON equivalent for them (see `src/subprocess_transport.ts`
-for why each one specifically can't be approximated safely), and those
-calls throw `UnsupportedTransportError` rather than silently returning
-wrong data. It is also asymmetric on omitted paths: `comb get` without `--path`
-defaults to the CLI process's own working directory, while `comb put`
-without `--path` means "global" — pass an explicit `path` for global
-(pathless) providers under this transport.
+`status`, `watch`, and session context. `get` is one `comb get -f json
+<key> <key>:age <key>:stale`, so its answer is the resolver's — the
+directory chain up to `$HOME`, `$HOME` as the global entry, metadata
+suffixes, `force`/`wait`, the daemon's refusals — with one divergence:
+`comb get` *resolves*, so a template-backed key returns its **rendered**
+value where the FFI tier returns the raw template half. A result from
+this tier never carries `template` or `rest`; a template-only node is a
+hit holding the rendered value (age 0, not stale — it has no cached
+freshness of its own). The CLI renders with `exec()` on, so the client's
+`exec` option has no effect here — a caller that must not spawn processes
+from a template, or that needs the raw template half, needs the FFI
+transport. The tier does **not** implement `hello`, `introspect`,
+`refresh`, `resolve`, or `eval` — `comb`'s CLI has no faithful JSON
+equivalent for them (see `src/subprocess_transport.ts` for why each one
+specifically can't be approximated safely), and those calls throw
+`UnsupportedTransportError` rather than silently returning wrong data.
+An omitted `path` means the global entry, as under FFI (the transport
+passes `--global`).
 
 ## Library discovery (FFI transport)
 

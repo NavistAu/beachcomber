@@ -84,6 +84,8 @@ function waitForSocket(sockPath: string, timeoutMs = 5000): Promise<boolean> {
 
 export interface TestDaemon {
   sockPath: string;
+  /** The daemon's `$HOME` and `$XDG_CONFIG_HOME`; its state dir is `.local/state` below it. */
+  tmpDir: string;
   stop(): void;
 }
 
@@ -117,6 +119,7 @@ export async function spawnDaemon(): Promise<TestDaemon> {
 
   return {
     sockPath,
+    tmpDir,
     stop(): void {
       try {
         proc.kill('SIGTERM');
