@@ -253,12 +253,16 @@ fn a_cycle_fails_the_query_naming_both_nodes() {
 /// behind: `ensure_daemon` forks without `--exit-with-parent`.
 struct SpawnedDaemon {
     socket: IsolatedSocket,
+    home: PathBuf,
+    xdg: PathBuf,
 }
 
 impl Drop for SpawnedDaemon {
     fn drop(&mut self) {
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
             .env("RUST_LOG", "error")
+            .env("HOME", &self.home)
+            .env("XDG_CONFIG_HOME", &self.xdg)
             .args(["kill", "--socket"])
             .arg(&self.socket.path)
             .output();
@@ -267,12 +271,15 @@ impl Drop for SpawnedDaemon {
 
 #[test]
 fn env_keys_answer_from_the_shell_and_still_ensure_the_daemon() {
-    let guard = SpawnedDaemon {
-        socket: IsolatedSocket::new(),
-    };
-    let home = guard.socket.dir.path().join("home");
-    let xdg = guard.socket.dir.path().join("xdg");
+    let socket = IsolatedSocket::new();
+    let home = socket.dir.path().join("home");
+    let xdg = socket.dir.path().join("xdg");
     std::fs::create_dir_all(&home).unwrap();
+    let guard = SpawnedDaemon {
+        socket,
+        home: home.clone(),
+        xdg: xdg.clone(),
+    };
     assert!(
         !guard.socket.path.exists(),
         "no daemon before the first get"

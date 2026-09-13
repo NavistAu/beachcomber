@@ -86,15 +86,12 @@ fn golden_put_sets_a_value() {
 
 // ── get_json_finds_put_created_virtual_without_explicit_path ─────────────────
 
-/// Regression test for the bug where `comb put myvirtual '{"field1":"hello"}'`
-/// (no `--path`, so the entry is stored globally) followed by
-/// `comb get myvirtual.field1 -f json` (also no `--path`) exited 2 with empty
-/// stdout AND stderr, even though the identical request over the raw socket
-/// (no path field at all) answers correctly. Root cause: `get`'s CLI layer
-/// defaults the request path to the process CWD when neither `--path` nor a
-/// trailing positional path is given, which scopes the lookup away from the
-/// global entry `put` created. `get` must still find a globally-put virtual
-/// entry when no path was explicitly requested.
+/// A `put` with no `--path` and a `get` with no `--path` must agree on where
+/// "no path" means. Both resolve through `effective_cli_path` in `main.rs`,
+/// which defaults an absent path (with no `--global`) to the process's
+/// current directory — `comb()` fixes that to "/" — so `put myvirtual
+/// '{"field1":"hello"}'` and `get myvirtual.field1 -f json` land at and read
+/// from the same entry without either command naming a directory.
 #[test]
 fn get_json_finds_put_created_virtual_without_explicit_path() {
     let d = TestDaemon::spawn();
@@ -113,15 +110,15 @@ fn get_json_finds_put_created_virtual_without_explicit_path() {
 
 // ── single_key_get_error_paths_always_write_stderr ────────────────────────────
 
-/// Regression test: every path in `run_get`'s single-key client-side rendering
-/// block that exits non-zero must also write something to stderr. Before the
-/// fix, the `ok:true`/`data:None` (cache-miss) branch set the error flag with
-/// no accompanying `eprintln!`, so the process exited 2 with zero bytes on
-/// both stdout and stderr — indistinguishable from a hang or a swallowed
-/// panic. This exercises a genuine miss (an unknown field on an existing
-/// static namespace, path-matched on both ends) rather than the routing bug
-/// above, to isolate the "silent failure" defect from the "wrong routing"
-/// defect.
+/// Regression test: every branch of `run_get`'s per-key `resolve()` loop that
+/// sets the error flag must also write something to stderr. A miss under a
+/// structured format takes the `Ok(None)` arm, which prints "no data (cache
+/// miss)"; before the fix that arm set the flag with no accompanying
+/// `eprintln!`, so the process exited 2 with zero bytes on both stdout and
+/// stderr — indistinguishable from a hang or a swallowed panic. This exercises
+/// a genuine miss (an unknown field on an existing static namespace,
+/// path-matched on both ends) rather than a routing bug, to isolate the
+/// "silent failure" defect from "wrong routing".
 #[test]
 fn single_key_get_error_paths_always_write_stderr() {
     let d = TestDaemon::spawn();
@@ -148,17 +145,12 @@ fn single_key_get_error_paths_always_write_stderr() {
 
 // ── get_text_finds_put_created_virtual_without_explicit_path ─────────────────
 
-/// Regression test for the text/sh half of the bug 6980405 fixed for `-f json`.
-///
-/// `comb put scanline '{...}'` (no `--path`, so the entry is stored globally)
-/// followed by `comb get scanline.stdin` printed nothing and exited 0, while
-/// `-f json` on the same key returned the value. The two formats take
-/// different routes through `run_get`: client-side formats collect a
-/// `Response` and got 6980405's global-fallback retry, whereas text/sh
-/// short-circuit into `get_formatted_with_flags`, which renders a miss as the
-/// empty string with no retry. Every shape of the key is covered because they
-/// all funnel through that same short-circuit: a scalar field, a nested field,
-/// and the bare provider.
+/// Companion to the json test above, for the default `text` format: a `put`
+/// with no `--path` (stored at the caller's cwd) must be visible to a `get`
+/// with no `--path` from the same cwd here too. `run_get` resolves every
+/// format through the same `resolve()` call per key, so there is no separate
+/// route for `text`/`sh` to drop the value on — this covers a scalar field, a
+/// nested field, and the bare provider (flattened `key=value` lines).
 #[test]
 fn get_text_finds_put_created_virtual_without_explicit_path() {
     let d = TestDaemon::spawn();
@@ -317,6 +309,8 @@ fn golden_kill_terminates_daemon() {
         .unwrap()
         .env("BEACHCOMBER_SOCKET", &d.socket.path)
         .env("RUST_LOG", "error")
+        .env("HOME", &d.home)
+        .env("XDG_CONFIG_HOME", &d.xdg)
         .args(["kill", "--socket"])
         .arg(&d.socket.path)
         .assert()

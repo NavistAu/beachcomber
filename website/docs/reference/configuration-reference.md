@@ -308,6 +308,8 @@ version = "{{ env.MY_PY or cache.python.venv_version }}"   # venv_name still com
 
 **The 0.9 form is an error.** `[providers.<name>.virtual]` — the 0.9 home of a provider's templates, as a table or as dotted keys under `[providers.<name>]` — is reported by daemon start and `comb check config` as `unrecognised block [providers.<name>.virtual]: templates live in [providers."<name>:template"]`.
 
+**A `path` key directly under `[providers.<name>]` is also an error.** Path expressions are gone; a query addresses the caller's directory, `--path`, or `--global`. Daemon start and `comb check config` report it as `[providers.<name>]: path is not a provider setting: a query addresses the caller's directory, --path, or --global`.
+
 ### `exec()` in templates
 
 A template can call `exec()` to run a command and use its output as the field's value — `defaults/kubecontext.toml` renders `kubecontext.context` this way:

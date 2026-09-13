@@ -66,8 +66,8 @@ impl Source for PythonVenv {
         let dir = Path::new(path);
 
         // Scan common venv directory names. $VIRTUAL_ENV is a per-shell var
-        // resolved client-side via:
-        //   venv_name = "python.local_venv_name or (env.VIRTUAL_ENV | basename)"
+        // rendered client-side by the venv_name template in defaults/python.toml:
+        //   venv_name = "{{ cache.python.local_venv_name or (env.VIRTUAL_ENV | basename) }}"
         // The daemon only reads from the filesystem at the given path.
         for name in VENV_DIRS {
             let venv_path = dir.join(name);

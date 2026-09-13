@@ -60,8 +60,9 @@ impl Source for TerraformState {
         }
 
         // Read from .terraform/environment file only. $TF_WORKSPACE is a
-        // per-shell override resolved client-side in the virtual cascade:
-        //   workspace = "env.TF_WORKSPACE or cache.terraform.workspace"
+        // per-shell override rendered client-side by the workspace template
+        // in defaults/terraform.toml:
+        //   workspace = "{{ env.TF_WORKSPACE or cache.terraform.workspace }}"
         let workspace = read_workspace_file(&tf_dir);
 
         let mut result = SourceResult::new();

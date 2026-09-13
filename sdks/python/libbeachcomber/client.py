@@ -372,7 +372,7 @@ class Client:
                 — this library never reads the process's own working
                 directory on the caller's behalf.
             env: The caller's environment for ``env.*`` refs. ``None``
-                means none supplied (every ``env.*`` ref misses).
+                means none supplied (every ``env.*`` ref is the empty string).
 
         Returns:
             :class:`~beachcomber.result.CombResult` — ``age_ms``/``stale``

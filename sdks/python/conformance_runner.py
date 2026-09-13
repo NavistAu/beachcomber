@@ -84,13 +84,8 @@ class DaemonProcess:
         self._comb_bin = comb_bin
         self._tmpdir = tempfile.mkdtemp(prefix="bcconf_")
         self.socket_path = os.path.join(self._tmpdir, "comb.sock")
-        self._config_path = os.path.join(self._tmpdir, "config.toml")
         self._proc: Optional[subprocess.Popen[bytes]] = None
         self._log_path = os.path.join(self._tmpdir, "daemon.log")
-
-        # Write a minimal config pointing at our temp socket.
-        with open(self._config_path, "w") as f:
-            f.write(f'[daemon]\nsocket_path = "{self.socket_path}"\n')
 
     def start(self) -> None:
         """Start the daemon process."""

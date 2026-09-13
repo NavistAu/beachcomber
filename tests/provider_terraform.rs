@@ -44,7 +44,7 @@ fn terraform_no_env_read_for_tf_workspace() {
     assert_eq!(
         result.fields.get("workspace").unwrap().as_text(),
         "from-file",
-        "daemon must not read $TF_WORKSPACE; that is a client-side virtual field (expression form)"
+        "daemon must not read $TF_WORKSPACE; that is the `terraform:template` default"
     );
 }
 
