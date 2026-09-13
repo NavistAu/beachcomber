@@ -357,32 +357,46 @@ fn a_template_put_globally_is_visible_to_both_reads() {
     );
 }
 
-// ── a key the daemon rejects is a miss ───────────────────────────────────────
+// ── a key the daemon rejects is an error, in the daemon's words ──────────────
 
-/// The daemon answers `ok: false` for an invalid facet key. The resolver's
-/// transport treats a rejected key as a miss — the daemon answered, and
-/// nothing is stored there — the same rule the FFI applies, so the miss
-/// contract per format follows: empty and exit 0 under `text`, an error under
-/// `json`.
+/// The daemon answers `ok: false` for an invalid facet key or an unknown
+/// provider. The key the user typed being refused is an error in every
+/// format, worded by the daemon — only a ref inside a template naming such a
+/// key is falsy (canon: a missing ref is falsy at any depth).
 #[test]
-fn a_daemon_rejected_key_is_a_miss() {
+fn a_daemon_rejected_key_is_an_error_in_every_format() {
     let d = TestDaemon::spawn();
     let cwd = project(&d);
 
+    for format in ["text", "json"] {
+        comb(&d, &cwd)
+            .args(["get", "-f", format, "a:b:c.x"])
+            .assert()
+            .code(2)
+            .stdout(predicates::str::is_empty())
+            .stderr(predicates::str::contains("Error querying a:b:c.x: "))
+            .stderr(predicates::str::contains("invalid facet key"));
+    }
     comb(&d, &cwd)
-        .args(["get", "a:b:c.x"])
-        .assert()
-        .success()
-        .stdout(predicates::str::is_empty())
-        .stderr(predicates::str::is_empty());
-    comb(&d, &cwd)
-        .args(["get", "-f", "json", "a:b:c.x"])
+        .args(["get", "nope.x"])
         .assert()
         .code(2)
         .stdout(predicates::str::is_empty())
-        .stderr(predicates::str::contains(
-            "Error querying a:b:c.x: no data (cache miss)",
-        ));
+        .stderr(predicates::str::contains("Error querying nope.x: "))
+        .stderr(predicates::str::contains("unknown provider"));
+}
+
+#[test]
+fn a_rejected_ref_inside_a_template_is_falsy() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    put(
+        &d,
+        &cwd,
+        &["t:template.v", r#""{{ cache.nope.x or 'fb' }}""#],
+    );
+
+    assert_eq!(stdout(&d, &cwd, &["t.v"]), "fb");
 }
 
 // ── multi-key: every key resolves independently ──────────────────────────────
@@ -417,14 +431,42 @@ fn multi_key_output_keeps_its_shape_per_format_and_a_miss_reports_itself() {
         stdout(&d, &cwd, &["-f", "CSV", "scanline.lit", "scanline.widgets"]),
         format!("scanline.lit,bar,foo\n1,{bar},hi\n")
     );
-    // A miss under a structured format is an error for that key alone; the
-    // others still render.
-    comb(&d, &cwd)
-        .args(["get", "-f", "json", "scanline.lit", "scanline.nope"])
+    // A miss under a structured format is an error for that key alone and
+    // the others still render — with the document keeping one slot per key:
+    // `null` in the array, an empty cell in the row.
+    let out = comb(&d, &cwd)
+        .args([
+            "get",
+            "-f",
+            "json",
+            "scanline.lit",
+            "scanline.nope",
+            "scanline.widgets.foo",
+        ])
         .assert()
         .code(2)
-        .stdout(predicates::str::contains("1"))
         .stderr(predicates::str::contains(
             "Error querying scanline.nope: no data (cache miss)",
         ));
+    let parsed: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(parsed, serde_json::json!([1, null, "hi"]));
+
+    let out = comb(&d, &cwd)
+        .args([
+            "get",
+            "-f",
+            "CSV",
+            "scanline.lit",
+            "scanline.nope",
+            "scanline.widgets.foo",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "Error querying scanline.nope: no data (cache miss)",
+        ));
+    assert_eq!(
+        String::from_utf8(out.get_output().stdout.clone()).unwrap(),
+        "scanline.lit,scanline.nope,scanline.widgets.foo\n1,,hi\n"
+    );
 }

@@ -12,7 +12,7 @@ use crate::cli::format::render_fmt_template_json;
 use crate::cli::output_format::{OutputFormat, format_sv, value_to_string};
 use crate::config::Config;
 use libbeachcomber::render::render_data;
-use libbeachcomber::resolve::{FetchError, Inputs, ResolveError, Slot, resolve};
+use libbeachcomber::resolve::{Inputs, ResolveError, Slot, resolve};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -95,37 +95,44 @@ pub fn run_get(
         allow_exec: true,
     };
 
-    // Under `text`/`sh` a miss is the empty string — nothing to print, not a
-    // failure — so a value embeds in a prompt verbatim. Under every structured
-    // format it is an error: there is no value to put in the document.
+    // One slot per key, `None` where it produced no value, so a multi-key
+    // document keeps its positions. Under `text`/`sh` a miss is the empty
+    // string — nothing to print, not a failure — so a value embeds in a prompt
+    // verbatim. Under every structured format it is an error: there is no
+    // value to put in the document.
     let plain = matches!(format, OutputFormat::Text | OutputFormat::Sh);
-    let mut hits: Vec<(&str, Value)> = Vec::new();
+    let mut slots: Vec<(&str, Option<Value>)> = Vec::with_capacity(keys.len());
     let mut any_error = false;
     for key in keys {
-        match resolve(key, &inputs, &mut session) {
-            Ok(Some(value)) => hits.push((key, value)),
+        let value = match resolve(key, &inputs, &mut session) {
+            Ok(Some(value)) => Some(value),
             Ok(None) => {
                 if !plain {
                     eprintln!("Error querying {key}: no data (cache miss)");
                     any_error = true;
                 }
+                None
             }
-            Err(ResolveError::Fetch(FetchError(msg))) => {
-                eprintln!("Error querying {key}: {msg}");
+            // The daemon's own words for a key it refused, or the transport's.
+            Err(ResolveError::Fetch(e)) => {
+                eprintln!("Error querying {key}: {e}");
                 any_error = true;
+                None
             }
             // A config or runtime failure already names its field.
             Err(e) => {
                 eprintln!("{e}");
                 any_error = true;
+                None
             }
-        }
+        };
+        slots.push((key, value));
     }
 
     let rendered = if keys.len() == 1 {
-        render_one(&format, hits.first().map(|(_, v)| v))
+        render_one(&format, slots[0].1.as_ref())
     } else {
-        render_many(&format, &hits)
+        render_many(&format, &slots)
     };
     match rendered {
         Ok(out) => print!("{out}"),
@@ -160,12 +167,13 @@ fn render_one(format: &OutputFormat, value: Option<&Value>) -> Result<String, St
     })
 }
 
-/// Several keys' values as one document: `text`/`sh` one rendering per line,
-/// `json` an array in key order, `csv`/`tsv` one row across every key (an
-/// object contributes its sorted fields, a scalar its key), `fmt` a template
-/// over the merge of every object's fields — as `provider.field` and as
-/// `field` — and every scalar under its key.
-fn render_many(format: &OutputFormat, hits: &[(&str, Value)]) -> Result<String, String> {
+/// Several keys' values as one document, one slot per key: `text`/`sh` one
+/// rendering per line (a slot with no value prints nothing), `json` an array
+/// in key order (`null`), `csv`/`tsv` one row across every key — an object
+/// contributes its sorted fields, a scalar its key, no value an empty cell —
+/// and `fmt` a template over the merge of every object's fields, as
+/// `provider.field` and as `field`, and every scalar under its key.
+fn render_many(format: &OutputFormat, slots: &[(&str, Option<Value>)]) -> Result<String, String> {
     Ok(match format {
         OutputFormat::Text | OutputFormat::Sh => {
             let wire = if matches!(format, OutputFormat::Sh) {
@@ -173,14 +181,15 @@ fn render_many(format: &OutputFormat, hits: &[(&str, Value)]) -> Result<String, 
             } else {
                 "text"
             };
-            hits.iter()
-                .map(|(_, v)| render_data(Some(v), wire))
+            slots
+                .iter()
+                .map(|(_, v)| render_data(v.as_ref(), wire))
                 .filter(|line| !line.is_empty())
                 .map(|line| format!("{line}\n"))
                 .collect()
         }
         OutputFormat::Json => {
-            let values: Vec<&Value> = hits.iter().map(|(_, v)| v).collect();
+            let values: Vec<&Option<Value>> = slots.iter().map(|(_, v)| v).collect();
             format!("{}\n", serde_json::to_string_pretty(&values).unwrap())
         }
         OutputFormat::Csv
@@ -195,9 +204,9 @@ fn render_many(format: &OutputFormat, hits: &[(&str, Value)]) -> Result<String, 
             let with_header = matches!(format, OutputFormat::CsvHeader | OutputFormat::TsvHeader);
             let mut names: Vec<String> = Vec::new();
             let mut values: Vec<String> = Vec::new();
-            for (key, value) in hits {
+            for (key, value) in slots {
                 match value {
-                    Value::Object(map) => {
+                    Some(Value::Object(map)) => {
                         let mut pairs: Vec<(&String, &Value)> = map.iter().collect();
                         pairs.sort_by_key(|(k, _)| *k);
                         for (k, v) in pairs {
@@ -205,9 +214,13 @@ fn render_many(format: &OutputFormat, hits: &[(&str, Value)]) -> Result<String, 
                             values.push(value_to_string(v));
                         }
                     }
-                    _ => {
+                    Some(value) => {
                         names.push(key.to_string());
                         values.push(value_to_string(value));
+                    }
+                    None => {
+                        names.push(key.to_string());
+                        values.push(String::new());
                     }
                 }
             }
@@ -222,18 +235,19 @@ fn render_many(format: &OutputFormat, hits: &[(&str, Value)]) -> Result<String, 
         }
         OutputFormat::Fmt(template) => {
             let mut merged = serde_json::Map::new();
-            for (key, value) in hits {
+            for (key, value) in slots {
                 match value {
-                    Value::Object(map) => {
+                    Some(Value::Object(map)) => {
                         let provider = key.split('.').next().unwrap_or(key);
                         for (k, v) in map {
                             merged.insert(format!("{provider}.{k}"), v.clone());
                             merged.insert(k.clone(), v.clone());
                         }
                     }
-                    _ => {
+                    Some(value) => {
                         merged.insert(key.to_string(), value.clone());
                     }
+                    None => {}
                 }
             }
             render_fmt_template_json(template, &Value::Object(merged))?

@@ -384,12 +384,12 @@ impl ClientSession {
 /// The CLI's transport for [`libbeachcomber::resolve`]: one daemon `get` per
 /// node on this session's connection.
 ///
-/// A node with nothing in it — no `data`, no `template` — is a miss, and so is
-/// a key the daemon rejected (`ok: false`, e.g. an invalid facet): the daemon
-/// answered, and nothing is stored at that address. That is the rule the FFI's
-/// `Fetch` applies too, so `comb get` and `bc_resolve` agree on what a
-/// rejected key is worth. Every other failure is the transport's and aborts the
-/// resolution, worded as `comb_error_to_io` words it for every other op.
+/// A node with nothing in it — no `data`, no `template` — is a miss. A key the
+/// daemon rejected (`ok: false`: an invalid facet, an unknown provider) is
+/// `Rejected` with the daemon's own words, for the resolver to decide whether
+/// it is the caller's key (an error) or a ref inside a template (falsy). Every
+/// other failure is the transport's, worded as `comb_error_to_io` words it for
+/// every other op.
 impl Fetch for ClientSession {
     fn get(
         &mut self,
@@ -400,8 +400,8 @@ impl Fetch for ClientSession {
     ) -> Result<Option<Got>, FetchError> {
         match self.session.get_node(key, path, force, wait) {
             Ok(got) => Ok((got != Got::default()).then_some(got)),
-            Err(CombError::ServerError(_)) => Ok(None),
-            Err(e) => Err(FetchError(comb_error_to_io(e).to_string())),
+            Err(CombError::ServerError(msg)) => Err(FetchError::Rejected(msg)),
+            Err(e) => Err(FetchError::Transport(comb_error_to_io(e).to_string())),
         }
     }
 }

@@ -87,9 +87,30 @@ impl Inputs<'_> {
     }
 }
 
-/// A [`Fetch`] failure — a transport fault, not a miss.
+/// A [`Fetch`] failure.
+///
+/// Neither is a miss. `Transport` is the daemon not being asked — a broken
+/// connection, a timeout — and stops a resolution wherever it happens.
+/// `Rejected` is the daemon answering `ok: false` to the key itself: an
+/// invalid facet, an unknown provider. The key the caller asked for being
+/// rejected is an error the caller hears, in the daemon's own words; a ref
+/// inside a template naming a rejected key is a missing ref, and canon says a
+/// missing ref is falsy at any depth.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FetchError(pub String);
+pub enum FetchError {
+    /// The daemon could not be asked.
+    Transport(String),
+    /// The daemon refused the key, with its reason.
+    Rejected(String),
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FetchError::Transport(m) | FetchError::Rejected(m) => f.write_str(m),
+        }
+    }
+}
 
 /// One request to the daemon.
 ///
@@ -114,7 +135,7 @@ pub enum ResolveError {
     Config(String),
     /// A failed or disabled `exec()`, or any other render-time failure.
     Runtime(String),
-    /// The daemon could not be asked.
+    /// The daemon could not be asked, or refused the key being resolved.
     Fetch(FetchError),
 }
 
@@ -122,7 +143,7 @@ impl std::fmt::Display for ResolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ResolveError::Config(m) | ResolveError::Runtime(m) => f.write_str(m),
-            ResolveError::Fetch(FetchError(m)) => f.write_str(m),
+            ResolveError::Fetch(e) => e.fmt(f),
         }
     }
 }
@@ -184,14 +205,15 @@ const METADATA_SUFFIXES: [&str; 5] = [":age", ":stale", ":fresh", ":cache", ":so
 ///
 /// Both the memo and the stack are per top-level call. The memo makes
 /// `Fetch::get` run exactly once per distinct `(key, path)` — a namespace
-/// whose leaves share a ref is one round trip for that ref, not one per leaf
-/// — and its insertion order is the dependency list [`deps`] returns. The
-/// stack is what makes a cycle an error rather than a hang; its entries are
-/// `(key, path)`, because the same key at two directories is two nodes.
+/// whose leaves share a ref is one round trip for that ref, not one per leaf,
+/// and a key the daemon rejected is asked about once too — and its insertion
+/// order is the dependency list [`deps`] returns. The stack is what makes a
+/// cycle an error rather than a hang; its entries are `(key, path)`, because
+/// the same key at two directories is two nodes.
 struct Resolver<'a> {
     inputs: &'a Inputs<'a>,
     fetch: &'a mut dyn Fetch,
-    memo: HashMap<(String, Option<String>), Option<Got>>,
+    memo: HashMap<(String, Option<String>), Result<Option<Got>, FetchError>>,
     order: Fetched,
     stack: Frames,
 }
@@ -260,18 +282,34 @@ impl<'a> Resolver<'a> {
     }
 
     /// Ask the daemon for one node, at most once per `(key, path)`.
+    ///
+    /// A rejection is the daemon's answer about the key and is memoised like a
+    /// hit or a miss; a transport failure is not an answer and ends the
+    /// resolution, so nothing about it is kept.
     fn fetch(&mut self, key: &str) -> Result<Option<Got>, ResolveError> {
         let coord = (key.to_string(), self.inputs.path().map(str::to_string));
-        if let Some(got) = self.memo.get(&coord) {
-            return Ok(got.clone());
+        if let Some(answer) = self.memo.get(&coord) {
+            return answer.clone().map_err(ResolveError::Fetch);
         }
-        let got = self
+        let answer = self
             .fetch
-            .get(key, coord.1.as_deref(), self.inputs.force, self.inputs.wait)
-            .map_err(ResolveError::Fetch)?;
-        self.memo.insert(coord.clone(), got.clone());
+            .get(key, coord.1.as_deref(), self.inputs.force, self.inputs.wait);
+        if let Err(FetchError::Transport(_)) = &answer {
+            return answer.map_err(ResolveError::Fetch);
+        }
+        self.memo.insert(coord.clone(), answer.clone());
         self.order.push(coord);
-        Ok(got)
+        answer.map_err(ResolveError::Fetch)
+    }
+
+    /// [`Self::fetch`] for a ref inside a template: a key the daemon rejected
+    /// is a missing ref, and a missing ref is falsy at any depth (canon), so
+    /// it binds nothing. A transport failure still stops the resolution.
+    fn fetch_ref(&mut self, key: &str) -> Result<Option<Got>, ResolveError> {
+        match self.fetch(key) {
+            Err(ResolveError::Fetch(FetchError::Rejected(_))) => Ok(None),
+            other => other,
+        }
     }
 
     /// Render one template source, as the node addressed by `key`.
@@ -373,11 +411,11 @@ impl<'a> Resolver<'a> {
     /// Bind every ref a source names into the context it evaluates against.
     ///
     /// A daemon miss binds nothing — not the value, and not the object that
-    /// would have enclosed it — so `default` and `or` fire on it. An env
-    /// miss binds `""` (canon invariant 6), so `or` fires and `default` does
-    /// not. Where a whole `cache.P` and a `cache.P.F` disagree, the whole
-    /// object wins: it is the authoritative snapshot, whichever ref is bound
-    /// first.
+    /// would have enclosed it — so `default` and `or` fire on it; a key the
+    /// daemon rejects is the same missing ref. An env miss binds `""` (canon
+    /// invariant 6), so `or` fires and `default` does not. Where a whole
+    /// `cache.P` and a `cache.P.F` disagree, the whole object wins: it is the
+    /// authoritative snapshot, whichever ref is bound first.
     fn bind(&mut self, refs: &[Ref]) -> Result<JsonValue, ResolveError> {
         let mut top = Map::new();
         top.insert("env".to_string(), JsonValue::Object(Map::new()));
@@ -393,7 +431,7 @@ impl<'a> Resolver<'a> {
                 }
                 Ref::CacheField(provider, field) => {
                     let Some(value) = self
-                        .fetch(&format!("{provider}.{field}"))?
+                        .fetch_ref(&format!("{provider}.{field}"))?
                         .and_then(|g| g.data)
                     else {
                         continue;
@@ -408,7 +446,7 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 Ref::CacheProvider(provider) => {
-                    let Some(value) = self.fetch(provider)?.and_then(|g| g.data) else {
+                    let Some(value) = self.fetch_ref(provider)?.and_then(|g| g.data) else {
                         continue;
                     };
                     if let Some(JsonValue::Object(cache)) = top.get_mut("cache") {
@@ -427,11 +465,14 @@ impl<'a> Resolver<'a> {
                 }
                 // `rest` is the whole remaining address (`widgets.b`), and
                 // the value lands at that nested path so the template's own
-                // attribute walk (`scanline.widgets.b`) finds it.
+                // attribute walk (`scanline.widgets.b`) finds it. The key
+                // being rejected is, here, a missing ref like any other.
                 Ref::Resolved(provider, rest) => {
                     let key = format!("{provider}.{rest}");
-                    let Some(value) = self.resolve(&key)? else {
-                        continue;
+                    let value = match self.resolve(&key) {
+                        Ok(Some(value)) => value,
+                        Ok(None) | Err(ResolveError::Fetch(FetchError::Rejected(_))) => continue,
+                        Err(e) => return Err(e),
                     };
                     insert_at(&mut top, &key, value);
                 }

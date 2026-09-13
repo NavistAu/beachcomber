@@ -31,6 +31,8 @@ struct MapFetch {
     entries: HashMap<(String, Option<String>), Got>,
     /// Keys whose fetch fails, standing in for a transport failure.
     fails: Vec<String>,
+    /// Keys the daemon refuses, standing in for `ok: false`.
+    rejects: Vec<String>,
     log: Vec<Call>,
 }
 
@@ -63,7 +65,10 @@ impl Fetch for MapFetch {
             wait,
         });
         if self.fails.iter().any(|k| k == key) {
-            return Err(FetchError(format!("transport failed for {key}")));
+            return Err(FetchError::Transport(format!("transport failed for {key}")));
+        }
+        if self.rejects.iter().any(|k| k == key) {
+            return Err(FetchError::Rejected(format!("unknown provider: {key}")));
         }
         Ok(self
             .entries
@@ -802,9 +807,58 @@ fn a_fetch_error_stops_the_resolution_where_it_happened() {
     let err = resolve("k", &inputs(&env), &mut f).unwrap_err();
     assert_eq!(
         err,
-        ResolveError::Fetch(FetchError("transport failed for boom.x".to_string()))
+        ResolveError::Fetch(FetchError::Transport(
+            "transport failed for boom.x".to_string()
+        ))
     );
     assert_eq!(f.keys(), vec!["k", "boom.x"]);
+}
+
+// ── 13a. A rejected key ───────────────────────────────────────────────────────
+
+/// The key the caller asked for being refused is an error in the daemon's
+/// words; the same key named by a ref inside a template is a missing ref,
+/// falsy at any depth, and asked about once however many refs name it.
+#[test]
+fn a_rejected_top_level_key_is_an_error_and_a_rejected_ref_is_falsy() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.rejects.push("c.z".to_string());
+
+    assert_eq!(
+        resolve("c.z", &inputs(&env), &mut f),
+        Err(ResolveError::Fetch(FetchError::Rejected(
+            "unknown provider: c.z".to_string()
+        )))
+    );
+
+    let mut f = MapFetch::default();
+    f.rejects.push("c.z".to_string());
+    f.seed(
+        "k",
+        Some(CWD),
+        tmpl(json!("{{ cache.c.z or c.z or 'fb' }}")),
+    );
+    assert_eq!(resolve("k", &inputs(&env), &mut f), Ok(Some(json!("fb"))));
+    assert_eq!(
+        f.keys(),
+        vec!["k", "c.z"],
+        "a rejection is memoised like any other answer: two refs, one fetch"
+    );
+
+    // Inside a group, too: the leaf renders with the ref unbound rather than
+    // failing the query.
+    let mut f = MapFetch::default();
+    f.rejects.push("c.z".to_string());
+    f.seed(
+        "g",
+        Some(CWD),
+        tmpl(json!({ "a": "{{ cache.c.z | default('fb') }}", "b": "x" })),
+    );
+    assert_eq!(
+        resolve("g", &inputs(&env), &mut f),
+        Ok(Some(json!({ "a": "fb", "b": "x" })))
+    );
 }
 
 // ── 14. eval ──────────────────────────────────────────────────────────────────
