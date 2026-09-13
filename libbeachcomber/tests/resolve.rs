@@ -276,8 +276,8 @@ fn the_walk_indexes_a_rendered_array_by_decimal_index() {
 
 #[test]
 fn the_walk_accepts_only_the_canonical_decimal_index() {
-    // The daemon keys array elements "0", "1", …; a spelling that would
-    // miss there misses here too.
+    // One spelling per index: ASCII digits, no leading zero unless the
+    // segment is exactly "0". Anything else misses.
     let env = spec_env();
     let mut f = spec_fetch();
     for rest in ["+0", "01", "1 ", ""] {

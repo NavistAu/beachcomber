@@ -490,9 +490,9 @@ fn walk(value: JsonValue, rest: &str) -> Option<JsonValue> {
     Some(current)
 }
 
-/// A canonical decimal index — how the daemon keys array elements: ASCII
-/// digits only, no leading zero unless the segment is exactly `0`. A
-/// spelling the daemon would miss on (`01`, `+0`) misses here too.
+/// The canonical spelling of a decimal index (spec §4.2 "array by decimal
+/// index"): ASCII digits only, no leading zero unless the segment is exactly
+/// `0`. Any other spelling (`01`, `+0`, `1 `) misses.
 fn decimal_index(segment: &str) -> Option<usize> {
     let canonical = segment == "0"
         || (!segment.is_empty()

@@ -281,7 +281,8 @@ pub fn fetch_daemon_data<E>(
 //
 // ERROR-MESSAGE ABI CONTRACT. The two compile failures below are prefixed
 // `"expression compile error: "` (the typed path, `evaluate_expression`) and
-// `"template compile error: "` (the render path, `render_template`). Those
+// `"template compile error: "` (the render path — the literal now lives in
+// `RenderError`'s `Display`, which `render_template` maps through). Those
 // prefixes are not cosmetic: `libbeachcomber-ffi::eval_error_kind` matches the
 // substring `"compile error"` in them to report `parse_error` — the caller's
 // own source being malformed — and everything else as `server_error`. The
