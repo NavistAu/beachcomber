@@ -58,7 +58,13 @@ impl Fixture {
     fn start_with_home(registry: ProviderRegistry, home_rel: &str) -> Fixture {
         let root_dir = TempDir::new().unwrap();
         let root = root_dir.path().canonicalize().unwrap();
-        let home = root.join(home_rel);
+        // `root.join("")` would append a trailing separator; `$HOME` at the
+        // root itself must be the canonical path, byte for byte.
+        let home = if home_rel.is_empty() {
+            root.clone()
+        } else {
+            root.join(home_rel)
+        };
         std::fs::create_dir_all(&home).unwrap();
         // SAFETY: nextest gives every test its own process, so no other thread
         // is reading the environment concurrently.
