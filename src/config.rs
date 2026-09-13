@@ -1227,6 +1227,10 @@ impl Config {
                 // live inside per-source blocks instead. Skip both at provider level.
                 continue;
             }
+            // Not a source either; `validate_providers` owns the error for it.
+            if sub_key == "virtual" {
+                continue;
+            }
             let block_name = format!("[providers.{prov_name}.{sub_key}]");
             let mut src = ExternalSourceConfig::from_toml_table(&block_name, sub_table)?;
             src.name = sub_key.clone();

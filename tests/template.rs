@@ -1,5 +1,5 @@
 //! Tests for the CLI's `-f fmt` rendering and for the value-expression
-//! rendering it now shares with `comb eval` and config virtual fields.
+//! rendering it now shares with `comb eval` and the `:template` facet.
 //!
 //! Task 3 deleted `src/cli/format.rs`'s hand-rolled `{{ }}` scanner
 //! (`find_eval_template_pairs` / `find_eval_template_refs`) and its

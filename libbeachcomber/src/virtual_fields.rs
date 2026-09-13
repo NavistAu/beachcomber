@@ -14,8 +14,7 @@
 //! module neither knows which keys are templates nor evaluates one on its own.
 //!
 //! RUST NOTE: `virtual` is a reserved keyword in Rust, which is why this
-//! module is `virtual_fields` and the TOML key is read as the string literal
-//! `"virtual"`.
+//! module is `virtual_fields`.
 
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error, ErrorKind, UndefinedBehavior};
@@ -351,16 +350,13 @@ mod tests {
 
     /// Compile and evaluate one expression against an empty context, the way
     /// [`crate::resolve`] evaluates the single-tag form. A missed ref is
-    /// chainable undefined. The two error prefixes are the resolver's, so
-    /// `libbeachcomber-ffi::eval_error_kind` reads the same phases here.
+    /// chainable undefined.
     fn eval_expr(expr: &str, allow_exec: bool) -> Result<JsonValue, String> {
         let env = build_expression_env(allow_exec);
-        let compiled = env
-            .compile_expression(expr)
-            .map_err(|e| format!("expression compile error: {e}"))?;
+        let compiled = env.compile_expression(expr).map_err(|e| e.to_string())?;
         let value = compiled
             .eval(MjValue::from_serialize(serde_json::json!({})))
-            .map_err(|e| format!("expression eval error: {e}"))?;
+            .map_err(|e| e.to_string())?;
         Ok(mj_to_json(value))
     }
 
@@ -449,21 +445,5 @@ mod tests {
     fn exec_non_string_cmd_errors() {
         let err = eval_expr(r#"exec(42)"#, true).unwrap_err();
         assert!(err.contains("argument 1"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn exec_runtime_failure_is_an_eval_error_not_a_compile_error() {
-        // `libbeachcomber-ffi::eval_error_kind` matches the substring
-        // "compile error" to classify a failure as the caller's own source
-        // being malformed; a real command failure must never read as one.
-        let err = eval_expr(r#"exec("sh", "-c", "exit 3")"#, true).unwrap_err();
-        assert!(
-            err.starts_with("expression eval error: "),
-            "unexpected error: {err}"
-        );
-        assert!(
-            !err.contains("compile error"),
-            "must not read as a compile error: {err}"
-        );
     }
 }

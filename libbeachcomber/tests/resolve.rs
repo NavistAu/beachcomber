@@ -946,6 +946,19 @@ fn a_miss_binds_nothing_so_default_fires_at_any_depth() {
         .unwrap(),
         json!(r#"V|{"f": "V"}"#)
     );
+
+    // A resolved hit lands beside a resolved miss on the same provider: the
+    // hit creates `probe`, and the missed sibling is still absent from it.
+    f.seed("probe.here", Some(CWD), data(json!("V")));
+    assert_eq!(
+        eval(
+            r#"{{ probe.here }}/{{ probe.missing | default("FB") }}"#,
+            &i,
+            &mut f
+        )
+        .unwrap(),
+        json!("V/FB")
+    );
 }
 
 // ── 12. The two expression forms ──────────────────────────────────────────────

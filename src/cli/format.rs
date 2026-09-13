@@ -25,9 +25,9 @@ pub fn render_fmt_template(template: &str, result: &ProviderResult) -> Result<St
 /// Used by call sites that already hold a `serde_json::Value`.
 ///
 /// The render itself is [`libbeachcomber::eval::render_template`] — the
-/// workspace's one template render, shared with value-expression evaluation, so
-/// `-f fmt`, `comb eval` and a config `virtual.x` see the same filters and the
-/// same undefined/`none` handling.
+/// workspace's one template render, sharing its environment with the resolver,
+/// so `-f fmt`, `comb eval` and a `:template` facet leaf see the same filters
+/// and the same undefined/`none` handling.
 pub fn render_fmt_template_json(
     template: &str,
     data: &serde_json::Value,

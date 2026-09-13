@@ -10,8 +10,8 @@
 //! invariant 8 says `sh` shell-escapes, so a value carrying a space, a
 //! single quote, a `$` or a newline is safe to `eval`. [`render_data`] now
 //! takes the format and quotes under `sh`; [`shell_quote`] is the single
-//! escaping helper, shared with the CLI's client-side virtual-field
-//! rendering so the two paths cannot drift.
+//! escaping helper, shared with `comb status -f sh` so the two paths cannot
+//! drift.
 //!
 //! The wire form additionally framed each response with a trailing blank
 //! line (and an empty object needed a special case, fixed in `63f8e55`, to
@@ -24,7 +24,7 @@ use serde_json::Value;
 
 /// POSIX single-quote a string: wrap in `'...'`, rewriting each internal `'`
 /// as `'\''`. The one shell-escaping helper behind `--format sh` — used here
-/// for daemon-backed values and by the CLI for client-side virtual fields.
+/// for every rendered value and by `comb status -f sh`.
 pub fn shell_quote(s: &str) -> String {
     let escaped = s.replace('\'', r"'\''");
     format!("'{escaped}'")

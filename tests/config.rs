@@ -1012,24 +1012,64 @@ fn validate_providers_rejects_a_virtual_subtable_naming_the_template_facet() {
     // 15), so the old block is unrecognised — and its error says where the
     // templates went, rather than the generic per-source "unknown key"
     // any other stray sub-table gets. `virtual.env = …` is the dotted-key
-    // spelling of the same table. `conda` is not a known provider, so the
-    // error cannot be the "does not match any registered source" warning
-    // either: it is this block's own.
+    // spelling of the same table. The check runs before the provider's kind
+    // is consulted, so every kind gets the same error: a namespace no
+    // provider stands behind (`conda`), a builtin with a real source block
+    // beside it (`git`), a `backend = "script"`, a `backend = "library"`,
+    // and a legacy bare-`command` provider. Nothing else in the file is
+    // wrong, so these five are the whole verdict.
     let toml_str = r#"
 [providers.conda]
 virtual.env = "{{ env.CONDA_DEFAULT_ENV }}"
+
+[providers.git]
+virtual.branch_display = "{{ env.GIT_BRANCH or git.branch }}"
+
+[providers.git.diff]
+type = "poll"
+poll_interval = "30s"
+poll_count = 12
+
+[providers.localdash]
+backend = "script"
+virtual.label = "{{ localdash.weather }}"
+
+[providers.localdash.weather]
+command = "/usr/bin/weather"
+type = "poll"
+
+[providers.mygpu]
+backend = "library"
+library_path = "/usr/local/lib/libgpu.dylib"
+virtual.label = "{{ mygpu.usage }}"
+
+[providers.mygpu.usage]
+poll_interval = "5s"
+
+[providers.chronoclaude]
+command = "/path/statusline"
+output = "text"
+virtual.label = "{{ chronoclaude.value }}"
 "#;
     let config: Config = toml::from_str(toml_str).expect("valid toml");
-    let known_providers: Vec<String> = vec![];
-    let known_sources = std::collections::HashMap::new();
-    let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert_eq!(
-        errors,
-        vec![
-            "unrecognised block [providers.conda.virtual]: templates live in [providers.\"conda:template\"]"
-                .to_string()
-        ]
+    let known_providers = vec!["git".to_string()];
+    let mut known_sources = std::collections::HashMap::new();
+    known_sources.insert(
+        "git".to_string(),
+        vec!["diff".to_string(), "refs".to_string(), "status".to_string()],
     );
+    let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
+    let expected: Vec<String> = ["chronoclaude", "conda", "git", "localdash", "mygpu"]
+        .iter()
+        .map(|p| {
+            format!(
+                "unrecognised block [providers.{p}.virtual]: templates live in [providers.\"{p}:template\"]"
+            )
+        })
+        .collect();
+    let mut sorted = errors.clone();
+    sorted.sort();
+    assert_eq!(sorted, expected, "errors: {errors:?}");
     assert!(warnings.is_empty(), "no warnings expected: {warnings:?}");
 }
 
