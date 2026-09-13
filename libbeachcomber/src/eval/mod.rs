@@ -17,8 +17,9 @@ mod scan;
 pub use scan::{Tag, TagKind, scan_tags};
 
 use crate::virtual_fields::{
-    EvalContext, Ref, VirtualFields, build_context_json, build_expression_env,
-    discover_expression_refs, mj_to_json, refs_from_names,
+    EvalContext, Ref, VirtualFields, build_context_json, build_expression_env, classify_dotted,
+    classify_dotted_deep, discover_expression_refs, discover_expression_refs_with, mj_to_json,
+    refs_from_names,
 };
 use minijinja::value::Value as MjValue;
 use std::collections::{HashMap, HashSet};
@@ -124,9 +125,21 @@ fn analyze(src: &str) -> Analysis<'_> {
 /// `build_context_json` in particular resolves a `cache.P` / `cache.P.F`
 /// collision the same way whichever it binds first.
 pub fn discover_refs(src: &str) -> Vec<Ref> {
+    discover_refs_with(src, classify_dotted)
+}
+
+/// [`discover_refs`] for the one-tree resolver: the same analysis, with a
+/// `P.rest…` name kept whole as `Resolved(P, "rest…")` rather than cut at
+/// two segments — see [`crate::virtual_fields::classify_dotted_deep`]. A ref
+/// names a node at any depth, never the group above it.
+pub(crate) fn discover_refs_deep(src: &str) -> Vec<Ref> {
+    discover_refs_with(src, classify_dotted_deep)
+}
+
+fn discover_refs_with(src: &str, classify: fn(&str) -> Option<Ref>) -> Vec<Ref> {
     match analyze(src) {
-        // Already sorted by `discover_expression_refs`.
-        Analysis::SingleTag(expr) => discover_expression_refs(expr),
+        // Already sorted by `discover_expression_refs_with`.
+        Analysis::SingleTag(expr) => discover_expression_refs_with(expr, classify),
         Analysis::Template => {
             // Ref discovery never evaluates anything, so `allow_exec`
             // doesn't matter here — `false` is an arbitrary, harmless
@@ -137,7 +150,7 @@ pub fn discover_refs(src: &str) -> Vec<Ref> {
             let Ok(template) = env.template_from_str(src) else {
                 return Vec::new();
             };
-            let mut refs = refs_from_names(template.undeclared_variables(true));
+            let mut refs = refs_from_names(template.undeclared_variables(true), classify);
             refs.sort();
             refs
         }

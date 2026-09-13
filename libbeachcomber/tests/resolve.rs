@@ -439,9 +439,18 @@ fn cycle_fetch(a: &str, b: &str) -> MapFetch {
 #[test]
 fn a_leaf_referencing_its_own_group_is_a_cycle_naming_the_group() {
     let env = spec_env();
-    // `a` reaches `b` through the group, and `b` names the group itself — so
-    // assembling the group needs the group.
+    // `a` names `b`, and `b` names the group itself — so assembling the group
+    // needs the group. Asked for the group, the cycle closes on it.
     let mut f = cycle_fetch("{{ scanline.widgets.b }}", "{{ scanline.widgets }}");
+    let err = resolve("scanline.widgets", &inputs(&env), &mut f).unwrap_err();
+    assert_eq!(
+        err,
+        ResolveError::Config(
+            "scanline.widgets: virtual field cycle detected: scanline.widgets references itself"
+                .to_string()
+        )
+    );
+    // Asked for `a`, the same cycle (a → b → widgets → a) closes on `a`.
     let err = resolve("scanline.widgets.a", &inputs(&env), &mut f).unwrap_err();
     match &err {
         ResolveError::Config(m) => assert!(
@@ -456,9 +465,38 @@ fn a_leaf_referencing_its_own_group_is_a_cycle_naming_the_group() {
 fn a_leaf_referencing_a_sibling_by_full_path_is_not_a_cycle() {
     let env = env_of(&[("X", "sibling")]);
     let mut f = cycle_fetch("{{ scanline.widgets.b }}", "{{ env.X }}");
+    // The ref names the sibling leaf, not the group above it.
     assert_eq!(
         resolve("scanline.widgets.a", &inputs(&env), &mut f),
         Ok(Some(json!("sibling")))
+    );
+    assert_eq!(
+        f.keys(),
+        vec!["scanline.widgets.a", "scanline.widgets.b"],
+        "the group itself is never fetched"
+    );
+    // And the group assembles: `a` resolves `b` beneath it, no cycle.
+    assert_eq!(
+        resolve("scanline.widgets", &inputs(&env), &mut f),
+        Ok(Some(json!({ "a": "sibling", "b": "sibling" })))
+    );
+}
+
+#[test]
+fn a_self_referencing_leaf_at_depth_is_a_cycle_naming_itself() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "scanline.widgets.x",
+        Some(CWD),
+        tmpl(json!("{{ scanline.widgets.x }}")),
+    );
+    assert_eq!(
+        resolve("scanline.widgets.x", &inputs(&env), &mut f).unwrap_err(),
+        ResolveError::Config(
+            "scanline.widgets.x: virtual field cycle detected: scanline.widgets.x references itself"
+                .to_string()
+        )
     );
 }
 
@@ -654,17 +692,48 @@ fn eval_reads_the_same_keys_as_resolving_the_ref() {
     let mut resolved = spec_fetch();
     let mut evaled = spec_fetch();
 
-    // A two-segment ref addresses exactly the key it names, so `eval` reads
-    // what `resolve` reads. (A deeper ref — `{{ scanline.widgets.foo }}` —
-    // addresses `scanline.widgets` and navigates into it, per
-    // `virtual_fields::classify_dotted`, so it reads the group instead.)
-    let by_key = deps("terraform.workspace", &inputs(&env), &mut resolved).unwrap();
-    eval("{{ terraform.workspace }}", &inputs(&env), &mut evaled).unwrap();
+    // A ref names a node at any depth, so `eval` of the ref reads exactly
+    // what `resolve` of the key reads.
+    let by_key = deps("scanline.widgets.foo", &inputs(&env), &mut resolved).unwrap();
+    eval("{{ scanline.widgets.foo }}", &inputs(&env), &mut evaled).unwrap();
     assert_eq!(
         by_key,
-        vec![("terraform.workspace".to_string(), Some(CWD.to_string()))]
+        vec![("scanline.widgets.foo".to_string(), Some(CWD.to_string()))]
     );
-    assert_eq!(evaled.keys(), vec!["terraform.workspace"]);
+    let evaled_keys: Vec<&str> = evaled.keys();
+    assert_eq!(evaled_keys, vec!["scanline.widgets.foo"]);
+}
+
+#[test]
+fn a_ref_at_depth_fetches_that_leaf_and_never_the_group_above_it() {
+    let env = spec_env();
+    let mut f = spec_fetch();
+    f.seed(
+        "k.ref",
+        Some(CWD),
+        tmpl(json!("{{ scanline.widgets.foo }}")),
+    );
+    assert_eq!(
+        resolve("k.ref", &inputs(&env), &mut f),
+        Ok(Some(json!("hi")))
+    );
+    assert_eq!(f.keys(), vec!["k.ref", "scanline.widgets.foo"]);
+}
+
+#[test]
+fn a_ref_past_a_template_walks_into_what_it_renders() {
+    let env = spec_env();
+    let mut f = spec_fetch();
+    // `scanline.stats.cpu` is served as the stats template plus `rest: cpu`;
+    // a ref to it takes the same walk `resolve` does.
+    assert_eq!(
+        eval("{{ scanline.stats.cpu }}", &inputs(&env), &mut f).unwrap(),
+        json!(40)
+    );
+    assert_eq!(
+        eval("{{ scanline.stats.cpu + 2 }}", &inputs(&env), &mut f).unwrap(),
+        json!(42)
+    );
 }
 
 #[test]

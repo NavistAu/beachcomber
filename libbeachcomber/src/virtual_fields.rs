@@ -108,6 +108,9 @@ pub enum Ref {
     /// `cache.P` — the whole provider object from the cache.
     CacheProvider(String),
     /// `P.F` — the resolved field value (recursive if virtual, daemon fetch if not).
+    /// Under the resolver's deep classifier (`classify_dotted_deep`) the
+    /// second component is the whole remaining address (`"widgets.b"`), not
+    /// one segment.
     Resolved(String, String),
 }
 
@@ -517,22 +520,39 @@ pub(crate) fn classify_dotted(name: &str) -> Option<Ref> {
     }
 }
 
+/// [`classify_dotted`] for the one-tree resolver ([`crate::resolve`]), where
+/// every node is addressable: a `P.rest…` name is `Resolved(P, "rest…")`
+/// with every segment kept, so `scanline.widgets.b` names that leaf and
+/// never the group above it. `env.*`, `cache.*`, `cwd` and a bare name
+/// classify exactly as [`classify_dotted`] does.
+pub(crate) fn classify_dotted_deep(name: &str) -> Option<Ref> {
+    let (first, rest) = name.split_once('.')?;
+    match first {
+        "env" | "cache" | "cwd" => classify_dotted(name),
+        _ => Some(Ref::Resolved(first.to_string(), rest.to_string())),
+    }
+}
+
 /// Classify a batch of undeclared-variable names into a deduplicated ref list.
 ///
 /// Shared by [`discover_expression_refs`] and the template discovery path in
 /// `crate::eval`, so the expression and template forms of one value expression
-/// always yield the same refs.
+/// always yield the same refs. `classify` is [`classify_dotted`] or
+/// [`classify_dotted_deep`]; everything but the classification is shared.
 ///
 /// VERIFIED against vendor/minijinja 2.19.0 (compiler/meta.rs:141-157): with
-/// nested = true, an attribute chain `a.b` is recorded as the dotted string
-/// "a.b" (e.g. `env.PYENV_VERSION or mise.python` → {"env.PYENV_VERSION",
-/// "mise.python"}). So `classify_dotted` splits each entry on '.' — no
+/// nested = true, an attribute chain `a.b.c` is recorded as the dotted string
+/// "a.b.c" (e.g. `env.PYENV_VERSION or mise.python` → {"env.PYENV_VERSION",
+/// "mise.python"}). So the classifier splits each entry on '.' — no
 /// byte-scanning needed.
-pub(crate) fn refs_from_names(names: impl IntoIterator<Item = String>) -> Vec<Ref> {
+pub(crate) fn refs_from_names(
+    names: impl IntoIterator<Item = String>,
+    classify: fn(&str) -> Option<Ref>,
+) -> Vec<Ref> {
     let mut refs: Vec<Ref> = Vec::new();
     let mut seen: HashSet<Ref> = HashSet::new();
     for name in names {
-        if let Some(r) = classify_dotted(&name)
+        if let Some(r) = classify(&name)
             && seen.insert(r.clone())
         {
             refs.push(r);
@@ -554,6 +574,15 @@ pub(crate) fn refs_from_names(names: impl IntoIterator<Item = String>) -> Vec<Re
 /// the entry point that handles both forms, and is what callers outside
 /// this module use.
 pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
+    discover_expression_refs_with(expr, classify_dotted)
+}
+
+/// [`discover_expression_refs`] with the classifier chosen by the caller —
+/// [`classify_dotted_deep`] for [`crate::resolve`].
+pub(crate) fn discover_expression_refs_with(
+    expr: &str,
+    classify: fn(&str) -> Option<Ref>,
+) -> Vec<Ref> {
     // Ref discovery never evaluates anything, so `allow_exec` doesn't
     // matter here — `false` is an arbitrary, harmless choice. (This has
     // nothing to do with `exec` showing up as an "undeclared variable":
@@ -563,7 +592,7 @@ pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
     let Ok(compiled) = env.compile_expression(expr) else {
         return vec![];
     };
-    let mut refs = refs_from_names(compiled.undeclared_variables(true));
+    let mut refs = refs_from_names(compiled.undeclared_variables(true), classify);
     refs.sort();
     refs
 }

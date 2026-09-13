@@ -20,7 +20,7 @@
 //! and canon `field_resolution.md`.
 
 use crate::eval::{
-    MAX_VIRTUAL_DEPTH, discover_refs, render_template_with, single_tag_expression, too_deep,
+    MAX_VIRTUAL_DEPTH, discover_refs_deep, render_template_with, single_tag_expression, too_deep,
 };
 use crate::virtual_fields::{Ref, build_expression_env, mj_to_json};
 use minijinja::value::Value as MjValue;
@@ -275,7 +275,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn render_frame(&mut self, src: &str, key: &str) -> Result<JsonValue, ResolveError> {
-        let context = self.bind(&discover_refs(src))?;
+        let context = self.bind(&discover_refs_deep(src))?;
         // The two forms of `crate::eval::classify`: exactly one `{{ expr }}`
         // takes the typed path, everything else (literal text included)
         // renders to a string.
@@ -313,11 +313,9 @@ impl<'a> Resolver<'a> {
     /// Render every string leaf of a template tree, keeping its shape.
     ///
     /// The group is on the stack around its leaves, so a leaf that names its
-    /// own group is a cycle rather than an infinite assembly. A leaf already
-    /// being rendered further up is skipped instead: a leaf reaching a
-    /// sibling by full path addresses the group (`classify_dotted` reads two
-    /// segments and navigates the rest), and the leaf that asked cannot also
-    /// be part of the answer.
+    /// own group is a cycle rather than an infinite assembly. A leaf naming a
+    /// sibling resolves that sibling alone — refs carry their full path — so
+    /// nothing here needs to be skipped.
     fn render_tree(
         &mut self,
         tree: &Map<String, JsonValue>,
@@ -341,9 +339,6 @@ impl<'a> Resolver<'a> {
             let leaf = format!("{key}.{name}");
             match node {
                 JsonValue::String(src) => {
-                    if self.on_stack(&leaf) {
-                        continue;
-                    }
                     match self.render(src, &leaf) {
                         Ok(value) => {
                             out.insert(name.clone(), value);
@@ -424,16 +419,15 @@ impl<'a> Resolver<'a> {
                         }
                     }
                 }
-                Ref::Resolved(provider, field) => {
-                    let Some(value) = self.resolve(&format!("{provider}.{field}"))? else {
+                // `rest` is the whole remaining address (`widgets.b`), and
+                // the value lands at that nested path so the template's own
+                // attribute walk (`scanline.widgets.b`) finds it.
+                Ref::Resolved(provider, rest) => {
+                    let key = format!("{provider}.{rest}");
+                    let Some(value) = self.resolve(&key)? else {
                         continue;
                     };
-                    let entry = top
-                        .entry(provider.clone())
-                        .or_insert_with(|| JsonValue::Object(Map::new()));
-                    if let JsonValue::Object(fields) = entry {
-                        fields.insert(field.clone(), value);
-                    }
+                    insert_at(&mut top, &key, value);
                 }
             }
         }
@@ -479,6 +473,25 @@ fn walk(value: JsonValue, rest: &str) -> Option<JsonValue> {
         };
     }
     Some(current)
+}
+
+/// Insert `value` at the dotted `path` under `map`, creating the objects
+/// between. A scalar already sitting on the path is left alone — a field of a
+/// scalar is not navigable either way.
+fn insert_at(map: &mut Map<String, JsonValue>, path: &str, value: JsonValue) {
+    match path.split_once('.') {
+        None => {
+            map.insert(path.to_string(), value);
+        }
+        Some((head, tail)) => {
+            let entry = map
+                .entry(head.to_string())
+                .or_insert_with(|| JsonValue::Object(Map::new()));
+            if let JsonValue::Object(inner) = entry {
+                insert_at(inner, tail, value);
+            }
+        }
+    }
 }
 
 /// Merge `over` into `base`, `over` winning per leaf: the rendered tree wins
