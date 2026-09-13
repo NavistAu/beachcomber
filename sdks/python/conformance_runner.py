@@ -157,8 +157,7 @@ def _run_op(
     or raises CombError / ServerError on failure.
 
     `resolve_ctx` (only consulted for the `resolve` and `eval` ops) carries
-    the fixture's `virtual`/`env`/`cwd` blocks — see
-    tests/conformance/README.md.
+    the fixture's `env`/`cwd` blocks — see tests/conformance/README.md.
     """
     if op == "resolve":
         assert resolve_ctx is not None
@@ -167,7 +166,6 @@ def _run_op(
             key,
             cwd=resolve_ctx["cwd"],
             env=resolve_ctx["env"] or None,
-            overrides=resolve_ctx["virtual"] or None,
         )
     if op == "eval":
         assert resolve_ctx is not None
@@ -177,7 +175,6 @@ def _run_op(
             args.get("template", ""),
             cwd=resolve_ctx["cwd"],
             env=resolve_ctx["env"] or None,
-            overrides=resolve_ctx["virtual"] or None,
         )
         # Client.eval returns the bare value; wrap it the way Client.resolve
         # already does so the shared expectation checks see one shape.
@@ -457,7 +454,6 @@ def run_fixture(fixture_path: pathlib.Path, client: Client) -> tuple[str, str]:
 
     with tempfile.TemporaryDirectory(prefix="bcconf_cwd_") as default_cwd:
         resolve_ctx = {
-            "virtual": fixture.get("virtual", {}),
             "env": fixture.get("env", {}),
             "cwd": fixture.get("cwd", default_cwd),
         }

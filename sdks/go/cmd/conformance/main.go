@@ -57,9 +57,8 @@ type fixture struct {
 	Setup       []opDescriptor    `json:"setup"`
 	Test        opDescriptor      `json:"test"`
 	Expect      expectBlock       `json:"expect"`
-	Virtual     map[string]string `json:"virtual"` // resolve/eval fixtures: field/provider key -> expression override
-	Env         map[string]string `json:"env"`     // resolve/eval fixtures: env.* refs
-	Cwd         string            `json:"cwd"`     // resolve/eval fixtures: cwd for path expressions and daemon query scope; defaults to the per-fixture temp dir
+	Env         map[string]string `json:"env"` // resolve/eval fixtures: env.* refs
+	Cwd         string            `json:"cwd"` // resolve/eval fixtures: the cwd every fetch addresses; defaults to the per-fixture temp dir
 	path        string            // source file path (not in JSON)
 }
 
@@ -340,7 +339,7 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 		if cwd == "" {
 			cwd = tmpDir
 		}
-		r, err := c.Resolve(key, cwd, f.Env, f.Virtual)
+		r, err := c.Resolve(key, cwd, f.Env)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -352,7 +351,7 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 		if cwd == "" {
 			cwd = tmpDir
 		}
-		r, err := c.Eval(template, cwd, f.Env, f.Virtual)
+		r, err := c.Eval(template, cwd, f.Env)
 		if err != nil {
 			return nil, nil, err
 		}

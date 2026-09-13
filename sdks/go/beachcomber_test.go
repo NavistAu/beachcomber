@@ -2,6 +2,7 @@ package beachcomber_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	beachcomber "github.com/NavistAu/beachcomber/sdks/go"
@@ -292,10 +293,14 @@ func TestNewClient_AutoDiscovery(t *testing.T) {
 // Resolve / Eval
 // ---------------------------------------------------------------------------
 
-func TestClient_Resolve_VirtualField(t *testing.T) {
+// The daemon holds the template; the client renders it with the env the
+// caller passes — the same value `comb get filters.based` prints.
+func TestClient_Resolve_RendersAPutTemplate(t *testing.T) {
 	c := requireClient(t)
-	result, err := c.Resolve("filters.based", "/", map[string]string{"PYVAR": "/foo/bar/baz"},
-		map[string]string{"filters.based": "{{ env.PYVAR | basename }}"})
+	if err := c.Put("filters:template", map[string]interface{}{"based": "{{ env.PYVAR | basename }}"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	result, err := c.Resolve("filters.based", "/", map[string]string{"PYVAR": "/foo/bar/baz"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -304,25 +309,91 @@ func TestClient_Resolve_VirtualField(t *testing.T) {
 	}
 }
 
-func TestClient_Resolve_PathExpression(t *testing.T) {
+func TestClient_Resolve_BareProviderIsTheMergedNamespace(t *testing.T) {
 	c := requireClient(t)
-	result, err := c.Resolve("myproject", "/Users/x/repo-a", nil,
-		map[string]string{"myproject": "{{ 'workspace-a' if cwd == '/Users/x/repo-a' else 'workspace-b' }}"})
+	if err := c.Put("ns", map[string]interface{}{"lit": float64(1)}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := c.Put("ns:template", map[string]interface{}{"t": "{{ env.NS }}"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	result, err := c.Resolve("ns", "/", map[string]string{"NS": "hi"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if s, ok := result.GetString(""); !ok || s != "workspace-a" {
-		t.Errorf("Resolve() = (%q, %v), want (\"workspace-a\", true)", s, ok)
+	if v, ok := result.GetFloat("lit"); !ok || v != 1 {
+		t.Errorf("lit = (%v, %v), want (1, true)", v, ok)
+	}
+	if s, ok := result.GetString("t"); !ok || s != "hi" {
+		t.Errorf("t = (%q, %v), want (\"hi\", true)", s, ok)
+	}
+}
+
+func TestClient_Resolve_MissIsNilData(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Put("ns2", map[string]interface{}{"v": float64(1)}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	result, err := c.Resolve("ns2.nope", "/", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !result.IsMiss() {
+		t.Errorf("Resolve() = %+v, want a miss", result)
 	}
 }
 
 func TestClient_Eval(t *testing.T) {
 	c := requireClient(t)
-	result, err := c.Eval("{{ env.FOO | truncate(2) }}", "/", map[string]string{"FOO": "hello"}, nil)
+	result, err := c.Eval("{{ env.FOO | truncate(2) }}", "/", map[string]string{"FOO": "hello"})
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
 	if s, ok := result.GetString(""); !ok || s != "he..." {
 		t.Errorf("Eval() = (%q, %v), want (\"he...\", true)", s, ok)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WithExec
+// ---------------------------------------------------------------------------
+
+func TestWithExec_ReachesTheOptionsJSON(t *testing.T) {
+	if got := beachcomber.OptionsJSONForTest("/tmp/s"); strings.Contains(got, `"exec"`) {
+		t.Errorf("exec is off by default, but options_json = %s", got)
+	}
+	got := beachcomber.OptionsJSONForTest("/tmp/s", beachcomber.WithExec(true))
+	if !strings.Contains(got, `"exec":true`) {
+		t.Errorf("options_json = %s, want it to carry \"exec\":true", got)
+	}
+}
+
+func TestClient_Resolve_ExecIsDisabledWithoutTheOption(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Put("execns:template", map[string]interface{}{"out": "{{ exec('printf', 'x') }}"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	_, err := c.Resolve("execns.out", "/", nil)
+	var se *beachcomber.ServerError
+	if !errors.As(err, &se) {
+		t.Fatalf("expected *ServerError, got %T: %v", err, err)
+	}
+	if !strings.Contains(se.Error(), "exec() is disabled in this context") {
+		t.Errorf("error = %q, want the disabled-exec message", se.Error())
+	}
+}
+
+func TestClient_Resolve_ExecRunsWithTheOption(t *testing.T) {
+	sock := startDaemon(t)
+	c := beachcomber.NewClientWithPath(sock, beachcomber.WithExec(true))
+	if err := c.Put("execns2:template", map[string]interface{}{"out": "{{ exec('printf', 'x') }}"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	result, err := c.Resolve("execns2.out", "/", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if s, ok := result.GetString(""); !ok || s != "x" {
+		t.Errorf("Resolve() = (%q, %v), want (\"x\", true)", s, ok)
 	}
 }

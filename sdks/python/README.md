@@ -63,13 +63,21 @@ with client.session() as session:
 
 ## Resolve and eval
 
-`client.resolve(key, cwd, env=None, overrides=None)` evaluates a declared
-virtual field client-side; `client.eval(template_str, cwd, env=None,
-overrides=None)` evaluates a raw expression the same way. Both `cwd`
-arguments are required. The expression itself accepts a single `{{ expr }}`
-tag, or literal text/several tags — the former keeps the expression's
-natural type, the latter is always a string (a source with no tags at all
-is its literal text).
+`client.resolve(key, cwd, env=None)` returns the same value `comb get`
+returns for this key, cwd and env: the daemon holds the templates
+(`<provider>:template`, seeded from configuration or `put`) and the client
+renders them. A plain field is its cached value, a templated one is
+rendered, and a bare provider name is the whole merged namespace.
+`client.eval(template_str, cwd, env=None)` renders a template that is
+stored nowhere — the same value `comb eval` prints. Both `cwd` arguments
+are required. The template accepts a single `{{ expr }}` tag, or literal
+text/several tags — the former keeps the expression's natural type, the
+latter is always a string (a source with no tags at all is its literal
+text).
+
+`exec()` inside a template runs only on a client created with
+`Client(exec=True)`; it is off by default, and a template that calls it
+then fails with `exec() is disabled in this context`.
 
 ## Custom socket path
 

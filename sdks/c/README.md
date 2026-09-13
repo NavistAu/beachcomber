@@ -30,6 +30,9 @@ instead.
 
 int main(void) {
     BcClient *c = bc_client_new(NULL); /* default socket discovery */
+    /* Options JSON keys: socket_path, timeout_ms, autostart, exec —
+     * bc_client_new("{\"exec\":true}") lets templates this client resolves
+     * call exec(); it is off by default. */
 
     char *r = bc_get(c, "git.branch", "/path/to/repo", 0);
     printf("%s\n", r);
@@ -48,8 +51,8 @@ int main(void) {
     r = bc_put_null(c, "myapp", NULL);
     bc_string_free(r);
 
-    /* Client-side field resolution — no daemon config file involved */
-    r = bc_resolve(c, "myapp.theme", "/path/to/repo", NULL, NULL);
+    /* The same value `comb get myapp.theme` prints at that cwd */
+    r = bc_resolve(c, "myapp.theme", "/path/to/repo", NULL);
     bc_string_free(r);
 
     /* A persistent connection, for a context set once and reused */
@@ -95,16 +98,22 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
   use it when a `set_context` needs to be visible to later calls.
 - `bc_get` / `bc_session_get` take a `flags` bitmask: `BC_GET_FORCE`,
   `BC_GET_WAIT`. Any other bit set is rejected (`kind: "bad_flags"`).
-- `bc_resolve` / `bc_eval` are client-side field resolution — virtual field
-  expressions and path expressions, evaluated in-process against an
-  explicit `cwd` (required) and optional `env_json` / `overrides_json`.
-  Every `cache.*` and plain `provider.field` ref the expression names is
-  fetched from the daemon at `cwd`, following virtual fields transitively;
-  an expression with only `env.*` refs never contacts the daemon.
-- `bc_eval`'s `template_str` accepts a single `{{ expr }}` tag, or literal
-  text/several tags — the former keeps the expression's natural type, the
-  latter is always a string (a source with no tags at all is its literal
-  text).
+- `bc_resolve(client, key, cwd, env_json)` returns the same value `comb get`
+  returns for this key, cwd and env: the daemon holds the templates
+  (`<provider>:template`, seeded from configuration or `bc_put`) and the
+  client renders them. A plain field is its cached value, a templated one
+  is rendered, and a bare provider name is the whole merged namespace; a
+  miss is `data: null`. `cwd` is required; `env_json` is nullable ("no
+  environment": every `env.*` is `""`). Every fetch the resolution makes
+  addresses `cwd`.
+- `bc_eval(client, template_str, cwd, env_json)` renders a template that is
+  stored nowhere — the same value `comb eval` prints. `template_str`
+  accepts a single `{{ expr }}` tag, or literal text/several tags — the
+  former keeps the expression's natural type, the latter is always a
+  string (a source with no tags at all is its literal text).
+- `exec()` inside a template runs only on a client created with
+  `bc_client_new("{\"exec\":true}")`; it is off by default, and a template
+  that calls it then fails with `exec() is disabled in this context`.
 - `bc_watch_open` + `bc_watch_next(w, timeout_ms)` + `bc_watch_cancel` /
   `bc_watch_free`: blocking poll, five machine-readable outcomes
   (`event`/`timeout`/`eof`/`cancelled`/the ordinary `ok:false` error

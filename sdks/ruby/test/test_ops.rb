@@ -265,27 +265,27 @@ class TestOps < Minitest::Test
   end
 
   # --- resolve / eval_expression ---
-  # (client-side resolution; env.* refs never touch the daemon)
+  # (the daemon holds the template, answered on the `get` for the key; the
+  # client renders it, and env.* refs never touch the daemon)
 
-  def test_resolve_field_expression_with_filter
-    value = @client.resolve(
-      'filters.based', cwd: '/tmp',
-      env: { 'PYVAR' => '/foo/bar/baz' },
-      overrides: { 'filters.based' => '{{ env.PYVAR | basename }}' },
-    )
+  def test_resolve_fetches_the_key_at_cwd_and_renders_its_template
+    @server.enqueue('{"ok":true,"template":"{{ env.PYVAR | basename }}"}')
+    value = @client.resolve('filters.based', cwd: '/tmp', env: { 'PYVAR' => '/foo/bar/baz' })
     assert_equal 'baz', value
+    req = @server.requests.last
+    assert_equal 'get',           req['op']
+    assert_equal 'filters.based', req['key']
+    assert_equal '/tmp',          req['path']
   end
 
-  def test_resolve_undeclared_field_raises_protocol_error
-    assert_raises(Beachcomber::ProtocolError) do
-      @client.resolve('nope.field', cwd: '/tmp')
-    end
+  def test_resolve_miss_is_nil
+    @server.enqueue('{"ok":true}')
+    assert_nil @client.resolve('nope.field', cwd: '/tmp')
   end
 
-  def test_resolve_path_expression_selects_by_cwd
-    overrides = { 'myproject' => "{{ 'a' if cwd == '/repo-a' else 'b' }}" }
-    assert_equal 'a', @client.resolve('myproject', cwd: '/repo-a', overrides: overrides)
-    assert_equal 'b', @client.resolve('myproject', cwd: '/repo-b', overrides: overrides)
+  def test_resolve_plain_field_is_its_cached_value
+    @server.enqueue('{"ok":true,"data":"main","age_ms":10,"stale":false}')
+    assert_equal 'main', @client.resolve('git.branch', cwd: '/repo')
   end
 
   def test_eval_expression_evaluates_raw_template

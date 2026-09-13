@@ -342,15 +342,19 @@ export interface ClientOptions {
   timeoutMs?: number;
   /** Whether the underlying client may auto-start the daemon. Default: true. */
   autostart?: boolean;
+  /**
+   * Whether a template this client resolves (`resolve`, `eval`) may call
+   * `exec()`. Default: false — a template that calls it then fails with
+   * `exec() is disabled in this context`.
+   */
+  exec?: boolean;
 }
 
 export interface ResolveOptions {
-  /** Required: path expressions resolve over `cwd`. Never defaults to the process's own cwd. */
+  /** Required: every fetch the resolution makes addresses `cwd`. Never defaults to the process's own cwd. */
   cwd: string;
-  /** `env.*` references in the expression. Absent references resolve to `""`. */
+  /** The caller's environment for `env.*` references. Absent references resolve to `""`. */
   env?: Record<string, string>;
-  /** Field-expression overrides (`"provider.field"`) or path-expression overrides (a bare provider name). */
-  overrides?: Record<string, string>;
 }
 
 /**
@@ -369,6 +373,7 @@ export class Client {
       socketPath: opts.socketPath,
       timeoutMs: opts.timeoutMs,
       autostart: opts.autostart,
+      exec: opts.exec,
     });
   }
 
@@ -461,21 +466,23 @@ export class Client {
   }
 
   /**
-   * Resolve a virtual field (`key = "provider.field"`) or a path expression
-   * (`key` = a bare provider name) client-side — exactly as `comb get`'s
-   * resolution layer does. `cwd` is required: this library never falls back
-   * to the process's own working directory.
+   * Resolve `key` to the same value `comb get` returns for this key, cwd
+   * and env. The daemon holds the templates (`<provider>:template`, seeded
+   * from configuration or `put`); this client renders them. A plain field
+   * is its cached value, a templated one is rendered, and a bare provider
+   * name is the whole merged namespace. A miss is `null`. `cwd` is
+   * required: this library never falls back to the process's own working
+   * directory.
    */
   async resolve(key: string, opts: ResolveOptions): Promise<unknown> {
     const envJson = opts.env !== undefined ? JSON.stringify(opts.env) : undefined;
-    const overridesJson = opts.overrides !== undefined ? JSON.stringify(opts.overrides) : undefined;
-    return unwrap(await this.tp.resolve(this.handle, key, opts.cwd, envJson, overridesJson));
+    return unwrap(await this.tp.resolve(this.handle, key, opts.cwd, envJson));
   }
 
   /**
-   * Evaluate a value expression — the same evaluator `resolve` uses for a
-   * declared virtual field, but for a raw expression that need not be
-   * registered anywhere.
+   * Render a template that is stored nowhere — the same value `comb eval`
+   * prints. Every ref resolves exactly as it would inside a stored
+   * template, so `eval("{{ p.f }}")` and `resolve("p.f")` agree.
    *
    * `templateStr` accepts a single `{{ expr }}` tag, or literal
    * text/several tags — the former keeps the expression's natural type,
@@ -484,8 +491,7 @@ export class Client {
    */
   async eval(templateStr: string, opts: ResolveOptions): Promise<unknown> {
     const envJson = opts.env !== undefined ? JSON.stringify(opts.env) : undefined;
-    const overridesJson = opts.overrides !== undefined ? JSON.stringify(opts.overrides) : undefined;
-    return unwrap(await this.tp.evaluate(this.handle, templateStr, opts.cwd, envJson, overridesJson));
+    return unwrap(await this.tp.evaluate(this.handle, templateStr, opts.cwd, envJson));
   }
 
   /**

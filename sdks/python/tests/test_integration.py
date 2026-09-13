@@ -115,29 +115,46 @@ def test_daemon_not_running_raises_with_kind(tmp_path, monkeypatch: pytest.Monke
         bad_client.close()
 
 
-def test_resolve_field_expression_override(client: Client) -> None:
-    result = client.resolve(
-        "widget.label",
-        cwd="/tmp",
-        overrides={"widget.label": "{{ 'resolved-' ~ env.MYVAR }}"},
-        env={"MYVAR": "x"},
-    )
+def test_resolve_renders_a_put_template(client: Client) -> None:
+    # The daemon holds the template; the client renders it with the env the
+    # caller passes — the same value `comb get widget.label` prints.
+    client.put("widget:template", {"label": "{{ 'resolved-' ~ env.MYVAR }}"})
+    result = client.resolve("widget.label", cwd="/tmp", env={"MYVAR": "x"})
     assert result.is_hit
     assert result.data == "resolved-x"
 
 
-def test_resolve_path_expression(client: Client) -> None:
-    result = client.resolve(
-        "myproject",
-        cwd="/repo-a",
-        overrides={"myproject": "{{ 'a' if cwd == '/repo-a' else 'b' }}"},
-    )
-    assert result.data == "a"
+def test_resolve_bare_provider_is_the_merged_namespace(client: Client) -> None:
+    client.put("widget6", {"lit": 1})
+    client.put("widget6:template", {"t": "{{ env.W6 }}"})
+    result = client.resolve("widget6", cwd="/tmp", env={"W6": "hi"})
+    assert result.data == {"lit": 1, "t": "hi"}
+
+
+def test_resolve_miss_is_none(client: Client) -> None:
+    client.put("widget7", {"v": 1})
+    assert client.resolve("widget7.nope", cwd="/tmp").data is None
 
 
 def test_eval_raw_expression(client: Client) -> None:
     value = client.eval("{{ 'x-' ~ env.FOO }}", cwd="/tmp", env={"FOO": "bar"})
     assert value == "x-bar"
+
+
+def test_exec_is_disabled_without_the_option(client: Client) -> None:
+    client.put("execwidget:template", {"out": "{{ exec('printf', 'x') }}"})
+    with pytest.raises(ServerError) as excinfo:
+        client.resolve("execwidget.out", cwd="/tmp")
+    assert "exec() is disabled in this context" in excinfo.value.message
+
+
+def test_exec_runs_on_a_client_with_the_option(client: Client, daemon) -> None:
+    client.put("execwidget2:template", {"out": "{{ exec('printf', 'x') }}"})
+    exec_client = Client(socket_path=daemon.socket_path, timeout=5.0, exec=True)
+    try:
+        assert exec_client.resolve("execwidget2.out", cwd="/tmp").data == "x"
+    finally:
+        exec_client.close()
 
 
 def test_session_get_put_set_context(client: Client) -> None:

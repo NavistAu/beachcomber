@@ -15,3 +15,9 @@ func ParseGetResultForTest(raw []byte) (*Result, error) {
 func ParseScalarResultForTest(raw []byte) (*Result, error) {
 	return resultFromScalarData(json.RawMessage(raw))
 }
+
+// OptionsJSONForTest exposes the options_json a client constructor hands
+// bc_client_new, so tests can check an Option reaches the library.
+func OptionsJSONForTest(socketPath string, options ...Option) string {
+	return optionsJSON(socketPath, options...)
+}

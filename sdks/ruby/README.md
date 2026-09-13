@@ -51,14 +51,19 @@ Opens a fresh socket connection for each call. Simple and stateless.
 | `watch(key, path: nil)` | Subscribe to live updates. Returns a `WatchStream` (Enumerable). |
 | `status` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
 | `session { \|s\| }` | Open a persistent connection (see below). |
-| `resolve(key, cwd:, env: nil, overrides: nil)` | Client-side field resolution — the same evaluator `comb get`'s resolution layer uses. |
-| `eval_expression(template_str, cwd:, env: nil, overrides: nil)` | Evaluate a value expression in either of the two forms — one `{{ }}` tag, or a template — same evaluator as `resolve`. |
+| `resolve(key, cwd:, env: nil)` | The same value `comb get` returns for this key, cwd and env — the daemon holds the templates, the client renders them; a bare provider name is the whole merged namespace. |
+| `eval_expression(template_str, cwd:, env: nil)` | Render a template stored nowhere — the same value `comb eval` prints. |
 
 `resolve` and `eval_expression` require `cwd`. `template_str` (and each
-field's own expression) accepts a single `{{ expr }}` tag, or literal
+stored template) accepts a single `{{ expr }}` tag, or literal
 text/several tags — the former keeps the expression's natural type, the
 latter is always a string (a source with no tags at all is its literal
 text).
+
+`exec()` inside a template runs only on a client created with
+`Beachcomber::Client.new(exec: true)`; it is off by default, and a
+template that calls it then fails with `exec() is disabled in this
+context`.
 
 ### `Beachcomber::Session`
 

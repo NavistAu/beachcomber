@@ -126,7 +126,7 @@ def _parse_introspect(subject: IntrospectSubject, data: Any) -> IntrospectRespon
 
 
 def _build_options_json(
-    socket_path: Optional[str], timeout: float, autostart: Optional[bool]
+    socket_path: Optional[str], timeout: float, autostart: Optional[bool], exec: bool
 ) -> Optional[str]:
     options: dict = {}
     if socket_path is not None:
@@ -134,6 +134,8 @@ def _build_options_json(
     options["timeout_ms"] = int(round(timeout * 1000))
     if autostart is not None:
         options["autostart"] = autostart
+    if exec:
+        options["exec"] = True
     return json.dumps(options)
 
 
@@ -214,6 +216,10 @@ class Client:
         timeout: Socket read/write timeout in seconds. Default ``0.1``.
         autostart: Whether to attempt starting the daemon if it isn't
             running. ``None`` leaves the native library's own default.
+        exec: Whether a template this client resolves (:meth:`resolve`,
+            :meth:`eval`) may call ``exec()``. Off by default: a template
+            that calls it then fails with ``exec() is disabled in this
+            context``.
     """
 
     def __init__(
@@ -221,10 +227,11 @@ class Client:
         socket_path: Optional[str] = None,
         timeout: float = _DEFAULT_TIMEOUT,
         autostart: Optional[bool] = None,
+        exec: bool = False,
     ) -> None:
         self._ptr = None
         self._lib = _native.get_lib()
-        options_json = _build_options_json(socket_path, timeout, autostart)
+        options_json = _build_options_json(socket_path, timeout, autostart, exec)
         ptr = self._lib.call_ptr("bc_client_new", options_json.encode())
         if not ptr:
             raise CombError("bc_client_new returned NULL")
@@ -350,23 +357,22 @@ class Client:
         key: str,
         cwd: str,
         env: Optional[dict] = None,
-        overrides: Optional[dict] = None,
     ) -> CombResult:
-        """Resolve a virtual field (``"provider.field"``) or a path expression
-        (a bare provider name) client-side, exactly as ``comb get``'s
-        resolution layer does.
+        """Resolve ``key`` to the same value ``comb get`` returns for this
+        key, cwd and env.
+
+        The daemon holds the templates (``<provider>:template``, seeded from
+        configuration or :meth:`put`); this client renders them. A plain
+        field is its cached value, a templated one is rendered, and a bare
+        provider name is the whole merged namespace. A miss is ``None``.
 
         Args:
-            key: ``"provider.field"`` for a field expression, or a bare
-                provider name for a path expression.
+            key: ``"provider.field"``, or a bare provider name.
             cwd: Working directory the resolver evaluates against. Required
                 — this library never reads the process's own working
                 directory on the caller's behalf.
-            env: Overrides for ``env.*`` refs in the expression. ``None``
+            env: The caller's environment for ``env.*`` refs. ``None``
                 means none supplied (every ``env.*`` ref misses).
-            overrides: Maps a field key (``"provider.field"``) or bare
-                provider name to an expression string, overriding the
-                built-in default for that key.
 
         Returns:
             :class:`~beachcomber.result.CombResult` — ``age_ms``/``stale``
@@ -376,14 +382,12 @@ class Client:
             CombError: subclass matching the failure kind.
         """
         env_json = _opt_json(env)
-        overrides_json = _opt_json(overrides)
         value = self._lib.call(
             "bc_resolve",
             self._ptr,
             key.encode(),
             cwd.encode(),
             env_json.encode() if env_json is not None else None,
-            overrides_json.encode() if overrides_json is not None else None,
         )
         return CombResult(ok=True, data=value, age_ms=0, stale=False)
 
@@ -392,11 +396,11 @@ class Client:
         template_str: str,
         cwd: str,
         env: Optional[dict] = None,
-        overrides: Optional[dict] = None,
     ) -> Any:
-        """Evaluate a value expression — the same evaluator :meth:`resolve`
-        uses for a declared virtual field, but for a raw expression that
-        need not be registered anywhere.
+        """Render a template that is stored nowhere — the same value
+        ``comb eval`` prints. Every ref resolves exactly as it would inside
+        a stored template, so ``eval("{{ p.f }}")`` and ``resolve("p.f")``
+        agree.
 
         ``template_str`` accepts a single ``{{ expr }}`` tag, or literal
         text/several tags — the former keeps the expression's natural
@@ -404,24 +408,20 @@ class Client:
         is its literal text).
 
         Args:
-            template_str: The expression to evaluate.
+            template_str: The template to render.
             cwd: Required, matching :meth:`resolve`'s ``cwd`` semantics.
-            env: Overrides for ``env.*`` refs.
-            overrides: Field-expression overrides, same shape as
-                :meth:`resolve`'s.
+            env: The caller's environment for ``env.*`` refs.
 
         Raises:
             CombError: subclass matching the failure kind.
         """
         env_json = _opt_json(env)
-        overrides_json = _opt_json(overrides)
         return self._lib.call(
             "bc_eval",
             self._ptr,
             template_str.encode(),
             cwd.encode(),
             env_json.encode() if env_json is not None else None,
-            overrides_json.encode() if overrides_json is not None else None,
         )
 
     def watch(self, key: str, path: Optional[str] = None) -> WatchStream:

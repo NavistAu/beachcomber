@@ -229,11 +229,16 @@ module Beachcomber
     #   (autostart on); pass false to disable. The library only autostarts
     #   when the socket path is auto-discovered — never for an explicit
     #   socket_path.
-    def initialize(socket_path: nil, timeout: DEFAULT_TIMEOUT, autostart: nil)
+    # @param exec [Boolean] whether a template this client resolves
+    #   ({#resolve}, {#eval_expression}) may call +exec()+. Off by default:
+    #   a template that calls it then fails with
+    #   "exec() is disabled in this context".
+    def initialize(socket_path: nil, timeout: DEFAULT_TIMEOUT, autostart: nil, exec: false)
       options = {}
       options[:autostart] = autostart unless autostart.nil?
       options[:socket_path] = socket_path if socket_path
       options[:timeout_ms] = (timeout * 1000).round if timeout
+      options[:exec] = true if exec
 
       @handle = Beachcomber::FFI.new_client(JSON.generate(options))
       ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
@@ -317,24 +322,25 @@ module Beachcomber
       parse_introspect(subject.to_s, data)
     end
 
-    # Resolves a virtual field ("provider.field") or a provider's path
-    # expression ("provider") client-side, exactly as `comb get`'s
-    # resolution layer does. `cache.*` refs the expression makes are fetched
-    # live through this client.
+    # Resolves +key+ to the same value `comb get` returns for this key, cwd
+    # and env. The daemon holds the templates (`<provider>:template`, seeded
+    # from configuration or {#put}); this client renders them. A plain field
+    # is its cached value, a templated one is rendered, and a bare provider
+    # name is the whole merged namespace.
     #
     # @param key [String] "provider.field" or a bare provider name
-    # @param cwd [String] required — path-expression evaluation has no
-    #   ambient fallback; the library never reads the process's own cwd.
-    # @param env [Hash, nil] env var values `env.*` refs resolve against
-    # @param overrides [Hash, nil] expression overrides, keyed
-    #   "provider.field" or a bare provider name
-    # @return [Object, nil] the resolved value, or nil on a path-expression miss
-    def resolve(key, cwd:, env: nil, overrides: nil)
-      Beachcomber::FFI.call!(:bc_resolve, @handle, key, cwd, json_or_nil(env), json_or_nil(overrides))
+    # @param cwd [String] required — the library never reads the process's
+    #   own cwd on the caller's behalf.
+    # @param env [Hash, nil] the caller's environment for `env.*` refs
+    # @return [Object, nil] the resolved value, or nil on a miss
+    def resolve(key, cwd:, env: nil)
+      Beachcomber::FFI.call!(:bc_resolve, @handle, key, cwd, json_or_nil(env))
     end
 
-    # Evaluates a value expression against `env.*`/`cache.*` refs, using the
-    # same evaluator {#resolve} uses for a declared field.
+    # Renders a template that is stored nowhere — the same value `comb eval`
+    # prints. Every ref resolves exactly as it would inside a stored
+    # template, so <tt>eval_expression('{{ p.f }}')</tt> and
+    # <tt>resolve('p.f')</tt> agree.
     #
     # +template+ accepts a single <tt>{{ expr }}</tt> tag, or literal
     # text/several tags — the former keeps the expression's natural type,
@@ -344,10 +350,9 @@ module Beachcomber
     # @param template [String]
     # @param cwd [String] required, matching {#resolve}
     # @param env [Hash, nil]
-    # @param overrides [Hash, nil]
     # @return [Object]
-    def eval_expression(template, cwd:, env: nil, overrides: nil)
-      Beachcomber::FFI.call!(:bc_eval, @handle, template, cwd, json_or_nil(env), json_or_nil(overrides))
+    def eval_expression(template, cwd:, env: nil)
+      Beachcomber::FFI.call!(:bc_eval, @handle, template, cwd, json_or_nil(env))
     end
 
     # Opens a persistent watch subscription. Returns a WatchStream

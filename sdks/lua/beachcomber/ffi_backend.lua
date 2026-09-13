@@ -67,8 +67,8 @@ end
 
 local M = {}
 
---- @param opts table?  opts.socket_path / opts.timeout_ms / opts.autostart
---                       forwarded into bc_client_new's options_json;
+--- @param opts table?  opts.socket_path / opts.timeout_ms / opts.autostart /
+--                       opts.exec forwarded into bc_client_new's options_json;
 --                       opts.library_path overrides ffi library discovery.
 -- @return Backend, or nil, Error
 function M.new(opts)
@@ -83,6 +83,7 @@ function M.new(opts)
   if opts.socket_path ~= nil then options.socket_path = opts.socket_path end
   if opts.timeout_ms ~= nil then options.timeout_ms = opts.timeout_ms end
   if opts.autostart ~= nil then options.autostart = opts.autostart end
+  if opts.exec ~= nil then options.exec = opts.exec end
   local options_json = next(options) and json.encode(options) or nil
 
   local client_ptr = C.bc_client_new(options_json)
@@ -152,17 +153,15 @@ function Backend:hello()
   return plain(decode(self._C, ptr))
 end
 
-function Backend:resolve(key, cwd, env_vars, overrides)
+function Backend:resolve(key, cwd, env_vars)
   local env_json = json.encode(env_vars or {})
-  local overrides_json = json.encode(overrides or {})
-  local ptr = self._C.bc_resolve(self._client, key, cwd, env_json, overrides_json)
+  local ptr = self._C.bc_resolve(self._client, key, cwd, env_json)
   return plain(decode(self._C, ptr))
 end
 
-function Backend:eval(template_str, cwd, env_vars, overrides)
+function Backend:eval(template_str, cwd, env_vars)
   local env_json = json.encode(env_vars or {})
-  local overrides_json = json.encode(overrides or {})
-  local ptr = self._C.bc_eval(self._client, template_str, cwd, env_json, overrides_json)
+  local ptr = self._C.bc_eval(self._client, template_str, cwd, env_json)
   return plain(decode(self._C, ptr))
 end
 

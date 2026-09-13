@@ -28,7 +28,6 @@
  *     "description": "...",
  *     "setup": [ { "op": "put", "args": {...} } ],
  *     "test":  { "op": "get",  "args": {...} },
- *     "virtual": { "provider.field": "expr" },   // resolve/eval fixtures only
  *     "env": { "VAR": "value" },                 // resolve/eval fixtures only
  *     "cwd": "/some/path",                       // resolve/eval fixtures only
  *     "expect": {
@@ -220,8 +219,8 @@ static int collect_fixtures(const char *dir,
 
 /*
  * serialise_node: serialise a parsed json_node_t back into a malloc'd JSON
- * string. Used to turn fixture "data" (put), "env" and "virtual" (resolve)
- * blocks into the JSON text bc_put / bc_resolve expect.
+ * string. Used to turn fixture "data" (put) and "env" (resolve/eval) blocks
+ * into the JSON text bc_put / bc_resolve / bc_eval expect.
  */
 static char *serialise_node(const json_node_t *node) {
     if (!node) return NULL;
@@ -514,8 +513,8 @@ static void stop_daemon(daemon_proc_t *dp) {
 /*
  * default_cwd: the directory `resolve`/`eval` fixtures get when they don't
  * declare their own "cwd" — this run's shared per-run temp directory (real,
- * existing, but otherwise inert; path-expression fixtures that care about a
- * specific cwd always declare one explicitly).
+ * existing, but otherwise inert; fixtures that care about a specific cwd
+ * always declare one explicitly).
  */
 static char *run_op(BcClient *client, BcSession *session,
                      const json_node_t *op_node, const json_node_t *fixture_root,
@@ -587,7 +586,7 @@ static char *run_op(BcClient *client, BcSession *session,
     }
 
     if (strcmp(op_str, "resolve") == 0) {
-        /* cwd / env / virtual are fixture-level fields, not op args — see
+        /* cwd / env are fixture-level fields, not op args — see
          * tests/conformance/README.md's "resolve" section. */
         const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
         if (!cwd) cwd = default_cwd;
@@ -597,19 +596,13 @@ static char *run_op(BcClient *client, BcSession *session,
                               ? serialise_node(env_node)
                               : NULL;
 
-        json_node_t *virtual_node = json_get(fixture_root, "virtual");
-        char *overrides_json = (virtual_node && virtual_node->type == JSON_OBJECT)
-                                    ? serialise_node(virtual_node)
-                                    : NULL;
-
-        char *result = bc_resolve(client, key ? key : "", cwd, env_json, overrides_json);
+        char *result = bc_resolve(client, key ? key : "", cwd, env_json);
         free(env_json);
-        free(overrides_json);
         return result;
     }
 
     if (strcmp(op_str, "eval") == 0) {
-        /* Same fixture-level cwd / env / virtual as "resolve" — see
+        /* Same fixture-level cwd / env as "resolve" — see
          * tests/conformance/README.md's "eval" section. */
         const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
         if (!cwd) cwd = default_cwd;
@@ -619,16 +612,9 @@ static char *run_op(BcClient *client, BcSession *session,
                               ? serialise_node(env_node)
                               : NULL;
 
-        json_node_t *virtual_node = json_get(fixture_root, "virtual");
-        char *overrides_json = (virtual_node && virtual_node->type == JSON_OBJECT)
-                                    ? serialise_node(virtual_node)
-                                    : NULL;
-
         const char *template_str = args ? json_as_str(json_get(args, "template")) : NULL;
-        char *result = bc_eval(client, template_str ? template_str : "", cwd,
-                               env_json, overrides_json);
+        char *result = bc_eval(client, template_str ? template_str : "", cwd, env_json);
         free(env_json);
-        free(overrides_json);
         return result;
     }
 

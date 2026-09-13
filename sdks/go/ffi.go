@@ -215,7 +215,7 @@ func cStringToGo(ptr uintptr) string {
 }
 
 // jsonMapBytes marshals m to a JSON object, or returns nil (NULL) when m is
-// nil — the ABI's "not supplied" sentinel for env_json/overrides_json.
+// nil — the ABI's "not supplied" sentinel for env_json.
 func jsonMapBytes(m map[string]string) []byte {
 	if m == nil {
 		return nil

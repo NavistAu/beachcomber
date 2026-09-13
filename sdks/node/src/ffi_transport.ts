@@ -120,8 +120,8 @@ function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('k
     bc_status: [BcString, [BcClient]],
     bc_introspect: [BcString, [BcClient, 'str', 'str']],
     bc_hello: [BcString, [BcClient]],
-    bc_resolve: [BcString, [BcClient, 'str', 'str', 'str', 'str']],
-    bc_eval: [BcString, [BcClient, 'str', 'str', 'str', 'str']],
+    bc_resolve: [BcString, [BcClient, 'str', 'str', 'str']],
+    bc_eval: [BcString, [BcClient, 'str', 'str', 'str']],
     bc_session_open: [BcSession, [BcClient]],
     bc_session_close: ['void', [BcSession]],
     bc_session_get: [BcString, [BcSession, 'str', 'str', 'uint32']],
@@ -202,6 +202,7 @@ export function createFfiTransport(): Transport {
               socket_path: options.socketPath,
               timeout_ms: options.timeoutMs,
               autostart: options.autostart,
+              exec: options.exec,
             });
       return fns.bc_client_new(optionsJson);
     },
@@ -234,29 +235,11 @@ export function createFfiTransport(): Transport {
     async hello(handle) {
       return parseEnvelope(await callAsync(fns.bc_hello, handle));
     },
-    async resolve(handle, key, cwd, envJson, overridesJson) {
-      return parseEnvelope(
-        await callAsync(
-          fns.bc_resolve,
-          handle,
-          key,
-          cwd,
-          nullIfUndefined(envJson),
-          nullIfUndefined(overridesJson),
-        ),
-      );
+    async resolve(handle, key, cwd, envJson) {
+      return parseEnvelope(await callAsync(fns.bc_resolve, handle, key, cwd, nullIfUndefined(envJson)));
     },
-    async evaluate(handle, templateStr, cwd, envJson, overridesJson) {
-      return parseEnvelope(
-        await callAsync(
-          fns.bc_eval,
-          handle,
-          templateStr,
-          cwd,
-          nullIfUndefined(envJson),
-          nullIfUndefined(overridesJson),
-        ),
-      );
+    async evaluate(handle, templateStr, cwd, envJson) {
+      return parseEnvelope(await callAsync(fns.bc_eval, handle, templateStr, cwd, nullIfUndefined(envJson)));
     },
 
     openSession(handle) {

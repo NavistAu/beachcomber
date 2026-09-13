@@ -90,13 +90,49 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     }
   });
 
-  it('resolve evaluates a virtual field with the basename filter', async () => {
+  it('resolve renders a template the daemon holds', async () => {
+    // The daemon holds the template; the client renders it with the env the
+    // caller passes — the same value `comb get filters.itest_based` prints.
+    await client.put('filters:template', { itest_based: '{{ env.ITEST_PYVAR | basename }}' });
     const value = await client.resolve('filters.itest_based', {
       cwd: '/tmp',
       env: { ITEST_PYVAR: '/foo/bar/baz' },
-      overrides: { 'filters.itest_based': '{{ env.ITEST_PYVAR | basename }}' },
     });
     assert.equal(value, 'baz');
+  });
+
+  it('resolve on a bare provider is the whole merged namespace', async () => {
+    await client.put('itest_ns', { lit: 1 });
+    await client.put('itest_ns:template', { t: '{{ env.ITEST_NS }}' });
+    const value = await client.resolve('itest_ns', { cwd: '/tmp', env: { ITEST_NS: 'hi' } });
+    assert.deepEqual(value, { lit: 1, t: 'hi' });
+  });
+
+  it('eval renders a template stored nowhere', async () => {
+    const value = await client.eval("{{ 'x-' ~ env.FOO }}", { cwd: '/tmp', env: { FOO: 'bar' } });
+    assert.equal(value, 'x-bar');
+  });
+
+  it('exec() is disabled on a client without the option', async () => {
+    await client.put('itest_exec:template', { out: "{{ exec('printf', 'x') }}" });
+    await assert.rejects(
+      () => client.resolve('itest_exec.out', { cwd: '/tmp' }),
+      (err: unknown) => {
+        if (!(err instanceof ServerError)) return false;
+        assert.match(err.message, /exec\(\) is disabled in this context/);
+        return true;
+      },
+    );
+  });
+
+  it('exec() runs on a client with the option', async () => {
+    await client.put('itest_exec2:template', { out: "{{ exec('printf', 'x') }}" });
+    const execClient = new Client({ socketPath: daemon.sockPath, timeoutMs: 5000, exec: true });
+    try {
+      assert.equal(await execClient.resolve('itest_exec2.out', { cwd: '/tmp' }), 'x');
+    } finally {
+      execClient.close();
+    }
   });
 
   it('watch yields the current value as its first event', async () => {

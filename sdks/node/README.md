@@ -47,7 +47,11 @@ if (result.isHit) {
 const client = new Client();
 const client = new Client({ socketPath: '/custom/path' });
 const client = new Client({ socketPath: '/custom/path', timeoutMs: 2000, autostart: true });
+const client = new Client({ exec: true }); // templates this client resolves may call exec()
 ```
+
+`exec` is off by default: a template that calls `exec()` on a client
+without it fails with `exec() is disabled in this context`.
 
 #### `client.transport()`
 
@@ -90,24 +94,25 @@ Daemon protocol/version info, and internal daemon introspection
 
 #### `client.resolve(key, opts)` / `client.eval(templateStr, opts)`
 
-Client-side field resolution — the same evaluator `comb get`'s resolution
-layer uses, run entirely in this process except for a daemon round-trip per
-`cache.*` / `provider.field` ref the expression names (virtual fields
-followed transitively); an expression with only `env.*` refs never
-contacts the daemon. `opts.cwd` is **required**: this library never falls
-back to the process's own working directory, and refs are fetched scoped
-to it. `opts.env` and `opts.overrides` are optional. **FFI transport
-only**.
+`resolve` returns the same value `comb get` returns for this key, cwd and
+env: the daemon holds the templates (`<provider>:template`, seeded from
+configuration or `put`) and the client renders them. A plain field is its
+cached value, a templated one is rendered, and a bare provider name is the
+whole merged namespace; a miss is `null`. `eval` renders a template that
+is stored nowhere — the same value `comb eval` prints. `opts.cwd` is
+**required**: this library never falls back to the process's own working
+directory, and every fetch the resolution makes addresses it. `opts.env`
+is optional. **FFI transport only**.
 
 `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's
 natural type), or literal text/several tags (always a string — a source
 with no tags at all is its literal text).
 
 ```typescript
+await client.put('myapp:template', { workspace: '{{ env.MYAPP_ENV or cache.myappcache.workspace }}' });
 const value = await client.resolve('myapp.workspace', {
   cwd: '/some/repo',
   env: { MYAPP_ENV: 'prod' },
-  overrides: { 'myapp.workspace': '{{ env.MYAPP_ENV or cache.myappcache.workspace }}' },
 });
 ```
 

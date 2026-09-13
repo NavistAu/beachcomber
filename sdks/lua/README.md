@@ -118,10 +118,14 @@ local client = comb.connect({
   socket_path = '/run/user/1000/beachcomber/sock',  -- ffi transport
   timeout_ms  = 2000,                                -- ffi transport
   autostart   = true,                                -- ffi transport
+  exec        = true,                                -- ffi transport: templates may call exec()
   library_path = '/opt/beachcomber/lib/libbeachcomber.dylib', -- ffi: override discovery
   comb_bin     = '/opt/beachcomber/bin/comb',                 -- subprocess: override discovery
 })
 ```
+
+`exec` is off by default: a template that calls `exec()` on a client
+without it fails with `exec() is disabled in this context`.
 
 ---
 
@@ -175,13 +179,15 @@ ffi transport only — `Error{kind="unsupported"}` over subprocess.
 ### `Client:resolve(key [, opts])` → `value | nil, Error`
 ### `Client:eval(template_str [, opts])` → `value | nil, Error`
 
-Client-side field/path-expression resolution (`bc_resolve`/`bc_eval`) —
-the same evaluator `comb get`'s resolution layer uses, exposed so a caller
-never has to reimplement it. `opts.cwd` (default: the context path, then
-`"."`), `opts.env`, `opts.virtual` (expression overrides, keyed
-`"provider.field"` or a bare provider name — see
-`tests/conformance/README.md`'s `resolve` fixture shape). ffi transport
-only.
+`resolve` returns the same value `comb get` returns for this key, cwd and
+env (`bc_resolve`): the daemon holds the templates (`<provider>:template`,
+seeded from configuration or `put`) and the client renders them. A plain
+field is its cached value, a templated one is rendered, and a bare
+provider name is the whole merged namespace; a miss is `nil` with no
+`Error`. `eval` renders a template that is stored nowhere — the same value
+`comb eval` prints (`bc_eval`). `opts.cwd` (default: the context path,
+then `"."`), `opts.env` (the caller's environment for `env.*` refs). ffi
+transport only.
 
 `template_str` accepts a single `{{ expr }}` tag, or literal text/several
 tags — the former keeps the expression's natural type, the latter is

@@ -123,20 +123,23 @@ For latency-sensitive use, prefer `Session`.
 | `Status() ([]CacheRow, error)` | Cache rows from the daemon. |
 | `Hello() (*HelloInfo, error)` | Protocol/daemon version handshake. |
 | `Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)` | Inspect a daemon subsystem. |
-| `Resolve(key, cwd string, env, overrides map[string]string) (*Result, error)` | Client-side field resolution — the same evaluator `comb get` uses, run in-process. |
-| `Eval(templateStr, cwd string, env, overrides map[string]string) (*Result, error)` | Evaluate a value expression in either of the two forms — one `{{ }}` tag, or a template — same evaluator as `Resolve`. |
+| `Resolve(key, cwd string, env map[string]string) (*Result, error)` | The same value `comb get` returns for this key, cwd and env — the daemon holds the templates, the client renders them; a bare provider name is the whole merged namespace. |
+| `Eval(templateStr, cwd string, env map[string]string) (*Result, error)` | Render a template stored nowhere — the same value `comb eval` prints. |
 | `Watch(key, path string) (*WatchStream, error)` | Subscribe to live updates. |
 | `Session() (*Session, error)` | Open a persistent connection. |
 
-`Resolve` and `Eval` require `cwd`: path expressions select a cache
-coordinate over it, so the library never falls back to the process's own
-working directory. `env` and `overrides` are optional (`nil` for "not
-supplied") — a `nil` `env` makes every `env.*` reference resolve to `""`,
-and `nil` `overrides` uses the built-in default expressions.
+`Resolve` and `Eval` require `cwd`: every fetch the resolution makes
+addresses it, so the library never falls back to the process's own
+working directory. `env` is optional (`nil` for "not supplied") — a `nil`
+`env` makes every `env.*` reference resolve to `""`.
 
 `templateStr` accepts a single `{{ expr }}` tag, or literal text/several
 tags — the former keeps the expression's natural type, the latter is
 always a string (a source with no tags at all is its literal text).
+
+`exec()` inside a template runs only on a client constructed with
+`beachcomber.WithExec(true)`; it is off by default, and a template that
+calls it then fails with `exec() is disabled in this context`.
 
 ### `Session`
 

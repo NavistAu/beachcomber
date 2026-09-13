@@ -13,8 +13,8 @@
 -- A backend implements: name(), get(key,path,flags), put(key,data,ttl,path),
 -- put_null(key,path), status(), close(), and optionally
 -- refresh(key,path), introspect(subject,duration_secs), hello(),
--- resolve(key,cwd,env,overrides),
--- eval(template,cwd,env,overrides), watch_open(key,path) — each returning a
+-- resolve(key,cwd,env),
+-- eval(template,cwd,env), watch_open(key,path) — each returning a
 -- canonical response table `{ok, data, age_ms, stale, error={kind,message}}`.
 -- A backend that omits an optional method signals the capability doesn't
 -- exist over that transport; Client turns that into Error.unsupported().
@@ -186,11 +186,15 @@ function Client:introspect(subject, duration_secs)
   return { subject = subject, daemon = nil, other = resp.data }
 end
 
---- Resolve a virtual field or path expression client-side (via bc_resolve).
+--- Resolve `key` to the same value `comb get` returns for this key, cwd and
+-- env (via bc_resolve). The daemon holds the templates
+-- (`<provider>:template`, seeded from configuration or put); this client
+-- renders them. A plain field is its cached value, a templated one is
+-- rendered, and a bare provider name is the whole merged namespace. A miss
+-- is nil with no Error.
 -- @param key  string  "provider.field" or a bare provider name
--- @param opts table?  opts.cwd (default: context path, then "."), opts.env,
---                      opts.virtual (field/path expression overrides, keyed
---                      the same way tests/conformance fixtures' `virtual` is)
+-- @param opts table?  opts.cwd (default: context path, then "."), opts.env
+--                      (the caller's environment for env.* refs)
 -- @return value, or nil, Error
 function Client:resolve(key, opts)
   if not self._backend.resolve then
@@ -198,15 +202,17 @@ function Client:resolve(key, opts)
   end
   opts = opts or {}
   local cwd = opts.cwd or self._context_path or "."
-  local resp = self._backend:resolve(key, cwd, opts.env or {}, opts.virtual or {})
+  local resp = self._backend:resolve(key, cwd, opts.env or {})
   if not resp.ok then return nil, Error.from(resp.error) end
   return resp.data
 end
 
---- Evaluate a value expression client-side (via bc_eval). template_str
--- accepts a single "{{ expr }}" tag, or literal text/several tags — the
--- former keeps the expression's natural type, the latter is always a
--- string (a source with no tags at all is its literal text).
+--- Render a template that is stored nowhere — the same value `comb eval`
+-- prints (via bc_eval). Every ref resolves exactly as it would inside a
+-- stored template, so eval("{{ p.f }}") and resolve("p.f") agree.
+-- template_str accepts a single "{{ expr }}" tag, or literal text/several
+-- tags — the former keeps the expression's natural type, the latter is
+-- always a string (a source with no tags at all is its literal text).
 -- @param template_str string
 -- @param opts table?  Same shape as Client:resolve's opts.
 -- @return value, or nil, Error
@@ -216,7 +222,7 @@ function Client:eval(template_str, opts)
   end
   opts = opts or {}
   local cwd = opts.cwd or self._context_path or "."
-  local resp = self._backend:eval(template_str, cwd, opts.env or {}, opts.virtual or {})
+  local resp = self._backend:eval(template_str, cwd, opts.env or {})
   if not resp.ok then return nil, Error.from(resp.error) end
   return resp.data
 end

@@ -49,11 +49,11 @@ _SYMBOLS: dict = {
     ),
     "bc_hello": ([ctypes.c_void_p], ctypes.c_void_p),
     "bc_resolve": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_void_p,
     ),
     "bc_eval": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_void_p,
     ),
     "bc_session_open": ([ctypes.c_void_p], ctypes.c_void_p),

@@ -44,6 +44,10 @@ local M = {}
 --   opts.socket_path   string  ffi transport: override daemon socket discovery.
 --   opts.timeout_ms    number  ffi transport: per-call timeout.
 --   opts.autostart     boolean ffi transport: auto-spawn the daemon on demand.
+--   opts.exec          boolean ffi transport: whether a template this client
+--                               resolves (resolve/eval) may call exec(). Off by
+--                               default: a template that calls it then fails with
+--                               "exec() is disabled in this context".
 --   opts.library_path  string  ffi transport: override library discovery entirely.
 --   opts.comb_bin      string  subprocess transport: override `comb` discovery.
 --

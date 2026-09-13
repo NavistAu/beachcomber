@@ -32,8 +32,8 @@ char *bc_status(BcClient *client);
 char *bc_introspect(BcClient *client, const char *subject, const char *options_json);
 char *bc_hello(BcClient *client);
 
-char *bc_resolve(BcClient *client, const char *key, const char *cwd, const char *env_json, const char *overrides_json);
-char *bc_eval(BcClient *client, const char *template_str, const char *cwd, const char *env_json, const char *overrides_json);
+char *bc_resolve(BcClient *client, const char *key, const char *cwd, const char *env_json);
+char *bc_eval(BcClient *client, const char *template_str, const char *cwd, const char *env_json);
 
 BcSession *bc_session_open(BcClient *client);
 void bc_session_close(BcSession *session);

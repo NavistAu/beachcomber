@@ -206,4 +206,60 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     local backend = make_backend({ name = function() return "ffi" end })
     assert_eq(Client.new(backend):transport(), "ffi")
   end)
+
+  -- ── exec option (ffi transport) ───────────────────────────────────────────
+  -- An exec() call with no daemon-backed ref never touches the socket, so
+  -- whether `opts.exec` reached bc_client_new is observable against a dead
+  -- socket with autostart off. Needs LuaJIT and a built libbeachcomber
+  -- ($BEACHCOMBER_LIB, or the workspace's own debug build).
+
+  suite("ffi_backend.new{ exec = ... }")
+
+  local function built_lib()
+    local env_lib = os.getenv("BEACHCOMBER_LIB")
+    if env_lib and env_lib ~= "" then return env_lib end
+    local script_dir = (arg and arg[0]) and arg[0]:match("(.*/)") or "./"
+    for _, name in ipairs({ "libbeachcomber.dylib", "libbeachcomber.so" }) do
+      local path = script_dir .. "../../../target/debug/" .. name
+      local f = io.open(path, "rb")
+      if f then f:close(); return path end
+    end
+    return nil
+  end
+
+  local has_ffi = pcall(require, "ffi")
+  local lib = built_lib()
+  local function exec_client(exec)
+    local backend, err = require("beachcomber.ffi_backend").new({
+      library_path = lib, socket_path = "/nonexistent/beachcomber-test.sock",
+      autostart = false, timeout_ms = 500, exec = exec,
+    })
+    if not backend then return nil, err end
+    return Client.new(backend)
+  end
+
+  if not has_ffi then
+    skip("exec is disabled by default", "no ffi (PUC Lua)")
+    skip("exec = true reaches bc_client_new", "no ffi (PUC Lua)")
+  elseif not lib then
+    skip("exec is disabled by default", "no libbeachcomber built")
+    skip("exec = true reaches bc_client_new", "no libbeachcomber built")
+  else
+    test("exec is disabled by default", function()
+      local c, cerr = exec_client(nil)
+      assert_nil(cerr)
+      local value, err = c:eval("{{ exec('printf', 'x') }}", { cwd = "/tmp" })
+      assert_nil(value)
+      assert_eq(err.kind, "server_error")
+      assert_true(tostring(err.message):find("exec() is disabled in this context", 1, true) ~= nil, tostring(err.message))
+    end)
+
+    test("exec = true reaches bc_client_new", function()
+      local c, cerr = exec_client(true)
+      assert_nil(cerr)
+      local value, err = c:eval("{{ exec('printf', 'x') }}", { cwd = "/tmp" })
+      assert_nil(err)
+      assert_eq(value, "x")
+    end)
+  end
 end

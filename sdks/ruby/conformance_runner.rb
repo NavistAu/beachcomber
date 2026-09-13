@@ -202,11 +202,11 @@ class ConformanceRunner
       [event, nil]
     when 'resolve'
       cwd = fixture['cwd'] || @default_cwd
-      value = @client.resolve(args['key'], cwd: cwd, env: fixture['env'], overrides: fixture['virtual'])
+      value = @client.resolve(args['key'], cwd: cwd, env: fixture['env'])
       [value, nil]
     when 'eval'
       cwd = fixture['cwd'] || @default_cwd
-      value = @client.eval_expression(args['template'], cwd: cwd, env: fixture['env'], overrides: fixture['virtual'])
+      value = @client.eval_expression(args['template'], cwd: cwd, env: fixture['env'])
       [value, nil]
     else
       raise "unknown op in fixture: #{op.inspect}"

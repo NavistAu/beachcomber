@@ -68,9 +68,8 @@ if (!fs.existsSync(DIST_CLIENT)) {
           setup: Array.isArray(v.setup) ? v.setup : [],
           test: v.test,
           expect: v.expect,
-          // `resolve`-op context: field/path expression overrides, env vars,
-          // and cwd, all client-side (see tests/conformance/README.md).
-          virtual: v.virtual && typeof v.virtual === 'object' ? v.virtual : {},
+          // `resolve`/`eval`-op context: the caller's env vars and cwd
+          // (see tests/conformance/README.md).
           env: v.env && typeof v.env === 'object' ? v.env : {},
           cwd: typeof v.cwd === 'string' ? v.cwd : null,
           sourcePath: filePath,
@@ -178,7 +177,6 @@ if (!fs.existsSync(DIST_CLIENT)) {
           const data = await client.resolve(key, {
             cwd: resolveCtx.cwd,
             env: resolveCtx.env,
-            overrides: resolveCtx.virtual,
           });
           if (data === null || data === undefined) {
             return makeOk();
@@ -190,7 +188,6 @@ if (!fs.existsSync(DIST_CLIENT)) {
           const data = await client.eval(template, {
             cwd: resolveCtx.cwd,
             env: resolveCtx.env,
-            overrides: resolveCtx.virtual,
           });
           if (data === null || data === undefined) {
             return makeOk();
@@ -505,7 +502,6 @@ if (!fs.existsSync(DIST_CLIENT)) {
         // `resolve` is client-side: cwd defaults to this fixture's private
         // temp dir (matching the Rust reference runner) when not declared.
         const resolveCtx = {
-          virtual: fixture.virtual,
           env: fixture.env,
           cwd: fixture.cwd ?? daemon.tmpDir,
         };

@@ -202,6 +202,13 @@ func WithAutostart(enabled bool) Option {
 	return func(opts map[string]interface{}) { opts["autostart"] = enabled }
 }
 
+// WithExec sets whether a template this client resolves ([Client.Resolve],
+// [Client.Eval]) may call exec(). Off by default: a template that calls it
+// then fails with "exec() is disabled in this context".
+func WithExec(enabled bool) Option {
+	return func(opts map[string]interface{}) { opts["exec"] = enabled }
+}
+
 // NewClient returns a Client that auto-discovers the daemon socket path (the
 // resolution libbeachcomber itself performs — see docs/canon/singleton.md).
 // Unlike [NewClientWithPath] this may fail immediately: locating and
@@ -228,7 +235,8 @@ func NewClientWithPath(socketPath string, options ...Option) *Client {
 	return c
 }
 
-func newClientWithLib(l *nativeLib, socketPath string, options ...Option) (*Client, error) {
+// optionsJSON builds the options_json bc_client_new takes.
+func optionsJSON(socketPath string, options ...Option) string {
 	opts := map[string]interface{}{}
 	if socketPath != "" {
 		opts["socket_path"] = socketPath
@@ -236,8 +244,12 @@ func newClientWithLib(l *nativeLib, socketPath string, options ...Option) (*Clie
 	for _, o := range options {
 		o(opts)
 	}
-	optsJSON, _ := json.Marshal(opts)
-	optsBuf := cBytes(string(optsJSON))
+	b, _ := json.Marshal(opts)
+	return string(b)
+}
+
+func newClientWithLib(l *nativeLib, socketPath string, options ...Option) (*Client, error) {
+	optsBuf := cBytes(optionsJSON(socketPath, options...))
 	r1, _, _ := purego.SyscallN(l.bcClientNew, ptrOf(optsBuf))
 	runtime.KeepAlive(optsBuf)
 

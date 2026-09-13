@@ -151,23 +151,25 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
   suite("Client:resolve")
 
-  test("resolve forwards key, cwd, env, virtual overrides", function()
-    local seen
+  test("resolve forwards exactly key, cwd, env", function()
+    local seen, nargs
     local backend = make_backend({
-      resolve = function(_, key, cwd, env, overrides)
-        seen = { key = key, cwd = cwd, env = env, overrides = overrides }
+      resolve = function(_, ...)
+        nargs = select("#", ...)
+        local key, cwd, env = ...
+        seen = { key = key, cwd = cwd, env = env }
         return { ok = true, data = "baz" }
       end,
     })
     local value, err = Client.new(backend):resolve("filters.based", {
-      cwd = "/tmp", env = { PYVAR = "/foo/bar/baz" }, virtual = { ["filters.based"] = "{{ env.PYVAR | basename }}" },
+      cwd = "/tmp", env = { PYVAR = "/foo/bar/baz" },
     })
     assert_nil(err)
     assert_eq(value, "baz")
+    assert_eq(nargs, 3)
     assert_eq(seen.key, "filters.based")
     assert_eq(seen.cwd, "/tmp")
     assert_eq(seen.env.PYVAR, "/foo/bar/baz")
-    assert_eq(seen.overrides["filters.based"], "{{ env.PYVAR | basename }}")
   end)
 
   test("resolve defaults cwd to the context path", function()
@@ -189,18 +191,22 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
   suite("Client:eval")
 
-  test("eval forwards template, cwd, env, overrides", function()
-    local seen
+  test("eval forwards exactly template, cwd, env", function()
+    local seen, nargs
     local backend = make_backend({
-      eval = function(_, template, cwd, env, overrides)
-        seen = { template = template, cwd = cwd }
+      eval = function(_, ...)
+        nargs = select("#", ...)
+        local template, cwd, env = ...
+        seen = { template = template, cwd = cwd, env = env }
         return { ok = true, data = "rendered" }
       end,
     })
-    local value = Client.new(backend):eval("{{ git.branch }}", { cwd = "/repo" })
+    local value = Client.new(backend):eval("{{ git.branch }}", { cwd = "/repo", env = { X = "1" } })
     assert_eq(value, "rendered")
+    assert_eq(nargs, 3)
     assert_eq(seen.template, "{{ git.branch }}")
     assert_eq(seen.cwd, "/repo")
+    assert_eq(seen.env.X, "1")
   end)
 
   -- ── watch / WatchStream ───────────────────────────────────────────────────

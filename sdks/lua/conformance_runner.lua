@@ -142,8 +142,8 @@ end
 
 --- Run one op descriptor {op=, args=} through the Client's public API and
 -- return a canonical response table {ok, data, age_ms, stale, error}.
--- `resolve_ctx` supplies the fixture's top-level cwd/env/virtual for the
--- `resolve` and `eval` ops, neither of which is a wire op (see
+-- `resolve_ctx` supplies the fixture's top-level cwd/env for the `resolve`
+-- and `eval` ops, neither of which is a wire op (see
 -- tests/conformance/README.md).
 local function run_op(client, descriptor, resolve_ctx)
   local op, args = descriptor.op, descriptor.args or {}
@@ -200,16 +200,12 @@ local function run_op(client, descriptor, resolve_ctx)
     return { ok = true, data = ev.data, age_ms = ev.age_ms, stale = ev.stale }
 
   elseif op == "resolve" then
-    local value, err = client:resolve(args.key, {
-      cwd = resolve_ctx.cwd, env = resolve_ctx.env, virtual = resolve_ctx.virtual,
-    })
+    local value, err = client:resolve(args.key, { cwd = resolve_ctx.cwd, env = resolve_ctx.env })
     if value == nil and err then return fail(err) end
     return { ok = true, data = value }
 
   elseif op == "eval" then
-    local value, err = client:eval(args.template, {
-      cwd = resolve_ctx.cwd, env = resolve_ctx.env, virtual = resolve_ctx.virtual,
-    })
+    local value, err = client:eval(args.template, { cwd = resolve_ctx.cwd, env = resolve_ctx.env })
     if value == nil and err then return fail(err) end
     return { ok = true, data = value }
 
@@ -370,7 +366,6 @@ local function run_fixture(fixture)
   local resolve_ctx = {
     cwd = fixture.cwd or guard.tmpdir,
     env = fixture.env or {},
-    virtual = fixture.virtual or {},
   }
 
   for i, step in ipairs(fixture.setup or {}) do

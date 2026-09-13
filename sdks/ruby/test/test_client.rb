@@ -117,6 +117,22 @@ class TestClient < Minitest::Test
     assert_includes %w[connection_failed daemon_not_running], err.kind
   end
 
+  # --- exec option ---
+  # An exec() call with no daemon-backed ref never touches the socket, so
+  # the option's effect is observable against the mock alone.
+
+  def test_exec_is_disabled_by_default
+    err = assert_raises(Beachcomber::ServerError) do
+      @client.eval_expression("{{ exec('printf', 'x') }}", cwd: '/tmp')
+    end
+    assert_includes err.message, 'exec() is disabled in this context'
+  end
+
+  def test_exec_option_reaches_the_library
+    client = Beachcomber::Client.new(socket_path: @server.path, exec: true)
+    assert_equal 'x', client.eval_expression("{{ exec('printf', 'x') }}", cwd: '/tmp')
+  end
+
   # --- protocol errors ---
 
   def test_malformed_json_raises_protocol_error

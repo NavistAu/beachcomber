@@ -20,6 +20,7 @@ export interface NewClientOptions {
   socketPath?: string;
   timeoutMs?: number;
   autostart?: boolean;
+  exec?: boolean;
 }
 
 export interface Transport {
@@ -44,19 +45,12 @@ export interface Transport {
   status(handle: ClientHandle): Promise<Envelope>;
   introspect(handle: ClientHandle, subject: string, optionsJson: string | undefined): Promise<Envelope>;
   hello(handle: ClientHandle): Promise<Envelope>;
-  resolve(
-    handle: ClientHandle,
-    key: string,
-    cwd: string,
-    envJson: string | undefined,
-    overridesJson: string | undefined,
-  ): Promise<Envelope>;
+  resolve(handle: ClientHandle, key: string, cwd: string, envJson: string | undefined): Promise<Envelope>;
   evaluate(
     handle: ClientHandle,
     templateStr: string,
     cwd: string,
     envJson: string | undefined,
-    overridesJson: string | undefined,
   ): Promise<Envelope>;
 
   openSession(handle: ClientHandle): SessionHandle;
