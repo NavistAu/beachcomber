@@ -30,7 +30,7 @@ async fn setup_stale() -> (TempDir, std::path::PathBuf) {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("stale-seed".to_string()));
     fields.insert("short".to_string(), Value::String("stale".to_string()));
-    cache.put_source("hostname", None, "main", fields, Some(0));
+    cache.put_source("hostname", None, "host", fields, Some(0));
 
     // The entry must reach elapsed().as_secs() > 0 to count as stale, i.e. a
     // full second of clock. Both tests run on a paused clock (`start_paused`):
