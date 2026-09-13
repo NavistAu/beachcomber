@@ -419,7 +419,7 @@ async fn seed_box(s: &mut UnixStream) {
 }
 
 #[tokio::test]
-async fn a_template_beats_the_unknown_field_error() {
+async fn a_template_answers_where_the_data_half_has_nothing() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -454,16 +454,20 @@ async fn a_template_beats_the_unknown_field_error() {
         serde_json::json!({"ok": true, "data": 1, "stale": false})
     );
 
-    // Still an error where neither half answers.
+    // A miss where neither half answers — an address into an existing object
+    // that has no such key misses exactly as a missing top-level field does.
     let neither = get(&mut s, "box.widgets.nope").await;
-    assert_eq!(neither["ok"], false, "got {neither}");
-    assert_eq!(neither["error"], "unknown field: box.widgets.nope");
+    assert_eq!(
+        without_age(neither),
+        serde_json::json!({"ok": true}),
+        "a sub-path nothing answers is a miss, not an error"
+    );
 
     handle.abort();
 }
 
 #[tokio::test]
-async fn a_watch_frame_prefers_the_template_over_the_unknown_field_error() {
+async fn a_watch_frame_carries_the_template_where_the_data_half_has_nothing() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();

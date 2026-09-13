@@ -366,9 +366,11 @@ async fn nested_key_walks_into_object_field() {
     handle.abort();
 }
 
-/// Nested key lookup fails loudly with a clear error when the subkey is absent.
+/// An address into an existing object that has no such key is a miss, like a
+/// missing top-level field — not an error. The same rule the client applies
+/// when it walks an address past a template.
 #[tokio::test]
-async fn nested_key_missing_subkey_errors() {
+async fn nested_key_missing_subkey_is_a_miss() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     let mut tools_map = std::collections::HashMap::new();
@@ -392,13 +394,11 @@ async fn nested_key_missing_subkey_errors() {
     let mut line = String::new();
     reader.read_line(&mut line).await.unwrap();
     let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["ok"], true, "a miss is ok: {line}");
+    assert!(resp.get("data").is_none(), "a miss carries no data: {line}");
     assert!(
-        resp["error"]
-            .as_str()
-            .unwrap()
-            .contains("unknown field: myproj.project.nonesuch"),
-        "got: {line}"
+        resp.get("error").is_none(),
+        "a miss is not an error: {line}"
     );
 
     handle.abort();

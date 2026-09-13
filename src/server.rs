@@ -786,21 +786,20 @@ fn source_scope_path<'a>(
 }
 
 /// Assemble the response for a resolved read: the data half out of `merged`
-/// with its own freshness, and the template half attached to it — or the
-/// `unknown field` error, which a caller recognises by `ok: false`.
+/// with its own freshness, and the template half attached to it.
 ///
 /// `get` and `watch` share this, so a streamed value and a fetched one cannot
 /// answer the same key differently. The only thing they do apart is warming:
 /// `get` runs sources on a cold miss, `watch` waits for the scheduler.
 ///
-/// A sub-path whose head resolves but whose tail does not (`p.project.nonesuch`
-/// where `project` exists) is the loud error rather than a silent miss — but
-/// only when the template half is empty too, since otherwise the address is
-/// answered after all.
+/// An address nothing answers is a miss, at any depth: `p.project.nonesuch`
+/// where `project` exists but has no `nonesuch`, or `p.lit.x` where `lit` is a
+/// scalar, miss exactly as `p.nonesuch` does. That is the same rule the client
+/// applies when it walks an address past a template (a scalar reached with
+/// segments left is a miss), so the two halves of the tree agree.
 fn resolve_halves(
     merged: &Option<MergedRead>,
     target: &KeyParse,
-    provider: &str,
     template: Option<serde_json::Value>,
     template_rest: Option<String>,
 ) -> Response {
@@ -808,14 +807,7 @@ fn resolve_halves(
     let response = match target {
         KeyParse::Field(..) => match (lookup_merged(merged, rest), merged) {
             (Some(data), Some(m)) => hit_response(data, freshness(m, rest)),
-            _ => {
-                let head_resolves =
-                    rest.contains('.') && lookup_merged(merged, split_head(rest).0).is_some();
-                if template.is_none() && head_resolves {
-                    return Response::error(format!("unknown field: {provider}.{rest}"));
-                }
-                Response::miss()
-            }
+            _ => Response::miss(),
         },
         KeyParse::Provider(_) => match merged {
             Some(m) => serde_json::to_value(&m.fields)
@@ -849,7 +841,7 @@ fn read_watch_value(
         template_half(cache, registry, provider, target.rest(), requested)
     };
     let merged = cache.read_merged(provider, requested, provider_entry, registry);
-    resolve_halves(&merged, target, provider, half.template, half.rest)
+    resolve_halves(&merged, target, half.template, half.rest)
 }
 
 async fn write_watch_line(
@@ -963,10 +955,9 @@ async fn handle_request(
             // path, so a static record written below `at` is still visible.
             let at = effective_path.as_deref();
 
-            // The template half is read before the data half, because it decides
-            // what an unresolvable sub-path means: `get box.widgets.foo` where
-            // `box.widgets` is an object without a `foo` is only "unknown field"
-            // when no template answers there either.
+            // The template half is read before the data half: `get box.widgets.foo`
+            // where `box.widgets` is an object without a `foo` is a hit when a
+            // template answers there, a miss otherwise.
             let half = if facet.is_some() {
                 TemplateHalf::default()
             } else {
@@ -1016,18 +1007,7 @@ async fn handle_request(
             }
 
             // Both halves, assembled the one way `watch` assembles them.
-            let normal_response = resolve_halves(
-                &merged,
-                &plan.target,
-                provider_name,
-                half.template,
-                half.rest,
-            );
-            // An address nothing answers is an error, and a metadata suffix has
-            // no question to ask about one.
-            if !normal_response.ok {
-                return normal_response;
-            }
+            let normal_response = resolve_halves(&merged, &plan.target, half.template, half.rest);
             let cache_hit = normal_response.data.is_some();
 
             match meta {

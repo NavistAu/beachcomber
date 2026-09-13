@@ -179,8 +179,10 @@ A `get` on a key whose namespace carries no facet does two lookups: the data at
 the addressed node, and the same node in the merged tree of that namespace's
 `template` facet (`<provider>:template`). Whichever exist come back, so a
 response may carry the template half with no `data` at all — a namespace holding
-only templates is a hit, not `unknown provider`, and a sub-path the data half
-cannot resolve is `unknown field` only when no template answers there either.
+only templates is a hit, not `unknown provider`. A sub-path neither half answers
+is a miss (`{"ok":true}`), at any depth: an address into an existing object that
+has no such key, or past a scalar, misses exactly as a missing top-level field
+does. There is no `unknown field` error.
 
 The two halves are addressed from different places. The data half sits where the
 provider's records live, which is the requested path narrowed by the provider's

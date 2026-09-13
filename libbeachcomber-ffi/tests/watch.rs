@@ -137,17 +137,10 @@ fn watch_next_reports_eof_after_the_daemon_closes_the_connection() {
 fn watch_next_on_an_invalid_key_yields_an_error_envelope() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    // A dotted sub-path whose head exists but whose tail doesn't is the
-    // documented "unknown field" error (mirrors `get`'s own semantics; see
-    // tests/conformance/put/nested_object_data.json), so it errors as the
-    // stream's very first frame rather than the ordinary miss a wholly
-    // unregistered provider would produce.
-    put_static(
-        client,
-        "watch_error_test",
-        r#"{"widget":{"kind":"renderable"}}"#,
-    );
-    let key = cs("watch_error_test.widget.nonexistent");
+    // An invalid facet key (two colons) is refused by the daemon on `watch`
+    // exactly as on `get`, so it errors as the stream's very first frame rather
+    // than the ordinary miss an unknown address would produce.
+    let key = cs("a:b:c.x");
     let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null()) };
     assert!(!watch.is_null());
 
