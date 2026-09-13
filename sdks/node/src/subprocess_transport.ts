@@ -11,9 +11,8 @@
  * has direct equivalents for get/put/put_null/status/watch, and session
  * semantics are emulated client-side (remembering a context path between
  * calls — there is no real persistent connection to share, since each op
- * is its own process). `hello`, `introspect`, `refresh`, and the
- * client-side `resolve`/`eval` resolution ops have **no** faithful CLI
- * equivalent:
+ * is its own process). `hello`, `introspect` and `refresh` have **no**
+ * faithful CLI equivalent:
  *
  *   - `comb` exposes no JSON-emitting subcommand for `hello`/`introspect`.
  *   - `get --force` is not a stand-in for `refresh`: `refresh` on a key
@@ -21,12 +20,14 @@
  *     has no sources"), and `comb get --force` on the same key errors too
  *     ("no source to re-execute from") — differently worded, but neither
  *     is a silent no-op.
- *   - `resolve`'s path-expression case pins `cwd` to the CLI process's
- *     actual working directory rather than the caller-supplied one, which
- *     fixtures often set to a nonexistent path.
+ *
+ * `resolve`/`eval` are simply not implemented over this tier. `comb get
+ * --path <cwd> -f json` and `comb eval <template> <cwd>` resolve through
+ * the same `libbeachcomber::resolve` the FFI does, so a faithful shell-out
+ * exists; nobody has wired it yet.
  *
  * Rather than fake structured data from scraped human-readable text or
- * silently return the wrong answer, those ops throw
+ * silently return the wrong answer, all five ops throw
  * `UnsupportedTransportError` naming the FFI transport as the
  * full-fidelity path.
  *

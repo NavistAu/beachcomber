@@ -52,17 +52,33 @@ local function unwrap_get(env)
   return { ok = true, data = data, age_ms = d.age_ms, stale = d.stale }
 end
 
---- put/put_null/refresh/status/introspect/hello/resolve/eval-shaped result:
--- `{data:...}` on ok. Deliberately does NOT collapse json.NULL — none of
--- these ops encode a "miss" as a literal null the way bc_get/bc_watch_next
--- do (see unwrap_get above), so their `data` stays whatever it decoded to;
--- an op that ever grows that convention should route through its own
--- unwrap function instead of this one.
+--- put/put_null/refresh/status/introspect/hello-shaped result: `{data:...}`
+-- on ok. Deliberately does NOT collapse json.NULL — none of these ops
+-- encode a "miss" as a literal null the way bc_get/bc_watch_next do (see
+-- unwrap_get above), so their `data` stays whatever it decoded to; an op
+-- that ever grows that convention should route through its own unwrap
+-- function instead of this one.
 local function plain(env)
   if not env.ok then
     return { ok = false, error = env.error }
   end
   return { ok = true, data = env.data }
+end
+
+--- bc_resolve/bc_eval-shaped result: the value itself at top-level `data`,
+-- where a miss (`bc_resolve` of an address nothing is stored at) is a
+-- literal `"data":null`. Collapse that to Lua nil, the miss the Client
+-- documents. bc_eval shares the unwrap so the two ops agree on a top-level
+-- null (a template rendering none is `""` by canon, so eval never actually
+-- produces one); a null nested inside a rendered object stays json.NULL
+-- like any other decoded value.
+local function unwrap_resolve(env)
+  if not env.ok then
+    return { ok = false, error = env.error }
+  end
+  local data = env.data
+  if data == json.NULL then data = nil end
+  return { ok = true, data = data }
 end
 
 local M = {}
@@ -156,13 +172,13 @@ end
 function Backend:resolve(key, cwd, env_vars)
   local env_json = json.encode(env_vars or {})
   local ptr = self._C.bc_resolve(self._client, key, cwd, env_json)
-  return plain(decode(self._C, ptr))
+  return unwrap_resolve(decode(self._C, ptr))
 end
 
 function Backend:eval(template_str, cwd, env_vars)
   local env_json = json.encode(env_vars or {})
   local ptr = self._C.bc_eval(self._client, template_str, cwd, env_json)
-  return plain(decode(self._C, ptr))
+  return unwrap_resolve(decode(self._C, ptr))
 end
 
 -- ── Session (advanced: a persistent connection with server-side context) ──

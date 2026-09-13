@@ -172,6 +172,15 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(seen.env.PYVAR, "/foo/bar/baz")
   end)
 
+  test("resolve miss is nil with no Error", function()
+    local backend = make_backend({
+      resolve = function() return { ok = true, data = nil } end,
+    })
+    local value, err = Client.new(backend):resolve("p.nope", { cwd = "/tmp" })
+    assert_nil(value)
+    assert_nil(err)
+  end)
+
   test("resolve defaults cwd to the context path", function()
     local seen_cwd
     local backend = make_backend({

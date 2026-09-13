@@ -262,4 +262,92 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
       assert_eq(value, "x")
     end)
   end
+
+  -- ── resolve / eval against a live daemon (ffi transport) ──────────────────
+  -- bc_resolve answers a miss as `"data":null`; the binding must hand that
+  -- back as Lua nil (the miss Client:resolve documents), never as the
+  -- json.NULL sentinel. Needs LuaJIT, the built library, and a comb binary
+  -- ($COMB_BIN, or the workspace's own debug build).
+
+  suite("ffi_backend resolve/eval against a live daemon")
+
+  local function built_comb()
+    local env_bin = os.getenv("COMB_BIN")
+    if env_bin and env_bin ~= "" then return env_bin end
+    local script_dir = (arg and arg[0]) and arg[0]:match("(.*/)") or "./"
+    local path = script_dir .. "../../../target/debug/comb"
+    local f = io.open(path, "rb")
+    if f then f:close(); return path end
+    return nil
+  end
+
+  -- Spawn a daemon on a private socket, with HOME/XDG_CONFIG_HOME pointed
+  -- into its tempdir so its managed defaults never touch the real config.
+  local function start_daemon(comb_bin)
+    local p = io.popen("mktemp -d " .. (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "") .. "/beachcomber-luatest-XXXXXX", "r")
+    local tmpdir = p and p:read("*l")
+    if p then p:close() end
+    if not tmpdir or tmpdir == "" then return nil end
+    local socket_path = tmpdir .. "/sock"
+    local pid_pipe = io.popen("XDG_CONFIG_HOME=" .. tmpdir .. " HOME=" .. tmpdir .. " " .. comb_bin
+      .. " daemon --socket " .. socket_path .. " > /dev/null 2>&1 & echo $!", "r")
+    local pid = pid_pipe and pid_pipe:read("*l")
+    if pid_pipe then pid_pipe:close() end
+    local deadline = os.time() + 5
+    while os.time() < deadline do
+      if os.execute("test -S " .. socket_path) then
+        return { pid = pid, socket = socket_path, tmpdir = tmpdir }
+      end
+      os.execute("sleep 0.05 2>/dev/null || true")
+    end
+    os.execute("kill " .. tostring(pid) .. " 2>/dev/null; rm -rf " .. tmpdir)
+    return nil
+  end
+
+  local comb_bin = built_comb()
+  local live_tests = {
+    "resolve of a missing key is nil with no Error",
+    "eval rendering none is the empty string, not the null sentinel",
+    "resolve renders a put template",
+  }
+  if not has_ffi then
+    for _, name in ipairs(live_tests) do skip(name, "no ffi (PUC Lua)") end
+  elseif not lib or not comb_bin then
+    for _, name in ipairs(live_tests) do skip(name, "no libbeachcomber/comb built") end
+  else
+    local guard = start_daemon(comb_bin)
+    if not guard then
+      for _, name in ipairs(live_tests) do skip(name, "daemon did not start") end
+    else
+      local backend = require("beachcomber.ffi_backend").new({
+        library_path = lib, socket_path = guard.socket, autostart = false, timeout_ms = 3000,
+      })
+      local c = Client.new(backend)
+
+      test(live_tests[1], function()
+        assert_true(c:put("revns", { v = 1 }))
+        local value, err = c:resolve("revns.nope", { cwd = "/tmp" })
+        assert_nil(err)
+        assert_nil(value)
+      end)
+
+      test(live_tests[2], function()
+        -- Canon: a missing ref is falsy and renders "" — a string, never
+        -- a top-level null (and so never json.NULL through the binding).
+        local value, err = c:eval("{{ none }}", { cwd = "/tmp" })
+        assert_nil(err)
+        assert_eq(value, "")
+      end)
+
+      test(live_tests[3], function()
+        assert_true(c:put("revtpl:template", { label = "{{ 'resolved-' ~ env.MYVAR }}" }))
+        local value, err = c:resolve("revtpl.label", { cwd = "/tmp", env = { MYVAR = "x" } })
+        assert_nil(err)
+        assert_eq(value, "resolved-x")
+      end)
+
+      c:close()
+      os.execute("kill " .. tostring(guard.pid) .. " 2>/dev/null; rm -rf " .. guard.tmpdir)
+    end
+  end
 end

@@ -12,14 +12,17 @@
 -- library call); `Client:transport()` reports "subprocess" so a caller can
 -- see this in a profile rather than discover it there.
 --
--- Capability ceiling: `comb` has no CLI surface for `hello`, `refresh`,
--- `introspect`, or `eval`/`resolve` (no subcommand exposes protocol/daemon
--- version, a bare re-execution, a structured introspection query, or the
--- client-side expression evaluator bc_resolve/bc_eval wrap). Those methods
--- are simply absent from this
--- backend table; beachcomber.client turns a missing method into an
--- Error.unsupported() naming this transport, and a conformance runner
--- skips (never silently passes) a fixture that needs one.
+-- Capability ceiling: `comb` has no CLI surface for `hello`, `refresh` or
+-- `introspect` (no subcommand exposes protocol/daemon version, a bare
+-- re-execution, or a structured introspection query). `resolve`/`eval` are
+-- simply not implemented over this tier — `comb get --path <cwd> -f json`
+-- and `comb eval <template> <cwd>` resolve through the same
+-- libbeachcomber::resolve the ffi tier's bc_resolve/bc_eval do, so a
+-- faithful shell-out exists; nobody has wired it yet. All five methods are
+-- absent from this backend table; beachcomber.client turns a missing
+-- method into an Error.unsupported() naming this transport, and a
+-- conformance runner skips (never silently passes) a fixture that needs
+-- one.
 --
 -- `get` on a virtual (put-created) provider does not go through `comb get`:
 -- as of this writing that CLI path silently drops the value for entries
@@ -238,7 +241,10 @@ end
 
 -- hello / introspect / resolve / eval / watch_open intentionally absent.
 --
--- hello / introspect / resolve / eval: no CLI surface exposes them.
+-- hello / introspect: no CLI surface exposes them.
+--
+-- resolve / eval: not implemented over this tier (see the header comment —
+-- `comb get`/`comb eval` would be a faithful shell-out).
 --
 -- refresh: `comb get --force` is not a stand-in. `refresh` selects the
 -- Sources its key demands and refuses a key that names none; `get --force`
