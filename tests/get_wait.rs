@@ -36,13 +36,20 @@ async fn wait_fresh_entry_is_served_from_cache() {
     fields.insert("short".to_string(), Value::String("cached".to_string()));
     cache.put_source("hostname", None, "host", fields, Some(60));
 
+    // Age the record by ten seconds on the mock clock — well inside its 60 s
+    // interval, so it stays fresh, and far enough that the `age_ms` assertion
+    // below cannot depend on how long the put→get gap took in wall time.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(10)).await;
+    tokio::time::resume();
+
     // Sanity-check the entry is not stale.
     let entry = cache
         .get_entry("hostname", None)
         .expect("entry must be present");
     assert!(
         !entry.is_stale(),
-        "entry with 60s interval must not be stale immediately"
+        "entry with 60s interval must not be stale after 10 s"
     );
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
@@ -71,10 +78,12 @@ async fn wait_fresh_entry_is_served_from_cache() {
         "wait on fresh entry must return the cached value"
     );
 
-    // age_ms should be > 0 because it was served from cache (not re-executed inline).
+    // Served from cache, not re-executed: the record carries the ten seconds
+    // the clock advanced. A re-execution would have written a fresh record.
     assert!(
-        response.age_ms.unwrap_or(0) > 0,
-        "wait on fresh entry should report age > 0 (cache hit, not re-executed)"
+        response.age_ms.unwrap_or(0) >= 10_000,
+        "wait on fresh entry should report the seeded record's age (cache hit, not re-executed), got {:?}",
+        response.age_ms
     );
 
     handle.abort();
