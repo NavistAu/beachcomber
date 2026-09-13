@@ -1,9 +1,9 @@
 {
   "name": "resolve_cache_ref_virtual_field",
-  "description": "A virtual field expression referencing cache.P.F resolves to that cached value. The seed is put globally while the query runs at a cwd, so this also pins the chain resolution a static namespace gets: the global entry is the last link of every path's chain (canon field_resolution.md \u00a7\"Path resolution\").",
-  "virtual": { "widget.label": "{{ cache.widgetdata.label }}" },
+  "description": "A template referencing cache.P.F resolves to that cached value. The template and the seed are both put globally while the query runs at a cwd, so this also pins the chain resolution a static record gets: the global entry is the last link of every path's chain (canon field_resolution.md §\"Path resolution\").",
   "cwd": "/nonexistent/proj",
   "setup": [
+    { "op": "put", "args": { "key": "widget:template", "data": { "label": "{{ cache.widgetdata.label }}" } } },
     { "op": "put", "args": { "key": "widgetdata", "data": { "label": "hello-value" } } }
   ],
   "test": { "op": "resolve", "args": { "key": "widget.label" } },

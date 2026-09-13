@@ -1,7 +1,9 @@
 {
   "name": "eval_virtual_defined_with_tags",
-  "description": "A virtual field whose expression is itself written with tags resolves through eval: x.y is \"{{ env.A or cache.x.y }}\", so {{ x.y }} takes the env term (cache.x.y names no registered provider and is falsy) and keeps its string type.",
-  "virtual": { "x.y": "{{ env.A or cache.x.y }}" },
+  "description": "A templated field whose source is itself written with tags resolves through eval: x:template.y is \"{{ env.A or cache.x.y }}\", so {{ x.y }} takes the env term (x.y holds no cached value, so cache.x.y is falsy) and keeps its string type.",
+  "setup": [
+    { "op": "put", "args": { "key": "x:template", "data": { "y": "{{ env.A or cache.x.y }}" } } }
+  ],
   "env": { "A": "from-env" },
   "test": { "op": "eval", "args": { "template": "{{ x.y }}" } },
   "expect": { "status": "hit", "data_type": "string", "data_equals": "from-env" }

@@ -516,6 +516,10 @@ pub struct ClientConfig {
     pub timeout: Duration,
     /// Whether to attempt starting the daemon if it's not running.
     pub auto_start: bool,
+    /// Whether templates this client resolves may call `exec()`. Off by
+    /// default: an embedding caller does not spawn processes on the user's
+    /// behalf unless it says so (canon `field_resolution.md` invariant 15).
+    pub exec: bool,
 }
 
 impl Default for ClientConfig {
@@ -523,6 +527,7 @@ impl Default for ClientConfig {
         Self {
             timeout: Duration::from_millis(100),
             auto_start: true,
+            exec: false,
         }
     }
 }
@@ -567,6 +572,12 @@ impl Client {
     /// first connection is made, or once made, if the versions matched.
     pub fn version_skew(&self) -> Option<VersionSkew> {
         self.version_skew.get().cloned().flatten()
+    }
+
+    /// Whether templates this client resolves may call `exec()`
+    /// ([`ClientConfig::exec`]).
+    pub fn allow_exec(&self) -> bool {
+        self.config.exec
     }
 
     fn skew_ref(&self) -> Option<&VersionSkew> {
@@ -943,6 +954,53 @@ impl Client {
 impl Default for Client {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// [`resolve::Fetch`] over a [`Client`]: one daemon `get` per node, each on
+/// its own connection.
+///
+/// A node with nothing in it — no `data`, no `template` — is a miss. A key
+/// the daemon rejected (`ok: false`: an invalid facet, an unknown provider)
+/// is [`FetchError::Rejected`](resolve::FetchError::Rejected) in the daemon's
+/// own words. Every other failure is the transport's: it is reported as
+/// [`FetchError::Transport`](resolve::FetchError::Transport) and the
+/// [`CombError`] behind it is kept in [`transport`](Self::transport), so a
+/// surface that classifies failures by type (the C ABI's `error.kind`) reads
+/// the error rather than parsing its message back.
+pub struct ClientFetch<'a> {
+    client: &'a Client,
+    /// The failure behind the last `Transport` this fetch returned.
+    pub transport: Option<CombError>,
+}
+
+impl<'a> ClientFetch<'a> {
+    /// A fetch over `client`, with no failure recorded yet.
+    pub fn new(client: &'a Client) -> Self {
+        Self {
+            client,
+            transport: None,
+        }
+    }
+}
+
+impl resolve::Fetch for ClientFetch<'_> {
+    fn get(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: bool,
+    ) -> Result<Option<resolve::Got>, resolve::FetchError> {
+        match self.client.get_node(key, path, force, wait) {
+            Ok(got) => Ok((got != resolve::Got::default()).then_some(got)),
+            Err(CombError::ServerError(msg)) => Err(resolve::FetchError::Rejected(msg)),
+            Err(e) => {
+                let message = e.to_string();
+                self.transport = Some(e);
+                Err(resolve::FetchError::Transport(message))
+            }
+        }
     }
 }
 

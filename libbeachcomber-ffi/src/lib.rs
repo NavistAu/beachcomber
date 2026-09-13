@@ -10,13 +10,11 @@ use std::time::{Duration, Instant};
 pub mod envelope;
 
 use envelope::{ErrorKind, FfiError, WatchOutcome, call_ffi, call_watch_next};
-use libbeachcomber::eval;
-use libbeachcomber::path_expr::{evaluate_path, path_expression_for};
-use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields};
+use libbeachcomber::resolve::{self, FetchError, Inputs, ResolveError, Slot};
 use libbeachcomber::{
-    CacheRow, CombError, CombResult, DaemonHealth, IntrospectResponse, IntrospectSubject,
+    CacheRow, ClientFetch, CombResult, DaemonHealth, IntrospectResponse, IntrospectSubject,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Opaque client handle returned by [`bc_client_new`].
 ///
@@ -47,6 +45,7 @@ struct ClientOptions {
     socket_path: Option<String>,
     timeout_ms: Option<u64>,
     autostart: Option<bool>,
+    exec: Option<bool>,
 }
 
 /// # Safety
@@ -71,6 +70,7 @@ unsafe fn build_client(options_json: *const c_char) -> Result<libbeachcomber::Cl
             .map(Duration::from_millis)
             .unwrap_or(default_config.timeout),
         auto_start: options.autostart.unwrap_or(default_config.auto_start),
+        exec: options.exec.unwrap_or(default_config.exec),
     };
 
     let mut client = libbeachcomber::Client::with_config(config);
@@ -81,9 +81,11 @@ unsafe fn build_client(options_json: *const c_char) -> Result<libbeachcomber::Cl
 }
 
 /// Creates a new client handle. `options_json` is nullable; recognised keys
-/// are `socket_path`, `timeout_ms` and `autostart`. Never returns NULL — a
-/// malformed `options_json` still yields a handle, with the parse error
-/// deferred to the handle's first operation rather than failing here.
+/// are `socket_path`, `timeout_ms`, `autostart` and `exec` — whether a
+/// template this client resolves (`bc_resolve`, `bc_eval`) may call `exec()`,
+/// default `false`. Never returns NULL — a malformed `options_json` still
+/// yields a handle, with the parse error deferred to the handle's first
+/// operation rather than failing here.
 ///
 /// # Safety
 /// `options_json` must be NULL or a valid pointer to a NUL-terminated string.
@@ -438,228 +440,114 @@ fn parse_env_json(json: Option<&str>) -> Result<HashMap<String, String>, FfiErro
     }
 }
 
-/// Field-expression overrides, keyed `(provider, field)`.
-type FieldOverrides = Vec<((String, String), String)>;
-
-/// Parses a nullable `overrides_json` argument into field-expression
-/// overrides (keyed `"provider.field"`) and path-expression overrides
-/// (keyed by a bare provider name) — the same split the conformance
-/// runner's fixture `virtual` block uses. `None` (NULL) means "no
-/// overrides" — [`VirtualFields::with_config_overrides`] still applies the
-/// built-in defaults underneath an empty override list.
-fn parse_overrides_json(
-    json: Option<&str>,
-) -> Result<(FieldOverrides, HashMap<String, String>), FfiError> {
-    let Some(s) = json else {
-        return Ok((Vec::new(), HashMap::new()));
-    };
-    let v: serde_json::Value = serde_json::from_str(s).map_err(|e| {
-        FfiError::new(
-            ErrorKind::ParseError,
-            format!("malformed overrides_json: {e}"),
-        )
-    })?;
-    let obj = v.as_object().ok_or_else(|| {
-        FfiError::new(
-            ErrorKind::ParseError,
-            "overrides_json must be a JSON object",
-        )
-    })?;
-    let mut field_overrides = Vec::new();
-    let mut path_overrides = HashMap::new();
-    for (key, expr) in obj {
-        let expr = expr.as_str().ok_or_else(|| {
-            FfiError::new(
-                ErrorKind::ParseError,
-                format!("overrides_json[{key}] must be a string expression"),
-            )
-        })?;
-        match key.split_once('.') {
-            Some((provider, field)) => {
-                field_overrides.push(((provider.to_string(), field.to_string()), expr.to_string()));
-            }
-            None => {
-                path_overrides.insert(key.clone(), expr.to_string());
-            }
-        }
-    }
-    Ok((field_overrides, path_overrides))
-}
-
-/// Fetches every ref in `refs` from the daemon via `client.get(key,
-/// Some(cwd))`, into a daemon-data map an [`EvalContext`] can borrow. `cwd`
-/// is threaded through so path-scoped providers (`git`, `terraform`,
-/// `python`, `kubecontext`, …) resolve at the caller's supplied directory —
-/// the same convention `comb get`'s `--path` and `comb eval`'s
-/// `set_context` follow. Keying and dedup are [`eval::fetch_daemon_data`]'s;
-/// this closure only translates one `client.get` call into the
-/// `Result<Option<Value>, FfiError>` shape it wants. A cache miss is simply
-/// absent from the map and evaluates falsy.
+/// A resolution failure as an envelope error.
 ///
-/// So is `CombError::ServerError` — the daemon answered, but rejected the
-/// key (e.g. "unknown provider: c" for a `cache.*` ref that names nothing
-/// registered). Canon: a missing ref is falsy at any depth, and a rejected
-/// key is exactly that, not a transport failure. This mirrors
-/// `src/client.rs`'s `to_response`, which turns the very same
-/// `CombError::ServerError` into a response with `data: None` for the CLI
-/// (`comb eval '{{ c.z or "x" }}'` prints `x`) — so the FFI and the CLI
-/// agree on what a rejected key means. Every other `CombError` variant
-/// (connection/IO/parse/timeout/daemon-not-running) is a genuine transport
-/// failure and aborts the whole fetch: the [`CombError`]-derived envelope
-/// error every other `bc_*` op already produces via `?`, with the failing
-/// key named in the message the way `run_eval`'s own fetch closure names it.
-fn fetch_via_client(
-    client: &libbeachcomber::Client,
-    cwd: &str,
-    refs: &[Ref],
-) -> Result<HashMap<String, serde_json::Value>, FfiError> {
-    eval::fetch_daemon_data(refs, |key| match client.get(key, Some(cwd)) {
-        Ok(CombResult::Hit { data, .. }) => Ok(Some(data.as_value().clone())),
-        Ok(CombResult::Miss) => Ok(None),
-        Err(CombError::ServerError(_)) => Ok(None),
-        Err(e) => {
-            let mapped = FfiError::from(e);
-            Err(FfiError::new(
-                mapped.kind,
-                format!("querying {key}: {}", mapped.message),
-            ))
-        }
-    })
-}
-
-/// Maps an evaluation error message from [`eval::evaluate`] /
-/// [`VirtualFields::evaluate`] to an [`ErrorKind`]. Both
-/// `eval::evaluate`'s typed path and `eval::render_template` prefix a
-/// compile failure with `"expression compile error: "` / `"template compile
-/// error: "` (optionally itself wrapped by `VirtualFields::evaluate`'s
-/// `"provider.field: "`) — that is the caller's own expression being
-/// malformed, a `parse_error`. Everything else (a runtime eval/render
-/// failure, an evaluation cycle) is a `server_error`. There is no typed
-/// error to match on here — both functions return a plain `String` — so
-/// this is deliberately a substring check on the one phrase both compile
-/// paths share.
-fn eval_error_kind(message: &str) -> ErrorKind {
-    if message.contains("compile error") {
-        ErrorKind::ParseError
-    } else {
-        ErrorKind::ServerError
+/// A template that does not compile, cycles or runs past the depth limit is
+/// configuration someone has to go and edit — the caller's input being
+/// malformed, `parse_error`. A failure while rendering (`exec()` disabled or
+/// failed) is `server_error`, and so is the daemon refusing the key itself,
+/// in the daemon's own words. A transport failure keeps the kind its
+/// `CombError` gave it — `daemon_not_running`, `timeout`, … — which
+/// [`ClientFetch`] recorded when it reported the failure.
+fn resolve_error(e: ResolveError, fetch: &mut ClientFetch<'_>) -> FfiError {
+    match e {
+        ResolveError::Config(m) => FfiError::new(ErrorKind::ParseError, m),
+        ResolveError::Runtime(m) => FfiError::new(ErrorKind::ServerError, m),
+        ResolveError::Fetch(FetchError::Rejected(m)) => FfiError::new(ErrorKind::ServerError, m),
+        ResolveError::Fetch(FetchError::Transport(_)) => fetch
+            .transport
+            .take()
+            .map(FfiError::from)
+            .expect("ClientFetch records the CombError behind every Transport"),
     }
 }
 
-/// Resolve a virtual field (`key` = `"provider.field"`) or a path
-/// expression (`key` = a bare provider name) — client-side, exactly as
-/// `comb get`'s resolution layer does.
+/// Resolve `key` to the value `comb get key` prints at `cwd`, through
+/// [`libbeachcomber::resolve`]: the daemon holds the templates
+/// (`<provider>:template`, seeded from configuration or `put`), and this
+/// client renders them with `env_json` as the caller's environment. A plain
+/// field is its cached value; a templated one is rendered; a bare provider
+/// is the whole merged namespace, as `comb get provider -f json`. A miss is
+/// `data: null`.
 ///
 /// `cwd` is required: NULL returns an error envelope rather than falling
 /// back to the process's own working directory — this library must never
-/// read ambient state on the caller's behalf. Every daemon-backed ref the
-/// field's expression makes (`cache.*` and plain `provider.field`,
-/// virtual fields followed transitively) is fetched scoped to `cwd`, the
-/// same convention `comb get`'s `--path` follows. `env_json` and
-/// `overrides_json` are nullable, meaning "none supplied".
+/// read ambient state on the caller's behalf. Every fetch the resolution
+/// makes addresses `cwd`, the same convention `comb get --path` follows.
+/// `env_json` is nullable, meaning "no environment": every `env.*` is `""`.
+/// `exec()` inside a template runs only on a client created with
+/// `{"exec":true}`; otherwise it fails with `exec() is disabled in this
+/// context`.
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `key` and `cwd`
-/// must be non-null and NUL-terminated; `env_json` and `overrides_json` must
-/// be NULL or NUL-terminated.
+/// must be non-null and NUL-terminated; `env_json` must be NULL or
+/// NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_resolve(
     client: *mut BcClient,
     key: *const c_char,
     cwd: *const c_char,
     env_json: *const c_char,
-    overrides_json: *const c_char,
 ) -> *mut c_char {
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let key = unsafe { required_str(key, "key") }?;
         let cwd = unsafe { required_str(cwd, "cwd") }?;
-        let env_json = unsafe { optional_str(env_json) }?;
-        let overrides_json = unsafe { optional_str(overrides_json) }?;
-        let env_vars = parse_env_json(env_json)?;
-        let (field_overrides, path_overrides) = parse_overrides_json(overrides_json)?;
-        let vf = VirtualFields::with_config_overrides(field_overrides);
-
-        match key.split_once('.') {
-            Some((provider, field)) => {
-                let expr = vf
-                    .expression(provider, field)
-                    .ok_or_else(|| {
-                        FfiError::new(
-                            ErrorKind::ParseError,
-                            format!("{provider}.{field} is not a virtual field"),
-                        )
-                    })?
-                    .to_string();
-                let refs = eval::daemon_refs(&expr, &vf)
-                    .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
-                let daemon_data = fetch_via_client(c, cwd, &refs)?;
-                let ctx = EvalContext::new(&env_vars, &daemon_data);
-                let v = vf
-                    .evaluate(provider, field, &ctx, &mut HashSet::new())
-                    .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
-                Ok(v)
-            }
-            None => match path_expression_for(key, &path_overrides) {
-                Some(expr) => match evaluate_path(&expr, cwd, &env_vars) {
-                    Some(s) => Ok(serde_json::Value::String(s)),
-                    None => Ok(serde_json::Value::Null),
-                },
-                None => Err(FfiError::new(
-                    ErrorKind::ParseError,
-                    format!("{key} has no declared path expression"),
-                )),
-            },
+        let env_vars = parse_env_json(unsafe { optional_str(env_json) }?)?;
+        let inputs = Inputs {
+            cwd,
+            env: &env_vars,
+            slot: Slot::Path(cwd.to_string()),
+            force: false,
+            wait: false,
+            allow_exec: c.allow_exec(),
+        };
+        let mut fetch = ClientFetch::new(c);
+        match resolve::resolve(key, &inputs, &mut fetch) {
+            Ok(Some(value)) => Ok(value),
+            Ok(None) => Ok(serde_json::Value::Null),
+            Err(e) => Err(resolve_error(e, &mut fetch)),
         }
     })
 }
 
-/// Evaluate a value expression in either of the two forms canon
-/// `field_resolution.md` (invariant 14) defines: exactly one `{{ expr }}` tag
-/// (keeps the expression's natural type), or literal text and/or several
-/// tags (string-valued — a source with no tags at all is its literal text) —
-/// the same evaluator `bc_resolve` uses for a declared virtual field, but for
-/// a raw expression that need not be registered anywhere. Every reference the
-/// source makes is threaded in: `env.*` from `env_json`, and `cache.*` / plain
-/// `provider.field` refs fetched from the daemon scoped to `cwd`, following
-/// virtual fields transitively — the same closure `bc_resolve` uses. A
-/// missing or unknown ref (an absent `env.*`, a daemon miss, or a
-/// daemon-rejected key such as an unregistered provider) is falsy at any
-/// depth, not an error.
+/// Render a source that is stored nowhere, every ref resolved exactly as it
+/// would be inside a stored template — so `bc_eval("{{ p.f }}")` and
+/// `bc_resolve("p.f")` agree by construction. A source that is exactly one
+/// `{{ expr }}` tag keeps the expression's natural type; anything else
+/// (literal text, several tags, a source with no tags at all) is a string.
+/// A missing ref — an absent `env.*`, a daemon miss, a key the daemon
+/// rejects — is falsy at any depth, not an error.
 ///
-/// `cwd` is required, matching `bc_resolve`'s signature (see there for
-/// why) — a bare `cwd` reference in a field expression is reserved for a
-/// later task and not evaluated by `bc_eval` today.
+/// `cwd`, `env_json` and `exec()` behave as for [`bc_resolve`].
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `template_str`
-/// and `cwd` must be non-null and NUL-terminated; `env_json` and
-/// `overrides_json` must be NULL or NUL-terminated.
+/// and `cwd` must be non-null and NUL-terminated; `env_json` must be NULL
+/// or NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_eval(
     client: *mut BcClient,
     template_str: *const c_char,
     cwd: *const c_char,
     env_json: *const c_char,
-    overrides_json: *const c_char,
 ) -> *mut c_char {
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let template_str = unsafe { required_str(template_str, "template_str") }?;
         let cwd = unsafe { required_str(cwd, "cwd") }?;
-        let env_json = unsafe { optional_str(env_json) }?;
-        let overrides_json = unsafe { optional_str(overrides_json) }?;
-        let env_vars = parse_env_json(env_json)?;
-        let (field_overrides, _path_overrides) = parse_overrides_json(overrides_json)?;
-        let vf = VirtualFields::with_config_overrides(field_overrides);
-
-        // Every daemon key this source needs, virtual-field dependencies
-        // included — mirrors the CLI's `run_eval`.
-        let refs = eval::daemon_refs(template_str, &vf)
-            .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
-        let daemon_data = fetch_via_client(c, cwd, &refs)?;
-        let ctx = EvalContext::new(&env_vars, &daemon_data);
-        eval::evaluate(template_str, &vf, &ctx).map_err(|e| FfiError::new(eval_error_kind(&e), e))
+        let env_vars = parse_env_json(unsafe { optional_str(env_json) }?)?;
+        let inputs = Inputs {
+            cwd,
+            env: &env_vars,
+            slot: Slot::Path(cwd.to_string()),
+            force: false,
+            wait: false,
+            allow_exec: c.allow_exec(),
+        };
+        let mut fetch = ClientFetch::new(c);
+        resolve::eval(template_str, &inputs, &mut fetch).map_err(|e| resolve_error(e, &mut fetch))
     })
 }
 

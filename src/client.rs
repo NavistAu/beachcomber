@@ -37,6 +37,9 @@ fn build_client(socket_path: &Path) -> libbeachcomber::Client {
     libbeachcomber::Client::with_config(libbeachcomber::ClientConfig {
         timeout: SOCKET_TIMEOUT,
         auto_start: false,
+        // The CLI resolves with exec on regardless (its `Inputs` say so);
+        // the config states the same so nothing reads a contradiction here.
+        exec: true,
     })
     .with_socket_path(socket_path.to_path_buf())
 }

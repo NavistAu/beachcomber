@@ -7,14 +7,12 @@
 mod common;
 use common::daemon::DaemonGuard;
 
-use libbeachcomber::eval;
-use libbeachcomber::path_expr::{evaluate_path, path_expression_for};
-use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields};
+use libbeachcomber::resolve::{self, Inputs, Slot};
 use libbeachcomber::{
-    Client, ClientConfig, CombError, CombResult, IntrospectResponse, IntrospectSubject,
+    Client, ClientConfig, ClientFetch, CombResult, IntrospectResponse, IntrospectSubject,
 };
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -27,21 +25,33 @@ struct Fixture {
     test: OpDescriptor,
     expect: Value,
     source_path: PathBuf,
-    /// `resolve`/`eval` op context, parsed from the fixture's top-level `virtual`/`env`/`cwd`.
-    /// `virtual` entries keyed "provider.field" become field expression overrides;
-    /// entries keyed by a bare provider name become path expression overrides.
-    field_overrides: Vec<((String, String), String)>,
-    path_overrides: HashMap<String, String>,
+    /// `resolve`/`eval` op context, parsed from the fixture's top-level
+    /// `env`/`cwd`. Templates are not fixture context: a fixture declares
+    /// one by a `setup` `put` to `<provider>:template`, like any caller.
     env_vars: HashMap<String, String>,
     cwd: Option<String>,
 }
 
 /// Per-fixture context a `resolve` or `eval` op is evaluated against.
 struct ResolveCtx<'a> {
-    field_overrides: &'a [((String, String), String)],
-    path_overrides: &'a HashMap<String, String>,
     env_vars: &'a HashMap<String, String>,
     cwd: &'a str,
+}
+
+impl ResolveCtx<'_> {
+    /// The resolver's inputs: the fixture's `cwd` is the slot every fetch
+    /// addresses (the convention `bc_resolve`/`bc_eval` follow), and `exec()`
+    /// is off, as it is for an SDK client without the option.
+    fn inputs(&self) -> Inputs<'_> {
+        Inputs {
+            cwd: self.cwd,
+            env: self.env_vars,
+            slot: Slot::Path(self.cwd.to_string()),
+            force: false,
+            wait: false,
+            allow_exec: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +64,7 @@ fn client_for(sock: &Path) -> Client {
     Client::with_config(ClientConfig {
         timeout: Duration::from_secs(2),
         auto_start: false,
+        exec: false,
     })
     .with_socket_path(sock.to_path_buf())
 }
@@ -77,7 +88,11 @@ fn load_fixtures() -> Vec<Fixture> {
             }
             let text = fs::read_to_string(&path).expect("read fixture");
             let v: Value = serde_json::from_str(&text).expect("parse fixture");
-            let (field_overrides, path_overrides) = parse_virtual(&v["virtual"]);
+            assert!(
+                v.get("virtual").is_none(),
+                "{}: the `virtual` block is gone — declare a template by a setup put to <p>:template",
+                path.display()
+            );
             out.push(Fixture {
                 name: v["name"].as_str().unwrap().to_string(),
                 description: v["description"].as_str().unwrap().to_string(),
@@ -85,41 +100,12 @@ fn load_fixtures() -> Vec<Fixture> {
                 test: parse_op(&v["test"]).expect("test op required"),
                 expect: v["expect"].clone(),
                 source_path: path,
-                field_overrides,
-                path_overrides,
                 env_vars: parse_str_map(&v["env"]),
                 cwd: v["cwd"].as_str().map(|s| s.to_string()),
             });
         }
     }
     out
-}
-
-/// `((provider, field), expression)` overrides from a fixture's `virtual` object.
-type FieldOverrides = Vec<((String, String), String)>;
-/// `provider → path expression` overrides from a fixture's `virtual` object.
-type PathOverrides = HashMap<String, String>;
-
-/// Split the fixture's `virtual` object into field-expression overrides
-/// (keyed "provider.field") and path-expression overrides (keyed by a bare
-/// provider name — no `.`).
-fn parse_virtual(v: &Value) -> (FieldOverrides, PathOverrides) {
-    let mut field_overrides = Vec::new();
-    let mut path_overrides = HashMap::new();
-    if let Some(obj) = v.as_object() {
-        for (key, expr) in obj {
-            let expr = expr.as_str().unwrap_or("").to_string();
-            match key.split_once('.') {
-                Some((provider, field)) => {
-                    field_overrides.push(((provider.to_string(), field.to_string()), expr));
-                }
-                None => {
-                    path_overrides.insert(key.clone(), expr);
-                }
-            }
-        }
-    }
-    (field_overrides, path_overrides)
 }
 
 fn parse_str_map(v: &Value) -> HashMap<String, String> {
@@ -351,121 +337,51 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                 Err(e) => error_response(e),
             }
         }
+        // `resolve` and `eval` are the client-side half, through the one
+        // resolver every surface shares (`libbeachcomber::resolve`): the
+        // fixture's `env` is the caller's environment, its `cwd` the slot
+        // every fetch addresses, and templates come from the daemon — the
+        // fixture's `setup` `put`s to `<p>:template` seed them.
         "resolve" => {
             let key = descriptor.args["key"].as_str().unwrap_or("");
-            match key.split_once('.') {
-                Some((provider, field)) => {
-                    let vf = VirtualFields::with_config_overrides(
-                        resolve.field_overrides.iter().cloned(),
-                    );
-                    match vf.expression(provider, field) {
-                        Some(expr) => {
-                            let expr = expr.to_string();
-                            // Every daemon key the expression needs, virtual-field
-                            // dependencies included — the fixture's `setup` `put` ops
-                            // seed these.
-                            let refs = match eval::daemon_refs(&expr, &vf) {
-                                Ok(refs) => refs,
-                                Err(e) => return err_resp(e),
-                            };
-                            match fetch_via_client(client, resolve.cwd, &refs) {
-                                Ok(daemon_data) => {
-                                    let ctx = EvalContext::new(resolve.env_vars, &daemon_data);
-                                    match vf.evaluate(provider, field, &ctx, &mut HashSet::new()) {
-                                        Ok(v) => CanonicalResponse {
-                                            ok: true,
-                                            data: Some(v),
-                                            data_as_text: None,
-                                            age_ms: None,
-                                            stale: None,
-                                            error: None,
-                                        },
-                                        Err(e) => err_resp(e),
-                                    }
-                                }
-                                Err(e) => err_resp(e),
-                            }
-                        }
-                        None => err_resp(format!("{provider}.{field} is not a virtual field")),
-                    }
-                }
-                None => match path_expression_for(key, resolve.path_overrides) {
-                    Some(expr) => match evaluate_path(&expr, resolve.cwd, resolve.env_vars) {
-                        Some(s) => CanonicalResponse {
-                            ok: true,
-                            data: Some(Value::String(s)),
-                            data_as_text: None,
-                            age_ms: None,
-                            stale: None,
-                            error: None,
-                        },
-                        None => CanonicalResponse {
-                            ok: true,
-                            data: None,
-                            data_as_text: None,
-                            age_ms: None,
-                            stale: None,
-                            error: None,
-                        },
-                    },
-                    None => err_resp(format!("{key} declares no path expression")),
+            let mut fetch = ClientFetch::new(client);
+            match resolve::resolve(key, &resolve.inputs(), &mut fetch) {
+                Ok(Some(v)) => CanonicalResponse {
+                    ok: true,
+                    data: Some(v),
+                    data_as_text: None,
+                    age_ms: None,
+                    stale: None,
+                    error: None,
                 },
+                Ok(None) => CanonicalResponse {
+                    ok: true,
+                    data: None,
+                    data_as_text: None,
+                    age_ms: None,
+                    stale: None,
+                    error: None,
+                },
+                Err(e) => err_resp(e.to_string()),
             }
         }
         "eval" => {
             let template = descriptor.args["template"].as_str().unwrap_or("");
-            let vf = VirtualFields::with_config_overrides(resolve.field_overrides.iter().cloned());
-            // Same three steps `bc_eval` and `comb eval` take: close the ref set
-            // over virtual fields, fetch it, evaluate whichever of the three
-            // forms the source is written in.
-            let refs = match eval::daemon_refs(template, &vf) {
-                Ok(refs) => refs,
-                Err(e) => return err_resp(e),
-            };
-            match fetch_via_client(client, resolve.cwd, &refs) {
-                Ok(daemon_data) => {
-                    let ctx = EvalContext::new(resolve.env_vars, &daemon_data);
-                    match eval::evaluate(template, &vf, &ctx) {
-                        Ok(v) => CanonicalResponse {
-                            ok: true,
-                            data: Some(v),
-                            data_as_text: None,
-                            age_ms: None,
-                            stale: None,
-                            error: None,
-                        },
-                        Err(e) => err_resp(e),
-                    }
-                }
-                Err(e) => err_resp(e),
+            let mut fetch = ClientFetch::new(client);
+            match resolve::eval(template, &resolve.inputs(), &mut fetch) {
+                Ok(v) => CanonicalResponse {
+                    ok: true,
+                    data: Some(v),
+                    data_as_text: None,
+                    age_ms: None,
+                    stale: None,
+                    error: None,
+                },
+                Err(e) => err_resp(e.to_string()),
             }
         }
         other => panic!("unknown op in fixture: {other}"),
     }
-}
-
-/// Fetch every ref in `refs` from the daemon, keyed the way an
-/// [`EvalContext`] expects — the reference runner's copy of the FFI's
-/// `fetch_via_client` (`libbeachcomber-ffi/src/lib.rs`), so `resolve` and
-/// `eval` fixtures exercise one fetch contract rather than three.
-///
-/// `cwd` scopes the query the way `bc_resolve`/`bc_eval` scope theirs. A cache
-/// miss and a daemon-rejected key (`CombError::ServerError` — "unknown
-/// provider: c" for a `cache.*` ref that names nothing registered) are both
-/// simply absent from the map and evaluate falsy, per canon's "a missing or
-/// unknown ref is falsy at any depth". Every other `CombError` is a genuine
-/// transport failure and fails the fixture.
-fn fetch_via_client(
-    client: &Client,
-    cwd: &str,
-    refs: &[Ref],
-) -> Result<HashMap<String, Value>, String> {
-    eval::fetch_daemon_data(refs, |key| match client.get(key, Some(cwd)) {
-        Ok(CombResult::Hit { data, .. }) => Ok(Some(data.as_value().clone())),
-        Ok(CombResult::Miss) => Ok(None),
-        Err(CombError::ServerError(_)) => Ok(None),
-        Err(e) => Err(format!("querying {key}: {e}")),
-    })
 }
 
 fn error_response(e: libbeachcomber::CombError) -> CanonicalResponse {
@@ -662,8 +578,6 @@ fn conformance_suite() {
             .unwrap_or_default();
         let cwd = fixture.cwd.clone().unwrap_or(default_cwd);
         let resolve_ctx = ResolveCtx {
-            field_overrides: &fixture.field_overrides,
-            path_overrides: &fixture.path_overrides,
             env_vars: &fixture.env_vars,
             cwd: &cwd,
         };

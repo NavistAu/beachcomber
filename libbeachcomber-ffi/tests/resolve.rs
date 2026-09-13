@@ -1,11 +1,9 @@
-//! Resolution: `bc_resolve`, `bc_eval`. Task 3.5 of
-//! docs/superpowers/plans/2026-08-15-client-abi-and-sdk-refactor.md.
-//!
-//! Mirrors all four of Task 1.6's properties
-//! (libbeachcomber/tests/resolution.rs) through the ABI: cache-ref virtual
-//! field, env-or-cache cascade including miss -> "", a path expression over
-//! a supplied cwd, and the truncate/basename filters. Runs against a real
-//! in-process daemon so cache-ref virtual fields have something to fetch.
+//! Resolution: `bc_resolve`, `bc_eval`, over `libbeachcomber::resolve`
+//! (design `2026-09-05-one-tree-resolution-design.md` §5.3; outcomes 25, 26,
+//! 27). The daemon is the only source of templates — a test declares one by
+//! `bc_put` to `<provider>:template`, or starts the daemon from a config
+//! directory holding the managed defaults — and the client renders it with
+//! the supplied `cwd` and `env_json`. Runs against a real in-process daemon.
 
 mod common;
 use common::daemon::DaemonGuard;
@@ -37,676 +35,399 @@ fn read(ptr: *mut c_char) -> serde_json::Value {
     serde_json::from_str(&body).expect("envelope must be valid JSON")
 }
 
-/// Case 1: a virtual field whose expression references a `cache.*` value
-/// resolves to that value. `otherprov` is `put` globally (no `path`) while
-/// the resolve runs at a `cwd`: a static namespace declares no path-scoped
-/// source, so the daemon's path-scoped read falls back to the global entry
-/// (canon `field_resolution.md` §"Path resolution" — the prose on static
-/// namespaces; invariant 2 is only about an empty/falsy path expression).
-/// `bc_eval_path_scoped_ref_resolves_at_cwd` covers the other
-/// half — a `put` at one directory is not visible at another.
-#[test]
-fn resolve_cache_ref_virtual_field() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
-
-    let provider_key = cs("otherprov");
-    let data = cs(r#"{"otherfield":"hello-value"}"#);
-    let put_v = read(unsafe {
+/// `bc_put(key, data)` at `path` (NULL for the global entry), asserting it
+/// was accepted.
+fn put(client: *mut BcClient, key: &str, data: &str, path: Option<&str>) {
+    let key = cs(key);
+    let data = cs(data);
+    let path = path.map(cs);
+    let v = read(unsafe {
         bc_put(
             client,
-            provider_key.as_ptr(),
+            key.as_ptr(),
             data.as_ptr(),
             ptr::null(),
-            ptr::null(),
+            path.as_ref().map_or(ptr::null(), |p| p.as_ptr()),
         )
     });
-    assert_eq!(put_v["ok"], serde_json::json!(true));
+    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+}
 
-    let key = cs("myprov.myfield");
-    let overrides = cs(r#"{"myprov.myfield":"{{ cache.otherprov.otherfield }}"}"#);
-    let v = read(unsafe {
+fn resolve(client: *mut BcClient, key: &str, cwd: &str, env: Option<&str>) -> serde_json::Value {
+    let key = cs(key);
+    let cwd = cs(cwd);
+    let env = env.map(cs);
+    read(unsafe {
         bc_resolve(
             client,
             key.as_ptr(),
             cwd.as_ptr(),
-            ptr::null(),
-            overrides.as_ptr(),
+            env.as_ref().map_or(ptr::null(), |e| e.as_ptr()),
         )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("hello-value"));
-
-    unsafe { bc_client_free(client) };
+    })
 }
 
-/// Case 2: a cascade `env.X or cache.p.f` takes the env term when present
-/// and falls through when absent; a total miss yields `""`, not an error.
-#[test]
-fn resolve_env_or_cache_cascade_falls_through_to_empty_string_on_miss() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let key = cs("terraform.workspace"); // built-in: "env.TF_WORKSPACE or cache.terraform.workspace"
-    let cwd = cs("/tmp");
-
-    // (a) env present -> env term wins, no daemon fetch needed.
-    let env_present = cs(r#"{"TF_WORKSPACE":"prod-env"}"#);
-    let v = read(unsafe {
-        bc_resolve(
-            client,
-            key.as_ptr(),
-            cwd.as_ptr(),
-            env_present.as_ptr(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("prod-env"));
-
-    // (b) both absent -> a miss yields "" rather than an error.
-    let v =
-        read(unsafe { bc_resolve(client, key.as_ptr(), cwd.as_ptr(), ptr::null(), ptr::null()) });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!(""));
-
-    unsafe { bc_client_free(client) };
-}
-
-/// Case 3: a path expression evaluated over a supplied `cwd` selects the
-/// expected cache coordinate.
-#[test]
-fn resolve_path_expression_over_supplied_cwd() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let key = cs("myproject");
-    let overrides =
-        cs(r#"{"myproject":"{{ 'workspace-a' if cwd == '/Users/x/repo-a' else 'workspace-b' }}"}"#);
-
-    let cwd_a = cs("/Users/x/repo-a");
-    let v = read(unsafe {
-        bc_resolve(
-            client,
-            key.as_ptr(),
-            cwd_a.as_ptr(),
-            ptr::null(),
-            overrides.as_ptr(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("workspace-a"));
-
-    let cwd_b = cs("/Users/x/repo-b");
-    let v = read(unsafe {
-        bc_resolve(
-            client,
-            key.as_ptr(),
-            cwd_b.as_ptr(),
-            ptr::null(),
-            overrides.as_ptr(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("workspace-b"));
-
-    unsafe { bc_client_free(client) };
-}
-
-/// Case 4: an expression using the `truncate` and `basename` filters
-/// resolves through `bc_eval` — proving the filters survived the move into
-/// the client crate, not just the symbols.
-#[test]
-fn eval_truncate_and_basename_filters() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
-    let env = cs(r#"{"LONGVAR":"abcdefghij","PYVAR":"/foo/bar/baz"}"#);
-
-    let truncate_expr = cs("{{ env.LONGVAR | truncate(5) }}");
-    let v = read(unsafe {
+fn eval(client: *mut BcClient, src: &str, cwd: &str, env: Option<&str>) -> serde_json::Value {
+    let src = cs(src);
+    let cwd = cs(cwd);
+    let env = env.map(cs);
+    read(unsafe {
         bc_eval(
             client,
-            truncate_expr.as_ptr(),
+            src.as_ptr(),
             cwd.as_ptr(),
-            env.as_ptr(),
-            ptr::null(),
+            env.as_ref().map_or(ptr::null(), |e| e.as_ptr()),
         )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("abcde..."));
-
-    let basename_expr = cs("{{ env.PYVAR | basename }}");
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            basename_expr.as_ptr(),
-            cwd.as_ptr(),
-            env.as_ptr(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("baz"));
-
-    unsafe { bc_client_free(client) };
+    })
 }
 
-/// `cwd` is required: NULL must return an error envelope, never fall back
-/// to the process's own working directory.
-#[test]
-fn resolve_null_cwd_is_an_error_envelope() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let key = cs("terraform.workspace");
-
-    let v =
-        read(unsafe { bc_resolve(client, key.as_ptr(), ptr::null(), ptr::null(), ptr::null()) });
-    assert_eq!(v["ok"], serde_json::json!(false));
-
-    unsafe { bc_client_free(client) };
-}
-
-#[test]
-fn eval_null_cwd_is_an_error_envelope() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let expr = cs("{{ env.LONGVAR | truncate(5) }}");
-
-    let v = read(unsafe { bc_eval(client, expr.as_ptr(), ptr::null(), ptr::null(), ptr::null()) });
-    assert_eq!(v["ok"], serde_json::json!(false));
-
-    unsafe { bc_client_free(client) };
-}
-
-/// One expression syntax (canon `field_resolution.md` invariant 14): a
-/// single `{{ expr }}` tag keeps the expression's natural type — a JSON
-/// bool here, not the string `"true"`.
-#[test]
-fn bc_eval_single_tag_typed() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
-    let env = cs(r#"{"T":"x"}"#);
-    let expr = cs(r#"{{ env.T != "" }}"#);
-
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            expr.as_ptr(),
-            cwd.as_ptr(),
-            env.as_ptr(),
-            ptr::null(),
-        )
-    });
+fn hit(v: &serde_json::Value) -> &serde_json::Value {
     assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!(true));
-
-    unsafe { bc_client_free(client) };
+    &v["data"]
 }
 
-/// Literal text around a tag is string-valued.
-#[test]
-fn bc_eval_template_string() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
-    let expr = cs("{{ 1 + 1 }} apples");
-
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            expr.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("2 apples"));
-
-    unsafe { bc_client_free(client) };
-}
-
-/// What `eval::daemon_refs`'s transitive closure over virtual fields buys
-/// over the old one-level `fetch_cache_refs`: `a.x` references virtual
-/// `b.y`, which itself references `cache.d.w` — a daemon key two hops away
-/// from the field being evaluated. It must still be fetched and threaded
-/// through before evaluation, or `b.y` (and so `a.x`) is falsy.
-///
-/// `c` is never registered, so `cache.c.z` in `a.x`'s `or` fallback hits
-/// the daemon's "unknown provider" rejection — a missing ref, not an
-/// error (see `bc_eval_unknown_provider_is_a_miss`) — and is never reached
-/// anyway once `b.y` resolves truthy. `d` is `put` globally and read at a
-/// `cwd`: a static namespace falls back to the global entry (canon
-/// `field_resolution.md` §"Path resolution" prose, not invariant 2).
-#[test]
-fn bc_eval_nested_virtual_dependency_is_fetched() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
-
-    let provider_key = cs("d");
-    let data = cs(r#"{"w":"deep-value"}"#);
-    let put_v = read(unsafe {
-        bc_put(
-            client,
-            provider_key.as_ptr(),
-            data.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(put_v["ok"], serde_json::json!(true), "{put_v}");
-
-    let overrides = cs(r#"{"a.x":"{{ b.y or cache.c.z }}","b.y":"{{ cache.d.w }}"}"#);
-    let expr = cs("{{ a.x }}");
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            expr.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            overrides.as_ptr(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("deep-value"));
-
-    unsafe { bc_client_free(client) };
-}
-
-/// `bc_resolve` twin of `bc_eval_nested_virtual_dependency_is_fetched`:
-/// `eval::daemon_refs`'s transitive closure over virtual fields applies to
-/// a declared field's own expression too, not just a raw `bc_eval` source.
-/// `d` is `put` globally and read at a `cwd`: a static namespace falls back
-/// to the global entry (canon `field_resolution.md` §"Path resolution" prose,
-/// not invariant 2).
-#[test]
-fn bc_resolve_nested_virtual_dependency_is_fetched() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
-
-    let provider_key = cs("d");
-    let data = cs(r#"{"w":"deep-value"}"#);
-    let put_v = read(unsafe {
-        bc_put(
-            client,
-            provider_key.as_ptr(),
-            data.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(put_v["ok"], serde_json::json!(true), "{put_v}");
-
-    let overrides = cs(r#"{"a.x":"{{ b.y or cache.c.z }}","b.y":"{{ cache.d.w }}"}"#);
-    let key = cs("a.x");
-    let v = read(unsafe {
-        bc_resolve(
-            client,
-            key.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            overrides.as_ptr(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("deep-value"));
-
-    unsafe { bc_client_free(client) };
-}
-
-/// A ref naming a provider the daemon has never heard of (`"unknown
-/// provider: nope"`, a `CombError::ServerError`) is a missing ref, not a
-/// transport failure — canon says a missing ref is falsy at any depth, and
-/// this is the same rule `src/client.rs`'s `to_response` applies for the
-/// CLI (`comb eval '{{ c.z or "x" }}'` prints `x`, never errors).
-#[test]
-fn bc_eval_unknown_provider_is_a_miss() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
-
-    let or_expr = cs(r#"{{ nope.field or "x" }}"#);
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            or_expr.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("x"));
-
-    let default_expr = cs(r#"{{ nope.field | default("x") }}"#);
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            default_expr.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("x"));
-
-    unsafe { bc_client_free(client) };
-}
-
-/// A compile failure in the expression itself is the caller's own input
-/// being malformed — `parse_error`, matching the kind `bc_resolve` uses for
-/// the same failure in a declared virtual field's expression. Covers both
-/// compile-error producers: an expression that fails to parse, and a
-/// template with an unterminated tag marker (`eval::render_template`'s
-/// "template compile error: " path, not `eval::evaluate`'s typed one).
-#[test]
-fn bc_eval_compile_error_is_parse_error_kind() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
-    let expr = cs("{{ 1 +++ }}");
-
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            expr.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
+fn error_kind(v: &serde_json::Value) -> &str {
     assert_eq!(v["ok"], serde_json::json!(false), "{v}");
-    assert_eq!(v["error"]["kind"], serde_json::json!("parse_error"), "{v}");
+    v["error"]["kind"].as_str().unwrap_or_default()
+}
 
-    let unterminated = cs("a {{ b");
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            unterminated.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
-    assert_eq!(v["error"]["kind"], serde_json::json!("parse_error"), "{v}");
+// ── managed defaults (outcome 24) ────────────────────────────────────────────
+
+/// A daemon started from a config directory holding the managed defaults
+/// serves `python:template.version`, and `bc_resolve("python.version")`
+/// renders it with the caller's environment — the same value `comb get
+/// python.version` prints, from the same template.
+#[test]
+fn bc_resolve_renders_a_managed_default_template() {
+    let config_dir = tempfile::tempdir().expect("tempdir");
+    comb_daemon::daemon::defaults::write_managed_defaults(
+        &config_dir.path().join("defaults"),
+        libbeachcomber::VERSION,
+    )
+    .expect("write managed defaults");
+    let daemon = DaemonGuard::spawn_with_config_dir(config_dir.path());
+    let client = client_for(&daemon.path);
+    let cwd = tempfile::tempdir().expect("tempdir");
+
+    let v = resolve(
+        client,
+        "python.version",
+        cwd.path().to_str().unwrap(),
+        Some(r#"{"PYENV_VERSION":"3.12"}"#),
+    );
+    assert_eq!(hit(&v), &serde_json::json!("3.12"));
 
     unsafe { bc_client_free(client) };
 }
 
-/// `bc_resolve` twin of `bc_eval_compile_error_is_parse_error_kind`. Also
-/// pins that `eval_error_kind` sees through the `"provider.field: "` prefix
-/// `VirtualFields::evaluate` wraps the underlying "... compile error: ..."
-/// message in — the substring check still has to fire after that wrapping.
+// ── a template the daemon holds (outcomes 25, 27) ────────────────────────────
+
+/// A template `put` to `scanline:template` is rendered at every depth the
+/// address can name: the leaf, the group (shape kept), and the bare provider
+/// — the whole namespace, rendered tree merged over the cached data, as
+/// `comb get scanline -f json`. An address nothing is stored at is a miss,
+/// `data: null`.
 #[test]
-fn bc_resolve_compile_error_is_parse_error_kind() {
+fn bc_resolve_leaf_group_and_whole_namespace_from_a_put_template() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
-    let key = cs("a.x");
-    let overrides = cs(r#"{"a.x":"{{ 1 +++ }}"}"#);
+    let cwd = "/tmp";
+    let env = Some(r#"{"SCANLINE_FOO":"hi"}"#);
 
-    let v = read(unsafe {
-        bc_resolve(
-            client,
-            key.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            overrides.as_ptr(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
-    assert_eq!(v["error"]["kind"], serde_json::json!("parse_error"), "{v}");
+    put(
+        client,
+        "scanline:template",
+        r#"{"widgets":{"foo":"{{ env.SCANLINE_FOO }}"}}"#,
+        None,
+    );
+    put(client, "scanline", r#"{"lit":1}"#, None);
+
+    let v = resolve(client, "scanline.widgets.foo", cwd, env);
+    assert_eq!(hit(&v), &serde_json::json!("hi"));
+
+    let v = resolve(client, "scanline.widgets", cwd, env);
+    assert_eq!(hit(&v), &serde_json::json!({"foo": "hi"}));
+
+    let v = resolve(client, "scanline", cwd, env);
+    assert_eq!(
+        hit(&v),
+        &serde_json::json!({"lit": 1, "widgets": {"foo": "hi"}})
+    );
+
+    let v = resolve(client, "scanline.nope", cwd, env);
+    assert_eq!(hit(&v), &serde_json::Value::Null);
 
     unsafe { bc_client_free(client) };
 }
 
-/// The negative half of `bc_eval_compile_error_is_parse_error_kind`: a source
-/// that compiles fine and then fails at *evaluation* is a `server_error`, not
-/// a `parse_error`. Without this, `eval_error_kind`'s `"compile error"`
-/// substring check could be widened (or the prefixes reworded) and nothing
-/// would notice that every runtime failure had started reporting as the
-/// caller's syntax being wrong.
-///
-/// Covers both runtime producers: `eval::evaluate`'s typed path
-/// ("expression eval error: ", from a single tag whose operands are
-/// incompatible) and `eval::render_template`'s ("template render error: ",
-/// from a `{% for %}` over a non-iterable — a template, so the render path).
+/// A template whose expression references a `cache.*` value resolves to
+/// that value. `otherprov` is `put` globally (no `path`) while the resolve
+/// runs at a `cwd`: a static record is read up the directory chain, and the
+/// global entry is the last link of every chain (canon `field_resolution.md`
+/// §"Path resolution").
 #[test]
-fn bc_eval_runtime_error_is_server_error_kind() {
+fn bc_resolve_cache_ref_template() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
 
-    let bad_operands = cs(r#"{{ 1 / "a" }}"#);
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            bad_operands.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
-    assert_eq!(v["error"]["kind"], serde_json::json!("server_error"), "{v}");
+    put(client, "otherprov", r#"{"otherfield":"hello-value"}"#, None);
+    put(
+        client,
+        "myprov:template",
+        r#"{"myfield":"{{ cache.otherprov.otherfield }}"}"#,
+        None,
+    );
 
-    let bad_loop = cs("{% for x in 5 %}{{ x }}{% endfor %}");
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            bad_loop.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
-    assert_eq!(v["error"]["kind"], serde_json::json!("server_error"), "{v}");
+    let v = resolve(client, "myprov.myfield", "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::json!("hello-value"));
 
     unsafe { bc_client_free(client) };
 }
 
-/// `bc_resolve` twin of `bc_eval_runtime_error_is_server_error_kind`: a
-/// declared virtual field that compiles and then fails at evaluation is a
-/// `server_error` too, and the `"provider.field: "` prefix
-/// `VirtualFields::evaluate` adds must not push it over into `parse_error`.
+/// A cascade `env.X or cache.p.f` takes the env term when present and falls
+/// through when absent; a total miss yields `""`, not an error and not a
+/// miss (canon invariant 9).
 #[test]
-fn bc_resolve_runtime_error_is_server_error_kind() {
+fn bc_resolve_env_or_cache_cascade_falls_through_to_empty_string_on_miss() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
-    let key = cs("a.x");
-    let overrides = cs(r#"{"a.x":"{{ 1 / \"a\" }}"}"#);
+    put(
+        client,
+        "myapp:template",
+        r#"{"workspace":"{{ env.MYAPP_ENV or cache.myappcache.workspace }}"}"#,
+        None,
+    );
 
-    let v = read(unsafe {
-        bc_resolve(
-            client,
-            key.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            overrides.as_ptr(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
-    assert_eq!(v["error"]["kind"], serde_json::json!("server_error"), "{v}");
+    let v = resolve(
+        client,
+        "myapp.workspace",
+        "/tmp",
+        Some(r#"{"MYAPP_ENV":"prod-env"}"#),
+    );
+    assert_eq!(hit(&v), &serde_json::json!("prod-env"));
+
+    let v = resolve(client, "myapp.workspace", "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::json!(""));
 
     unsafe { bc_client_free(client) };
 }
 
-/// A ref naming a provider the daemon has never heard of is a missing ref
-/// (`bc_eval_unknown_provider_is_a_miss`), but the daemon itself being
-/// unreachable is a genuine transport failure and aborts the whole fetch
-/// with an error envelope rather than silently evaluating against an empty
-/// map.
+/// A template naming another provider's templated field follows it: `a.x`
+/// references `b.y`, itself a template over `cache.d.w`. `cache.c.z` names no
+/// registered provider — a missing ref, falsy — and is never reached once
+/// `b.y` is truthy. Both `bc_eval` of `{{ a.x }}` and `bc_resolve` of `a.x`
+/// reach `deep-value`.
 #[test]
-fn bc_eval_transport_failure_aborts() {
-    let sock = Path::new("/tmp/beachcomber-ffi-resolve-test-unreachable.sock");
-    let _ = std::fs::remove_file(sock);
-    let client = client_for(sock);
-    let cwd = cs("/tmp");
-    let expr = cs("{{ git.branch }}");
+fn nested_template_dependency_is_followed() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
 
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            expr.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
-    let kind = v["error"]["kind"].as_str().unwrap_or("");
-    assert!(
-        kind == "daemon_not_running" || kind == "connection_failed",
-        "expected a transport-failure kind, got: {v}"
+    put(client, "d", r#"{"w":"deep-value"}"#, None);
+    put(
+        client,
+        "a:template",
+        r#"{"x":"{{ b.y or cache.c.z }}"}"#,
+        None,
+    );
+    put(client, "b:template", r#"{"y":"{{ cache.d.w }}"}"#, None);
+
+    let v = eval(client, "{{ a.x }}", "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::json!("deep-value"));
+
+    let v = resolve(client, "a.x", "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::json!("deep-value"));
+
+    unsafe { bc_client_free(client) };
+}
+
+/// `cwd` is threaded into every fetch, not merely required: a value `put` at
+/// an explicit `path` is seen only when `cwd` is that path — through a raw
+/// `bc_eval` ref and through a template's `cache.*` ref alike.
+#[test]
+fn path_scoped_ref_resolves_at_cwd() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let dir_a = tempfile::tempdir().expect("tempdir");
+    let dir_b = tempfile::tempdir().expect("tempdir");
+    let a = dir_a.path().to_str().unwrap();
+    let b = dir_b.path().to_str().unwrap();
+
+    put(client, "pp", r#"{"f":"here"}"#, Some(a));
+    put(
+        client,
+        "myprov:template",
+        r#"{"myfield":"{{ cache.pp.f }}"}"#,
+        None,
+    );
+
+    assert_eq!(
+        hit(&eval(client, "{{ pp.f }}", a, None)),
+        &serde_json::json!("here")
+    );
+    assert_eq!(
+        hit(&eval(client, "{{ pp.f }}", b, None)),
+        &serde_json::json!("")
+    );
+    assert_eq!(
+        hit(&resolve(client, "myprov.myfield", a, None)),
+        &serde_json::json!("here")
+    );
+    assert_eq!(
+        hit(&resolve(client, "myprov.myfield", b, None)),
+        &serde_json::json!("")
     );
 
     unsafe { bc_client_free(client) };
 }
 
-/// `cwd` is threaded into the daemon fetch, not merely required and
-/// ignored: a path-scoped provider — `put` at an explicit `path` — resolves
-/// only when `bc_eval`'s `cwd` matches that path, the same convention
-/// `comb get`'s `--path` / `comb eval`'s `set_context` follow.
+// ── bc_eval forms and filters ────────────────────────────────────────────────
+
+/// One expression syntax (canon `field_resolution.md` invariant 14): a
+/// single `{{ expr }}` tag keeps the expression's natural type — a JSON
+/// bool here, not the string `"true"` — and literal text around a tag is
+/// string-valued.
 #[test]
-fn bc_eval_path_scoped_ref_resolves_at_cwd() {
+fn bc_eval_single_tag_is_typed_and_a_template_is_a_string() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    let dir_a = tempfile::tempdir().expect("tempdir");
-    let dir_b = tempfile::tempdir().expect("tempdir");
-    let dir_a_path = cs(dir_a.path().to_str().unwrap());
-    let dir_b_path = cs(dir_b.path().to_str().unwrap());
 
-    let key = cs("pp");
-    let data = cs(r#"{"f":"here"}"#);
-    let put_v = read(unsafe {
-        bc_put(
-            client,
-            key.as_ptr(),
-            data.as_ptr(),
-            ptr::null(),
-            dir_a_path.as_ptr(),
-        )
-    });
-    assert_eq!(put_v["ok"], serde_json::json!(true), "{put_v}");
+    let v = eval(client, r#"{{ env.T != "" }}"#, "/tmp", Some(r#"{"T":"x"}"#));
+    assert_eq!(hit(&v), &serde_json::json!(true));
 
-    let expr = cs("{{ pp.f }}");
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            expr.as_ptr(),
-            dir_a_path.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("here"));
-
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            expr.as_ptr(),
-            dir_b_path.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!(""));
+    let v = eval(client, "{{ 1 + 1 }} apples", "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::json!("2 apples"));
 
     unsafe { bc_client_free(client) };
 }
 
-/// `bc_resolve` twin of `bc_eval_path_scoped_ref_resolves_at_cwd`: a
-/// declared field's `cache.*` ref is fetched at the resolver's own `cwd`.
+/// The `truncate` and `basename` filters are registered on the environment
+/// `bc_eval` renders with.
 #[test]
-fn bc_resolve_path_scoped_ref_resolves_at_cwd() {
+fn bc_eval_truncate_and_basename_filters() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    let dir_a = tempfile::tempdir().expect("tempdir");
-    let dir_b = tempfile::tempdir().expect("tempdir");
-    let dir_a_path = cs(dir_a.path().to_str().unwrap());
-    let dir_b_path = cs(dir_b.path().to_str().unwrap());
+    let env = Some(r#"{"LONGVAR":"abcdefghij","PYVAR":"/foo/bar/baz"}"#);
 
-    let key = cs("pp");
-    let data = cs(r#"{"f":"here"}"#);
-    let put_v = read(unsafe {
-        bc_put(
-            client,
-            key.as_ptr(),
-            data.as_ptr(),
-            ptr::null(),
-            dir_a_path.as_ptr(),
-        )
-    });
-    assert_eq!(put_v["ok"], serde_json::json!(true), "{put_v}");
+    let v = eval(client, "{{ env.LONGVAR | truncate(5) }}", "/tmp", env);
+    assert_eq!(hit(&v), &serde_json::json!("abcde..."));
 
-    let resolve_key = cs("myprov.myfield");
-    let overrides = cs(r#"{"myprov.myfield":"{{ cache.pp.f }}"}"#);
-    let v = read(unsafe {
-        bc_resolve(
-            client,
-            resolve_key.as_ptr(),
-            dir_a_path.as_ptr(),
-            ptr::null(),
-            overrides.as_ptr(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!("here"));
-
-    let v = read(unsafe {
-        bc_resolve(
-            client,
-            resolve_key.as_ptr(),
-            dir_b_path.as_ptr(),
-            ptr::null(),
-            overrides.as_ptr(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["data"], serde_json::json!(""));
+    let v = eval(client, "{{ env.PYVAR | basename }}", "/tmp", env);
+    assert_eq!(hit(&v), &serde_json::json!("baz"));
 
     unsafe { bc_client_free(client) };
 }
 
-/// A chain of distinct virtual fields recurses once per link on both the ref
-/// closure and the evaluation, and the cycle guard does not bound it — no field
-/// repeats. Before the depth limit a ~2000-link `overrides_json` ran the native
-/// stack out inside the cdylib, which is a SIGSEGV in the *host* process: not
-/// an error the caller can catch, and not something `call_ffi`'s panic guard
-/// sees. The whole point of the limit is that this returns an envelope.
+/// A ref the daemon rejects — an unregistered provider, as a plain ref or a
+/// `cache.*` ref — is a missing ref inside a template, falsy at any depth
+/// (canon), so `or` and `default` both fire and nothing errors.
 #[test]
-fn bc_eval_deeply_nested_overrides_error_rather_than_crash() {
+fn bc_eval_rejected_ref_is_falsy() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    let cwd = cs("/tmp");
 
-    let mut entries: Vec<String> = (0..1999)
-        .map(|i| format!(r#""chain.f{i}":"{{{{ chain.f{} }}}}""#, i + 1))
+    let v = eval(client, r#"{{ nope.field or "x" }}"#, "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::json!("x"));
+
+    let v = eval(client, r#"{{ nope.field | default("x") }}"#, "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::json!("x"));
+
+    let v = eval(client, "{{ cache.nope.x or 'fb' }}", "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::json!("fb"));
+
+    unsafe { bc_client_free(client) };
+}
+
+// ── error kinds, from the resolver's typed errors ────────────────────────────
+
+/// A source that does not compile is the caller's own input being malformed:
+/// `ResolveError::Config` → `parse_error`. Both producers: a single tag whose
+/// expression fails to parse, and a template with an unterminated marker.
+#[test]
+fn bc_eval_compile_error_is_parse_error() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+
+    assert_eq!(
+        error_kind(&eval(client, "{{ 1 + }}", "/tmp", None)),
+        "parse_error"
+    );
+    assert_eq!(
+        error_kind(&eval(client, "a {{ b", "/tmp", None)),
+        "parse_error"
+    );
+
+    unsafe { bc_client_free(client) };
+}
+
+/// The key the caller asked for being refused by the daemon is an error in
+/// the daemon's own words — `server_error` carrying its message — not a miss
+/// and not a transport failure. Only a ref *inside* a template naming such a
+/// key is falsy (`bc_eval_rejected_ref_is_falsy`).
+#[test]
+fn bc_resolve_rejected_key_is_a_server_error_in_the_daemons_words() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+
+    let v = resolve(client, "a:b:c.x", "/tmp", None);
+    assert_eq!(error_kind(&v), "server_error");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("invalid facet key"),
+        "{v}"
+    );
+
+    unsafe { bc_client_free(client) };
+}
+
+/// The daemon itself being unreachable is a transport failure and keeps the
+/// kind `CombError` gave it — never `server_error`, which is the daemon
+/// answering. Both entry points.
+#[test]
+fn transport_failure_keeps_its_kind() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sock = dir.path().join("nothing-listens-here.sock");
+    let client = client_for(&sock);
+
+    for v in [
+        eval(client, "{{ git.branch }}", "/tmp", None),
+        resolve(client, "git.branch", "/tmp", None),
+    ] {
+        let kind = error_kind(&v);
+        assert!(
+            kind == "daemon_not_running" || kind == "connection_failed",
+            "expected a transport-failure kind, got: {v}"
+        );
+    }
+
+    unsafe { bc_client_free(client) };
+}
+
+/// A chain of distinct templated fields recurses once per link, and the
+/// cycle guard does not bound it — no field repeats. Before the depth limit
+/// a ~2000-link chain ran the native stack out inside the cdylib, which is a
+/// SIGSEGV in the *host* process: not an error the caller can catch, and not
+/// something `call_ffi`'s panic guard sees. The limit makes this an envelope:
+/// a `Config` failure naming the field, so `parse_error`.
+#[test]
+fn bc_eval_deeply_nested_templates_error_rather_than_crash() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+
+    let mut leaves: Vec<String> = (0..1999)
+        .map(|i| format!(r#""f{i}":"{{{{ chain.f{} }}}}""#, i + 1))
         .collect();
-    entries.push(r#""chain.f1999":"{{ cache.leaf.v }}""#.to_string());
-    let overrides = cs(&format!("{{{}}}", entries.join(",")));
-    let expr = cs("{{ chain.f0 }}");
+    leaves.push(r#""f1999":"{{ cache.leaf.v }}""#.to_string());
+    put(
+        client,
+        "chain:template",
+        &format!("{{{}}}", leaves.join(",")),
+        None,
+    );
 
-    let v = read(unsafe {
-        bc_eval(
-            client,
-            expr.as_ptr(),
-            cwd.as_ptr(),
-            ptr::null(),
-            overrides.as_ptr(),
-        )
-    });
-    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
-    assert_eq!(v["error"]["kind"], serde_json::json!("server_error"), "{v}");
+    let v = eval(client, "{{ chain.f0 }}", "/tmp", None);
+    assert_eq!(error_kind(&v), "parse_error");
     assert!(
         v["error"]["message"]
             .as_str()
@@ -714,6 +435,26 @@ fn bc_eval_deeply_nested_overrides_error_rather_than_crash() {
             .contains("nesting too deep"),
         "{v}"
     );
+
+    unsafe { bc_client_free(client) };
+}
+
+// ── cwd is required ──────────────────────────────────────────────────────────
+
+/// `cwd` is required: NULL must return an error envelope, never fall back
+/// to the process's own working directory.
+#[test]
+fn null_cwd_is_an_error_envelope() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let key = cs("terraform.workspace");
+    let expr = cs("{{ env.LONGVAR | truncate(5) }}");
+
+    let v = read(unsafe { bc_resolve(client, key.as_ptr(), ptr::null(), ptr::null()) });
+    assert_eq!(v["ok"], serde_json::json!(false));
+
+    let v = read(unsafe { bc_eval(client, expr.as_ptr(), ptr::null(), ptr::null()) });
+    assert_eq!(v["ok"], serde_json::json!(false));
 
     unsafe { bc_client_free(client) };
 }

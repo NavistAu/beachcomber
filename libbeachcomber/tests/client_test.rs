@@ -13,6 +13,7 @@ fn client_with_config() {
     let config = ClientConfig {
         timeout: Duration::from_millis(50),
         auto_start: false,
+        exec: false,
     };
     let client = Client::with_config(config);
     let _ = client;
@@ -31,6 +32,7 @@ fn client_no_autostart_returns_error() {
     let client = Client::with_config(ClientConfig {
         timeout: Duration::from_millis(50),
         auto_start: false,
+        exec: false,
     })
     .with_socket_path(socket);
     let result = client.get("hostname", None);

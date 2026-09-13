@@ -24,6 +24,7 @@ fn client_for(sock: &std::path::Path) -> Client {
     Client::with_config(ClientConfig {
         timeout: Duration::from_secs(2),
         auto_start: false,
+        exec: false,
     })
     .with_socket_path(sock.to_path_buf())
 }

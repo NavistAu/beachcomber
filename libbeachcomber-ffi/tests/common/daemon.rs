@@ -8,7 +8,7 @@
 use crate::common::socket::IsolatedSocket;
 use comb_daemon::config::Config;
 use comb_daemon::daemon;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 use tokio::runtime::{Handle, Runtime};
@@ -29,7 +29,27 @@ pub struct DaemonGuard {
 impl DaemonGuard {
     /// Spawn a new in-process daemon on an isolated socket path.
     /// Blocks until the daemon is ready (socket appears on disk).
+    ///
+    /// The daemon is handed a `Config` built in memory, which corresponds to
+    /// no file: it seeds nothing, watches nothing, and never touches the
+    /// developer's `~/.config/beachcomber`.
     pub fn spawn() -> Self {
+        Self::start(Config::default(), false)
+    }
+
+    /// Spawn a daemon whose configuration directory is `config_dir`: it seeds
+    /// `config_dir/defaults/*.toml`, `config.toml` and `conf.d/*.toml` the way
+    /// `comb daemon` seeds `~/.config/beachcomber`, and reads nothing outside
+    /// that directory. The config self-watch takes the polling seam so no
+    /// kernel watch is registered on a directory the test deletes on exit.
+    #[allow(dead_code)]
+    pub fn spawn_with_config_dir(config_dir: &Path) -> Self {
+        let mut config = Config::default();
+        config.config_path = Some(config_dir.join("config.toml"));
+        Self::start(config, true)
+    }
+
+    fn start(config: Config, polling: bool) -> Self {
         let iso = IsolatedSocket::new();
         let sock = iso.path.clone();
 
@@ -39,7 +59,11 @@ impl DaemonGuard {
 
         let thread = thread::spawn(move || {
             handle.block_on(async {
-                let (join, _ready) = daemon::start_in_process(sock_clone, Config::default());
+                let (join, _ready) = if polling {
+                    daemon::start_in_process_polling(sock_clone, config)
+                } else {
+                    daemon::start_in_process(sock_clone, config)
+                };
                 let _ = join.await;
             });
         });

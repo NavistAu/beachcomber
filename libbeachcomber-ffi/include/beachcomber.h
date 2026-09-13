@@ -61,9 +61,11 @@ const char *bc_version(void);
 
 /**
  * Creates a new client handle. `options_json` is nullable; recognised keys
- * are `socket_path`, `timeout_ms` and `autostart`. Never returns NULL — a
- * malformed `options_json` still yields a handle, with the parse error
- * deferred to the handle's first operation rather than failing here.
+ * are `socket_path`, `timeout_ms`, `autostart` and `exec` — whether a
+ * template this client resolves (`bc_resolve`, `bc_eval`) may call `exec()`,
+ * default `false`. Never returns NULL — a malformed `options_json` still
+ * yields a handle, with the parse error deferred to the handle's first
+ * operation rather than failing here.
  *
  * # Safety
  * `options_json` must be NULL or a valid pointer to a NUL-terminated string.
@@ -157,57 +159,47 @@ char *bc_introspect(BcClient *client, const char *subject, const char *options_j
 char *bc_hello(BcClient *client);
 
 /**
- * Resolve a virtual field (`key` = `"provider.field"`) or a path
- * expression (`key` = a bare provider name) — client-side, exactly as
- * `comb get`'s resolution layer does.
+ * Resolve `key` to the value `comb get key` prints at `cwd`, through
+ * [`libbeachcomber::resolve`]: the daemon holds the templates
+ * (`<provider>:template`, seeded from configuration or `put`), and this
+ * client renders them with `env_json` as the caller's environment. A plain
+ * field is its cached value; a templated one is rendered; a bare provider
+ * is the whole merged namespace, as `comb get provider -f json`. A miss is
+ * `data: null`.
  *
  * `cwd` is required: NULL returns an error envelope rather than falling
  * back to the process's own working directory — this library must never
- * read ambient state on the caller's behalf. Every daemon-backed ref the
- * field's expression makes (`cache.*` and plain `provider.field`,
- * virtual fields followed transitively) is fetched scoped to `cwd`, the
- * same convention `comb get`'s `--path` follows. `env_json` and
- * `overrides_json` are nullable, meaning "none supplied".
+ * read ambient state on the caller's behalf. Every fetch the resolution
+ * makes addresses `cwd`, the same convention `comb get --path` follows.
+ * `env_json` is nullable, meaning "no environment": every `env.*` is `""`.
+ * `exec()` inside a template runs only on a client created with
+ * `{"exec":true}`; otherwise it fails with `exec() is disabled in this
+ * context`.
  *
  * # Safety
  * `client` must be a valid pointer from [`bc_client_new`]; `key` and `cwd`
- * must be non-null and NUL-terminated; `env_json` and `overrides_json` must
- * be NULL or NUL-terminated.
+ * must be non-null and NUL-terminated; `env_json` must be NULL or
+ * NUL-terminated.
  */
-char *bc_resolve(BcClient *client,
-                 const char *key,
-                 const char *cwd,
-                 const char *env_json,
-                 const char *overrides_json);
+char *bc_resolve(BcClient *client, const char *key, const char *cwd, const char *env_json);
 
 /**
- * Evaluate a value expression in either of the two forms canon
- * `field_resolution.md` (invariant 14) defines: exactly one `{{ expr }}` tag
- * (keeps the expression's natural type), or literal text and/or several
- * tags (string-valued — a source with no tags at all is its literal text) —
- * the same evaluator `bc_resolve` uses for a declared virtual field, but for
- * a raw expression that need not be registered anywhere. Every reference the
- * source makes is threaded in: `env.*` from `env_json`, and `cache.*` / plain
- * `provider.field` refs fetched from the daemon scoped to `cwd`, following
- * virtual fields transitively — the same closure `bc_resolve` uses. A
- * missing or unknown ref (an absent `env.*`, a daemon miss, or a
- * daemon-rejected key such as an unregistered provider) is falsy at any
- * depth, not an error.
+ * Render a source that is stored nowhere, every ref resolved exactly as it
+ * would be inside a stored template — so `bc_eval("{{ p.f }}")` and
+ * `bc_resolve("p.f")` agree by construction. A source that is exactly one
+ * `{{ expr }}` tag keeps the expression's natural type; anything else
+ * (literal text, several tags, a source with no tags at all) is a string.
+ * A missing ref — an absent `env.*`, a daemon miss, a key the daemon
+ * rejects — is falsy at any depth, not an error.
  *
- * `cwd` is required, matching `bc_resolve`'s signature (see there for
- * why) — a bare `cwd` reference in a field expression is reserved for a
- * later task and not evaluated by `bc_eval` today.
+ * `cwd`, `env_json` and `exec()` behave as for [`bc_resolve`].
  *
  * # Safety
  * `client` must be a valid pointer from [`bc_client_new`]; `template_str`
- * and `cwd` must be non-null and NUL-terminated; `env_json` and
- * `overrides_json` must be NULL or NUL-terminated.
+ * and `cwd` must be non-null and NUL-terminated; `env_json` must be NULL
+ * or NUL-terminated.
  */
-char *bc_eval(BcClient *client,
-              const char *template_str,
-              const char *cwd,
-              const char *env_json,
-              const char *overrides_json);
+char *bc_eval(BcClient *client, const char *template_str, const char *cwd, const char *env_json);
 
 /**
  * Opens a persistent session on `client`'s connection. Never returns NULL:

@@ -43,9 +43,18 @@ conformance run in the same commit.
 | `setup` | no | array of op descriptors to run first (ignored for expectations) |
 | `test` | yes | the op descriptor whose response is asserted |
 | `expect` | yes | assertions — see below |
-| `virtual` | no | object mapping a field key (`"provider.field"`) or a bare provider name to an expression string. Feeds the client-side resolver for `resolve` and `eval` fixtures — see below. Defaults to empty. |
-| `env` | no | object mapping env var name to string value. Feeds the client-side resolver's `env.*` refs for `resolve` and `eval` fixtures. Defaults to empty. |
-| `cwd` | no | string. Feeds the client-side resolver's `cwd`: the path-expression variable for `resolve` fixtures, and the path daemon queries are scoped to for both `resolve` and `eval`. Defaults to the runner's per-fixture temp directory. |
+| `env` | no | object mapping env var name to string value. The caller's environment for `resolve` and `eval` fixtures — the only source of `env.*`. Defaults to empty. |
+| `cwd` | no | string. The directory a `resolve` or `eval` fixture runs at: every daemon query the resolution makes addresses it. Defaults to the runner's per-fixture temp directory. |
+
+There is no `virtual` block. A fixture declares a template the way any
+caller does — by a `setup` `put` to `<provider>:template`:
+
+```json
+{ "op": "put", "args": { "key": "widget:template", "data": { "label": "{{ cache.widgetdata.label }}" } } }
+```
+
+A nested field (`widget.group.label`) is a nested object in `data`. The
+daemon is the only source of templates; the resolver takes no overrides.
 
 ### Op descriptor
 
@@ -58,32 +67,29 @@ conformance run in the same commit.
 
 ### The `resolve` op
 
-`resolve` is not a wire op — it never reaches the daemon. It exercises
-client-side field resolution: virtual field expressions and path expressions,
-both evaluated in-process against the fixture's `virtual`, `env`, and `cwd`.
-`args.key` is the only argument:
+`resolve` is not a wire op. It exercises the client-side resolver
+(`libbeachcomber::resolve`, the one every SDK's `resolve` binds through the
+C ABI's `bc_resolve`): the daemon answers each `get` with the cached value
+and the template in effect at the address, and the client renders the
+template with the fixture's `env` and `cwd`. `args.key` is the only
+argument, and it resolves exactly as `comb get <key>` does:
 
-- `"provider.field"` (contains a `.`) — evaluate that virtual field. The
-  fixture's `virtual` entry for the same `"provider.field"` key (if any)
-  overrides the built-in expression; otherwise the built-in default (if one
-  exists) is used. Refs of the form `cache.P.F` / `cache.P` inside the
-  expression are fetched live from the daemon — seed them with `setup` `put`
-  ops first. `env.X` refs come from the fixture's `env` map, not the
-  ambient process environment.
-- `"provider"` (no `.`) — evaluate that provider's path expression. The
-  fixture's `virtual` entry keyed by the bare provider name (if any)
-  overrides the built-in path expression; `cwd` and `env` come from the
-  fixture. A falsy/undefined result is a `miss` (`ok=true`, data absent),
-  matching the "no per-path variant" contract.
+- `"provider.field"` — the cached value, or, where a template is in effect
+  at that address, the rendered template. Refs of the form `cache.P.F` /
+  `cache.P` inside it are fetched from the daemon; a plain `P.F` ref is
+  resolved the same way recursively, so a template may reference another
+  provider's templated field. `env.X` comes from the fixture's `env` map,
+  never the ambient process environment.
+- `"provider"` (no `.`) — the whole merged namespace: every string leaf of
+  the provider's template tree rendered, shape kept, merged over the cached
+  data (rendered wins).
 
-A `resolve` fixture typically seeds cache values via `setup` `put` ops,
-declares `virtual`, supplies `env`/`cwd` as needed, and asserts the resolved
-value and its `data_type`.
+A miss — nothing stored or templated at the address — is `ok=true`, data
+absent. An all-empty cascade is `""`, a hit.
 
-Resolution is client-side (see `docs/canon/` for the field-resolution model),
-so this is deliberately **not** wired through a daemon config file — the
-fixture's `virtual`/`env`/`cwd` feed the resolver call directly (for the C
-ABI this is `overrides_json` / `env_json` / `cwd`).
+A `resolve` fixture typically seeds cache values and templates via `setup`
+`put` ops, supplies `env`/`cwd` as needed, and asserts the resolved value and
+its `data_type`.
 
 Daemon queries a `resolve` makes are scoped to the fixture's `cwd`. A
 pathless (global) `setup` `put` is still visible to them: a read at a path
@@ -93,10 +99,11 @@ Seed with `args.path` only when the fixture is about path-keyed data.
 
 ### The `eval` op
 
-`eval` is not a wire op either. It evaluates one **value expression** in
-either of the two forms canon `field_resolution.md` (invariant 14) defines,
-against the same client-side context `resolve` uses. `args.template` is the
-only argument:
+`eval` is not a wire op either. It renders one **value expression** that is
+stored nowhere, every ref resolved as it would be inside a stored template —
+so `{ "op": "eval", "args": { "template": "{{ p.f }}" } }` and
+`{ "op": "resolve", "args": { "key": "p.f" } }` agree by construction.
+`args.template` is the only argument:
 
 ```json
 { "op": "eval", "args": { "template": "{{ env.A or cache.p.f }}" } }
@@ -116,11 +123,9 @@ A missing or unknown ref is falsy at any depth, never an error: an absent
 `env.*`, a cache miss, and a daemon-rejected key (an unregistered provider)
 all evaluate falsy, so `{{ nope.field or "x" }}` is `"x"`.
 
-`virtual`, `env` and `cwd` apply exactly as they do for `resolve`: `virtual`
-entries keyed `"provider.field"` define the field expressions a `provider.field`
-reference resolves through (transitively — a virtual field may reference
-another), `env` supplies `env.*`, and `cwd` scopes the daemon queries — with
-the same chain resolution `resolve` gets.
+`env` and `cwd` apply exactly as they do for `resolve`, with the same chain
+resolution. `exec()` is disabled: the runners build their client without the
+`exec` option, as an SDK user does by default.
 
 **Not every runner supports `resolve`/`eval`.** A runner whose binding
 doesn't implement them must **skip** those fixtures and report them as
