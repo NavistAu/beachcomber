@@ -393,13 +393,14 @@ fn main() -> ExitCode {
         }
         Commands::Eval { template, path } => {
             // `eval` is a query like `get`, so it addresses the same path: the
-            // one given, else the caller's directory.
-            let effective_path = effective_cli_path(false, path);
-            beachcomber::cli::commands::eval::run_eval(
-                &config,
-                &template,
-                effective_path.as_deref(),
-            )
+            // one given, else the caller's directory. Unlike `get` there is
+            // no `--global` to fall back to, so a directory that cannot be
+            // determined is an error rather than a guess.
+            let Some(path) = effective_cli_path(false, path) else {
+                eprintln!("cannot determine the current directory");
+                return ExitCode::from(2);
+            };
+            beachcomber::cli::commands::eval::run_eval(&config, &template, &path)
         }
         Commands::Init => run_init(),
         Commands::Check {

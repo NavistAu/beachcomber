@@ -2,10 +2,11 @@
 //! `exec()` enabled — the CLI user already has a shell, so `exec()` is
 //! available to both surfaces.
 //!
-//! `comb` always requires the daemon (design §2, outcome 22), so the `eval`
-//! test below forks a real one into a temp socket, same as `comb get` would.
-//! The `get` tests declare their template through `comb put <p>:template`
-//! against a test daemon, the one way a template exists.
+//! `comb` always requires the daemon (design §2, outcome 22), so every test
+//! here runs against `TestDaemon`, which is killed in `Drop` — no test in
+//! this repo may leave a daemon running. The `get` tests declare their
+//! template through `comb put <p>:template` against it, the one way a
+//! template exists.
 
 mod common;
 use common::daemon::TestDaemon;
@@ -25,15 +26,13 @@ fn comb(d: &TestDaemon) -> assert_cmd::Command {
 /// prints its output.
 #[test]
 fn eval_of_exec_call_prints_command_output() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let bogus_sock = dir.path().join("nonexistent.sock");
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &bogus_sock)
-        .env("RUST_LOG", "error")
-        .env("HOME", dir.path())
-        .env("XDG_CONFIG_HOME", dir.path().join("cfg"))
-        .args(["eval", r#"{{ exec("sh", "-c", "echo hi") }}"#]);
-    cmd.assert().success().stdout(predicates::str::diff("hi"));
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["eval", r#"{{ exec("sh", "-c", "echo hi") }}"#])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("hi"));
 }
 
 /// `comb get demo.shout` renders an exec()-backed template with `exec()`

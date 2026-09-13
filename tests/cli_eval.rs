@@ -14,6 +14,7 @@ mod common;
 
 use common::daemon::TestDaemon;
 use common::socket::IsolatedSocket;
+use std::path::PathBuf;
 
 /// A `comb` at `/`, pointed at `d`'s socket and its temp `$HOME`/config dir.
 fn comb(d: &TestDaemon) -> assert_cmd::Command {
@@ -29,15 +30,22 @@ fn comb(d: &TestDaemon) -> assert_cmd::Command {
 // ── outcome 22: `comb eval` always starts the daemon ─────────────────────────
 
 /// Stops the daemon `comb eval` started on its own, so a test never leaves
-/// one behind: `ensure_daemon` forks without `--exit-with-parent`.
+/// one behind: `ensure_daemon` forks without `--exit-with-parent`. `kill`
+/// gets the same temp `$HOME`/`$XDG_CONFIG_HOME` as the `eval` that started
+/// the daemon, like every other `comb` spawn in this file — the developer's
+/// real config dir must never be touched by a test.
 struct SpawnedDaemon {
     socket: IsolatedSocket,
+    home: PathBuf,
+    xdg: PathBuf,
 }
 
 impl Drop for SpawnedDaemon {
     fn drop(&mut self) {
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
             .env("RUST_LOG", "error")
+            .env("HOME", &self.home)
+            .env("XDG_CONFIG_HOME", &self.xdg)
             .args(["kill", "--socket"])
             .arg(&self.socket.path)
             .output();
@@ -49,12 +57,15 @@ impl Drop for SpawnedDaemon {
 /// empty daemon-ref closure skipped `ensure_daemon` entirely.
 #[test]
 fn eval_starts_the_daemon() {
-    let guard = SpawnedDaemon {
-        socket: IsolatedSocket::new(),
-    };
-    let home = guard.socket.dir.path().join("home");
-    let xdg = guard.socket.dir.path().join("xdg");
+    let socket = IsolatedSocket::new();
+    let home = socket.dir.path().join("home");
+    let xdg = socket.dir.path().join("xdg");
     std::fs::create_dir_all(&home).unwrap();
+    let guard = SpawnedDaemon {
+        socket,
+        home: home.clone(),
+        xdg: xdg.clone(),
+    };
     assert!(!guard.socket.path.exists(), "no daemon before eval runs");
 
     let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();

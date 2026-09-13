@@ -16,12 +16,13 @@
 //! same renderer `comb get -f text` uses.
 
 use crate::config::Config;
-use libbeachcomber::resolve::{Inputs, Slot, eval};
+use libbeachcomber::resolve::{Inputs, ResolveError, Slot, eval};
 use std::process::ExitCode;
 
-/// `path` is what `main.rs` already settled: the `--path`, the trailing
-/// positional, or the current directory (`eval` has no `--global`).
-pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
+/// `path` is what `main.rs` already settled: the positional argument, or the
+/// current directory (`eval` has no `--path` flag and no `--global`) — always
+/// a real directory, never guessed here.
+pub fn run_eval(config: &Config, template: &str, path: &str) -> ExitCode {
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
@@ -38,18 +39,11 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
         }
     };
 
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
     let env = crate::cli::shell_env();
-    // `main.rs` defaults `path` to the process cwd (`eval` has no `--global`),
-    // so this is always `Slot::Path` — the fallback below only matters if
-    // `current_dir()` itself failed.
-    let slot = Slot::Path(path.unwrap_or(&cwd).to_string());
     let inputs = Inputs {
-        cwd: &cwd,
+        cwd: path,
         env: &env,
-        slot,
+        slot: Slot::Path(path.to_string()),
         force: false,
         wait: false,
         allow_exec: true,
@@ -63,6 +57,12 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
             );
             ExitCode::SUCCESS
         }
+        // The daemon's own words for a key it refused, or the transport's.
+        Err(ResolveError::Fetch(e)) => {
+            eprintln!("Error: {e}");
+            ExitCode::from(2)
+        }
+        // A config or runtime failure already names its field.
         Err(e) => {
             eprintln!("{e}");
             ExitCode::from(2)
