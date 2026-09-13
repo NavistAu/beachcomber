@@ -885,3 +885,34 @@ fn check_config_reports_its_own_local_verdict() {
         "expected a local PASS line, got:\n{stdout}"
     );
 }
+
+/// `comb check config` on a file still carrying a 0.9 `[providers.<p>.virtual]`
+/// table prints a local FAIL line that says where the templates went.
+#[test]
+fn check_config_fails_a_virtual_subtable_naming_the_template_facet() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_dir = tmp.path().join("beachcomber");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "[providers.conda]\nvirtual.env = \"{{ env.CONDA_DEFAULT_ENV }}\"\n",
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(comb_binary())
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
+        .args(["check", "--connect-timeout", "0", "config"])
+        .output()
+        .expect("run comb check config");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(
+            "[FAIL] local    unrecognised block [providers.conda.virtual]: \
+             templates live in [providers.\"conda:template\"]"
+        ),
+        "expected a local FAIL line naming the template facet, got:\n{stdout}"
+    );
+}

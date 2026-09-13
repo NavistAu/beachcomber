@@ -601,6 +601,18 @@ fn a_self_referencing_leaf_is_a_cycle_naming_itself() {
                 .to_string()
         )
     );
+
+    // The template form sits on the same frame stack: literal text around
+    // the ref changes nothing about the cycle.
+    f.seed("scanline.y", Some(CWD), tmpl(json!("[{{ scanline.y }}]")));
+    let err = resolve("scanline.y", &inputs(&env), &mut f).unwrap_err();
+    assert_eq!(
+        err,
+        ResolveError::Config(
+            "scanline.y: virtual field cycle detected: scanline.y is already being resolved"
+                .to_string()
+        )
+    );
 }
 
 // ── 8. The depth limit ────────────────────────────────────────────────────────
@@ -656,6 +668,63 @@ fn exec_is_a_runtime_error_when_the_surface_disallows_it() {
 }
 
 #[test]
+fn exec_runs_in_the_template_form_too_and_is_refused_the_same_way() {
+    // Both forms of canon invariant 14 share one environment, so the
+    // surface's decision reaches a template exactly as it reaches a tag.
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    let src = "prefix {{ exec('printf', 'x') }} suffix";
+    let mut i = inputs(&env);
+    i.allow_exec = true;
+    assert_eq!(eval(src, &i, &mut f).unwrap(), json!("prefix x suffix"));
+    match eval(src, &inputs(&env), &mut f).unwrap_err() {
+        ResolveError::Runtime(m) => {
+            assert!(m.contains("exec() is disabled"), "unexpected message: {m}")
+        }
+        other => panic!("expected a runtime error, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_failing_command_is_a_runtime_error_not_a_config_error() {
+    // `libbeachcomber-ffi` reads a Config error as the caller's own source
+    // being malformed; a command that exits non-zero is the moment's
+    // failure, in both forms, and must never read as a compile error.
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    let mut i = inputs(&env);
+    i.allow_exec = true;
+    for src in [
+        "{{ exec('sh', '-c', 'exit 3') }}",
+        "[{{ exec('sh', '-c', 'exit 3') }}]",
+    ] {
+        match eval(src, &i, &mut f).unwrap_err() {
+            ResolveError::Runtime(m) => {
+                assert!(!m.contains("compile error"), "{src}: {m}");
+            }
+            other => panic!("{src}: expected a runtime error, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn an_exec_leaf_renders_beside_its_siblings_when_allowed() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "k",
+        Some(CWD),
+        tmpl(json!({ "run": EXEC_TMPL, "plain": "{{ 'ok' }}" })),
+    );
+    let mut i = inputs(&env);
+    i.allow_exec = true;
+    assert_eq!(
+        resolve("k", &i, &mut f),
+        Ok(Some(json!({ "run": "x", "plain": "ok" })))
+    );
+}
+
+#[test]
 fn a_runtime_failure_omits_its_leaf_and_keeps_its_siblings() {
     let env = spec_env();
     let mut f = MapFetch::default();
@@ -668,6 +737,26 @@ fn a_runtime_failure_omits_its_leaf_and_keeps_its_siblings() {
         resolve("k", &inputs(&env), &mut f),
         Ok(Some(json!({ "plain": "ok" })))
     );
+}
+
+#[test]
+fn an_exec_argument_may_be_a_ref_to_another_template() {
+    // `chain.a`'s argument names `chain.b`, itself a template. The ref is
+    // resolved first — rendered on the frame stack like any other, so the
+    // depth limit and the cycle guard reach it — and the child sees the
+    // rendered value, not the source.
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "chain.a",
+        Some(CWD),
+        tmpl(json!("{{ exec('printf', chain.b) }}")),
+    )
+    .seed("chain.b", Some(CWD), tmpl(json!("{{ 'bee' }}")));
+    let mut i = inputs(&env);
+    i.allow_exec = true;
+    assert_eq!(resolve("chain.a", &i, &mut f), Ok(Some(json!("bee"))));
+    assert_eq!(f.keys(), vec!["chain.a", "chain.b"]);
 }
 
 #[test]
@@ -771,6 +860,94 @@ fn an_all_empty_cascade_is_the_empty_string_alone_and_in_a_group() {
     );
 }
 
+// ── 11a. What a ref binds ─────────────────────────────────────────────────────
+
+#[test]
+fn a_whole_provider_object_wins_over_a_disagreeing_cache_field() {
+    // `cache.p` and `cache.p.f` are separate daemon reads and can disagree.
+    // The whole object is the authoritative snapshot, and that holds
+    // whichever ref is bound first, so the value is the same every run.
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed("p", Some(CWD), data(json!({ "f": "whole" }))).seed(
+        "p.f",
+        Some(CWD),
+        data(json!("field")),
+    );
+    let i = inputs(&env);
+
+    // The field ref alone: nothing to override it, so its own value stands.
+    assert_eq!(eval("{{ cache.p.f }}", &i, &mut f).unwrap(), json!("field"));
+    // Both refs, written in either order: the object supplies `f`.
+    assert_eq!(
+        eval("{{ cache.p.f or cache.p }}", &i, &mut f).unwrap(),
+        json!("whole")
+    );
+    assert_eq!(
+        eval("{{ cache.p and cache.p.f }}", &i, &mut f).unwrap(),
+        json!("whole")
+    );
+    // …and the object itself is not damaged by the field binding.
+    assert_eq!(
+        eval("{{ cache.p.f and cache.p }}", &i, &mut f).unwrap(),
+        json!({ "f": "whole" })
+    );
+
+    // A field the object does not carry is still filled in by its own ref.
+    f.seed("p", Some(CWD), data(json!({ "other": 1 })));
+    assert_eq!(
+        eval("{{ cache.p.f or cache.p }}", &i, &mut f).unwrap(),
+        json!("field")
+    );
+}
+
+#[test]
+fn a_miss_binds_nothing_so_default_fires_at_any_depth() {
+    // `default` replaces an *undefined* value, not a null one, so a miss has
+    // to leave the key absent from the context — the value, and the object
+    // that would have enclosed it. Binding a miss to JSON null would make
+    // every `| default(...)` in the wild silently render empty; pre-creating
+    // an empty `cache.nope` to hold a missed field would make the
+    // whole-provider ref *defined* and render `{}`. Chaining through a miss
+    // stays undefined, so it is falsy at any depth (canon).
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    let i = inputs(&env);
+    for (src, want) in [
+        (r#"{{ probe.missing | default("FB") }}"#, "FB"),
+        (r#"[{{ probe.missing | default("FB") }}]"#, "[FB]"),
+        (r#"{{ cache.probe.missing | default("FB") }}"#, "FB"),
+        (r#"{{ cache.probe | default("FB") }}"#, "FB"),
+        (
+            r#"{{ cache.nope.f }}|{{ cache.nope | default("FB") }}"#,
+            "|FB",
+        ),
+        (r#"{{ p.f }}|{{ p | default("FB") }}"#, "|FB"),
+        ("{{ probe.missing.sub }}", ""),
+        ("[{{ probe.missing.sub }}]", "[]"),
+        (r#"{{ probe.missing.sub or "next" }}"#, "next"),
+    ] {
+        assert_eq!(eval(src, &i, &mut f).unwrap(), json!(want), "src: {src}");
+    }
+
+    // A hit still binds, and the map it creates is the real one — the
+    // whole-provider ref sees the field that hit, not a placeholder.
+    f.seed("nope.f", Some(CWD), data(json!("V"))).seed(
+        "nope",
+        Some(CWD),
+        data(json!({ "f": "V" })),
+    );
+    assert_eq!(
+        eval(
+            r#"{{ cache.nope.f }}|{{ cache.nope | default("FB") }}"#,
+            &i,
+            &mut f
+        )
+        .unwrap(),
+        json!(r#"V|{"f": "V"}"#)
+    );
+}
+
 // ── 12. The two expression forms ──────────────────────────────────────────────
 
 #[test]
@@ -787,6 +964,63 @@ fn the_two_expression_forms_keep_their_types() {
     assert_eq!(resolve("k.sum", &i, &mut f), Ok(Some(json!(2))));
     assert_eq!(resolve("k.bool", &i, &mut f), Ok(Some(json!(true))));
     assert_eq!(resolve("k.mixed", &i, &mut f), Ok(Some(json!("a 1 b"))));
+}
+
+#[test]
+fn the_single_tag_form_keeps_structured_shapes() {
+    // An interior node resolves to its subtree as an object, a sequence
+    // stays a sequence, and a filter yielding an iterable keeps that shape
+    // too (canon invariants 8 and 12) — the typed path never re-renders a
+    // structured result as a string. Literal text is what stringifies it.
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed("p", Some(CWD), data(json!({ "a": 1, "b": "two" })));
+    let i = inputs(&env);
+    assert_eq!(
+        eval("{{ cache.p }}", &i, &mut f).unwrap(),
+        json!({ "a": 1, "b": "two" })
+    );
+    assert_eq!(
+        eval("{{ [1, cache.p] }}", &i, &mut f).unwrap(),
+        json!([1, { "a": 1, "b": "two" }])
+    );
+    assert_eq!(
+        eval("{{ {'a': 1} | items }}", &i, &mut f).unwrap(),
+        json!([["a", 1]])
+    );
+    assert_eq!(
+        eval("{{ [1, 2] | reverse }}", &i, &mut f).unwrap(),
+        json!([2, 1])
+    );
+    assert!(matches!(
+        eval("p={{ cache.p }}", &i, &mut f).unwrap(),
+        Value::String(_)
+    ));
+}
+
+#[test]
+fn a_statement_tag_template_renders_over_a_template_ref_and_a_data_ref() {
+    // `git.branch` is a template over the env and the cache; `git.dirty` is
+    // data. The statement tag makes the source a template, and each ref in
+    // it resolves exactly as `resolve` of that key would.
+    let src = "{{ git.branch }}{% if git.dirty %}*{% endif %}";
+    let mut f = MapFetch::default();
+    f.seed(
+        "git.branch",
+        Some(CWD),
+        both(json!("main"), json!("{{ env.BRANCH or cache.git.branch }}")),
+    )
+    .seed("git.dirty", Some(CWD), data(json!(true)));
+
+    let env = spec_env();
+    assert_eq!(eval(src, &inputs(&env), &mut f).unwrap(), json!("main*"));
+
+    f.seed("git.dirty", Some(CWD), data(json!(false)));
+    assert_eq!(eval(src, &inputs(&env), &mut f).unwrap(), json!("main"));
+
+    // The env arm inside the referenced template still wins.
+    let env = env_of(&[("BRANCH", "feature")]);
+    assert_eq!(eval(src, &inputs(&env), &mut f).unwrap(), json!("feature"));
 }
 
 // ── 13. A transport failure ───────────────────────────────────────────────────
@@ -931,6 +1165,10 @@ fn eval_of_tagless_text_is_that_text() {
         eval("hello", &inputs(&env), &mut f).unwrap(),
         json!("hello")
     );
+    // An empty source is a template of no tags — `-f ''` asks for exactly
+    // this — and whitespace-only is literal text that survives.
+    assert_eq!(eval("", &inputs(&env), &mut f).unwrap(), json!(""));
+    assert_eq!(eval("   ", &inputs(&env), &mut f).unwrap(), json!("   "));
     assert!(f.log.is_empty());
 }
 

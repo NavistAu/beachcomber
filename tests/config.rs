@@ -934,13 +934,11 @@ fn legacy_flat_script_provider_fields_and_invalidation_accepted_in_validate() {
     // and `invalidation` are provider-level sub-tables in this shape (see
     // ScriptProviderConfig::{fields, invalidation}), not per-source blocks —
     // validate_providers must not flag them as unrecognized source blocks.
-    // `virtual` is also a legitimate provider-level sub-table here.
     let toml_str = r#"
 [providers.chronoclaude]
 command = "comb eval '{{ scanline.stdin }}' | '/path/statusline'"
 output = "text"
 fields = { value = "string" }
-virtual.extra = "fields.value"
 
 [providers.chronoclaude.invalidation]
 poll = "1s"
@@ -951,7 +949,7 @@ poll = "1s"
     let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
     assert!(
         errors.is_empty(),
-        "legacy flat provider's fields/invalidation/virtual sub-tables must not \
+        "legacy flat provider's fields/invalidation sub-tables must not \
          produce validation errors: {:?}",
         errors
     );
@@ -1008,110 +1006,31 @@ type = "poll"
 }
 
 #[test]
-fn config_parses_virtual_field_expressions() {
-    let toml = r#"
-[providers.terraform]
-virtual.workspace = "env.MY_TF_WORKSPACE or cache.terraform.workspace"
-
-[providers.python]
-virtual.version = "env.PYENV_VERSION or cache.python.venv_version"
-"#;
-    let config: Config = toml::from_str(toml).expect("valid toml");
-    let fields = config.virtual_fields();
-    assert_eq!(
-        fields
-            .get(&("terraform".to_string(), "workspace".to_string()))
-            .map(|s| s.as_str()),
-        Some("env.MY_TF_WORKSPACE or cache.terraform.workspace"),
-    );
-    assert_eq!(
-        fields
-            .get(&("python".to_string(), "version".to_string()))
-            .map(|s| s.as_str()),
-        Some("env.PYENV_VERSION or cache.python.venv_version"),
-    );
-}
-
-#[test]
-fn config_source_knobs_not_confused_with_virtual_fields() {
-    // Source knobs (poll_interval etc.) are siblings of virtual, not inside it.
-    // They must NOT appear in virtual_fields() output.
-    let toml = r#"
-[providers.terraform]
-poll_interval = 30
-virtual.workspace = "env.TF_WORKSPACE or cache.terraform.workspace"
-"#;
-    let config: Config = toml::from_str(toml).expect("valid toml");
-    let fields = config.virtual_fields();
-    assert!(
-        fields.contains_key(&("terraform".to_string(), "workspace".to_string())),
-        "virtual.workspace must be present"
-    );
-    // poll_interval is a sibling of the virtual sub-table, not inside it — not returned.
-    assert!(
-        !fields.contains_key(&("terraform".to_string(), "poll_interval".to_string())),
-        "poll_interval must not appear in virtual_fields"
-    );
-}
-
-#[test]
-fn validate_providers_ignores_virtual_subtable() {
-    // A built-in provider that has a `virtual` sub-table must NOT produce validation
-    // errors. The daemon skips the `virtual` sub-table — it is client-side only.
-    //
-    // Note: TOML requires [providers.git] before [providers.git.diff] to avoid a
-    // "cannot redefine table" error. virtual.branch_display is set as a dotted key
-    // inside [providers.git] before the diff sub-table header.
+fn validate_providers_rejects_a_virtual_subtable_naming_the_template_facet() {
+    // `[providers.<p>.virtual]` was where 0.9 kept a provider's templates.
+    // They are `[providers."<p>:template"]` data now (design §3.9, outcome
+    // 15), so the old block is unrecognised — and its error says where the
+    // templates went, rather than the generic per-source "unknown key"
+    // any other stray sub-table gets. `virtual.env = …` is the dotted-key
+    // spelling of the same table. `conda` is not a known provider, so the
+    // error cannot be the "does not match any registered source" warning
+    // either: it is this block's own.
     let toml_str = r#"
-[providers.terraform]
-virtual.workspace = "env.TF_WORKSPACE or cache.terraform.workspace"
-
-[providers.aws]
-virtual.region = "env.AWS_REGION or env.AWS_DEFAULT_REGION or cache.aws_profiles[env.AWS_PROFILE or \"default\"].region"
-
-[providers.git]
-virtual.branch_display = "env.GIT_BRANCH or git.branch"
-
-[providers.git.diff]
-type = "poll"
-poll_interval = "30s"
-poll_count = 12
+[providers.conda]
+virtual.env = "{{ env.CONDA_DEFAULT_ENV }}"
 "#;
     let config: Config = toml::from_str(toml_str).expect("valid toml");
-    let known_providers = vec![
-        "terraform".to_string(),
-        "aws".to_string(),
-        "git".to_string(),
-    ];
-    let mut known_sources = std::collections::HashMap::new();
-    known_sources.insert(
-        "git".to_string(),
-        vec!["diff".to_string(), "refs".to_string(), "status".to_string()],
-    );
-
-    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        errors.is_empty(),
-        "virtual sub-table must not produce validation errors: {:?}",
-        errors
-    );
-
-    // Also verify virtual_fields() still returns the expressions.
-    let fields = config.virtual_fields();
+    let known_providers: Vec<String> = vec![];
+    let known_sources = std::collections::HashMap::new();
+    let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
     assert_eq!(
-        fields
-            .get(&("terraform".to_string(), "workspace".to_string()))
-            .map(|s| s.as_str()),
-        Some("env.TF_WORKSPACE or cache.terraform.workspace"),
-        "virtual_fields() must still return terraform.workspace"
+        errors,
+        vec![
+            "unrecognised block [providers.conda.virtual]: templates live in [providers.\"conda:template\"]"
+                .to_string()
+        ]
     );
-    assert_eq!(
-        fields
-            .get(&("git".to_string(), "branch_display".to_string()))
-            .map(|s| s.as_str()),
-        Some("env.GIT_BRANCH or git.branch"),
-        "virtual_fields() must still return git.branch_display"
-    );
+    assert!(warnings.is_empty(), "no warnings expected: {warnings:?}");
 }
 
 #[test]

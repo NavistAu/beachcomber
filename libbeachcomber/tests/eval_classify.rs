@@ -1,28 +1,21 @@
-//! Classification and reference discovery for value expressions.
+//! Classification, reference discovery and the template render for value
+//! expressions — `libbeachcomber::eval`, the primitives `resolve` is built on.
 //!
 //! Pins canon `field_resolution.md` invariant 14: a value expression written as
 //! exactly one `{{ expr }}` keeps the expression's natural type; one written
 //! with literal text or more than one tag is a string-valued template. A
 //! source with no tags at all is its own literal text — there is no
-//! bare-expression form.
+//! bare-expression form. Evaluation against fetched data is `tests/resolve.rs`.
 
 use libbeachcomber::eval::{
-    Form, TagKind, classify, daemon_refs, discover_refs, fetch_daemon_data, scan_tags,
-    single_tag_expression,
+    Form, TagKind, classify, discover_refs, render_template, scan_tags, single_tag_expression,
 };
-use libbeachcomber::virtual_fields::{Ref, VirtualFields};
+use libbeachcomber::virtual_fields::Ref;
+use serde_json::{Value, json};
 use std::collections::HashSet;
 
 fn refs_set(src: &str) -> HashSet<Ref> {
     discover_refs(src).into_iter().collect()
-}
-
-fn vfields(entries: &[(&str, &str, &str)]) -> VirtualFields {
-    VirtualFields::with_config_overrides(
-        entries
-            .iter()
-            .map(|(p, f, e)| ((p.to_string(), f.to_string()), e.to_string())),
-    )
 }
 
 #[test]
@@ -236,140 +229,78 @@ fn discover_refs_uncompilable_template_yields_no_refs() {
 }
 
 #[test]
-fn discover_refs_deduplicates_across_tags() {
-    // A ref names a daemon key of exactly two segments; deeper segments are
-    // attribute navigation into the fetched value, so `a.b.c` is the same ref
-    // as `a.b` and the two collapse to one.
+fn discover_refs_keeps_every_segment_of_a_resolved_ref() {
+    // A ref names a node at any depth, never the group above it: `a.b` and
+    // `a.b.c` are two addresses, so they are two refs. Only `env.*` and
+    // `cache.*` cut at a fixed depth — `env.A.B` is the variable `A` with
+    // attribute navigation into it, and `cache.P.F.G` is the cached field
+    // `P.F` — so those collapse.
     assert_eq!(
         discover_refs("{{ a.b }}{{ a.b.c }}"),
-        vec![Ref::Resolved("a".into(), "b".into())]
+        vec![
+            Ref::Resolved("a".into(), "b".into()),
+            Ref::Resolved("a".into(), "b.c".into()),
+        ]
     );
     assert_eq!(
         discover_refs("{{ env.A }}{{ env.A.B }}"),
         vec![Ref::Env("A".into())]
     );
-}
-
-#[test]
-fn daemon_refs_follows_nested_virtual_fields() {
-    let vf = vfields(&[
-        ("a", "x", "{{ b.y or cache.c.z }}"),
-        ("b", "y", "{{ cache.d.w }}"),
-    ]);
-
-    let refs: HashSet<Ref> = daemon_refs("{{ a.x }}", &vf).unwrap().into_iter().collect();
-    let expected: HashSet<Ref> = [
-        Ref::CacheField("d".into(), "w".into()),
-        Ref::CacheField("c".into(), "z".into()),
-    ]
-    .into_iter()
-    .collect();
-    assert_eq!(refs, expected);
-
-    // The virtual fields themselves are never fetched from the daemon.
-    assert!(!refs.contains(&Ref::Resolved("a".into(), "x".into())));
-    assert!(!refs.contains(&Ref::Resolved("b".into(), "y".into())));
-
-    // A non-virtual resolved ref survives the closure as-is, and env refs drop out.
-    let refs: HashSet<Ref> = daemon_refs("{{ a.x }} {{ other.field }} {{ env.HOME }}", &vf)
-        .unwrap()
-        .into_iter()
-        .collect();
-    assert!(refs.contains(&Ref::Resolved("other".into(), "field".into())));
-    assert!(!refs.iter().any(|r| matches!(r, Ref::Env(_))));
-}
-
-#[test]
-fn daemon_refs_is_sorted_after_expansion() {
-    // Expansion splices a virtual field's own refs into the walk at the point
-    // it is reached, so a sorted input does not stay sorted: `cache.z.q` is
-    // discovered first, but `cache.a.b` — reached through a.x — sorts ahead.
-    let vf = vfields(&[("a", "x", "{{ cache.a.b }}")]);
     assert_eq!(
-        daemon_refs("{{ cache.z.q or a.x }}", &vf).unwrap(),
-        vec![
-            Ref::CacheField("a".into(), "b".into()),
-            Ref::CacheField("z".into(), "q".into()),
-        ]
+        discover_refs("{{ cache.p.f }}{{ cache.p.f.g }}"),
+        vec![Ref::CacheField("p".into(), "f".into())]
+    );
+    // And the same ref twice is one ref.
+    assert_eq!(
+        discover_refs("{{ a.b.c }}{{ a.b.c }}"),
+        vec![Ref::Resolved("a".into(), "b.c".into())]
     );
 }
 
-#[test]
-fn daemon_refs_cycle_terminates() {
-    let vf = vfields(&[("a", "x", "{{ b.y }}"), ("b", "y", "{{ a.x }}")]);
-    assert_eq!(daemon_refs("{{ a.x }}", &vf).unwrap(), vec![]);
+// ── render_template over an already-assembled context ─────────────────────────
 
-    // A self-cycle with a real dependency still yields that dependency.
-    let vf = vfields(&[("a", "x", "{{ a.x or cache.c.z }}")]);
+#[test]
+fn render_template_over_assembled_context() {
+    let ctx = json!({"git": {"branch": "main", "dirty": true, "tag": Value::Null}});
+
     assert_eq!(
-        daemon_refs("{{ a.x }}", &vf).unwrap(),
-        vec![Ref::CacheField("c".into(), "z".into())]
+        render_template("{{ git.branch }}{% if git.dirty %}*{% endif %}", &ctx).unwrap(),
+        "main*"
     );
+    // A null in the assembled context renders as nothing — not the literal
+    // word `none`. The same "missing is falsy" reading canon gives `env.*`
+    // misses and `render::render_data` gives an explicit null.
+    let rendered = render_template("[{{ git.tag }}]", &ctx).unwrap();
+    assert_eq!(rendered, "[]");
+    assert!(!rendered.contains("none"), "got: {rendered}");
+
+    // An unbound name is undefined, and chaining through it stays undefined —
+    // not a render error (see `build_expression_env`'s `Chainable`).
+    assert_eq!(
+        render_template("[{{ nope.field }}]", &json!({})).unwrap(),
+        "[]"
+    );
+    assert_eq!(
+        render_template("[{{ nope.field.deeper }}]", &json!({})).unwrap(),
+        "[]"
+    );
+
+    // Errors are prefixed by phase.
+    let err = render_template("{{ x } }}", &ctx).unwrap_err();
+    assert!(err.starts_with("template compile error:"), "got: {err}");
+    let err = render_template("{% for x in 5 %}{% endfor %}", &json!({})).unwrap_err();
+    assert!(err.starts_with("template render error:"), "got: {err}");
 }
 
 #[test]
-fn fetch_daemon_data_keys() {
-    let refs = vec![
-        Ref::CacheField("git".into(), "branch".into()),
-        Ref::CacheProvider("aws_profiles".into()),
-        Ref::Resolved("other".into(), "field".into()),
-        // Same daemon key as the ref above — one query, not two.
-        Ref::CacheField("other".into(), "field".into()),
-        Ref::Resolved("missing".into(), "field".into()),
-        // Same key again, and a miss — a miss is not retried either.
-        Ref::CacheField("missing".into(), "field".into()),
-        Ref::Env("HOME".into()),
-    ];
-
-    let mut asked: Vec<String> = Vec::new();
-    let data = fetch_daemon_data(&refs, |key| {
-        asked.push(key.to_string());
-        Ok::<_, String>(match key {
-            "git.branch" => Some(serde_json::json!("main")),
-            "aws_profiles" => Some(serde_json::json!({"default": {"region": "ap-southeast-2"}})),
-            "other.field" => Some(serde_json::json!(7)),
-            _ => None,
-        })
-    })
-    .expect("no transport error");
-
-    // `cache.P.F` and a resolved `P.F` are both keyed "P.F"; `cache.P` is keyed "P".
-    assert_eq!(data.get("git.branch"), Some(&serde_json::json!("main")));
-    assert_eq!(data.get("other.field"), Some(&serde_json::json!(7)));
-    assert!(data.contains_key("aws_profiles"));
-    // Misses are simply absent, and env refs are never fetched.
-    assert!(!data.contains_key("missing.field"));
-    assert!(!data.contains_key("HOME"));
-    assert_eq!(data.len(), 3);
-
-    // Called exactly once per distinct key, in ref order.
-    assert_eq!(
-        asked,
-        vec!["git.branch", "aws_profiles", "other.field", "missing.field"]
+fn render_template_has_no_exec() {
+    // The formatting surfaces' render registers `exec()` in its disabled
+    // form, so a call fails at the call site with the on-topic message —
+    // not minijinja's "unknown function", indistinguishable from a typo.
+    let err = render_template("{{ exec('printf', 'x') }}", &json!({})).unwrap_err();
+    assert!(err.starts_with("template render error:"), "got: {err}");
+    assert!(
+        err.contains("exec() is disabled in this context"),
+        "got: {err}"
     );
-}
-
-#[test]
-fn fetch_daemon_data_short_circuits_on_error() {
-    let refs = vec![
-        Ref::CacheField("git".into(), "branch".into()),
-        Ref::CacheField("boom".into(), "field".into()),
-        Ref::CacheField("never".into(), "asked".into()),
-    ];
-
-    let mut asked: Vec<String> = Vec::new();
-    let err = fetch_daemon_data(&refs, |key| {
-        asked.push(key.to_string());
-        if key == "boom.field" {
-            Err("connection reset")
-        } else {
-            Ok(Some(serde_json::json!("main")))
-        }
-    })
-    .expect_err("the transport error should surface");
-
-    // The caller owns the policy, so the first Err stops the walk and is
-    // handed back rather than being swallowed into a partial map.
-    assert_eq!(err, "connection reset");
-    assert_eq!(asked, vec!["git.branch", "boom.field"]);
 }

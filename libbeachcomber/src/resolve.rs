@@ -20,8 +20,8 @@
 //! and canon `field_resolution.md`.
 
 use crate::eval::{
-    MAX_VIRTUAL_DEPTH, RenderError, discover_refs_deep, render_template_with,
-    single_tag_expression, too_deep,
+    MAX_VIRTUAL_DEPTH, RenderError, discover_refs, render_template_with, single_tag_expression,
+    too_deep,
 };
 use crate::virtual_fields::{Ref, build_expression_env, mj_to_json};
 use minijinja::value::Value as MjValue;
@@ -325,7 +325,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn render_frame(&mut self, src: &str, key: &str) -> Result<JsonValue, ResolveError> {
-        let context = self.bind(&discover_refs_deep(src))?;
+        let context = self.bind(&discover_refs(src))?;
         // The two forms of `crate::eval::classify`: exactly one `{{ expr }}`
         // takes the typed path, everything else (literal text included)
         // renders to a string.

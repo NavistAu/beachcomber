@@ -72,33 +72,23 @@ fn ref_discovery_finds_all_refs_in_cascade() {
 }
 
 #[test]
-fn nested_ref_discovery_three_segments_returns_provider_and_second_segment() {
-    // foo.object.key must yield Resolved("foo", "object") — deeper segments are MiniJinja
-    // attribute navigation into the fetched value, not part of the daemon key.
+fn nested_ref_discovery_keeps_every_segment_of_a_resolved_ref() {
+    // A ref names a node at any depth, never the group above it:
+    // `foo.object.key` is Resolved("foo", "object.key") and the resolver
+    // fetches exactly that leaf. Only `env.*` and `cache.*` cut at a fixed
+    // depth, where deeper segments are attribute navigation into the value.
     use libbeachcomber::eval::discover_refs;
     use libbeachcomber::virtual_fields::Ref;
-    let refs = discover_refs("{{ foo.object.key }}");
-    assert_eq!(refs.len(), 1, "one ref expected; got: {refs:?}");
-    assert!(
-        refs.contains(&Ref::Resolved("foo".into(), "object".into())),
-        "expected Resolved(\"foo\", \"object\"); got: {refs:?}"
+    assert_eq!(
+        discover_refs("{{ foo.object.key }}"),
+        vec![Ref::Resolved("foo".into(), "object.key".into())]
     );
-}
-
-#[test]
-fn nested_ref_discovery_four_segments_and_two_segment_ref() {
-    // "a.b.c.d or env.X" → [Resolved("a", "b"), Env("X")]
-    use libbeachcomber::eval::discover_refs;
-    use libbeachcomber::virtual_fields::Ref;
-    let refs = discover_refs("{{ a.b.c.d or env.X }}");
-    assert_eq!(refs.len(), 2, "two refs expected; got: {refs:?}");
-    assert!(
-        refs.contains(&Ref::Resolved("a".into(), "b".into())),
-        "expected Resolved(\"a\", \"b\"); got: {refs:?}"
-    );
-    assert!(
-        refs.contains(&Ref::Env("X".into())),
-        "expected Env(\"X\"); got: {refs:?}"
+    assert_eq!(
+        discover_refs("{{ a.b.c.d or env.X.deeper }}"),
+        vec![
+            Ref::Env("X".into()),
+            Ref::Resolved("a".into(), "b.c.d".into()),
+        ]
     );
 }
 
