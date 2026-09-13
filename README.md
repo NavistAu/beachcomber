@@ -315,8 +315,8 @@ comb g git.branch:stale        # whether value is past refresh time
 ```
 
 **Exit codes:**
-- `0` — success, data returned
-- `1` — cache miss (provider has no data yet)
+- `0` — success; also a miss under `text`/`sh`, which print nothing
+- `2` — a miss under `json`, `csv`, `tsv` or `fmt` (`Error querying <key>: no data (cache miss)` on stderr)
 - `2` — error (daemon unreachable, unknown provider, invalid key, a template that does not compile or cycles — named in the message)
 
 ### `comb s` (status)

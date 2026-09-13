@@ -119,8 +119,8 @@ comb g git.branch:source         # → head (the Source that wrote the record)
 | `:source` | string | The record's writer: a Source of the provider (`head`, `refs`, …) or a static label (`put`, `config:<file>`). `null` for an object — a whole namespace, or a group of several records — and for a miss |
 
 **Exit codes:**
-- `0` — success, data returned
-- `1` — provider returned no data (e.g. `git` queried outside a git repository)
+- `0` — success; also a miss under `text`/`sh`, which print nothing (e.g. `git` queried outside a git repository)
+- `2` — a miss under `json`, `csv`, `tsv` or `fmt` (`Error querying <key>: no data (cache miss)` on stderr)
 - `2` — error (daemon unreachable, unknown provider, invalid key, a template that does not compile or cycles — the message names the field)
 
 ## `comb s` (status)
