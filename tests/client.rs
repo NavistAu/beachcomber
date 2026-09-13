@@ -55,14 +55,6 @@ async fn client_get_single_field() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn client_get_text_format() {
-    let (_tmp, sock) = setup_server().await;
-    let client = Client::new(sock);
-    let text = client.get_text("hostname.name", None).unwrap();
-    assert_eq!(text, "testhost.local");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_get_unknown_provider() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock);

@@ -10,6 +10,17 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
+/// A `libbeachcomber` client on `sock`, with no daemon auto-start — for the
+/// benches that measure its own API (`get_text`, a `Session`).
+fn lib_client(sock: std::path::PathBuf) -> libbeachcomber::Client {
+    libbeachcomber::Client::with_config(libbeachcomber::ClientConfig {
+        timeout: std::time::Duration::from_secs(2),
+        auto_start: false,
+        exec: false,
+    })
+    .with_socket_path(sock)
+}
+
 struct TestServer {
     _tmp: TempDir,
     sock: std::path::PathBuf,
@@ -82,8 +93,7 @@ fn bench_socket_roundtrip_text(c: &mut Criterion) {
         b.to_async(&server.rt).iter(|| {
             let sock = server.sock.clone();
             async move {
-                let client = Client::new(sock);
-                let text = client.get_text("hostname.name", None).unwrap();
+                let text = lib_client(sock).get_text("hostname.name", None).unwrap();
                 criterion::black_box(text);
             }
         })
@@ -134,7 +144,7 @@ fn bench_sequential_gets(c: &mut Criterion) {
     });
 }
 
-/// Persistent session: one connection, 10 sequential gets via ClientSession.
+/// Persistent session: one connection, 10 sequential gets via `Session`.
 fn bench_socket_session_gets(c: &mut Criterion) {
     let server = TestServer::new();
 
@@ -142,8 +152,7 @@ fn bench_socket_session_gets(c: &mut Criterion) {
         b.to_async(&server.rt).iter(|| {
             let sock = server.sock.clone();
             async move {
-                let client = Client::new(sock);
-                let mut session = client.connect().unwrap();
+                let mut session = lib_client(sock).session().unwrap();
                 for _ in 0..10 {
                     let resp = session.get("hostname.name", None).unwrap();
                     criterion::black_box(resp);

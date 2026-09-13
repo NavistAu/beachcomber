@@ -1,5 +1,5 @@
-// Locks in wait=true semantics: at the Client API layer
-// (Client::get_formatted_with_flags and ClientSession::get_with_flags) and at
+// Locks in wait=true semantics: at the `libbeachcomber` client layer
+// (`Client::get_formatted_with_flags` and `Session::get_with_flags`) and at
 // the binary (`comb get --wait`), against one stale seeded entry — a value
 // served with wait=true must be the re-executed one, never the stale seed.
 //
@@ -11,13 +11,24 @@
 // so every CLI --wait invocation silently behaved as wait=false.
 
 use beachcomber::cache::Cache;
-use beachcomber::client::Client;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
+use libbeachcomber::{Client, ClientConfig, CombResult};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
+
+/// A `libbeachcomber` client on `sock`, with no daemon auto-start.
+fn client_for(sock: std::path::PathBuf) -> Client {
+    Client::with_config(ClientConfig {
+        timeout: Duration::from_secs(2),
+        auto_start: false,
+        exec: false,
+    })
+    .with_socket_path(sock)
+}
 
 async fn setup_stale() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
@@ -55,7 +66,7 @@ async fn single_key_text_wait_true_re_executes_stale_entry() {
     let (_tmp, sock) = setup_stale().await;
 
     let text = tokio::task::spawn_blocking(move || {
-        Client::new(sock)
+        client_for(sock)
             .get_formatted_with_flags("hostname.name", None, "text", false, true)
             .unwrap()
     })
@@ -101,9 +112,8 @@ async fn multi_key_client_side_wait_true_re_executes_stale_entry() {
     // The same through a session's get_with_flags, wait=true forwarded.
     let (_tmp, sock) = setup_stale().await;
 
-    let response = tokio::task::spawn_blocking(move || {
-        let client = Client::new(sock);
-        let mut session = client.connect().unwrap();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut session = client_for(sock).session().unwrap();
         session
             .get_with_flags("hostname.name", None, false, true)
             .unwrap()
@@ -111,16 +121,13 @@ async fn multi_key_client_side_wait_true_re_executes_stale_entry() {
     .await
     .expect("client call");
 
-    assert!(response.ok);
-    let data = response.data.expect("data present");
-    let name = data.as_str().expect("name field is a string");
+    let CombResult::Hit { data, age_ms, .. } = result else {
+        panic!("expected a hit, got {result:?}");
+    };
+    let name = data.as_value().as_str().expect("name field is a string");
     assert_ne!(
         name, "stale-seed",
         "wait=true on a stale entry must trigger re-execution; got {name:?}"
     );
-    assert_eq!(
-        response.age_ms,
-        Some(0),
-        "wait re-execution must return age_ms=0"
-    );
+    assert_eq!(age_ms, 0, "wait re-execution must return age_ms=0");
 }

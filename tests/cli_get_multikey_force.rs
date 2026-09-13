@@ -1,14 +1,27 @@
 // Verify that a multi-key `comb get` propagates force=true and wait=true to
-// every fetch. Phase 1 Round 3 bug: session.get_formatted dropped both.
+// every fetch, and that `libbeachcomber::Session::get_formatted_with_flags`
+// puts both on the wire. Phase 1 Round 3 bug: the CLI's session wrapper
+// dropped both.
 
 use beachcomber::cache::Cache;
-use beachcomber::client::Client;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
+use libbeachcomber::{Client, ClientConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
+
+/// A `libbeachcomber` client on `sock`, with no daemon auto-start.
+fn client_for(sock: std::path::PathBuf) -> Client {
+    Client::with_config(ClientConfig {
+        timeout: Duration::from_secs(2),
+        auto_start: false,
+        exec: false,
+    })
+    .with_socket_path(sock)
+}
 
 async fn setup_seeded() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
@@ -32,12 +45,11 @@ async fn setup_seeded() -> (TempDir, std::path::PathBuf) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn session_get_formatted_with_flags_exists_and_forwards_force() {
-    // The method must exist on Session (Task 1) and force=true must evict
-    // a non-stale seeded entry, returning the live provider value.
+async fn session_get_formatted_with_flags_forwards_force() {
+    // force=true must evict a non-stale seeded entry, returning the live
+    // provider value.
     let (_tmp, sock) = setup_seeded().await;
-    let client = Client::new(sock);
-    let mut session = client.connect().unwrap();
+    let mut session = client_for(sock).session().unwrap();
 
     let text = session
         .get_formatted_with_flags("hostname.name", None, "text", true, false)
@@ -56,8 +68,7 @@ async fn session_get_formatted_with_flags_forwards_wait() {
     // behavioral wait=true semantics (stale-re-execute) are covered in
     // tests/cli_get_wait_propagation.rs and tests/get_wait.rs.
     let (_tmp, sock) = setup_seeded().await;
-    let client = Client::new(sock);
-    let mut session = client.connect().unwrap();
+    let mut session = client_for(sock).session().unwrap();
 
     let text = session
         .get_formatted_with_flags("hostname.name", None, "text", false, true)

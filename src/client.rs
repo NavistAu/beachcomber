@@ -243,20 +243,6 @@ impl ClientSession {
         hello_to_response(self.session.hello())
     }
 
-    pub fn get(&mut self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
-        self.get_with_flags(key, path, false, false)
-    }
-
-    pub fn get_with_flags(
-        &mut self,
-        key: &str,
-        path: Option<&str>,
-        force: bool,
-        wait: bool,
-    ) -> std::io::Result<Response> {
-        combresult_to_response(self.session.get_with_flags(key, path, force, wait))
-    }
-
     pub fn put(
         &mut self,
         key: &str,
@@ -297,32 +283,6 @@ impl ClientSession {
         path: Option<&str>,
     ) -> std::io::Result<Response> {
         unit_to_response(self.session.put_null(key, path))
-    }
-
-    pub fn get_text(&mut self, key: &str, path: Option<&str>) -> std::io::Result<String> {
-        self.get_formatted(key, path, "text")
-    }
-
-    pub fn get_formatted(
-        &mut self,
-        key: &str,
-        path: Option<&str>,
-        format: &str,
-    ) -> std::io::Result<String> {
-        self.get_formatted_with_flags(key, path, format, false, false)
-    }
-
-    pub fn get_formatted_with_flags(
-        &mut self,
-        key: &str,
-        path: Option<&str>,
-        format: &str,
-        force: bool,
-        wait: bool,
-    ) -> std::io::Result<String> {
-        self.session
-            .get_formatted_with_flags(key, path, format, force, wait)
-            .map_err(comb_error_to_io)
     }
 
     /// Send a watch request. Call read_watch_event() in a loop to receive
@@ -445,32 +405,6 @@ impl Client {
         wait: bool,
     ) -> std::io::Result<Response> {
         combresult_to_response(self.inner().get_with_flags(key, path, force, wait))
-    }
-
-    pub fn get_text(&self, key: &str, path: Option<&str>) -> std::io::Result<String> {
-        self.get_formatted(key, path, "text")
-    }
-
-    pub fn get_formatted(
-        &self,
-        key: &str,
-        path: Option<&str>,
-        format: &str,
-    ) -> std::io::Result<String> {
-        self.get_formatted_with_flags(key, path, format, false, false)
-    }
-
-    pub fn get_formatted_with_flags(
-        &self,
-        key: &str,
-        path: Option<&str>,
-        format: &str,
-        force: bool,
-        wait: bool,
-    ) -> std::io::Result<String> {
-        self.inner()
-            .get_formatted_with_flags(key, path, format, force, wait)
-            .map_err(comb_error_to_io)
     }
 
     pub fn put(

@@ -1,8 +1,10 @@
 /// Integration tests for path context handling in `comb get`.
 ///
-/// These tests exercise the server-side path context (set via `ClientSession::set_context`)
-/// to verify that path-scoped queries work correctly — which is the server behaviour that
-/// the CLI disambiguation logic (split_keys_and_path) routes to.
+/// These tests exercise the server-side path context (set via
+/// `libbeachcomber::Session::set_context`, the `context` op every SDK session
+/// uses) to verify that path-scoped queries work correctly — which is the
+/// server behaviour that the CLI disambiguation logic (split_keys_and_path)
+/// routes to.
 ///
 /// Unit tests for the disambiguation logic itself live in src/main.rs
 /// under `#[cfg(test)] mod path_disambiguation_tests`.
@@ -13,9 +15,31 @@ use beachcomber::client::Client;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
+use libbeachcomber::{ClientConfig, CombResult, Session};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
+
+/// A `libbeachcomber` session on `sock`, with no daemon auto-start.
+fn session_for(sock: std::path::PathBuf) -> Session {
+    libbeachcomber::Client::with_config(ClientConfig {
+        timeout: Duration::from_secs(2),
+        auto_start: false,
+        exec: false,
+    })
+    .with_socket_path(sock)
+    .session()
+    .unwrap()
+}
+
+/// The `data` of a hit; a miss is a panic naming `what`.
+fn hit(result: CombResult, what: &str) -> serde_json::Value {
+    match result {
+        CombResult::Hit { data, .. } => data.as_value().clone(),
+        CombResult::Miss => panic!("{what}: expected a hit, got a miss"),
+    }
+}
 
 /// Set up a server with a real git repo on disk, so the git provider's
 /// `canonical_path` (which walks up looking for `.git`) actually finds a
@@ -75,14 +99,12 @@ async fn path_context_resolves_git_branch() {
         return;
     }
     let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
-    let client = Client::new(sock);
-    let mut session = client.connect().unwrap();
+    let mut session = session_for(sock);
 
     session.set_context(&repo_path).unwrap();
-    let resp = session.get("git.branch", None).unwrap();
+    let branch = hit(session.get("git.branch", None).unwrap(), "git.branch");
 
-    assert!(resp.ok, "expected ok response, got: {:?}", resp.error);
-    assert_eq!(resp.data.as_ref().unwrap(), "main");
+    assert_eq!(branch, "main");
 }
 
 /// Global providers (hostname) work regardless of path context.
@@ -93,15 +115,13 @@ async fn global_provider_ignores_path_context() {
         return;
     }
     let (_sock_tmp, sock, _repo_tmp, _repo_path) = setup_server_with_git_repo().await;
-    let client = Client::new(sock);
-    let mut session = client.connect().unwrap();
+    let mut session = session_for(sock);
 
     // Set context to a path where no git data exists.
     session.set_context("/some/other/path").unwrap();
-    let resp = session.get("hostname.name", None).unwrap();
+    let name = hit(session.get("hostname.name", None).unwrap(), "hostname.name");
 
-    assert!(resp.ok, "expected ok for global provider: {:?}", resp.error);
-    assert_eq!(resp.data.as_ref().unwrap(), "myhost");
+    assert_eq!(name, "myhost");
 }
 
 /// Querying multiple keys in one session shares the same path context.
@@ -112,19 +132,15 @@ async fn multiple_keys_share_path_context() {
         return;
     }
     let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
-    let client = Client::new(sock);
-    let mut session = client.connect().unwrap();
+    let mut session = session_for(sock);
 
     session.set_context(&repo_path).unwrap();
 
-    let branch_resp = session.get("git.branch", None).unwrap();
-    let dirty_resp = session.get("git.dirty", None).unwrap();
+    let branch = hit(session.get("git.branch", None).unwrap(), "git.branch");
+    let dirty = hit(session.get("git.dirty", None).unwrap(), "git.dirty");
 
-    assert!(branch_resp.ok);
-    assert_eq!(branch_resp.data.as_ref().unwrap(), "main");
-
-    assert!(dirty_resp.ok);
-    assert_eq!(dirty_resp.data.as_ref().unwrap(), false);
+    assert_eq!(branch, "main");
+    assert_eq!(dirty, false);
 }
 
 /// Without set_context, a path-scoped key is still queried (may return not-found).

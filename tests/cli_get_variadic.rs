@@ -1,11 +1,33 @@
 use beachcomber::cache::Cache;
-use beachcomber::client::{Client, ClientSession};
+use beachcomber::client::Client;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
+use libbeachcomber::{ClientConfig, CombError, CombResult, Session};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
+
+/// A `libbeachcomber` session on `sock`, with no daemon auto-start.
+fn session_for(sock: std::path::PathBuf) -> Session {
+    libbeachcomber::Client::with_config(ClientConfig {
+        timeout: Duration::from_secs(2),
+        auto_start: false,
+        exec: false,
+    })
+    .with_socket_path(sock)
+    .session()
+    .unwrap()
+}
+
+/// The `data` of a hit; a miss is a panic naming `what`.
+fn hit(result: CombResult, what: &str) -> serde_json::Value {
+    match result {
+        CombResult::Hit { data, .. } => data.as_value().clone(),
+        CombResult::Miss => panic!("{what}: expected a hit, got a miss"),
+    }
+}
 
 async fn setup_server() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
@@ -28,57 +50,43 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
     (tmp, sock)
 }
 
-/// Open a session and fetch multiple keys, returning the responses in order.
-async fn fetch_keys(
-    session: &mut ClientSession,
-    keys: &[&str],
-) -> Vec<beachcomber::protocol::Response> {
-    let mut results = Vec::new();
-    for key in keys {
-        let resp = session.get(key, None).unwrap();
-        results.push(resp);
-    }
-    results
+/// Fetch multiple keys on one session, returning the hits in order.
+fn fetch_keys(session: &mut Session, keys: &[&str]) -> Vec<serde_json::Value> {
+    keys.iter()
+        .map(|key| hit(session.get(key, None).unwrap(), key))
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_variadic_both_keys_succeed() {
     let (_tmp, sock) = setup_server().await;
-    let client = Client::new(sock);
-    let mut session = client.connect().unwrap();
+    let mut session = session_for(sock);
 
-    let responses = fetch_keys(&mut session, &["hostname.value", "user.value"]).await;
+    let values = fetch_keys(&mut session, &["hostname.value", "user.value"]);
 
-    assert_eq!(responses.len(), 2);
-    assert!(responses[0].ok);
-    assert_eq!(responses[0].data.as_ref().unwrap(), "myhost");
-    assert!(responses[1].ok);
-    assert_eq!(responses[1].data.as_ref().unwrap(), "alice");
+    assert_eq!(values, vec!["myhost", "alice"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_variadic_partial_failure_still_emits_successful_key() {
     let (_tmp, sock) = setup_server().await;
-    let client = Client::new(sock);
-    let mut session = client.connect().unwrap();
+    let mut session = session_for(sock);
 
     // "hostname.value" exists; "nonexistent.field" does not.
-    let resp_good = session.get("hostname.value", None).unwrap();
-    let resp_bad = session.get("nonexistent.field", None).unwrap();
-
-    assert!(resp_good.ok);
-    assert_eq!(resp_good.data.as_ref().unwrap(), "myhost");
-
-    // The server returns ok:false for the missing key rather than closing the connection,
-    // allowing the caller to continue fetching remaining keys.
-    assert!(!resp_bad.ok);
-    assert!(
-        resp_bad
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("unknown provider")
+    let good = hit(
+        session.get("hostname.value", None).unwrap(),
+        "hostname.value",
     );
+    let bad = session.get("nonexistent.field", None);
+
+    assert_eq!(good, "myhost");
+
+    // The server returns ok:false for the missing key rather than closing the
+    // connection, allowing the caller to continue fetching remaining keys.
+    match bad {
+        Err(CombError::ServerError(msg)) => assert!(msg.contains("unknown provider"), "{msg}"),
+        other => panic!("expected the daemon's rejection, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -91,11 +99,12 @@ async fn get_variadic_single_key_is_unchanged() {
     assert!(direct.ok);
     assert_eq!(direct.data.as_ref().unwrap(), "myhost");
 
-    let client2 = Client::new(sock);
-    let mut session = client2.connect().unwrap();
-    let via_session = session.get("hostname.value", None).unwrap();
-    assert!(via_session.ok);
-    assert_eq!(via_session.data.as_ref().unwrap(), "myhost");
+    let mut session = session_for(sock);
+    let via_session = hit(
+        session.get("hostname.value", None).unwrap(),
+        "hostname.value",
+    );
+    assert_eq!(via_session, "myhost");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

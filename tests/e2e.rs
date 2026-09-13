@@ -47,23 +47,6 @@ async fn e2e_get_hostname_single_field() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_get_hostname_text_format() {
-    let tmp = TempDir::new().unwrap();
-    let sock = tmp.path().join("sock");
-    let config = Config::default();
-
-    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
-    ready.await.expect("daemon ready");
-
-    let client = Client::new(sock.clone());
-    let text = client.get_text("hostname.short", None).unwrap();
-    assert!(!text.is_empty(), "Text response should not be empty");
-    assert!(!text.contains('{'), "Text format should not contain JSON");
-
-    handle.abort();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_get_user() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
