@@ -165,6 +165,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     data,
                     age_ms,
                     stale,
+                    ..
                 }) => CanonicalResponse {
                     ok: true,
                     data: Some(data.as_value().clone()),
@@ -173,7 +174,10 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     stale: Some(stale),
                     error: None,
                 },
-                Ok(CombResult::Miss) => CanonicalResponse {
+                // The canonical shape has no template half yet; a
+                // template-only node is data-less here until the fixtures
+                // that expect `status: "template"` teach every runner.
+                Ok(CombResult::Template { .. }) | Ok(CombResult::Miss) => CanonicalResponse {
                     ok: true,
                     data: None,
                     data_as_text: None,

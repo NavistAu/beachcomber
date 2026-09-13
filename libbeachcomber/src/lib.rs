@@ -7,8 +7,11 @@
 //!
 //! let client = Client::new();
 //! match client.get("git.branch", Some("/path/to/repo")) {
-//!     Ok(CombResult::Hit { data, age_ms, stale }) => {
+//!     Ok(CombResult::Hit { data, age_ms, stale, .. }) => {
 //!         println!("branch: {}", data.get_str("git.branch").unwrap_or("?"));
+//!     }
+//!     Ok(CombResult::Template { template, .. }) => {
+//!         println!("a template, not a value: {template} — render it with `resolve`");
 //!     }
 //!     Ok(CombResult::Miss) => println!("not cached yet"),
 //!     Err(e) => println!("error: {}", e),
@@ -77,22 +80,107 @@ pub fn connect_with_retry_for(path: &Path, budget: Duration) -> std::io::Result<
     }
 }
 
-/// Result of a cache query.
-#[derive(Debug)]
+/// What a raw `get` found at an address: the daemon's answer, classified.
+///
+/// A node may hold a value (`data`), a template (`template`), or both. The
+/// value is the cached half; the template is the half the *client* renders,
+/// because rendering needs the caller's environment and directory. A raw
+/// `get` hands both back as they arrived — [`resolve`] is what renders the
+/// template into the value `comb get` prints.
+#[derive(Debug, PartialEq)]
 pub enum CombResult {
-    /// Cache hit — data is available.
+    /// The node holds a value. It may also hold a template, which wins on
+    /// read when rendered (`resolve`); a raw `get` hands both back.
     Hit {
         data: CombData,
         age_ms: u128,
         stale: bool,
+        /// The template in effect at the address, if any: a string for a
+        /// leaf, an object tree for a group.
+        template: Option<serde_json::Value>,
+        /// The address left over when the template walk stopped at a string.
+        rest: Option<String>,
     },
-    /// Cache miss — provider hasn't computed this yet.
-    /// The daemon will compute it in the background; retry shortly.
+    /// The node holds only a template: an address whose value is rendered
+    /// client-side (`resolve`). Not a miss — something is stored there — and
+    /// not a hit — there is no value until it is rendered.
+    Template {
+        /// A string for a leaf, an object tree for a group.
+        template: serde_json::Value,
+        /// The address left over when the template walk stopped at a string.
+        rest: Option<String>,
+    },
+    /// Nothing is stored at the address.
     Miss,
 }
 
+impl CombResult {
+    /// True for [`Hit`](Self::Hit) only: the node holds a value.
+    pub fn is_hit(&self) -> bool {
+        matches!(self, CombResult::Hit { .. })
+    }
+
+    /// True for [`Miss`](Self::Miss) only. A [`Template`](Self::Template) is
+    /// not a miss: render it with [`resolve`].
+    pub fn is_miss(&self) -> bool {
+        matches!(self, CombResult::Miss)
+    }
+
+    /// The template half, from a `Hit` that carries one or a `Template`.
+    pub fn template(&self) -> Option<&serde_json::Value> {
+        match self {
+            CombResult::Hit { template, .. } => template.as_ref(),
+            CombResult::Template { template, .. } => Some(template),
+            CombResult::Miss => None,
+        }
+    }
+
+    /// The address left over past a template string, from either variant.
+    pub fn rest(&self) -> Option<&str> {
+        match self {
+            CombResult::Hit { rest, .. } | CombResult::Template { rest, .. } => rest.as_deref(),
+            CombResult::Miss => None,
+        }
+    }
+}
+
+/// Classify a node: `data` present is a `Hit` (the template half rides
+/// along), a template alone is a `Template`, neither is a `Miss`. `age_ms`
+/// and `stale` always accompany `data` on the wire; the defaults are never
+/// reached.
+impl From<resolve::Got> for CombResult {
+    fn from(got: resolve::Got) -> Self {
+        match got {
+            resolve::Got {
+                data: Some(value),
+                template,
+                rest,
+                age_ms,
+                stale,
+            } => CombResult::Hit {
+                data: CombData { value },
+                age_ms: age_ms.unwrap_or(0),
+                stale: stale.unwrap_or(false),
+                template,
+                rest,
+            },
+            resolve::Got {
+                data: None,
+                template: Some(template),
+                rest,
+                ..
+            } => CombResult::Template { template, rest },
+            resolve::Got {
+                data: None,
+                template: None,
+                ..
+            } => CombResult::Miss,
+        }
+    }
+}
+
 /// Parsed response data from a provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CombData {
     value: serde_json::Value,
 }
@@ -610,12 +698,18 @@ impl Client {
         self
     }
 
-    /// Query a single key. Returns Hit with data, Miss, or an error.
+    /// Query a single key, raw: the daemon's answer as it arrived, nothing
+    /// rendered. A [`CombResult::Hit`] carries the value (and the template in
+    /// effect there, if any); a [`CombResult::Template`] is a node that holds
+    /// only a template — not a miss, but not a value until [`resolve`]
+    /// renders it; a [`CombResult::Miss`] has nothing stored.
     ///
     /// Examples:
     /// - `client.get("git.branch", Some("/path/to/repo"))` — single field
     /// - `client.get("git", Some("/path/to/repo"))` — all fields
     /// - `client.get("hostname.short", None)` — global provider
+    /// - `client.get("scanline.widgets.foo", None)` on a templated address —
+    ///   `Template { template: "{{ env.SCANLINE_FOO }}", rest: None }`
     pub fn get(&self, key: &str, path: Option<&str>) -> Result<CombResult, CombError> {
         self.get_with_flags(key, path, false, false)
     }
@@ -679,7 +773,9 @@ impl Client {
     /// [`render::render_data`]). This performs a plain JSON `get` and renders
     /// the result locally (Task 1.8 retired the server-rendered wire
     /// sub-protocol this used to speak); a failed request surfaces as
-    /// `CombError::ServerError`, never as a rendered `error:` line.
+    /// `CombError::ServerError`, never as a rendered `error:` line. This is
+    /// raw like [`get`](Self::get): a template-only node renders its template
+    /// text, not the value [`resolve`] would make of it.
     pub fn get_formatted_with_flags(
         &self,
         key: &str,
@@ -690,6 +786,9 @@ impl Client {
     ) -> Result<String, CombError> {
         match self.get_with_flags(key, path, force, wait)? {
             CombResult::Hit { data, .. } => Ok(render::render_data(Some(data.as_value()), format)),
+            CombResult::Template { template, .. } => {
+                Ok(render::render_data(Some(&template), format))
+            }
             CombResult::Miss => Ok(render::render_data(None, format)),
         }
     }
@@ -1114,7 +1213,9 @@ impl Session {
     /// [`render::render_data`]). This performs a plain JSON `get` and renders
     /// the result locally (Task 1.8 retired the server-rendered wire
     /// sub-protocol this used to speak); a failed request surfaces as
-    /// `CombError::ServerError`, never as a rendered `error:` line.
+    /// `CombError::ServerError`, never as a rendered `error:` line. This is
+    /// raw like [`get`](Self::get): a template-only node renders its template
+    /// text, not the value [`resolve`] would make of it.
     pub fn get_formatted_with_flags(
         &mut self,
         key: &str,
@@ -1125,6 +1226,9 @@ impl Session {
     ) -> Result<String, CombError> {
         match self.get_with_flags(key, path, force, wait)? {
             CombResult::Hit { data, .. } => Ok(render::render_data(Some(data.as_value()), format)),
+            CombResult::Template { template, .. } => {
+                Ok(render::render_data(Some(&template), format))
+            }
             CombResult::Miss => Ok(render::render_data(None, format)),
         }
     }
@@ -1308,27 +1412,10 @@ fn check_ok(line: &str, skew: Option<&VersionSkew>) -> Result<serde_json::Value,
     Ok(resp)
 }
 
+/// Parse a `get` response into a classified [`CombResult`]: [`parse_node`]
+/// plus [`From<resolve::Got>`](CombResult::from) — one wire parser.
 fn parse_response(line: &str, skew: Option<&VersionSkew>) -> Result<CombResult, CombError> {
-    let resp = check_ok(line, skew)?;
-
-    match resp.get("data") {
-        Some(serde_json::Value::Null) | None => Ok(CombResult::Miss),
-        Some(data) => {
-            let age_ms = resp
-                .get("age_ms")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u128)
-                .unwrap_or(0);
-            let stale = resp.get("stale").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(CombResult::Hit {
-                data: CombData {
-                    value: data.clone(),
-                },
-                age_ms,
-                stale,
-            })
-        }
-    }
+    parse_node(line, skew).map(CombResult::from)
 }
 
 /// Parse a `get` response into both halves the daemon returned. Every field
@@ -1585,26 +1672,105 @@ fn which_comb() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// A `get` response carries a `template` half from Task 5 onward. The
-    /// client reads the fields it knows by name, so the extra ones are simply
-    /// not its business — the hit still parses.
-    ///
-    /// `template` reaching `CombResult` is Plan 3, not this.
+    /// `parse_response` classifies the eight response shapes of the one-tree
+    /// design §3.4: `data` present is a `Hit` carrying whatever template
+    /// half came with it; a template alone is a `Template`, with `rest` when
+    /// the walk stopped at a string; neither is a `Miss`; `ok:false` is a
+    /// server error. And it is `parse_node` plus `From<Got>` — the two
+    /// parsers cannot disagree.
     #[test]
-    fn parse_response_ignores_the_template_half() {
-        let line = r#"{"ok":true,"data":"x","template":"t","rest":"r","age_ms":1,"stale":false}"#;
-        match parse_response(line, None).expect("a hit with a template still parses") {
-            CombResult::Hit {
-                data,
-                age_ms,
-                stale,
-            } => {
-                assert_eq!(data.as_value(), &serde_json::json!("x"));
-                assert_eq!(age_ms, 1);
-                assert!(!stale);
-            }
-            CombResult::Miss => panic!("expected a hit"),
+    fn parse_response_carries_the_template_half() {
+        use serde_json::json;
+
+        let hit = |value: serde_json::Value,
+                   age_ms: u128,
+                   stale: bool,
+                   template: Option<serde_json::Value>| CombResult::Hit {
+            data: CombData::from_json(value),
+            age_ms,
+            stale,
+            template,
+            rest: None,
+        };
+        let shapes: [(&str, CombResult); 7] = [
+            (
+                r#"{"ok":true,"template":"{{ env.SCANLINE_FOO }}"}"#,
+                CombResult::Template {
+                    template: json!("{{ env.SCANLINE_FOO }}"),
+                    rest: None,
+                },
+            ),
+            (
+                r#"{"ok":true,"template":{"foo":"{{ a }}","bar":"{{ b }}"}}"#,
+                CombResult::Template {
+                    template: json!({"foo": "{{ a }}", "bar": "{{ b }}"}),
+                    rest: None,
+                },
+            ),
+            (
+                r#"{"ok":true,"data":{"lit":1},"age_ms":30,"stale":false,"template":{"theme":"t","widgets":{"foo":"f"}}}"#,
+                hit(
+                    json!({"lit": 1}),
+                    30,
+                    false,
+                    Some(json!({"theme": "t", "widgets": {"foo": "f"}})),
+                ),
+            ),
+            (
+                r#"{"ok":true,"data":"default","age_ms":812,"stale":false,"template":"{{ env.TF_WORKSPACE or cache.terraform.workspace }}"}"#,
+                hit(
+                    json!("default"),
+                    812,
+                    false,
+                    Some(json!("{{ env.TF_WORKSPACE or cache.terraform.workspace }}")),
+                ),
+            ),
+            (
+                r#"{"ok":true,"data":"feature/x","age_ms":812,"stale":true}"#,
+                hit(json!("feature/x"), 812, true, None),
+            ),
+            (
+                r#"{"ok":true,"template":"{{ {'cpu': 40, 'mem': 12} }}","rest":"cpu"}"#,
+                CombResult::Template {
+                    template: json!("{{ {'cpu': 40, 'mem': 12} }}"),
+                    rest: Some("cpu".to_string()),
+                },
+            ),
+            (r#"{"ok":true}"#, CombResult::Miss),
+        ];
+        for (line, expected) in shapes {
+            let parsed = parse_response(line, None).expect("an ok response parses");
+            assert_eq!(parsed, expected, "{line}");
+            assert_eq!(
+                CombResult::from(parse_node(line, None).unwrap()),
+                parsed,
+                "parse_response is parse_node plus From<Got>: {line}"
+            );
         }
+        match parse_response(r#"{"ok":false,"error":"invalid key"}"#, None) {
+            Err(CombError::ServerError(m)) => assert_eq!(m, "invalid key"),
+            other => panic!("a rejected key must be a server error, got {other:?}"),
+        }
+
+        // The accessors: a `Template` is neither a hit nor a miss, and both
+        // halves are reachable from whichever variant carries them.
+        let template_only =
+            parse_response(r#"{"ok":true,"template":"{{ x }}","rest":"cpu"}"#, None).unwrap();
+        assert!(!template_only.is_hit());
+        assert!(!template_only.is_miss());
+        assert_eq!(template_only.template(), Some(&json!("{{ x }}")));
+        assert_eq!(template_only.rest(), Some("cpu"));
+        let both = parse_response(
+            r#"{"ok":true,"data":1,"age_ms":0,"stale":false,"template":"{{ 2 }}"}"#,
+            None,
+        )
+        .unwrap();
+        assert!(both.is_hit());
+        assert_eq!(both.template(), Some(&json!("{{ 2 }}")));
+        assert_eq!(both.rest(), None);
+        let miss = parse_response(r#"{"ok":true}"#, None).unwrap();
+        assert!(miss.is_miss());
+        assert_eq!(miss.template(), None);
     }
 
     /// `parse_node` keeps both halves: the eight response shapes of the

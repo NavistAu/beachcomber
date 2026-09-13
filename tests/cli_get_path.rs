@@ -33,10 +33,11 @@ fn session_for(sock: std::path::PathBuf) -> Session {
     .unwrap()
 }
 
-/// The `data` of a hit; a miss is a panic naming `what`.
+/// The `data` of a hit; anything else is a panic naming `what`.
 fn hit(result: CombResult, what: &str) -> serde_json::Value {
     match result {
         CombResult::Hit { data, .. } => data.as_value().clone(),
+        CombResult::Template { .. } => panic!("{what}: expected a hit, got a template"),
         CombResult::Miss => panic!("{what}: expected a hit, got a miss"),
     }
 }

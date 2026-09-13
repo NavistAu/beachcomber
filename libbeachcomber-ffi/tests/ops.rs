@@ -113,6 +113,76 @@ fn put_get_put_null_round_trip() {
     unsafe { bc_client_free(client) };
 }
 
+/// The `get` envelope carries the template half (one-tree design §3.4, plan
+/// 3 design decision 3): keys are added, never changed. A template-only node
+/// is the null triple plus `template`; a valued node with a template has
+/// both; a data-only node and a miss are exactly what they were.
+#[test]
+fn get_envelope_carries_the_template_half() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let keys = |v: &serde_json::Value| -> Vec<String> {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    };
+
+    let template_ns = cs("p:template");
+    let template_data = cs(r#"{"t":"{{ 1 }}","v":"{{ 2 }}"}"#);
+    let ns = cs("p");
+    let data = cs(r#"{"v":1,"d":"plain"}"#);
+    for (key, body) in [(&template_ns, &template_data), (&ns, &data)] {
+        let put_v = read(unsafe {
+            bc_put(
+                client,
+                key.as_ptr(),
+                body.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+            )
+        });
+        assert_eq!(put_v["ok"], serde_json::json!(true), "{put_v}");
+    }
+
+    let template_only = cs("p.t");
+    let v = read(unsafe { bc_get(client, template_only.as_ptr(), ptr::null(), 0) });
+    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+    assert_eq!(keys(&v["data"]), ["age_ms", "data", "stale", "template"]);
+    assert_eq!(v["data"]["data"], serde_json::Value::Null);
+    assert_eq!(v["data"]["template"], serde_json::json!("{{ 1 }}"));
+
+    let past_a_string = cs("p.t.x");
+    let v = read(unsafe { bc_get(client, past_a_string.as_ptr(), ptr::null(), 0) });
+    assert_eq!(
+        keys(&v["data"]),
+        ["age_ms", "data", "rest", "stale", "template"]
+    );
+    assert_eq!(v["data"]["rest"], serde_json::json!("x"));
+
+    let both = cs("p.v");
+    let v = read(unsafe { bc_get(client, both.as_ptr(), ptr::null(), 0) });
+    assert_eq!(keys(&v["data"]), ["age_ms", "data", "stale", "template"]);
+    assert_eq!(v["data"]["data"], serde_json::json!(1));
+    assert_eq!(v["data"]["template"], serde_json::json!("{{ 2 }}"));
+    assert!(v["data"]["age_ms"].is_number(), "{v}");
+    assert!(v["data"]["stale"].is_boolean(), "{v}");
+
+    let data_only = cs("p.d");
+    let v = read(unsafe { bc_get(client, data_only.as_ptr(), ptr::null(), 0) });
+    assert_eq!(keys(&v["data"]), ["age_ms", "data", "stale"]);
+    assert_eq!(v["data"]["data"], serde_json::json!("plain"));
+
+    let miss = cs("p.nope");
+    let v = read(unsafe { bc_get(client, miss.as_ptr(), ptr::null(), 0) });
+    assert_eq!(keys(&v["data"]), ["age_ms", "data", "stale"]);
+    assert_eq!(
+        v["data"],
+        serde_json::json!({"data": null, "age_ms": null, "stale": null})
+    );
+
+    unsafe { bc_client_free(client) };
+}
+
 #[test]
 fn refresh_returns_ok_envelope() {
     let daemon = DaemonGuard::spawn();

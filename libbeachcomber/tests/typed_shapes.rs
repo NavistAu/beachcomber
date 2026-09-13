@@ -55,8 +55,88 @@ fn put_with_data_then_get_round_trips() {
         CombResult::Hit { data, .. } => {
             assert_eq!(data.as_text().as_deref(), Some("purple"));
         }
-        CombResult::Miss => panic!("put followed by get should not miss"),
+        other => panic!("put followed by get should hit, got {other:?}"),
     }
+}
+
+/// A raw `get` carries the template half the daemon holds at the address
+/// (one-tree design §3.4, §5.3): a template-only node is `Template` — not a
+/// hit, not a miss — a valued node is `Hit` with whatever template rides
+/// along, and past a template string the leftover address is `rest`.
+#[test]
+fn get_carries_the_template_half() {
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
+
+    client
+        .put(
+            "p:template",
+            serde_json::json!({"t": "{{ 1 }}"}),
+            None,
+            None,
+        )
+        .expect("put template");
+    client
+        .put("p", serde_json::json!({"v": 1}), None, None)
+        .expect("put data");
+
+    let template_only = client.get("p.t", None).expect("get p.t");
+    assert_eq!(
+        template_only,
+        CombResult::Template {
+            template: serde_json::json!("{{ 1 }}"),
+            rest: None,
+        }
+    );
+    assert!(!template_only.is_hit());
+    assert!(!template_only.is_miss());
+    assert_eq!(
+        template_only.template(),
+        Some(&serde_json::json!("{{ 1 }}"))
+    );
+
+    match client.get("p.v", None).expect("get p.v") {
+        CombResult::Hit { data, template, .. } => {
+            assert_eq!(data.as_value(), &serde_json::json!(1));
+            assert_eq!(template, None);
+        }
+        other => panic!("a valued node is a hit, got {other:?}"),
+    }
+
+    client
+        .put(
+            "p:template",
+            serde_json::json!({"v": "{{ 2 }}"}),
+            None,
+            None,
+        )
+        .expect("put template over data");
+    match client.get("p.v", None).expect("get p.v with both halves") {
+        CombResult::Hit {
+            data,
+            template,
+            rest,
+            ..
+        } => {
+            assert_eq!(data.as_value(), &serde_json::json!(1));
+            assert_eq!(template, Some(serde_json::json!("{{ 2 }}")));
+            assert_eq!(rest, None);
+        }
+        other => panic!("both halves is still a hit, got {other:?}"),
+    }
+
+    assert_eq!(
+        client.get("p.nope", None).expect("get p.nope"),
+        CombResult::Miss
+    );
+
+    assert_eq!(
+        client.get("p.t.x", None).expect("get p.t.x"),
+        CombResult::Template {
+            template: serde_json::json!("{{ 1 }}"),
+            rest: Some("x".to_string()),
+        }
+    );
 }
 
 #[test]

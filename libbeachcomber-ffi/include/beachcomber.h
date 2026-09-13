@@ -82,9 +82,21 @@ BcClient *bc_client_new(const char *options_json);
 void bc_client_free(BcClient *client);
 
 /**
- * Query a single key. `path` is nullable (global providers). `flags` is a
- * bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit set yields a
- * `bad_flags` envelope.
+ * Query a single key, raw. `path` is nullable (global providers). `flags` is
+ * a bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit set yields
+ * a `bad_flags` envelope.
+ *
+ * The envelope's `data` object is the node as the daemon holds it — nothing
+ * rendered; `bc_resolve` is what renders a template into a value:
+ *
+ * | node               | `data`   | `age_ms`/`stale` | `template`        | `rest`      |
+ * |--------------------|----------|------------------|-------------------|-------------|
+ * | value (a hit)      | value    | set              | only if templated | only if set |
+ * | template only      | `null`   | `null`           | string or tree    | only if set |
+ * | nothing (a miss)   | `null`   | `null`           | absent            | absent      |
+ *
+ * A template-only node is not a miss: something is stored there, and it
+ * has no value until rendered.
  *
  * # Safety
  * `client` must be a valid pointer from [`bc_client_new`]; `key` must be
@@ -223,8 +235,15 @@ BcSession *bc_session_open(BcClient *client);
 void bc_session_close(BcSession *session);
 
 /**
- * Query a single key on this session's persistent connection. `flags` is
- * the same [`BC_GET_FORCE`] / [`BC_GET_WAIT`] bitmask [`bc_get`] takes.
+ * Query a single key on this session's persistent connection, raw. `flags`
+ * is the same [`BC_GET_FORCE`] / [`BC_GET_WAIT`] bitmask [`bc_get`] takes,
+ * and the envelope's `data` object has the same three shapes:
+ *
+ * | node               | `data`   | `age_ms`/`stale` | `template`        | `rest`      |
+ * |--------------------|----------|------------------|-------------------|-------------|
+ * | value (a hit)      | value    | set              | only if templated | only if set |
+ * | template only      | `null`   | `null`           | string or tree    | only if set |
+ * | nothing (a miss)   | `null`   | `null`           | absent            | absent      |
  *
  * # Safety
  * `session` must be a valid pointer from [`bc_session_open`]; `key` must

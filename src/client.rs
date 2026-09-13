@@ -79,7 +79,12 @@ fn combresult_to_response(r: Result<CombResult, CombError>) -> std::io::Result<R
             data,
             age_ms,
             stale,
-        } => Response::ok(data.as_value().clone(), age_ms, stale),
+            template,
+            rest,
+        } => Response::ok(data.as_value().clone(), age_ms, stale).with_template(template, rest),
+        CombResult::Template { template, rest } => {
+            Response::miss().with_template(Some(template), rest)
+        }
         CombResult::Miss => Response::miss(),
     })
 }

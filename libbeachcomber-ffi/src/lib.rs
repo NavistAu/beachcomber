@@ -175,23 +175,35 @@ unsafe fn optional_str<'a>(ptr: *const c_char) -> Result<Option<&'a str>, FfiErr
         })
 }
 
+/// The `get` envelope's inner object. `data`/`age_ms`/`stale` are always
+/// present (null on anything but a hit); `template` and `rest` appear only
+/// when the node carries them — so a data-only hit and a miss are unchanged
+/// from before the template half existed.
 fn combresult_to_json(result: CombResult) -> serde_json::Value {
-    match result {
+    let mut inner = match &result {
         CombResult::Hit {
             data,
             age_ms,
             stale,
+            ..
         } => serde_json::json!({
             "data": data.as_value(),
-            "age_ms": age_ms as u64,
+            "age_ms": *age_ms as u64,
             "stale": stale,
         }),
-        CombResult::Miss => serde_json::json!({
+        CombResult::Template { .. } | CombResult::Miss => serde_json::json!({
             "data": null,
             "age_ms": null,
             "stale": null,
         }),
+    };
+    if let Some(template) = result.template() {
+        inner["template"] = template.clone();
     }
+    if let Some(rest) = result.rest() {
+        inner["rest"] = serde_json::Value::String(rest.to_string());
+    }
+    inner
 }
 
 fn cache_row_to_json(r: &CacheRow) -> serde_json::Value {
@@ -262,9 +274,21 @@ fn introspect_subject_from_str(name: &str) -> Result<IntrospectSubject, FfiError
     }
 }
 
-/// Query a single key. `path` is nullable (global providers). `flags` is a
-/// bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit set yields a
-/// `bad_flags` envelope.
+/// Query a single key, raw. `path` is nullable (global providers). `flags` is
+/// a bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit set yields
+/// a `bad_flags` envelope.
+///
+/// The envelope's `data` object is the node as the daemon holds it — nothing
+/// rendered; `bc_resolve` is what renders a template into a value:
+///
+/// | node               | `data`   | `age_ms`/`stale` | `template`        | `rest`      |
+/// |--------------------|----------|------------------|-------------------|-------------|
+/// | value (a hit)      | value    | set              | only if templated | only if set |
+/// | template only      | `null`   | `null`           | string or tree    | only if set |
+/// | nothing (a miss)   | `null`   | `null`           | absent            | absent      |
+///
+/// A template-only node is not a miss: something is stored there, and it
+/// has no value until rendered.
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `key` must be
@@ -621,8 +645,15 @@ pub unsafe extern "C" fn bc_session_close(session: *mut BcSession) {
     drop(unsafe { Box::from_raw(session) });
 }
 
-/// Query a single key on this session's persistent connection. `flags` is
-/// the same [`BC_GET_FORCE`] / [`BC_GET_WAIT`] bitmask [`bc_get`] takes.
+/// Query a single key on this session's persistent connection, raw. `flags`
+/// is the same [`BC_GET_FORCE`] / [`BC_GET_WAIT`] bitmask [`bc_get`] takes,
+/// and the envelope's `data` object has the same three shapes:
+///
+/// | node               | `data`   | `age_ms`/`stale` | `template`        | `rest`      |
+/// |--------------------|----------|------------------|-------------------|-------------|
+/// | value (a hit)      | value    | set              | only if templated | only if set |
+/// | template only      | `null`   | `null`           | string or tree    | only if set |
+/// | nothing (a miss)   | `null`   | `null`           | absent            | absent      |
 ///
 /// # Safety
 /// `session` must be a valid pointer from [`bc_session_open`]; `key` must
