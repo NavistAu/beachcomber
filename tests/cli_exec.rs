@@ -2,8 +2,8 @@
 //! `exec()` enabled — the CLI user already has a shell, so `exec()` is
 //! available to both surfaces.
 //!
-//! The `eval` test uses the no-daemon harness `tests/cli_eval.rs`
-//! establishes: a bogus `BEACHCOMBER_SOCKET` proves no daemon is contacted.
+//! `comb` always requires the daemon (design §2, outcome 22), so the `eval`
+//! test below forks a real one into a temp socket, same as `comb get` would.
 //! The `get` tests declare their template through `comb put <p>:template`
 //! against a test daemon, the one way a template exists.
 

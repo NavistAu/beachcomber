@@ -1,54 +1,167 @@
-//! End-to-end tests for `comb eval`: env.* injection and daemon-skip behavior.
+//! End-to-end tests for `comb eval`: it is a client of
+//! `libbeachcomber::resolve`, exactly as `comb get` is, so every ref inside
+//! its template — `env.*`, a plain `provider.field`, a `cache.*` ref, a
+//! nested template field — resolves through the one resolver. `comb` always
+//! requires the daemon (design §2, outcome 22): there is no source that
+//! skips starting one, `env.*`-only included.
 //!
-//! Task 3 deleted the hand-rolled `find_eval_template_pairs` scanner these
-//! tests used to exercise directly; reference discovery is now
-//! `libbeachcomber::eval::discover_refs`, covered in
-//! `libbeachcomber/tests/eval_classify.rs` and `tests/template.rs`.
+//! Reference discovery is `libbeachcomber::eval::discover_refs`, covered in
+//! `libbeachcomber/tests/eval_classify.rs` and `tests/template.rs`. The
+//! bulk of `eval`'s render-contract tests (literal text, typed single-tag
+//! results, the `default` filter on a miss, …) live in `tests/cli_golden.rs`.
 
-// ── #2: eval resolves virtual fields (end-to-end via the real binary) ─────────
+mod common;
 
-/// eval resolves a client-side virtual field (rather than querying the daemon for
-/// a field that no longer exists after the P1 rename). Uses `aws.profile`
-/// (`env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE`) — a pure-env
-/// virtual cascade with no daemon dependency, so the test needs no daemon and is
-/// deterministic on CI. Before the fix, eval sent `aws.profile` to the daemon
-/// (where it does not exist) and rendered undefined; now it evaluates the
-/// virtual cascade client-side. The bogus socket asserts no daemon is contacted.
-#[test]
-fn eval_resolves_virtual_field_from_env() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let bogus_sock = dir.path().join("nonexistent.sock");
+use common::daemon::TestDaemon;
+use common::socket::IsolatedSocket;
+
+/// A `comb` at `/`, pointed at `d`'s socket and its temp `$HOME`/config dir.
+fn comb(d: &TestDaemon) -> assert_cmd::Command {
     let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &bogus_sock)
+    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
         .env("RUST_LOG", "error")
+        .env("HOME", &d.home)
+        .env("XDG_CONFIG_HOME", &d.xdg)
+        .current_dir("/");
+    cmd
+}
+
+// ── outcome 22: `comb eval` always starts the daemon ─────────────────────────
+
+/// Stops the daemon `comb eval` started on its own, so a test never leaves
+/// one behind: `ensure_daemon` forks without `--exit-with-parent`.
+struct SpawnedDaemon {
+    socket: IsolatedSocket,
+}
+
+impl Drop for SpawnedDaemon {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
+            .env("RUST_LOG", "error")
+            .args(["kill", "--socket"])
+            .arg(&self.socket.path)
+            .output();
+    }
+}
+
+/// A source needing only `env.*` still starts the daemon: `comb` always
+/// requires one (design §2), no source is exempt. Before this task, an
+/// empty daemon-ref closure skipped `ensure_daemon` entirely.
+#[test]
+fn eval_starts_the_daemon() {
+    let guard = SpawnedDaemon {
+        socket: IsolatedSocket::new(),
+    };
+    let home = guard.socket.dir.path().join("home");
+    let xdg = guard.socket.dir.path().join("xdg");
+    std::fs::create_dir_all(&home).unwrap();
+    assert!(!guard.socket.path.exists(), "no daemon before eval runs");
+
+    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
+    cmd.env("BEACHCOMBER_SOCKET", &guard.socket.path)
+        .env("RUST_LOG", "error")
+        .env("FOO", "hi")
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &xdg)
+        .args(["eval", "{{ env.FOO }}"]);
+    cmd.assert().success().stdout(predicates::str::diff("hi"));
+
+    assert!(
+        guard.socket.path.exists(),
+        "comb eval must start the daemon (outcome 22)"
+    );
+}
+
+// ── refs resolve through the same daemon-served template store `get` uses ────
+
+/// `aws.profile` is a managed default (`defaults/aws.toml`, seeded by every
+/// daemon on start) — a template served under `aws:template`, not a
+/// hand-declared field. `eval` fetches it from the daemon and renders it with
+/// the calling shell's environment, same as `comb get aws.profile` would.
+#[test]
+fn eval_resolves_daemon_served_template_from_env() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
         .env("AWS_PROFILE", "prod-account")
-        .env("HOME", dir.path())
-        .env("XDG_CONFIG_HOME", dir.path().join("cfg"))
-        .args(["eval", "{{ aws.profile }}"]);
-    cmd.assert()
+        .args(["eval", "{{ aws.profile }}"])
+        .assert()
         .success()
         .stdout(predicates::str::contains("prod-account"));
 }
 
-/// A template referencing only env.* never starts/contacts the daemon, even with
-/// an unstartable socket path (parent is a regular file).
+/// `comb eval '{{ scanline.widgets.foo }}'` resolves a field nested two
+/// levels inside a stored template exactly as `comb get scanline.widgets.foo`
+/// does (design §3.1's worked example) — the two must agree byte-for-byte.
 #[test]
-fn eval_env_only_skips_daemon() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let blocker = dir.path().join("blocker");
-    std::fs::write(&blocker, b"not a dir").unwrap();
-    let unstartable = blocker.join("sock");
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &unstartable)
-        .env("RUST_LOG", "error")
-        .env("FOO", "hi")
-        .env("HOME", dir.path())
-        .env("XDG_CONFIG_HOME", dir.path().join("cfg"))
-        .args(["eval", "{{ env.FOO }}"]);
-    // No daemon needed → renders despite an unstartable socket.
-    cmd.assert()
+fn eval_of_nested_template_field_matches_get() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args([
+            "put",
+            "scanline:template",
+            r#"{"widgets":{"foo":"{{ env.SCANLINE_FOO }}"}}"#,
+        ])
+        .assert()
+        .success();
+
+    let get_out = comb(&d)
+        .env("SCANLINE_FOO", "hi")
+        .args(["get", "scanline.widgets.foo"])
+        .output()
+        .unwrap();
+    let get_out = String::from_utf8(get_out.stdout).unwrap();
+    assert_eq!(get_out, "hi");
+
+    comb(&d)
+        .env("SCANLINE_FOO", "hi")
+        .args(["eval", "{{ scanline.widgets.foo }}"])
+        .assert()
         .success()
-        .stdout(predicates::str::contains("hi"));
+        .stdout(predicates::str::diff(get_out));
+}
+
+/// A ref the daemon rejects — `nope` names no registered provider, no `put`,
+/// no template — is a missing ref inside a template, not an error: it binds
+/// nothing, so `or` falls through to its other side (canon: a missing ref is
+/// falsy at any depth).
+#[test]
+fn eval_rejected_ref_is_falsy() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["eval", r#"{{ cache.nope.x or "fb" }}"#])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("fb"));
+}
+
+/// A source that does not compile is the caller's to fix: `1 +` is not a
+/// valid minijinja expression, so `eval` exits 2 naming the failure as a
+/// compile error rather than trying to render anything.
+#[test]
+fn eval_compile_error_exits_2_naming_it() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["eval", "{{ 1 + }}"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("compile error"));
+}
+
+/// `comb eval` runs with `allow_exec = true` — the CLI user already has a
+/// shell, so `exec()` is available to it, same as `comb get`.
+#[test]
+fn eval_exec_call_is_enabled_for_the_cli() {
+    let d = TestDaemon::spawn();
+
+    comb(&d)
+        .args(["eval", r#"{{ exec("printf", "x") }}"#])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("x"));
 }
 
 /// `comb eval`'s output goes through `render::render_data`, which is a bare
@@ -58,16 +171,12 @@ fn eval_env_only_skips_daemon() {
 /// version of it.
 #[test]
 fn eval_fg_filter_escapes_pass_through_unstripped() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let bogus_sock = dir.path().join("nonexistent.sock");
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &bogus_sock)
-        .env("RUST_LOG", "error")
+    let d = TestDaemon::spawn();
+
+    comb(&d)
         .env("FOO", "hi")
-        .env("HOME", dir.path())
-        .env("XDG_CONFIG_HOME", dir.path().join("cfg"))
-        .args(["eval", "{{ env.FOO | fg('#00ff00') }}"]);
-    cmd.assert()
+        .args(["eval", "{{ env.FOO | fg('#00ff00') }}"])
+        .assert()
         .success()
         .stdout(predicates::str::contains("\x1b[38;2;0;255;0mhi\x1b[0m"));
 }

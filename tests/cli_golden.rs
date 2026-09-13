@@ -351,24 +351,6 @@ fn golden_init_prints_or_writes_config() {
 // same renderer `comb get -f text` uses — so `comb eval '{{ p.f }}'` and
 // `comb get p.f` agree on how a value looks.
 
-/// A `comb` command with an isolated, empty config dir, so the ambient
-/// `~/.config/beachcomber/config.toml` cannot leak virtual fields into a test.
-/// `cfg` may hold a `beachcomber/config.toml` written by the caller.
-fn comb_with_config(d: &TestDaemon, cfg: &std::path::Path) -> assert_cmd::Command {
-    let mut cmd = comb(d);
-    cmd.env("XDG_CONFIG_HOME", cfg);
-    cmd
-}
-
-/// Write `body` as the beachcomber config inside `dir`, returning the
-/// `XDG_CONFIG_HOME` to hand to [`comb_with_config`].
-fn write_config(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
-    let cfg = dir.join("cfg");
-    std::fs::create_dir_all(cfg.join("beachcomber")).unwrap();
-    std::fs::write(cfg.join("beachcomber").join("config.toml"), body).unwrap();
-    cfg
-}
-
 #[test]
 fn eval_single_tag_prints_raw_string() {
     let d = TestDaemon::spawn();
@@ -494,58 +476,42 @@ fn get_of_a_template_written_with_tags_renders_it() {
         .assert()
         .success()
         .stdout(predicates::str::diff("from-env"));
+
+    // `comb eval '{{ x.y }}'` resolves the same ref through the same
+    // library resolver, so it renders the identical value `get` does.
+    comb(&d)
+        .env("A", "from-env")
+        .args(["eval", "{{ x.y }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("from-env"));
 }
 
 #[test]
 fn eval_nested_virtual_dependency_is_fetched() {
     let d = TestDaemon::spawn();
-    let dir = tempfile::TempDir::new().unwrap();
-    let cfg = write_config(
-        dir.path(),
-        r#"
-[providers.x]
-virtual.a = "{{ b.y or cache.c.z }}"
 
-[providers.b]
-virtual.y = "{{ cache.d.w }}"
-"#,
-    );
-
+    // `x.a` is a template naming `b.y`, itself a template naming `cache.d.w`:
+    // the resolver must reach through two levels of stored template and
+    // actually fetch `d.w`. `cache.c.z` names no such provider and is falsy.
+    comb(&d)
+        .args(["put", "x:template.a", r#""{{ b.y or cache.c.z }}""#])
+        .assert()
+        .success();
+    comb(&d)
+        .args(["put", "b:template.y", r#""{{ cache.d.w }}""#])
+        .assert()
+        .success();
     comb(&d)
         .args(["put", "d", r#"{"w":"deep-value"}"#])
         .assert()
         .success();
 
-    // `x.a` → `b.y` (virtual) → `cache.d.w`: the daemon-ref closure must reach
-    // through two levels of virtual field and actually fetch `d.w`.
-    comb_with_config(&d, &cfg)
+    comb(&d)
         .args(["eval", "{{ x.a }}"])
         .assert()
         .success()
         .stdout(predicates::str::diff("deep-value"));
-}
-
-#[test]
-fn eval_env_only_template_does_not_need_daemon() {
-    // No daemon at all: the socket path's parent is a regular file, so one
-    // cannot even be started. A source referencing only `env.*` has no daemon
-    // refs, so `ensure_daemon` is never called.
-    let dir = tempfile::TempDir::new().unwrap();
-    let blocker = dir.path().join("blocker");
-    std::fs::write(&blocker, b"not a dir").unwrap();
-    let unstartable = blocker.join("sock");
-
-    assert_cmd::Command::cargo_bin("comb")
-        .unwrap()
-        .env("BEACHCOMBER_SOCKET", &unstartable)
-        .env("RUST_LOG", "error")
-        .env("HOME", dir.path())
-        .env("XDG_CONFIG_HOME", dir.path().join("cfg"))
-        .env("FOO", "hi")
-        .args(["eval", "env.FOO is {{ env.FOO }}"])
-        .assert()
-        .success()
-        .stdout(predicates::str::diff("env.FOO is hi"));
 }
 
 // ── -f fmt and the status formatter ──────────────────────────────────────────
