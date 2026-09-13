@@ -217,6 +217,7 @@ def _run_op(
 _KNOWN_EXPECT_KEYS = {
     "status", "data_type", "data_equals", "data_as_text", "data_contains_field",
     "data_field_equals", "age_ms_present", "stale", "error_contains",
+    "template_equals", "rest_equals",
 }
 
 # Ops this runner's binding can execute. A fixture using any op outside this
@@ -345,6 +346,24 @@ def _check_expect(
                     f"expected stale={expect['stale']!r} but got {actual_stale!r}"
                 )
 
+        failures.extend(_check_template_half(expect, result))
+
+    elif status == "template":
+        # A template-only node: no data, a template in effect. Neither a
+        # hit nor a miss — `resolve` renders it.
+        if error is not None:
+            failures.append(f"expected template but got error: {error!r}")
+            return failures
+        from libbeachcomber.result import CombResult
+        if not isinstance(result, CombResult):
+            failures.append(f"expected CombResult for template, got {type(result).__name__}")
+            return failures
+        if result.is_hit:
+            failures.append(f"expected template-only but data was present: {result.data!r}")
+        if result.template is None:
+            failures.append("expected a template but none was present")
+        failures.extend(_check_template_half(expect, result))
+
     elif status == "error":
         if error is None:
             failures.append(f"expected an error but op succeeded with result: {result!r}")
@@ -360,12 +379,32 @@ def _check_expect(
             failures.append(f"expected miss but got error: {error!r}")
         else:
             from libbeachcomber.result import CombResult
-            if isinstance(result, CombResult) and result.is_hit:
-                failures.append(f"expected cache miss but got hit with data: {result.data!r}")
+            if isinstance(result, CombResult) and not result.is_miss:
+                failures.append(
+                    f"expected cache miss but got data={result.data!r} template={result.template!r}"
+                )
 
     else:
         failures.append(f"unknown expect status: {status!r}")
 
+    return failures
+
+
+def _check_template_half(expect: dict[str, Any], result: Any) -> list[str]:
+    """`template_equals` / `rest_equals` against a CombResult's template half."""
+    from libbeachcomber.result import CombResult
+
+    failures: list[str] = []
+    if "template_equals" in expect:
+        actual = result.template if isinstance(result, CombResult) else None
+        if actual != expect["template_equals"]:
+            failures.append(
+                f"expected template == {expect['template_equals']!r} but got {actual!r}"
+            )
+    if "rest_equals" in expect:
+        actual = result.rest if isinstance(result, CombResult) else None
+        if actual != expect["rest_equals"]:
+            failures.append(f"expected rest == {expect['rest_equals']!r} but got {actual!r}")
     return failures
 
 

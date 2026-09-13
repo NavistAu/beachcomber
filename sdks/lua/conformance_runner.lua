@@ -162,7 +162,7 @@ local function run_op(client, descriptor, resolve_ctx)
   elseif op == "get" then
     local r, err = client:get_with_flags(args.key, args.path, args.force, args.wait)
     if not r then return fail(err) end
-    return { ok = true, data = r.data, age_ms = r.age_ms, stale = r.stale }
+    return { ok = true, data = r.data, age_ms = r.age_ms, stale = r.stale, template = r.template, rest = r.rest }
 
   elseif op == "refresh" then
     local ok, err = client:refresh(args.key, args.path)
@@ -256,8 +256,14 @@ end
 local KNOWN_EXPECT_KEYS = {
   status = true, data_type = true, data_equals = true, data_as_text = true,
   data_contains_field = true, data_field_equals = true, age_ms_present = true,
-  stale = true, error_contains = true,
+  stale = true, error_contains = true, template_equals = true, rest_equals = true,
 }
+
+--- True when the fixture asserts anything about the template half of a
+-- `get` — the `template` status or either template expectation key.
+local function asserts_template_half(expect)
+  return expect.status == "template" or expect.template_equals ~= nil or expect.rest_equals ~= nil
+end
 
 --- @return true, or false, reason_string
 local function check_expect(resp, expect)
@@ -285,6 +291,21 @@ local function check_expect(resp, expect)
     end
     if resp.data ~= nil then
       return false, "status=miss expected but data was present: " .. tostring(resp.data)
+    end
+    if resp.template ~= nil then
+      return false, "status=miss expected but a template was present: " .. tostring(resp.template)
+    end
+  elseif status == "template" then
+    -- A template-only node: no data, a template in effect. Neither a hit
+    -- nor a miss — `resolve` renders it.
+    if not resp.ok then
+      return false, "status=template expected but response was error: " .. tostring(resp.error and resp.error.message)
+    end
+    if resp.data ~= nil then
+      return false, "status=template expected but data was present: " .. tostring(resp.data)
+    end
+    if resp.template == nil then
+      return false, "status=template expected but no template was present"
     end
   elseif status == "error" then
     if resp.ok then
@@ -351,6 +372,18 @@ local function check_expect(resp, expect)
     end
   end
 
+  if expect.template_equals ~= nil then
+    if resp.template == nil or not deep_equal(resp.template, expect.template_equals) then
+      return false, "template_equals failed: expected " .. tostring(expect.template_equals) .. ", got " .. tostring(resp.template)
+    end
+  end
+
+  if expect.rest_equals ~= nil then
+    if resp.rest ~= expect.rest_equals then
+      return false, "rest_equals=" .. tostring(expect.rest_equals) .. " expected but got " .. tostring(resp.rest)
+    end
+  end
+
   return true
 end
 
@@ -377,6 +410,17 @@ local function run_fixture(fixture)
       stop_daemon(guard)
       return "fail", string.format("setup step %d (%s) failed: %s", i, step.op, tostring(resp.error and resp.error.message))
     end
+  end
+
+  -- The subprocess transport cannot see the template half of a node (see
+  -- beachcomber.subprocess_backend's header): its `get` is not
+  -- unsupported — it answers, with `template = nil` — so a fixture that
+  -- asserts the template half is skipped here explicitly rather than
+  -- failing on a transport limit or passing vacuously.
+  if fixture.test.op == "get" and asserts_template_half(fixture.expect) and client:transport() == "subprocess" then
+    client:close()
+    stop_daemon(guard)
+    return "skip", "the subprocess transport cannot see the template half of a get"
   end
 
   local resp = run_op(client, fixture.test, resolve_ctx)

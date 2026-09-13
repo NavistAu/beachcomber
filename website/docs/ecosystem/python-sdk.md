@@ -90,7 +90,7 @@ client = Client(exec=True)   # templates this client resolves may call exec(); o
 
 #### `client.get(key, path=None)`
 
-Read a cached value. Returns a `Result`.
+Read a node raw — both halves, nothing rendered. Returns a `Result` (see below).
 
 #### `client.resolve(key, cwd, env=None)` / `client.eval(template_str, cwd, env=None)`
 
@@ -130,12 +130,17 @@ Returns a context manager that yields a `Session` for persistent connections.
 
 ### `Result`
 
+`get` returns the node as the daemon holds it — both halves, nothing rendered. A node may hold a cached value (`data`), a template (`template`), or both. A template-only result is neither a hit nor a miss: it is an address whose value `resolve` renders — `get` is the raw half, `resolve(key, cwd, env)` is how you get the value.
+
 | Attribute | Type | Description |
 |---|---|---|
 | `is_hit` | `bool` | `True` when the cache had a value |
-| `data` | `Any` | Cached value (scalar or dict) |
+| `is_miss` | `bool` | `True` when nothing is stored at the address: no value **and** no template |
+| `data` | `Any` | Cached value (scalar or dict); `None` when nothing is cached |
 | `age_ms` | `int` | Cache age in milliseconds |
 | `stale` | `bool` | Whether the value is stale |
+| `template` | `Any` | The template in effect at the address, unrendered: a string for a leaf, a dict for a group; `None` when none is in effect |
+| `rest` | `Optional[str]` | The address left over when the template walk stopped at a string — `get("p.t.x")` where `p.t` is a template string gives the template of `p.t` and `rest == "x"` |
 
 For full provider results, `result["field"]` delegates to the underlying dict.
 

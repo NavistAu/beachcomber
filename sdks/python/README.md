@@ -49,6 +49,20 @@ client.refresh("git", path="/path/to/repo")
 status = client.status()
 ```
 
+## The `get` result
+
+`get` returns the node as the daemon holds it — both halves, nothing
+rendered. `CombResult` carries `data` (the cached value, `None` when nothing
+is cached), `age_ms`/`stale` (meaningful only with `data`), `template` (the
+template in effect at the address, unrendered: a string for a leaf, a dict
+for a group; `None` when none is in effect) and `rest` (the address left
+over when the template walk stopped at a string — `get("p.t.x")` where
+`p.t` is a template string gives `template` of `p.t` and `rest == "x"`).
+`is_hit` is "data present"; `is_miss` is "no data **and** no template". A
+template-only result is neither: it is an address whose value `resolve`
+renders — `get` is the raw half, `resolve(key, cwd, env)` is how you get the
+value.
+
 ## Sessions
 
 For multiple queries use a session to reuse a single connection:

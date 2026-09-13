@@ -158,12 +158,12 @@ if (!fs.existsSync(DIST_CLIENT)) {
    * Canonical response shape used by expectation checking.
    * Mirrors the Rust conformance runner's CanonicalResponse.
    */
-  function makeOk({ data = null, dataAsText = null, ageMs = null, stale = null } = {}) {
-    return { ok: true, data, dataAsText, ageMs, stale, error: null };
+  function makeOk({ data = null, dataAsText = null, ageMs = null, stale = null, template = null, rest = null } = {}) {
+    return { ok: true, data, dataAsText, ageMs, stale, template, rest, error: null };
   }
 
   function makeError(message) {
-    return { ok: false, data: null, dataAsText: null, ageMs: null, stale: null, error: message };
+    return { ok: false, data: null, dataAsText: null, ageMs: null, stale: null, template: null, rest: null, error: message };
   }
 
   function valueAsText(v) {
@@ -214,15 +214,21 @@ if (!fs.existsSync(DIST_CLIENT)) {
           const key = args.key || '';
           const pathArg = args.path;
           const result = await client.get(key, pathArg);
+          // The template half rides along on a hit and is the whole of a
+          // template-only result; the SDK leaves both undefined when absent.
+          const template = result.template === undefined ? null : result.template;
+          const rest = result.rest === undefined ? null : result.rest;
           if (result.isHit) {
             return makeOk({
               data: result.data,
               dataAsText: result.getString(),
               ageMs: result.ageMs,
               stale: result.stale,
+              template,
+              rest,
             });
           } else {
-            return makeOk();
+            return makeOk({ template, rest });
           }
         }
 
@@ -364,6 +370,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
   const KNOWN_EXPECT_KEYS = new Set([
     'status', 'data_type', 'data_equals', 'data_as_text', 'data_contains_field',
     'data_field_equals', 'age_ms_present', 'stale', 'error_contains',
+    'template_equals', 'rest_equals',
   ]);
 
   function checkExpect(fixture, resp) {
@@ -389,6 +396,14 @@ if (!fs.existsSync(DIST_CLIENT)) {
         case 'miss':
           if (!resp.ok) failures.push(`status=miss expected but got error: ${resp.error}`);
           else if (resp.data !== null) failures.push('status=miss expected but data was present');
+          else if (resp.template !== null) failures.push('status=miss expected but a template was present');
+          break;
+        // A template-only node: no data, a template in effect. Neither a
+        // hit nor a miss — `resolve` renders it.
+        case 'template':
+          if (!resp.ok) failures.push(`status=template expected but got error: ${resp.error}`);
+          else if (resp.data !== null) failures.push('status=template expected but data was present');
+          else if (resp.template === null) failures.push('status=template expected but no template was present');
           break;
         case 'error':
           if (resp.ok) failures.push('status=error expected but response was ok');
@@ -467,6 +482,20 @@ if (!fs.existsSync(DIST_CLIENT)) {
       const actual = resp.error ?? '';
       if (!actual.includes(expect.error_contains)) {
         failures.push(`error_contains=${JSON.stringify(expect.error_contains)} expected but error was ${JSON.stringify(actual)}`);
+      }
+    }
+
+    // template_equals
+    if (expect.template_equals !== undefined) {
+      if (resp.template === null || !deepEqual(resp.template, expect.template_equals)) {
+        failures.push(`template_equals failed: expected ${JSON.stringify(expect.template_equals)}, got ${JSON.stringify(resp.template)}`);
+      }
+    }
+
+    // rest_equals
+    if (expect.rest_equals !== undefined) {
+      if (resp.rest !== expect.rest_equals) {
+        failures.push(`rest_equals=${JSON.stringify(expect.rest_equals)} expected but got ${JSON.stringify(resp.rest)}`);
       }
     }
 

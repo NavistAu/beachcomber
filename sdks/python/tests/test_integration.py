@@ -32,6 +32,32 @@ def test_get_miss_after_put_none(client: Client) -> None:
     assert result.data is None
 
 
+def test_get_template_only_node_is_neither_hit_nor_miss(client: Client) -> None:
+    client.put("tpl1:template", {"t": "{{ 1 }}"})
+    result = client.get("tpl1.t")
+    assert result.template == "{{ 1 }}"
+    assert result.data is None
+    assert not result.is_hit
+    assert not result.is_miss
+
+
+def test_get_carries_both_halves(client: Client) -> None:
+    client.put("tpl2", {"v": 1})
+    client.put("tpl2:template", {"v": "{{ 2 }}"})
+    result = client.get("tpl2.v")
+    assert result.is_hit
+    assert result.data == 1
+    assert result.template == "{{ 2 }}"
+    assert result.rest is None
+
+
+def test_get_past_a_template_string_sets_rest(client: Client) -> None:
+    client.put("tpl3:template", {"t": "{{ 1 }}"})
+    result = client.get("tpl3.t.x")
+    assert result.template == "{{ 1 }}"
+    assert result.rest == "x"
+
+
 def test_get_full_provider_object_subscriptable(client: Client) -> None:
     client.put("widget2", {"a": 1, "b": "two"})
     result = client.get("widget2")

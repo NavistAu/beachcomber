@@ -14,9 +14,37 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   test("is_hit returns false on miss", function()
     local r = Result.new({ data = nil })
     assert_true(not r:is_hit(), "nil data should be a miss")
+    assert_true(r:is_miss(), "no data and no template is a miss")
     assert_nil(r.data)
     assert_eq(r.age_ms, 0)
     assert_eq(r.stale, false)
+    assert_nil(r.template)
+    assert_nil(r.rest)
+  end)
+
+  test("template-only result is neither a hit nor a miss", function()
+    local r = Result.new({ data = nil, template = "{{ 1 }}" })
+    assert_eq(r.template, "{{ 1 }}")
+    assert_nil(r.data)
+    assert_true(not r:is_hit(), "no data is not a hit")
+    assert_true(not r:is_miss(), "a template-only node is not a miss")
+    assert_nil(r.rest)
+  end)
+
+  test("a hit carries the template half when the node has both", function()
+    local r = Result.new({ data = 1, age_ms = 12, stale = false, template = "{{ 2 }}", rest = "x" })
+    assert_true(r:is_hit())
+    assert_true(not r:is_miss())
+    assert_eq(r.data, 1)
+    assert_eq(r.template, "{{ 2 }}")
+    assert_eq(r.rest, "x")
+  end)
+
+  test("a plain hit has no template half", function()
+    local r = Result.new({ data = "main", age_ms = 500, stale = false })
+    assert_true(r:is_hit())
+    assert_nil(r.template)
+    assert_nil(r.rest)
   end)
 
   test("is_hit returns true on hit", function()
@@ -105,6 +133,28 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     local backend = make_backend({ get = function() return { ok = true } end })
     local r = Client.new(backend):get("git.branch")
     assert_true(not r:is_hit())
+    assert_true(r:is_miss())
+  end)
+
+  test("get passes the backend's template half through", function()
+    local backend = make_backend({
+      get = function() return { ok = true, template = "{{ env.A }}", rest = "x" } end,
+    })
+    local r, err = Client.new(backend):get("fx.t.x")
+    assert_nil(err)
+    assert_eq(r.template, "{{ env.A }}")
+    assert_eq(r.rest, "x")
+    assert_true(not r:is_hit())
+    assert_true(not r:is_miss())
+  end)
+
+  test("get passes a template group through as a table", function()
+    local backend = make_backend({
+      get = function() return { ok = true, template = { foo = "{{ 1 }}" } } end,
+    })
+    local r = Client.new(backend):get("fx.widgets")
+    assert_eq(r.template.foo, "{{ 1 }}")
+    assert_true(not r:is_miss())
   end)
 
   test("get returns nil+Error when backend returns ok=false", function()

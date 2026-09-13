@@ -59,7 +59,7 @@ Returns `"ffi"` or `"subprocess"` — which transport this client is using.
 
 #### `client.get(key, path?)`
 
-Read a cached value.
+Read a node raw — both halves, nothing rendered.
 
 ```typescript
 const result = await client.get('git.branch', '/some/repo');
@@ -67,7 +67,7 @@ const result = await client.get('hostname');          // global provider, no pat
 const result = await client.get('git', '/some/repo'); // full provider (returns object)
 ```
 
-Returns a `CombResult`.
+Returns a `CombResult` (see below).
 
 #### `client.refresh(key, path?)`
 
@@ -152,13 +152,21 @@ Release the underlying client handle (FFI only; a no-op under subprocess).
 
 ### `CombResult`
 
+`get` returns the node as the daemon holds it — both halves, nothing
+rendered. A node may hold a cached value (`data`), a template (`template`),
+or both. A template-only result is neither a hit nor a miss: it is an
+address whose value `resolve` renders — `get` is the raw half,
+`resolve(key, { cwd, env })` is how you get the value.
+
 | Property / method | Type | Description |
 |---|---|---|
 | `isHit` | `boolean` | `true` when the cache had a value |
-| `isMiss` | `boolean` | `true` when the cache had no value |
-| `data` | `unknown` | Raw data (undefined on miss) |
-| `ageMs` | `number` | Cache age in milliseconds (0 on miss) |
-| `stale` | `boolean` | Whether the value is stale (false on miss) |
+| `isMiss` | `boolean` | `true` when nothing is stored at the address: no value **and** no template |
+| `data` | `unknown` | Raw data (undefined when nothing is cached) |
+| `ageMs` | `number` | Cache age in milliseconds (0 when nothing is cached) |
+| `stale` | `boolean` | Whether the value is stale (false when nothing is cached) |
+| `template` | `unknown` | The template in effect at the address, unrendered: a string for a leaf, an object for a group (undefined when none is in effect) |
+| `rest` | `string \| undefined` | The address left over when the template walk stopped at a string — `get('p.t.x')` where `p.t` is a template string gives the template of `p.t` and `rest === 'x'` |
 | `getString(field?)` | `string \| undefined` | Data as a string; picks a named field from object results |
 | `getNumber(field?)` | `number \| undefined` | Data as a number |
 | `getBool(field?)` | `boolean \| undefined` | Data as a boolean |

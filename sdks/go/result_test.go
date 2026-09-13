@@ -41,6 +41,66 @@ func TestResult_IsMiss_NoData(t *testing.T) {
 	if !r.IsMiss() {
 		t.Error("expected IsMiss() = true")
 	}
+	if r.Template != nil || r.Rest != "" {
+		t.Errorf("a miss carries no template half, got Template=%v Rest=%q", r.Template, r.Rest)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The template half (libbeachcomber-ffi combresult_to_json's three shapes)
+// ---------------------------------------------------------------------------
+
+func TestResult_TemplateOnly_IsNeitherHitNorMiss(t *testing.T) {
+	r := buildResult(t, `{"data":null,"age_ms":null,"stale":null,"template":"{{ 1 }}"}`)
+	if r.Template != "{{ 1 }}" {
+		t.Errorf("Template = %v, want \"{{ 1 }}\"", r.Template)
+	}
+	if r.Data != nil {
+		t.Errorf("Data = %v, want nil", r.Data)
+	}
+	if r.IsHit() {
+		t.Error("expected IsHit() = false")
+	}
+	if r.IsMiss() {
+		t.Error("expected IsMiss() = false: a template-only node is not a miss")
+	}
+}
+
+func TestResult_BothHalves_IsAHitCarryingTheTemplate(t *testing.T) {
+	r := buildResult(t, `{"data":1,"age_ms":12,"stale":false,"template":"{{ 2 }}","rest":"x"}`)
+	if !r.IsHit() || r.IsMiss() {
+		t.Errorf("expected a hit, got IsHit=%v IsMiss=%v", r.IsHit(), r.IsMiss())
+	}
+	if v, ok := r.GetFloat(""); !ok || v != 1 {
+		t.Errorf("Data = %v, want 1", r.Data)
+	}
+	if r.Template != "{{ 2 }}" {
+		t.Errorf("Template = %v, want \"{{ 2 }}\"", r.Template)
+	}
+	if r.Rest != "x" {
+		t.Errorf("Rest = %q, want \"x\"", r.Rest)
+	}
+}
+
+func TestResult_PlainHit_HasNoTemplateHalf(t *testing.T) {
+	r := buildResult(t, `{"data":"main","age_ms":10,"stale":false}`)
+	if r.Template != nil {
+		t.Errorf("Template = %v, want nil", r.Template)
+	}
+	if r.Rest != "" {
+		t.Errorf("Rest = %q, want \"\"", r.Rest)
+	}
+}
+
+func TestResult_TemplateMayBeAGroup(t *testing.T) {
+	r := buildResult(t, `{"data":null,"age_ms":null,"stale":null,"template":{"a":"{{ 1 }}"}}`)
+	m, ok := r.Template.(map[string]interface{})
+	if !ok || m["a"] != "{{ 1 }}" {
+		t.Errorf("Template = %#v, want map with a=\"{{ 1 }}\"", r.Template)
+	}
+	if r.IsMiss() {
+		t.Error("expected IsMiss() = false")
+	}
 }
 
 // ---------------------------------------------------------------------------

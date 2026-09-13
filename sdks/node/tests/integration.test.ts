@@ -50,6 +50,43 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     await client.putNull('itest_null', '/tmp');
     const result = await client.get('itest_null.x', '/tmp');
     assert.equal(result.isMiss, true);
+    assert.equal(result.template, undefined);
+  });
+
+  // The template half (design §3.4): get returns both halves, unrendered.
+  it('get on a template-only node is neither a hit nor a miss', async () => {
+    await client.put('itest_tpl1:template', { t: '{{ 1 }}' });
+    const result = await client.get('itest_tpl1.t');
+    assert.equal(result.template, '{{ 1 }}');
+    assert.equal(result.data, undefined);
+    assert.equal(result.isHit, false);
+    assert.equal(result.isMiss, false);
+  });
+
+  it('get carries both halves when a node has data and a template', async () => {
+    await client.put('itest_tpl2', { v: 1 });
+    await client.put('itest_tpl2:template', { v: '{{ 2 }}' });
+    const result = await client.get('itest_tpl2.v');
+    assert.equal(result.isHit, true);
+    assert.equal(result.isMiss, false);
+    assert.equal(result.data, 1);
+    assert.equal(result.template, '{{ 2 }}');
+    assert.equal(result.rest, undefined);
+  });
+
+  it('get past a template string carries the leftover address as rest', async () => {
+    await client.put('itest_tpl3:template', { t: '{{ 1 }}' });
+    const result = await client.get('itest_tpl3.t.x');
+    assert.equal(result.template, '{{ 1 }}');
+    assert.equal(result.rest, 'x');
+  });
+
+  it('a plain hit carries no template half', async () => {
+    await client.put('itest_tpl4', { v: 'plain' });
+    const result = await client.get('itest_tpl4.v');
+    assert.equal(result.isHit, true);
+    assert.equal(result.template, undefined);
+    assert.equal(result.rest, undefined);
   });
 
   it('status returns an array of cache rows', async () => {

@@ -37,7 +37,12 @@ const BC_GET_WAIT = 1 << 1;
 // ---- CombResult ----
 
 /**
- * The result of a cache query.
+ * The result of a `get`: the node as the daemon holds it — both halves,
+ * nothing rendered. A node may hold a cached value (`data`), a template
+ * (`template`), or both. A template-only result is an address whose value
+ * `resolve` renders: this is the raw half — `resolve(key, { cwd, env })` is
+ * how you get the value. Such a result is neither a hit (no value until it
+ * is rendered) nor a miss (something is stored there).
  *
  * Check `isHit` before accessing `data`, `ageMs`, and `stale`.
  * Convenience accessors (`getString`, `getNumber`, `getBool`) safely coerce
@@ -45,15 +50,26 @@ const BC_GET_WAIT = 1 << 1;
  */
 export interface CombResult {
   ok: boolean;
-  /** Present on a cache hit, undefined on a miss. */
+  /** Present on a cache hit, undefined when nothing is cached. */
   data: unknown;
-  /** Age of the cached value in milliseconds (0 on miss). */
+  /** Age of the cached value in milliseconds (0 when nothing is cached). */
   ageMs: number;
-  /** True when the cached value is considered stale (0 on miss). */
+  /** True when the cached value is considered stale (false when nothing is cached). */
   stale: boolean;
+  /**
+   * The template in effect at the address, unrendered: a string for a leaf,
+   * an object for a group of templates. `undefined` when none is in effect.
+   */
+  readonly template: unknown;
+  /**
+   * The address left over when the template walk stopped at a string —
+   * `get("p.t.x")` where `p.t` is a template string gives the template of
+   * `p.t` and `rest === "x"`. `undefined` otherwise.
+   */
+  readonly rest: string | undefined;
   /** True when the cache had a value for this key. */
   isHit: boolean;
-  /** True when the cache had no value for this key. */
+  /** True when nothing is stored at the address: no value and no template. */
   isMiss: boolean;
   /**
    * Return the data (or a named field within an object result) as a string.
@@ -77,28 +93,36 @@ function pickField(data: unknown, field?: string): unknown {
   return data;
 }
 
+/** bc_get's payload: `template`/`rest` are present only when set. */
 interface GetResultShape {
   data: unknown;
   age_ms: number | null;
   stale: boolean | null;
+  template?: unknown;
+  rest?: string;
 }
 
 function makeCombResult(raw: GetResultShape): CombResult {
-  // The ABI's Miss variant sets age_ms/stale to null alongside data; a Hit
-  // always carries an age. That is the reliable hit/miss signal, since the
-  // data value itself may legitimately be JSON null on a hit.
+  // The ABI sets age_ms/stale to null whenever data is absent (a miss, or a
+  // template-only node); a Hit always carries an age. That is the reliable
+  // hit signal, since the data value itself may legitimately be JSON null
+  // on a hit.
   const isHit = raw.age_ms !== null;
   const data = isHit ? raw.data : undefined;
   const ageMs = raw.age_ms ?? 0;
   const stale = raw.stale ?? false;
+  const template = raw.template;
+  const rest = raw.rest;
 
   return {
     ok: true,
     data,
     ageMs,
     stale,
+    template,
+    rest,
     isHit,
-    isMiss: !isHit,
+    isMiss: !isHit && template === undefined,
     getString(field?: string): string | undefined {
       const v = pickField(data, field);
       if (v === undefined || v === null) return undefined;
@@ -270,7 +294,10 @@ export class Session {
     unwrap(await this.tp.sessionSetContext(this.handle, repoPath));
   }
 
-  /** Query a key. If `setContext` has been called, `path` can be omitted. */
+  /**
+   * Query a key, raw — both halves, as `Client.get` describes. If
+   * `setContext` has been called, `path` can be omitted.
+   */
   async get(key: string, path?: string): Promise<CombResult> {
     const result = unwrap(await this.tp.sessionGet(this.handle, key, path, 0)) as GetResultShape;
     return makeCombResult(result);
@@ -383,7 +410,13 @@ export class Client {
   }
 
   /**
-   * Read a cached value.
+   * Read a node from the daemon, raw — both halves, nothing rendered.
+   *
+   * The result carries the cached value (`data`) and the template in
+   * effect at the address (`template`), whichever exist. A template-only
+   * result is an address whose value `resolve` renders — this is the raw
+   * half; `resolve(key, { cwd, env })` is how you get the value. `isHit`
+   * is "data present"; `isMiss` is "no data and no template".
    *
    * @param key   Provider key, e.g. `"git.branch"` or `"git"`.
    * @param path  Optional repository/working-directory path.

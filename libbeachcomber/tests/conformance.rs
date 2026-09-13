@@ -139,6 +139,10 @@ struct CanonicalResponse {
     age_ms: Option<u64>,
     stale: Option<bool>,
     error: Option<String>,
+    /// The template half of a `get`: a string leaf or an object tree.
+    template: Option<Value>,
+    /// The address left over past a template string.
+    rest: Option<String>,
 }
 
 fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> CanonicalResponse {
@@ -154,6 +158,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                 age_ms: None,
                 stale: None,
                 error: None,
+                template: None,
+                rest: None,
             },
             Err(e) => error_response(e),
         },
@@ -165,7 +171,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     data,
                     age_ms,
                     stale,
-                    ..
+                    template,
+                    rest,
                 }) => CanonicalResponse {
                     ok: true,
                     data: Some(data.as_value().clone()),
@@ -173,17 +180,28 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     age_ms: Some(age_ms as u64),
                     stale: Some(stale),
                     error: None,
+                    template,
+                    rest,
                 },
-                // The canonical shape has no template half yet; a
-                // template-only node is data-less here until the fixtures
-                // that expect `status: "template"` teach every runner.
-                Ok(CombResult::Template { .. }) | Ok(CombResult::Miss) => CanonicalResponse {
+                Ok(CombResult::Template { template, rest }) => CanonicalResponse {
                     ok: true,
                     data: None,
                     data_as_text: None,
                     age_ms: None,
                     stale: None,
                     error: None,
+                    template: Some(template),
+                    rest,
+                },
+                Ok(CombResult::Miss) => CanonicalResponse {
+                    ok: true,
+                    data: None,
+                    data_as_text: None,
+                    age_ms: None,
+                    stale: None,
+                    error: None,
+                    template: None,
+                    rest: None,
                 },
                 Err(e) => error_response(e),
             }
@@ -199,6 +217,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     age_ms: None,
                     stale: None,
                     error: None,
+                    template: None,
+                    rest: None,
                 },
                 Err(e) => error_response(e),
             }
@@ -217,6 +237,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                         age_ms: None,
                         stale: None,
                         error: None,
+                        template: None,
+                        rest: None,
                     },
                     Err(e) => error_response(e),
                 },
@@ -236,6 +258,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     age_ms: None,
                     stale: None,
                     error: None,
+                    template: None,
+                    rest: None,
                 },
                 Err(e) => error_response(e),
             }
@@ -262,6 +286,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     age_ms: None,
                     stale: None,
                     error: None,
+                    template: None,
+                    rest: None,
                 }
             }
             Err(e) => error_response(e),
@@ -281,6 +307,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                             age_ms: Some(ev.age_ms),
                             stale: Some(ev.stale),
                             error: None,
+                            template: None,
+                            rest: None,
                         }
                     }
                     Ok(None) => CanonicalResponse {
@@ -290,6 +318,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                         age_ms: None,
                         stale: None,
                         error: None,
+                        template: None,
+                        rest: None,
                     },
                     Err(e) => error_response(e),
                 },
@@ -329,6 +359,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     age_ms: None,
                     stale: None,
                     error: None,
+                    template: None,
+                    rest: None,
                 },
                 Ok(IntrospectResponse::Other(v)) => CanonicalResponse {
                     ok: true,
@@ -337,6 +369,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     age_ms: None,
                     stale: None,
                     error: None,
+                    template: None,
+                    rest: None,
                 },
                 Err(e) => error_response(e),
             }
@@ -357,6 +391,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     age_ms: None,
                     stale: None,
                     error: None,
+                    template: None,
+                    rest: None,
                 },
                 Ok(None) => CanonicalResponse {
                     ok: true,
@@ -365,6 +401,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     age_ms: None,
                     stale: None,
                     error: None,
+                    template: None,
+                    rest: None,
                 },
                 Err(e) => err_resp(e.to_string()),
             }
@@ -380,6 +418,8 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     age_ms: None,
                     stale: None,
                     error: None,
+                    template: None,
+                    rest: None,
                 },
                 Err(e) => err_resp(e.to_string()),
             }
@@ -396,6 +436,8 @@ fn error_response(e: libbeachcomber::CombError) -> CanonicalResponse {
         age_ms: None,
         stale: None,
         error: Some(e.to_string()),
+        template: None,
+        rest: None,
     }
 }
 
@@ -407,11 +449,41 @@ fn err_resp(msg: String) -> CanonicalResponse {
         age_ms: None,
         stale: None,
         error: Some(msg),
+        template: None,
+        rest: None,
     }
 }
 
+/// Every expectation kind documented in tests/conformance/README.md. A
+/// fixture using a key outside this set fails loudly rather than being
+/// silently ignored — otherwise a fixture can pass vacuously, asserting
+/// something no runner checks.
+const KNOWN_EXPECT_KEYS: &[&str] = &[
+    "status",
+    "data_type",
+    "data_equals",
+    "data_as_text",
+    "data_contains_field",
+    "data_field_equals",
+    "age_ms_present",
+    "stale",
+    "error_contains",
+    "template_equals",
+    "rest_equals",
+];
+
 fn check_expect(fixture: &Fixture, resp: &CanonicalResponse) -> Result<(), String> {
     let expect = &fixture.expect;
+
+    if let Some(obj) = expect.as_object() {
+        for key in obj.keys() {
+            if !KNOWN_EXPECT_KEYS.contains(&key.as_str()) {
+                return Err(format!(
+                    "fixture uses unknown expectation key {key:?} — the runner has no check for it"
+                ));
+            }
+        }
+    }
 
     // status
     if let Some(status) = expect.get("status").and_then(|v| v.as_str()) {
@@ -444,6 +516,25 @@ fn check_expect(fixture: &Fixture, resp: &CanonicalResponse) -> Result<(), Strin
                 }
                 if resp.data.is_some() {
                     return Err("status=miss expected but data was present".into());
+                }
+                if resp.template.is_some() {
+                    return Err("status=miss expected but a template was present".into());
+                }
+            }
+            // A template-only node: nothing cached, a template in effect.
+            // Neither a hit nor a miss — `resolve` renders it.
+            "template" => {
+                if !resp.ok {
+                    return Err(format!(
+                        "status=template expected but response was error: {:?}",
+                        resp.error
+                    ));
+                }
+                if resp.data.is_some() {
+                    return Err("status=template expected but data was present".into());
+                }
+                if resp.template.is_none() {
+                    return Err("status=template expected but no template was present".into());
                 }
             }
             "error" => {
@@ -555,6 +646,30 @@ fn check_expect(fixture: &Fixture, resp: &CanonicalResponse) -> Result<(), Strin
             return Err(format!(
                 "error_contains={substr:?} expected but error was {actual:?}"
             ));
+        }
+    }
+
+    // template_equals
+    if let Some(expected) = expect.get("template_equals") {
+        match &resp.template {
+            Some(actual) if actual == expected => {}
+            other => {
+                return Err(format!(
+                    "template_equals failed: expected {expected}, got {other:?}"
+                ));
+            }
+        }
+    }
+
+    // rest_equals
+    if let Some(expected) = expect.get("rest_equals").and_then(|v| v.as_str()) {
+        match resp.rest.as_deref() {
+            Some(actual) if actual == expected => {}
+            other => {
+                return Err(format!(
+                    "rest_equals={expected:?} expected but got {other:?}"
+                ));
+            }
         }
     }
 

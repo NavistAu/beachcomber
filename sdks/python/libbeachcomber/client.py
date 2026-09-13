@@ -54,7 +54,11 @@ def _opt_json(value: Optional[Any]) -> Optional[str]:
 
 
 def _result_from_get_payload(payload: Optional[dict]) -> CombResult:
-    """Build a :class:`CombResult` from a decoded ``bc_get``/``bc_session_get`` payload."""
+    """Build a :class:`CombResult` from a decoded ``bc_get``/``bc_session_get`` payload.
+
+    The payload carries ``template`` and ``rest`` only when set, so a plain
+    hit leaves both ``None``.
+    """
     if not isinstance(payload, dict):
         return CombResult(ok=True, data=None, age_ms=0, stale=False)
     return CombResult(
@@ -62,6 +66,8 @@ def _result_from_get_payload(payload: Optional[dict]) -> CombResult:
         data=payload.get("data"),
         age_ms=int(payload.get("age_ms") or 0),
         stale=bool(payload.get("stale") or False),
+        template=payload.get("template"),
+        rest=payload.get("rest"),
     )
 
 
@@ -247,7 +253,13 @@ class Client:
         self.close()
 
     def get(self, key: str, path: Optional[str] = None) -> CombResult:
-        """Read a cached value from the daemon.
+        """Read a node from the daemon, raw — both halves, nothing rendered.
+
+        The result carries the cached value (``data``) and the template in
+        effect at the address (``template``), whichever exist. A
+        template-only result is an address whose value :meth:`resolve`
+        renders — this is the raw half; ``resolve(key, cwd, env)`` is how
+        you get the value.
 
         Args:
             key: Provider key. Use ``"provider.field"`` for a single
@@ -258,7 +270,8 @@ class Client:
 
         Returns:
             :class:`~beachcomber.result.CombResult` with ``is_hit``
-            ``True`` when a cached value exists.
+            ``True`` when a cached value exists, ``is_miss`` ``True`` when
+            neither a value nor a template does.
 
         Raises:
             CombError: subclass matching the failure kind (see
@@ -503,7 +516,8 @@ class Session:
         self._lib.call("bc_session_set_context", self._ptr, path.encode())
 
     def get(self, key: str, path: Optional[str] = None) -> CombResult:
-        """Read a cached value using the persistent connection.
+        """Read a node using the persistent connection — raw, both halves,
+        as :meth:`Client.get` describes.
 
         Raises:
             CombError: subclass matching the failure kind.

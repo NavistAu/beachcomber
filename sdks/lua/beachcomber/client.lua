@@ -42,19 +42,43 @@ end
 local Result = {}
 Result.__index = Result
 
---- @param resp table  Canonical response `{data, age_ms, stale}` (ok=true).
+--- The result of a `get`: the node as the daemon holds it — both halves,
+-- nothing rendered. A node may hold a cached value (`data`), a template
+-- (`template`), or both. A template-only Result is an address whose value
+-- `Client:resolve` renders: this is the raw half — `resolve(key, {cwd, env})`
+-- is how you get the value. Such a Result is neither a hit (no value until
+-- it is rendered) nor a miss (something is stored there).
+--
+-- Fields: `data` (nil when nothing is cached), `age_ms`/`stale` (meaningful
+-- only with `data`), `template` (the template in effect at the address,
+-- unrendered: a string for a leaf, a table for a group; nil when none is in
+-- effect), `rest` (the address left over when the template walk stopped at
+-- a string — `get("p.t.x")` where `p.t` is a template string gives the
+-- template of `p.t` and `rest == "x"`; nil otherwise). Over the subprocess
+-- transport `template` and `rest` are always nil — see
+-- beachcomber.subprocess_backend.
+--
+-- @param resp table  Canonical response `{data, age_ms, stale, template, rest}` (ok=true).
 -- @return Result
 function Result.new(resp)
   return setmetatable({
-    data   = resp.data,
-    age_ms = resp.age_ms or 0,
-    stale  = resp.stale or false,
+    data     = resp.data,
+    age_ms   = resp.age_ms or 0,
+    stale    = resp.stale or false,
+    template = resp.template,
+    rest     = resp.rest,
   }, Result)
 end
 
 --- Return true when the cache contains a value (cache hit).
 function Result:is_hit()
   return self.data ~= nil
+end
+
+--- Return true when nothing is stored at the address: no cached value and
+-- no template. A template-only Result is not a miss.
+function Result:is_miss()
+  return self.data == nil and self.template == nil
 end
 
 --- Get a string field from object data (convenience for whole-provider gets).
@@ -83,7 +107,13 @@ end
 
 -- ── Client methods ───────────────────────────────────────────────────────
 
---- Query a cached value.
+--- Query a node raw — both halves, nothing rendered.
+--
+-- The Result carries the cached value (`data`) and the template in effect
+-- at the address (`template`), whichever exist. A template-only Result is
+-- an address whose value `Client:resolve` renders — this is the raw half;
+-- `resolve(key, {cwd, env})` is how you get the value. `is_hit()` is "data
+-- present"; `is_miss()` is "no data and no template".
 -- @param key string    Provider key, e.g. "git.branch" or "git"
 -- @param path string?  Optional working-directory path
 -- @return Result, or nil, Error

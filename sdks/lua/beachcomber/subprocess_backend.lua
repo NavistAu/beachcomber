@@ -37,6 +37,14 @@
 -- providers; it walks the requested key's remaining dotted path into the
 -- row's `value` itself (matching the daemon's own path-drilling) rather
 -- than depending on the buggy code path at all.
+--
+-- The template half is ffi-tier only. `get` over this tier never sees the
+-- template in effect at an address: `comb get -f json` prints the bare
+-- resolved value, and the `comb status` rows read here are the `<p>`
+-- provider's cached values, not its `<p>:template` tree. So a Result from
+-- this backend always has `template = nil` and `rest = nil`, and a
+-- template-only node reads as a miss here. A caller that needs the raw
+-- template half needs the ffi transport.
 
 local json = require("beachcomber.json")
 local discovery = require("beachcomber.discovery")

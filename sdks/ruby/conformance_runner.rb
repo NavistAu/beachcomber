@@ -103,6 +103,7 @@ class ConformanceRunner
   KNOWN_EXPECT_KEYS = %w[
     status data_type data_equals data_as_text data_contains_field
     data_field_equals age_ms_present stale error_contains
+    template_equals rest_equals
   ].freeze
 
   def initialize(comb_bin)
@@ -216,8 +217,12 @@ class ConformanceRunner
   end
 
   def check(name, expect, result, _raw, op)
-    status_ok = check_status(expect, result, op)
-    return unless status_ok
+    if (status_failure = check_status(expect, result, op))
+      @failed += 1
+      @errors << "#{name}: #{status_failure}"
+      puts "FAIL  #{name}"
+      return
+    end
 
     if (dt = expect['data_type'])
       check_data_type(name, dt, result, op)
@@ -239,6 +244,12 @@ class ConformanceRunner
     end
     if expect.key?('stale')
       check_stale(name, expect['stale'], result, op)
+    end
+    if expect.key?('template_equals')
+      check_template_equals(name, expect['template_equals'], result)
+    end
+    if expect.key?('rest_equals')
+      check_rest_equals(name, expect['rest_equals'], result)
     end
 
     if @errors.any? { |e| e.start_with?(name) }
@@ -272,32 +283,56 @@ class ConformanceRunner
   # See RAW_VALUE_OPS: `resolve` and `eval` hand back a raw JSON scalar, so
   # status/data extraction special-case them rather than trying to duck-type
   # that scalar against the wrapper types below.
+  #
+  # @return [String, nil] a failure reason, or nil when the status holds
   def check_status(expect, result, op)
     expected = expect['status']
     case expected
-    when 'ok'
-      true # result returned without raising
+    when 'ok', nil
+      nil # result returned without raising
     when 'hit'
-      if RAW_VALUE_OPS.include?(op)
-        !result.nil?
-      elsif result.respond_to?(:data) && !result.data.nil?
-        true
-      elsif result.is_a?(Beachcomber::WatchEvent) && !result.data.nil?
-        true
-      else
-        false
-      end
+      hit =
+        if RAW_VALUE_OPS.include?(op)
+          !result.nil?
+        else
+          result.respond_to?(:data) && !result.data.nil?
+        end
+      hit ? nil : "expected status hit but data was absent (#{result.inspect})"
     when 'miss'
-      if RAW_VALUE_OPS.include?(op)
-        result.nil?
-      else
-        result.respond_to?(:miss?) ? result.miss? : false
-      end
+      miss =
+        if RAW_VALUE_OPS.include?(op)
+          result.nil?
+        else
+          result.respond_to?(:miss?) && result.miss?
+        end
+      miss ? nil : "expected status miss but got #{result.inspect}"
+    when 'template'
+      # A template-only node: no data, a template in effect. Neither a hit
+      # nor a miss — `resolve` renders it.
+      return "expected status template but got #{result.inspect}" unless result.is_a?(Beachcomber::Result)
+      return "expected template-only but data was present: #{result.data.inspect}" unless result.data.nil?
+      return 'expected a template but none was present' if result.template.nil?
+
+      nil
     when 'error'
       # If we got here without raising, that's a failure — caller handles raises separately
-      false
+      "expected status error but op succeeded with #{result.inspect}"
     else
-      true
+      "unknown expect status: #{expected.inspect}"
+    end
+  end
+
+  def check_template_equals(name, expected, result)
+    actual = result.is_a?(Beachcomber::Result) ? result.template : nil
+    unless actual == expected
+      @errors << "#{name}: template_equals expected #{expected.inspect}, got #{actual.inspect}"
+    end
+  end
+
+  def check_rest_equals(name, expected, result)
+    actual = result.is_a?(Beachcomber::Result) ? result.rest : nil
+    unless actual == expected
+      @errors << "#{name}: rest_equals expected #{expected.inspect}, got #{actual.inspect}"
     end
   end
 

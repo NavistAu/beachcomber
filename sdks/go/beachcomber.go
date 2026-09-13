@@ -264,7 +264,13 @@ func (c *Client) finalize() {
 	}
 }
 
-// Get reads a cached value from the daemon.
+// Get reads a node from the daemon, raw — both halves, nothing rendered.
+//
+// The Result carries the cached value (Data) and the template in effect at
+// the address (Template), whichever exist. A template-only Result is an
+// address whose value Resolve renders — this is the raw half;
+// Resolve(key, cwd, env) is how you get the value. IsHit is "data
+// present"; IsMiss is "no data and no template".
 //
 // key follows the "provider" or "provider.field" format (e.g. "git" or
 // "git.branch"). path is the working directory context; pass "" to omit it.

@@ -33,14 +33,17 @@ local function decode(C, ptr)
   return resp
 end
 
---- `bc_get`/`bc_session_get`-shaped result: `{data:{data,age_ms,stale}}` on
--- ok, `{error:{kind,message}}` otherwise. Flatten to the canonical shape.
+--- `bc_get`/`bc_session_get`-shaped result:
+-- `{data:{data,age_ms,stale,template?,rest?}}` on ok,
+-- `{error:{kind,message}}` otherwise. Flatten to the canonical shape.
+-- `template` and `rest` are present only when set, so they pass through
+-- as nil otherwise.
 --
--- The inner `data` field is where the wire encodes a cache miss as a
+-- The inner `data` field is where the wire encodes "nothing cached" as a
 -- literal JSON null (`"data":null`) — indistinguishable on the wire from a
 -- genuine stored null, except that the daemon has no way to store a
 -- genuine null (see beachcomber.json's M.NULL doc comment), so this field
--- can only ever mean "miss" here. This is the one place that collapses
+-- can only ever mean "no value" here. This is the one place that collapses
 -- json.NULL back to plain Lua nil; nowhere else should.
 local function unwrap_get(env)
   if not env.ok then
@@ -49,7 +52,7 @@ local function unwrap_get(env)
   local d = env.data or {}
   local data = d.data
   if data == json.NULL then data = nil end
-  return { ok = true, data = data, age_ms = d.age_ms, stale = d.stale }
+  return { ok = true, data = data, age_ms = d.age_ms, stale = d.stale, template = d.template, rest = d.rest }
 end
 
 --- put/put_null/refresh/status/introspect/hello-shaped result: `{data:...}`

@@ -116,7 +116,7 @@ For latency-sensitive use, prefer `Session`.
 |---|---|
 | `NewClient() (*Client, error)` | Auto-discovers the daemon socket path. May fail immediately: library discovery/validation happens here. |
 | `NewClientWithPath(socketPath string) *Client` | Uses an explicit socket path. Never fails immediately; errors surface on first use. |
-| `Get(key, path string) (*Result, error)` | Read a cached value. |
+| `Get(key, path string) (*Result, error)` | Read a node raw — both halves, nothing rendered (see `Result`). |
 | `GetWithFlags(key, path string, force, wait bool) (*Result, error)` | Read with the ABI's `force`/`wait` flags. |
 | `Refresh(key, path string) error` | Force recomputation. |
 | `Put(key string, data interface{}, ttl, path string) error` | Write a value into the cache as static data. `data` is marshalled to JSON. |
@@ -162,20 +162,30 @@ interleaving requests; create one `Session` per goroutine.
 
 ### `Result`
 
+`Get` returns the node as the daemon holds it — both halves, nothing
+rendered. A node may hold a cached value (`Data`), a template (`Template`),
+or both. A template-only `Result` is neither a hit nor a miss: it is an
+address whose value `Resolve` renders — `Get` is the raw half,
+`Resolve(key, cwd, env)` is how you get the value.
+
 | Method | Description |
 |---|---|
 | `IsHit() bool` | Successful response carrying data. |
-| `IsMiss() bool` | Successful response with no data. |
+| `IsMiss() bool` | Successful response carrying neither data nor a template. |
 | `GetString(field string) (string, bool)` | Extract a string; `field == ""` reads `Data` itself when it's a scalar. |
 | `GetInt(field string) (int64, bool)` | Extract an integer (truncated from the underlying `float64`). |
 | `GetFloat(field string) (float64, bool)` | Extract a numeric field. |
 | `GetBool(field string) (bool, bool)` | Extract a boolean. |
 | `RawJSON() []byte` | The raw JSON payload backing this `Result`. |
 
-Fields: `OK bool`, `Data interface{}`, `AgeMs uint64`, `Stale bool`.
-Construction always succeeds — an `ok:false` envelope becomes a
-`*ServerError` instead of a `Result`, so every `Result` you hold represents
-success.
+Fields: `OK bool`, `Data interface{}`, `AgeMs uint64`, `Stale bool`,
+`Template interface{}` (the template in effect at the address, unrendered: a
+string for a leaf, a map for a group; `nil` when none is in effect), `Rest
+string` (the address left over when the template walk stopped at a string —
+`Get("p.t.x", "")` where `p.t` is a template string gives the template of
+`p.t` and `Rest == "x"`; `""` otherwise). Construction always succeeds — an
+`ok:false` envelope becomes a `*ServerError` instead of a `Result`, so every
+`Result` you hold represents success.
 
 ### `WatchStream`
 

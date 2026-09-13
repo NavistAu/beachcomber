@@ -31,7 +31,7 @@
  *     "env": { "VAR": "value" },                 // resolve/eval fixtures only
  *     "cwd": "/some/path",                       // resolve/eval fixtures only
  *     "expect": {
- *       "status": "hit"|"miss"|"ok"|"error",
+ *       "status": "hit"|"miss"|"template"|"ok"|"error",
  *       "data_type": "string"|"number"|"bool"|"object"|"array"|"null",
  *       "data_equals": <json>,
  *       "data_as_text": "...",
@@ -39,7 +39,9 @@
  *       "data_field_equals": { "field": "...", "value": <json> },
  *       "age_ms_present": true|false,
  *       "stale": true|false,
- *       "error_contains": "..."
+ *       "error_contains": "...",
+ *       "template_equals": <json>,
+ *       "rest_equals": "..."
  *     }
  *   }
  */
@@ -648,7 +650,7 @@ static int is_known_expect_key(const char *key) {
     static const char *known[] = {
         "status", "data_type", "data_equals", "data_as_text",
         "data_contains_field", "data_field_equals", "age_ms_present",
-        "stale", "error_contains",
+        "stale", "error_contains", "template_equals", "rest_equals",
     };
     for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
         if (strcmp(key, known[i]) == 0) return 1;
@@ -688,6 +690,14 @@ static int check_expect(const char *name, const json_node_t *expect,
 
     const char *status = json_as_str(json_get(expect, "status"));
 
+    if (status && strcmp(status, "ok") != 0 && strcmp(status, "hit") != 0 &&
+        strcmp(status, "miss") != 0 && strcmp(status, "template") != 0 &&
+        strcmp(status, "error") != 0) {
+        report_fail(name, "unknown expect status \"%s\"", status);
+        json_free(root);
+        return 0;
+    }
+
     if (status && strcmp(status, "error") == 0) {
         if (ok) {
             report_fail(name, "expected status=error but ok=true");
@@ -721,19 +731,25 @@ static int check_expect(const char *name, const json_node_t *expect,
 
     /* Only "get" and "watch" (event outcome) wrap their payload as
      * {"data":{"data":<value>,"age_ms":...,"stale":...}}; every other op's
-     * envelope "data" field IS the value. */
+     * envelope "data" field IS the value. A "get" payload also carries
+     * "template" and "rest" — the template half — only when set. */
     json_node_t *data = json_get(root, "data");
     json_node_t *value = data;
     json_node_t *age_node = NULL;
     json_node_t *stale_node = NULL;
+    json_node_t *template_node = NULL;
+    json_node_t *rest_node = NULL;
     int is_nested = strcmp(op_str, "get") == 0 || strcmp(op_str, "watch") == 0;
     if (is_nested && data && data->type == JSON_OBJECT) {
         value = json_get(data, "data");
         age_node = json_get(data, "age_ms");
         stale_node = json_get(data, "stale");
+        template_node = json_get(data, "template");
+        rest_node = json_get(data, "rest");
     }
 
     int is_null = !value || value->type == JSON_NULL;
+    int has_template = template_node && template_node->type != JSON_NULL;
 
     if (status) {
         if (strcmp(status, "hit") == 0 && is_null) {
@@ -743,6 +759,23 @@ static int check_expect(const char *name, const json_node_t *expect,
         }
         if (strcmp(status, "miss") == 0 && !is_null) {
             report_fail(name, "expected status=miss but data is present");
+            json_free(root);
+            return 0;
+        }
+        if (strcmp(status, "miss") == 0 && has_template) {
+            report_fail(name, "expected status=miss but a template is present");
+            json_free(root);
+            return 0;
+        }
+        /* A template-only node: no data, a template in effect. Neither a
+         * hit nor a miss — bc_resolve renders it. */
+        if (strcmp(status, "template") == 0 && !is_null) {
+            report_fail(name, "expected status=template but data is present");
+            json_free(root);
+            return 0;
+        }
+        if (strcmp(status, "template") == 0 && !has_template) {
+            report_fail(name, "expected status=template but no template is present");
             json_free(root);
             return 0;
         }
@@ -846,6 +879,28 @@ static int check_expect(const char *name, const json_node_t *expect,
         int got = stale_node && stale_node->type == JSON_BOOL && stale_node->val.boolean;
         if (want != got) {
             report_fail(name, "stale: expected %d, got %d", want, got);
+            json_free(root);
+            return 0;
+        }
+    }
+
+    /* template_equals: deep-equality on the template half */
+    json_node_t *te = json_get(expect, "template_equals");
+    if (te) {
+        if (!has_template || !nodes_equal(template_node, te)) {
+            report_fail(name, "template_equals mismatch");
+            json_free(root);
+            return 0;
+        }
+    }
+
+    /* rest_equals */
+    const char *re = json_as_str(json_get(expect, "rest_equals"));
+    if (re) {
+        const char *got = json_as_str(rest_node);
+        if (!got || strcmp(got, re) != 0) {
+            report_fail(name, "rest_equals: expected \"%s\", got \"%s\"",
+                        re, got ? got : "(null)");
             json_free(root);
             return 0;
         }

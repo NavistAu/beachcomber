@@ -29,18 +29,19 @@ let client = Client::new(); // auto-discovers socket, starts daemon if needed
 // Single field query
 match client.get("git.branch", Some("/path/to/repo"))? {
     CombResult::Hit { data, .. } => println!("branch: {}", data.as_text().unwrap()),
+    CombResult::Template { .. } => println!("a template is in effect — resolve renders it"),
     CombResult::Miss => println!("not cached yet — will be ready on next query"),
 }
 
 // Full provider query with typed field access
 match client.get("git", Some("/path/to/repo"))? {
-    CombResult::Hit { data, age_ms, stale } => {
+    CombResult::Hit { data, age_ms, stale, .. } => {
         println!("branch: {}", data.get_str("branch").unwrap_or("?"));
         println!("dirty: {}", data.get_bool("dirty").unwrap_or(false));
         println!("ahead: {}", data.get_i64("ahead").unwrap_or(0));
         println!("age: {}ms, stale: {}", age_ms, stale);
     }
-    CombResult::Miss => {}
+    CombResult::Template { .. } | CombResult::Miss => {}
 }
 
 // Persistent session for multiple queries (one connection, multiple requests)
@@ -72,7 +73,7 @@ let client = Client::with_config(ClientConfig { exec: true, ..Default::default()
 
 #### `client.get(key, path)`
 
-Read a cached value. Returns `CombResult::Hit { data, age_ms, stale }` or `CombResult::Miss`.
+Read a node raw — both halves, nothing rendered. Returns `CombResult::Hit { data, age_ms, stale, template, rest }`, `CombResult::Template { template, rest }` or `CombResult::Miss` (see `CombResult`).
 
 ```rust
 client.get("git.branch", Some("/path/to/repo"))?;
@@ -128,10 +129,13 @@ let dirty = session.get("git.dirty", None)?;
 
 ### `CombResult`
 
+`get` returns the node as the daemon holds it — both halves, nothing rendered. A node may hold a cached value, a template, or both. `Hit` carries `data` (with `age_ms`/`stale`) and, when one is in effect, `template: Option<Value>` — a string for a leaf, an object for a group, unrendered — plus `rest: Option<String>`, the address left over when the template walk stopped at a string (`get("p.t.x")` where `p.t` is a template string gives the template of `p.t` and `rest == Some("x")`). `Template` is a template-only node: neither a hit (no value until it is rendered) nor a miss (something is stored there) — an address whose value `resolve` renders. `get` is the raw half; `resolve` is how you get the value. `is_hit()`, `is_miss()`, `template()` and `rest()` read across the variants.
+
 ```rust
 match result {
-    CombResult::Hit { data, age_ms, stale } => { /* cache hit */ }
-    CombResult::Miss => { /* not yet cached */ }
+    CombResult::Hit { data, age_ms, stale, template, rest } => { /* cache hit; template/rest ride along when set */ }
+    CombResult::Template { template, rest } => { /* template only — render it with resolve */ }
+    CombResult::Miss => { /* nothing stored */ }
 }
 ```
 

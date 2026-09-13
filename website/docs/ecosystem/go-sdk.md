@@ -119,7 +119,7 @@ Open a persistent connection.
 
 | Method | Description |
 |---|---|
-| `Get(key, path string) (*Result, error)` | Read a cached value |
+| `Get(key, path string) (*Result, error)` | Read a node raw — both halves, nothing rendered (see `Result`) |
 | `Refresh(key, path string) error` | Force recomputation |
 | `SetContext(path string) error` | Set default path for subsequent queries |
 | `GetWithFlags(key, path string, force, wait bool) (*Result, error)` | Read with force/wait flags |
@@ -131,14 +131,18 @@ Open a persistent connection.
 
 ### `Result`
 
+`Get` returns the node as the daemon holds it — both halves, nothing rendered. A node may hold a cached value (`Data`), a template (`Template`), or both. A template-only `Result` is neither a hit nor a miss: it is an address whose value `Resolve` renders — `Get` is the raw half, `Resolve(key, cwd, env)` is how you get the value.
+
 | Field / method | Type | Description |
 |---|---|---|
 | `OK` | `bool` | `true` when the daemon returned success |
-| `Data` | `interface{}` | Decoded payload (string, map, etc.) |
+| `Data` | `interface{}` | Decoded payload (string, map, etc.); `nil` when nothing is cached |
 | `AgeMs` | `uint64` | Cache age in milliseconds |
 | `Stale` | `bool` | Whether the value is stale |
+| `Template` | `interface{}` | The template in effect at the address, unrendered: a string for a leaf, a map for a group; `nil` when none is in effect |
+| `Rest` | `string` | The address left over when the template walk stopped at a string — `Get("p.t.x", "")` where `p.t` is a template string gives the template of `p.t` and `Rest == "x"`; `""` otherwise |
 | `IsHit() bool` | — | `true` when `OK && Data != nil` |
-| `IsMiss() bool` | — | `true` when `OK && Data == nil` |
+| `IsMiss() bool` | — | `true` when `OK && Data == nil && Template == nil` |
 | `GetString(field string) (string, bool)` | — | Extract a string (pass `""` for scalar results) |
 | `GetInt(field string) (int64, bool)` | — | Extract an integer |
 | `GetFloat(field string) (float64, bool)` | — | Extract a float |

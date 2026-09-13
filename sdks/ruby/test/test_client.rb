@@ -64,6 +64,41 @@ class TestClient < Minitest::Test
     assert result.stale?
   end
 
+  # --- the template half (design §3.4: get returns both halves) ---
+
+  def test_get_template_only_is_neither_hit_nor_miss
+    @server.enqueue('{"ok":true,"template":"{{ env.A }}"}')
+    result = @client.get('fx.t')
+    assert_equal '{{ env.A }}', result.template
+    assert_nil result.data
+    refute result.hit?
+    refute result.miss?
+  end
+
+  def test_get_carries_both_halves
+    @server.enqueue('{"ok":true,"data":1,"age_ms":12,"stale":false,"template":"{{ 2 }}","rest":"x"}')
+    result = @client.get('fx.v')
+    assert result.hit?
+    refute result.miss?
+    assert_equal 1,        result.data
+    assert_equal '{{ 2 }}', result.template
+    assert_equal 'x',      result.rest
+  end
+
+  def test_get_plain_hit_has_no_template_or_rest
+    @server.enqueue('{"ok":true,"data":"main","age_ms":42,"stale":false}')
+    result = @client.get('git.branch')
+    assert_nil result.template
+    assert_nil result.rest
+  end
+
+  def test_get_template_may_be_a_group
+    @server.enqueue('{"ok":true,"template":{"foo":"{{ 1 }}"}}')
+    result = @client.get('fx.widgets')
+    assert_equal({ 'foo' => '{{ 1 }}' }, result.template)
+    refute result.miss?
+  end
+
   # --- server error ---
 
   def test_get_server_error_raises

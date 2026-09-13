@@ -77,6 +77,64 @@ func TestClient_PutThenGet(t *testing.T) {
 	}
 }
 
+// The template half (design §3.4): Get returns both halves, unrendered.
+func TestClient_Get_TemplateOnlyIsNeitherHitNorMiss(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Put("tpl1:template", map[string]interface{}{"t": "{{ 1 }}"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	result, err := c.Get("tpl1.t", "")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if result.Template != "{{ 1 }}" {
+		t.Errorf("Template = %v, want \"{{ 1 }}\"", result.Template)
+	}
+	if result.Data != nil || result.IsHit() || result.IsMiss() {
+		t.Errorf("template-only node: Data=%v IsHit=%v IsMiss=%v, want nil/false/false", result.Data, result.IsHit(), result.IsMiss())
+	}
+}
+
+func TestClient_Get_CarriesBothHalves(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Put("tpl2", map[string]interface{}{"v": float64(1)}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := c.Put("tpl2:template", map[string]interface{}{"v": "{{ 2 }}"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	result, err := c.Get("tpl2.v", "")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !result.IsHit() {
+		t.Fatal("expected IsHit() = true")
+	}
+	if v, ok := result.GetFloat(""); !ok || v != 1 {
+		t.Errorf("Data = %v, want 1", result.Data)
+	}
+	if result.Template != "{{ 2 }}" {
+		t.Errorf("Template = %v, want \"{{ 2 }}\"", result.Template)
+	}
+	if result.Rest != "" {
+		t.Errorf("Rest = %q, want \"\"", result.Rest)
+	}
+}
+
+func TestClient_Get_PastATemplateStringSetsRest(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Put("tpl3:template", map[string]interface{}{"t": "{{ 1 }}"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	result, err := c.Get("tpl3.t.x", "")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if result.Template != "{{ 1 }}" || result.Rest != "x" {
+		t.Errorf("Template=%v Rest=%q, want \"{{ 1 }}\"/\"x\"", result.Template, result.Rest)
+	}
+}
+
 func TestClient_Refresh(t *testing.T) {
 	c := requireClient(t)
 	if err := c.Refresh("hostname", ""); err != nil {

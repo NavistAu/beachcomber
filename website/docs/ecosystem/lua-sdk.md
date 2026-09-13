@@ -89,7 +89,7 @@ Returns `nil, error_message` on failure.
 
 ### `Client:get(key [, path])` → `Result | nil, error`
 
-Read a cached value. `key` is `"provider"` or `"provider.field"`. `path` overrides any connection context.
+Read a node raw — both halves, nothing rendered (see `Result`). `key` is `"provider"` or `"provider.field"`. `path` overrides any connection context.
 
 ### `Client:refresh(key [, path])` → `true | nil, error`
 
@@ -138,15 +138,20 @@ Close the underlying socket.
 
 ### `Result`
 
+`get` returns the node as the daemon holds it — both halves, nothing rendered. A node may hold a cached value (`data`), a template (`template`), or both. A template-only result is neither a hit nor a miss: it is an address whose value `resolve` renders — `get` is the raw half, `resolve(key, {cwd, env})` is how you get the value. The template half is `ffi` transport only: over `subprocess`, `template` and `rest` are always `nil` and a template-only node reads as a miss.
+
 | Field | Type | Description |
 |---|---|---|
-| `data` | any | Cached value; `nil` on a miss |
+| `data` | any | Cached value; `nil` when nothing is cached |
 | `age_ms` | number | Age of the cached value in milliseconds |
 | `stale` | boolean | True when past TTL but no fresh value yet |
+| `template` | string\|table\|nil | The template in effect at the address, unrendered: a string for a leaf, a table for a group; `nil` when none is in effect |
+| `rest` | string\|nil | The address left over when the template walk stopped at a string — `get("p.t.x")` where `p.t` is a template string gives the template of `p.t` and `rest == "x"` |
 
 | Method | Returns | Description |
 |---|---|---|
 | `result:is_hit()` | boolean | True when `data ~= nil` |
+| `result:is_miss()` | boolean | True when `data == nil` and `template == nil` |
 | `result:get_str(field)` | string\|nil, error | Get a string field from object data |
 
 ## Wire protocol reference

@@ -67,6 +67,8 @@ int main(void) {
     char *r = bc_get(c, "git.branch", "/path/to/repo", 0);
     printf("%s\n", r);
     /* {"ok":true,"data":{"data":"main","age_ms":12,"stale":false}}
+     * or {"ok":true,"data":{"data":null,"age_ms":null,"stale":null,"template":"{{ … }}"}}
+     *    on a template-only node (see "The get envelope" below)
      * or {"ok":true,"data":{"data":null,"age_ms":null,"stale":null}} on miss
      * or {"ok":false,"error":{"kind":"...","message":"..."}} on error */
     bc_string_free(r);
@@ -105,8 +107,29 @@ Every operation returns one of two shapes:
 ```
 
 `bc_get` / `bc_session_get` nest the read itself one level deeper —
-`data.data` is the value (`null` on a cache miss), alongside `data.age_ms`
-and `data.stale`.
+`data.data` is the value (`null` when nothing is cached), alongside
+`data.age_ms` and `data.stale`, plus `data.template` and `data.rest` when
+set — see "The `get` envelope".
+
+### The `get` envelope
+
+`bc_get` / `bc_session_get` return the node as the daemon holds it — both
+halves, nothing rendered. The inner object has five keys, the last two
+present only when set:
+
+| node | `data` | `age_ms` / `stale` | `template` | `rest` |
+|---|---|---|---|---|
+| value (a hit) | the value | set | only if a template is in effect | only if set |
+| template only | `null` | `null` | a string (leaf) or object (group) | only if set |
+| nothing (a miss) | `null` | `null` | absent | absent |
+
+`template` is the template in effect at the address, unrendered. `rest` is
+the address left over when the template walk stopped at a string:
+`bc_get(c, "p.t.x", …)` where `p.t` is a template string gives `template`
+of `p.t` and `"rest": "x"`. A template-only node is not a miss — something
+is stored there — and not a hit — it has no value until it is rendered. It
+is an address whose value `bc_resolve` renders: `bc_get` is the raw half,
+`bc_resolve(c, key, cwd, env_json)` is how you get the value.
 
 `bc_watch_next` uses a five-outcome shape instead of the plain `data` field,
 so a binding can tell the cases apart without string matching:
@@ -155,7 +178,7 @@ so a binding can tell the cases apart without string matching:
 
 | Function | Description |
 |---|---|
-| `char *bc_get(BcClient *c, const char *key, const char *path, uint32_t flags)` | Read a cached value. `path` is nullable. `flags` is a bitmask of `BC_GET_FORCE` / `BC_GET_WAIT`; any other bit yields `kind: "bad_flags"`. |
+| `char *bc_get(BcClient *c, const char *key, const char *path, uint32_t flags)` | Read a node raw — both halves, nothing rendered (see "The `get` envelope"). `path` is nullable. `flags` is a bitmask of `BC_GET_FORCE` / `BC_GET_WAIT`; any other bit yields `kind: "bad_flags"`. |
 | `char *bc_put(BcClient *c, const char *key, const char *json_data, const char *ttl, const char *path)` | Write a value into the cache as static data. `json_data` must parse as JSON; `ttl` and `path` are nullable. |
 | `char *bc_put_null(BcClient *c, const char *key, const char *path)` | Clear the cached entry for a static-data key. `path` is nullable. |
 | `char *bc_refresh(BcClient *c, const char *key, const char *path)` | Re-execute the Sources `key` demands, each at its own scope. `path` is nullable. A key naming no Source (a static namespace, a facet, an unknown name, a field no Source owns) errors: `nothing to refresh: <key> has no sources`. |

@@ -140,7 +140,7 @@ uptime — those vary per run.
 
 | Key | Meaning |
 |---|---|
-| `status` | "hit" (ok=true, data present), "miss" (ok=true, data absent), "ok" (ok=true, data not asserted), "error" (ok=false) |
+| `status` | "hit" (ok=true, data present), "miss" (ok=true, neither data nor template present), "template" (ok=true, data absent, template present — a template-only node, neither a hit nor a miss), "ok" (ok=true, data not asserted), "error" (ok=false) |
 | `data_type` | "string", "number", "bool", "object", "array", "null" |
 | `data_equals` | exact deep-equality match on data |
 | `data_as_text` | data interpreted as text (scalar stringification, or field-less object with a single value) equals this |
@@ -149,8 +149,24 @@ uptime — those vary per run.
 | `age_ms_present` | boolean — age_ms is (not) null |
 | `stale` | boolean — stale equals this |
 | `error_contains` | ok=false and response.error contains this substring |
+| `template_equals` | exact deep-equality match on a `get`'s template half (a string for a leaf, an object for a group); fails when no template is present |
+| `rest_equals` | string — a `get`'s `rest`, the address left over past a template string, equals this; fails when absent |
 
-Multiple expectations in the same `expect` block are AND-combined.
+Multiple expectations in the same `expect` block are AND-combined. A
+fixture using a key outside this table must **fail** in every runner, never
+be ignored — otherwise it can pass vacuously; the same goes for a `status`
+value outside the five above.
+
+### The template half of `get`
+
+`get` returns the node as the daemon holds it — both halves, nothing
+rendered (design §3.4): `data` is the cached value, `template` the template
+in effect at the address, `rest` the address left over when the template
+walk stopped at a string. The runner reads them off the SDK's typed result
+(`template`/`rest` fields under each language's idiom). A runner whose
+transport cannot see the template half must skip fixtures that assert it
+(the `template` status, `template_equals`, `rest_equals`), reported as
+skipped — the Lua runner does so over its subprocess transport.
 
 ## Isolation
 

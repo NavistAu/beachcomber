@@ -56,7 +56,7 @@ Opens a fresh socket connection for each call. Simple and stateless.
 
 | Method | Description |
 |--------|-------------|
-| `get(key, path: nil)` | Read a cached value. Returns a `Result`. |
+| `get(key, path: nil)` | Read a node raw — both halves, nothing rendered. Returns a `Result`. |
 | `get_with_flags(key, path: nil, force: false, wait: false)` | Read with protocol flags. Returns a `Result`. |
 | `refresh(key, path: nil)` | Force recomputation. Returns `nil`. |
 | `hello` | Handshake. Returns a `HelloInfo`. |
@@ -86,14 +86,18 @@ Opens a fresh socket connection for each call. Simple and stateless.
 
 ### `Beachcomber::Result`
 
+`get` returns the node as the daemon holds it — both halves, nothing rendered. A node may hold a cached value (`data`), a template (`template`), or both. A template-only result is neither a hit nor a miss: it is an address whose value `resolve` renders — `get` is the raw half, `resolve(key, cwd:, env:)` is how you get the value.
+
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `ok?` | Boolean | Daemon reported success. |
 | `hit?` | Boolean | Success and data is present. |
-| `miss?` | Boolean | Success but no data (cache miss). |
+| `miss?` | Boolean | Success and neither data nor a template is present. |
 | `stale?` | Boolean | Data exists but is stale. |
 | `data` | Object/nil | Decoded payload (String, Hash, Array, …). |
 | `age_ms` | Integer | Age of the cached value in milliseconds. |
+| `template` | String/Hash/nil | The template in effect at the address, unrendered: a String for a leaf, a Hash for a group. `nil` when none is in effect. |
+| `rest` | String/nil | The address left over when the template walk stopped at a string — `get('p.t.x')` where `p.t` is a template string gives the template of `p.t` and `rest == 'x'`. |
 | `error` | String/nil | Error message when `ok?` is false. |
 | `[](key)` | Object/nil | Delegates to `data` hash. Raises `TypeError` if data is not a Hash. |
 

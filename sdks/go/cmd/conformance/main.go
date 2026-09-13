@@ -37,7 +37,7 @@ type opDescriptor struct {
 }
 
 type expectBlock struct {
-	Status            string      `json:"status"`       // hit|miss|ok|error
+	Status            string      `json:"status"`       // hit|miss|template|ok|error
 	DataType          string      `json:"data_type"`    // string|number|bool|object|array|null
 	DataEquals        interface{} `json:"data_equals"`  // exact deep-equality
 	DataAsText        string      `json:"data_as_text"` // scalar stringification
@@ -46,9 +46,11 @@ type expectBlock struct {
 		Field string      `json:"field"`
 		Value interface{} `json:"value"`
 	} `json:"data_field_equals"`
-	AgeMsPresent  *bool  `json:"age_ms_present"`
-	Stale         *bool  `json:"stale"`
-	ErrorContains string `json:"error_contains"`
+	AgeMsPresent   *bool       `json:"age_ms_present"`
+	Stale          *bool       `json:"stale"`
+	ErrorContains  string      `json:"error_contains"`
+	TemplateEquals interface{} `json:"template_equals"` // exact deep-equality on the template half
+	RestEquals     *string     `json:"rest_equals"`
 }
 
 type fixture struct {
@@ -290,6 +292,8 @@ type opResult struct {
 	ageMs    uint64
 	ageMsSet bool // true when the daemon response contained an age_ms key (checked in the raw JSON; the value 0 is a real age)
 	stale    bool
+	template interface{} // a get's template half; nil when none is in effect
+	rest     string      // the address left over past a template string; "" when none
 }
 
 // runOp executes a setup op. If expect is non-nil (for error ops in setup) it
@@ -461,8 +465,10 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 
 func resultFromSDK(r *beachcomber.Result) *opResult {
 	or := &opResult{
-		data:  r.Data,
-		stale: r.Stale,
+		data:     r.Data,
+		stale:    r.Stale,
+		template: r.Template,
+		rest:     r.Rest,
 	}
 	// Presence must come from the wire, not the value: age_ms=0 is a real
 	// age (put-then-get within the same millisecond), so AgeMs > 0 misreads
@@ -509,6 +515,8 @@ func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serve
 	var ageMs uint64
 	var ageMsSet bool
 	var stale bool
+	var template interface{}
+	var rest string
 	isError := serverErr != nil
 
 	if we != nil {
@@ -521,6 +529,8 @@ func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serve
 		ageMs = r.ageMs
 		ageMsSet = r.ageMsSet
 		stale = r.stale
+		template = r.template
+		rest = r.rest
 	}
 
 	// status assertion
@@ -539,6 +549,21 @@ func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serve
 		if data != nil {
 			return false, fmt.Sprintf("expected miss (no data), got data: %v", data)
 		}
+		if template != nil {
+			return false, fmt.Sprintf("expected miss (no template), got template: %v", template)
+		}
+	case "template":
+		// A template-only node: no data, a template in effect. Neither a
+		// hit nor a miss — Resolve renders it.
+		if isError {
+			return false, "expected template, got error: " + serverErr.Error()
+		}
+		if data != nil {
+			return false, fmt.Sprintf("expected template-only (no data), got data: %v", data)
+		}
+		if template == nil {
+			return false, "expected a template, got none"
+		}
 	case "ok":
 		if isError {
 			return false, "expected ok, got error: " + serverErr.Error()
@@ -555,6 +580,8 @@ func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serve
 		return true, ""
 	case "":
 		// no status assertion
+	default:
+		return false, fmt.Sprintf("unknown expect status: %q", exp.Status)
 	}
 
 	if isError {
@@ -624,6 +651,20 @@ func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serve
 	if exp.Stale != nil {
 		if stale != *exp.Stale {
 			return false, fmt.Sprintf("stale: got %v, want %v", stale, *exp.Stale)
+		}
+	}
+
+	// template_equals assertion
+	if exp.TemplateEquals != nil {
+		if template == nil || !deepEqual(template, exp.TemplateEquals) {
+			return false, fmt.Sprintf("template_equals: got %v, want %v", template, exp.TemplateEquals)
+		}
+	}
+
+	// rest_equals assertion
+	if exp.RestEquals != nil {
+		if rest != *exp.RestEquals {
+			return false, fmt.Sprintf("rest_equals: got %q, want %q", rest, *exp.RestEquals)
 		}
 	}
 

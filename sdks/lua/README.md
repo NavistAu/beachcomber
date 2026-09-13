@@ -39,7 +39,9 @@ header comment: piped through `io.popen`, the CLI's stdout buffering means a
 `read("*l")` blocks forever even though the daemon already sent the event).
 Those `Client` methods return `nil, err` with `err.kind == "unsupported"`
 over `subprocess`; get/put/put_null/status/context all work fully over
-either transport.
+either transport — except that the template half of a `get` (`Result.template`
+and `Result.rest`, see `Result` below) is ffi-tier only: over `subprocess` both
+are always `nil`, and a template-only node reads as a miss.
 
 ---
 
@@ -142,8 +144,9 @@ documented at the top of `beachcomber/client.lua`.
 
 ### `Client:get(key [, path])` → `Result | nil, Error`
 
-Read a cached value. `key` is `"provider"` or `"provider.field"`. `path`
-overrides `set_context()`'s default, if any.
+Read a node raw — both halves, nothing rendered (see `Result`). `key` is
+`"provider"` or `"provider.field"`. `path` overrides `set_context()`'s
+default, if any.
 
 ### `Client:get_with_flags(key, path, force, wait)` → `Result | nil, Error`
 
@@ -211,15 +214,24 @@ transport only.
 
 ### `Result`
 
+`get` returns the node as the daemon holds it — both halves, nothing
+rendered. A node may hold a cached value (`data`), a template (`template`),
+or both. A template-only result is neither a hit nor a miss: it is an
+address whose value `resolve` renders — `get` is the raw half,
+`resolve(key, {cwd, env})` is how you get the value.
+
 | Field | Type | Description |
 |---|---|---|
-| `data` | any | Cached value; `nil` on a miss |
+| `data` | any | Cached value; `nil` when nothing is cached |
 | `age_ms` | number | Age of the cached value in milliseconds |
 | `stale` | boolean | True when past TTL but no fresh value yet |
+| `template` | string\|table\|nil | The template in effect at the address, unrendered: a string for a leaf, a table for a group; `nil` when none is in effect. Always `nil` over `subprocess`. |
+| `rest` | string\|nil | The address left over when the template walk stopped at a string — `get("p.t.x")` where `p.t` is a template string gives the template of `p.t` and `rest == "x"`. Always `nil` over `subprocess`. |
 
 | Method | Returns | Description |
 |---|---|---|
 | `result:is_hit()` | boolean | True when `data ~= nil` |
+| `result:is_miss()` | boolean | True when `data == nil` and `template == nil` |
 | `result:get_str(field)` | string\|nil, error | Get a string field from object data |
 
 ### `Error`

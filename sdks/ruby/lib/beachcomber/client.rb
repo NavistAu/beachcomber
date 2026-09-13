@@ -14,6 +14,8 @@ module Beachcomber
   module ResponseParsing
     private
 
+    # The payload carries `template` and `rest` only when set, so a plain
+    # hit leaves both nil.
     def build_result(payload)
       Result.new(
         ok: true,
@@ -21,6 +23,8 @@ module Beachcomber
         age_ms: (payload['age_ms'] || 0).to_i,
         stale: payload['stale'] == true,
         error: nil,
+        template: payload['template'],
+        rest: payload['rest'],
       )
     end
 
@@ -131,7 +135,7 @@ module Beachcomber
       nil
     end
 
-    # Reads a cached value.
+    # Reads a node raw — both halves, as {Client#get} describes.
     #
     # @param key [String] e.g. "git.branch" or "git"
     # @param path [String, nil] optional working-directory override
@@ -248,11 +252,17 @@ module Beachcomber
       proc { Beachcomber::FFI.free_client(handle) }
     end
 
-    # Reads a cached value.
+    # Reads a node from the daemon, raw — both halves, nothing rendered.
+    #
+    # The Result carries the cached value (+data+) and the template in
+    # effect at the address (+template+), whichever exist. A template-only
+    # result is an address whose value {#resolve} renders — this is the raw
+    # half; <tt>resolve(key, cwd:, env:)</tt> is how you get the value.
     #
     # @param key [String] e.g. "git.branch" or "git"
     # @param path [String, nil] optional working-directory context
-    # @return [Result]
+    # @return [Result] hit? when a cached value exists, miss? when neither a
+    #   value nor a template does
     # @raise [Beachcomber::DaemonNotRunning] when the socket cannot be reached
     # @raise [Beachcomber::ServerError] when the daemon returns ok: false
     def get(key, path: nil)

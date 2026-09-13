@@ -30,7 +30,8 @@ type Session struct {
 	handle uintptr // BcSession*
 }
 
-// Get reads a cached value. path="" omits the path field.
+// Get reads a node raw — both halves, as Client.Get describes. path=""
+// omits the path field.
 func (s *Session) Get(key string, path string) (*Result, error) {
 	return s.GetWithFlags(key, path, false, false)
 }

@@ -28,6 +28,21 @@ class TestResult < Minitest::Test
     refute r.miss?
   end
 
+  def test_template_only_is_neither_hit_nor_miss
+    r = Beachcomber::Result.new(ok: true, data: nil, age_ms: 0, stale: false, error: nil, template: '{{ 1 }}')
+    assert r.ok?
+    refute r.hit?
+    refute r.miss?
+    assert_equal '{{ 1 }}', r.template
+    assert_nil r.rest
+  end
+
+  def test_template_and_rest_default_to_nil
+    r = make_result(data: 'main')
+    assert_nil r.template
+    assert_nil r.rest
+  end
+
   # --- stale? ---
 
   def test_stale_false_by_default
@@ -100,5 +115,12 @@ class TestResult < Minitest::Test
     assert_match(/Beachcomber::Result/, r.inspect)
     assert_match(/data=/, r.inspect)
     assert_match(/age_ms=5/, r.inspect)
+    refute_match(/template=/, r.inspect)
+  end
+
+  def test_inspect_shows_the_template_half
+    r = Beachcomber::Result.new(ok: true, data: nil, age_ms: 0, stale: false, error: nil, template: '{{ 1 }}', rest: 'x')
+    assert_match(/template="\{\{ 1 \}\}"/, r.inspect)
+    assert_match(/rest="x"/, r.inspect)
   end
 end

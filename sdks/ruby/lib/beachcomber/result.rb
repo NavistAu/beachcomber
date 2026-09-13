@@ -1,8 +1,13 @@
 module Beachcomber
   # Wraps a daemon response.
   #
-  # A result can represent a cache hit (data present), a miss (ok but no data),
-  # or an error (ok: false — though errors are normally raised as ServerError).
+  # `get` returns the node as the daemon holds it — both halves, nothing
+  # rendered. A node may hold a cached value (+data+), a template
+  # (+template+), or both. A result is a hit when data is present, a miss
+  # when neither half is, or an error (ok: false — though errors are normally
+  # raised as ServerError). A template-only result is neither a hit nor a
+  # miss: it is an address whose value {Client#resolve} renders — this is the
+  # raw half; <tt>resolve(key, cwd:, env:)</tt> is how you get the value.
   #
   # Examples:
   #
@@ -15,6 +20,9 @@ module Beachcomber
   #   # hash data access
   #   result = client.get('git', path: '/repo')
   #   puts result['branch']
+  #
+  #   result = client.get('scanline.widgets.foo')
+  #   result.template  # "{{ env.SCANLINE_FOO }}" — render it with resolve
   class Result
     # @return [Boolean] whether the daemon reported success
     attr_reader :ok
@@ -28,12 +36,24 @@ module Beachcomber
     # @return [String, nil] error message when ok is false
     attr_reader :error
 
-    def initialize(ok:, data:, age_ms:, stale:, error:)
-      @ok     = ok
-      @data   = data
-      @age_ms = age_ms
-      @stale  = stale
-      @error  = error
+    # @return [String, Hash, nil] the template in effect at the address,
+    #   unrendered: a String for a leaf, a Hash for a group of templates;
+    #   nil when none is in effect
+    attr_reader :template
+
+    # @return [String, nil] the address left over when the template walk
+    #   stopped at a string — <tt>get('p.t.x')</tt> where +p.t+ is a
+    #   template string gives the template of +p.t+ and rest +"x"+
+    attr_reader :rest
+
+    def initialize(ok:, data:, age_ms:, stale:, error:, template: nil, rest: nil)
+      @ok       = ok
+      @data     = data
+      @age_ms   = age_ms
+      @stale    = stale
+      @error    = error
+      @template = template
+      @rest     = rest
     end
 
     # @return [Boolean]
@@ -46,9 +66,10 @@ module Beachcomber
       @ok && !@data.nil?
     end
 
-    # @return [Boolean] true when the response was successful but had no data
+    # @return [Boolean] true when nothing is stored at the address: no data
+    #   and no template. A template-only result is not a miss.
     def miss?
-      @ok && @data.nil?
+      @ok && @data.nil? && @template.nil?
     end
 
     # @return [Boolean] true when the cached value is stale
@@ -74,6 +95,8 @@ module Beachcomber
       parts << "data=#{@data.inspect}" unless @data.nil?
       parts << "age_ms=#{@age_ms}" if @age_ms > 0
       parts << "stale=true" if @stale
+      parts << "template=#{@template.inspect}" unless @template.nil?
+      parts << "rest=#{@rest.inspect}" unless @rest.nil?
       parts << "error=#{@error.inspect}" if @error
       "#<Beachcomber::Result #{parts.join(', ')}>"
     end
