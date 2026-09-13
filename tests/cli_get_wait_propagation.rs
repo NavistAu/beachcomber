@@ -1,10 +1,9 @@
-// Locks in wait=true semantics at the Client API layer that run_get delegates
-// to: Client::get_formatted_with_flags (single-key server-side text path) and
-// ClientSession::get_with_flags (multi-key client-side loop).
+// Locks in wait=true semantics at the Client API layer:
+// Client::get_formatted_with_flags and ClientSession::get_with_flags.
 //
-// run_get itself lives in the binary crate and cannot be called from an
-// integration test; its flag-threading is guarded by the compiler + clippy
-// (the previously-unused `_wait` would re-trigger a warning if it came back).
+// run_get hands `wait` to `libbeachcomber::resolve` through `Inputs`, which
+// forwards it on every fetch (pinned in libbeachcomber/tests/resolve.rs);
+// tests/cli_get_multikey_force.rs runs the binary with `--force`.
 //
 // Phase 1 Round 3 bug: run_get captured `wait` then discarded it via `_wait`,
 // so every CLI --wait invocation silently behaved as wait=false.
@@ -49,9 +48,8 @@ async fn setup_stale() -> (TempDir, std::path::PathBuf) {
 
 #[tokio::test(start_paused = true)]
 async fn single_key_text_wait_true_re_executes_stale_entry() {
-    // run_get's single-key server-side path (format=text, keys.len()==1) must
-    // forward wait=true. If it does, the stale seeded value is evicted and the
-    // live provider runs inline — the returned text must not contain the seed.
+    // wait=true on a stale entry: the seeded value is evicted and the live
+    // provider runs inline — the returned text must not contain the seed.
     let (_tmp, sock) = setup_stale().await;
 
     let text = tokio::task::spawn_blocking(move || {
@@ -70,8 +68,7 @@ async fn single_key_text_wait_true_re_executes_stale_entry() {
 
 #[tokio::test(start_paused = true)]
 async fn multi_key_client_side_wait_true_re_executes_stale_entry() {
-    // run_get's multi-key client-side path (e.g. format=json) calls
-    // session.get_with_flags per key. It must forward wait=true.
+    // The same through a session's get_with_flags, wait=true forwarded.
     let (_tmp, sock) = setup_stale().await;
 
     let response = tokio::task::spawn_blocking(move || {

@@ -1,8 +1,9 @@
 //! Client-side output format type and shared rendering helpers.
 //!
-//! `OutputFormat` is richer than the protocol `Format` type — it covers
-//! server-side formats (text, sh) that the daemon renders and client-side
-//! formats (json, csv, tsv, fmt) that the CLI renders locally from JSON data.
+//! `OutputFormat` is richer than the protocol `Format` type — every format is
+//! rendered locally from the resolved JSON value: `text`/`sh` through
+//! `libbeachcomber::render::render_data`, the rest (json, csv, tsv, fmt) here
+//! and in the `get`/`watch` handlers.
 //!
 //! `parse_output_format` and `suffix_to_format` handle the CLI argument /
 //! suffix syntax.  `format_sv` and `value_to_string` are shared rendering
@@ -21,19 +22,13 @@ pub enum OutputFormat {
 }
 
 impl OutputFormat {
-    /// The wire format to request from the server.
+    /// The `render_data` format name for this output format.
     pub fn server_format(&self) -> &str {
         match self {
             OutputFormat::Text => "text",
             OutputFormat::Sh => "sh",
-            // Client-side formats get JSON from the server
             _ => "json",
         }
-    }
-
-    /// Whether this format is handled server-side (text/sh wire format with blank-line termination).
-    pub fn is_server_side(&self) -> bool {
-        matches!(self, OutputFormat::Text | OutputFormat::Sh)
     }
 }
 

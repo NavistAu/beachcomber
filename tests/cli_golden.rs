@@ -13,7 +13,8 @@ fn daemon_fixture_starts_and_exits() {
 
 /// Build a `comb` Command pre-configured with `BEACHCOMBER_SOCKET` pointing
 /// directly at the test daemon's socket path, so `Config::resolve_socket_path()`
-/// resolves to the isolated test socket.
+/// resolves to the isolated test socket, and with the daemon's temp
+/// `$HOME`/`$XDG_CONFIG_HOME` so the developer's own config never leaks in.
 ///
 /// The current_dir is fixed to "/" so that path-scoped static keys written with
 /// `--path /` are found by `get` (which always injects CWD as path context for
@@ -21,6 +22,8 @@ fn daemon_fixture_starts_and_exits() {
 fn comb(d: &TestDaemon) -> assert_cmd::Command {
     let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
     cmd.env("BEACHCOMBER_SOCKET", &d.socket.path);
+    cmd.env("HOME", &d.home);
+    cmd.env("XDG_CONFIG_HOME", &d.xdg);
     // Suppress daemon-start output from bleeding into stdout assertions.
     cmd.env("RUST_LOG", "error");
     // Fix CWD to "/" so `get` injects a stable, known path context. Virtual
@@ -183,7 +186,7 @@ fn get_text_finds_put_created_virtual_without_explicit_path() {
         .success()
         .stdout(predicates::str::contains("42"));
 
-    // Whole provider: sorted `key=value` lines, nested objects flattened one level.
+    // Whole provider: sorted `key=value` lines, nested objects flattened.
     comb(&d)
         .args(["get", "textvirt"])
         .assert()
@@ -194,9 +197,9 @@ fn get_text_finds_put_created_virtual_without_explicit_path() {
 
 // ── get_sh_finds_put_created_virtual_without_explicit_path ───────────────────
 
-/// The `sh` output format shares the text short-circuit (both are
-/// `is_server_side()` and render through `render::render_data`), so it lost
-/// put-created values the same way. Companion to the text test above.
+/// The `sh` output format renders through the same `render::render_data` as
+/// text, so it lost put-created values the same way. Companion to the text
+/// test above.
 #[test]
 fn get_sh_finds_put_created_virtual_without_explicit_path() {
     let d = TestDaemon::spawn();
@@ -475,29 +478,19 @@ fn eval_single_tag_object_prints_like_get_text() {
 }
 
 #[test]
-fn eval_virtual_field_defined_with_tags_in_config() {
+fn get_of_a_template_written_with_tags_renders_it() {
     let d = TestDaemon::spawn();
-    let dir = tempfile::TempDir::new().unwrap();
-    let cfg = write_config(
-        dir.path(),
-        r#"
-[providers.x]
-virtual.y = "{{ env.A }}"
-"#,
-    );
 
-    // A config virtual field written with tags resolves the same way through
-    // `get` and through `eval`.
-    comb_with_config(&d, &cfg)
+    // A template is data the daemon holds under `x:template`; `get x.y`
+    // renders it with the caller's environment.
+    comb(&d)
+        .args(["put", "x:template.y", r#""{{ env.A }}""#, "--path", "/"])
+        .assert()
+        .success();
+
+    comb(&d)
         .env("A", "from-env")
         .args(["get", "x.y"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("from-env"));
-
-    comb_with_config(&d, &cfg)
-        .env("A", "from-env")
-        .args(["eval", "{{ x.y }}"])
         .assert()
         .success()
         .stdout(predicates::str::diff("from-env"));

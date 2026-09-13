@@ -1,11 +1,16 @@
 use crate::common::poll::poll_until;
 use crate::common::socket::IsolatedSocket;
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::Duration;
 
 #[allow(dead_code)]
 pub struct TestDaemon {
     pub socket: IsolatedSocket,
+    /// The daemon's `$HOME`, a directory inside the socket's tempdir.
+    pub home: PathBuf,
+    /// The daemon's `$XDG_CONFIG_HOME`; its config dir is `xdg/beachcomber`.
+    pub xdg: PathBuf,
     process: Child,
 }
 
@@ -19,6 +24,13 @@ impl TestDaemon {
         // than at the developer's real `~/.config/beachcomber`.
         let home = socket.dir.path().join("home");
         let xdg = socket.dir.path().join("xdg");
+        Self::spawn_in(socket, home, xdg)
+    }
+
+    /// Spawn with a chosen `$HOME` and `$XDG_CONFIG_HOME`, for a test that
+    /// writes into the daemon's config dir (`xdg/beachcomber`) before it starts.
+    #[allow(dead_code)]
+    pub fn spawn_in(socket: IsolatedSocket, home: PathBuf, xdg: PathBuf) -> Self {
         std::fs::create_dir_all(&home).expect("create temp HOME");
         // The Child is stored in the returned struct and wait()ed in the Drop impl.
         #[allow(clippy::zombie_processes)]
@@ -42,7 +54,12 @@ impl TestDaemon {
             || socket.path.exists(),
             |exists| *exists,
         );
-        Self { socket, process }
+        Self {
+            socket,
+            home,
+            xdg,
+            process,
+        }
     }
 }
 

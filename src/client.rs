@@ -1,4 +1,5 @@
 use crate::protocol::Response;
+use libbeachcomber::resolve::{Fetch, FetchError, Got};
 use libbeachcomber::{CombError, CombResult, HelloInfo, IntrospectResponse, IntrospectSubject};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -376,6 +377,31 @@ impl ClientSession {
             Ok(None) => Ok(None),
             Err(CombError::ServerError(msg)) => Ok(Some(Response::error(msg))),
             Err(e) => Err(comb_error_to_io(e)),
+        }
+    }
+}
+
+/// The CLI's transport for [`libbeachcomber::resolve`]: one daemon `get` per
+/// node on this session's connection.
+///
+/// A node with nothing in it — no `data`, no `template` — is a miss, and so is
+/// a key the daemon rejected (`ok: false`, e.g. an invalid facet): the daemon
+/// answered, and nothing is stored at that address. That is the rule the FFI's
+/// `Fetch` applies too, so `comb get` and `bc_resolve` agree on what a
+/// rejected key is worth. Every other failure is the transport's and aborts the
+/// resolution, worded as `comb_error_to_io` words it for every other op.
+impl Fetch for ClientSession {
+    fn get(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: bool,
+    ) -> Result<Option<Got>, FetchError> {
+        match self.session.get_node(key, path, force, wait) {
+            Ok(got) => Ok((got != Got::default()).then_some(got)),
+            Err(CombError::ServerError(_)) => Ok(None),
+            Err(e) => Err(FetchError(comb_error_to_io(e).to_string())),
         }
     }
 }

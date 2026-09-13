@@ -2,34 +2,40 @@
 //! shell-escapes it. Object output (a whole-provider or object-valued query)
 //! must escape each value too, not only scalars.
 //!
-//! Two rendering paths reach `-f sh` and both are covered here:
+//! Two kinds of value reach `-f sh` and both are covered here, through the
+//! one renderer (`libbeachcomber::render::render_data`):
 //!
-//! - **client-side** — `conda` is the cleanest probe: a pure-virtual namespace
-//!   (no daemon provider behind it), so `comb get conda` renders through the
-//!   CLI's own object formatter with no socket in play.
-//! - **daemon-backed** — a `put`-created provider has no virtual fields, so
-//!   `comb get -f sh <prov>` short-circuits to `Client::get_formatted_with_flags`
-//!   and renders through `libbeachcomber::render::render_data`.
+//! - **rendered** — `conda` is the cleanest probe: a namespace the daemon holds
+//!   only a template for (the managed default `conda:template.env`), so
+//!   `comb get conda` is an object assembled entirely from rendered leaves.
+//! - **cached** — a `put`-created provider has no template, so
+//!   `comb get -f sh <prov>` is the daemon's data as stored.
 
 mod common;
 
 use assert_cmd::Command;
 use common::daemon::TestDaemon;
-use tempfile::TempDir;
 
-/// Run `comb get -f <format> conda` with `CONDA_DEFAULT_ENV` set to `value`,
-/// against a socket that does not exist (no daemon is contacted for `conda`).
-fn conda_output(format: &str, value: &str) -> String {
-    let dir = TempDir::new().unwrap();
-    let bogus_sock = dir.path().join("nonexistent.sock");
+/// A `comb` at `/`, pointed at `d`'s socket and its temp `$HOME`/config dir.
+fn comb(d: &TestDaemon) -> Command {
     let mut cmd = Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &bogus_sock)
+    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
         .env("RUST_LOG", "error")
-        .env("HOME", dir.path())
-        .env("XDG_CONFIG_HOME", dir.path().join("cfg"))
+        .env("HOME", &d.home)
+        .env("XDG_CONFIG_HOME", &d.xdg)
+        .current_dir("/");
+    cmd
+}
+
+/// Run `comb get -f <format> conda` with `CONDA_DEFAULT_ENV` set to `value`
+/// against a daemon whose managed defaults hold `conda:template.env`.
+fn conda_output(format: &str, value: &str) -> String {
+    let d = TestDaemon::spawn();
+    let assert = comb(&d)
         .env("CONDA_DEFAULT_ENV", value)
-        .args(["get", "-f", format, "conda"]);
-    let assert = cmd.assert().success();
+        .args(["get", "-f", format, "conda"])
+        .assert()
+        .success();
     String::from_utf8(assert.get_output().stdout.clone()).unwrap()
 }
 
@@ -73,21 +79,15 @@ fn text_format_leaves_object_values_raw() {
     assert_eq!(out, "env=it's a $HOME env", "-f text must not shell-escape");
 }
 
-// ── daemon-backed path (`render::render_data`) ───────────────────────────────
+// ── cached values ────────────────────────────────────────────────────────────
 
 /// The nasty value every daemon-backed case below round-trips: a space, a
 /// single quote and a `$` — each of which breaks a bare `eval`.
 const HOSTILE: &str = "it's a $HOME env";
 
-/// Seed `shq` (a `put`-created provider, so no virtual fields and no
-/// client-side resolution) and run `comb get -f <format> <key>` against it.
+/// Run `comb get -f <format> <key>` against `d`.
 fn daemon_output(d: &TestDaemon, format: &str, key: &str) -> String {
-    let mut cmd = Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .current_dir("/")
-        .args(["get", "-f", format, key]);
-    let assert = cmd.assert().success();
+    let assert = comb(d).args(["get", "-f", format, key]).assert().success();
     String::from_utf8(assert.get_output().stdout.clone()).unwrap()
 }
 
@@ -95,11 +95,7 @@ fn daemon_output(d: &TestDaemon, format: &str, key: &str) -> String {
 /// helper above queries from).
 fn seed(d: &TestDaemon) {
     let payload = serde_json::json!({ "one": HOSTILE, "two": 42 }).to_string();
-    Command::cargo_bin("comb")
-        .unwrap()
-        .env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .current_dir("/")
+    comb(d)
         .args(["put", "shq", &payload, "--path", "/"])
         .assert()
         .success();
@@ -166,11 +162,7 @@ fn daemon_object_sh_escapes_every_value() {
 #[test]
 fn daemon_scalar_sh_escapes_newline() {
     let d = TestDaemon::spawn();
-    Command::cargo_bin("comb")
-        .unwrap()
-        .env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .current_dir("/")
+    comb(&d)
         .args([
             "put",
             "shnl",
@@ -200,14 +192,14 @@ fn daemon_text_leaves_values_raw() {
     );
 }
 
-/// `-f json` on the daemon-backed path is untouched: the value keeps its
-/// natural type and is never shell-quoted.
+/// `-f json` is the resolved value itself: it keeps its natural type and is
+/// never shell-quoted.
 #[test]
 fn daemon_json_is_unescaped_and_typed() {
     let d = TestDaemon::spawn();
     seed(&d);
     let parsed: serde_json::Value =
         serde_json::from_str(&daemon_output(&d, "json", "shq")).expect("json parses");
-    assert_eq!(parsed["data"]["one"], serde_json::json!(HOSTILE));
-    assert_eq!(parsed["data"]["two"], serde_json::json!(42));
+    assert_eq!(parsed["one"], serde_json::json!(HOSTILE));
+    assert_eq!(parsed["two"], serde_json::json!(42));
 }

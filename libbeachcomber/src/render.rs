@@ -41,39 +41,52 @@ fn render_value(v: &Value, sh: bool) -> String {
 }
 
 /// Render a `get`/`watch` response's `data` field into `format`: scalars bare,
-/// objects as sorted `subkey=value` lines with one level of
-/// `outer.inner=value` flattening for nested objects, and `None`/`Value::Null`
-/// (a miss, or an explicit null) both rendering as the empty string.
+/// containers as sorted `a.b.c=value` lines — one per leaf at any depth,
+/// objects by key and arrays by decimal index — and `None`/`Value::Null` (a
+/// miss, or an explicit null) both rendering as the empty string.
 ///
 /// `format` is the wire format name. `"sh"` shell-quotes every rendered value
-/// — the scalar, or each value of a flattened object — so the output is safe
-/// to `eval` (canon `field_resolution.md` invariant 8); keys are left bare.
-/// Every other name (`"text"`, `"json"`, anything unrecognised) renders
+/// — the scalar, or each leaf of a flattened container — so the output is
+/// safe to `eval` (canon `field_resolution.md` invariant 8); keys are left
+/// bare. Every other name (`"text"`, `"json"`, anything unrecognised) renders
 /// unquoted, exactly as before. A miss stays the empty string under `sh` too:
 /// nothing to assign, not an empty-string assignment.
 pub fn render_data(data: Option<&Value>, format: &str) -> String {
     let sh = format == "sh";
     match data {
-        Some(Value::Object(map)) => {
-            let mut lines: Vec<String> = map
-                .iter()
-                .flat_map(|(k, v)| {
-                    if let Value::Object(inner) = v {
-                        // Nested object: flatten as outer.inner=value
-                        inner
-                            .iter()
-                            .map(|(ik, iv)| format!("{k}.{ik}={}", render_value(iv, sh)))
-                            .collect::<Vec<_>>()
-                    } else {
-                        vec![format!("{k}={}", render_value(v, sh))]
-                    }
-                })
-                .collect();
+        Some(Value::Null) | None => String::new(),
+        Some(container @ (Value::Object(_) | Value::Array(_))) => {
+            let mut lines = Vec::new();
+            flatten("", container, sh, &mut lines);
             lines.sort();
             lines.join("\n")
         }
-        Some(Value::Null) | None => String::new(),
         Some(other) => render_value(other, sh),
+    }
+}
+
+/// Push one `path=value` line per leaf under `value`, `prefix` being the
+/// dotted path to it. An empty container contributes no line.
+fn flatten(prefix: &str, value: &Value, sh: bool, lines: &mut Vec<String>) {
+    let at = |segment: &str| {
+        if prefix.is_empty() {
+            segment.to_string()
+        } else {
+            format!("{prefix}.{segment}")
+        }
+    };
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map {
+                flatten(&at(k), v, sh, lines);
+            }
+        }
+        Value::Array(items) => {
+            for (i, v) in items.iter().enumerate() {
+                flatten(&at(&i.to_string()), v, sh, lines);
+            }
+        }
+        leaf => lines.push(format!("{prefix}={}", render_value(leaf, sh))),
     }
 }
 
@@ -117,12 +130,33 @@ mod tests {
     }
 
     #[test]
-    fn nested_object_flattens_one_level() {
-        let data = serde_json::json!({"tools": {"node": "20", "python": "3.12"}});
+    fn nested_object_flattens_to_one_line_per_leaf_at_any_depth() {
+        let data = serde_json::json!({
+            "tools": {"node": "20", "python": "3.12"},
+            "widgets": {"clock": {"format": "%H:%M"}, "n": null}
+        });
         assert_eq!(
             render_data(Some(&data), "text"),
-            "tools.node=20\ntools.python=3.12"
+            "tools.node=20\ntools.python=3.12\nwidgets.clock.format=%H:%M\nwidgets.n=null"
         );
+    }
+
+    #[test]
+    fn arrays_flatten_by_decimal_index() {
+        let data = serde_json::json!({"list": ["a", {"k": "v"}], "n": 1});
+        assert_eq!(
+            render_data(Some(&data), "text"),
+            "list.0=a\nlist.1.k=v\nn=1"
+        );
+        let top = serde_json::json!(["x", "y"]);
+        assert_eq!(render_data(Some(&top), "text"), "0=x\n1=y");
+    }
+
+    #[test]
+    fn empty_containers_contribute_no_line() {
+        let data = serde_json::json!({"a": {}, "b": [], "c": 1});
+        assert_eq!(render_data(Some(&data), "text"), "c=1");
+        assert_eq!(render_data(Some(&serde_json::json!([])), "text"), "");
     }
 
     // ── sh: canon field_resolution.md invariant 8 ────────────────────────────
@@ -155,10 +189,13 @@ mod tests {
 
     #[test]
     fn sh_quotes_flattened_nested_values() {
-        let data = serde_json::json!({"tools": {"node": "20 rc", "python": "3.12"}});
+        let data = serde_json::json!({
+            "tools": {"node": "20 rc", "python": "3.12"},
+            "deep": {"er": {"list": ["it's"]}}
+        });
         assert_eq!(
             render_data(Some(&data), "sh"),
-            "tools.node='20 rc'\ntools.python='3.12'"
+            "deep.er.list.0='it'\\''s'\ntools.node='20 rc'\ntools.python='3.12'"
         );
     }
 

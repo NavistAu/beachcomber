@@ -100,25 +100,25 @@ async fn get_variadic_single_key_is_unchanged() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_variadic_json_format_produces_array() {
-    // Verify that multiple-key JSON aggregation produces a valid JSON array.
-    let (_tmp, sock) = setup_server().await;
-    let client = Client::new(sock);
-    let mut session = client.connect().unwrap();
+    // `comb get -f json a b` is one JSON array of the resolved values, in key
+    // order.
+    let (tmp, sock) = setup_server().await;
 
-    let responses = fetch_keys(&mut session, &["hostname.value", "user.value"]).await;
+    let stdout = tokio::task::spawn_blocking(move || {
+        let out = assert_cmd::Command::cargo_bin("comb")
+            .unwrap()
+            .env("BEACHCOMBER_SOCKET", &sock)
+            .env("RUST_LOG", "error")
+            .env("HOME", tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path().join("cfg"))
+            .args(["get", "-f", "json", "hostname.value", "user.value"])
+            .assert()
+            .success();
+        String::from_utf8(out.get_output().stdout.clone()).unwrap()
+    })
+    .await
+    .unwrap();
 
-    // Serialize as an array the same way run_get does.
-    let arr: Vec<&beachcomber::protocol::Response> = responses.iter().collect();
-    let json_str = serde_json::to_string_pretty(&arr).unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON array");
-
-    assert!(parsed.is_array());
-    let arr = parsed.as_array().unwrap();
-    assert_eq!(arr.len(), 2);
-
-    // Each element must have ok:true and a data field.
-    for element in arr {
-        assert_eq!(element["ok"], serde_json::json!(true));
-        assert!(!element["data"].is_null());
-    }
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert_eq!(parsed, serde_json::json!(["myhost", "alice"]));
 }

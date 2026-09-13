@@ -1473,22 +1473,21 @@ async fn cli_carries_the_cwd_for_a_plain_get_from_a_subdirectory() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cli_carries_the_cwd_for_a_virtual_fields_dependency_fetch() {
+async fn cli_carries_the_cwd_for_a_templates_dependency_fetch() {
     let f = Fixture::defaults();
     let project = PathBuf::from(f.path("ws/project"));
     let deep = PathBuf::from(f.path("ws/project/foo/bar/baz"));
     let cfg = f.home.join("cfg");
-    std::fs::create_dir_all(cfg.join("beachcomber")).unwrap();
-    std::fs::write(
-        cfg.join("beachcomber").join("config.toml"),
-        "[providers.myvirt.virtual]\nw = \"{{ cache.seed.v }}\"\n",
-    )
-    .unwrap();
 
-    let project_arg = project.to_string_lossy().into_owned();
     let out = tokio::task::spawn_blocking(move || {
+        // Both the template and the value it reads live at the project; the
+        // read is from a directory beneath it.
         comb(&f, &project, &cfg)
-            .args(["put", "seed", r#"{"v":"chain-ok"}"#, "--path", &project_arg])
+            .args(["put", "myvirt:template.w", r#""{{ cache.seed.v }}""#])
+            .assert()
+            .success();
+        comb(&f, &project, &cfg)
+            .args(["put", "seed", r#"{"v":"chain-ok"}"#])
             .assert()
             .success();
         let got = comb(&f, &deep, &cfg)
@@ -1503,6 +1502,6 @@ async fn cli_carries_the_cwd_for_a_virtual_fields_dependency_fetch() {
     assert_eq!(
         out.trim(),
         "chain-ok",
-        "the daemon dependency fetch carries the cwd, so the chain finds the seed"
+        "the template and its dependency fetch carry the cwd, so the chain finds both"
     );
 }

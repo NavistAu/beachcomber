@@ -1,5 +1,5 @@
-// Verify that the multi-key server-side text/sh path propagates force=true
-// and wait=true. Phase 1 Round 3 bug: session.get_formatted dropped both.
+// Verify that a multi-key `comb get` propagates force=true and wait=true to
+// every fetch. Phase 1 Round 3 bug: session.get_formatted dropped both.
 
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
@@ -70,20 +70,29 @@ async fn session_get_formatted_with_flags_forwards_wait() {
     );
 }
 
-#[test]
-fn run_get_multikey_server_side_uses_get_formatted_with_flags() {
-    // The multi-key server-side loop must call get_formatted_with_flags,
-    // not the flag-less get_formatted. This guards against regression to
-    // the Round 3 bug where force and wait were silently dropped.
-    // run_get now lives in src/cli/commands/get.rs (moved in Task 2.2).
-    // Whitespace-normalized so rustfmt's line-wrapping of this call (it no
-    // longer shares a line with a trailing `.await`, and rustfmt adds a
-    // trailing comma once it wraps) doesn't break the check.
-    let src = std::fs::read_to_string("src/cli/commands/get.rs").unwrap();
-    let normalized: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn comb_get_multikey_forwards_force_to_every_fetch() {
+    // `--force` on a multi-key get reaches each key's fetch: both seeded
+    // hostname fields are evicted and re-executed, so neither seed is printed.
+    let (tmp, sock) = setup_seeded().await;
+
+    let stdout = tokio::task::spawn_blocking(move || {
+        let out = assert_cmd::Command::cargo_bin("comb")
+            .unwrap()
+            .env("BEACHCOMBER_SOCKET", &sock)
+            .env("RUST_LOG", "error")
+            .env("HOME", tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path().join("cfg"))
+            .args(["get", "--force", "hostname.name", "hostname.short"])
+            .assert()
+            .success();
+        String::from_utf8(out.get_output().stdout.clone()).unwrap()
+    })
+    .await
+    .unwrap();
+
     assert!(
-        normalized.contains("get_formatted_with_flags(key,effective_key_path,wire_fmt,force,wait"),
-        "run_get's multi-key server-side loop must forward force and wait via \
-         get_formatted_with_flags"
+        !stdout.contains("seeded"),
+        "--force must evict every seeded field and re-execute; got {stdout:?}"
     );
 }
