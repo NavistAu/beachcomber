@@ -32,12 +32,9 @@
 //!   some descendant manages to escape the group (e.g. by calling
 //!   `setsid`), a `run` call still returns instead of hanging on it.
 //!
-//! Error strings returned here are plain text. They must never contain the
-//! substring `"compile error"` — `libbeachcomber-ffi::eval_error_kind`
-//! matches that substring to classify eval failures, and the
-//! `"expression eval error: "` / `"template render error: "` prefixes that
-//! wrap these messages on the eval path are added by the caller
-//! (`eval/mod.rs`), not here.
+//! Error strings returned here are plain text; the `"expression eval error: "`
+//! / `"template render error: "` prefixes that wrap them on the eval path are
+//! added by the caller (`eval/mod.rs`), not here.
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;

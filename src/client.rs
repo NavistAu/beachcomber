@@ -37,9 +37,10 @@ fn build_client(socket_path: &Path) -> libbeachcomber::Client {
     libbeachcomber::Client::with_config(libbeachcomber::ClientConfig {
         timeout: SOCKET_TIMEOUT,
         auto_start: false,
-        // The CLI resolves with exec on regardless (its `Inputs` say so);
-        // the config states the same so nothing reads a contradiction here.
-        exec: true,
+        // `exec` governs `bc_resolve`/`bc_eval` through `Client::allow_exec`,
+        // which the CLI never calls: each command decides at its own `Inputs`
+        // (`allow_exec: true` in `get` and `eval`). This flag is never read here.
+        ..libbeachcomber::ClientConfig::default()
     })
     .with_socket_path(socket_path.to_path_buf())
 }
