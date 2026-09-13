@@ -5,7 +5,7 @@ title: Built-in Providers
 
 # Built-in Providers
 
-beachcomber ships 19 built-in providers organized by category.
+beachcomber ships 16 built-in providers organized by category, plus [template-backed namespaces](#template-backed-namespaces) defined in the managed `defaults/` files.
 
 Each provider declares one or more **sources** — independent units of execution with their own invalidation strategy and lifecycle. The tables below show each provider's source breakdown. Consumers use `comb get provider.field` as before; the source is selected automatically by the registry's `field → source` map.
 
@@ -27,7 +27,6 @@ Each provider declares one or more **sources** — independent units of executio
 | `git` | `lineage` | poll 60s | path | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
 | `git` | `status` | fsevent_poll | path | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
 | `hostname` | `host` | fsevent (pure-watch global) | global | `name`, `short` |
-| `kubecontext` | `context` | poll 30s | global | `context`, `namespace` |
 | `load` | `loadavg` | poll 10s | global | `one`, `five`, `fifteen` |
 | `mise` | `global` | fsevent (pure-watch global) | global | global tool versions (one field per tool) |
 | `mise` | `project` | fsevent | path | project tool versions (one field per tool) |
@@ -188,23 +187,15 @@ feature/fast-cache
 
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `kubecontext` | global | `context` (string), `namespace` (string) | poll 30s | 749 ns |
 | `gcloud` | global | `project` (string), `account` (string) | poll 60s | 1.08 µs |
 | `aws` | global | `profile` (string), `region` (string), `source` (string), `expiration` (string) | poll 60s | < 1 µs |
 | `terraform` | path | `workspace` (string) | watch `.terraform` | < 1 µs |
 
-`kubecontext` reads `~/.kube/config` directly (respecting `$KUBECONFIG`) — no `kubectl` subprocess. `gcloud` reads `~/.config/gcloud/properties` directly — no Python CLI subprocess.
+`gcloud` reads `~/.config/gcloud/properties` directly — no Python CLI subprocess.
 
 **Example output:**
 
 ```json
-// comb g kubecontext
-{
-  "ok": true,
-  "data": { "context": "prod-cluster", "namespace": "default" },
-  "age_ms": 15200
-}
-
 // comb g aws
 {
   "ok": true,
@@ -212,6 +203,17 @@ feature/fast-cache
   "age_ms": 42100
 }
 ```
+
+## Template-backed namespaces
+
+`kubecontext` and `talos` are not daemon providers. Their fields are templates in the managed defaults the daemon writes to `~/.config/beachcomber/defaults/`:
+
+| Namespace | Default file | Fields | Renders by |
+|---|---|---|---|
+| `kubecontext` | `defaults/kubecontext.toml` | `context`, `namespace` | `exec('kubectl', 'config', …)` |
+| `talos` | `defaults/talos.toml` | `context` | `exec('talosctl', 'config', 'info', …)` |
+
+Each one calls the tool the shell would run, so it honours the shell's own `$KUBECONFIG`/`$TALOSCONFIG`, and the field names are unchanged — `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `exec()` is enabled: `comb get`/`comb eval`, or an SDK client constructed with `exec` on. Anywhere else the field is the error `exec() is disabled in this context`.
 
 ## Development Tools
 

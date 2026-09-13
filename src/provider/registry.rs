@@ -190,9 +190,6 @@ impl ProviderRegistry {
             .register(Box::new(crate::provider::hostname::HostnameProvider))
             .expect("hostname");
         registry
-            .register(Box::new(crate::provider::kubecontext::KubecontextProvider))
-            .expect("kubecontext");
-        registry
             .register(Box::new(crate::provider::load::LoadProvider))
             .expect("load");
         registry
@@ -207,9 +204,6 @@ impl ProviderRegistry {
         registry
             .register(Box::new(crate::provider::sudo::SudoProvider))
             .expect("sudo");
-        registry
-            .register(Box::new(crate::provider::talos::TalosProvider))
-            .expect("talos");
         registry
             .register(Box::new(crate::provider::terraform::TerraformProvider))
             .expect("terraform");
@@ -255,16 +249,11 @@ impl ProviderRegistry {
         add_builtin!("gcloud_configs", crate::provider::gcloud::GcloudProvider);
         add_builtin!("git", crate::provider::git::GitProvider);
         add_builtin!("hostname", crate::provider::hostname::HostnameProvider);
-        add_builtin!(
-            "kubecontext",
-            crate::provider::kubecontext::KubecontextProvider
-        );
         add_builtin!("load", crate::provider::load::LoadProvider);
         add_builtin!("mise", crate::provider::mise::MiseProvider);
         add_builtin!("network", crate::provider::network::NetworkProvider);
         add_builtin!("python", crate::provider::python::PythonProvider);
         add_builtin!("sudo", crate::provider::sudo::SudoProvider);
-        add_builtin!("talos", crate::provider::talos::TalosProvider);
         add_builtin!("terraform", crate::provider::terraform::TerraformProvider);
         add_builtin!("uname", crate::provider::uname::UnameProvider);
         #[cfg(any(target_os = "macos", target_os = "linux"))]

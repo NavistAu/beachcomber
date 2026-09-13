@@ -319,7 +319,7 @@ comb e '{{ exec("git", "rev-parse", "--short", "HEAD") }}' .
 | Output | stdout, lossy-UTF-8 decoded, with at most one trailing `\n` (and a preceding `\r`) stripped |
 | Output cap | stdout past 1 MiB is a failure, not a truncation |
 | Failure | a non-zero exit, a timeout, an oversized stdout, or a spawn error is an eval error naming the command, with stderr (truncated) attached |
-| Availability | `comb eval` and `comb get`'s virtual-field evaluation only — the CLI user already has a shell. Disabled everywhere else a value expression is evaluated: path expressions, every other formatting surface (`-f fmt`, `watch -f fmt`, the status formatter), and the FFI/SDK surface (`bc_eval`/`bc_resolve`). A call on a disabled surface fails immediately with `exec() is disabled in this context`. |
+| Availability | `comb eval` and `comb get`'s virtual-field evaluation only — the CLI user already has a shell. Disabled everywhere else a value expression is evaluated: every other formatting surface (`-f fmt`, `watch -f fmt`, the status formatter), and the FFI/SDK surface (`bc_eval`/`bc_resolve`). A call on a disabled surface fails immediately with `exec() is disabled in this context`. |
 
 `exec()` always runs client-side — the daemon never executes it, the same as every other value expression. See the [Configuration Reference](/docs/reference/configuration-reference) for a virtual-field example that wraps a script call.
 

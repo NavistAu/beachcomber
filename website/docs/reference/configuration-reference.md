@@ -299,7 +299,7 @@ virtual.deploy_tag = "{{ exec(\"git\", \"describe\", \"--tags\", \"--always\") }
 | `stdin` | keyword, default none; must be a string — `\| tojson` first for structured data |
 | Output | stdout, lossy-UTF-8, at most one trailing newline stripped; capped at 1 MiB (an oversized stdout is a failure, not a truncation) |
 | Failure | non-zero exit / timeout / oversized stdout / spawn failure → eval error naming the command, with truncated stderr attached |
-| Availability | `comb eval` and `comb get` only — evaluation is always client-side, never on the daemon. Disabled (`exec() is disabled in this context`) in path expressions, formatting surfaces (`-f fmt`, `watch -f fmt`, the status formatter), and the FFI/SDK surface (`bc_eval`/`bc_resolve`) |
+| Availability | `comb eval` and `comb get` only — evaluation is always client-side, never on the daemon. Disabled (`exec() is disabled in this context`) in formatting surfaces (`-f fmt`, `watch -f fmt`, the status formatter), and the FFI/SDK surface (`bc_eval`/`bc_resolve`) |
 
 A whole-namespace `comb get <provider>` evaluates every virtual field in that provider in sequence, so several `exec()`-backed fields under one provider can serialise up to N × `timeout_ms` in the worst case — pass an explicit, low `timeout_ms` when the consumer is latency-sensitive (a shell prompt or statusline).
 

@@ -2,30 +2,6 @@ use beachcomber::provider::Provider;
 use beachcomber::provider::SourceScope;
 use beachcomber::provider::aws::AwsProvider;
 use beachcomber::provider::gcloud::GcloudProvider;
-use beachcomber::provider::kubecontext::KubecontextProvider;
-
-#[test]
-fn kubecontext_provider_metadata() {
-    let p = KubecontextProvider;
-    let meta = p.metadata();
-    assert_eq!(meta.name, "kubecontext");
-    assert_eq!(meta.sources.len(), 1);
-    let src = &meta.sources[0];
-    assert_eq!(src.name, "context");
-    // PathScoped (Task 8): the source reads the kubeconfig path the CLI hands it
-    // (resolved from $KUBECONFIG via the provider's path expression), not a fixed file.
-    assert_eq!(src.scope, SourceScope::PathScoped);
-    let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"context"));
-    assert!(fields.contains(&"namespace"));
-}
-
-#[test]
-fn kubecontext_executes_without_panic() {
-    let p = KubecontextProvider;
-    let sources = p.sources();
-    let _ = sources[0].execute(None); // May return empty if kubectl not installed
-}
 
 #[test]
 fn aws_provider_metadata() {

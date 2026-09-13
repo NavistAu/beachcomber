@@ -6,7 +6,6 @@ pub mod gcloud;
 pub mod git;
 pub mod hostname;
 pub mod http;
-pub mod kubecontext;
 pub mod library;
 pub mod load;
 pub mod mise;
@@ -15,7 +14,6 @@ pub mod python;
 pub mod registry;
 pub mod script;
 pub mod sudo;
-pub mod talos;
 pub mod terraform;
 pub mod uname;
 #[cfg(target_os = "macos")]
@@ -597,14 +595,6 @@ fn validate_source(provider: &str, s: &SourceMetadata) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum ProviderSource {
-    #[default]
-    Builtin,
-    Script,
-    Static,
-}
-
 /// A Provider is a namespace declaring one or more Sources.
 pub trait Provider: Send + Sync {
     fn metadata(&self) -> ProviderMetadata;
@@ -625,10 +615,9 @@ pub trait Source: Send + Sync {
     }
 
     /// Absolute files this PathScoped instance should watch, derived from its
-    /// scope `path`. Default: none. An env-selected file source (kube/talos)
-    /// returns the concrete files encoded in its (possibly ':'-joined) path so
-    /// the scheduler can watch each one even though the path is not a single
-    /// watchable directory. Only consulted for Watch/WatchAndPoll PathScoped sources.
+    /// scope `path`. Default: none. A source whose scope path is not itself a
+    /// watchable directory returns the concrete files the scheduler should
+    /// watch instead. Only consulted for Watch/WatchAndPoll PathScoped sources.
     fn watched_files(&self, _path: Option<&str>) -> Vec<std::path::PathBuf> {
         Vec::new()
     }

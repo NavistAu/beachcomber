@@ -35,13 +35,6 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       is treated as data-present in the Rust and C conformance runners but as a miss in Node, Ruby, Lua and Python.
       Settle whether `eval` has a genuine "miss" notion distinct from "resolved to null", and pin the answer with a
       conformance fixture.
-- [ ] **A path-expression compile error is swallowed to `None`.** `path_expr::evaluate_path` returns
-      `Option<String>`, where `None` means "empty/falsy result ⇒ the global slot" (canon `field_resolution.md`
-      §"Path resolution"). A source that fails to compile takes the same `None` — so a typo in a config `path =`
-      silently collapses the provider to the global slot instead of reporting the syntax error. Both forms now
-      compile (`{{ }}` and bare), which removes the most common way to hit this, but the wart stands: the return
-      type needs to distinguish "no path" from "bad expression", and every caller (`comb get`'s resolution layer,
-      `bc_resolve`'s path-expression arm, the conformance runners) needs to surface it.
 - [ ] **Per-directory customization.** In tool-heavy directories the prompt drowns in `mise` tool/version output —
       there's no way to shape what comb feeds a given project's prompt. Two candidate mechanisms: (a) a computed
       field (e.g. `tools_prompt`) that filters `mise.project` through an allowlist and the prompt pulls instead of the
@@ -49,13 +42,6 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       (b) a project config file (`.beachcomber.toml`?) carrying per-dir allowlists / virtual-field definitions — new
       discovery and trust surface, since config would come from arbitrary repos. Cross-references the env/cascade item
       above. The mise prompt-spam case is the acceptance test.
-- [ ] **Typed `EvalError` from `libbeachcomber::eval`.** `eval::evaluate` (and `VirtualFields::evaluate`) return a
-      plain `String` on failure; `libbeachcomber-ffi`'s `eval_error_kind` classifies `parse_error` vs `server_error` by
-      a substring check on `"compile error"`. Replace the `String` with a typed `EvalError { Compile, Eval, Render,
-      Cycle }` so the FFI (and any other caller) can match on the failure kind instead of parsing the message.
-      Exposing `exec()` on the FFI/SDK surface is blocked on this: an `exec()` failure message carries the child's
-      stderr verbatim, which can contain arbitrary text (including, incidentally, the substring `"compile error"`),
-      so string-substring classification is unsafe once exec-sourced messages can reach it.
 
 ### CLI Ergonomics
 

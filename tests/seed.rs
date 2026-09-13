@@ -311,6 +311,19 @@ async fn a_settings_key_in_a_facet_table_stops_the_daemon_starting() {
     .await;
 }
 
+/// `path` is not a provider setting any more (the path-expression setting is
+/// gone), so a facet may hold a leaf by that name: the table validates clean
+/// and the leaf is seeded like any other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_leaf_named_path_in_a_facet_table_is_data() {
+    let e = Env::new("[providers.\"git:template\"]\npath = \"x\"\n", &[]);
+    assert_eq!(startup_errors(), Vec::<String>::new());
+    let _h = e.serve().await;
+    let mut s = e.connect().await;
+
+    assert_eq!(data(&mut s, "git:template.path").await, json!("x"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reserved_facet_name_stops_the_daemon_starting() {
     let e = Env::new("[providers.\"x:age\"]\nn = \"1\"\n", &[]);

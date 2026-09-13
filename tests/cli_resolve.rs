@@ -5,7 +5,7 @@
 //! daemon at a temp socket with a temp `$HOME`/`$XDG_CONFIG_HOME`, the §3.1
 //! template tree put through `comb put`, and `SCANLINE_FOO=hi` in the shell.
 //!
-//! Outcomes pinned: 1, 2, 3, 4, 4a, 8, 22, 23 of the design's §12.
+//! Outcomes pinned: 1, 2, 3, 4, 4a, 8, 20, 22, 23 of the design's §12.
 
 mod common;
 
@@ -359,6 +359,79 @@ fn a_managed_default_renders_through_comb_get() {
     assert_eq!(
         String::from_utf8(out.get_output().stdout.clone()).unwrap(),
         "base"
+    );
+}
+
+// ── outcome 20: kubecontext is a template over kubectl ───────────────────────
+
+/// A daemon started with the managed defaults written, plus a `kubectl` on
+/// the child's `PATH` that prints `ctx-1` for `config current-context` and
+/// nothing for `config view …`.
+fn daemon_with_defaults_and_fake_kubectl() -> (TestDaemon, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let socket = IsolatedSocket::new();
+    let home = socket.dir.path().join("home");
+    let xdg = socket.dir.path().join("xdg");
+    beachcomber::daemon::defaults::write_managed_defaults(
+        &xdg.join("beachcomber").join("defaults"),
+        env!("BEACHCOMBER_VERSION"),
+    )
+    .expect("write managed defaults");
+    let bin = socket.dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let kubectl = bin.join("kubectl");
+    std::fs::write(
+        &kubectl,
+        "#!/bin/sh\ncase \"$2\" in current-context) printf 'ctx-1' ;; esac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&kubectl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (TestDaemon::spawn_in(socket, home, xdg), bin)
+}
+
+fn path_with(bin: &Path) -> String {
+    format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// `kubecontext.context` is `defaults/kubecontext.toml`'s template — the same
+/// field name the deleted daemon provider served, rendered through `exec()`
+/// over the `kubectl` the shell would run.
+#[test]
+fn kubecontext_context_renders_through_kubectl() {
+    let (d, bin) = daemon_with_defaults_and_fake_kubectl();
+    let cwd = project(&d);
+
+    let out = comb(&d, &cwd)
+        .env("PATH", path_with(&bin))
+        .args(["get", "kubecontext.context"])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8(out.get_output().stdout.clone()).unwrap(),
+        "ctx-1"
+    );
+}
+
+/// `kubecontext.namespace` falls back to `default` when `kubectl config view`
+/// prints no namespace.
+#[test]
+fn kubecontext_namespace_defaults_when_kubectl_prints_none() {
+    let (d, bin) = daemon_with_defaults_and_fake_kubectl();
+    let cwd = project(&d);
+
+    let out = comb(&d, &cwd)
+        .env("PATH", path_with(&bin))
+        .args(["get", "kubecontext.namespace"])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8(out.get_output().stdout.clone()).unwrap(),
+        "default"
     );
 }
 

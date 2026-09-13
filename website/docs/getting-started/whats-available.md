@@ -5,7 +5,7 @@ title: What's Available
 
 # What's Available
 
-beachcomber ships with 19 built-in providers out of the box — no configuration required. Each one exposes a small set of fields under a namespace.
+beachcomber ships with 16 built-in providers out of the box — no configuration required. Each one exposes a small set of fields under a namespace.
 
 The table below gives a one-line summary of each. See the [Built-in Providers reference](../reference/built-in-providers.md) for every field, type, and default polling cadence.
 
@@ -32,7 +32,6 @@ The table below gives a one-line summary of each. See the [Built-in Providers re
 
 | Provider | Scope | What it tells you | Example |
 |---|---|---|---|
-| `kubecontext` | global | Active kube context and namespace | `comb g kubecontext.context` |
 | `gcloud` | global | Active gcloud project and account | `comb g gcloud.project` |
 | `aws` | global | Active AWS profile and region | `comb g aws.profile` |
 | `terraform` | path | Current workspace | `comb g terraform.workspace .` |
@@ -46,6 +45,10 @@ The table below gives a one-line summary of each. See the [Built-in Providers re
 | `mise` | path | Tool versions in effect | `comb g mise .` |
 | `asdf` | path | Tool versions in effect | `comb g asdf .` |
 | `direnv` | path | envrc status and whether it's allowed | `comb g direnv.status .` |
+
+## Template-backed namespaces
+
+`kubecontext` and `talos` are templates rather than daemon providers: the managed `defaults/kubecontext.toml` and `defaults/talos.toml` render `kubecontext.context`, `kubecontext.namespace` and `talos.context` by calling `kubectl`/`talosctl` through `exec()`. `comb g kubecontext.context` works as before; because they spawn a process, they render only where `exec()` is enabled (`comb get`/`eval`, or an SDK client with `exec` on). See the [Built-in Providers reference](../reference/built-in-providers.md#template-backed-namespaces).
 
 ## Scope at a glance
 

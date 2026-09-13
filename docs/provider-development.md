@@ -2,7 +2,7 @@
 
 Step-by-step reference for writing new built-in providers. Built-in providers live in `src/provider/` and are compiled into the daemon. For a lower-effort path using shell scripts, see §6.
 
-For the authoritative model of how consumer queries resolve against providers — field types, the `cache.*` namespace, path expressions, value expressions, and env-driven selection — see **`docs/canon/field_resolution.md`**.
+For the authoritative model of how consumer queries resolve against providers — field types, the `cache.*` namespace, value expressions, and env-driven selection — see **`docs/canon/field_resolution.md`**.
 
 ---
 
@@ -514,28 +514,9 @@ terraform.workspace = {{ env.TF_WORKSPACE or cache.terraform.workspace }}
 
 ---
 
-## 2c. Path Expressions
+## 2c. `Source::watched_files`
 
-A provider's **cache-key path** is computed client-side by a **path expression** — a Jinja expression over `cwd` and `env.*`. Like a value expression it may be written bare, as a single `{{ }}` tag, or as a template; the examples below are bare, and wrapping any of them in `{{ }}` means exactly the same thing.
-
-```toml
-[providers.myproject]
-path = "cwd"                              # path-scoped at the working directory (default for PathScoped)
-path = ""                                 # always global
-path = "env.MYCONFIG or '/etc/myapp'"    # env-selected file; default when unset
-```
-
-- Non-empty result → the query reads the `(provider, result)` slot (path-scoped).
-- Empty/falsy result → the pathless `(provider, None)` global slot.
-- Built-in providers ship compiled-in defaults; config overrides them per provider.
-
-The client resolves the expression and sends the result as the `path` field in the wire request. **The daemon never reads `env` or `cwd`** — it only receives the concrete path coordinate.
-
----
-
-## 2d. `Source::watched_files` — Env-Selected File Providers (Tier B)
-
-When a source needs to watch a file whose path comes from an env var (e.g. `$KUBECONFIG`), the daemon cannot determine that path at registration time — `cwd`/`env` belong to the calling shell. The solution is `Source::watched_files`:
+When a `PathScoped` source's scope path is not itself a watchable directory, `Source::watched_files` names the concrete files the scheduler should watch for it:
 
 ```rust
 pub trait Source: Send + Sync {
@@ -550,22 +531,10 @@ pub trait Source: Send + Sync {
 }
 ```
 
-The scheduler calls `watched_files(resolved_path)` when demand is first registered and uses the result to set up per-file watches. For a `:`-joined list the source splits the path and returns each file. The daemon watches the concrete files; the client resolves the selector to a path and passes it as the cache coordinate.
-
-Example shape (Tier B provider like `kubecontext` or `talos`):
-
-```rust
-fn watched_files(&self, path: Option<&str>) -> Vec<PathBuf> {
-    let Some(p) = path else { return vec![] };
-    // A ':'-joined list — watch each file individually.
-    p.split(':').map(PathBuf::from).collect()
-}
-```
+The scheduler calls `watched_files(scope_path)` when demand is first registered and uses the result to set up per-file watches, each subscribed to that instance's lifecycle key. No built-in source overrides it today.
 
 Use `watched_files` when:
-- The file to watch is determined by a per-shell env var (path expression resolves it client-side).
-- A `:`-joined list of files should each be watched.
-- `abs_paths` in the invalidation strategy is not suitable because the path is dynamic per query.
+- `abs_paths` in the invalidation strategy is not suitable because the files depend on the scope path.
 
 ---
 
@@ -661,7 +630,7 @@ Provider execution happens on tokio's blocking thread pool. Slow providers delay
 
 | Tier | Target | Method |
 |---|---|---|
-| Nanosecond (<1µs) | `user`, `hostname`, `kubecontext`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
+| Nanosecond (<1µs) | `user`, `hostname`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
 | Microsecond (1-100µs) | `terraform`, `python`, `direnv` (no binary) | File existence checks + small reads |
 | Millisecond (1-10ms) | `git`, `network`, `battery` | At most one process spawn |
 | Slow (10-50ms) | `mise`, `direnv` (with binary), script providers | Multiple spawns or interpreted CLI |
@@ -684,7 +653,6 @@ let count = std::fs::read_to_string(&stash_log)
 
 Real examples from `docs/performance.md`:
 - `gcloud`: reading `~/.config/gcloud/properties` instead of spawning the Python CLI — 500ms to 1µs (~500,000x)
-- `kubecontext`: reading `~/.kube/config` instead of running `kubectl` — 60ms to 749ns (~80,000x)
 - `git` stash: reading `.git/logs/refs/stash` instead of `git stash list` — 5ms to 1µs
 
 **Rule 2: If you must spawn a process, spawn exactly one.**

@@ -20,7 +20,6 @@ pub mod eval;
 // `virtual_fields::build_expression_env`.
 mod exec;
 pub mod filters;
-pub mod path_expr;
 pub mod render;
 pub mod resolve;
 pub mod virtual_fields;

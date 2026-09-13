@@ -84,6 +84,6 @@ Source your `.zshrc` and open a few more shells in the same repo. Run `comb s` �
 
 ## Next steps
 
-- **[What's Available](./whats-available.md)** — the 19 built-in providers and what they expose.
+- **[What's Available](./whats-available.md)** — the 16 built-in providers and what they expose.
 - **[How It Works](./how-it-works.md)** — the daemon architecture in one page.
 - **[Integrations](../integrations/shell.md)** — wire beachcomber into your prompt, status bar, or editor.

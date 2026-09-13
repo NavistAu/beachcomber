@@ -3,7 +3,6 @@ use beachcomber::provider::battery::BatteryProvider;
 use beachcomber::provider::gcloud::GcloudProvider;
 use beachcomber::provider::git::GitProvider;
 use beachcomber::provider::hostname::HostnameProvider;
-use beachcomber::provider::kubecontext::KubecontextProvider;
 use beachcomber::provider::load::LoadProvider;
 use beachcomber::provider::network::NetworkProvider;
 use beachcomber::provider::uptime::UptimeProvider;
@@ -118,15 +117,6 @@ fn bench_battery_execute(c: &mut Criterion) {
     });
 }
 
-fn bench_kubecontext_execute(c: &mut Criterion) {
-    let p = KubecontextProvider;
-    c.bench_function("provider_kubecontext_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
-}
-
 fn bench_gcloud_execute(c: &mut Criterion) {
     let p = GcloudProvider;
     c.bench_function("provider_gcloud_execute", |b| {
@@ -146,7 +136,6 @@ criterion_group!(
     bench_git_vs_raw,
     bench_network_execute,
     bench_battery_execute,
-    bench_kubecontext_execute,
     bench_gcloud_execute,
 );
 criterion_main!(benches);

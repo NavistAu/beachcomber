@@ -446,7 +446,7 @@ Provider execution happens on tokio's blocking thread pool. Slow providers delay
 
 | Tier | Target | Method |
 |---|---|---|
-| Nanosecond (`<1µs`) | `user`, `hostname`, `kubecontext`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
+| Nanosecond (`<1µs`) | `user`, `hostname`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
 | Microsecond (1-100µs) | `terraform`, `python`, `direnv` (no binary) | File existence checks + small reads |
 | Millisecond (1-10ms) | `git`, `network`, `battery` | At most one process spawn |
 | Slow (10-50ms) | `mise`, `direnv` (with binary), script providers | Multiple spawns or interpreted CLI |
@@ -469,7 +469,6 @@ let count = std::fs::read_to_string(&stash_log)
 
 Real examples from `docs/performance.md`:
 - `gcloud`: reading `~/.config/gcloud/properties` instead of spawning the Python CLI — 500ms to 1µs (~500,000x)
-- `kubecontext`: reading `~/.kube/config` instead of running `kubectl` — 60ms to 749ns (~80,000x)
 - `git` stash: reading `.git/logs/refs/stash` instead of `git stash list` — 5ms to 1µs
 
 **Rule 2: If you must spawn a process, spawn exactly one.**

@@ -92,7 +92,6 @@ const FACET_SETTINGS_KEYS: &[&str] = &[
     "command",
     "library_path",
     "url",
-    "path",
 ];
 
 /// Drop repeats, keeping the first of each. Two layers holding the same facet
@@ -1357,6 +1356,19 @@ impl Config {
                 Ok(None) => {}
             }
 
+            // `path` was the path-expression setting: a client-side expression
+            // that computed the entry a query read. A query addresses the
+            // caller's directory, `--path`, or `--global` now, so a config
+            // still carrying the key is told where the address went. A table
+            // under this name is a source block and falls through to the
+            // per-source loop below.
+            if table.get("path").is_some_and(|v| !v.is_table()) {
+                errors.push(format!(
+                    "[providers.{prov_name}]: path is not a provider setting: \
+                     a query addresses the caller's directory, --path, or --global"
+                ));
+            }
+
             // Check for old flat source-knob keys at the provider level.
             // These are rejected for ALL providers (built-in and external).
             // Exception: script/library/http providers still use some of these
@@ -1476,23 +1488,6 @@ impl Config {
         }
 
         (warnings, errors)
-    }
-
-    /// Return per-provider path expression overrides from config.
-    ///
-    /// Reads the `path` scalar key from each `[providers.<name>]` section.
-    /// Returns a map of provider_name → path_expression_string.
-    pub fn path_expressions(&self) -> std::collections::HashMap<String, String> {
-        let mut out = std::collections::HashMap::new();
-        for (provider_name, provider_val) in &self.providers {
-            let toml::Value::Table(table) = provider_val else {
-                continue;
-            };
-            if let Some(toml::Value::String(expr)) = table.get("path") {
-                out.insert(provider_name.clone(), expr.clone());
-            }
-        }
-        out
     }
 
     pub fn load() -> Self {

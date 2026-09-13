@@ -1073,43 +1073,28 @@ virtual.label = "{{ chronoclaude.value }}"
     assert!(warnings.is_empty(), "no warnings expected: {warnings:?}");
 }
 
+/// `path` was the path-expression setting (design §3.8, outcome 19). Nothing
+/// computes an entry's path any more — a query addresses the caller's
+/// directory, `--path`, or `--global` — so the key is an error that says so,
+/// on a built-in and on a namespace the registry does not know alike.
 #[test]
-fn path_expressions_parsed_from_config() {
+fn a_path_key_under_a_provider_is_a_validation_error() {
     let toml_str = r#"
-[providers.kubecontext]
-path = "env.KUBECONFIG or '~/.kube/config'"
+[providers.foo]
+path = "{{ env.FOOCONFIG or '~/.foo/config' }}"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    let exprs = config.path_expressions();
+    let (warnings, errors) =
+        config.validate_providers(&["git".to_string()], &std::collections::HashMap::new());
     assert_eq!(
-        exprs.get("kubecontext").map(|s| s.as_str()),
-        Some("env.KUBECONFIG or '~/.kube/config'"),
-        "path_expressions() must return the kubecontext path expression"
+        errors,
+        vec![
+            "[providers.foo]: path is not a provider setting: a query addresses the caller's \
+             directory, --path, or --global"
+                .to_string()
+        ]
     );
-}
-
-#[test]
-fn path_key_does_not_trip_provider_validation() {
-    // [providers.kubecontext] with a `path` string key must not cause validation errors.
-    // `path` is a scalar and is skipped by the source-block validation loop.
-    let toml_str = r#"
-[providers.kubecontext]
-path = "env.KUBECONFIG or '~/.kube/config'"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers = vec!["kubecontext".to_string()];
-    let known_sources = std::collections::HashMap::new();
-    let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        errors.is_empty(),
-        "path key on provider must not produce validation errors: {:?}",
-        errors
-    );
-    assert!(
-        warnings.is_empty(),
-        "path key on provider must not produce validation warnings: {:?}",
-        warnings
-    );
+    assert!(warnings.is_empty(), "no warnings expected: {warnings:?}");
 }
 
 // ── Layers, facet tables, and the settings/facets split (Task 6) ─────────────

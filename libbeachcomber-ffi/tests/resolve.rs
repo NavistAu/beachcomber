@@ -120,6 +120,40 @@ fn bc_resolve_renders_a_managed_default_template() {
     unsafe { bc_client_free(client) };
 }
 
+/// `kubecontext.context` is a managed-default template over `exec('kubectl',
+/// …)` (outcome 20). A client that did not opt into `exec` renders it as the
+/// disabled-exec failure — a `server_error`, the resolver's runtime fault —
+/// rather than spawning anything.
+#[test]
+fn bc_resolve_of_kubecontext_without_exec_is_the_disabled_error() {
+    let config_dir = tempfile::tempdir().expect("tempdir");
+    comb_daemon::daemon::defaults::write_managed_defaults(
+        &config_dir.path().join("defaults"),
+        libbeachcomber::VERSION,
+    )
+    .expect("write managed defaults");
+    let daemon = DaemonGuard::spawn_with_config_dir(config_dir.path());
+    let client = client_for(&daemon.path);
+    let cwd = tempfile::tempdir().expect("tempdir");
+
+    let v = resolve(
+        client,
+        "kubecontext.context",
+        cwd.path().to_str().unwrap(),
+        None,
+    );
+    assert_eq!(error_kind(&v), "server_error", "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exec() is disabled"),
+        "unexpected error: {v}"
+    );
+
+    unsafe { bc_client_free(client) };
+}
+
 // ── a template the daemon holds (outcomes 25, 27) ────────────────────────────
 
 /// A template `put` to `scanline:template` is rendered at every depth the

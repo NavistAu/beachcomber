@@ -150,27 +150,7 @@ let content = std::fs::read_to_string(config_dir.join("properties")).ok()?;
 
 **Rule for future providers:** If a CLI tool stores its state in a config file, read the file. Never spawn a Python/Ruby/Node CLI when you can parse a text file.
 
-#### 2.2 Kubecontext — read kubeconfig instead of kubectl
-
-**Problem:** `kubecontext.rs` spawned `kubectl config current-context` and `kubectl config view --minify`. kubectl is a Go binary with ~30ms startup time. Two calls = ~60ms.
-
-**Fix:** Read `~/.kube/config` directly. Extract `current-context:` with a line scan, then find the matching context block for its namespace. Respects `KUBECONFIG` env var.
-
-```rust
-// Before: ~60ms (2 Go process spawns)
-Command::new("kubectl").args(["config", "current-context"]).output()
-Command::new("kubectl").args(["config", "view", "--minify", ...]).output()
-
-// After: ~749ns (file read + YAML-like parse)
-let content = std::fs::read_to_string(kubeconfig_path).ok()?;
-// find "current-context:" line, then scan context blocks for namespace
-```
-
-**Result:** ~60ms → 749ns. **~80,000x improvement.**
-
-**Caveat:** The kubeconfig parser is line-based, not a full YAML parser. It handles the standard kubeconfig format correctly but may not handle exotic formatting. If edge cases arise, consider adding `serde_yaml` as an optional dependency.
-
-#### 2.3 Network — getifaddrs() instead of process spawns
+#### 2.2 Network — getifaddrs() instead of process spawns
 
 **Problem:** `network.rs` spawned 3-4 processes per execution:
 1. `route -n get default` — find default interface
@@ -207,7 +187,7 @@ libc::getifaddrs(&mut ifaddrs);
 
 | Tier | Time | Providers | Method |
 |---|---|---|---|
-| **Nanosecond** (< 1µs) | 395ns - 749ns | user, load, hostname, uptime, kubecontext, gcloud, aws, conda | libc calls, file reads, env vars |
+| **Nanosecond** (< 1µs) | 395ns - 749ns | user, load, hostname, uptime, gcloud, aws, conda | libc calls, file reads, env vars |
 | **Microsecond** (1-100µs) | ~1-50µs | terraform, python, asdf, direnv (no direnv binary) | File existence checks + reads |
 | **Millisecond** (1-10ms) | 2-6ms | network (2ms), git (5.6ms), battery (6ms) | 1 process spawn each |
 | **Slow** (10-50ms) | 10-50ms | mise, direnv (with direnv), script providers | Process spawn (user-defined) |

@@ -776,7 +776,7 @@ Source-level knobs (`poll_interval`, `poll_count`, `fsevent_*`, `failback_*`) go
 
 ## Built-in Providers Reference
 
-beachcomber ships 19 built-in providers organized by category.
+beachcomber ships 16 built-in providers organized by category, plus template-backed namespaces defined in the managed `defaults/` files.
 
 ### System
 
@@ -913,23 +913,15 @@ feature/fast-cache
 
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `kubecontext` | global | `context` (string), `namespace` (string) | poll 30s | 749 ns |
 | `gcloud` | global | `project` (string), `account` (string) | poll 60s | 1.08 µs |
 | `aws` | global | `profile` (string), `region` (string) | poll 60s | < 1 µs |
 | `terraform` | path | `workspace` (string) | watch `.terraform/` | < 1 µs |
 
-`kubecontext` reads `~/.kube/config` directly (respecting `$KUBECONFIG`) — no `kubectl` subprocess. `gcloud` reads `~/.config/gcloud/properties` directly — no Python CLI subprocess.
+`gcloud` reads `~/.config/gcloud/properties` directly — no Python CLI subprocess.
 
 **Example output:**
 
 ```json
-// comb g kubecontext
-{
-  "ok": true,
-  "data": { "context": "prod-cluster", "namespace": "default" },
-  "age_ms": 15200
-}
-
 // comb g aws
 {
   "ok": true,
@@ -937,6 +929,10 @@ feature/fast-cache
   "age_ms": 42100
 }
 ```
+
+### Template-backed namespaces
+
+`kubecontext` and `talos` are not daemon providers. Their fields are templates in the managed defaults the daemon writes to `~/.config/beachcomber/defaults/` (`kubecontext.toml`: `context`, `namespace`; `talos.toml`: `context`), and each one calls the tool the shell would run through `exec()` — `kubectl config current-context`, `talosctl config info` — so it honours the shell's own `$KUBECONFIG`/`$TALOSCONFIG`. The field names are unchanged: `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `exec()` is enabled — `comb get`/`eval`, or an SDK client constructed with `exec` on; anywhere else the field is the error `exec() is disabled in this context`.
 
 ### Development Tools
 
@@ -1959,7 +1955,7 @@ gitstatusd's key insight was correct: a persistent daemon that maintains an in-m
 
 The limitation is architectural: gitstatusd spawns one daemon per interactive shell. On a machine with 20 shells open, that's 20 daemons, up to 640 threads, 20 independent FSEvents registrations all watching the same directories. The maintainer declined a shared-daemon proposal on security grounds, and powerlevel10k is now on maintenance-only status ("NO NEW FEATURES ARE IN THE WORKS. MOST BUGS WILL GO UNFIXED").
 
-**beachcomber vs gitstatusd:** beachcomber is what gitstatusd would be if the daemon were shared across all consumers. One daemon, one cache, one watcher — for git and everything else. gitstatusd handles only git; beachcomber handles 19 providers plus extensibility. If you are a powerlevel10k user looking for a maintained, general-purpose replacement, beachcomber is the intended answer.
+**beachcomber vs gitstatusd:** beachcomber is what gitstatusd would be if the daemon were shared across all consumers. One daemon, one cache, one watcher — for git and everything else. gitstatusd handles only git; beachcomber handles 16 providers plus extensibility. If you are a powerlevel10k user looking for a maintained, general-purpose replacement, beachcomber is the intended answer.
 
 See `docs/competitive-landscape.md` for detailed numbers.
 
