@@ -52,42 +52,45 @@ Project2501
 $ comb g battery.percent
 85
 
-$ comb g.s git .                # .s = shell format (key=value, sourceable)
-branch=main
-dirty=true
-staged=2
+$ comb g.s git .                # .s = shell format: key='value' lines, quoted for eval
+ahead='0'
+behind='0'
+branch='main'
+branch_default='main'
+branch_parent='main'
+commit='36b2704'
+commit_summary='init'
+conflicted='0'
+detached='false'
+dirty='true'
+…                               # one line per field, sorted — 30 in all
+
+$ comb g git .                   # default: text — the same key=value lines, unquoted
 ahead=0
 behind=0
-stash=1
+branch=main
+branch_default=main
+branch_parent=main
+commit=36b2704
+commit_summary=init
+conflicted=0
+detached=false
+dirty=true
+…
 
-$ comb g git .                   # default: text (one value per line)
-a1b2c3d
-0
-0
-main
-true
-2
-clean
-1
-1
-
-$ comb g.j git .                 # .j = JSON format
+$ comb g.j git .                 # .j = JSON: the bare value, no envelope (age is git.branch:age)
 {
-  "ok": true,
-  "data": {
-    "branch": "main",
-    "commit": "a1b2c3d",
-    "dirty": true,
-    "staged": 2,
-    "unstaged": 1,
-    "untracked": 4,
-    "ahead": 0,
-    "behind": 0,
-    "stash": 1,
-    "state": "clean"
-  },
-  "age_ms": 120,
-  "stale": false
+  "ahead": 0,
+  "behind": 0,
+  "branch": "main",
+  "branch_default": "main",
+  "branch_parent": "main",
+  "commit": "36b2704",
+  "commit_summary": "init",
+  "conflicted": 0,
+  "detached": false,
+  "dirty": true,
+  …
 }
 
 $ comb s                         # status: one row per warm cache entry
@@ -462,7 +465,7 @@ comb c demand            # demand-tracked keys and last-query times
 comb c procs             # 1-minute process snapshot, categorize against providers
 ```
 
-Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation. `comb c config` validates the composed configuration locally as well as relaying the daemon's view, and reports the managed `defaults/` directory (file count, version, anything in it `comb` did not write, whether the daemon can write it) without touching it.
+Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation. `comb c config` validates the composed configuration locally as well as relaying the daemon's view, and reports the managed `defaults/` directory (file count, version, anything in it `comb` did not write, whether the daemon can write it) without writing any defaults — only a `.comb-probe.<pid>` write probe is created and removed.
 
 > Use `comb check daemon` to see what `comb s` used to show (pid, uptime, request counts, watcher count).
 
@@ -937,7 +940,7 @@ Not every `comb g` namespace is a daemon provider. The managed `defaults/` files
 | `kubecontext` | `defaults/kubecontext.toml` | `context`, `namespace` | `exec('kubectl', 'config', …)` |
 | `talos` | `defaults/talos.toml` | `context` | `exec('talosctl', 'config', 'info', …)` |
 
-`aws`, `gcloud`, `python` and `terraform` have a daemon provider behind them and a `comb g <namespace>` returns the cached fields deep-merged with the rendered ones; `conda`, `op`, `kubecontext` and `talos` are templates only. `kubecontext` and `talos` call the tool the shell would run — `kubectl config current-context`, `talosctl config info` — so they honour the shell's own `$KUBECONFIG`/`$TALOSCONFIG`, and the field names are unchanged: `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `exec()` is enabled — `comb get`/`eval`, or an SDK client constructed with `exec` on; anywhere else the field is the error `exec() is disabled in this context`.
+Only `python` and `terraform` have a daemon provider of the same name, so only there does `comb g <namespace>` return cached fields deep-merged with rendered ones. `aws` and `gcloud` are templates only: their data lives in the differently named `aws_profiles` and `gcloud_configs` namespaces, which the templates reach through `cache.*` refs, and `comb g aws` is just the rendered template tree. `conda`, `op`, `kubecontext` and `talos` are templates only too, over the environment or a command. `kubecontext` and `talos` call the tool the shell would run — `kubectl config current-context`, `talosctl config info` — so they honour the shell's own `$KUBECONFIG`/`$TALOSCONFIG`, and the field names are unchanged: `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `exec()` is enabled — `comb get`/`eval`, or an SDK client constructed with `exec` on; anywhere else the field is the error `exec() is disabled in this context`.
 
 ### Development Tools
 
@@ -1012,25 +1015,22 @@ The simple `#()` approach shown above is already a major improvement over shelli
 
 ### bash prompt (PROMPT_COMMAND)
 
-bash runs `PROMPT_COMMAND` before each prompt. Parse the `key=value` sh output from a whole-provider query to minimize subprocess calls.
+bash runs `PROMPT_COMMAND` before each prompt. `eval` the `key='value'` sh output from a whole-provider query into prefixed locals to minimize subprocess calls.
 
 ```bash
 # ~/.bashrc
 __beachcomber_prompt() {
-    # Fetch entire git state in one query, parse key=value output
-    local git_state
-    git_state=$(comb g.s git . 2>/dev/null)
-
-    local branch dirty
-    while IFS='=' read -r key value; do
-        case "$key" in
-            branch) branch="$value" ;;
-            dirty)  dirty="$value" ;;
-        esac
-    done <<< "$git_state"
+    # One query for the whole git namespace. `.s` output is key='value' lines,
+    # shell-quoted, so eval it into prefixed locals rather than parsing by hand.
+    local git_branch="" git_dirty=""
+    eval "$(comb g.s git . 2>/dev/null | sed 's/^/local git_/')"
 
     local git_part=""
-    [[ -n "$branch" ]] && git_part="(${branch}${dirty:+*}) "
+    if [[ -n "$git_branch" ]]; then
+        git_part="(${git_branch}"
+        [[ "$git_dirty" == true ]] && git_part+="*"
+        git_part+=") "
+    fi
 
     local kube
     kube=$(comb g kubecontext.context 2>/dev/null)
@@ -1911,15 +1911,15 @@ The wire protocol is JSON-only: every response is the JSON envelope with `ok`, `
 
 The `comb` CLI renders the JSON response into additional output formats on the client side (these are not part of the wire protocol):
 
-**`text`:** Raw value only, followed by `\n`. For full-provider queries, returns one raw value per field, one per line, sorted alphabetically.
+**`text`:** The bare value, no trailing newline, so it embeds in a prompt string verbatim. For a whole namespace or any object value: one `key=value` line per leaf at any depth (`a.b.c=value`, arrays by index), sorted alphabetically.
 
-**`sh`:** `key=value` lines sorted alphabetically, one per line. Suitable for `eval` or `while IFS='=' read -r key value` parsing.
+**`sh`:** The same lines as `text` with every value POSIX-single-quoted (`branch='main'`), so the output is safe to `eval`; keys stay bare dotted names.
 
 **`csv` / `tsv`:** Comma- or tab-separated values. For single-field queries: one value per line. For full-provider queries: field values in alphabetical key order, one row.
 
 **`CSV` / `TSV`:** Same as `csv`/`tsv` but prefixed with a header row of field names.
 
-**`fmt`:** Compact human-readable format, suitable for terminal display.
+**`fmt`:** A minijinja template rendered over the value — `comb g.f '{{ branch }} ({{ dirty }})' git .` → `main (true)`.
 
 Use format suffixes on the CLI (`.s` sh, `.c` csv, `.C` CSV, `.t` tsv, `.T` TSV, `.f` fmt) or the `-f` flag.
 

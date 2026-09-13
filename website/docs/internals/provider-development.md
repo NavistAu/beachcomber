@@ -554,24 +554,17 @@ fn git_refs_on_empty_repo() {
 
 **Testing when the external tool is not installed**
 
-Sources that depend on optional tools must return an empty `SourceResult` gracefully when the tool is absent or when the relevant config files do not exist:
+Sources that depend on optional tools or files must return an empty `SourceResult` gracefully when the tool is absent or when the relevant files do not exist — `terraform`'s source reads `.terraform/environment` and answers nothing without it:
 
 ```rust
 #[test]
-fn returns_empty_without_kubeconfig() {
+fn returns_empty_without_terraform_dir() {
     let dir = tempfile::tempdir().unwrap();
-    // SAFETY: test-only env mutation; nextest runs each test in its own process
-    unsafe {
-        std::env::set_var("HOME", dir.path());
-        std::env::remove_var("KUBECONFIG");
-    }
 
-    let provider = KubecontextProvider;
+    let provider = TerraformProvider;
     let sources = provider.sources();
-    let result = sources[0].execute(None);
+    let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
     assert!(result.fields.is_empty());
-
-    unsafe { std::env::remove_var("HOME"); }
 }
 ```
 

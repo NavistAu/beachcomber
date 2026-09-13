@@ -368,7 +368,7 @@ comb c procs             # 1-minute process snapshot, categorize against provide
 
 Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
 
-`comb c config` validates the composed configuration locally as well as relaying the daemon's view, and reports the managed `defaults/` directory without writing to it: `[PASS] local  defaults <dir> (8 files, comb <version>)` when every shipped file is current, `[WARN]` when shipped files are missing or stale (the daemon writes them on its next start) or when the directory holds files `comb` did not write, and `[FAIL]` when the directory is not writable.
+`comb c config` validates the composed configuration locally as well as relaying the daemon's view, and reports the managed `defaults/` directory without writing any defaults (a `.comb-probe.<pid>` write probe is created and removed to test writability): `[PASS] local  defaults <dir> (8 files, comb <version>)` when every shipped file is current, `[WARN]` when shipped files are missing or stale (the daemon writes them on its next start) or when the directory holds files `comb` did not write, and `[FAIL]` when the directory is not writable.
 
 `--connect-timeout <DURATION>` bounds how long the check keeps trying to reach the daemon before reporting it unreachable (default `1s`; `0` for a single attempt, or e.g. `250ms`, `2s`). Retries start 5ms apart and double, so a daemon that is mid-restart is reached as soon as it binds. The option is accepted before or after the subcommand: `comb c --connect-timeout 0 daemon`.
 

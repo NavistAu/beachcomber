@@ -31,7 +31,7 @@ Add `sdks/lua` to your `package.path`, or copy the `beachcomber/` directory some
 ```lua
 local comb = require('beachcomber')
 
--- Connect (auto-detects vim.uv or luasocket)
+-- Connect (LuaJIT: ffi into libbeachcomber; PUC Lua: comb subprocess)
 local client, err = comb.connect()
 if not client then
   error("beachcomber: " .. err)
@@ -184,4 +184,4 @@ local function git_branch()
 end
 ```
 
-All socket I/O in the `vim.uv` backend is synchronous so `git_branch()` can be called directly from a statusline evaluation without scheduling callbacks.
+Every `ffi` call is synchronous, so `git_branch()` can be called directly from a statusline evaluation without scheduling callbacks.

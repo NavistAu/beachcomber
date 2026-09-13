@@ -738,23 +738,21 @@ fn git_status_on_empty_repo() {
 
 **Testing when the external tool is not installed**
 
-Providers that depend on optional tools (`docker`, `kubectl`, `aws`) must return `None` gracefully when the tool is absent or when the relevant config files do not exist. Test this by pointing `HOME` to a clean tempdir:
+Sources that depend on optional tools or files must return an empty `SourceResult` gracefully when the tool is absent or when the relevant files do not exist. Test this against a clean tempdir — `terraform`'s source reads `.terraform/environment` and answers nothing without it:
 
 ```rust
 #[test]
-fn returns_none_without_kubeconfig() {
+fn returns_empty_without_terraform_dir() {
     let dir = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", dir.path());
-    std::env::remove_var("KUBECONFIG");
 
-    let provider = KubecontextProvider;
-    assert!(provider.execute(None).is_none());
-
-    std::env::remove_var("HOME");
+    let provider = TerraformProvider;
+    let sources = provider.sources();
+    let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
+    assert!(result.fields.is_empty());
 }
 ```
 
-Avoid `std::env::set_var` in parallel tests — it mutates global state. Either mark such tests `#[serial]` (via the `serial_test` crate), run them with `cargo nextest run --test-threads=1 <filter>`, or use `cargo test -- --test-threads=1`. Note: cargo-nextest runs each test in its own process by default, so env-var mutations are already isolated per test — the `--test-threads=1` workaround is mainly relevant for plain `cargo test`.
+If a source reads `HOME` or another environment variable, avoid `std::env::set_var` in parallel tests — it mutates global state. Either mark such tests `#[serial]` (via the `serial_test` crate), run them with `cargo nextest run --test-threads=1 <filter>`, or use `cargo test -- --test-threads=1`. Note: cargo-nextest runs each test in its own process by default, so env-var mutations are already isolated per test — the `--test-threads=1` workaround is mainly relevant for plain `cargo test`.
 
 **Testing `metadata()` completeness**
 

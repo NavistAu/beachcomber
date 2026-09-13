@@ -8,7 +8,7 @@ sidebar_position: 10
 
 Neovim statuslines re-evaluate on every redraw. Traditional approaches — running `git branch`, parsing `kubectl config current-context`, or reading battery files — add latency on each redraw cycle. beachcomber eliminates that cost: cached data is returned in microseconds over a persistent Unix socket connection.
 
-The Lua SDK auto-detects neovim and uses `vim.uv` (neovim's built-in libuv bindings) for non-blocking socket access. No external dependencies are required inside neovim. Outside neovim, the SDK falls back to luasocket if available, or shells out to `comb` as a last resort.
+The Lua SDK has two transports. Under LuaJIT — which neovim always ships — it uses `ffi` to call straight into the shared `libbeachcomber` C library (~0.3 ms per call), so no external dependencies are required inside neovim. Under PUC Lua 5.1–5.4, which has no `ffi`, it falls back to shelling out to the `comb` binary (~5 ms per call). `client:transport()` reports which one is active.
 
 ## Prerequisites
 
@@ -58,7 +58,7 @@ This module has the same interface as the SDK-based version below, so lualine an
 
 ## With the Lua SDK
 
-The SDK uses `vim.uv` for non-blocking socket access — no process forking. This is the recommended approach if you can install the SDK.
+Inside neovim the SDK binds `libbeachcomber` through LuaJIT's `ffi` — no process forking, sub-millisecond calls. This is the recommended approach if you can install the SDK.
 
 The SDK exposes a single `connect()` call that returns a persistent client. Call `client:get(key, path)` to retrieve a cached value. The second argument is the working directory path and is required for providers like `git` that are path-scoped. A template-backed key such as `kubecontext.context` has no cached value — `get` on it is always a miss — so read it with `client:resolve(key, { cwd = ... })`, which renders the template the way `comb get` does; `kubecontext` calls `kubectl` through `exec()`, so connect with `exec = true`.
 

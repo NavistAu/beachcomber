@@ -46,8 +46,8 @@ When you need a different output format, append a suffix:
 | Suffix | Format |
 |--------|--------|
 | _(none)_ | plain text (default) |
-| `.j` | JSON envelope (with `age_ms`, `stale`, etc.) |
-| `.s` | shell `key=value` lines — sourceable |
+| `.j` | JSON — the bare value, nested at any depth (metadata is by `:age`/`:stale`) |
+| `.s` | shell `key='value'` lines — quoted, safe to `eval` |
 | `.c` / `.C` | CSV (optionally with header) |
 | `.t` / `.T` | TSV (optionally with header) |
 | `.f` | minijinja template — `{{ field }}` placeholders |
@@ -55,8 +55,8 @@ When you need a different output format, append a suffix:
 See the [CLI reference](../reference/cli-commands.md) for the full list. Examples:
 
 ```sh
-comb g.j git.branch .           # JSON envelope
-comb g.s git .                  # all git fields as key=value
+comb g.j git.branch .           # the bare JSON value: "main"
+comb g.s git .                  # all git fields as key='value' lines
 comb g.f '{{ branch }} ({{ dirty }})' git .   # templated
 ```
 

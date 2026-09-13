@@ -66,22 +66,19 @@ Add the function and `PROMPT_COMMAND` assignment to your `~/.bashrc`. bash evalu
 
 ```bash
 # ~/.bashrc
-# comb g.s is shorthand for `comb get -f shell`. g = get, .s = shell format (key=value output).
+# comb g.s is shorthand for `comb get -f sh`. g = get, .s = shell format (key='value' lines).
 __beachcomber_prompt() {
-    # Fetch entire git state in one query, parse key=value output
-    local git_state
-    git_state=$(comb g.s git . 2>/dev/null)
-
-    local branch dirty
-    while IFS='=' read -r key value; do
-        case "$key" in
-            branch) branch="$value" ;;
-            dirty)  dirty="$value" ;;
-        esac
-    done <<< "$git_state"
+    # One query for the whole git namespace. `.s` output is key='value' lines,
+    # shell-quoted, so eval it into prefixed locals rather than parsing by hand.
+    local git_branch="" git_dirty=""
+    eval "$(comb g.s git . 2>/dev/null | sed 's/^/local git_/')"
 
     local git_part=""
-    [[ -n "$branch" ]] && git_part="(${branch}${dirty:+*}) "
+    if [[ -n "$git_branch" ]]; then
+        git_part="(${git_branch}"
+        [[ "$git_dirty" == true ]] && git_part+="*"
+        git_part+=") "
+    fi
 
     local kube
     kube=$(comb g kubecontext.context 2>/dev/null)
@@ -94,7 +91,7 @@ __beachcomber_prompt() {
 PROMPT_COMMAND=__beachcomber_prompt
 ```
 
-The bash example queries the entire `git` namespace at once with `comb g.s git .`, which returns all fields as `key=value` lines. Parsing that single response is more efficient than making one `comb g` call per field. The `kubecontext.context` query has no path argument because the current Kubernetes context is global, not directory-scoped.
+The bash example queries the entire `git` namespace at once with `comb g.s git .`, which returns all fields as `key='value'` lines with every value shell-quoted, so `eval` is the right parser — the `sed` prefixes each line with `local git_` so the fields land in this function's scope and never collide with your own variables. Parsing that single response is more efficient than making one `comb g` call per field. The `kubecontext.context` query has no path argument because the current Kubernetes context is global, not directory-scoped.
 
 ### How to reload
 
