@@ -1559,6 +1559,60 @@ async fn cli_rejects_global_together_with_path() {
     .unwrap();
 }
 
+/// A relative path names a directory below the *caller's* cwd. The daemon
+/// canonicalises whatever it receives against its own working directory, so
+/// the CLI must make the path absolute before sending it — otherwise
+/// `comb g my.a .` answers for wherever the daemon was started. The in-process
+/// daemon here runs in the test's cwd, which is not `ws/project`, so the old
+/// behaviour is a miss and the fixed one a hit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_resolves_a_relative_path_against_the_callers_cwd() {
+    let f = Fixture::defaults();
+    let cwd = PathBuf::from(f.path("ws/project"));
+    let cfg = f.home.join("cfg");
+
+    let out = tokio::task::spawn_blocking(move || {
+        comb(&f, &cwd, &cfg)
+            .args(["put", "--path", "foo", "my", r#"{"a":1}"#])
+            .assert()
+            .success();
+        let dot = comb(&f, &cwd, &cfg)
+            .args(["get", "my.a", "./foo"])
+            .assert()
+            .success();
+        let at_dot = String::from_utf8(dot.get_output().stdout.clone()).unwrap();
+        let flag = comb(&f, &cwd, &cfg)
+            .args(["get", "--path", "foo/bar", "my.a"])
+            .assert()
+            .success();
+        let below = String::from_utf8(flag.get_output().stdout.clone()).unwrap();
+        let here = comb(&f, &cwd, &cfg)
+            .args(["get", "my.a", "."])
+            .assert()
+            .success();
+        let at_here = String::from_utf8(here.get_output().stdout.clone()).unwrap();
+        (at_dot, below, at_here)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        out.0.trim(),
+        "1",
+        "`./foo` is `<cwd>/foo`, where the put landed"
+    );
+    assert_eq!(
+        out.1.trim(),
+        "1",
+        "`--path foo/bar` is below it and resolves up the chain"
+    );
+    assert_eq!(
+        out.2.trim(),
+        "",
+        "`.` is the cwd itself, above the record: a miss"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cli_carries_the_cwd_for_a_plain_get_from_a_subdirectory() {
     if !has_git() {

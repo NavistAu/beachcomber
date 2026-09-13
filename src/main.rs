@@ -260,14 +260,20 @@ fn preprocess_args() -> (Vec<String>, Option<String>) {
 /// The path a `get` or `put` addresses: `None` for `--global` (the daemon's
 /// global entry, which is `$HOME`), otherwise the requested path, otherwise the
 /// current working directory.
+/// A relative path is the caller's, not the daemon's: the daemon canonicalises
+/// what it receives against *its own* working directory, so `comb g git.branch .`
+/// would otherwise answer for wherever the daemon happened to be started.
 fn effective_cli_path(global: bool, requested: Option<String>) -> Option<String> {
     if global {
         return None;
     }
-    requested.or_else(|| {
-        std::env::current_dir()
-            .ok()
-            .map(|p| p.to_string_lossy().into_owned())
+    let cwd = std::env::current_dir().ok()?;
+    Some(match requested {
+        Some(p) if std::path::Path::new(&p).is_relative() => {
+            cwd.join(p).to_string_lossy().into_owned()
+        }
+        Some(p) => p,
+        None => cwd.to_string_lossy().into_owned(),
     })
 }
 
