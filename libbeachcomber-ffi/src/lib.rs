@@ -771,8 +771,9 @@ fn watch_event_to_json(e: &libbeachcomber::WatchEvent) -> serde_json::Value {
 /// (via `ok:true` plus an `outcome` field), and `error` (the ordinary
 /// `ok:false` envelope, already machine-readable via `error.kind`).
 /// `error` is reserved for the daemon actively rejecting the watched key
-/// (a malformed response line, or the `ServerError`/`ParseError` a bad
-/// nested field path produces) — any lower-level socket failure (a reset
+/// (a malformed response line, or the `ServerError` a malformed or
+/// unregistered key produces — an address nothing answers is a miss frame,
+/// not an error) — any lower-level socket failure (a reset
 /// connection, or even a failing `set_read_timeout`, observed on macOS as
 /// `EINVAL` from `setsockopt` on an already-reset unix socket rather than
 /// the loss surfacing on the next read) is treated as `eof`: from a

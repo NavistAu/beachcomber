@@ -38,11 +38,11 @@ func TestClient_Get_Hostname_Hit(t *testing.T) {
 
 func TestClient_Get_ServerError_HasKindAndVersion(t *testing.T) {
 	c := requireClient(t)
-	// A path expression evaluated against a bogus nested field path is
-	// rejected server-side (see docs/protocol-spec.md).
-	_, err := c.Get("hostname.short.nested.too.deep", "")
+	// An invalid facet key (two colons) is refused by the daemon; an address
+	// nothing answers, however deep, is a miss, not an error.
+	_, err := c.Get("a:b:c.x", "")
 	if err == nil {
-		t.Fatal("expected an error for an over-deep field path")
+		t.Fatal("expected an error for an invalid facet key")
 	}
 	var se *beachcomber.ServerError
 	if !errors.As(err, &se) {

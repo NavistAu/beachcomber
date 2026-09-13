@@ -832,7 +832,7 @@ fn read_watch_value(
     let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
     // A watch frame carries the same two halves a `get` does. A facet key is
     // already inside a facet and never gets one. Read first: the template
-    // decides whether an unresolvable sub-path is an error or a hit.
+    // decides whether an unresolvable sub-path is a hit or a miss.
     let half = if crate::query::parse_facet(provider).ok().flatten().is_some() {
         TemplateHalf::default()
     } else {
