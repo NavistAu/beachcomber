@@ -25,7 +25,7 @@ comb g git.branch .
 comb g battery.percent
 ```
 
-If the command returns nothing, the provider has no data for the current context. This is normal — for example, `git.branch` returns empty outside a git repository, and `kubecontext.context` returns empty when no context is set.
+If the command returns nothing, the provider has no data for the current context. This is normal — for example, `git.branch` returns empty outside a git repository. A template-backed key that shells out is different: `kubecontext.context` runs `kubectl config current-context` through `exec()`, and when no context is set `kubectl` exits 1, so `comb g kubecontext.context` prints that error to stderr and exits `2` rather than printing nothing — `2>/dev/null` it in a prompt.
 
 ## Path-scoped providers return empty or wrong data
 
@@ -49,7 +49,7 @@ In bar programs (polybar, waybar, sketchybar), `.` resolves to wherever the bar 
 comb g git.branch /home/yourname/myproject
 ```
 
-Global providers (battery, load, network, kubecontext, gcloud, aws, hostname, uptime, user, conda) do not take a path argument.
+Global providers (battery, load, network, hostname, uptime, user, sudo, uname) do not take a path argument, and neither do the template-backed namespaces that read only the shell's environment or a global provider (`aws`, `gcloud`, `conda`, `op`, `kubecontext`, `talos`).
 
 ## Stale data
 

@@ -85,11 +85,16 @@ This mirrors the daemon's bind path; no session-scoped environment (`$TMPDIR`, `
 ```python
 client = Client()
 client = Client(socket_path="/custom/path")
+client = Client(exec=True)   # templates this client resolves may call exec(); off by default
 ```
 
 #### `client.get(key, path=None)`
 
 Read a cached value. Returns a `Result`.
+
+#### `client.resolve(key, cwd, env=None)` / `client.eval(template_str, cwd, env=None)`
+
+`resolve` returns the same value `comb get` returns for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `eval` renders a template that is stored nowhere — the same value `comb eval` prints. Both `cwd` arguments are required. The template accepts a single `{{ expr }}` tag, or literal text/several tags — the former keeps the expression's natural type, the latter is always a string (a source with no tags at all is its literal text). `exec()` inside a template runs only on a `Client(exec=True)`; otherwise it fails with `exec() is disabled in this context`.
 
 #### `client.refresh(key, path=None)`
 

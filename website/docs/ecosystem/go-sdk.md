@@ -70,6 +70,7 @@ dirtyResult, err  := sess.Get("git.dirty", "")
 ```go
 c, err := beachcomber.NewClient()                       // auto-discover socket
 c := beachcomber.NewClientWithPath("/custom/path/sock") // explicit socket path
+c, err := beachcomber.NewClient(beachcomber.WithExec(true)) // templates this client resolves may call exec()
 ```
 
 #### `c.Get(key, path) (*Result, error)`
@@ -105,6 +106,10 @@ Inspect a daemon subsystem (`"daemon"`, `"providers"`, `"config"`, `"cache"`, `"
 #### `c.Watch(key, path string) (*WatchStream, error)`
 
 Subscribe to live cache updates. Returns a `WatchStream`; call `NextEvent()` in a loop and `Close()` when done.
+
+#### `c.Resolve(key, cwd string, env map[string]string) (*Result, error)` / `c.Eval(templateStr, cwd string, env map[string]string) (*Result, error)`
+
+`Resolve` returns the same value `comb get` returns for this key, cwd and env — the daemon holds the templates, the client renders them; a plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `Eval` renders a template stored nowhere — the same value `comb eval` prints. Both require `cwd` (every fetch the resolution makes addresses it); `env` may be `nil`, which makes every `env.*` reference `""`. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type) or literal text/several tags (always a string — a source with no tags at all is its literal text). `exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
 
 #### `c.Session() (*Session, error)`
 

@@ -14,13 +14,12 @@ Each provider declares one or more **sources** — independent units of executio
 | Provider | Source | Strategy | Scope | Fields |
 |---|---|---|---|---|
 | `asdf` | `tools` | fsevent | path | `tools` (object keyed by tool name) |
-| `aws` | `profile` | poll 60s | global | `profile`, `region`, `source`, `expiration` |
+| `aws_profiles` | `config_file` | fsevent_poll 60s (`~/.aws/config`) | global | one object per profile name (`default`, `staging`, …), each `{ region }` |
 | `battery` | `state` | poll 30s | global | `percent`, `charging`, `status`, `time_remaining_secs` (macOS) |
 | `battery` | `level` | poll 30s | global | `percent`, `charging`, `status_raw` (Linux) |
 | `battery` | `upower` | poll 60s | global | `time_remaining_secs`, `status` (Linux, requires UPower) |
-| `conda` | `env` | poll 30s | global | `env` |
 | `direnv` | `state` | fsevent | path | `status`, `allowed` |
-| `gcloud` | `config` | poll 60s | global | `project`, `account` |
+| `gcloud_configs` | `config_dir` | poll 60s | global | `active_config`, plus one object per configuration name, each `{ project, account }` |
 | `git` | `head` | fsevent | path | `branch`, `detached` |
 | `git` | `refs` | fsevent | path | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
 | `git` | `diff` | poll 30s | path | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
@@ -31,8 +30,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `mise` | `global` | fsevent (pure-watch global) | global | global tool versions (one field per tool) |
 | `mise` | `project` | fsevent | path | project tool versions (one field per tool) |
 | `network` | `interfaces` | poll 10s | global | `interface`, `ip`, `vpn_active`, `vpn_name`, `ssid`, `online` |
-| `op` | `vault` | poll 60s | global | `signed_in`, `account` |
-| `python` | `venv` | fsevent | path | `venv`, `venv_name`, `version` |
+| `python` | `venv` | fsevent | path | `venv`, `local_venv_name`, `venv_version` (`venv_name` and `version` are [templates](#template-backed-namespaces) over them) |
 | `sudo` | `state` | poll 30s | global | `active` |
 | `terraform` | `state` | fsevent | path | `workspace` |
 | `uname` | `system` | fsevent (pure-watch global) | global | `sysname`, `release`, `version`, `machine` |
@@ -54,7 +52,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `battery` | global | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s | 6 ms |
 | `network` | global | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s | 2 ms |
 | `sudo` | global | `active` (bool) | poll 30s | < 1 µs |
-| `op` | global | `signed_in` (bool), `account` (string) | poll 60s | varies |
+| `uname` | global | `sysname` (string), `release` (string), `version` (string), `machine` (string) | once at startup | < 1 µs |
 
 **Platform notes:**
 
@@ -65,33 +63,21 @@ Each provider declares one or more **sources** — independent units of executio
 **Example output:**
 
 ```json
-// comb g battery
+// comb g.j battery       (-f json prints the bare value; ask for age with battery:age)
+{ "percent": 78, "charging": false, "time_remaining_secs": 7200, "status": "discharging" }
+
+// comb g.j network
 {
-  "ok": true,
-  "data": { "percent": 78, "charging": false, "time_remaining_secs": 7200, "status": "discharging" },
-  "age_ms": 4200
+  "interface": "en0",
+  "ip": "192.168.1.42",
+  "vpn_active": true,
+  "vpn_name": "utun2",
+  "ssid": "OfficeNet",
+  "online": true
 }
 
-// comb g network
-{
-  "ok": true,
-  "data": {
-    "interface": "en0",
-    "ip": "192.168.1.42",
-    "vpn_active": true,
-    "vpn_name": "utun2",
-    "ssid": "OfficeNet",
-    "online": true
-  },
-  "age_ms": 3100
-}
-
-// comb g load
-{
-  "ok": true,
-  "data": { "one": 2.34, "five": 1.87, "fifteen": 1.42 },
-  "age_ms": 8900
-}
+// comb g.j load
+{ "one": 2.34, "five": 1.87, "fifteen": 1.42 }
 ```
 
 ## Git
@@ -147,36 +133,32 @@ absent when no default branch can be detected.
 **Example output:**
 
 ```json
-// comb g git .
+// comb g.j git .
 {
-  "ok": true,
-  "data": {
-    "branch": "feature/fast-cache",
-    "commit": "a1b2c3d",
-    "detached": false,
-    "upstream": "origin/main",
-    "tag": "v0.3.1",
-    "dirty": true,
-    "staged": 3,
-    "unstaged": 1,
-    "untracked": 0,
-    "conflicted": 0,
-    "ahead": 2,
-    "behind": 0,
-    "stash": 1,
-    "lines_added": 47,
-    "lines_removed": 12,
-    "lines_staged_added": 23,
-    "lines_staged_removed": 5,
-    "state": "clean",
-    "state_step": 0,
-    "state_total": 0,
-    "last_commit_age_secs": 3420,
-    "commit_summary": "feat: add synchronous cache miss",
-    "push_ahead": 2,
-    "push_behind": 0
-  },
-  "age_ms": 234
+  "branch": "feature/fast-cache",
+  "commit": "a1b2c3d",
+  "detached": false,
+  "upstream": "origin/main",
+  "tag": "v0.3.1",
+  "dirty": true,
+  "staged": 3,
+  "unstaged": 1,
+  "untracked": 0,
+  "conflicted": 0,
+  "ahead": 2,
+  "behind": 0,
+  "stash": 1,
+  "lines_added": 47,
+  "lines_removed": 12,
+  "lines_staged_added": 23,
+  "lines_staged_removed": 5,
+  "state": "clean",
+  "state_step": 0,
+  "state_total": 0,
+  "last_commit_age_secs": 3420,
+  "commit_summary": "feat: add synchronous cache miss",
+  "push_ahead": 2,
+  "push_behind": 0
 }
 
 // comb g git.branch .    (g = get, text is the default format)
@@ -187,40 +169,44 @@ feature/fast-cache
 
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `gcloud` | global | `project` (string), `account` (string) | poll 60s | 1.08 µs |
-| `aws` | global | `profile` (string), `region` (string), `source` (string), `expiration` (string) | poll 60s | < 1 µs |
-| `terraform` | path | `workspace` (string) | watch `.terraform` | < 1 µs |
+| `gcloud_configs` | global | `active_config` (string), plus one object per gcloud configuration: `{ project, account }` | poll 60s | 1.08 µs |
+| `aws_profiles` | global | one object per profile in `~/.aws/config`: `{ region }` | watch `~/.aws/config` + poll 60s | < 1 µs |
+| `terraform` | path | `workspace` (string) | watch `.terraform/environment` | < 1 µs |
 
-`gcloud` reads `~/.config/gcloud/properties` directly — no Python CLI subprocess.
+`gcloud_configs` reads `~/.config/gcloud/configurations/` directly — no Python CLI subprocess. Both are **data providers**: they cache every profile or configuration, blind to the shell's selector, and the user-facing `aws.*` and `gcloud.*` fields are [templates](#template-backed-namespaces) that index them by `$AWS_PROFILE` / `$CLOUDSDK_ACTIVE_CONFIG_NAME`.
 
 **Example output:**
 
 ```json
-// comb g aws
-{
-  "ok": true,
-  "data": { "profile": "work-prod", "region": "us-east-1", "source": "profile", "expiration": "2026-05-30T12:00:00Z" },
-  "age_ms": 42100
-}
+// comb g.j aws_profiles
+{ "default": { "region": "us-east-1" }, "work-prod": { "region": "eu-west-1" } }
+
+// AWS_PROFILE=work-prod comb g aws.region       (a template over aws_profiles)
+eu-west-1
 ```
 
 ## Template-backed namespaces
 
-`kubecontext` and `talos` are not daemon providers. Their fields are templates in the managed defaults the daemon writes to `~/.config/beachcomber/defaults/`:
+Not every `comb g` namespace is a daemon provider. The managed `defaults/` files the daemon writes to `~/.config/beachcomber/defaults/` declare templates under `[providers."<namespace>:template"]`; the daemon serves them as data and the client renders them with the caller's environment (see [Configuration Reference — Templates](/docs/reference/configuration-reference#templates-and-value-expressions)). Override one field by setting the same key in `config.toml` or `conf.d/`.
 
-| Namespace | Default file | Fields | Renders by |
+| Namespace | Default file | Fields | Renders from |
 |---|---|---|---|
+| `aws` | `defaults/aws.toml` | `profile`, `region`, `expiration` | `$AWS_PROFILE`/`$AWS_VAULT`/`$AWS_DEFAULT_PROFILE`, `$AWS_REGION`, `$AWS_CREDENTIAL_EXPIRATION`, falling back to `cache.aws_profiles[<profile>].region` |
+| `gcloud` | `defaults/gcloud.toml` | `project`, `account` | `$CLOUDSDK_CORE_PROJECT`, `$CLOUDSDK_ACTIVE_CONFIG_NAME`, falling back to `cache.gcloud_configs[<active>]` |
+| `python` | `defaults/python.toml` | `version`, `venv_name` | `$PYENV_VERSION`/`$MISE_PYTHON_VERSION`, `cache.mise.python`, `cache.asdf.python`, `cache.python.venv_version`; `cache.python.local_venv_name`, `$VIRTUAL_ENV` |
+| `terraform` | `defaults/terraform.toml` | `workspace` | `$TF_WORKSPACE`, falling back to the cached `cache.terraform.workspace` — a template at a cached field's path wins on read |
+| `conda` | `defaults/conda.toml` | `env` | `$CONDA_DEFAULT_ENV` |
+| `op` | `defaults/op.toml` | `signed_in` (bool) | whether `$OP_SERVICE_ACCOUNT_TOKEN` is set — never the token itself |
 | `kubecontext` | `defaults/kubecontext.toml` | `context`, `namespace` | `exec('kubectl', 'config', …)` |
 | `talos` | `defaults/talos.toml` | `context` | `exec('talosctl', 'config', 'info', …)` |
 
-Each one calls the tool the shell would run, so it honours the shell's own `$KUBECONFIG`/`$TALOSCONFIG`, and the field names are unchanged — `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `exec()` is enabled: `comb get`/`comb eval`, or an SDK client constructed with `exec` on. Anywhere else the field is the error `exec() is disabled in this context`.
+`aws`, `gcloud`, `python` and `terraform` have a daemon provider behind them (`aws_profiles`, `gcloud_configs`, `python`, `terraform`) and a `comb g <namespace>` returns the cached fields deep-merged with the rendered ones; `conda`, `op`, `kubecontext` and `talos` are templates only. `kubecontext` and `talos` call the tool the shell would run, so they honour the shell's own `$KUBECONFIG`/`$TALOSCONFIG`, and the field names are unchanged — `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `exec()` is enabled: `comb get`/`comb eval`, or an SDK client constructed with `exec` on. Anywhere else the field is the error `exec() is disabled in this context`, and when `kubectl` itself fails (no current context) `comb g kubecontext.context` exits `2` with its error rather than printing nothing.
 
 ## Development Tools
 
 | Provider | Scope | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `python` | path | `venv` (bool), `venv_name` (string), `version` (string) | watch `.venv`, `pyproject.toml` | < 1 µs |
-| `conda` | global | `env` (string) | poll 30s | < 1 µs |
+| `python` | path | `venv` (bool), `local_venv_name` (string), `venv_version` (string) — plus the `venv_name` and `version` [templates](#template-backed-namespaces) | watch `.venv`, `pyproject.toml` | < 1 µs |
 | `mise` | global/path | one string field per tool name (e.g. `node`, `rust`) — `global` source (Global scope) and `project` source (PathScoped) | watch `.mise.toml`, `mise.toml` | varies |
 | `asdf` | path | `tools` (object keyed by tool name) | watch `.tool-versions` | < 1 µs |
 | `direnv` | path | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
@@ -228,24 +214,12 @@ Each one calls the tool the shell would run, so it honours the shell's own `$KUB
 **Example output:**
 
 ```json
-// comb g mise .              (project tools for the current directory)
-{
-  "ok": true,
-  "data": { "node": "20.11.0", "python": "3.12.1" },
-  "age_ms": 890
-}
+// comb g.j mise .            (project tools for the current directory, merged over the global set)
+{ "node": "20.11.0", "python": "3.12.1", "rust": "1.75.0" }
 
-// comb g mise               (global tools — no path context)
-{
-  "ok": true,
-  "data": { "rust": "1.75.0" },
-  "age_ms": 890
-}
+// comb g.j --global mise     (global tools only)
+{ "rust": "1.75.0" }
 
-// comb g python .
-{
-  "ok": true,
-  "data": { "venv": true, "venv_name": ".venv", "version": "3.12.1" },
-  "age_ms": 120
-}
+// comb g.j python .          (cached fields plus the two rendered templates)
+{ "venv": true, "local_venv_name": ".venv", "venv_version": "3.12.1", "venv_name": ".venv", "version": "3.12.1" }
 ```

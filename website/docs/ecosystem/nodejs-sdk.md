@@ -40,7 +40,10 @@ if (result.isHit) {
 const client = new Client();
 const client = new Client({ socketPath: '/custom/path' });
 const client = new Client({ socketPath: '/custom/path', timeoutMs: 2000 });
+const client = new Client({ exec: true }); // templates this client resolves may call exec()
 ```
+
+`exec` is off by default: a template that calls `exec()` on a client without it fails with `exec() is disabled in this context`.
 
 #### `client.get(key, path?)`
 
@@ -83,6 +86,18 @@ Subscribe to live cache updates. Returns a `WatchStream` (async iterable) yieldi
 #### `client.getWithFlags(key, path?, opts?)`
 
 Read a cached value with optional `force` (recompute) or `wait` (block for fresh value) flags.
+
+#### `client.resolve(key, opts)` / `client.eval(templateStr, opts)`
+
+`resolve` returns the same value `comb get` returns for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace; a miss is `null`. `eval` renders a template that is stored nowhere — the same value `comb eval` prints. `opts.cwd` is **required** (every fetch the resolution makes addresses it); `opts.env` is optional. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). FFI transport only.
+
+```typescript
+await client.put('myapp:template', { workspace: '{{ env.MYAPP_ENV or cache.myappcache.workspace }}' });
+const value = await client.resolve('myapp.workspace', {
+  cwd: '/some/repo',
+  env: { MYAPP_ENV: 'prod' },
+});
+```
 
 #### `client.session()`
 

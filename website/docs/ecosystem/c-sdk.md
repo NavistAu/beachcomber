@@ -146,7 +146,7 @@ so a binding can tell the cases apart without string matching:
 
 | Function | Description |
 |---|---|
-| `BcClient *bc_client_new(const char *options_json)` | Create a client handle. `options_json` is nullable; recognised keys are `socket_path`, `timeout_ms`, `autostart`. Never returns NULL. |
+| `BcClient *bc_client_new(const char *options_json)` | Create a client handle. `options_json` is nullable; recognised keys are `socket_path`, `timeout_ms`, `autostart`, and `exec` (`{"exec":true}` lets templates this client resolves call `exec()`; off by default). Never returns NULL. |
 | `void bc_client_free(BcClient *client)` | Free a client handle. Null-safe. |
 
 ### Operations
@@ -165,13 +165,21 @@ so a binding can tell the cases apart without string matching:
 
 ### Resolve / eval
 
-Client-side field resolution — evaluated in-process, never touching the
-daemon except to fetch `cache.*` refs the expression itself names.
+Both go through `libbeachcomber::resolve`, the same function behind
+`comb get` and `comb eval`: the daemon holds the templates
+(`<provider>:template`, seeded from configuration or `bc_put`) and the
+client renders them in-process with the `cwd` and `env_json` you pass.
 
 | Function | Description |
 |---|---|
-| `char *bc_resolve(BcClient *c, const char *key, const char *cwd, const char *env_json, const char *overrides_json)` | Resolve a key (`"provider.field"` at any depth, or a bare provider name for the whole namespace), exactly as `comb get` does. `cwd` is required. `env_json` / `overrides_json` are nullable. |
-| `char *bc_eval(BcClient *c, const char *template_str, const char *cwd, const char *env_json, const char *overrides_json)` | Evaluate a value expression with the same evaluator, for an expression that need not be registered anywhere: a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). `cwd` is required, and every daemon ref the expression names is fetched scoped to it. |
+| `char *bc_resolve(BcClient *c, const char *key, const char *cwd, const char *env_json)` | The same value `comb get` returns for this key, cwd and env. A plain field is its cached value, a templated one is rendered, and a bare provider name is the whole merged namespace; a miss is `data: null`. `cwd` is required — every fetch the resolution makes addresses it. `env_json` is nullable ("no environment": every `env.*` is `""`). |
+| `char *bc_eval(BcClient *c, const char *template_str, const char *cwd, const char *env_json)` | Render a template that is stored nowhere — the same value `comb eval` prints. `template_str` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). `cwd` is required, and every daemon ref the expression names is fetched scoped to it. |
+
+`exec()` inside a template runs only on a client created with
+`bc_client_new("{\"exec\":true}")`; it is off by default, and a template
+that calls it then fails with `exec() is disabled in this context`. A
+template that does not compile, or cycles, is `kind: "parse_error"`; a
+runtime failure (a failed or disabled `exec()`) is `kind: "server_error"`.
 
 ### Sessions
 

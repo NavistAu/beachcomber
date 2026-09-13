@@ -15,7 +15,7 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 |--------|--------|----------|
 | _(none)_ | **text** (default) | the common case — single values, shell substitution |
 | `.p` | plain text (explicit) | when text isn't the default for the command |
-| `.j` | json | programmatic consumers, want the `age_ms`/`stale` envelope |
+| `.j` | json | programmatic consumers — the bare value, nested at any depth |
 | `.s` | sh (key=value lines) | sourceable output for `eval`/`source` |
 | `.c` / `.C` | csv / csv+header | spreadsheet-style field dumps |
 | `.t` / `.T` | tsv / tsv+header | tab-separated for `awk`/`cut` |
@@ -35,7 +35,7 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 
 ## `comb g` (get) `<key>... [path] [--path <path>] [--global] [-f format]`
 
-Query a cached value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay.
+Query a value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay. `comb get` is a client of `libbeachcomber::resolve`, the same function behind `comb eval` and every SDK's `resolve`: it always needs the daemon, even for a key (`env.HOME`) it answers without a request.
 
 **Flags:** `--force` (trigger immediate recomputation before returning), `--wait` (block until a fresh value arrives), `--path <dir>` (query a directory other than the current one), `--global` (query the global entry, `$HOME`). Multiple keys can be passed in a single connection (variadic).
 
@@ -46,9 +46,14 @@ Query a cached value. Returns cached data immediately. On a cold cache (first qu
 | Form | What it selects |
 |---|---|
 | `provider.field` | Single field — most common form |
-| `provider` | All fields from all sources (flattened) |
+| `provider.path.to.node` | Any node at any depth — a leaf returns a scalar, an interior node its subtree as an object |
+| `provider` | The whole namespace: every cached field, deep-merged with every rendered template |
+| `provider:template.path…` | The raw template text at that node, unrendered |
+| `env.NAME` | The caller's own environment variable |
 
 The `provider.field` form automatically routes to the source that owns the field — a source name is metadata on the record, never a key you address directly. Unlike a field, a source has no address at all.
+
+**Templates.** A key whose namespace carries a template (`[providers."<p>:template"]` in configuration, the managed `defaults/`, or a `comb p <p>:template.<f>`) is rendered by `comb get` with this shell's environment and directory — `comb g python.version`, `comb g aws.region` and `comb g kubecontext.context` are all templates, and `exec()` is enabled here. A template at a cached field's path wins on read. A template that does not compile, or cycles, exits `2` with a message naming the field — for a namespace query too, so `comb g scanline` fails on a broken `scanline.widgets.foo` rather than silently omitting it; a runtime failure such as a failed `exec()` is omitted from a namespace object and fails a single-leaf query. See [Configuration Reference — Templates](/docs/reference/configuration-reference#templates-and-value-expressions).
 
 ```sh
 # Query a specific field — text is the default
@@ -60,9 +65,9 @@ comb g battery.percent           # → 87
 comb g hostname.short            # → myhost
 
 # Query the entire provider (all fields from all sources) — alternate formats
-comb g git .                     # → values only, one per line (text default)
-comb g.j git .                   # → full JSON envelope with age_ms, stale
-comb g.s git .                   # → key=value pairs, sourceable
+comb g git .                     # → key=value lines, one per leaf at any depth (text default)
+comb g.j git .                   # → the bare JSON object, nested (no envelope — metadata is by :age, :stale)
+comb g.s git .                   # → the same lines as text, every value shell-quoted
 comb g.c git .                   # → comma-separated values
 comb g.C git .                   # → CSV with header row
 comb g.t git .                   # → tab-separated values
@@ -87,6 +92,14 @@ comb g --force git .
 # Block until a fresh value arrives (useful after a trigger)
 comb g --wait git.branch .
 
+# Template-backed keys render here, with this shell's environment
+comb g python.version .              # → 3.12.1 (defaults/python.toml's cascade)
+comb g kubecontext.context           # → prod-cluster (kubectl, through exec())
+comb g scanline:template.widgets.foo # → {{ env.SCANLINE_FOO }} (the raw template)
+
+# The global entry ($HOME) alone, ignoring the current directory
+comb g --global myapp.status
+
 # Field metadata — append a colon suffix to retrieve metadata instead of the value
 comb g git.branch:age            # → 1523 (age in ms)
 comb g git.branch:stale          # → false
@@ -108,7 +121,7 @@ comb g git.branch:source         # → head (the Source that wrote the record)
 **Exit codes:**
 - `0` — success, data returned
 - `1` — provider returned no data (e.g. `git` queried outside a git repository)
-- `2` — error (daemon unreachable, unknown provider, invalid key)
+- `2` — error (daemon unreachable, unknown provider, invalid key, a template that does not compile or cycles — the message names the field)
 
 ## `comb s` (status)
 
@@ -209,6 +222,9 @@ comb p myapp '{"status":"healthy"}' --replace
 
 # Clear a previously written entry
 comb p myapp --null
+
+# Write a template — the next `comb g myapp.greeting` renders it
+comb p myapp:template.greeting '"hello {{ env.USER }}"'
 ```
 
 **Merge or replace:** a write deep-merges into whatever is already stored at the node, so `comb p myapp '{"version":"1.2.4"}'` leaves a `status` written earlier in place. `--replace` drops the subtree at the node first, so only what this write carries remains there. Both act on static records only — a `put` never removes a record a provider's Source produces. `--null` removes the subtree and writes nothing in its place, and cannot be combined with `--replace`.
@@ -264,7 +280,7 @@ Field-level filtering: `comb w git.branch` only emits when the branch value chan
 
 ## `comb e` (eval) `<template> [path]`
 
-Evaluate a value expression against cached provider data, resolving every referenced key in a single connection.
+Evaluate a value expression against cached provider data, resolving every referenced key in a single connection. `comb eval` renders through the same `libbeachcomber::resolve` as `comb get`, so `comb e '{{ p.f }}'` and `comb g p.f` agree by construction — and like `get` it always uses the daemon, even for an expression with no daemon refs.
 
 A value expression is written in one of two forms:
 
@@ -289,7 +305,7 @@ comb e '{% if git.dirty %}*{{ git.branch }}{% else %}{{ git.branch }}{% endif %}
 comb e '{{ git.branch | truncate(20) }}' .
 ```
 
-Available filters: `truncate`, `default`, `upper`, `lower`, `length`.
+Available filters: minijinja's built-ins (`default`, `upper`, `lower`, `length`, `tojson`, …) plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson` (parse a string — typically `exec()` output — as JSON).
 
 The natural type a single-tag expression keeps is mostly *not* visible
 in `comb e`'s own output, which is text: a bool prints `true`, and so does the
@@ -319,9 +335,9 @@ comb e '{{ exec("git", "rev-parse", "--short", "HEAD") }}' .
 | Output | stdout, lossy-UTF-8 decoded, with at most one trailing `\n` (and a preceding `\r`) stripped |
 | Output cap | stdout past 1 MiB is a failure, not a truncation |
 | Failure | a non-zero exit, a timeout, an oversized stdout, or a spawn error is an eval error naming the command, with stderr (truncated) attached |
-| Availability | `comb eval` and `comb get`'s virtual-field evaluation only — the CLI user already has a shell. Disabled everywhere else a value expression is evaluated: every other formatting surface (`-f fmt`, `watch -f fmt`, the status formatter), and the FFI/SDK surface (`bc_eval`/`bc_resolve`). A call on a disabled surface fails immediately with `exec() is disabled in this context`. |
+| Availability | `comb eval` and `comb get` — the CLI user already has a shell — and an SDK client constructed with `exec` on (`Client(exec=True)` and the equivalent in each SDK; off by default). Disabled everywhere else a value expression is evaluated: every formatting surface (`-f fmt`, `watch -f fmt`, the status formatter), and an SDK client without the option. A call on a disabled surface fails immediately with `exec() is disabled in this context`. |
 
-`exec()` always runs client-side — the daemon never executes it, the same as every other value expression. See the [Configuration Reference](/docs/reference/configuration-reference) for a virtual-field example that wraps a script call.
+`exec()` always runs client-side — the daemon never executes it, the same as every other value expression. See the [Configuration Reference](/docs/reference/configuration-reference#exec-in-templates) for a template that wraps a script call.
 
 ## `comb i` (init)
 
@@ -351,6 +367,8 @@ comb c procs             # 1-minute process snapshot, categorize against provide
 ```
 
 Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
+
+`comb c config` validates the composed configuration locally as well as relaying the daemon's view, and reports the managed `defaults/` directory without writing to it: `[PASS] local  defaults <dir> (8 files, comb <version>)` when every shipped file is current, `[WARN]` when shipped files are missing or stale (the daemon writes them on its next start) or when the directory holds files `comb` did not write, and `[FAIL]` when the directory is not writable.
 
 `--connect-timeout <DURATION>` bounds how long the check keeps trying to reach the daemon before reporting it unreachable (default `1s`; `0` for a single attempt, or e.g. `250ms`, `2s`). Retries start 5ms apart and double, so a daemon that is mid-restart is reached as soon as it binds. The option is accepted before or after the subcommand: `comb c --connect-timeout 0 daemon`.
 

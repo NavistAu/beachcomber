@@ -181,7 +181,7 @@ description = "GCloud project via beachcomber"
 
 ## Environment and toolchain modules
 
-`terraform`, `mise`, and `asdf` are path-scoped — pass `.` so beachcomber receives the current directory. `conda` is a global provider and does not require a path argument.
+`terraform`, `mise`, and `asdf` are path-scoped — pass `.` so beachcomber receives the current directory. `conda.env` is a template over the shell's `$CONDA_DEFAULT_ENV` (from the managed `defaults/conda.toml`), rendered by `comb g` itself, and does not require a path argument.
 
 ```toml
 [conda]
@@ -192,7 +192,7 @@ command = "comb g conda.env"
 when = "comb g conda.env"
 format = "[conda:$output]($style) "
 style = "bold green"
-description = "Conda environment via beachcomber (global provider)"
+description = "Conda environment via beachcomber (template over $CONDA_DEFAULT_ENV)"
 
 [terraform]
 disabled = true
@@ -281,7 +281,7 @@ command = "comb g conda.env"
 when = "comb g conda.env"
 format = "[conda:$output]($style) "
 style = "bold green"
-description = "Conda environment via beachcomber (global provider)"
+description = "Conda environment via beachcomber (template over $CONDA_DEFAULT_ENV)"
 
 [custom.load]
 command = "comb g load.one"

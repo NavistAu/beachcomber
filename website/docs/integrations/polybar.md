@@ -65,7 +65,7 @@ format = <label>
 label = up %output%
 ```
 
-Global providers (battery, load, network, kubecontext, uptime) do not take a path argument. Path-scoped providers (git, terraform, etc.) take the target directory as a second argument — `.` means the current working directory, but since polybar runs scripts without a meaningful working directory you should pass an explicit path:
+Global providers (battery, load, network, uptime) do not take a path argument, nor does the `kubecontext` template (it asks `kubectl` for the current context, which is not directory-scoped). Path-scoped providers (git, terraform, etc.) take the target directory as a second argument — `.` means the current working directory, but since polybar runs scripts without a meaningful working directory you should pass an explicit path:
 
 ```ini
 [module/git-branch]

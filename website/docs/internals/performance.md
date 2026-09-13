@@ -187,7 +187,7 @@ libc::getifaddrs(&mut ifaddrs);
 
 | Tier | Time | Providers | Method |
 |---|---|---|---|
-| **Nanosecond** (< 1µs) | 395ns - 749ns | user, load, hostname, uptime, gcloud, aws, conda | libc calls, file reads, env vars |
+| **Nanosecond** (< 1µs) | 395ns - 749ns | user, load, hostname, uptime, gcloud_configs, aws_profiles | libc calls, file reads, env vars |
 | **Microsecond** (1-100µs) | ~1-50µs | terraform, python, asdf, direnv (no direnv binary) | File existence checks + reads |
 | **Millisecond** (1-10ms) | 2-6ms | network (2ms), git (5.6ms), battery (6ms) | 1 process spawn each |
 | **Slow** (10-50ms) | 10-50ms | mise, direnv (with direnv), script providers | Process spawn (user-defined) |

@@ -82,6 +82,7 @@ Connect to the daemon and return a `Client`.
 | Option | Type | Description |
 |---|---|---|
 | `socket_path` | string | Override automatic socket discovery |
+| `exec` | boolean | `ffi` transport: let templates this client resolves call `exec()`. Off by default — a template that calls it then fails with `exec() is disabled in this context` |
 | `backend` | module | Override the socket backend (advanced) |
 
 Returns `nil, error_message` on failure.
@@ -125,6 +126,11 @@ Subscribe to live cache updates. Returns a `WatchStream` — call `:next()` to r
 ### `Client:get_with_flags(key, path, force, wait)` → `Result | nil, error`
 
 Read a cached value with optional `force` (recompute) or `wait` (block for fresh value) flags.
+
+### `Client:resolve(key [, opts])` → `value | nil, error`
+### `Client:eval(template_str [, opts])` → `value | nil, error`
+
+`resolve` returns the same value `comb get` returns for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace; a miss is `nil` with no error. `eval` renders a template that is stored nowhere — the same value `comb eval` prints. `opts.cwd` (default: the context path, then `"."`), `opts.env` (the caller's environment for `env.*` refs). A template that calls `exec()` needs `exec = true` on the connect. `ffi` transport only.
 
 ### `Client:close()`
 

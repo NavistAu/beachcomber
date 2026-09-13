@@ -55,7 +55,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/provider/http.rs` | `HttpProvider`: in-process HTTP client for REST API providers; `extract` for JSON path navigation |
 | `src/client.rs` | `Client` (one-shot) and `ClientSession` (persistent) for consumer-side socket communication |
 
-The remaining provider files (`battery`, `load`, `uptime`, `network`, `aws_profiles`, `gcloud_configs`, `terraform`, `direnv`, `python`, `mise`, `asdf`, `sudo`) follow the same pattern — each implements `Provider` (namespace) declaring one or more `Source` objects. `aws_profiles` and `gcloud_configs` are **data providers** whose cached fields are indexed by client-side virtual fields in the `aws` and `gcloud` consumer namespaces (see `docs/canon/field_resolution.md`). `kubecontext` and `talos` are not providers: their fields are templates in the managed `defaults/` files, rendered by calling `kubectl`/`talosctl` through `exec()`.
+The remaining provider files (`battery`, `load`, `uptime`, `network`, `aws_profiles`, `gcloud_configs`, `terraform`, `direnv`, `python`, `mise`, `asdf`, `sudo`) follow the same pattern — each implements `Provider` (namespace) declaring one or more `Source` objects. `aws_profiles` and `gcloud_configs` are **data providers** whose cached fields are indexed by the templates in the managed `defaults/aws.toml` and `defaults/gcloud.toml`, which the client renders as the `aws` and `gcloud` namespaces (see `docs/canon/field_resolution.md`). `conda`, `op`, `kubecontext` and `talos` are not providers at all: their fields are templates in `defaults/`, the last two rendered by calling `kubectl`/`talosctl` through `exec()`.
 
 ### Provider→Source layering
 

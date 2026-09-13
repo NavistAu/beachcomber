@@ -87,13 +87,15 @@ A namespace `put` created is **static** — stored data with no `execute()` behi
 
 ## Config
 
-TOML at `~/.config/beachcomber/config.toml`. Three sections: `[daemon]`, `[lifecycle]`, `[providers.<name>]`.
+TOML at `~/.config/beachcomber/config.toml`. Three sections: `[daemon]`, `[lifecycle]`, `[providers.<name>]`. Composition is `defaults/*.toml` (managed files the daemon writes — the shipped templates, marker `# Managed by comb <version>`), then `config.toml`, then `conf.d/*.toml`. A `[providers."<p>:template"]` table holds templates: data the daemon seeds into the cache at `<p>:template` and never evaluates; the client renders them through `libbeachcomber::resolve`. `[providers.<p>.virtual]` and `[providers.<p>] path = …` are validation errors.
 
 Socket path resolution (daemon): config override → `$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock`. Client SDKs mirror this minus the config-file step (`$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock`). No session-scoped environment is consulted (`$TMPDIR`, `$XDG_RUNTIME_DIR`) — see `docs/canon/singleton.md`.
 
 ## SDKs
 
 Client SDKs live in `sdks/` — one directory per language (C, Go, Lua, Node.js, Python, Ruby). Each is self-contained with its own test suite. Each SDK binds the shared `libbeachcomber` C ABI (ctypes/fiddle/purego/LuaJIT-ffi/koffi). Python, Ruby, and C are stdlib-only. Go vendors `purego`. Node.js takes `koffi` as an optional peer dependency. Node and PUC-Lua (no `ffi`) have subprocess fallback tiers.
+
+Every SDK's `resolve`/`eval` goes through `bc_resolve`/`bc_eval`, which call `libbeachcomber::resolve` — the same function `comb get`/`comb eval` use — and take no overrides. `exec()` in a template runs only on a client constructed with the `exec` option (`bc_client_new` options JSON `"exec": true`); off by default.
 
 The Rust client SDK is `libbeachcomber/` (workspace member).
 

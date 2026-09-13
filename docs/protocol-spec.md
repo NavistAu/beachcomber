@@ -524,9 +524,9 @@ any request issued afterward on the same persistent connection. JSON framing
 has neither failure mode: errors are carried by `ok:false`, and values are
 escaped strings.
 
-## Env-cascade P2 — no wire change
+## Data-provider rename — no wire change
 
-The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs`) is a provider-name change visible in the `key` field of `Get`/`Refresh` requests and in `Status` rows — not a change to request/response shape or encoding.
+The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs`) is a provider-name change visible in the `key` field of `Get`/`Refresh` requests and in `Status` rows — not a change to request/response shape or encoding. The `aws` and `gcloud` names live on as template-backed namespaces: a `get aws.region` returns the template the client renders, not a daemon-computed value.
 
 ---
 

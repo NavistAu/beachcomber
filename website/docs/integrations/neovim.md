@@ -60,14 +60,14 @@ This module has the same interface as the SDK-based version below, so lualine an
 
 The SDK uses `vim.uv` for non-blocking socket access — no process forking. This is the recommended approach if you can install the SDK.
 
-The SDK exposes a single `connect()` call that returns a persistent client. Call `client:get(key, path)` to retrieve a value. The second argument is the working directory path and is required for providers like `git` that are path-scoped.
+The SDK exposes a single `connect()` call that returns a persistent client. Call `client:get(key, path)` to retrieve a cached value. The second argument is the working directory path and is required for providers like `git` that are path-scoped. A template-backed key such as `kubecontext.context` has no cached value — `get` on it is always a miss — so read it with `client:resolve(key, { cwd = ... })`, which renders the template the way `comb get` does; `kubecontext` calls `kubectl` through `exec()`, so connect with `exec = true`.
 
 Create a helper module so the same client is reused across your config:
 
 ```lua
 -- lua/beachcomber-status.lua
 local comb = require('beachcomber')
-local client = comb.connect()
+local client = comb.connect({ exec = true })
 
 local M = {}
 
@@ -96,11 +96,9 @@ function M.battery()
 end
 
 function M.kube()
-    local result = client:get('kubecontext.context')
-    if result and result:is_hit() then
-        return result.data
-    end
-    return ''
+    -- a template, not a cached field: resolve renders it (kubectl via exec())
+    local value = client:resolve('kubecontext.context', { cwd = vim.fn.getcwd() })
+    return value or ''
 end
 
 return M

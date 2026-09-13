@@ -111,7 +111,7 @@ poll_live_count = 12
 # enabled           bool      When false, source never executes. Default true.
 
 # Disable a provider entirely (it will never execute or appear in results)
-[providers.conda]
+[providers.sudo]
 enabled = false
 
 # Override the git.diff source to poll more frequently
@@ -257,7 +257,7 @@ version = "{{ python.version }}"
 That is `python:template.venv_name` and `python:template.widgets.version`. A facet table holds data only, and four rules are enforced at daemon startup (and by `comb check config`):
 
 - The key must be valid facet syntax — exactly one colon, a facet name of letters, digits, `_` or `-`, and not one of the metadata suffix names (`age`, `stale`, `fresh`, `cache`, `source`). `[providers."a:b:c"]` and `[providers."x:age"]` are **errors**.
-- No settings keys. `enabled`, `backend`, `type`, `command`, `library_path`, `url` and `path` are **errors** at the top level of a facet table, and so is any per-source knob — `poll_interval`, `poll_count`, `poll_secs`, `fsevent_patterns`, `fsevent_abs_paths`, `fsevent_lifespan`, `fsevent_reinstates`, `failback_count`, `failback_interval`, and the legacy spellings `poll_interval_secs`, `poll_live_count`, `fsevents_reinstate`, `failure_reattempts` and `failure_backoff_interval`. They belong in `[providers.<name>]`.
+- No settings keys. `enabled`, `backend`, `type`, `command`, `library_path` and `url` are **errors** at the top level of a facet table, and so is any per-source knob — `poll_interval`, `poll_count`, `poll_secs`, `fsevent_patterns`, `fsevent_abs_paths`, `fsevent_lifespan`, `fsevent_reinstates`, `failback_count`, `failback_interval`, and the legacy spellings `poll_interval_secs`, `poll_live_count`, `fsevents_reinstate`, `failure_reattempts` and `failure_backoff_interval`. They belong in `[providers.<name>]`.
 - Nesting is tables only, in **every** facet, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**.
 - Under `:template` a leaf that is neither a string nor a table is not a value expression: a **warning**, and the leaf is dropped from what gets loaded. Any other facet is plain data, so its leaves may be of any type.
 
@@ -267,27 +267,54 @@ Every leaf is loaded into the cache at daemon start, labelled with the file it c
 
 The reload is all or nothing, twice over. The edited files are checked against the four rules above before anything is touched, so an edit that breaks one of them changes nothing at all — the previous values keep being served and the error is logged (and shown by `comb check config`) until the file is fixed. And each namespace's old and new records are swapped together, so a `comb get` running concurrently with the reload never sees a value momentarily missing.
 
-### Virtual fields
+### Templates and value expressions
 
-A **virtual field** is a value expression computed client-side over `env.*`, `cache.*`, and other fields' resolved values — it need not have a cached value of its own. Declare one under `[providers.<name>]` as a dotted `virtual.<field>` key:
+A **template** is a string leaf of a `:template` facet: a value expression over `env.*`, `cache.*` and other fields' resolved values. The daemon stores it and serves it; the client — `comb get`, `comb eval`, and every SDK's `resolve`/`eval`, all through `libbeachcomber::resolve` — renders it with the caller's environment and directory. A field need not have a cached value to carry a template:
 
 ```toml
-[providers.myapp]
-virtual.region = "{{ env.AWS_REGION or cache.aws_profiles[env.AWS_PROFILE or \"default\"].region }}"
+[providers."scanline:template"]
+theme = "{{ env.SCANLINE_THEME or 'dark' }}"
 
-[providers.git]
-virtual.summary = "{{ git.branch }}{% if git.dirty %}*{% endif %}"
+[providers."scanline:template".widgets]
+foo = "{{ env.SCANLINE_FOO }}"
+bar = "{{ cache.git.branch | truncate(12) }}"
 ```
 
-`myapp.region` is a single `{{ expr }}` tag spanning the whole value, so it keeps the expression's natural type (here, whatever type the indexed `region` field is — typically a string, but a boolean or number cascades the same way). `git.summary` is not a single tag — it carries several, and the `{% if %}`/`{% endif %}` pair are `{% %}` statements rather than `{{ }}` expressions — so it is a template, and always string-valued. Either fact disqualifies it on its own: only exactly one `{{ }}` tag spanning the whole value takes the typed path, and the `*` here is literal text inside the `if`, not around the tags.
+**Addressing.** Every node is addressable at any depth, templated or cached alike: `comb g scanline.widgets.foo` renders one leaf, `comb g scanline.widgets` renders the group as an object, and `comb g scanline` returns the whole namespace — its cached fields deep-merged with its rendered template tree. Where a template sits at the same path as a cached field, the template wins on read (`defaults/terraform.toml` does this to `terraform.workspace`, reading the cached value back through `cache.terraform.workspace`). The raw template text is read through the facet: `comb g scanline:template.widgets.foo` prints `{{ env.SCANLINE_FOO }}`. An address can run past a template into what it renders — with `stats = "{{ {'cpu': 40} }}"`, `comb g scanline.stats.cpu` is `40`.
 
-### `exec()` in virtual fields
+**Expressions.** One rule, everywhere a template is evaluated:
 
-A `virtual.<field>` expression can call `exec()` to shell out to a script and use its output as the field's value:
+| Written as | Evaluates to | Example |
+|---|---|---|
+| exactly one `{{ expr }}` tag | the expression's natural type | `"{{ env.OP_SERVICE_ACCOUNT_TOKEN != '' }}"` → a bool |
+| literal text and/or more than one tag | a string | `"{{ git.branch }}{% if git.dirty %}*{% endif %}"` → `main*` |
+| no tags at all | its own literal text | `"env.HOME"` → the string `env.HOME` |
+
+Inside an expression, `cache.<provider>.<field>` is the raw cached value; `<provider>.<field>` is that field as `comb get` would resolve it (templates included, recursively, cycle-detected); `env.X` is the caller's environment. A missing ref is undefined and falsy. Filters: minijinja's built-ins plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson`.
+
+**Errors.** A template that does not compile, or a cycle, is a configuration error: a single-leaf query fails, and a namespace query fails naming the leaf (`comb g scanline` exits 2 with `scanline.widgets.foo: …`). A runtime failure — a failed or disabled `exec()` — fails a single-leaf query but is omitted from a namespace object.
+
+**Writing a template at runtime.** `put` addresses the facet like any other node: `comb p scanline:template.widgets.foo '"{{ env.OTHER }}"'` takes effect on the next read and lasts until the daemon restarts; it may also `--replace` a subtree or `--null` it, and `--global` writes `$HOME`. The ownership rule applies per record — a `put` may write a template record (nothing refreshes it) but never a field a provider's Source produces. Flags and semantics are under `comb p` in [CLI Commands](/docs/reference/cli-commands).
+
+**Managed defaults.** The shipped templates — `aws`, `conda`, `gcloud`, `op`, `python`, `terraform`, `kubecontext`, `talos` — are files the daemon writes to `~/.config/beachcomber/defaults/` before it loads configuration, each headed by `# Managed by comb <version>` and rewritten on a version change (a shipped name with this version's marker is left untouched even if edited). `defaults/` is the lowest composition layer — `defaults/*.toml`, then `config.toml`, then `conf.d/*.toml` — so override one field by setting the same key in your own file and leaving the rest to the default:
 
 ```toml
-[providers.myapp]
-virtual.deploy_tag = "{{ exec(\"git\", \"describe\", \"--tags\", \"--always\") }}"
+# ~/.config/beachcomber/conf.d/10-mine.toml
+[providers."python:template"]
+version = "{{ env.MY_PY or cache.python.venv_version }}"   # venv_name still comes from defaults/python.toml
+```
+
+`comb check config` reports the directory, its file count and version, and warns about files in it that `comb` did not write. A directory the daemon cannot write is a refusal to start.
+
+**The 0.9 form is an error.** `[providers.<name>.virtual]` — the 0.9 home of a provider's templates, as a table or as dotted keys under `[providers.<name>]` — is reported by daemon start and `comb check config` as `unrecognised block [providers.<name>.virtual]: templates live in [providers."<name>:template"]`.
+
+### `exec()` in templates
+
+A template can call `exec()` to run a command and use its output as the field's value — `defaults/kubecontext.toml` renders `kubecontext.context` this way:
+
+```toml
+[providers."myapp:template"]
+deploy_tag = "{{ exec('git', 'describe', '--tags', '--always') }}"
 ```
 
 | | |
@@ -298,10 +325,10 @@ virtual.deploy_tag = "{{ exec(\"git\", \"describe\", \"--tags\", \"--always\") }
 | `timeout_ms` | keyword, default `10000` |
 | `stdin` | keyword, default none; must be a string — `\| tojson` first for structured data |
 | Output | stdout, lossy-UTF-8, at most one trailing newline stripped; capped at 1 MiB (an oversized stdout is a failure, not a truncation) |
-| Failure | non-zero exit / timeout / oversized stdout / spawn failure → eval error naming the command, with truncated stderr attached |
-| Availability | `comb eval` and `comb get` only — evaluation is always client-side, never on the daemon. Disabled (`exec() is disabled in this context`) in formatting surfaces (`-f fmt`, `watch -f fmt`, the status formatter), and the FFI/SDK surface (`bc_eval`/`bc_resolve`) |
+| Failure | non-zero exit / timeout / oversized stdout / spawn failure → a runtime error naming the command, with truncated stderr attached |
+| Availability | `comb get`, `comb eval`, and an SDK client constructed with `exec` on (`Client(exec=True)`, `new Client({ exec: true })`, `beachcomber.WithExec(true)`, `Beachcomber::Client.new(exec: true)`, `comb.connect{ exec = true }`, `bc_client_new("{\"exec\":true}")`) — off by default. Never the daemon, and never a formatting surface (`-f fmt`, `watch -f fmt`, the status formatter). A call anywhere it is off fails with `exec() is disabled in this context`. |
 
-A whole-namespace `comb get <provider>` evaluates every virtual field in that provider in sequence, so several `exec()`-backed fields under one provider can serialise up to N × `timeout_ms` in the worst case — pass an explicit, low `timeout_ms` when the consumer is latency-sensitive (a shell prompt or statusline).
+A whole-namespace `comb get <provider>` renders every template in that namespace in sequence, so several `exec()`-backed leaves under one namespace can serialise up to N × `timeout_ms` in the worst case — pass an explicit, low `timeout_ms` when the consumer is latency-sensitive (a shell prompt or statusline).
 
 See [CLI Commands](/docs/reference/cli-commands) for the expression-level reference and more examples.
 
@@ -313,6 +340,9 @@ no `include =` directive needed. Any `*.toml` file placed in
 
 ```
 ~/.config/beachcomber/
+├── defaults/            # written by the daemon — the shipped templates
+│   ├── aws.toml
+│   └── …
 ├── config.toml
 └── conf.d/
     ├── 10-scanline.toml
@@ -321,6 +351,9 @@ no `include =` directive needed. Any `*.toml` file placed in
 
 Composition rules:
 
+- The managed `defaults/*.toml` files (see [Templates](#templates-and-value-expressions))
+  are the lowest layer, in lexical order; `config.toml` and then `conf.d/`
+  compose on top, so a key you set anywhere else overrides a default.
 - Files in `conf.d/` are merged in **lexical filename order** (a numeric
   prefix like `10-`, `20-` is a common way to control that order).
 - Each file is **deep-merged** onto the accumulated config: tables merge key
@@ -334,8 +367,9 @@ Composition rules:
   the file) rather than blocking daemon startup — the rest of the composed
   set still loads.
 - Config changes take effect via **automatic daemon restart** — no manual
-  restart. Changes to `config.toml` or any `conf.d/*.toml` file (including
-  files added or removed) trigger the daemon's config self-watch, which acts
+  restart. Changes to `config.toml`, any `conf.d/*.toml` or any
+  `defaults/*.toml` file (including files added or removed) trigger the
+  daemon's config self-watch, which acts
   only once the *whole* composed set parses cleanly; an edit that doesn't parse
   is ignored with a logged warning. The one change that does **not** restart is
   an edit confined to the [facet tables](#template-facets) themselves, which is
