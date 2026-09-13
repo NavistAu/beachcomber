@@ -916,3 +916,36 @@ fn check_config_fails_a_virtual_subtable_naming_the_template_facet() {
         "expected a local FAIL line naming the template facet, got:\n{stdout}"
     );
 }
+
+/// The same config refuses the daemon, and the refusal is an exit 2 — not the
+/// 0 of a clean stop, which a supervisor could not tell apart. It never binds.
+#[test]
+fn comb_daemon_refused_by_config_validation_exits_two_and_binds_nothing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_dir = tmp.path().join("beachcomber");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "[providers.conda]\nvirtual.env = \"{{ env.CONDA_DEFAULT_ENV }}\"\n",
+    )
+    .unwrap();
+    let sock = tmp.path().join("sock");
+
+    // `.output()` waits for the process to exit: a refused daemon returns
+    // on its own, so a hang here is the bug.
+    let output = std::process::Command::new(comb_binary())
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .args(["daemon", "--exit-with-parent", "--socket"])
+        .arg(&sock)
+        .output()
+        .expect("run comb daemon");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("Daemon refusing to start"),
+        "the refusal is logged, got:\n{stderr}"
+    );
+    assert!(!sock.exists(), "it never bound its socket");
+}

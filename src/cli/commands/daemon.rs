@@ -206,16 +206,22 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
             });
         }
 
-        let (handle, _ready) = crate::daemon::start_in_process_with_reaper(
+        let (handle, ready) = crate::daemon::start_in_process_with_reaper(
             socket_path,
             config,
             cancel,
             Some(reaper_health),
         );
         handle.await.ok();
-    });
-
-    ExitCode::SUCCESS
+        // A daemon that never signalled readiness never served: config
+        // validation refused it or the bind failed. Exit 2, as a failed
+        // managed-defaults write does, so a supervisor can tell a refused
+        // start from a clean stop.
+        if ready.await.is_err() {
+            return ExitCode::from(2);
+        }
+        ExitCode::SUCCESS
+    })
 }
 
 /// Cancel `cancel` when this daemon's parent process dies, detected via
