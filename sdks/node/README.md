@@ -209,12 +209,18 @@ programmatic handling.
 and watch — all with exact envelope fidelity.
 
 **Subprocess (`comb` CLI fallback)** covers `get`, `put`, `putNull`,
-`status`, `watch`, and session context. It does **not** implement `hello`,
-`introspect`, `refresh`, `resolve`, or `eval` — `comb`'s CLI has no
-faithful JSON equivalent for them (see `src/subprocess_transport.ts` for
-why each one specifically can't be approximated safely), and those calls
-throw `UnsupportedTransportError` rather than silently returning wrong
-data. It is also asymmetric on omitted paths: `comb get` without `--path`
+`status`, `watch`, and session context. `get` reads the raw node from the
+`comb status -f json` rows for the key's provider (after a `comb get` has
+primed it) rather than from `comb get`'s own output, which is the
+*resolved* value; those rows are the provider's cached values, not its
+`:template` tree, so a result from this tier never carries `template` or
+`rest`, and a template-only node reads as a miss here — a caller that
+needs the template half needs the FFI transport. It does **not** implement
+`hello`, `introspect`, `refresh`, `resolve`, or `eval` — `comb`'s CLI has
+no faithful JSON equivalent for them (see `src/subprocess_transport.ts`
+for why each one specifically can't be approximated safely), and those
+calls throw `UnsupportedTransportError` rather than silently returning
+wrong data. It is also asymmetric on omitted paths: `comb get` without `--path`
 defaults to the CLI process's own working directory, while `comb put`
 without `--path` means "global" — pass an explicit `path` for global
 (pathless) providers under this transport.

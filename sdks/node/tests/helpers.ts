@@ -49,6 +49,9 @@ function findCombBin(): string | undefined {
 }
 
 const COMB_BIN = findCombBin();
+if (!process.env['COMB_BIN'] && COMB_BIN) {
+  process.env['COMB_BIN'] = COMB_BIN;
+}
 
 /** True when a `comb` binary was found and daemon-backed tests can run. */
 export function daemonAvailable(): boolean {

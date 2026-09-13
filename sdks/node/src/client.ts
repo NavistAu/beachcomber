@@ -94,7 +94,7 @@ function pickField(data: unknown, field?: string): unknown {
 }
 
 /** bc_get's payload: `template`/`rest` are present only when set. */
-interface GetResultShape {
+export interface GetResultShape {
   data: unknown;
   age_ms: number | null;
   stale: boolean | null;
@@ -102,7 +102,8 @@ interface GetResultShape {
   rest?: string;
 }
 
-function makeCombResult(raw: GetResultShape): CombResult {
+/** Exported for the transport tests, which drive a transport without a `Client`. */
+export function makeCombResult(raw: GetResultShape): CombResult {
   // The ABI sets age_ms/stale to null whenever data is absent (a miss, or a
   // template-only node); a Hit always carries an age. That is the reliable
   // hit signal, since the data value itself may legitimately be JSON null
