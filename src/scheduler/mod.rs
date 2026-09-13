@@ -905,13 +905,20 @@ impl Scheduler {
 
                                 match outcome.watch_registration {
                                     WatchAction::Register | WatchAction::Reinstate => {
-                                        // Register fs watches for PathScoped sources —
-                                        // but only at a directory the query named. A
-                                        // path-scoped source at the global entry runs at
-                                        // `$HOME`, and a recursive watch there is a
-                                        // firehose; it refreshes by poll, by demand, and
-                                        // (when read-always) on every read.
+                                        // Register fs watches for PathScoped Watch and
+                                        // WatchAndPoll sources — but only at a directory
+                                        // the query named. A path-scoped source at the
+                                        // global entry runs at `$HOME`, and a recursive
+                                        // watch there is a firehose; it refreshes by
+                                        // poll, by demand, and (when read-always) on
+                                        // every read. A Poll source registers no watch
+                                        // at all (canon provider_source.md invariant 4):
+                                        // its pattern list is empty, and an empty list
+                                        // matches every event under the root, so a
+                                        // subscription for it would re-execute the
+                                        // source on any write anywhere in the tree.
                                         if matches!(sm.scope, SourceScope::PathScoped)
+                                            && !matches!(sm.invalidation, InvalidationStrategy::Poll { .. })
                                             && let Some(ref path_str) = path
                                         {
                                             let watch_path = PathBuf::from(path_str);
