@@ -297,16 +297,17 @@ async fn handle_watch(
     // addressed one: a `put` at an ancestor, at a directory below the provider's
     // scope entry, or at the global entry changes what this watch resolves to,
     // so it has to wake the stream — and so does a write to the template facet.
-    // Both halves subscribe exactly what [`Cache::read_merged`] walks: the
-    // requested directory's chain (`query::path_chain`), which the provider's
-    // own scope entry is always a link of. A facet key has no template half and
+    // The data half subscribes exactly what [`Cache::read_merged`] walks
+    // (`query::read_chain`, which carries the provider's scope entry even when
+    // it sits above `$HOME`); the template half is a static namespace, so its
+    // chain is the requested directory's. A facet key has no template half and
     // subscribes only its own chain. One forwarder task per link funnels the
     // per-key broadcasts into a single channel.
     let chain_watch = {
         let changed = Arc::new(tokio::sync::Notify::new());
         let mut tasks = Vec::new();
         let mut links: Vec<(String, Option<String>)> =
-            crate::query::path_chain(requested_path.as_deref())
+            crate::query::read_chain(requested_path.as_deref(), effective_path.as_deref())
                 .into_iter()
                 .map(|layer| (provider_name.clone(), layer))
                 .collect();

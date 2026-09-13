@@ -908,11 +908,10 @@ impl Cache {
     /// - each **ancestor** of `requested`, farthest first — static maps, plus
     ///   the `PathScoped` provider maps of the one that is `provider_entry`;
     /// - the **requested entry** — its `PathScoped` provider maps when it is
-    ///   `provider_entry`, then its static maps over them.
-    ///
-    /// `provider_entry` is always a link of that chain: a `canonical_path`
-    /// walks up from the requested path, so it returns an ancestor-or-self of
-    /// it, or `$HOME` — the global link (see [`crate::query::path_chain`]).
+    ///   `provider_entry`, then its static maps over them;
+    /// - `provider_entry` itself, last, when it is *not* a link of the chain
+    ///   — a walker that landed above `$HOME`, where the chain stops; see
+    ///   [`crate::query::read_chain`], which builds the walk order.
     ///
     /// A provider record never walks the chain: it is read only from the entry
     /// its Source's declared scope keys. So a provider declaring the same field
@@ -935,7 +934,7 @@ impl Cache {
         registry: &ProviderRegistry,
     ) -> Option<MergedRead> {
         use crate::provider::SourceScope::{Global, PathScoped};
-        let chain = crate::query::path_chain(requested);
+        let chain = crate::query::read_chain(requested, provider_entry);
         let mut out = MergedRead {
             fields: HashMap::new(),
             records: HashMap::new(),

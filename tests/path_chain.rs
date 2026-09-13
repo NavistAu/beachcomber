@@ -38,8 +38,10 @@ use tokio::net::UnixStream;
 
 struct Fixture {
     _sock_dir: TempDir,
-    _home: TempDir,
+    _root: TempDir,
     sock: PathBuf,
+    /// The temp root; `$HOME` is it, or a directory below it.
+    root: PathBuf,
     home: PathBuf,
     cache: Arc<Cache>,
 }
@@ -48,8 +50,16 @@ impl Fixture {
     /// `$HOME` is a fresh temp root holding `ws/project/foo/bar/baz` and
     /// `ws/other`. The server runs in-process on a unix socket.
     fn start(registry: ProviderRegistry) -> Fixture {
-        let home_dir = TempDir::new().unwrap();
-        let home = home_dir.path().canonicalize().unwrap();
+        Fixture::start_with_home(registry, "")
+    }
+
+    /// As [`Fixture::start`], with `$HOME` at `home_rel` below the temp root
+    /// — so a test can place something *above* `$HOME`.
+    fn start_with_home(registry: ProviderRegistry, home_rel: &str) -> Fixture {
+        let root_dir = TempDir::new().unwrap();
+        let root = root_dir.path().canonicalize().unwrap();
+        let home = root.join(home_rel);
+        std::fs::create_dir_all(&home).unwrap();
         // SAFETY: nextest gives every test its own process, so no other thread
         // is reading the environment concurrently.
         unsafe { std::env::set_var("HOME", &home) };
@@ -72,8 +82,9 @@ impl Fixture {
 
         Fixture {
             _sock_dir: sock_dir,
-            _home: home_dir,
+            _root: root_dir,
             sock,
+            root,
             home,
             cache,
         }
@@ -981,6 +992,104 @@ async fn an_ancestor_entrys_provider_records_never_leak_into_a_nested_root() {
         "a field the inner root never produces must not arrive from the outer entry, got {:?}",
         leaked.data
     );
+}
+
+// ── a provider entry above $HOME is off the chain, and still read ────────────
+
+/// The marker sits *above* `$HOME`: `$ROOT/.root` with `$HOME = $ROOT/home`.
+/// The walker does not stop at `$HOME`, so the provider's entry is keyed at
+/// `$ROOT` — a directory the chain from anywhere below `$HOME` never reaches,
+/// because the chain stops at `$HOME` and steps to the global entry.
+fn rooted_fixture_above_home() -> Fixture {
+    let mut reg = ProviderRegistry::new();
+    reg.register(Box::new(RootedProvider)).unwrap();
+    let f = Fixture::start_with_home(reg, "home");
+    std::fs::write(f.root.join(".root"), "").unwrap();
+    f
+}
+
+/// Canon `field_resolution.md` reads a path-scoped source's records at the
+/// addressed path, wherever the source resolved it to. An entry above `$HOME`
+/// is the one case that is not a link of the requested path's chain, so the
+/// read has to add it — and a static record put below `$HOME` still layers
+/// over it like any other.
+#[tokio::test]
+async fn a_provider_entry_above_home_is_read_from_a_path_below_home() {
+    let f = rooted_fixture_above_home();
+    let root = f.root.to_string_lossy().into_owned();
+    let sub = f.path("ws/project");
+    let mut s = f.connect().await;
+
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.field", &sub)).await,
+            "provider record"
+        ),
+        serde_json::json!(root),
+        "the source runs at the marker directory above $HOME"
+    );
+    assert!(
+        f.cache.get_entry("r", Some(&root)).is_some(),
+        "and its entry is keyed there, above $HOME"
+    );
+    assert!(
+        f.cache.get_entry("r", Some(&sub)).is_none(),
+        "nothing of the provider's lands at the requested directory"
+    );
+
+    let resp = send_recv(&mut s, put_at("r.note", serde_json::json!("kept"), &sub)).await;
+    assert!(resp.ok, "put below $HOME: {:?}", resp.error);
+    assert_eq!(
+        data(send_recv(&mut s, get_at("r", &sub)).await, "namespace"),
+        serde_json::json!({ "field": root, "note": "kept" }),
+        "the static record at the requested path layers over the entry above $HOME"
+    );
+}
+
+/// The watch subscribes the same chain the read walks, so a provider write to
+/// an entry above `$HOME` wakes a watch opened below it.
+#[tokio::test]
+async fn a_watch_below_home_receives_a_provider_write_above_home() {
+    let f = rooted_fixture_above_home();
+    let root = f.root.to_string_lossy().into_owned();
+    let sub = f.path("ws/project");
+
+    let mut w = f.connect().await;
+    let mut req = serde_json::json!({"op": "watch", "key": "r.field", "path": sub}).to_string();
+    req.push('\n');
+    w.write_all(req.as_bytes()).await.unwrap();
+    let mut frames = BufReader::new(w);
+
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("the initial frame must arrive")
+        .unwrap();
+    let initial: Response = serde_json::from_str(&line).unwrap();
+    assert!(
+        initial.data.is_none(),
+        "no scheduler and nothing executed yet, got {:?}",
+        initial.data
+    );
+
+    // A cold-miss `get` on another connection is the provider's write: it
+    // executes the source and stores its records at `$ROOT`.
+    let mut s = f.connect().await;
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.field", &sub)).await,
+            "cold-miss execute"
+        ),
+        serde_json::json!(root)
+    );
+
+    line.clear();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("a frame must arrive for the provider's write above $HOME")
+        .unwrap();
+    let update: Response = serde_json::from_str(&line).unwrap();
+    assert_eq!(update.data, Some(serde_json::json!(root)));
 }
 
 // ── (f) a nested repo never inherits its parent's records ────────────────────

@@ -939,11 +939,10 @@ impl Scheduler {
                                                     path, provider, sm.name
                                                 );
                                             }
-                                            // Env-selected file sources declare concrete
-                                            // files to watch via watched_files(); the path
-                                            // may be a ':'-joined list that is not itself a
-                                            // single watchable path. Subscribe each file to
-                                            // THIS instance's lifecycle key.
+                                            // A source whose scope path is not itself a
+                                            // watchable directory names the concrete files
+                                            // to watch via watched_files(). Subscribe each
+                                            // file to THIS instance's lifecycle key.
                                             if let Some(src) = self.registry.source(&provider, &sm.name) {
                                                 for file in src.watched_files(Some(path_str)) {
                                                     let sub = Subscription {

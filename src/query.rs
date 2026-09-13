@@ -162,16 +162,9 @@ pub fn source_dir(scope: SourceScope, address: Option<&str>) -> Option<String> {
 /// [`normalise_path`] turns every address naming it into `None`, so no writer
 /// can put anything at `Some($HOME)` for the walk to find.
 ///
-/// [`Cache::read_merged`] walks this, and `watch` subscribes it, so a write to
-/// any entry a frame is assembled from wakes the stream. A provider's own
-/// records are merged only at its scope entry — [`QueryPlan::effective_path`]
-/// — which is always a link of the requested path's chain: every
-/// `canonical_path` walks from the requested path towards `/`, so it returns
-/// an ancestor-or-self of it, or `$HOME`, which [`normalise_path`] turns into
-/// the global link.
-///
-/// [`Cache::read_merged`]: crate::cache::Cache::read_merged
-/// [`QueryPlan::effective_path`]: QueryPlan::effective_path
+/// This is the chain static records resolve up. The chain a read of a
+/// namespace actually walks is [`read_chain`], which also carries the entry
+/// the namespace's own records live at.
 pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
     let Some(p) = path else {
         return vec![None];
@@ -188,6 +181,33 @@ pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
     }
     out.push(None);
     out
+}
+
+/// Every cache-entry address one read of a namespace consults, nearest first:
+/// [`path_chain`] from the requested path, plus `provider_entry` as the head
+/// when it is not already a link.
+///
+/// `provider_entry` — [`QueryPlan::effective_path`] — is usually on that chain
+/// already: a `canonical_path` walks up from the requested path, so it returns
+/// an ancestor-or-self of it, or `$HOME`, which [`normalise_path`] turns into
+/// the global link. But the walk does not stop at `$HOME` and the chain does:
+/// a project marker *above* `$HOME` (a repository at `/srv/x` with `$HOME` at
+/// `/srv/x/home`) keys the provider's entry at a directory the chain from
+/// `$HOME/proj` never reaches. The entry still has to be read and watched —
+/// canon `field_resolution.md` reads a path-scoped source's records at the
+/// addressed path — so it is added here.
+///
+/// [`Cache::read_merged`] walks this, and `watch` subscribes it, so a write to
+/// any entry a frame is assembled from wakes the stream.
+///
+/// [`Cache::read_merged`]: crate::cache::Cache::read_merged
+/// [`QueryPlan::effective_path`]: QueryPlan::effective_path
+pub fn read_chain(requested: Option<&str>, provider_entry: Option<&str>) -> Vec<Option<String>> {
+    let mut chain = path_chain(requested);
+    if !chain.iter().any(|layer| layer.as_deref() == provider_entry) {
+        chain.insert(0, provider_entry.map(str::to_string));
+    }
+    chain
 }
 
 /// Resolve the effective path for a request: the cache entry the request

@@ -1082,17 +1082,22 @@ fn a_path_key_under_a_provider_is_a_validation_error() {
     let toml_str = r#"
 [providers.foo]
 path = "{{ env.FOOCONFIG or '~/.foo/config' }}"
+
+[providers.git]
+path = "{{ cwd }}"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     let (warnings, errors) =
         config.validate_providers(&["git".to_string()], &std::collections::HashMap::new());
+    let mut sorted = errors.clone();
+    sorted.sort();
     assert_eq!(
-        errors,
-        vec![
-            "[providers.foo]: path is not a provider setting: a query addresses the caller's \
+        sorted,
+        ["foo", "git"].map(|p| format!(
+            "[providers.{p}]: path is not a provider setting: a query addresses the caller's \
              directory, --path, or --global"
-                .to_string()
-        ]
+        )),
+        "errors: {errors:?}"
     );
     assert!(warnings.is_empty(), "no warnings expected: {warnings:?}");
 }
