@@ -20,7 +20,8 @@
 //! and canon `field_resolution.md`.
 
 use crate::eval::{
-    MAX_VIRTUAL_DEPTH, discover_refs_deep, render_template_with, single_tag_expression, too_deep,
+    MAX_VIRTUAL_DEPTH, RenderError, discover_refs_deep, render_template_with,
+    single_tag_expression, too_deep,
 };
 use crate::virtual_fields::{Ref, build_expression_env, mj_to_json};
 use minijinja::value::Value as MjValue;
@@ -129,6 +130,9 @@ impl std::fmt::Display for ResolveError {
 /// The distinct `(key, path)` pairs one resolution fetched, in first-fetch order.
 type Fetched = Vec<(String, Option<String>)>;
 
+/// The `(key, path)` nodes currently being rendered, innermost last.
+type Frames = Vec<(String, Option<String>)>;
+
 /// The value `comb get <key>` prints. `Ok(None)` is a miss.
 pub fn resolve(
     key: &str,
@@ -189,7 +193,7 @@ struct Resolver<'a> {
     fetch: &'a mut dyn Fetch,
     memo: HashMap<(String, Option<String>), Option<Got>>,
     order: Fetched,
-    stack: Fetched,
+    stack: Frames,
 }
 
 impl<'a> Resolver<'a> {
@@ -211,12 +215,13 @@ impl<'a> Resolver<'a> {
         if METADATA_SUFFIXES.iter().any(|s| key.ends_with(s)) {
             return Ok(self.fetch(key)?.and_then(|g| g.data));
         }
-        // Canon invariant 6: `env.*` is the caller's shell, never the daemon's.
+        // Canon invariant 6: `env.*` is the caller's shell, never the
+        // daemon's, and a miss yields `""` — never an error, never a miss.
         if key == "env" {
             return Ok(None);
         }
         if let Some(var) = key.strip_prefix("env.") {
-            return Ok(self.inputs.env.get(var).cloned().map(JsonValue::String));
+            return Ok(Some(JsonValue::String(self.env_value(var))));
         }
 
         let Some(got) = self.fetch(key)? else {
@@ -234,10 +239,13 @@ impl<'a> Resolver<'a> {
             }
             // A group. Every string leaf renders, the shape is kept, and the
             // result wins over the cached data it shares an address with.
+            // Every address the tree holds a leaf at is the template's,
+            // rendered or omitted — cached data never shows through one.
             Some(JsonValue::Object(tree)) => {
                 let rendered = self.render_tree(&tree, key)?;
                 Ok(Some(JsonValue::Object(match got.data {
                     Some(JsonValue::Object(mut data)) => {
+                        prune_template_owned(&mut data, &tree);
                         deep_merge(&mut data, rendered);
                         data
                     }
@@ -294,17 +302,15 @@ impl<'a> Resolver<'a> {
                 // undefined or none result onto it (canon invariant 9).
                 Ok(mj_to_json(value))
             }
-            // The compile/render split is what separates a source someone has
-            // to go and fix from a failure at render time; `crate::eval`'s
-            // ERROR-MESSAGE ABI CONTRACT pins these two prefixes for exactly
-            // this kind of classification.
+            // A source that does not compile is someone's to go and fix; a
+            // failure while rendering is the moment's.
             None => render_template_with(src, &context, self.inputs.allow_exec)
                 .map(JsonValue::String)
                 .map_err(|e| {
-                    if e.starts_with("template compile error") {
-                        ResolveError::Config(format!("{key}: {e}"))
-                    } else {
-                        ResolveError::Runtime(format!("{key}: {e}"))
+                    let message = format!("{key}: {e}");
+                    match e {
+                        RenderError::Compile(_) => ResolveError::Config(message),
+                        RenderError::Render(_) => ResolveError::Runtime(message),
                     }
                 }),
         }
@@ -366,10 +372,12 @@ impl<'a> Resolver<'a> {
 
     /// Bind every ref a source names into the context it evaluates against.
     ///
-    /// A miss binds nothing — not the value, and not the object that would
-    /// have enclosed it — so `default` and `or` fire on it. Where a whole
-    /// `cache.P` and a `cache.P.F` disagree, the whole object wins: it is the
-    /// authoritative snapshot, whichever ref is bound first.
+    /// A daemon miss binds nothing — not the value, and not the object that
+    /// would have enclosed it — so `default` and `or` fire on it. An env
+    /// miss binds `""` (canon invariant 6), so `or` fires and `default` does
+    /// not. Where a whole `cache.P` and a `cache.P.F` disagree, the whole
+    /// object wins: it is the authoritative snapshot, whichever ref is bound
+    /// first.
     fn bind(&mut self, refs: &[Ref]) -> Result<JsonValue, ResolveError> {
         let mut top = Map::new();
         top.insert("env".to_string(), JsonValue::Object(Map::new()));
@@ -378,11 +386,9 @@ impl<'a> Resolver<'a> {
         for r in refs {
             match r {
                 Ref::Env(var) => {
-                    let Some(value) = self.inputs.env.get(var).cloned() else {
-                        continue;
-                    };
+                    let value = JsonValue::String(self.env_value(var));
                     if let Some(JsonValue::Object(env)) = top.get_mut("env") {
-                        env.insert(var.clone(), JsonValue::String(value));
+                        env.insert(var.clone(), value);
                     }
                 }
                 Ref::CacheField(provider, field) => {
@@ -434,14 +440,23 @@ impl<'a> Resolver<'a> {
         Ok(JsonValue::Object(top))
     }
 
+    /// The caller's `$var`; `""` when unset (canon invariant 6).
+    fn env_value(&self, var: &str) -> String {
+        self.inputs.env.get(var).cloned().unwrap_or_default()
+    }
+
     /// Enter `key`'s frame, refusing a repeat and a chain past the depth limit.
+    ///
+    /// A cycle names both nodes: the one that asked (the frame on top of the
+    /// stack) and the one it asked for, which is already being resolved.
     fn push(&mut self, key: &str) -> Result<(), ResolveError> {
         if self.stack.len() >= MAX_VIRTUAL_DEPTH {
-            return Err(ResolveError::Config(too_deep()));
+            return Err(ResolveError::Config(format!("{key}: {}", too_deep())));
         }
         if self.on_stack(key) {
+            let top = self.stack.last().map(|(k, _)| k.as_str()).unwrap_or(key);
             return Err(ResolveError::Config(format!(
-                "{key}: virtual field cycle detected: {key} references itself"
+                "{top}: virtual field cycle detected: {key} is already being resolved"
             )));
         }
         self.stack
@@ -466,13 +481,43 @@ fn walk(value: JsonValue, rest: &str) -> Option<JsonValue> {
         current = match current {
             JsonValue::Object(mut fields) => fields.remove(segment)?,
             JsonValue::Array(mut items) => {
-                let index: usize = segment.parse().ok()?;
+                let index = decimal_index(segment)?;
                 (index < items.len()).then(|| items.swap_remove(index))?
             }
             _ => return None,
         };
     }
     Some(current)
+}
+
+/// A canonical decimal index — how the daemon keys array elements: ASCII
+/// digits only, no leading zero unless the segment is exactly `0`. A
+/// spelling the daemon would miss on (`01`, `+0`) misses here too.
+fn decimal_index(segment: &str) -> Option<usize> {
+    let canonical = segment == "0"
+        || (!segment.is_empty()
+            && !segment.starts_with('0')
+            && segment.bytes().all(|b| b.is_ascii_digit()));
+    canonical.then(|| segment.parse().ok()).flatten()
+}
+
+/// Drop from `data` every address `tree` holds a string leaf at. Those
+/// addresses are the template's — rendered, or omitted when the render
+/// failed — and the cached value beneath never shows through one.
+fn prune_template_owned(data: &mut Map<String, JsonValue>, tree: &Map<String, JsonValue>) {
+    for (name, node) in tree {
+        match node {
+            JsonValue::String(_) => {
+                data.remove(name);
+            }
+            JsonValue::Object(sub) => {
+                if let Some(JsonValue::Object(inner)) = data.get_mut(name) {
+                    prune_template_owned(inner, sub);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Insert `value` at the dotted `path` under `map`, creating the objects

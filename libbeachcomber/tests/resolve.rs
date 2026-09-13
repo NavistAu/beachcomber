@@ -275,6 +275,26 @@ fn the_walk_indexes_a_rendered_array_by_decimal_index() {
 }
 
 #[test]
+fn the_walk_accepts_only_the_canonical_decimal_index() {
+    // The daemon keys array elements "0", "1", …; a spelling that would
+    // miss there misses here too.
+    let env = spec_env();
+    let mut f = spec_fetch();
+    for rest in ["+0", "01", "1 ", ""] {
+        f.seed(
+            &format!("scanline.list.{rest}"),
+            Some(CWD),
+            tmpl_rest(json!("{{ ['a','b'] }}"), rest),
+        );
+        assert_eq!(
+            resolve(&format!("scanline.list.{rest}"), &inputs(&env), &mut f),
+            Ok(None),
+            "index {rest:?} must miss"
+        );
+    }
+}
+
+#[test]
 fn the_walk_misses_on_a_scalar_with_address_left_over() {
     let env = spec_env();
     let mut f = spec_fetch();
@@ -325,6 +345,37 @@ fn deps_are_the_distinct_keys_a_resolution_reads() {
     );
 }
 
+#[test]
+fn deps_of_a_plain_key_are_that_key_alone() {
+    let env = spec_env();
+    let mut f = spec_fetch();
+    assert_eq!(
+        deps("git.branch", &inputs(&env), &mut f).unwrap(),
+        vec![("git.branch".to_string(), Some(CWD.to_string()))]
+    );
+}
+
+#[test]
+fn deps_of_a_template_with_two_refs_list_both_in_fetch_order() {
+    let env = spec_env();
+    let mut f = spec_fetch();
+    f.seed(
+        "k.two",
+        Some(CWD),
+        tmpl(json!("{{ cache.git.branch }}/{{ terraform.workspace }}")),
+    );
+    let (value, d) = resolve_with_deps("k.two", &inputs(&env), &mut f).unwrap();
+    assert_eq!(value, Some(json!(format!("{BRANCH}/default"))));
+    assert_eq!(
+        d,
+        vec![
+            ("k.two".to_string(), Some(CWD.to_string())),
+            ("git.branch".to_string(), Some(CWD.to_string())),
+            ("terraform.workspace".to_string(), Some(CWD.to_string())),
+        ]
+    );
+}
+
 // ── 4. env.* is answered without a fetch ──────────────────────────────────────
 
 #[test]
@@ -339,11 +390,42 @@ fn an_env_key_is_answered_from_inputs_with_no_fetch() {
 }
 
 #[test]
-fn an_unset_env_key_is_a_miss_with_no_fetch() {
+fn an_unset_env_key_is_the_empty_string_with_no_fetch() {
+    // Canon `field_resolution.md` invariant 6: an env miss yields `""`,
+    // never an error and never a miss.
     let env = spec_env();
     let mut f = spec_fetch();
-    assert_eq!(resolve("env.NOPE", &inputs(&env), &mut f), Ok(None));
+    assert_eq!(
+        resolve("env.NOPE", &inputs(&env), &mut f),
+        Ok(Some(json!("")))
+    );
     assert!(f.log.is_empty());
+}
+
+#[test]
+fn an_unset_env_ref_binds_the_empty_string() {
+    // The same rule inside a template: `env.NOPE` is defined and empty, so
+    // `default` — which replaces only an undefined value — does not fire.
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "k.defined",
+        Some(CWD),
+        tmpl(json!("{{ env.NOPE is defined }}")),
+    )
+    .seed(
+        "k.default",
+        Some(CWD),
+        tmpl(json!("{{ env.NOPE | default('fb') }}")),
+    );
+    assert_eq!(
+        resolve("k.defined", &inputs(&env), &mut f),
+        Ok(Some(json!(true)))
+    );
+    assert_eq!(
+        resolve("k.default", &inputs(&env), &mut f),
+        Ok(Some(json!("")))
+    );
 }
 
 #[test]
@@ -446,19 +528,20 @@ fn a_leaf_referencing_its_own_group_is_a_cycle_naming_the_group() {
     assert_eq!(
         err,
         ResolveError::Config(
-            "scanline.widgets: virtual field cycle detected: scanline.widgets references itself"
+            "scanline.widgets.b: virtual field cycle detected: scanline.widgets is already being resolved"
                 .to_string()
         )
     );
-    // Asked for `a`, the same cycle (a → b → widgets → a) closes on `a`.
+    // Asked for `a`, the same cycle (a → b → widgets → a) closes on `a`, and
+    // the message names both the group that asked and the leaf it asked for.
     let err = resolve("scanline.widgets.a", &inputs(&env), &mut f).unwrap_err();
-    match &err {
-        ResolveError::Config(m) => assert!(
-            m.contains("scanline.widgets") && m.contains("cycle"),
-            "unexpected message: {m}"
-        ),
-        other => panic!("expected a config error, got {other:?}"),
-    }
+    assert_eq!(
+        err,
+        ResolveError::Config(
+            "scanline.widgets: virtual field cycle detected: scanline.widgets.a is already being resolved"
+                .to_string()
+        )
+    );
 }
 
 #[test]
@@ -494,7 +577,7 @@ fn a_self_referencing_leaf_at_depth_is_a_cycle_naming_itself() {
     assert_eq!(
         resolve("scanline.widgets.x", &inputs(&env), &mut f).unwrap_err(),
         ResolveError::Config(
-            "scanline.widgets.x: virtual field cycle detected: scanline.widgets.x references itself"
+            "scanline.widgets.x: virtual field cycle detected: scanline.widgets.x is already being resolved"
                 .to_string()
         )
     );
@@ -509,7 +592,8 @@ fn a_self_referencing_leaf_is_a_cycle_naming_itself() {
     assert_eq!(
         err,
         ResolveError::Config(
-            "scanline.x: virtual field cycle detected: scanline.x references itself".to_string()
+            "scanline.x: virtual field cycle detected: scanline.x is already being resolved"
+                .to_string()
         )
     );
 }
@@ -529,11 +613,12 @@ fn a_chain_of_distinct_keys_is_bounded_by_the_depth_limit() {
             tmpl(json!(format!("{{{{ chain.k{} }}}}", n + 1))),
         );
     }
-    let err = resolve("chain.k0", &inputs(&env), &mut f).unwrap_err();
-    match err {
-        ResolveError::Config(m) => assert!(m.contains("too deep"), "unexpected message: {m}"),
-        other => panic!("expected a config error, got {other:?}"),
-    }
+    // Frames k0..k127 fill the stack; k128 is the one refused, and the error
+    // names it.
+    assert_eq!(
+        resolve("chain.k0", &inputs(&env), &mut f).unwrap_err(),
+        ResolveError::Config("chain.k128: virtual field nesting too deep (limit 128)".to_string())
+    );
 }
 
 // ── 9. exec() ─────────────────────────────────────────────────────────────────
@@ -580,9 +665,57 @@ fn a_runtime_failure_omits_its_leaf_and_keeps_its_siblings() {
     );
 }
 
+#[test]
+fn an_omitted_leaf_is_not_shadowed_by_the_cached_data_beneath_it() {
+    // A template at a cached field's path wins on read (outcome 4). When that
+    // template fails at runtime the leaf is omitted — the cached `branch`
+    // does not show through, which would be a fallback. Siblings the tree
+    // does not own keep their cached values.
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "git",
+        Some(CWD),
+        both(
+            json!({ "branch": "cached-branch", "dirty": false }),
+            json!({ "branch": EXEC_TMPL }),
+        ),
+    )
+    .seed(
+        "git.branch",
+        Some(CWD),
+        both(json!("cached-branch"), json!(EXEC_TMPL)),
+    );
+    assert_eq!(
+        resolve("git", &inputs(&env), &mut f),
+        Ok(Some(json!({ "dirty": false })))
+    );
+    // And the single leaf is the error, not the cached value.
+    assert!(matches!(
+        resolve("git.branch", &inputs(&env), &mut f),
+        Err(ResolveError::Runtime(_))
+    ));
+}
+
 // ── 10. Compile failures ──────────────────────────────────────────────────────
 
 const BAD: &str = "{{ 1 + }}";
+
+#[test]
+fn a_compile_failure_in_the_template_form_is_a_config_error() {
+    // `BAD` is the single-tag form; literal text around it makes it a
+    // template, which compiles through a different path.
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed("k.bad", Some(CWD), tmpl(json!("a {{ 1 + }} b")));
+    match resolve("k.bad", &inputs(&env), &mut f).unwrap_err() {
+        ResolveError::Config(m) => assert!(
+            m.starts_with("k.bad: template compile error"),
+            "unexpected message: {m}"
+        ),
+        other => panic!("expected a config error, got {other:?}"),
+    }
+}
 
 #[test]
 fn a_compile_failure_on_a_single_key_fails_the_query() {

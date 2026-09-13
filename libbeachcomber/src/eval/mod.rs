@@ -377,7 +377,7 @@ fn evaluate_expression(
 /// matching how a missing `env.*` and [`crate::render::render_data`] already
 /// render nothing.
 pub fn render_template(src: &str, context: &serde_json::Value) -> Result<String, String> {
-    render_template_with(src, context, false)
+    render_template_with(src, context, false).map_err(|e| e.to_string())
 }
 
 /// [`render_template`], with the `exec()` jinja function available.
@@ -392,14 +392,34 @@ pub(crate) fn render_template_exec(
     src: &str,
     context: &serde_json::Value,
 ) -> Result<String, String> {
-    render_template_with(src, context, true)
+    render_template_with(src, context, true).map_err(|e| e.to_string())
+}
+
+/// Why a template render failed, by phase: the source itself does not
+/// compile, or it compiled and failed while rendering. A caller that has to
+/// tell a configuration fault from a runtime one ([`crate::resolve`]) matches
+/// the variant; the public `Result<String, String>` renders above carry the
+/// same split as the two prefixed strings `Display` produces.
+#[derive(Debug)]
+pub(crate) enum RenderError {
+    Compile(minijinja::Error),
+    Render(minijinja::Error),
+}
+
+impl std::fmt::Display for RenderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RenderError::Compile(e) => write!(f, "template compile error: {e}"),
+            RenderError::Render(e) => write!(f, "template render error: {e}"),
+        }
+    }
 }
 
 pub(crate) fn render_template_with(
     src: &str,
     context: &serde_json::Value,
     allow_exec: bool,
-) -> Result<String, String> {
+) -> Result<String, RenderError> {
     let mut env = build_expression_env(allow_exec);
     env.set_formatter(|out, state, value| {
         if value.is_none() {
@@ -408,10 +428,8 @@ pub(crate) fn render_template_with(
             minijinja::escape_formatter(out, state, value)
         }
     });
-    let template = env
-        .template_from_str(src)
-        .map_err(|e| format!("template compile error: {e}"))?;
+    let template = env.template_from_str(src).map_err(RenderError::Compile)?;
     template
         .render(MjValue::from_serialize(context))
-        .map_err(|e| format!("template render error: {e}"))
+        .map_err(RenderError::Render)
 }

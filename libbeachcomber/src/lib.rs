@@ -624,18 +624,7 @@ impl Client {
         let socket_path = self.find_or_start_socket()?;
         let mut stream = self.connect(&socket_path)?;
 
-        let mut request = serde_json::json!({ "op": "get", "key": key });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-        if force {
-            request["force"] = serde_json::json!(true);
-        }
-        if wait {
-            request["wait"] = serde_json::json!(true);
-        }
-
-        self.send_recv(&mut stream, &request)
+        self.send_recv(&mut stream, &get_request(key, path, force, wait))
     }
 
     /// Query one node and return both halves of the daemon's answer — the
@@ -653,33 +642,7 @@ impl Client {
         let socket_path = self.find_or_start_socket()?;
         let mut stream = self.connect(&socket_path)?;
 
-        let mut request = serde_json::json!({ "op": "get", "key": key });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-        if force {
-            request["force"] = serde_json::json!(true);
-        }
-        if wait {
-            request["wait"] = serde_json::json!(true);
-        }
-
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut
-            {
-                CombError::Timeout
-            } else {
-                CombError::IoError(e)
-            }
-        })?;
-        self.probe_skew_after(reader.get_mut());
-
+        let line = self.send_recv_line(&mut stream, &get_request(key, path, force, wait))?;
         parse_node(&line, self.skew_ref())
     }
 
@@ -946,6 +909,18 @@ impl Client {
         stream: &mut UnixStream,
         request: &serde_json::Value,
     ) -> Result<CombResult, CombError> {
+        let line = self.send_recv_line(stream, request)?;
+        parse_response(&line, self.skew_ref())
+    }
+
+    /// Send one request and read its one response line, probing for version
+    /// skew afterwards. The parse is the caller's, so a `get` can be read as
+    /// a [`CombResult`] or as a [`resolve::Got`].
+    fn send_recv_line(
+        &self,
+        stream: &mut UnixStream,
+        request: &serde_json::Value,
+    ) -> Result<String, CombError> {
         let msg = format!("{}\n", serde_json::to_string(request).unwrap());
         stream.write_all(msg.as_bytes())?;
 
@@ -961,8 +936,7 @@ impl Client {
             }
         })?;
         self.probe_skew_after(reader.get_mut());
-
-        parse_response(&line, self.skew_ref())
+        Ok(line)
     }
 }
 
@@ -1029,24 +1003,7 @@ impl Session {
         force: bool,
         wait: bool,
     ) -> Result<CombResult, CombError> {
-        let mut request = serde_json::json!({ "op": "get", "key": key });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-        if force {
-            request["force"] = serde_json::json!(true);
-        }
-        if wait {
-            request["wait"] = serde_json::json!(true);
-        }
-
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-
+        let line = self.send_recv_line(&get_request(key, path, force, wait))?;
         parse_response(&line, self.version_skew.as_ref())
     }
 
@@ -1059,25 +1016,21 @@ impl Session {
         force: bool,
         wait: bool,
     ) -> Result<resolve::Got, CombError> {
-        let mut request = serde_json::json!({ "op": "get", "key": key });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-        if force {
-            request["force"] = serde_json::json!(true);
-        }
-        if wait {
-            request["wait"] = serde_json::json!(true);
-        }
+        let line = self.send_recv_line(&get_request(key, path, force, wait))?;
+        parse_node(&line, self.version_skew.as_ref())
+    }
 
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
+    /// Send one request on this connection and read its one response line,
+    /// probing for version skew afterwards — the [`Client::send_recv_line`]
+    /// of a session.
+    fn send_recv_line(&mut self, request: &serde_json::Value) -> Result<String, CombError> {
+        let msg = format!("{}\n", serde_json::to_string(request).unwrap());
         self.reader.get_mut().write_all(msg.as_bytes())?;
 
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
         self.probe_skew_after();
-
-        parse_node(&line, self.version_skew.as_ref())
+        Ok(line)
     }
 
     /// Query a single key on this persistent connection, rendered by the
@@ -1258,6 +1211,23 @@ impl Session {
 }
 
 // --- Internal helpers ---
+
+/// The `get` request every query sends: `path`, `force` and `wait` are
+/// present only when set, so the wire form is the same whichever of
+/// `get_with_flags` or `get_node` builds it, on either transport.
+fn get_request(key: &str, path: Option<&str>, force: bool, wait: bool) -> serde_json::Value {
+    let mut request = serde_json::json!({ "op": "get", "key": key });
+    if let Some(p) = path {
+        request["path"] = serde_json::json!(p);
+    }
+    if force {
+        request["force"] = serde_json::json!(true);
+    }
+    if wait {
+        request["wait"] = serde_json::json!(true);
+    }
+    request
+}
 
 /// Parse a response line's `{"ok": ...}` envelope, returning the raw JSON
 /// value on success. On `ok:false`, returns `ServerError` with the
