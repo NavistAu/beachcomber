@@ -66,7 +66,11 @@ pub fn render_data(data: Option<&Value>, format: &str) -> String {
 }
 
 /// Push one `path=value` line per leaf under `value`, `prefix` being the
-/// dotted path to it. An empty container contributes no line.
+/// dotted path to it. An empty container contributes no line. A map key that
+/// itself contains a `.` is ambiguous in this output (`a.b=1` could be
+/// `{"a":{"b":1}}` or `{"a.b":1}`); the daemon refuses such a key on `put`
+/// and in configuration, so only a template rendering to such a map can
+/// produce one.
 fn flatten(prefix: &str, value: &Value, sh: bool, lines: &mut Vec<String>) {
     let at = |segment: &str| {
         if prefix.is_empty() {

@@ -177,6 +177,10 @@ pub fn resolve_with_deps(
 
 /// The distinct daemon keys a resolution of `key` reads — the watch fan-in's
 /// subscription set.
+///
+/// A key the daemon rejected is included: it is an address the resolution
+/// asked about, and a `put` can make it a hit later, so the fan-in must
+/// tolerate a subscription the daemon refuses rather than drop the key.
 pub fn deps(
     key: &str,
     inputs: &Inputs<'_>,

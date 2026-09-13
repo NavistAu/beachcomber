@@ -14,8 +14,9 @@ use common::git::{GitRepoFixture, has_git};
 use common::socket::IsolatedSocket;
 use std::path::{Path, PathBuf};
 
-/// The §3.1 tree, as `comb put scanline:template` takes it.
-const TREE: &str = r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":{"foo":"{{ env.SCANLINE_FOO }}","bar":"{{ cache.hostname.name | truncate(3) }}"}}"#;
+/// The §3.1 tree, as `comb put scanline:template` takes it, plus a third
+/// level (`widgets.clock.format`) for the flattening outcome.
+const TREE: &str = r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":{"foo":"{{ env.SCANLINE_FOO }}","bar":"{{ cache.hostname.name | truncate(3) }}","clock":{"format":"{{ '%H:%M' }}"}}}"#;
 
 /// A `comb` at `cwd`, pointed at `d`'s socket, with the daemon's temp
 /// `$HOME`/`$XDG_CONFIG_HOME` so nothing reaches the developer's config, and
@@ -91,7 +92,7 @@ fn a_group_renders_every_leaf_and_keeps_its_shape() {
     let bar = short_host(&d, &cwd);
     assert_eq!(
         json(&d, &cwd, &["scanline.widgets", "-f", "json"]),
-        serde_json::json!({"bar": bar, "foo": "hi"})
+        serde_json::json!({"bar": bar, "clock": {"format": "%H:%M"}, "foo": "hi"})
     );
 }
 
@@ -104,7 +105,11 @@ fn a_namespace_merges_the_rendered_tree_over_its_data() {
     let bar = short_host(&d, &cwd);
     assert_eq!(
         json(&d, &cwd, &["scanline", "-f", "json"]),
-        serde_json::json!({"lit": 1, "theme": "dark", "widgets": {"bar": bar, "foo": "hi"}})
+        serde_json::json!({
+            "lit": 1,
+            "theme": "dark",
+            "widgets": {"bar": bar, "clock": {"format": "%H:%M"}, "foo": "hi"}
+        })
     );
 }
 
@@ -187,9 +192,11 @@ fn text_flattens_every_level_to_sorted_leaf_lines() {
     seed_scanline(&d, &cwd);
 
     let bar = short_host(&d, &cwd);
+    // Three levels deep, one line per leaf, sorted (spec outcome 8: before,
+    // `widgets.clock={"format":"%H:%M"}`).
     assert_eq!(
         stdout(&d, &cwd, &["scanline", "-f", "text"]),
-        format!("lit=1\ntheme=dark\nwidgets.bar={bar}\nwidgets.foo=hi")
+        format!("lit=1\ntheme=dark\nwidgets.bar={bar}\nwidgets.clock.format=%H:%M\nwidgets.foo=hi")
     );
 }
 
@@ -203,7 +210,9 @@ fn sh_shell_quotes_every_flattened_value() {
     let bar = short_host(&d, &cwd);
     assert_eq!(
         stdout(&d, &cwd, &["scanline", "-f", "sh"]),
-        format!("lit='1'\ntheme='dark'\nwidgets.bar='{bar}'\nwidgets.foo='hi'")
+        format!(
+            "lit='1'\ntheme='dark'\nwidgets.bar='{bar}'\nwidgets.clock.format='%H:%M'\nwidgets.foo='hi'"
+        )
     );
     // A space and a single quote survive: POSIX single-quoting, `'` as `'\''`.
     assert_eq!(stdout(&d, &cwd, &["q", "-f", "sh"]), r"v='it'\''s a b'");
@@ -301,6 +310,31 @@ fn env_keys_answer_from_the_shell_and_still_ensure_the_daemon() {
         xdg.join("beachcomber").join("defaults").is_dir(),
         "the daemon comb started wrote its managed defaults into the temp config dir"
     );
+}
+
+/// A shell may carry a value that is not UTF-8. `comb get` reads its
+/// environment lossily: such a value never aborts the command, and asked for
+/// directly it is the lossy string.
+#[test]
+fn a_non_utf8_environment_value_never_panics_and_reads_lossily() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    let bad = std::ffi::OsStr::from_bytes(b"ok\xff\xfe");
+
+    comb(&d, &cwd)
+        .env("BAD", bad)
+        .args(["get", "env.HOME"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff(d.home.to_string_lossy().into_owned()));
+    comb(&d, &cwd)
+        .env("BAD", bad)
+        .args(["get", "env.BAD"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("ok\u{FFFD}\u{FFFD}"));
 }
 
 // ── outcome 17 through the real path: a managed default renders ──────────────
@@ -426,10 +460,13 @@ fn multi_key_output_keeps_its_shape_per_format_and_a_miss_reports_itself() {
         serde_json::json!([1, "hi"])
     );
     // CSV: an object contributes its sorted fields, a scalar its key.
-    let bar = short_host(&d, &cwd);
     assert_eq!(
-        stdout(&d, &cwd, &["-f", "CSV", "scanline.lit", "scanline.widgets"]),
-        format!("scanline.lit,bar,foo\n1,{bar},hi\n")
+        stdout(
+            &d,
+            &cwd,
+            &["-f", "CSV", "scanline.lit", "scanline.widgets.clock"]
+        ),
+        "scanline.lit,format\n1,%H:%M\n"
     );
     // A miss under a structured format is an error for that key alone and
     // the others still render — with the document keeping one slot per key:

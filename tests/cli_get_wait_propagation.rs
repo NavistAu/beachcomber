@@ -1,9 +1,11 @@
-// Locks in wait=true semantics at the Client API layer:
-// Client::get_formatted_with_flags and ClientSession::get_with_flags.
+// Locks in wait=true semantics: at the Client API layer
+// (Client::get_formatted_with_flags and ClientSession::get_with_flags) and at
+// the binary (`comb get --wait`), against one stale seeded entry — a value
+// served with wait=true must be the re-executed one, never the stale seed.
 //
 // run_get hands `wait` to `libbeachcomber::resolve` through `Inputs`, which
 // forwards it on every fetch (pinned in libbeachcomber/tests/resolve.rs);
-// tests/cli_get_multikey_force.rs runs the binary with `--force`.
+// tests/cli_get_multikey_force.rs runs the binary with `--force` the same way.
 //
 // Phase 1 Round 3 bug: run_get captured `wait` then discarded it via `_wait`,
 // so every CLI --wait invocation silently behaved as wait=false.
@@ -63,6 +65,33 @@ async fn single_key_text_wait_true_re_executes_stale_entry() {
     assert!(
         !text.contains("stale-seed"),
         "wait=true on a stale entry must trigger re-execution; got {text:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn comb_get_wait_re_executes_stale_entry() {
+    // The binary: `--wait` reaches the fetch, so the stale seed is not what
+    // prints. A `wait: false` typo in run_get would serve "stale-seed".
+    let (tmp, sock) = setup_stale().await;
+
+    let stdout = tokio::task::spawn_blocking(move || {
+        let out = assert_cmd::Command::cargo_bin("comb")
+            .unwrap()
+            .env("BEACHCOMBER_SOCKET", &sock)
+            .env("RUST_LOG", "error")
+            .env("HOME", tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path().join("cfg"))
+            .args(["get", "--wait", "hostname.name"])
+            .assert()
+            .success();
+        String::from_utf8(out.get_output().stdout.clone()).unwrap()
+    })
+    .await
+    .expect("comb runs");
+
+    assert!(
+        !stdout.contains("stale-seed"),
+        "comb get --wait on a stale entry must trigger re-execution; got {stdout:?}"
     );
 }
 

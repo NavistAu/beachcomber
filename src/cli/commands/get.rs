@@ -14,7 +14,6 @@ use crate::config::Config;
 use libbeachcomber::render::render_data;
 use libbeachcomber::resolve::{Inputs, ResolveError, Slot, resolve};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::process::ExitCode;
 
 /// Returns true if `s` looks like a filesystem path rather than a provider key.
@@ -81,7 +80,7 @@ pub fn run_get(
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let env: HashMap<String, String> = std::env::vars().collect();
+    let env = crate::cli::shell_env();
     let slot = match path {
         Some(p) => Slot::Path(p.to_string()),
         None => Slot::Global,
