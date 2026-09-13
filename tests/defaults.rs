@@ -387,10 +387,7 @@ fn comb_check_config_reports_the_defaults_directory() {
         )),
         "got:\n{stdout}"
     );
-    assert!(
-        beachcomber::config::Config::conf_d_files(&defaults).is_empty(),
-        "the check wrote nothing"
-    );
+    assert!(!defaults.exists(), "the check created nothing");
 
     // After a daemon has started: every shipped file is present at this version.
     let mut daemon = std::process::Command::new(exe)
@@ -434,6 +431,57 @@ fn comb_check_config_reports_the_defaults_directory() {
         beachcomber::config::Config::conf_d_files(&defaults).len(),
         8,
         "the daemon wrote the shipped set"
+    );
+}
+
+/// A check leaves no state behind. The writability probe lands in the nearest
+/// existing ancestor when `defaults/` is absent, so a config directory that has
+/// never seen a daemon gets the stale WARN, no FAIL, and no new directory.
+#[test]
+fn comb_check_config_probes_without_creating_the_defaults_directory() {
+    let tmp = TempDir::new().unwrap();
+    let cfg_dir = tmp.path().join("beachcomber");
+    std::fs::create_dir_all(cfg_dir.join("conf.d")).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "[daemon]\nlog_level = \"info\"\n",
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
+        .args(["check", "--connect-timeout", "0", "config"])
+        .output()
+        .expect("run comb check config");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("  [WARN] local    defaults "),
+        "the stale WARN is reported, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("not writable"),
+        "a writable parent is not a FAIL, got:\n{stdout}"
+    );
+    assert!(
+        !cfg_dir.join("defaults").exists(),
+        "the probe must not create defaults/"
+    );
+    assert!(
+        !cfg_dir.join(".comb-probe").exists(),
+        "the probe file is removed"
+    );
+    let mut entries: Vec<String> = std::fs::read_dir(&cfg_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec!["conf.d", "config.toml"],
+        "nothing else appeared"
     );
 }
 

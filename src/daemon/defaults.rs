@@ -24,37 +24,19 @@ pub const MARKER_PREFIX: &str = "# Managed by comb ";
 
 /// (file name, embedded body) for every shipped default, lexical by name.
 pub const SHIPPED: &[(&str, &str)] = &[
-    (
-        "aws.toml",
-        include_str!("../../libbeachcomber/defaults/aws.toml"),
-    ),
-    (
-        "conda.toml",
-        include_str!("../../libbeachcomber/defaults/conda.toml"),
-    ),
-    (
-        "gcloud.toml",
-        include_str!("../../libbeachcomber/defaults/gcloud.toml"),
-    ),
+    ("aws.toml", include_str!("../../defaults/aws.toml")),
+    ("conda.toml", include_str!("../../defaults/conda.toml")),
+    ("gcloud.toml", include_str!("../../defaults/gcloud.toml")),
     (
         "kubecontext.toml",
-        include_str!("../../libbeachcomber/defaults/kubecontext.toml"),
+        include_str!("../../defaults/kubecontext.toml"),
     ),
-    (
-        "op.toml",
-        include_str!("../../libbeachcomber/defaults/op.toml"),
-    ),
-    (
-        "python.toml",
-        include_str!("../../libbeachcomber/defaults/python.toml"),
-    ),
-    (
-        "talos.toml",
-        include_str!("../../libbeachcomber/defaults/talos.toml"),
-    ),
+    ("op.toml", include_str!("../../defaults/op.toml")),
+    ("python.toml", include_str!("../../defaults/python.toml")),
+    ("talos.toml", include_str!("../../defaults/talos.toml")),
     (
         "terraform.toml",
-        include_str!("../../libbeachcomber/defaults/terraform.toml"),
+        include_str!("../../defaults/terraform.toml"),
     ),
 ];
 

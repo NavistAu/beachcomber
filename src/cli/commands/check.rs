@@ -236,12 +236,19 @@ fn defaults_verdicts(config: &Config) -> Vec<serde_json::Value> {
             ),
         }));
     }
-    // A dry probe of what the daemon will do: create the directory, open one
-    // file for writing, remove it.
-    let probe = dir.join(".comb-probe");
-    let writable = std::fs::create_dir_all(&dir)
-        .and_then(|()| std::fs::File::create(&probe))
-        .and_then(|_| std::fs::remove_file(&probe));
+    // A dry probe of whether the daemon could write here: open one file for
+    // writing and remove it, in the directory if it exists, else in the nearest
+    // ancestor that does — the one `create_dir_all` would have to write into.
+    // A check leaves nothing behind, so it never creates the directory itself.
+    let mut target = dir.as_path();
+    while !target.exists() {
+        match target.parent() {
+            Some(parent) => target = parent,
+            None => break,
+        }
+    }
+    let probe = target.join(".comb-probe");
+    let writable = std::fs::File::create(&probe).and_then(|_| std::fs::remove_file(&probe));
     if let Err(e) = writable {
         out.push(serde_json::json!({
             "level": "FAIL",

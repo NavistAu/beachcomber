@@ -186,7 +186,7 @@ fn template_with_if_over_virtual_field() {
 
 /// Providers the built-in defaults declare. `VirtualFields` enumerates fields
 /// per provider but not providers; the constant is frozen — the shipped
-/// templates are now files under `libbeachcomber/defaults/`, and the constant
+/// templates are now files under `defaults/`, and the constant
 /// goes with the old evaluator — so the list is spelled here and the count
 /// assertion below catches a drift either way.
 fn default_providers() -> Vec<String> {
