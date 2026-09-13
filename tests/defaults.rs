@@ -469,10 +469,6 @@ fn comb_check_config_probes_without_creating_the_defaults_directory() {
         !cfg_dir.join("defaults").exists(),
         "the probe must not create defaults/"
     );
-    assert!(
-        !cfg_dir.join(".comb-probe").exists(),
-        "the probe file is removed"
-    );
     let mut entries: Vec<String> = std::fs::read_dir(&cfg_dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -481,7 +477,65 @@ fn comb_check_config_probes_without_creating_the_defaults_directory() {
     assert_eq!(
         entries,
         vec!["conf.d", "config.toml"],
-        "nothing else appeared"
+        "nothing else appeared — the probe file included"
+    );
+}
+
+/// `comb check config` with `XDG_CONFIG_HOME` at `root`, no daemon behind the
+/// socket, so only the local verdicts are on the line.
+fn check_config_stdout(root: &Path) -> String {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
+        .env("HOME", root)
+        .env("XDG_CONFIG_HOME", root)
+        .env("BEACHCOMBER_SOCKET", root.join("no-daemon.sock"))
+        .args(["check", "--connect-timeout", "0", "config"])
+        .output()
+        .expect("run comb check config");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn comb_check_config_counts_the_files_comb_did_not_write() {
+    let tmp = TempDir::new().unwrap();
+    let defaults = tmp.path().join("beachcomber").join("defaults");
+    write_managed_defaults(&defaults, env!("BEACHCOMBER_VERSION")).unwrap();
+    std::fs::write(defaults.join("mine.toml"), "x = 1\n").unwrap();
+
+    let stdout = check_config_stdout(tmp.path());
+
+    assert!(
+        stdout.contains(&format!(
+            "  [WARN] local    defaults {} holds 1 file(s) comb did not write\n",
+            defaults.display()
+        )),
+        "got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("(8 files, comb "),
+        "the shipped set is still complete and current, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn comb_check_config_fails_an_unwritable_defaults_directory() {
+    if is_root() {
+        eprintln!("skipping: root ignores directory permissions");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let defaults = tmp.path().join("beachcomber").join("defaults");
+    write_managed_defaults(&defaults, env!("BEACHCOMBER_VERSION")).unwrap();
+    std::fs::set_permissions(&defaults, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let stdout = check_config_stdout(tmp.path());
+    std::fs::set_permissions(&defaults, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(
+        stdout.contains(&format!(
+            "  [FAIL] local    defaults {} not writable: ",
+            defaults.display()
+        )) && stdout.contains("— the daemon cannot rewrite them on upgrade\n"),
+        "got:\n{stdout}"
     );
 }
 

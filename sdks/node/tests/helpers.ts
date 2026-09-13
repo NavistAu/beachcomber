@@ -92,9 +92,11 @@ export async function spawnDaemon(): Promise<TestDaemon> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beachcomber-node-test-'));
   const sockPath = path.join(tmpDir, 'comb.sock');
 
+  // The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
+  // (falling back to $HOME/.config): both point into the test's tempdir.
   const proc = spawn(COMB_BIN, ['daemon', '--socket', sockPath], {
     stdio: ['ignore', 'ignore', 'ignore'],
-    env: { ...process.env },
+    env: { ...process.env, XDG_CONFIG_HOME: tmpDir, HOME: tmpDir },
   });
 
   const ready = await waitForSocket(sockPath, 5000);

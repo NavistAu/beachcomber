@@ -247,12 +247,15 @@ fn defaults_verdicts(config: &Config) -> Vec<serde_json::Value> {
             None => break,
         }
     }
-    let probe = target.join(".comb-probe");
+    // Named per process so two concurrent checks never remove each other's probe.
+    let probe = target.join(format!(".comb-probe.{}", std::process::id()));
     let writable = std::fs::File::create(&probe).and_then(|_| std::fs::remove_file(&probe));
     if let Err(e) = writable {
         out.push(serde_json::json!({
             "level": "FAIL",
-            "message": format!("defaults {shown} not writable: {e}"),
+            "message": format!(
+                "defaults {shown} not writable: {e} — the daemon cannot rewrite them on upgrade"
+            ),
         }));
     }
     out
