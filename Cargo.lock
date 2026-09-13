@@ -133,6 +133,7 @@ dependencies = [
  "ctor",
  "dashmap",
  "libbeachcomber",
+ "libbeachcomber-ffi",
  "libc",
  "libloading",
  "minijinja",
