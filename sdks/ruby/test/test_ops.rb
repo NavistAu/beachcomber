@@ -271,7 +271,7 @@ class TestOps < Minitest::Test
     value = @client.resolve(
       'filters.based', cwd: '/tmp',
       env: { 'PYVAR' => '/foo/bar/baz' },
-      overrides: { 'filters.based' => 'env.PYVAR | basename' },
+      overrides: { 'filters.based' => '{{ env.PYVAR | basename }}' },
     )
     assert_equal 'baz', value
   end
@@ -283,13 +283,13 @@ class TestOps < Minitest::Test
   end
 
   def test_resolve_path_expression_selects_by_cwd
-    overrides = { 'myproject' => "'a' if cwd == '/repo-a' else 'b'" }
+    overrides = { 'myproject' => "{{ 'a' if cwd == '/repo-a' else 'b' }}" }
     assert_equal 'a', @client.resolve('myproject', cwd: '/repo-a', overrides: overrides)
     assert_equal 'b', @client.resolve('myproject', cwd: '/repo-b', overrides: overrides)
   end
 
   def test_eval_expression_evaluates_raw_template
-    result = @client.eval_expression('env.X | truncate(3)', cwd: '/tmp', env: { 'X' => 'abcdefgh' })
+    result = @client.eval_expression('{{ env.X | truncate(3) }}', cwd: '/tmp', env: { 'X' => 'abcdefgh' })
     assert_equal 'abc...', result
   end
 

@@ -94,7 +94,7 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     const value = await client.resolve('filters.itest_based', {
       cwd: '/tmp',
       env: { ITEST_PYVAR: '/foo/bar/baz' },
-      overrides: { 'filters.itest_based': 'env.ITEST_PYVAR | basename' },
+      overrides: { 'filters.itest_based': '{{ env.ITEST_PYVAR | basename }}' },
     });
     assert.equal(value, 'baz');
   });

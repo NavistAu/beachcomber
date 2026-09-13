@@ -295,7 +295,7 @@ func TestNewClient_AutoDiscovery(t *testing.T) {
 func TestClient_Resolve_VirtualField(t *testing.T) {
 	c := requireClient(t)
 	result, err := c.Resolve("filters.based", "/", map[string]string{"PYVAR": "/foo/bar/baz"},
-		map[string]string{"filters.based": "env.PYVAR | basename"})
+		map[string]string{"filters.based": "{{ env.PYVAR | basename }}"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestClient_Resolve_VirtualField(t *testing.T) {
 func TestClient_Resolve_PathExpression(t *testing.T) {
 	c := requireClient(t)
 	result, err := c.Resolve("myproject", "/Users/x/repo-a", nil,
-		map[string]string{"myproject": "'workspace-a' if cwd == '/Users/x/repo-a' else 'workspace-b'"})
+		map[string]string{"myproject": "{{ 'workspace-a' if cwd == '/Users/x/repo-a' else 'workspace-b' }}"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestClient_Resolve_PathExpression(t *testing.T) {
 
 func TestClient_Eval(t *testing.T) {
 	c := requireClient(t)
-	result, err := c.Eval("env.FOO | truncate(2)", "/", map[string]string{"FOO": "hello"}, nil)
+	result, err := c.Eval("{{ env.FOO | truncate(2) }}", "/", map[string]string{"FOO": "hello"}, nil)
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}

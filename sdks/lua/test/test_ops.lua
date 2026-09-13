@@ -160,14 +160,14 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
       end,
     })
     local value, err = Client.new(backend):resolve("filters.based", {
-      cwd = "/tmp", env = { PYVAR = "/foo/bar/baz" }, virtual = { ["filters.based"] = "env.PYVAR | basename" },
+      cwd = "/tmp", env = { PYVAR = "/foo/bar/baz" }, virtual = { ["filters.based"] = "{{ env.PYVAR | basename }}" },
     })
     assert_nil(err)
     assert_eq(value, "baz")
     assert_eq(seen.key, "filters.based")
     assert_eq(seen.cwd, "/tmp")
     assert_eq(seen.env.PYVAR, "/foo/bar/baz")
-    assert_eq(seen.overrides["filters.based"], "env.PYVAR | basename")
+    assert_eq(seen.overrides["filters.based"], "{{ env.PYVAR | basename }}")
   end)
 
   test("resolve defaults cwd to the context path", function()

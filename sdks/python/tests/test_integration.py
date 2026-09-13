@@ -119,7 +119,7 @@ def test_resolve_field_expression_override(client: Client) -> None:
     result = client.resolve(
         "widget.label",
         cwd="/tmp",
-        overrides={"widget.label": "'resolved-' ~ env.MYVAR"},
+        overrides={"widget.label": "{{ 'resolved-' ~ env.MYVAR }}"},
         env={"MYVAR": "x"},
     )
     assert result.is_hit
@@ -130,13 +130,13 @@ def test_resolve_path_expression(client: Client) -> None:
     result = client.resolve(
         "myproject",
         cwd="/repo-a",
-        overrides={"myproject": "'a' if cwd == '/repo-a' else 'b'"},
+        overrides={"myproject": "{{ 'a' if cwd == '/repo-a' else 'b' }}"},
     )
     assert result.data == "a"
 
 
 def test_eval_raw_expression(client: Client) -> None:
-    value = client.eval("'x-' ~ env.FOO", cwd="/tmp", env={"FOO": "bar"})
+    value = client.eval("{{ 'x-' ~ env.FOO }}", cwd="/tmp", env={"FOO": "bar"})
     assert value == "x-bar"
 
 
