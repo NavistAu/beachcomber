@@ -257,24 +257,30 @@ fn preprocess_args() -> (Vec<String>, Option<String>) {
     (args, fmt_template)
 }
 
-/// The path a `get` or `put` addresses: `None` for `--global` (the daemon's
-/// global entry, which is `$HOME`), otherwise the requested path, otherwise the
-/// current working directory.
+/// The path a `get`, `put` or `eval` addresses: `Ok(None)` for `--global` (the
+/// daemon's global entry, which is `$HOME`), otherwise the requested path made
+/// absolute, otherwise the current working directory.
+///
 /// A relative path is the caller's, not the daemon's: the daemon canonicalises
 /// what it receives against *its own* working directory, so `comb g git.branch .`
-/// would otherwise answer for wherever the daemon happened to be started.
-fn effective_cli_path(global: bool, requested: Option<String>) -> Option<String> {
+/// would otherwise answer for wherever the daemon happened to be started. The
+/// cwd is read only when it is needed — an absolute path must keep working from
+/// a directory that no longer exists — and when it is needed and unreadable the
+/// answer is an error, never a silent read of the global entry.
+fn effective_cli_path(global: bool, requested: Option<String>) -> Result<Option<String>, String> {
     if global {
-        return None;
+        return Ok(None);
     }
-    let cwd = std::env::current_dir().ok()?;
-    Some(match requested {
+    let cwd = || {
+        std::env::current_dir().map_err(|e| format!("cannot determine the current directory: {e}"))
+    };
+    Ok(Some(match requested {
         Some(p) if std::path::Path::new(&p).is_relative() => {
-            cwd.join(p).to_string_lossy().into_owned()
+            cwd()?.join(p).to_string_lossy().into_owned()
         }
         Some(p) => p,
-        None => cwd.to_string_lossy().into_owned(),
-    })
+        None => cwd()?.to_string_lossy().into_owned(),
+    }))
 }
 
 fn main() -> ExitCode {
@@ -334,7 +340,13 @@ fn main() -> ExitCode {
                 eprintln!("cannot combine --global with a path");
                 return ExitCode::from(2);
             }
-            let effective_path = effective_cli_path(global, resolved_path);
+            let effective_path = match effective_cli_path(global, resolved_path) {
+                Ok(p) => p,
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    return ExitCode::from(2);
+                }
+            };
             run_get(
                 &config,
                 &keys,
@@ -380,7 +392,13 @@ fn main() -> ExitCode {
             path,
             global,
         } => {
-            let effective_path = effective_cli_path(global, path);
+            let effective_path = match effective_cli_path(global, path) {
+                Ok(p) => p,
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    return ExitCode::from(2);
+                }
+            };
             run_put(
                 &config,
                 &key,
@@ -399,12 +417,14 @@ fn main() -> ExitCode {
         }
         Commands::Eval { template, path } => {
             // `eval` is a query like `get`, so it addresses the same path: the
-            // one given, else the caller's directory. Unlike `get` there is
-            // no `--global` to fall back to, so a directory that cannot be
-            // determined is an error rather than a guess.
-            let Some(path) = effective_cli_path(false, path) else {
-                eprintln!("cannot determine the current directory");
-                return ExitCode::from(2);
+            // one given, else the caller's directory; it has no `--global`.
+            let path = match effective_cli_path(false, path) {
+                Ok(Some(p)) => p,
+                Ok(None) => unreachable!("eval never asks for the global entry"),
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    return ExitCode::from(2);
+                }
             };
             beachcomber::cli::commands::eval::run_eval(&config, &template, &path)
         }

@@ -738,7 +738,7 @@ fn git_status_on_empty_repo() {
 
 **Testing when the external tool is not installed**
 
-Sources that depend on optional tools or files must return an empty `SourceResult` gracefully when the tool is absent or when the relevant files do not exist. Test this against a clean tempdir — `terraform`'s source reads `.terraform/environment` and answers nothing without it:
+Sources that depend on optional tools or files must return an empty `SourceResult` gracefully when the tool is absent or when the relevant files do not exist. Test this against a clean tempdir — `terraform`'s source reads `.terraform/environment` and answers nothing without a `.terraform/` directory:
 
 ```rust
 #[test]
