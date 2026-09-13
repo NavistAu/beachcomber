@@ -46,6 +46,29 @@ fn client_get_text_renders_scalar_field() {
 }
 
 #[test]
+fn client_get_text_of_a_template_only_node_is_the_template_text() {
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
+
+    client
+        .put(
+            "fmt_tmpl:template",
+            serde_json::json!({"t": "{{ 1 + 1 }}"}),
+            None,
+            None,
+        )
+        .expect("put");
+
+    // Raw, like `get`: the template text itself, not a rendering and not a miss.
+    let text = client.get_text("fmt_tmpl.t", None).expect("get_text");
+    assert_eq!(text, "{{ 1 + 1 }}");
+    let sh = client
+        .get_formatted("fmt_tmpl.t", None, "sh")
+        .expect("get_formatted");
+    assert_eq!(sh, "'{{ 1 + 1 }}'");
+}
+
+#[test]
 fn client_get_formatted_renders_whole_object_sorted() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);

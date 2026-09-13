@@ -147,7 +147,8 @@ impl CombResult {
 /// Classify a node: `data` present is a `Hit` (the template half rides
 /// along), a template alone is a `Template`, neither is a `Miss`. `age_ms`
 /// and `stale` always accompany `data` on the wire; the defaults are never
-/// reached.
+/// reached. `rest` never arrives without `template` — the daemon sets it only
+/// when the template walk stopped at a string — so a `Miss` ignores it.
 impl From<resolve::Got> for CombResult {
     fn from(got: resolve::Got) -> Self {
         match got {
@@ -1143,7 +1144,8 @@ impl Session {
         self.version_skew = probe_version_skew(self.reader.get_mut()).unwrap_or(None);
     }
 
-    /// Query a single key on this persistent connection.
+    /// Query a single key on this persistent connection. Raw, like
+    /// [`Client::get`]: a template-only node is [`CombResult::Template`].
     pub fn get(&mut self, key: &str, path: Option<&str>) -> Result<CombResult, CombError> {
         self.get_with_flags(key, path, false, false)
     }

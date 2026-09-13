@@ -63,6 +63,36 @@ async fn client_get_unknown_provider() {
     assert!(response.error.unwrap().contains("unknown provider"));
 }
 
+/// The CLI adapter keeps the template half: a template-only node is an
+/// `ok` response with `template` set and no `data`, never a bare miss.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_get_carries_the_template_half() {
+    let (_tmp, sock) = setup_server().await;
+    let client = Client::new(sock);
+    let resp = client
+        .put(
+            "tpl:template",
+            serde_json::json!({"t": "{{ 1 }}"}),
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(resp.ok, "{:?}", resp.error);
+
+    let resp = client.get("tpl.t", None).unwrap();
+    assert!(resp.ok);
+    assert!(resp.data.is_none(), "a template-only node has no data");
+    assert_eq!(resp.template, Some(serde_json::json!("{{ 1 }}")));
+    assert_eq!(resp.rest, None);
+
+    let resp = client.get("tpl.t.x", None).unwrap();
+    assert_eq!(
+        resp.rest.as_deref(),
+        Some("x"),
+        "the address past the template string"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_refresh() {
     let (_tmp, sock) = setup_server().await;
