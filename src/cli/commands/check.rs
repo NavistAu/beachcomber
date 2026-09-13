@@ -191,6 +191,63 @@ fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
     if out.is_empty() {
         out.push(serde_json::json!({"level": "PASS", "message": "config file valid"}));
     }
+    out.extend(defaults_verdicts(config));
+    out
+}
+
+/// The managed-defaults directory (spec §3.3), read without writing anything:
+/// whether every shipped file is present at this binary's version, whether
+/// the directory holds files comb did not write, and whether the daemon could
+/// write it — the one thing that stops it starting.
+fn defaults_verdicts(config: &Config) -> Vec<serde_json::Value> {
+    use crate::daemon::defaults::{SHIPPED, audit};
+    let version = env!("BEACHCOMBER_VERSION");
+    let dir = Config::defaults_dir_for(
+        config
+            .config_path
+            .as_deref()
+            .unwrap_or(&Config::config_path()),
+    );
+    let shown = dir.display();
+    let found = audit(&dir, version);
+
+    let mut out = Vec::new();
+    if found.stale.is_empty() {
+        out.push(serde_json::json!({
+            "level": "PASS",
+            "message": format!("defaults {shown} ({} files, comb {version})", SHIPPED.len()),
+        }));
+    } else {
+        out.push(serde_json::json!({
+            "level": "WARN",
+            "message": format!(
+                "defaults {shown}: {} shipped file(s) missing or stale — the daemon writes \
+                 them on its next start",
+                found.stale.len()
+            ),
+        }));
+    }
+    if !found.unmanaged.is_empty() {
+        out.push(serde_json::json!({
+            "level": "WARN",
+            "message": format!(
+                "defaults {shown} holds {} file(s) comb did not write",
+                found.unmanaged.len()
+            ),
+        }));
+    }
+    // A dry probe of what the daemon will do: create the directory, open one
+    // file for writing, remove it.
+    let probe = dir.join(".comb-probe");
+    let writable = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::File::create(&probe))
+        .and_then(|_| std::fs::remove_file(&probe));
+    if let Err(e) = writable {
+        out.push(serde_json::json!({
+            "level": "FAIL",
+            "message": format!("defaults {shown} not writable: {e}"),
+        }));
+    }
     out
 }
 

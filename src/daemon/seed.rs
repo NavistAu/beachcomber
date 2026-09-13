@@ -3,8 +3,9 @@
 //! Every `[providers."<p>:<facet>"]` table in configuration is written into the
 //! cache at namespace `<p>:<facet>` and the global path, each record labelled
 //! `config:<file>` with the file that set it. Layers are written in composition
-//! order — the main config file, then `conf.d/*.toml` lexically — with the
-//! deep-merge semantics `Cache::write_static` gives a `put`. A record two files
+//! order — `defaults/*.toml` lexically, then the main config file, then
+//! `conf.d/*.toml` lexically — with the deep-merge semantics
+//! `Cache::write_static` gives a `put`. A record two files
 //! set ends up labelled by the later one (a static write moves a record out of
 //! whichever static map held it), and a record only the earlier file set keeps
 //! its own label.
@@ -52,11 +53,12 @@ pub fn spawn_config_seeding(
     let Some(config_path) = config.config_path.clone() else {
         return;
     };
+    let defaults_dir = Config::defaults_dir_for(&config_path);
     let conf_d_dir = Config::conf_d_dir_for(&config_path);
     seed_facets(
         cache,
         registry,
-        &Config::layers(Some(&config_path), &conf_d_dir),
+        &Config::layers(Some(&defaults_dir), Some(&config_path), &conf_d_dir),
     );
 
     // The watch stops on the daemon's own shutdown token — its closure holds
@@ -79,7 +81,7 @@ pub fn spawn_config_seeding(
         stop,
         move |kind| match kind {
             super::config_watch::ChangeKind::FacetsOnly => {
-                let layers = Config::layers(Some(&watched_path), &conf_d_dir);
+                let layers = Config::layers(Some(&defaults_dir), Some(&watched_path), &conf_d_dir);
                 reseed_facets(&cache, &registry, &layers);
             }
             super::config_watch::ChangeKind::Settings => {

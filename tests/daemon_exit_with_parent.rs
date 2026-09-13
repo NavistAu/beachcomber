@@ -34,7 +34,11 @@ fn daemon_exits_when_parent_dies() {
     // daemon is its child), records the daemon's pid, then blocks in `wait`.
     // SIGKILLing this `sh` re-parents the daemon WITHOUT signalling it — exactly
     // the nextest-SIGKILL-of-a-test scenario that produced the orphans.
+    // `HOME`/`XDG_CONFIG_HOME` keep the daemon's managed-defaults write out of
+    // the developer's real config directory.
     let mut parent = Command::new("sh")
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
         .arg("-c")
         .arg(format!(
             "{comb} daemon --exit-with-parent --socket {sock} & echo $! > {pid}; wait",

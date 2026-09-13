@@ -1,0 +1,5 @@
+[providers."gcloud:template"]
+# The project in effect: the shell's override, else the active gcloud configuration's project.
+project = "{{ env.CLOUDSDK_CORE_PROJECT or cache.gcloud_configs[ env.CLOUDSDK_ACTIVE_CONFIG_NAME or cache.gcloud_configs.active_config ].project }}"
+# The account of the active gcloud configuration, honouring the shell's configuration selector.
+account = "{{ cache.gcloud_configs[ env.CLOUDSDK_ACTIVE_CONFIG_NAME or cache.gcloud_configs.active_config ].account }}"

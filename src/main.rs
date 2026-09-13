@@ -200,11 +200,7 @@ enum Commands {
     },
     /// Detect installed tools and show integration snippets
     #[command(visible_alias = "i")]
-    Init {
-        /// Append built-in virtual field defaults to ~/.config/beachcomber/config.toml
-        #[arg(long)]
-        write_config: bool,
-    },
+    Init,
     /// Run health checks
     #[command(visible_alias = "c")]
     Check {
@@ -286,6 +282,22 @@ fn main() -> ExitCode {
 
     let (args, fmt_template) = preprocess_args();
     let cli = Cli::parse_from(args);
+
+    // Only the daemon writes the managed defaults, and it does so before
+    // `Config::load()` reads the directory, so the defaults it seeds are this
+    // binary's. A directory it cannot write is a refusal to start (spec §3.3).
+    if matches!(cli.command, Commands::Daemon { .. }) {
+        let dir = Config::defaults_dir_for(&Config::config_path());
+        if let Err(e) =
+            beachcomber::daemon::defaults::write_managed_defaults(&dir, env!("BEACHCOMBER_VERSION"))
+        {
+            eprintln!(
+                "error: could not write managed defaults to {}: {e}",
+                dir.display()
+            );
+            return ExitCode::from(2);
+        }
+    }
     let config = Config::load();
 
     match cli.command {
@@ -389,7 +401,7 @@ fn main() -> ExitCode {
                 effective_path.as_deref(),
             )
         }
-        Commands::Init { write_config } => run_init(write_config),
+        Commands::Init => run_init(),
         Commands::Check {
             connect_timeout,
             check_cmd,

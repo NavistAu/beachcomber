@@ -1,4 +1,5 @@
 pub mod config_watch;
+pub mod defaults;
 pub mod lifecycle;
 pub mod seed;
 

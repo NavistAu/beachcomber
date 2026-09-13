@@ -17,7 +17,20 @@ pub fn build_env<'a>() -> Environment<'a> {
     env.add_filter("bg", bg_filter);
     env.add_filter("bold", bold_filter);
     env.add_filter("dim", dim_filter);
+    env.add_filter("fromjson", fromjson_filter);
     env
+}
+
+/// `{{ text | fromjson }}` — parse `text` as JSON into a value the template
+/// can navigate: `(exec('tool', 'info', '-o', 'json') | fromjson).context`.
+///
+/// Text that is not JSON is an `InvalidOperation` error carrying serde's
+/// message, so a tool that printed something else fails at the filter rather
+/// than rendering `undefined` three attributes later.
+fn fromjson_filter(value: String) -> Result<minijinja::Value, Error> {
+    serde_json::from_str::<serde_json::Value>(&value)
+        .map(|v| minijinja::Value::from_serialize(&v))
+        .map_err(|e| Error::new(ErrorKind::InvalidOperation, format!("fromjson: {e}")))
 }
 
 fn basename_filter(value: String) -> String {
@@ -245,6 +258,37 @@ mod tests {
         assert_eq!(
             out.as_str().unwrap(),
             "\x1b[1m\x1b[38;2;255;0;0mx\x1b[0m\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn fromjson_parses_an_object_that_round_trips() {
+        let v =
+            fromjson_filter(r#"{"context": "mycluster", "nodes": [1, 2]}"#.to_string()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&v).unwrap(),
+            serde_json::json!({"context": "mycluster", "nodes": [1, 2]})
+        );
+    }
+
+    #[test]
+    fn fromjson_result_is_navigable_in_an_expression() {
+        // The shipped `talos.toml` shape: parse a tool's JSON, then read one key.
+        let env = crate::virtual_fields::build_expression_env(false);
+        let expr = env.compile_expression("(s | fromjson).context").unwrap();
+        let out = expr
+            .eval(minijinja::context! { s => r#"{"context": "mycluster", "roles": null}"# })
+            .unwrap();
+        assert_eq!(out.as_str(), Some("mycluster"));
+    }
+
+    #[test]
+    fn fromjson_rejects_text_that_is_not_json() {
+        let err = fromjson_filter("error: current-context is not set".to_string()).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+        assert!(
+            err.to_string().contains("fromjson"),
+            "error should name the filter, got: {err}"
         );
     }
 

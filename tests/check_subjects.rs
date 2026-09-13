@@ -599,7 +599,10 @@ fn check_daemon_reports_watch_backend() {
 
     let exe = comb_binary();
 
+    // The daemon writes managed defaults under `$XDG_CONFIG_HOME` on start.
     let mut daemon = std::process::Command::new(&exe)
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
         .args(["daemon", "--exit-with-parent", "--socket"])
         .arg(&sock)
         .spawn()
@@ -776,6 +779,8 @@ async fn env_override_daemon_does_not_arm_reaper() {
 
     let mut daemon = std::process::Command::new(&exe)
         .env("BEACHCOMBER_SOCKET", &sock)
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
         .args(["daemon", "--exit-with-parent", "--socket"])
         .arg(&sock)
         .spawn()
@@ -832,6 +837,8 @@ fn daemon_exits_when_bind_fails() {
     let exe = comb_binary();
     let mut daemon = KillOnDrop(
         std::process::Command::new(&exe)
+            .env("HOME", tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path())
             .args(["daemon", "--socket"])
             .arg(&sock)
             .stdout(std::process::Stdio::null())

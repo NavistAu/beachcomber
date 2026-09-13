@@ -447,6 +447,16 @@ static daemon_proc_t spawn_daemon(const char *bin, const char *sock_path) {
         freopen("/dev/null", "w", stdout);
         freopen("/dev/null", "w", stderr);
 
+        /* The daemon writes its managed defaults under $XDG_CONFIG_HOME on
+         * start (falling back to $HOME/.config): both point at the socket's
+         * per-run directory, never the user's. */
+        char config_dir[SOCK_PATH_MAX];
+        snprintf(config_dir, sizeof(config_dir), "%s", sock_path);
+        char *slash = strrchr(config_dir, '/');
+        if (slash) *slash = '\0';
+        setenv("XDG_CONFIG_HOME", config_dir, 1);
+        setenv("HOME", config_dir, 1);
+
         char sock_arg[SOCK_PATH_MAX + 16];
         snprintf(sock_arg, sizeof(sock_arg), "--socket=%s", sock_path);
         execl(bin, bin, "daemon", sock_arg, NULL);

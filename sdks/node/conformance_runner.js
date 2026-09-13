@@ -116,9 +116,11 @@ if (!fs.existsSync(DIST_CLIENT)) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beachcomber-conform-'));
     const sockPath = path.join(tmpDir, 'comb.sock');
 
+    // The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
+    // (falling back to $HOME/.config): both point into the fixture's tempdir.
     const proc = spawn(COMB_BIN, ['daemon', '--socket', sockPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, COMB_SOCKET: sockPath },
+      env: { ...process.env, COMB_SOCKET: sockPath, XDG_CONFIG_HOME: tmpDir, HOME: tmpDir },
     });
 
     proc.stdout.on('data', () => {});

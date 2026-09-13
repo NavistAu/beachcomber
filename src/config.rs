@@ -1519,10 +1519,15 @@ impl Config {
         for warning in detect_deprecated_keys(&main_content) {
             warn!("{}", warning);
         }
-        let mut config = Self::load_composed(&main_content, &Self::conf_d_dir());
+        let config_path = Self::config_path();
+        let mut config = Self::load_composed(
+            &main_content,
+            &Self::defaults_dir_for(&config_path),
+            &Self::conf_d_dir_for(&config_path),
+        );
         // Recorded even when no file exists there: it is where this config
         // resolved to, and a conf.d-only installation is legitimate.
-        config.config_path = Some(Self::config_path());
+        config.config_path = Some(config_path);
         config
     }
 
@@ -1534,72 +1539,103 @@ impl Config {
         toml::from_str(content).map_err(|e| e.to_string())
     }
 
-    /// Compose `main_content` with every `conf.d/*.toml` drop-in found in
-    /// `conf_d_dir`, in lexical filename order, each deep-merged onto the
-    /// accumulated value — then deserialize the result. Mirrors `load()`'s
-    /// lenient startup posture: an unparseable conf.d file is skipped with a
-    /// `tracing::warn!` naming the file and error, the rest still compose.
-    /// A missing/unparseable `main_content` starts composition from an empty
-    /// table, same as `load()` does for an absent main config file.
+    /// Compose every `defaults/*.toml` in `defaults_dir`, then `main_content`,
+    /// then every `conf.d/*.toml` drop-in found in `conf_d_dir`, each directory
+    /// in lexical filename order, each layer deep-merged onto the accumulated
+    /// value — then deserialize the result. Mirrors `load()`'s lenient startup
+    /// posture: an unparseable file is skipped with a `tracing::warn!` naming
+    /// the file and error, the rest still compose. A missing/unparseable
+    /// `main_content` composes as an empty table, same as `load()` does for an
+    /// absent main config file.
     ///
     /// Kept separate from `load()` so tests can exercise composition against
     /// an explicit temp directory without mutating XDG env vars.
-    fn load_composed(main_content: &str, conf_d_dir: &Path) -> Self {
-        let composed = Self::compose_value(main_content, conf_d_dir);
+    fn load_composed(main_content: &str, defaults_dir: &Path, conf_d_dir: &Path) -> Self {
+        let composed = Self::compose_value(main_content, defaults_dir, conf_d_dir);
         Config::deserialize(composed).unwrap_or_default()
     }
 
     /// Value-level composition shared by `load_composed` and `parse_composed`.
-    /// Skips unparseable conf.d files with a warning (the lenient half of the
-    /// two postures — `parse_composed` is the strict half).
-    fn compose_value(main_content: &str, conf_d_dir: &Path) -> toml::Value {
-        let mut base: toml::Value =
+    /// Skips unparseable files with a warning (the lenient half of the two
+    /// postures — `parse_composed` is the strict half). The main file's content
+    /// arrives as text rather than a path, so the defaults layer is merged
+    /// first, then the main content, then conf.d — the order `layers` lists.
+    fn compose_value(main_content: &str, defaults_dir: &Path, conf_d_dir: &Path) -> toml::Value {
+        let mut main: toml::Value =
             toml::from_str(main_content).unwrap_or_else(|_| toml::Value::Table(Default::default()));
-        if base.as_table().is_none() {
-            base = toml::Value::Table(Default::default());
+        if main.as_table().is_none() {
+            main = toml::Value::Table(Default::default());
         }
-        for (_, overlay) in Self::layers(None, conf_d_dir) {
-            deep_merge_toml(&mut base, overlay);
+        let mut base = toml::Value::Table(Default::default());
+        for file in Self::conf_d_files(defaults_dir) {
+            if let Some(overlay) = Self::read_layer(&file) {
+                deep_merge_toml(&mut base, overlay);
+            }
+        }
+        deep_merge_toml(&mut base, main);
+        for file in Self::conf_d_files(conf_d_dir) {
+            if let Some(overlay) = Self::read_layer(&file) {
+                deep_merge_toml(&mut base, overlay);
+            }
         }
         base
     }
 
-    /// The configuration files that compose, in composition order — the main
-    /// config file (when `config_path` is given and readable), then every
-    /// `conf.d/*.toml` in lexical filename order — each parsed on its own. A
+    /// The configuration files that compose, in composition order — every
+    /// `defaults/*.toml` (when `defaults` is given), then the main config file
+    /// (when `config_path` is given and readable), then every `conf.d/*.toml`,
+    /// each directory in lexical filename order — each parsed on its own. A
     /// file that cannot be read or does not parse as a table is skipped with a
     /// warning, the lenient posture `compose_value` folds over.
     ///
     /// Settings compose by deep merge, but facet tables are seeded per layer so
     /// each record keeps the label of the file that set it — which is only
     /// possible while the layers are still separable.
-    pub fn layers(config_path: Option<&Path>, conf_d: &Path) -> Vec<(PathBuf, toml::Value)> {
-        let mut out: Vec<(PathBuf, toml::Value)> = Vec::new();
-        let mut push = |file: PathBuf| {
-            let content = match std::fs::read_to_string(&file) {
-                Ok(c) => c,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-                Err(e) => {
-                    warn!("config: could not read {}: {e}; skipping", file.display());
-                    return;
-                }
-            };
-            match toml::from_str::<toml::Value>(&content) {
-                Ok(v) if v.is_table() => out.push((file, v)),
-                Ok(_) => warn!(
-                    "config: {} top-level value is not a table; skipping",
-                    file.display()
-                ),
-                Err(e) => warn!("config: {} failed to parse ({e}); skipping", file.display()),
+    pub fn layers(
+        defaults: Option<&Path>,
+        config_path: Option<&Path>,
+        conf_d: &Path,
+    ) -> Vec<(PathBuf, toml::Value)> {
+        let mut files: Vec<PathBuf> = Vec::new();
+        if let Some(d) = defaults {
+            files.extend(Self::conf_d_files(d));
+        }
+        if let Some(p) = config_path {
+            files.push(p.to_path_buf());
+        }
+        files.extend(Self::conf_d_files(conf_d));
+        files
+            .into_iter()
+            .filter_map(|file| Self::read_layer(&file).map(|v| (file, v)))
+            .collect()
+    }
+
+    /// One layer of `layers`: the file parsed as a TOML table, or `None` —
+    /// silently for a file that does not exist, with a warning for one that
+    /// cannot be read, does not parse, or is not a table.
+    fn read_layer(file: &Path) -> Option<toml::Value> {
+        let content = match std::fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                warn!("config: could not read {}: {e}; skipping", file.display());
+                return None;
             }
         };
-        if let Some(p) = config_path {
-            push(p.to_path_buf());
+        match toml::from_str::<toml::Value>(&content) {
+            Ok(v) if v.is_table() => Some(v),
+            Ok(_) => {
+                warn!(
+                    "config: {} top-level value is not a table; skipping",
+                    file.display()
+                );
+                None
+            }
+            Err(e) => {
+                warn!("config: {} failed to parse ({e}); skipping", file.display());
+                None
+            }
         }
-        for file in Self::conf_d_files(conf_d) {
-            push(file);
-        }
-        out
     }
 
     /// The facet tables of one layer: every `[providers."<p>:<facet>"]` block,
@@ -1667,24 +1703,36 @@ impl Config {
         format!("{}{shown}", crate::cache::CONFIG_SOURCE_PREFIX)
     }
 
-    /// Strict composed parse: `main_content` plus every `conf.d/*.toml` in
-    /// `conf_d_dir` must ALL parse, or the whole call fails. Used by the
-    /// config self-watch's restart-gate (`src/daemon/config_watch.rs`), which
-    /// must never restart into a composed config where any file is broken —
-    /// unlike `load_composed`'s skip-and-continue.
-    pub fn parse_composed(main_content: &str, conf_d_dir: &Path) -> Result<Self, String> {
-        let mut base: toml::Value =
+    /// Strict composed parse: every `defaults/*.toml` in `defaults_dir`,
+    /// `main_content`, and every `conf.d/*.toml` in `conf_d_dir` must ALL
+    /// parse, or the whole call fails. Used by the config self-watch's
+    /// restart-gate (`src/daemon/config_watch.rs`), which must never restart
+    /// into a composed config where any file is broken — unlike
+    /// `load_composed`'s skip-and-continue.
+    pub fn parse_composed(
+        main_content: &str,
+        defaults_dir: &Path,
+        conf_d_dir: &Path,
+    ) -> Result<Self, String> {
+        let main: toml::Value =
             toml::from_str(main_content).map_err(|e| format!("config.toml: {e}"))?;
-        if base.as_table().is_none() {
+        if main.as_table().is_none() {
             return Err("config.toml: top-level value must be a table".to_string());
         }
-        for file in Self::conf_d_files(conf_d_dir) {
-            let content =
-                std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-            let overlay: toml::Value =
-                toml::from_str(&content).map_err(|e| format!("{}: {e}", file.display()))?;
-            deep_merge_toml(&mut base, overlay);
-        }
+        let mut base = toml::Value::Table(Default::default());
+        let merge_dir = |dir: &Path, base: &mut toml::Value| -> Result<(), String> {
+            for file in Self::conf_d_files(dir) {
+                let content = std::fs::read_to_string(&file)
+                    .map_err(|e| format!("{}: {e}", file.display()))?;
+                let overlay: toml::Value =
+                    toml::from_str(&content).map_err(|e| format!("{}: {e}", file.display()))?;
+                deep_merge_toml(base, overlay);
+            }
+            Ok(())
+        };
+        merge_dir(defaults_dir, &mut base)?;
+        deep_merge_toml(&mut base, main);
+        merge_dir(conf_d_dir, &mut base)?;
         Config::deserialize(base).map_err(|e| e.to_string())
     }
 
@@ -1698,16 +1746,22 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("conf.d"))
     }
 
-    /// The conf.d directory for the process's resolved config path
-    /// (`Self::config_path()`).
-    pub fn conf_d_dir() -> PathBuf {
-        Self::conf_d_dir_for(&Self::config_path())
+    /// The managed-defaults directory for a given main config file path:
+    /// `<config-file-parent>/defaults`, the lowest layer of composition and the
+    /// directory the daemon writes the shipped templates into
+    /// (`crate::daemon::defaults`). Derived like `conf_d_dir_for`.
+    pub fn defaults_dir_for(config_path: &Path) -> PathBuf {
+        config_path
+            .parent()
+            .map(|p| p.join("defaults"))
+            .unwrap_or_else(|| PathBuf::from("defaults"))
     }
 
     /// List `*.toml` files directly inside `dir`, sorted in lexical filename
     /// order (spec: drop-ins compose "in lexical filename order"). Returns an
     /// empty list if `dir` doesn't exist or can't be read — a conf.d
-    /// directory is optional.
+    /// directory is optional. The same listing serves the `defaults/`
+    /// directory, which composes by the same rule.
     pub fn conf_d_files(dir: &Path) -> Vec<PathBuf> {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
@@ -2059,7 +2113,7 @@ mod tests {
 
         let main =
             "[providers.git]\nenabled = true\npoll_interval = \"30s\"\npoll_live_count = 5\n";
-        let cfg = Config::load_composed(main, &conf_d);
+        let cfg = Config::load_composed(main, &tmp.path().join("defaults"), &conf_d);
 
         let git = cfg.providers.get("git").unwrap();
         assert_eq!(git.get("enabled").unwrap().as_bool(), Some(true));
@@ -2079,7 +2133,7 @@ mod tests {
         .unwrap();
 
         // No main config content at all (absent file).
-        let cfg = Config::load_composed("", &conf_d);
+        let cfg = Config::load_composed("", &tmp.path().join("defaults"), &conf_d);
         assert_eq!(cfg.daemon.log_level, "debug");
     }
 
@@ -2095,7 +2149,7 @@ mod tests {
         )
         .unwrap();
 
-        let cfg = Config::load_composed("[daemon]\n", &conf_d);
+        let cfg = Config::load_composed("[daemon]\n", &tmp.path().join("defaults"), &conf_d);
         assert_eq!(cfg.daemon.log_level, "debug");
     }
 
@@ -2106,7 +2160,7 @@ mod tests {
         std::fs::create_dir(&conf_d).unwrap();
         std::fs::write(conf_d.join("01-bad.toml"), "this is not [ valid toml").unwrap();
 
-        let result = Config::parse_composed("[daemon]\n", &conf_d);
+        let result = Config::parse_composed("[daemon]\n", &tmp.path().join("defaults"), &conf_d);
         assert!(result.is_err());
     }
 
@@ -2121,7 +2175,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = Config::parse_composed("[daemon]\n", &conf_d);
+        let result = Config::parse_composed("[daemon]\n", &tmp.path().join("defaults"), &conf_d);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().daemon.log_level, "debug");
     }

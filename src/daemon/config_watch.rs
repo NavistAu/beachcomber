@@ -31,16 +31,18 @@
 //! daemon (a test, an embedder) would be a leak rather than a process exit.
 //!
 //! Coverage also extends to the conf.d convention (`Config::conf_d_dir_for`,
-//! `docs/reference/configuration-reference.md` §"Composition / conf.d"): the
-//! composed set is main config file + every `conf.d/*.toml`. A change to any
-//! file in that set — the main file OR a conf.d drop-in modified, added, or
-//! removed — runs through the same debounce and parse-gate, validating the
-//! WHOLE composed set (`Config::parse_composed`) before restarting. Because
-//! conf.d is a subdirectory, not a sibling of the config file, it needs its
-//! own fs-event registration (the parent-dir watch is `NonRecursive` and
-//! doesn't see inside it) — registered separately, best-effort, when the
-//! directory exists at watch-registration time. The mtime-poll backstop holds
-//! a snapshot of the whole composed set — one mtime per file — and calls any
+//! `docs/reference/configuration-reference.md` §"Composition / conf.d") and
+//! to the managed `defaults/` directory (`Config::defaults_dir_for`, spec
+//! §3.3): the composed set is every `defaults/*.toml` + the main config file +
+//! every `conf.d/*.toml`. A change to any file in that set — the main file OR
+//! a drop-in in either directory modified, added, or removed — runs through
+//! the same debounce and parse-gate, validating the WHOLE composed set
+//! (`Config::parse_composed`) before restarting. Because the two directories
+//! are subdirectories, not siblings of the config file, each needs its own
+//! fs-event registration (the parent-dir watch is `NonRecursive` and doesn't
+//! see inside them) — registered separately, best-effort, when the directory
+//! exists at watch-registration time. The mtime-poll backstop holds a
+//! snapshot of the whole composed set — one mtime per file — and calls any
 //! difference a change, so an edit, an addition and a deletion are all noticed
 //! (a deletion bumps no remaining file's mtime) and an edit to one file is
 //! seen even while another carries a far-future mtime from clock skew.
@@ -81,7 +83,7 @@ pub enum ChangeKind {
 }
 
 /// The mtime of every file in the composed set that exists, keyed by path:
-/// the main config file plus every `conf.d/*.toml`.
+/// every `defaults/*.toml`, the main config file, and every `conf.d/*.toml`.
 ///
 /// Per file rather than "newest mtime plus a count", which two things defeat.
 /// A file carrying a far-future mtime — clock skew across a network mount, an
@@ -97,7 +99,7 @@ type Snapshot = std::collections::BTreeMap<PathBuf, u64>;
 /// Read the composed set's current [`Snapshot`]. A file whose mtime cannot be
 /// read is recorded as 0 rather than left out, so it does not read as a
 /// deletion on every tick.
-fn composed_snapshot(config_path: &Path, conf_d_dir: &Path) -> Snapshot {
+fn composed_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path) -> Snapshot {
     let mut out = Snapshot::new();
     let mut note = |p: PathBuf| {
         if let Ok(meta) = std::fs::metadata(&p) {
@@ -105,6 +107,9 @@ fn composed_snapshot(config_path: &Path, conf_d_dir: &Path) -> Snapshot {
             out.insert(p, ms);
         }
     };
+    for f in Config::conf_d_files(defaults_dir) {
+        note(f);
+    }
     note(config_path.to_path_buf());
     for f in Config::conf_d_files(conf_d_dir) {
         note(f);
@@ -112,8 +117,9 @@ fn composed_snapshot(config_path: &Path, conf_d_dir: &Path) -> Snapshot {
     out
 }
 
-/// Spawn a thread watching `config_path` and its `conf.d`. Each time the
-/// composed set changes and parses as valid config, calls `on_change` with the
+/// Spawn a thread watching `config_path`, its `defaults/` and its `conf.d`.
+/// Each time the composed set changes and parses as valid config, calls
+/// `on_change` with the
 /// kind of change (after a 200ms debounce on the fs-event path) and **keeps
 /// watching** — a facet-only change is handled in place, so there is no process
 /// exit to end the watch. A change that fails to parse logs a warning naming the
@@ -141,9 +147,10 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
     // The starting point is read on the caller's thread, not the watch's: a
     // change landing between the spawn and the thread's first instruction would
     // otherwise become the "before" state and classify itself as no change.
+    let defaults_dir = Config::defaults_dir_for(&config_path);
     let conf_d_dir = Config::conf_d_dir_for(&config_path);
-    let mut snapshot = composed_snapshot(&config_path, &conf_d_dir);
-    let mut settings = settings_snapshot(&config_path, &conf_d_dir);
+    let mut snapshot = composed_snapshot(&config_path, &defaults_dir, &conf_d_dir);
+    let mut settings = settings_snapshot(&config_path, &defaults_dir, &conf_d_dir);
 
     std::thread::spawn(move || {
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
@@ -154,20 +161,22 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
                         tracing::debug!(
                             "config-watch: watching {parent:?} for changes to {config_path:?}"
                         );
-                        // conf.d is a subdirectory, not a sibling — the parent-dir
-                        // watch above is NonRecursive and can't see inside it, so
-                        // it needs its own registration. Best-effort: only
-                        // possible if the directory already exists, and its
-                        // absence doesn't invalidate the rest of the watch (the
-                        // poll backstop covers conf.d either way).
-                        if conf_d_dir.is_dir() {
-                            match w.watch(&conf_d_dir, RecursiveMode::NonRecursive) {
-                                Ok(()) => tracing::debug!(
-                                    "config-watch: watching conf.d dir {conf_d_dir:?}"
-                                ),
+                        // defaults/ and conf.d are subdirectories, not siblings —
+                        // the parent-dir watch above is NonRecursive and can't
+                        // see inside them, so each needs its own registration.
+                        // Best-effort: only possible if the directory already
+                        // exists, and its absence doesn't invalidate the rest
+                        // of the watch (the poll backstop covers both either
+                        // way).
+                        for dir in [&defaults_dir, &conf_d_dir] {
+                            if !dir.is_dir() {
+                                continue;
+                            }
+                            match w.watch(dir, RecursiveMode::NonRecursive) {
+                                Ok(()) => tracing::debug!("config-watch: watching dir {dir:?}"),
                                 Err(e) => tracing::warn!(
-                                    "config-watch: failed to watch conf.d dir {conf_d_dir:?}: {e}; \
-                                     conf.d changes rely on the poll backstop"
+                                    "config-watch: failed to watch dir {dir:?}: {e}; \
+                                     its changes rely on the poll backstop"
                                 ),
                             }
                         }
@@ -196,6 +205,7 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
         if watcher.is_none() {
             poll_loop(
                 &config_path,
+                &defaults_dir,
                 &conf_d_dir,
                 poll_interval,
                 &stop,
@@ -233,9 +243,12 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
                     let target = config_path
                         .canonicalize()
                         .unwrap_or_else(|_| config_path.clone());
-                    let conf_d_target = conf_d_dir
-                        .canonicalize()
-                        .unwrap_or_else(|_| conf_d_dir.clone());
+                    let canonical_dir =
+                        |dir: &PathBuf| dir.canonicalize().unwrap_or_else(|_| dir.clone());
+                    let dirs = [
+                        (&defaults_dir, canonical_dir(&defaults_dir)),
+                        (&conf_d_dir, canonical_dir(&conf_d_dir)),
+                    ];
                     let path_match = event.paths.iter().any(|p| {
                         let canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
                         if canonical == target || p == &config_path {
@@ -243,8 +256,10 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
                         }
                         let is_toml = p.extension().and_then(|e| e.to_str()) == Some("toml");
                         is_toml
-                            && (p.parent() == Some(conf_d_dir.as_path())
-                                || canonical.parent() == Some(conf_d_target.as_path()))
+                            && dirs.iter().any(|(dir, dir_target)| {
+                                p.parent() == Some(dir.as_path())
+                                    || canonical.parent() == Some(dir_target.as_path())
+                            })
                     });
                     if path_match {
                         let is_change = matches!(
@@ -264,13 +279,20 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
                         && Instant::now() >= d
                     {
                         last_event = None;
-                        snapshot = composed_snapshot(&config_path, &conf_d_dir);
-                        try_fire(&config_path, &conf_d_dir, &mut settings, &mut on_change);
+                        snapshot = composed_snapshot(&config_path, &defaults_dir, &conf_d_dir);
+                        try_fire(
+                            &config_path,
+                            &defaults_dir,
+                            &conf_d_dir,
+                            &mut settings,
+                            &mut on_change,
+                        );
                     }
                     if Instant::now() >= next_poll {
                         next_poll = Instant::now() + poll_interval;
                         check_snapshot(
                             &config_path,
+                            &defaults_dir,
                             &conf_d_dir,
                             &mut snapshot,
                             &mut settings,
@@ -282,6 +304,7 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
                     // Event channel gone mid-run; the poll carries on alone.
                     poll_loop(
                         &config_path,
+                        &defaults_dir,
                         &conf_d_dir,
                         poll_interval,
                         &stop,
@@ -303,6 +326,7 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
 #[allow(clippy::too_many_arguments)]
 fn poll_loop<F: FnMut(ChangeKind)>(
     config_path: &Path,
+    defaults_dir: &Path,
     conf_d_dir: &Path,
     poll_interval: Duration,
     stop: &CancellationToken,
@@ -316,7 +340,14 @@ fn poll_loop<F: FnMut(ChangeKind)>(
             tracing::debug!("config-watch: stopped");
             return;
         }
-        check_snapshot(config_path, conf_d_dir, snapshot, settings, on_change);
+        check_snapshot(
+            config_path,
+            defaults_dir,
+            conf_d_dir,
+            snapshot,
+            settings,
+            on_change,
+        );
     }
 }
 
@@ -329,28 +360,30 @@ fn poll_loop<F: FnMut(ChangeKind)>(
 /// the snapshot so it fires on the next one.
 fn check_snapshot<F: FnMut(ChangeKind)>(
     config_path: &Path,
+    defaults_dir: &Path,
     conf_d_dir: &Path,
     snapshot: &mut Snapshot,
     settings: &mut toml::Value,
     on_change: &mut F,
 ) {
-    let observed = composed_snapshot(config_path, conf_d_dir);
+    let observed = composed_snapshot(config_path, defaults_dir, conf_d_dir);
     if observed == *snapshot {
         return;
     }
     *snapshot = observed;
-    try_fire(config_path, conf_d_dir, settings, on_change);
+    try_fire(config_path, defaults_dir, conf_d_dir, settings, on_change);
 }
 
-/// Validate the composed config at `config_path` (its conf.d dir included)
-/// and, if it parses cleanly, classify the change against `settings` and fire
-/// `on_change`, leaving `settings` holding the new snapshot. A missing main
-/// config file parses as empty content (see `validate_config_file`), not a
-/// failure. If the composed set fails to parse (any composed file being
-/// invalid, or the main file unreadable for a reason other than not existing),
-/// logs a warning naming the error and fires nothing.
+/// Validate the composed config at `config_path` (its defaults and conf.d
+/// dirs included) and, if it parses cleanly, classify the change against
+/// `settings` and fire `on_change`, leaving `settings` holding the new
+/// snapshot. A missing main config file parses as empty content (see
+/// `validate_config_file`), not a failure. If the composed set fails to parse
+/// (any composed file being invalid, or the main file unreadable for a reason
+/// other than not existing), logs a warning naming the error and fires nothing.
 fn try_fire<F: FnMut(ChangeKind)>(
     config_path: &Path,
+    defaults_dir: &Path,
     conf_d_dir: &Path,
     settings: &mut toml::Value,
     on_change: &mut F,
@@ -363,7 +396,7 @@ fn try_fire<F: FnMut(ChangeKind)>(
         );
         return;
     }
-    let next = settings_snapshot(config_path, conf_d_dir);
+    let next = settings_snapshot(config_path, defaults_dir, conf_d_dir);
     let kind = if next == *settings {
         ChangeKind::FacetsOnly
     } else {
@@ -376,27 +409,28 @@ fn try_fire<F: FnMut(ChangeKind)>(
 
 /// The composed configuration with every facet table removed — the half a
 /// change has to touch for a restart to be warranted.
-fn settings_snapshot(config_path: &Path, conf_d_dir: &Path) -> toml::Value {
+fn settings_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path) -> toml::Value {
     let mut composed = toml::Value::Table(Default::default());
-    for (_, layer) in Config::layers(Some(config_path), conf_d_dir) {
+    for (_, layer) in Config::layers(Some(defaults_dir), Some(config_path), conf_d_dir) {
         crate::config::deep_merge_toml(&mut composed, layer);
     }
     Config::settings_only(composed)
 }
 
-/// Validates the WHOLE composed set (main file + every conf.d/*.toml) — see
-/// `Config::parse_composed`. A missing main config file is treated as empty
-/// content, same tolerance `Config::load()` already gives daemon startup (a
-/// config that lives entirely in conf.d/ is legitimate); any other read
-/// error (e.g. permissions) still fails validation.
+/// Validates the WHOLE composed set (every defaults/*.toml + main file + every
+/// conf.d/*.toml) — see `Config::parse_composed`. A missing main config file
+/// is treated as empty content, same tolerance `Config::load()` already gives
+/// daemon startup (a config that lives entirely in conf.d/ is legitimate); any
+/// other read error (e.g. permissions) still fails validation.
 fn validate_config_file(config_path: &Path) -> Result<(), String> {
     let content = match std::fs::read_to_string(config_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(format!("could not read config file: {e}")),
     };
+    let defaults_dir = Config::defaults_dir_for(config_path);
     let conf_d_dir = Config::conf_d_dir_for(config_path);
-    Config::parse_composed(&content, &conf_d_dir).map(|_| ())
+    Config::parse_composed(&content, &defaults_dir, &conf_d_dir).map(|_| ())
 }
 
 fn mtime_to_unix_ms(mtime: SystemTime) -> u64 {

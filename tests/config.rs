@@ -1163,7 +1163,7 @@ fn write(dir: &std::path::Path, rel: &str, body: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn layers_are_the_main_file_then_conf_d_in_lexical_order() {
+fn layers_are_defaults_then_the_main_file_then_conf_d_in_lexical_order() {
     let tmp = tempfile::tempdir().unwrap();
     let main = write(
         tmp.path(),
@@ -1180,23 +1180,38 @@ fn layers_are_the_main_file_then_conf_d_in_lexical_order() {
         "conf.d/10-a.toml",
         "[daemon]\nlog_level = \"trace\"\n",
     );
+    let python = write(
+        tmp.path(),
+        "defaults/python.toml",
+        "[daemon]\nlog_level = \"error\"\n",
+    );
+    let aws = write(
+        tmp.path(),
+        "defaults/aws.toml",
+        "[daemon]\nlog_level = \"info\"\n",
+    );
 
-    let layers = Config::layers(Some(&main), &tmp.path().join("conf.d"));
+    let layers = Config::layers(
+        Some(&tmp.path().join("defaults")),
+        Some(&main),
+        &tmp.path().join("conf.d"),
+    );
     let paths: Vec<_> = layers.iter().map(|(p, _)| p.clone()).collect();
     assert_eq!(
         paths,
-        vec![main, a, b],
-        "layers compose main file first, then conf.d lexically"
+        vec![aws, python, main, a, b],
+        "layers compose defaults lexically, then the main file, then conf.d lexically"
     );
 
-    // Each file is parsed on its own, not merged: the first layer still holds
+    // Each file is parsed on its own, not merged: an early layer still holds
     // the value the later ones override.
     assert_eq!(
         layers[0].1["daemon"]["log_level"].as_str(),
-        Some("debug"),
+        Some("info"),
         "a layer keeps its own value; composition happens later"
     );
-    assert_eq!(layers[2].1["daemon"]["log_level"].as_str(), Some("warn"));
+    assert_eq!(layers[2].1["daemon"]["log_level"].as_str(), Some("debug"));
+    assert_eq!(layers[4].1["daemon"]["log_level"].as_str(), Some("warn"));
 }
 
 #[test]
@@ -1210,7 +1225,7 @@ fn layers_skip_a_file_that_does_not_parse() {
     );
     let ok = write(tmp.path(), "conf.d/20-ok.toml", "[lifecycle]\n");
 
-    let paths: Vec<_> = Config::layers(Some(&main), &tmp.path().join("conf.d"))
+    let paths: Vec<_> = Config::layers(None, Some(&main), &tmp.path().join("conf.d"))
         .into_iter()
         .map(|(p, _)| p)
         .collect();
@@ -1222,13 +1237,18 @@ fn layers_tolerate_a_missing_main_config_file() {
     let tmp = tempfile::tempdir().unwrap();
     let drop_in = write(tmp.path(), "conf.d/10-only.toml", "[daemon]\n");
     let paths: Vec<_> = Config::layers(
+        Some(&tmp.path().join("defaults")),
         Some(&tmp.path().join("config.toml")),
         &tmp.path().join("conf.d"),
     )
     .into_iter()
     .map(|(p, _)| p)
     .collect();
-    assert_eq!(paths, vec![drop_in]);
+    assert_eq!(
+        paths,
+        vec![drop_in],
+        "a missing main file and a missing defaults directory are both nothing"
+    );
 }
 
 #[test]

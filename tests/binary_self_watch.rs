@@ -45,6 +45,8 @@ async fn daemon_shuts_down_when_binary_touched() {
 
     let sock = tmpdir.path().join("sock");
     let mut child = std::process::Command::new(&target)
+        .env("HOME", tmpdir.path())
+        .env("XDG_CONFIG_HOME", tmpdir.path())
         .args(["daemon", "--socket", sock.to_str().unwrap()])
         .spawn()
         .expect("spawn daemon");

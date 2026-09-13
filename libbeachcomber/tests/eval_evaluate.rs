@@ -184,20 +184,16 @@ fn template_with_if_over_virtual_field() {
 
 // ── Built-in defaults are well-formed single-tag expressions ──────────────────
 
-/// Providers the built-in defaults declare, read back off the generated config's
-/// `[providers.<name>]` headers. `VirtualFields` enumerates fields per provider
-/// but not providers, and hardcoding the list here would let a new built-in
-/// provider go silently uncovered.
+/// Providers the built-in defaults declare. `VirtualFields` enumerates fields
+/// per provider but not providers; the constant is frozen — the shipped
+/// templates are now files under `libbeachcomber/defaults/`, and the constant
+/// goes with the old evaluator — so the list is spelled here and the count
+/// assertion below catches a drift either way.
 fn default_providers() -> Vec<String> {
-    let toml_str = VirtualFields::defaults_only().to_config_toml();
-    let mut names: Vec<String> = toml_str
-        .lines()
-        .filter_map(|l| l.strip_prefix("[providers.")?.strip_suffix(']'))
+    ["aws", "conda", "gcloud", "op", "python", "terraform"]
+        .iter()
         .map(|s| s.to_string())
-        .collect();
-    names.sort();
-    assert!(!names.is_empty(), "no providers found in:\n{toml_str}");
-    names
+        .collect()
 }
 
 /// A context that gives every ref in `expr` a value, so the property compares
@@ -337,101 +333,6 @@ fn virtual_field_cycle_still_detected_through_tags() {
     assert!(err.contains("cycle detected"), "got: {err}");
     let err = evaluate("[{{ a.x }}]", &vf, &ctx).unwrap_err();
     assert!(err.contains("cycle detected"), "got: {err}");
-}
-
-// ── Generated config ──────────────────────────────────────────────────────────
-
-#[test]
-fn to_config_toml_writes_tags() {
-    let vf = VirtualFields::defaults_only();
-    let toml_str = vf.to_config_toml();
-
-    // The documented form, verbatim.
-    assert!(
-        toml_str.contains(
-            r#"virtual.workspace = "{{ env.TF_WORKSPACE or cache.terraform.workspace }}""#
-        ),
-        "got:\n{toml_str}"
-    );
-    // Quotes inside the expression stay TOML-escaped inside the tag.
-    assert!(
-        toml_str.contains(r#"virtual.signed_in = "{{ env.OP_SERVICE_ACCOUNT_TOKEN != \"\" }}""#),
-        "got:\n{toml_str}"
-    );
-
-    // Parse the generated config the way the daemon's config loader does, feed
-    // the result back through `with_config_overrides`, and check the values that
-    // come out: every one is the single-tag form of the built-in expression, so
-    // regenerating a config and reading it back yields the same typed field.
-    let parsed: toml::Value = toml::from_str(&toml_str).expect("generated config must be TOML");
-    let providers = parsed["providers"]
-        .as_table()
-        .expect("[providers] table")
-        .clone();
-
-    let mut overrides: Vec<((String, String), String)> = Vec::new();
-    for (provider, table) in &providers {
-        let virtuals = table["virtual"].as_table().expect("virtual sub-table");
-        for (field, value) in virtuals {
-            let src = value.as_str().expect("expression is a string").to_string();
-            overrides.push(((provider.clone(), field.clone()), src));
-        }
-    }
-    assert_eq!(
-        overrides.len(),
-        10,
-        "every built-in default must be written"
-    );
-
-    let round_tripped = VirtualFields::with_config_overrides(overrides);
-    let mut checked = 0;
-    for provider in default_providers() {
-        for field in round_tripped.fields_for(&provider) {
-            let read_back = round_tripped.expression(&provider, &field).unwrap();
-            assert_eq!(
-                classify(read_back),
-                Form::SingleTag,
-                "{provider}.{field} did not read back as a single tag: {read_back:?}"
-            );
-            assert_eq!(
-                Some(read_back),
-                vf.expression(&provider, &field),
-                "{provider}.{field} did not round-trip"
-            );
-            checked += 1;
-        }
-    }
-    assert_eq!(checked, 10);
-}
-
-#[test]
-fn to_config_toml_leaves_the_source_expression_alone() {
-    // Every override is emitted exactly as written — single-tag, template, or
-    // tagless literal text — never rewritten, since wrapping a tagless source
-    // in `{{ }}` would silently turn its literal text into an expression.
-    let vf = vfields(&[
-        ("x", "single", "{{ env.A or cache.x.y }}"),
-        (
-            "x",
-            "tmpl",
-            "{{ git.branch }}{% if git.dirty %}*{% endif %}",
-        ),
-        ("x", "plain", "env.A"),
-    ]);
-    let toml_str = vf.to_config_toml();
-
-    assert!(
-        toml_str.contains(r#"virtual.single = "{{ env.A or cache.x.y }}""#),
-        "got:\n{toml_str}"
-    );
-    assert!(
-        toml_str.contains(r#"virtual.tmpl = "{{ git.branch }}{% if git.dirty %}*{% endif %}""#),
-        "got:\n{toml_str}"
-    );
-    assert!(
-        toml_str.contains(r#"virtual.plain = "env.A""#),
-        "got:\n{toml_str}"
-    );
 }
 
 // ── Context assembly ──────────────────────────────────────────────────────────

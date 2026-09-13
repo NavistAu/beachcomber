@@ -91,7 +91,10 @@ local function start_daemon()
   if not tmpdir or tmpdir == "" then die("mktemp -d failed under " .. base_tmpdir) end
   local socket_path = tmpdir .. "/sock"
 
-  local start_cmd = COMB_BIN .. " daemon --socket " .. socket_path .. " > /dev/null 2>&1 & echo $!"
+  -- The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
+  -- (falling back to $HOME/.config): both point into the fixture's tempdir.
+  local start_cmd = "XDG_CONFIG_HOME=" .. tmpdir .. " HOME=" .. tmpdir .. " "
+    .. COMB_BIN .. " daemon --socket " .. socket_path .. " > /dev/null 2>&1 & echo $!"
   local pid_pipe = io.popen(start_cmd, "r")
   if not pid_pipe then die("failed to start daemon") end
   local pid = pid_pipe:read("*l")

@@ -237,55 +237,6 @@ fn built_in_defaults_present_without_config() {
     );
 }
 
-// ── comb init --write-config (binary integration) ────────────────────────────
-
-#[test]
-fn init_write_config_is_idempotent_and_valid() {
-    use assert_cmd::Command;
-    use tempfile::TempDir;
-
-    let tmp = TempDir::new().expect("tempdir");
-    let tmp_path = tmp.path();
-
-    // Run once — must succeed.
-    Command::cargo_bin("comb")
-        .unwrap()
-        .args(["init", "--write-config"])
-        .env("XDG_CONFIG_HOME", tmp_path)
-        .env("HOME", tmp_path)
-        .env("RUST_LOG", "error")
-        .assert()
-        .success();
-
-    // Config file must exist and parse as valid TOML, containing "workspace".
-    let config_path = tmp_path.join("beachcomber").join("config.toml");
-    let contents =
-        std::fs::read_to_string(&config_path).expect("config.toml must exist after first run");
-    toml::from_str::<toml::Value>(&contents)
-        .expect("config.toml must be valid TOML after first run");
-    assert!(
-        contents.contains("workspace"),
-        "config.toml must contain 'workspace' after first run"
-    );
-
-    // Run a SECOND time with the same env — must also succeed.
-    Command::cargo_bin("comb")
-        .unwrap()
-        .args(["init", "--write-config"])
-        .env("XDG_CONFIG_HOME", tmp_path)
-        .env("HOME", tmp_path)
-        .env("RUST_LOG", "error")
-        .assert()
-        .success();
-
-    // Key regression assertion: file must STILL be valid TOML after second run.
-    // On unfixed code, duplicate [providers.*] table headers make it invalid.
-    let contents2 = std::fs::read_to_string(&config_path)
-        .expect("config.toml must still exist after second run");
-    toml::from_str::<toml::Value>(&contents2)
-        .expect("config.toml must remain valid TOML after second run (idempotency regression)");
-}
-
 // ── gcloud.project cascade (self-cycle regression) ───────────────────────────
 
 #[test]
@@ -383,22 +334,6 @@ fn nested_ref_evaluates_via_minijinja_attribute_navigation() {
         result,
         json!("val"),
         "nested attribute navigation must resolve to inner value; got: {result}"
-    );
-}
-
-// ── to_config_toml ────────────────────────────────────────────────────────────
-
-#[test]
-fn materialize_defaults_produces_valid_toml() {
-    // Confirms that the built-in defaults can be serialized to a valid TOML snippet.
-    let vf = VirtualFields::defaults_only();
-    let toml_str = vf.to_config_toml();
-    // Must be parseable TOML.
-    toml::from_str::<toml::Value>(&toml_str).expect("materialized defaults must be valid TOML");
-    // Must contain at least the terraform.workspace entry.
-    assert!(
-        toml_str.contains("workspace"),
-        "materialized TOML must contain 'workspace'; got:\n{toml_str}"
     );
 }
 

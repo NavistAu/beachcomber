@@ -478,7 +478,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
 
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
-    let layers = || Config::layers(Some(&cfg), &conf_d);
+    let layers = || Config::layers(None, Some(&cfg), &conf_d);
     beachcomber::daemon::seed::seed_facets(&cache, &registry, &layers());
     let leaf = |name: &str| {
         cache
@@ -498,7 +498,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
         stop.clone(),
         move |kind| {
             if kind == beachcomber::daemon::config_watch::ChangeKind::FacetsOnly {
-                let layers = Config::layers(Some(&watch_cfg), &watch_conf_d);
+                let layers = Config::layers(None, Some(&watch_cfg), &watch_conf_d);
                 beachcomber::daemon::seed::reseed_facets(&watch_cache, &watch_registry, &layers);
             }
             let _ = tx.send(kind);
@@ -821,7 +821,9 @@ fn comb_check_config_reports_a_facet_error() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn comb_check_config_renders_both_views_as_one_list() {
     // `width = 12` is a warning, not an error: the daemon starts, and the
-    // client has exactly one thing to say that the daemon does not.
+    // client has things to say that the daemon does not — the warning, and
+    // that an in-process daemon wrote no managed defaults (only `comb daemon`
+    // does).
     let e = Env::new("[providers.\"x:template\"]\nwidth = 12\n", &[]);
     let _h = e.serve().await;
 
@@ -847,10 +849,13 @@ async fn comb_check_config_renders_both_views_as_one_list() {
          \x20 [PASS] daemon   1 provider definitions loaded\n\
          \x20 [WARN] local    [providers.\"x:template\"] 'width' is integer, not a value \
          expression or a group; it is dropped from the seed.\n\
+         \x20 [WARN] local    defaults {}: 8 shipped file(s) missing or stale — the daemon \
+         writes them on its next start\n\
          \n\
-         (1 warning(s))\n\
+         (2 warning(s))\n\
          \n",
-        e.cfg_dir.join("config.toml").display()
+        e.cfg_dir.join("config.toml").display(),
+        e.cfg_dir.join("defaults").display(),
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),

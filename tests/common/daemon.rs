@@ -14,6 +14,12 @@ impl TestDaemon {
     #[allow(dead_code)]
     pub fn spawn() -> Self {
         let socket = IsolatedSocket::new();
+        // The daemon writes its managed defaults into `$XDG_CONFIG_HOME` on
+        // start, so both it and `$HOME` point into the socket's tempdir rather
+        // than at the developer's real `~/.config/beachcomber`.
+        let home = socket.dir.path().join("home");
+        let xdg = socket.dir.path().join("xdg");
+        std::fs::create_dir_all(&home).expect("create temp HOME");
         // The Child is stored in the returned struct and wait()ed in the Drop impl.
         #[allow(clippy::zombie_processes)]
         // `--exit-with-parent`: the daemon self-terminates if this test process
@@ -21,6 +27,8 @@ impl TestDaemon {
         // so a daemon can never be orphaned. Drop below still handles the normal
         // and panic-unwind paths.
         let process = Command::new(env!("CARGO_BIN_EXE_comb"))
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &xdg)
             .args(["daemon", "--exit-with-parent", "--socket"])
             .arg(&socket.path)
             .spawn()

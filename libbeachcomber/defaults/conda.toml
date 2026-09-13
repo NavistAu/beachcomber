@@ -1,0 +1,3 @@
+[providers."conda:template"]
+# The active conda environment, as the shell's activation set it.
+env = "{{ env.CONDA_DEFAULT_ENV }}"
