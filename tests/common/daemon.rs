@@ -20,8 +20,9 @@ impl TestDaemon {
     pub fn spawn() -> Self {
         let socket = IsolatedSocket::new();
         // The daemon writes its managed defaults into `$XDG_CONFIG_HOME` on
-        // start, so both it and `$HOME` point into the socket's tempdir rather
-        // than at the developer's real `~/.config/beachcomber`.
+        // start and its log under `$XDG_STATE_HOME`, so those and `$HOME` all
+        // point into the socket's tempdir rather than at the developer's real
+        // `~/.config/beachcomber` and `~/.local/state/beachcomber`.
         let home = socket.dir.path().join("home");
         let xdg = socket.dir.path().join("xdg");
         Self::spawn_in(socket, home, xdg)
@@ -29,6 +30,8 @@ impl TestDaemon {
 
     /// Spawn with a chosen `$HOME` and `$XDG_CONFIG_HOME`, for a test that
     /// writes into the daemon's config dir (`xdg/beachcomber`) before it starts.
+    /// `$XDG_STATE_HOME` is `<home>/.local/state` — the shell's own value would
+    /// otherwise reach the daemon and its log would land in the real one.
     #[allow(dead_code)]
     pub fn spawn_in(socket: IsolatedSocket, home: PathBuf, xdg: PathBuf) -> Self {
         std::fs::create_dir_all(&home).expect("create temp HOME");
@@ -41,6 +44,7 @@ impl TestDaemon {
         let process = Command::new(env!("CARGO_BIN_EXE_comb"))
             .env("HOME", &home)
             .env("XDG_CONFIG_HOME", &xdg)
+            .env("XDG_STATE_HOME", home.join(".local/state"))
             .args(["daemon", "--exit-with-parent", "--socket"])
             .arg(&socket.path)
             .spawn()

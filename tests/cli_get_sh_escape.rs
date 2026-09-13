@@ -23,6 +23,7 @@ fn comb(d: &TestDaemon) -> Command {
         .env("RUST_LOG", "error")
         .env("HOME", &d.home)
         .env("XDG_CONFIG_HOME", &d.xdg)
+        .env("XDG_STATE_HOME", d.home.join(".local/state"))
         .current_dir("/");
     cmd
 }

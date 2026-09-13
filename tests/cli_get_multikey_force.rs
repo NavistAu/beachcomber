@@ -83,6 +83,7 @@ async fn comb_get_multikey_forwards_force_to_every_fetch() {
             .env("RUST_LOG", "error")
             .env("HOME", tmp.path())
             .env("XDG_CONFIG_HOME", tmp.path().join("cfg"))
+            .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
             .args(["get", "--force", "hostname.name", "hostname.short"])
             .assert()
             .success();

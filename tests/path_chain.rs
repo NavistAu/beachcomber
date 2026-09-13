@@ -1499,6 +1499,7 @@ fn comb(f: &Fixture, cwd: &Path, cfg: &Path) -> assert_cmd::Command {
         .env("RUST_LOG", "error")
         .env("HOME", &f.home)
         .env("XDG_CONFIG_HOME", cfg)
+        .env("XDG_STATE_HOME", f.home.join(".local/state"))
         .current_dir(cwd);
     cmd
 }

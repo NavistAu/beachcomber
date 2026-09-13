@@ -94,9 +94,11 @@ class DaemonProcess:
     def start(self) -> None:
         env = os.environ.copy()
         # The daemon writes its managed defaults under $XDG_CONFIG_HOME on
-        # start (falling back to $HOME/.config): both point into the tempdir.
+        # start (falling back to $HOME/.config) and its log under
+        # $XDG_STATE_HOME: all three point into the tempdir.
         env["XDG_CONFIG_HOME"] = self._tmpdir
         env["HOME"] = self._tmpdir
+        env["XDG_STATE_HOME"] = os.path.join(self._tmpdir, ".local", "state")
         log_path = os.path.join(self._tmpdir, "daemon.log")
         with open(log_path, "wb") as log:
             self._proc = subprocess.Popen(

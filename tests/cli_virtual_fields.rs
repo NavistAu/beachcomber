@@ -152,6 +152,7 @@ fn comb(d: &TestDaemon, cwd: &Path, env: &[(&str, &str)]) -> assert_cmd::Command
         .env("RUST_LOG", "error")
         .env("HOME", &d.home)
         .env("XDG_CONFIG_HOME", &d.xdg)
+        .env("XDG_STATE_HOME", d.home.join(".local/state"))
         .current_dir(cwd);
     for var in SELECTORS {
         cmd.env_remove(var);

@@ -24,6 +24,7 @@ fn comb(d: &TestDaemon) -> assert_cmd::Command {
     cmd.env("BEACHCOMBER_SOCKET", &d.socket.path);
     cmd.env("HOME", &d.home);
     cmd.env("XDG_CONFIG_HOME", &d.xdg);
+    cmd.env("XDG_STATE_HOME", d.home.join(".local/state"));
     // Suppress daemon-start output from bleeding into stdout assertions.
     cmd.env("RUST_LOG", "error");
     // Fix CWD to "/" so `get` injects a stable, known path context. Virtual
@@ -311,6 +312,7 @@ fn golden_kill_terminates_daemon() {
         .env("RUST_LOG", "error")
         .env("HOME", &d.home)
         .env("XDG_CONFIG_HOME", &d.xdg)
+        .env("XDG_STATE_HOME", d.home.join(".local/state"))
         .args(["kill", "--socket"])
         .arg(&d.socket.path)
         .assert()

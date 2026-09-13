@@ -23,6 +23,7 @@ fn comb(d: &TestDaemon) -> assert_cmd::Command {
         .env("RUST_LOG", "error")
         .env("HOME", &d.home)
         .env("XDG_CONFIG_HOME", &d.xdg)
+        .env("XDG_STATE_HOME", d.home.join(".local/state"))
         .current_dir("/");
     cmd
 }
@@ -46,6 +47,7 @@ impl Drop for SpawnedDaemon {
             .env("RUST_LOG", "error")
             .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", &self.xdg)
+            .env("XDG_STATE_HOME", self.home.join(".local/state"))
             .args(["kill", "--socket"])
             .arg(&self.socket.path)
             .output();
@@ -74,6 +76,7 @@ fn eval_starts_the_daemon() {
         .env("FOO", "hi")
         .env("HOME", &home)
         .env("XDG_CONFIG_HOME", &xdg)
+        .env("XDG_STATE_HOME", home.join(".local/state"))
         .args(["eval", "{{ env.FOO }}"]);
     cmd.assert().success().stdout(predicates::str::diff("hi"));
 

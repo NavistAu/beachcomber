@@ -92,8 +92,10 @@ local function start_daemon()
   local socket_path = tmpdir .. "/sock"
 
   -- The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
-  -- (falling back to $HOME/.config): both point into the fixture's tempdir.
-  local start_cmd = "XDG_CONFIG_HOME=" .. tmpdir .. " HOME=" .. tmpdir .. " "
+  -- (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
+  -- three point into the fixture's tempdir.
+  local start_cmd = "XDG_CONFIG_HOME=" .. tmpdir .. " HOME=" .. tmpdir
+    .. " XDG_STATE_HOME=" .. tmpdir .. "/.local/state "
     .. COMB_BIN .. " daemon --socket " .. socket_path .. " > /dev/null 2>&1 & echo $!"
   local pid_pipe = io.popen(start_cmd, "r")
   if not pid_pipe then die("failed to start daemon") end

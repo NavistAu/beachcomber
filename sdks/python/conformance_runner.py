@@ -91,9 +91,11 @@ class DaemonProcess:
         """Start the daemon process."""
         env = os.environ.copy()
         # Isolate from user config: the daemon writes its managed defaults
-        # under $XDG_CONFIG_HOME on start, and falls back to $HOME/.config.
+        # under $XDG_CONFIG_HOME on start (falling back to $HOME/.config) and
+        # its log under $XDG_STATE_HOME.
         env["XDG_CONFIG_HOME"] = self._tmpdir
         env["HOME"] = self._tmpdir
+        env["XDG_STATE_HOME"] = os.path.join(self._tmpdir, ".local", "state")
 
         with open(self._log_path, "wb") as log:
             self._proc = subprocess.Popen(

@@ -281,15 +281,17 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     return nil
   end
 
-  -- Spawn a daemon on a private socket, with HOME/XDG_CONFIG_HOME pointed
-  -- into its tempdir so its managed defaults never touch the real config.
+  -- Spawn a daemon on a private socket, with HOME/XDG_CONFIG_HOME/XDG_STATE_HOME
+  -- pointed into its tempdir so its managed defaults and its log never touch
+  -- the real config or state.
   local function start_daemon(comb_bin)
     local p = io.popen("mktemp -d " .. (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "") .. "/beachcomber-luatest-XXXXXX", "r")
     local tmpdir = p and p:read("*l")
     if p then p:close() end
     if not tmpdir or tmpdir == "" then return nil end
     local socket_path = tmpdir .. "/sock"
-    local pid_pipe = io.popen("XDG_CONFIG_HOME=" .. tmpdir .. " HOME=" .. tmpdir .. " " .. comb_bin
+    local pid_pipe = io.popen("XDG_CONFIG_HOME=" .. tmpdir .. " HOME=" .. tmpdir
+      .. " XDG_STATE_HOME=" .. tmpdir .. "/.local/state " .. comb_bin
       .. " daemon --socket " .. socket_path .. " > /dev/null 2>&1 & echo $!", "r")
     local pid = pid_pipe and pid_pipe:read("*l")
     if pid_pipe then pid_pipe:close() end

@@ -41,11 +41,13 @@ class DaemonHandle
 
   def start
     # The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
-    # (falling back to $HOME/.config): both point into the run's tempdir.
+    # (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
+    # three point into the run's tempdir.
     env = {
       'BEACHCOMBER_SOCKET' => @socket_path,
       'HOME'               => @tmpdir,
       'XDG_CONFIG_HOME'    => @tmpdir,
+      'XDG_STATE_HOME'     => File.join(@tmpdir, '.local', 'state'),
     }
     @pid = spawn(env, @comb_bin, 'daemon',
                  '--socket', @socket_path,

@@ -84,8 +84,9 @@ func startDaemon(t *testing.T) string {
 	cmd := exec.Command(combBin(), "daemon", "--socket", sock)
 	cmd.Stderr = os.Stderr
 	// The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
-	// (falling back to $HOME/.config): both point into the test's tempdir.
-	cmd.Env = append(os.Environ(), "XDG_CONFIG_HOME="+dir, "HOME="+dir)
+	// (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
+	// three point into the test's tempdir.
+	cmd.Env = append(os.Environ(), "XDG_CONFIG_HOME="+dir, "HOME="+dir, "XDG_STATE_HOME="+filepath.Join(dir, ".local", "state"))
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start daemon: %v", err)
 	}

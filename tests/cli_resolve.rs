@@ -27,6 +27,7 @@ fn comb(d: &TestDaemon, cwd: &Path) -> assert_cmd::Command {
         .env("RUST_LOG", "error")
         .env("HOME", &d.home)
         .env("XDG_CONFIG_HOME", &d.xdg)
+        .env("XDG_STATE_HOME", d.home.join(".local/state"))
         .env("SCANLINE_FOO", "hi")
         .env_remove("SCANLINE_THEME")
         .current_dir(cwd);
@@ -263,6 +264,7 @@ impl Drop for SpawnedDaemon {
             .env("RUST_LOG", "error")
             .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", &self.xdg)
+            .env("XDG_STATE_HOME", self.home.join(".local/state"))
             .args(["kill", "--socket"])
             .arg(&self.socket.path)
             .output();
@@ -291,6 +293,7 @@ fn env_keys_answer_from_the_shell_and_still_ensure_the_daemon() {
             .env("RUST_LOG", "error")
             .env("HOME", &home)
             .env("XDG_CONFIG_HOME", &xdg)
+            .env("XDG_STATE_HOME", home.join(".local/state"))
             .env_remove("NOPE")
             .current_dir(&home);
         cmd

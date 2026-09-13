@@ -111,6 +111,7 @@ async fn get_variadic_json_format_produces_array() {
             .env("RUST_LOG", "error")
             .env("HOME", tmp.path())
             .env("XDG_CONFIG_HOME", tmp.path().join("cfg"))
+            .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
             .args(["get", "-f", "json", "hostname.value", "user.value"])
             .assert()
             .success();

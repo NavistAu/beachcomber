@@ -39,6 +39,7 @@ fn daemon_exits_when_parent_dies() {
     let mut parent = Command::new("sh")
         .env("HOME", tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
+        .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
         .arg("-c")
         .arg(format!(
             "{comb} daemon --exit-with-parent --socket {sock} & echo $! > {pid}; wait",

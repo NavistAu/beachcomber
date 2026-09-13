@@ -221,9 +221,10 @@ func startDaemon(combBin, socketPath string) (*exec.Cmd, error) {
 	cmd.Stdout = os.Stderr // daemon logs to stderr for visibility
 	cmd.Stderr = os.Stderr
 	// The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
-	// (falling back to $HOME/.config): both point into the fixture's tempdir.
+	// (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
+	// three point into the fixture's tempdir.
 	dir := filepath.Dir(socketPath)
-	cmd.Env = append(os.Environ(), "XDG_CONFIG_HOME="+dir, "HOME="+dir)
+	cmd.Env = append(os.Environ(), "XDG_CONFIG_HOME="+dir, "HOME="+dir, "XDG_STATE_HOME="+filepath.Join(dir, ".local", "state"))
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start daemon: %w", err)
 	}

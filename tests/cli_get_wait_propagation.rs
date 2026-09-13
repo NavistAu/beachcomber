@@ -81,6 +81,7 @@ async fn comb_get_wait_re_executes_stale_entry() {
             .env("RUST_LOG", "error")
             .env("HOME", tmp.path())
             .env("XDG_CONFIG_HOME", tmp.path().join("cfg"))
+            .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
             .args(["get", "--wait", "hostname.name"])
             .assert()
             .success();
