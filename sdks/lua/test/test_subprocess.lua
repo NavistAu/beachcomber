@@ -85,6 +85,8 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "a template that does not compile is the resolver's error, not a null hit",
     "a namespace read with one bad leaf is the resolver's error, not a null hit",
     "a template cycle is the resolver's error",
+    "a failed exec() is a server_error, never a transport kind",
+    "a group whose leaf fails reports the leaf's line, not the companion misses",
   }
   if not comb_bin then
     for _, name in ipairs(names) do skip(name, "no comb built") end
@@ -108,7 +110,12 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   assert_true(c:put("sp:template", { t = "{{ 1 + 1 }}" }, nil, "/tmp"))
   assert_true(c:put("spg", { g = 1 }))
   assert_true(c:put("bad", { n = 1 }, nil, "/tmp"))
-  assert_true(c:put("bad:template", { bad = "{{ 1 + }}", cyc = "{{ bad.cyc }}" }, nil, "/tmp"))
+  assert_true(c:put("bad:template", {
+    bad = "{{ 1 + }}",
+    cyc = "{{ bad.cyc }}",
+    ex = '{{ exec("definitely-missing-cmd-4f2a") }}',
+    grp = { leaf = "{{ 1 + }}" },
+  }, nil, "/tmp"))
 
   test(names[1], function()
     local r, err = c:get("sp.n", "/tmp")
@@ -220,6 +227,21 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_nil(r)
     assert_eq(err.kind, "server_error")
     assert_true(err.message:find("cycle", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
+  end)
+
+  test(names[17], function()
+    local r, err = c:get("bad.ex", "/tmp")
+    assert_nil(r)
+    assert_eq(err.kind, "server_error")
+    assert_true(err.message:find("definitely-missing-cmd-4f2a", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
+  end)
+
+  test(names[18], function()
+    local r, err = c:get("bad.grp", "/tmp")
+    assert_nil(r)
+    assert_eq(err.kind, "server_error")
+    assert_eq(err.message:sub(1, 14), "bad.grp.leaf: ")
+    assert_true(err.message:find("Error querying", 1, true) == nil, "companion miss lines must not be the message: " .. tostring(err))
   end)
   end)
 

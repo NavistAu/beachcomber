@@ -67,7 +67,16 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     await put('spg', { g: 1 });
     await put('chain', { a: 1 });
     await put('bad', { n: 1 }, '/tmp');
-    await put('bad:template', { bad: '{{ 1 + }}', cyc: '{{ bad.cyc }}' }, '/tmp');
+    await put(
+      'bad:template',
+      {
+        bad: '{{ 1 + }}',
+        cyc: '{{ bad.cyc }}',
+        ex: '{{ exec("definitely-missing-cmd-4f2a") }}',
+        grp: { leaf: '{{ 1 + }}' },
+      },
+      '/tmp',
+    );
   });
 
   after(() => {
@@ -182,6 +191,25 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     await assert.rejects(
       () => get('bad.cyc', '/tmp'),
       (err: unknown) => err instanceof ServerError && /cycle/.test(err.message),
+    );
+  });
+
+  it("a failed exec() is a ServerError, never a transport kind", async () => {
+    // The CLI's message names a missing file; that must not read as the
+    // daemon being unreachable — the daemon answered.
+    await assert.rejects(
+      () => get('bad.ex', '/tmp'),
+      (err: unknown) => err instanceof ServerError && /definitely-missing-cmd-4f2a/.test(err.message),
+    );
+  });
+
+  it("a group whose leaf fails reports the leaf's line, not the companion misses", async () => {
+    await assert.rejects(
+      () => get('bad.grp', '/tmp'),
+      (err: unknown) =>
+        err instanceof ServerError &&
+        /^bad\.grp\.leaf: /.test(err.serverMessage) &&
+        !/Error querying/.test(err.serverMessage),
     );
   });
 });

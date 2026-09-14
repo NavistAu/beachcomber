@@ -213,10 +213,25 @@ function Backend:get(key, path, flags)
       return { ok = false, error = { kind = "server_error", message = own } }
     end
     if decoded == nil or value == json.NULL then
-      -- The resolver failed on `key` (its `<key>: <msg>` line), or the CLI
-      -- did before answering at all (no daemon, a bad argument).
-      local message = line_after(err, key .. ": ")
-      if message then message = key .. ": " .. message else message = err:gsub("%s+$", "") end
+      -- The resolver failed on `key` (its `<key>: <msg>` line, or
+      -- `<key>.<leaf>: <msg>` when a leaf of a group failed), or the CLI did
+      -- before answering at all (no daemon, a bad argument). Companion miss
+      -- lines (`Error querying <key>:age: …`) are not the message.
+      local message
+      for line in err:gmatch("[^\n]+") do
+        if line:sub(1, #key + 2) == key .. ": " or line:sub(1, #key + 1) == key .. "." then
+          message = line
+          break
+        end
+      end
+      if not message then
+        local kept = {}
+        for line in err:gmatch("[^\n]+") do
+          if line:sub(1, 15) ~= "Error querying " then kept[#kept + 1] = line end
+        end
+        message = table.concat(kept, "\n")
+        if message == "" then message = (err:gsub("%s+$", "")) end
+      end
       return { ok = false, error = { kind = "server_error", message = message } }
     end
     -- Only the `:age`/`:stale` companions missed: `key` itself rendered.

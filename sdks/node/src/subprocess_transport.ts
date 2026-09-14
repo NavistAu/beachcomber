@@ -183,10 +183,18 @@ function cliGet(
       return { ok: true, data: { data: null, age_ms: null, stale: null } };
     }
     if (own !== undefined) return envelopeFromFailure(own);
-    if (decoded === undefined || value === null) {
-      // The resolver failed on `key` (its `<key>: <msg>` line), or the CLI
-      // did before answering at all (no daemon, a bad argument).
-      return envelopeFromFailure(lines.find((line) => line.startsWith(`${key}: `)) ?? stderr);
+    if (value === null) {
+      // The resolver failed on `key`: a `<key>: <msg>` line, or `<key>.<leaf>: <msg>`
+      // when a leaf of a group failed. The daemon answered, so this is a
+      // server error whatever the words say — never a transport kind.
+      const ownError =
+        lines.find((line) => line.startsWith(`${key}: `) || line.startsWith(`${key}.`)) ??
+        (lines.filter((line) => !line.startsWith('Error querying ')).join('\n') || stderr);
+      return { ok: false, error: { kind: 'server_error', message: ownError.trim() } };
+    }
+    if (decoded === undefined) {
+      // The CLI failed before answering at all (no daemon, a bad argument).
+      return envelopeFromFailure(stderr);
     }
     // Only the `:age`/`:stale` companions missed: `key` itself rendered.
   }
