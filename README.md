@@ -101,7 +101,7 @@ battery   -       percent  87       8s    ★     30s×04
 hostname  -       short    artemis  3h    ---
 ```
 
-All commands use single-letter shorthands (`g` get, `s` status, `w` watch, `p` put, `e` eval, `i` init, `c` check, `d` daemon). Format suffixes (`.s` shell, `.t` tsv, `.T` TSV+header, `.f` template, `.c` csv, `.C` CSV+header, `.j` json) replace the `-f` flag. Text is the default — `comb g` and `comb g git.branch .` both return plain text. Long forms always work too: `comb get git.branch . -f text` is the same as `comb g git.branch .`
+All commands use single-letter shorthands (`g` get, `s` status, `w` watch, `p` put, `r` refresh, `e` eval, `i` init, `c` check, `d` daemon, `k` kill). Format suffixes (`.s` shell, `.t` tsv, `.T` TSV+header, `.f` template, `.c` csv, `.C` CSV+header, `.j` json) replace the `-f` flag. Text is the default — `comb g` and `comb g git.branch .` both return plain text. Long forms always work too: `comb get git.branch . -f text` is the same as `comb g git.branch .`
 
 ---
 
@@ -397,6 +397,18 @@ comb g myapp                 # → full JSON
 ```
 
 Ownership is per record, not per namespace — `comb p git '{"note":1}'` is accepted and merges beside git's own fields, but `comb p git '{"branch":"x"}'` is rejected because a Source already owns `branch`.
+
+### `comb r` (refresh) `<key> [path] [--path <path>] [--global]`
+
+Re-execute the Sources a key demands, each at its own scope, reading nothing back. A bare `provider` re-runs every Source of the namespace; `provider.field` re-runs only the Source that owns the field.
+
+```sh
+comb r git                  # every git Source, for the current directory
+comb r git.commit .         # the one Source owning `commit` — `diff` is left alone
+comb r hostname --global    # at the global entry ($HOME)
+```
+
+Prints nothing on success; exits 2 with `nothing to refresh: <key> has no sources` for a key with no Source behind it (a `put`-created namespace, a facet key, an unknown name, an unowned field). `comb g --force` is the read-and-refresh form — the same Sources, then the value; `comb r` is the re-execution alone.
 
 ### `comb w` (watch) `<key> [--path <path>]`
 

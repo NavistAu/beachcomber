@@ -4,6 +4,7 @@ use beachcomber::cli::commands::get::{run_get, split_keys_and_path};
 use beachcomber::cli::commands::init::run_init;
 use beachcomber::cli::commands::kill::run_kill;
 use beachcomber::cli::commands::put::run_put;
+use beachcomber::cli::commands::refresh::run_refresh;
 use beachcomber::cli::commands::watch::run_watch;
 use beachcomber::cli::output_format::{parse_output_format, suffix_to_format};
 use beachcomber::config::Config;
@@ -178,6 +179,20 @@ enum Commands {
         #[arg(long, conflicts_with = "path")]
         global: bool,
     },
+    /// Re-execute the Sources a key demands, each at its own scope
+    #[command(visible_alias = "r")]
+    Refresh {
+        /// Provider key (e.g., "git" or "git.branch")
+        key: String,
+        /// Path context for directory-scoped providers (defaults to the current working directory)
+        path: Option<String>,
+        /// The path as a flag, as `put --path` takes it
+        #[arg(long = "path", value_name = "PATH", conflicts_with_all = ["path", "global"])]
+        path_flag: Option<String>,
+        /// Refresh at the global entry ($HOME) instead of a directory
+        #[arg(long, conflicts_with = "path")]
+        global: bool,
+    },
     /// Watch a key and stream changes to stdout
     #[command(visible_alias = "w")]
     Watch {
@@ -257,7 +272,7 @@ fn preprocess_args() -> (Vec<String>, Option<String>) {
     (args, fmt_template)
 }
 
-/// The path a `get`, `put` or `eval` addresses: `Ok(None)` for `--global` (the
+/// The path a `get`, `put`, `refresh` or `eval` addresses: `Ok(None)` for `--global` (the
 /// daemon's global entry, which is `$HOME`), otherwise the requested path made
 /// absolute, otherwise the current working directory.
 ///
@@ -408,6 +423,22 @@ fn main() -> ExitCode {
                 ttl.as_deref(),
                 effective_path.as_deref(),
             )
+        }
+        Commands::Refresh {
+            key,
+            path,
+            path_flag,
+            global,
+        } => {
+            // The two spellings of the path conflict, so at most one is set.
+            let effective_path = match effective_cli_path(global, path_flag.or(path)) {
+                Ok(p) => p,
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    return ExitCode::from(2);
+                }
+            };
+            run_refresh(&config, &key, effective_path.as_deref())
         }
         Commands::Watch { key, path, format } => {
             // Known gap: `watch` has neither `get`/`put`'s cwd default nor

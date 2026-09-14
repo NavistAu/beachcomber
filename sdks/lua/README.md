@@ -33,14 +33,17 @@ mysterious 5ms-per-call slowdown. Call `client:transport()` any time you
 need to know which one you got.
 
 **Capability ceiling of the subprocess transport.** `comb` has no CLI
-surface for `hello`, `refresh`, `introspect`, `resolve`, `eval`, or `watch`
+surface for `hello`, `introspect`, `resolve`, `eval`, or `watch`
 (the last was tried and rejected — see `beachcomber/subprocess_backend.lua`'s
 header comment: piped through `io.popen`, the CLI's stdout buffering means a
 `read("*l")` blocks forever even though the daemon already sent the event).
 Those `Client` methods return `nil, err` with `err.kind == "unsupported"`
-over `subprocess`; get/put/put_null/status/context all work over either
-transport. `get` over `subprocess` is one `comb get -f json <key> <key>:age
-<key>:stale`, so its answer is the resolver's — the directory chain up to
+over `subprocess`; get/put/put_null/refresh/status/context all work over
+either transport. `refresh` over `subprocess` is one `comb refresh <key>`,
+the daemon's op itself, and its refusal (`nothing to refresh: <key> has no
+sources`) is the error message. `get` over `subprocess` is one `comb get -f
+json <key> <key>:age <key>:stale`, so its answer is the resolver's — the
+directory chain up to
 `$HOME`, `$HOME` as the global entry, metadata suffixes, force/wait, the
 daemon's refusals — with one divergence: `comb get` *resolves*, so a
 template-backed key returns its **rendered** value where the ffi tier
@@ -167,7 +170,8 @@ Like `get`, with `bc_get`'s `BC_GET_FORCE` / `BC_GET_WAIT` flags.
 Re-execute the Sources `key` demands — every Source of the namespace for a
 bare `provider`, the one Source owning the field for `provider.field`. A key
 that names no Source (a `put`-created namespace, a facet key, an unknown
-name, a field no Source owns) is an error. `ffi` transport only.
+name, a field no Source owns) is an error. Over `ffi` this is `bc_refresh`;
+over `subprocess` it is one `comb refresh <key>`.
 
 ### `Client:set_context(path)` → `true`
 

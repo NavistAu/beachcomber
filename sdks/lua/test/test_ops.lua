@@ -56,8 +56,9 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   suite("Client:refresh")
 
   test("refresh returns Error.unsupported when the backend omits it", function()
-    -- The subprocess transport omits it: `comb` has no `refresh` subcommand,
-    -- and `get --force` is not the same op.
+    -- Both shipped backends have it (the ffi tier's `bc_refresh`, the
+    -- subprocess tier's `comb refresh`); this is the contract for one that
+    -- does not.
     local ok, err = Client.new(make_backend({})):refresh("git")
     assert_nil(ok)
     assert_eq(err.kind, "unsupported")

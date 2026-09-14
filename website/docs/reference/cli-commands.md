@@ -26,6 +26,7 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 | `comb g` | `comb get` | all of them |
 | `comb s` | `comb status` | — |
 | `comb p` | `comb put` | — |
+| `comb r` | `comb refresh` | — |
 | `comb w` | `comb watch` | `.p` `.j` `.s` |
 | `comb e` | `comb eval` | — |
 | `comb i` | `comb init` | — |
@@ -261,6 +262,25 @@ comb g myapp.status        # healthy
 Ownership is per record, not per namespace: storing to a field name a Source already produces is rejected (`cannot write <namespace>.<field>: owned by source <source>`), but a static record can sit beside that Source's own records in the same namespace.
 
 **Exit codes:** `0` on success, `2` on error.
+
+## `comb r` (refresh) `<key> [path] [--path <path>] [--global]`
+
+Re-execute the Sources a key demands, each at its own scope, without reading anything back. A bare `provider` re-runs every Source of the namespace; `provider.field` re-runs the one Source that owns the field — and only that one, so `comb r git.commit` runs `refs` and leaves `diff` alone. A `Global` Source runs at the global entry whatever path the request names; a path-scoped one at the directory given.
+
+```sh
+comb r git                  # every git Source, for the current directory
+comb r git.commit .         # the one Source owning `commit`
+comb r git --path ~/project # a directory other than the current one
+comb r hostname --global    # at the global entry ($HOME)
+```
+
+The path defaults to the current working directory, as `get` and `put` do, and a relative path is the caller's. `--global` cannot be combined with a path.
+
+A key with no Source behind it — a `put`-created namespace, a facet key (`p:template`), an unknown name, a field no Source owns — has nothing to re-execute, and saying so would claim work that never happened: it is an error, `nothing to refresh: <key> has no sources`. Reading configuration afresh is not a refresh; the config watcher does that.
+
+`refresh` prints nothing on success. It is the re-execution alone: `comb g --force` selects the same Sources but then *reads*, returning the value — the read-and-refresh form. Use `refresh` to warm or invalidate a key on a trigger (a git hook, a deploy step) and `get --force` when you also want the answer now.
+
+**Exit codes:** `0` on success, `2` on error (the daemon's refusal, or an unreachable daemon).
 
 ## `comb w` (watch) `<key> [--path <path>] [-f format]`
 

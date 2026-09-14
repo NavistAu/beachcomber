@@ -12,17 +12,22 @@
 -- library call); `Client:transport()` reports "subprocess" so a caller can
 -- see this in a profile rather than discover it there.
 --
--- Capability ceiling: `comb` has no CLI surface for `hello`, `refresh` or
--- `introspect` (no subcommand exposes protocol/daemon version, a bare
--- re-execution, or a structured introspection query). `resolve`/`eval` are
--- simply not implemented over this tier — `comb get --path <cwd> -f json`
--- and `comb eval <template> <cwd>` resolve through the same
--- libbeachcomber::resolve the ffi tier's bc_resolve/bc_eval do, so a
--- faithful shell-out exists; nobody has wired it yet. All five methods are
--- absent from this backend table; beachcomber.client turns a missing
--- method into an Error.unsupported() naming this transport, and a
--- conformance runner skips (never silently passes) a fixture that needs
--- one.
+-- Capability ceiling: `comb` has no CLI surface for `hello` or `introspect`
+-- (no subcommand exposes protocol/daemon version or a structured
+-- introspection query). `resolve`/`eval` are simply not implemented over
+-- this tier — `comb get --path <cwd> -f json` and `comb eval <template>
+-- <cwd>` resolve through the same libbeachcomber::resolve the ffi tier's
+-- bc_resolve/bc_eval do, so a faithful shell-out exists; nobody has wired
+-- it yet. All four methods are absent from this backend table;
+-- beachcomber.client turns a missing method into an Error.unsupported()
+-- naming this transport, and a conformance runner skips (never silently
+-- passes) a fixture that needs one.
+--
+-- `refresh` is one spawn of `comb refresh <key> [--path P | --global]`: the
+-- daemon's `refresh` op itself, which re-executes only the Sources the key
+-- demands and refuses a key with none behind it. `comb refresh` prints the
+-- daemon's refusal alone on stderr, so that line is the error message here,
+-- as it is over the ffi tier.
 --
 -- `get` is one spawn: `comb get -f json <key> <key>:age <key>:stale
 -- [--path P | --global] [--force] [--wait]`. Multi-key `-f json` prints a
@@ -273,6 +278,21 @@ function Backend:put_null(key, path)
   return { ok = true }
 end
 
+--- One `comb refresh`: exit 0 is the daemon's ok; exit 2 is its refusal,
+-- printed alone on stderr — `nothing to refresh: <key> has no sources` for a
+-- key with no Source behind it — or the CLI's own line when it could not
+-- reach the daemon. `comb get --force` is not a stand-in: it selects the
+-- same Sources but then *reads*, so it answers a sourceless key with a
+-- different refusal and an unowned field with a plain miss.
+function Backend:refresh(key, path)
+  local cmd = self._comb .. " refresh " .. shell_escape(key) .. path_arg(path)
+  local _, ok, err = run(cmd)
+  if not ok then
+    return { ok = false, error = { kind = "server_error", message = (err or ""):gsub("%s+$", "") } }
+  end
+  return { ok = true }
+end
+
 function Backend:status()
   local rows = status_rows(self._comb)
   return { ok = true, data = rows }
@@ -284,13 +304,6 @@ end
 --
 -- resolve / eval: not implemented over this tier (see the header comment —
 -- `comb get`/`comb eval` would be a faithful shell-out).
---
--- refresh: `comb get --force` is not a stand-in. `refresh` selects the
--- Sources its key demands and refuses a key that names none; `get --force`
--- selects the same Sources but then *reads*, so it answers a sourceless key
--- with its own, different refusal and answers an unowned field with a plain
--- miss. There is no `comb refresh` to shell out to, so this backend does not
--- pretend to have one. (The ffi tier calls `bc_refresh` and does.)
 --
 -- watch: `comb watch <key> -f json` was tried and rejected. Piped through
 -- `io.popen` (not a tty), the daemon-CLI process's stdout is block- rather

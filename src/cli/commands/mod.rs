@@ -11,5 +11,6 @@ pub mod get;
 pub mod init;
 pub mod kill;
 pub mod put;
+pub mod refresh;
 pub mod status;
 pub mod watch;

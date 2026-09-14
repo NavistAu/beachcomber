@@ -1,12 +1,14 @@
---- Tests for beachcomber.subprocess_backend's `get` against a live daemon.
+--- Tests for beachcomber.subprocess_backend's `get` and `refresh` against a
+--- live daemon.
 ---
 --- The backend asks `comb get -f json <key> <key>:age <key>:stale` for the
 --- value, its age and its staleness in one spawn (its header comment), so
 --- its answer is the resolver's: the directory chain, `$HOME` as the global
 --- entry, metadata suffixes, `--force`/`--wait`, the daemon's refusals — and
---- a template-backed key renders. Runs under PUC Lua and LuaJIT alike: the
---- backend is plain Lua over `io.popen`. Needs a comb binary ($COMB_BIN, or
---- the workspace's own debug build).
+--- a template-backed key renders. `refresh` is one `comb refresh <key>`,
+--- and its refusal is the daemon's line. Runs under PUC Lua and LuaJIT
+--- alike: the backend is plain Lua over `io.popen`. Needs a comb binary
+--- ($COMB_BIN, or the workspace's own debug build).
 
 return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
   local Client = require("beachcomber.client").Client
@@ -87,6 +89,8 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "a template cycle is the resolver's error",
     "a failed exec() is a server_error, never a transport kind",
     "a group whose leaf fails reports the leaf's line, not the companion misses",
+    "refresh of a provider is ok, through comb refresh",
+    "refresh of a static namespace is the daemon's refusal, in its words alone",
   }
   if not comb_bin then
     for _, name in ipairs(names) do skip(name, "no comb built") end
@@ -242,6 +246,21 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(err.kind, "server_error")
     assert_eq(err.message:sub(1, 14), "bad.grp.leaf: ")
     assert_true(err.message:find("Error querying", 1, true) == nil, "companion miss lines must not be the message: " .. tostring(err))
+  end)
+
+  test(names[19], function()
+    local ok, err = c:refresh("hostname")
+    assert_nil(err)
+    assert_true(ok)
+    assert_eq(last_argv(guard), "refresh hostname --global")
+  end)
+
+  test(names[20], function()
+    local ok, err = c:refresh("sp", "/tmp")
+    assert_nil(ok)
+    assert_eq(err.kind, "server_error")
+    assert_eq(err.message, "nothing to refresh: sp has no sources", "the daemon's words alone")
+    assert_eq(last_argv(guard), "refresh sp --path /tmp")
   end)
   end)
 
