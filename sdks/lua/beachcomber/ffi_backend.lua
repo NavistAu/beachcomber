@@ -43,16 +43,20 @@ end
 -- literal JSON null (`"data":null`) — indistinguishable on the wire from a
 -- genuine stored null, except that the daemon has no way to store a
 -- genuine null (see beachcomber.json's M.NULL doc comment), so this field
--- can only ever mean "no value" here. This is the one place that collapses
--- json.NULL back to plain Lua nil; nowhere else should.
+-- can only ever mean "no value" here. `age_ms` and `stale` are null with
+-- it (a miss, or a template-only node, has no freshness), so all three
+-- collapse json.NULL back to plain Lua nil and `Result.new`'s `or 0` /
+-- `or false` defaults fire, as every other SDK's do. Nowhere else should.
 local function unwrap_get(env)
   if not env.ok then
     return { ok = false, error = env.error }
   end
   local d = env.data or {}
-  local data = d.data
+  local data, age_ms, stale = d.data, d.age_ms, d.stale
   if data == json.NULL then data = nil end
-  return { ok = true, data = data, age_ms = d.age_ms, stale = d.stale, template = d.template, rest = d.rest }
+  if age_ms == json.NULL then age_ms = nil end
+  if stale == json.NULL then stale = nil end
+  return { ok = true, data = data, age_ms = age_ms, stale = stale, template = d.template, rest = d.rest }
 end
 
 --- put/put_null/refresh/status/introspect/hello-shaped result: `{data:...}`

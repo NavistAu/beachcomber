@@ -213,3 +213,42 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     );
   });
 });
+
+// A refusal the daemon answered `key` with is a server error whatever its
+// words — the transport must not guess a transport kind from them. Driven
+// by a `comb` stand-in that prints such a line, since no real refusal
+// happens to contain one of the phrases the transport-failure classifier
+// looks for.
+describe('subprocess transport classifies a daemon-answered refusal', () => {
+  const savedCombBin = process.env['COMB_BIN'];
+  let tmpDir: string;
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join('/tmp', 'bc-fake-comb-'));
+    const standIn = path.join(tmpDir, 'comb');
+    fs.writeFileSync(
+      standIn,
+      `#!/bin/sh\necho '[null,null,null]'\necho 'Error querying k.x: cannot read: no such file or directory' >&2\nexit 2\n`,
+      { mode: 0o755 },
+    );
+    process.env['COMB_BIN'] = standIn;
+  });
+
+  after(() => {
+    if (savedCombBin === undefined) delete process.env['COMB_BIN'];
+    else process.env['COMB_BIN'] = savedCombBin;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('as server_error, never daemon_not_running', async () => {
+    const tp = createSubprocessTransport();
+    const handle = tp.newClient({ timeoutMs: 5000 });
+    const env = await tp.get(handle, 'k.x', '/tmp', 0);
+    assert.equal(env.ok, false);
+    if (env.ok) return;
+    assert.deepEqual(env.error, {
+      kind: 'server_error',
+      message: 'cannot read: no such file or directory',
+    });
+  });
+});

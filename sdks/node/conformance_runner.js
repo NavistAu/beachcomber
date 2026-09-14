@@ -42,7 +42,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
 // Dynamic import is async; use top-level async IIFE.
 (async () => {
   const { Client, WatchStream } = await import(DIST_CLIENT);
-  const { ServerError } = await import(DIST_ERRORS);
+  const { ServerError, UnsupportedTransportError } = await import(DIST_ERRORS);
 
   // ---------------------------------------------------------------------------
   // Fixture discovery
@@ -327,8 +327,17 @@ if (!fs.existsSync(DIST_CLIENT)) {
           throw new Error(`unknown op in fixture: ${op}`);
       }
     } catch (err) {
+      // The active transport lacks this op (the subprocess tier's hello,
+      // introspect, resolve and eval): the fixture is skipped by the main
+      // loop, never failed on a documented gap or passed vacuously.
+      if (err instanceof UnsupportedTransportError) throw err;
       return makeError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /** True when a `get` fixture asserts the template half of the node. */
+  function assertsTemplateHalf(expect) {
+    return expect.status === 'template' || expect.template_equals !== undefined || expect.rest_equals !== undefined;
   }
 
   // Ops this runner's binding can execute. A fixture using any op outside
@@ -535,6 +544,17 @@ if (!fs.existsSync(DIST_CLIENT)) {
         if (transportUsed === null) {
           transportUsed = client.transport();
         }
+        // The subprocess transport renders the template half of a node
+        // instead of returning it (see src/subprocess_transport.ts): its
+        // `get` is not unsupported — it answers, with the rendered value
+        // and no `template` — so a fixture that asserts the template half
+        // is skipped explicitly rather than failing on a documented
+        // divergence or passing vacuously.
+        if (fixture.test.op === 'get' && assertsTemplateHalf(fixture.expect) && client.transport() === 'subprocess') {
+          console.log(`  SKIP [${fixture.name}]: the subprocess transport renders the template half of a get instead of returning it`);
+          skipped++;
+          continue;
+        }
         // `resolve` is client-side: cwd defaults to this fixture's private
         // temp dir (matching the Rust reference runner) when not declared.
         const resolveCtx = {
@@ -567,6 +587,11 @@ if (!fs.existsSync(DIST_CLIENT)) {
           console.log(`  pass [${fixture.name}]`);
         }
       } catch (err) {
+        if (err instanceof UnsupportedTransportError) {
+          console.log(`  SKIP [${fixture.name}]: ${err.message}`);
+          skipped++;
+          continue;
+        }
         failures.push({
           name: fixture.name,
           description: fixture.description,

@@ -346,8 +346,6 @@ def _check_expect(
                     f"expected stale={expect['stale']!r} but got {actual_stale!r}"
                 )
 
-        failures.extend(_check_template_half(expect, result))
-
     elif status == "template":
         # A template-only node: no data, a template in effect. Neither a
         # hit nor a miss — `resolve` renders it.
@@ -362,7 +360,6 @@ def _check_expect(
             failures.append(f"expected template-only but data was present: {result.data!r}")
         if result.template is None:
             failures.append("expected a template but none was present")
-        failures.extend(_check_template_half(expect, result))
 
     elif status == "error":
         if error is None:
@@ -386,6 +383,11 @@ def _check_expect(
 
     else:
         failures.append(f"unknown expect status: {status!r}")
+
+    # Under every status, not only the ones that expect a template: a
+    # `status: "miss"` fixture carrying `template_equals` must fail, as it
+    # does in the other six runners, never pass on an unchecked key.
+    failures.extend(_check_template_half(expect, result))
 
     return failures
 

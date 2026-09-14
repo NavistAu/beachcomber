@@ -365,6 +365,8 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "eval rendering none is the empty string, not the null sentinel",
     "resolve renders a put template",
     "refresh of a static namespace is the daemon's words alone",
+    "a miss carries age 0 and stale false, not the null sentinel",
+    "a template-only node carries age 0 and stale false, not the null sentinel",
   }
   if not has_ffi then
     for _, name in ipairs(live_tests) do skip(name, "no ffi (PUC Lua)") end
@@ -413,6 +415,28 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
         -- appends ` (client is …, daemon is …)`.
         local refusal = "nothing to refresh: revstatic has no sources"
         assert_true(err.message:sub(1, #refusal) == refusal, err.message)
+      end)
+
+      -- bc_get answers a miss and a template-only node with `age_ms` and
+      -- `stale` null; the binding must collapse those so `if r.stale then`
+      -- is false there, as it is in every other SDK.
+      test(live_tests[5], function()
+        assert_true(c:put("revmiss", { v = 1 }))
+        local r, err = c:get("revmiss.nope")
+        assert_nil(err)
+        assert_true(r:is_miss())
+        assert_eq(r.age_ms, 0)
+        assert_eq(r.stale, false)
+      end)
+
+      test(live_tests[6], function()
+        assert_true(c:put("revfresh:template", { t = "{{ 1 }}" }))
+        local r, err = c:get("revfresh.t")
+        assert_nil(err)
+        assert_eq(r.template, "{{ 1 }}")
+        assert_true(not r:is_hit() and not r:is_miss())
+        assert_eq(r.age_ms, 0)
+        assert_eq(r.stale, false)
       end)
 
       c:close()

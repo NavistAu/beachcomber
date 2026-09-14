@@ -90,9 +90,8 @@ interface SubprocessWatchHandle {
 
 function unsupported(op: string): never {
   throw new UnsupportedTransportError(
-    `${op} is not supported over the subprocess transport (no koffi available) — ` +
-      `comb's CLI has no faithful JSON equivalent for it. Install the optional ` +
-      `'koffi' peer dependency for the full-fidelity FFI transport.`,
+    `${op} is not supported over the subprocess transport (no koffi available). ` +
+      `Install the optional 'koffi' peer dependency for the full-fidelity FFI transport.`,
   );
 }
 
@@ -184,7 +183,12 @@ function cliGet(
     if (own === 'no data (cache miss)') {
       return { ok: true, data: { data: null, age_ms: null, stale: null } };
     }
-    if (own !== undefined) return envelopeFromFailure(own);
+    if (own !== undefined) {
+      // The daemon answered `key` with a refusal: a server error whatever
+      // the words say — never a transport kind, which `envelopeFromFailure`
+      // would guess from them.
+      return { ok: false, error: { kind: 'server_error', message: own } };
+    }
     if (value === null) {
       // The resolver failed on `key`: a `<key>: <msg>` line, or `<key>.<leaf>: <msg>`
       // when a leaf of a group failed. The daemon answered, so this is a
