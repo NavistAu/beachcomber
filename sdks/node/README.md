@@ -73,8 +73,8 @@ Returns a `CombResult` (see below).
 
 Re-execute the Sources `key` demands, each at its own scope. A key naming no
 Source (a static namespace, a facet, an unknown name, a field no Source
-owns) rejects with `nothing to refresh: <key> has no sources`. **FFI
-transport only** — see "Transports and their limits" below.
+owns) rejects with `nothing to refresh: <key> has no sources`. Works over
+both transports — see "Transports and their limits" below.
 
 #### `client.put(key, data?, opts?)` / `client.putNull(key, path?)`
 
@@ -209,8 +209,8 @@ programmatic handling.
 and watch — all with exact envelope fidelity.
 
 **Subprocess (`comb` CLI fallback)** covers `get`, `put`, `putNull`,
-`status`, `watch`, and session context. `get` is one `comb get -f json
-<key> <key>:age <key>:stale`, so its answer is the resolver's — the
+`refresh`, `status`, `watch`, and session context. `get` is one `comb get
+-f json <key> <key>:age <key>:stale`, so its answer is the resolver's — the
 directory chain up to `$HOME`, `$HOME` as the global entry, metadata
 suffixes, `force`/`wait`, the daemon's refusals — with one divergence:
 `comb get` *resolves*, so a template-backed key returns its **rendered**
@@ -220,13 +220,15 @@ hit holding the rendered value (age 0, not stale — it has no cached
 freshness of its own). The CLI renders with `exec()` on, so the client's
 `exec` option has no effect here — a caller that must not spawn processes
 from a template, or that needs the raw template half, needs the FFI
-transport. The tier does **not** implement `hello`, `introspect`,
-`refresh`, `resolve`, or `eval` — `comb`'s CLI has no faithful JSON
-equivalent for them (see `src/subprocess_transport.ts` for why each one
-specifically can't be approximated safely), and those calls throw
-`UnsupportedTransportError` rather than silently returning wrong data.
-An omitted `path` means the global entry, as under FFI (the transport
-passes `--global`).
+transport. `refresh` is one `comb refresh <key> [--path P | --global]`,
+the daemon's op itself; its refusal (`nothing to refresh: <key> has no
+sources`) is the error message, in the daemon's own words. The tier does
+**not** implement `hello`, `introspect`, `resolve`, or `eval` —
+`comb`'s CLI has no faithful JSON equivalent for them (see
+`src/subprocess_transport.ts` for why each one specifically can't be
+approximated safely), and those calls throw `UnsupportedTransportError`
+rather than silently returning wrong data. An omitted `path` means the
+global entry, as under FFI (the transport passes `--global`).
 
 ## Library discovery (FFI transport)
 

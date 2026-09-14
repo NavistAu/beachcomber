@@ -8,18 +8,12 @@
  * absent by configuration (see `transport_select.ts`).
  *
  * Coverage is deliberately narrower than the FFI transport. `comb`'s CLI
- * has direct equivalents for get/put/put_null/status/watch, and session
- * semantics are emulated client-side (remembering a context path between
- * calls — there is no real persistent connection to share, since each op
- * is its own process). `hello`, `introspect` and `refresh` have **no**
- * faithful CLI equivalent:
- *
- *   - `comb` exposes no JSON-emitting subcommand for `hello`/`introspect`.
- *   - `get --force` is not a stand-in for `refresh`: `refresh` on a key
- *     naming no Source is a documented error ("nothing to refresh: <key>
- *     has no sources"), and `comb get --force` on the same key errors too
- *     ("no source to re-execute from") — differently worded, but neither
- *     is a silent no-op.
+ * has direct equivalents for get/put/put_null/refresh/status/watch, and
+ * session semantics are emulated client-side (remembering a context path
+ * between calls — there is no real persistent connection to share, since
+ * each op is its own process). `hello` and `introspect` have **no**
+ * faithful CLI equivalent: `comb` exposes no JSON-emitting subcommand for
+ * either.
  *
  * `resolve`/`eval` are simply not implemented over this tier. `comb get
  * --path <cwd> -f json` and `comb eval <template> <cwd>` resolve through
@@ -27,9 +21,16 @@
  * exists; nobody has wired it yet.
  *
  * Rather than fake structured data from scraped human-readable text or
- * silently return the wrong answer, all five ops throw
+ * silently return the wrong answer, all four ops throw
  * `UnsupportedTransportError` naming the FFI transport as the
  * full-fidelity path.
+ *
+ * `refresh` is one spawn of `comb refresh <key> [--path P | --global]`: the
+ * daemon's `refresh` op itself, which re-executes only the Sources the key
+ * demands and refuses a key with none behind it. `comb refresh` prints the
+ * daemon's refusal alone on stderr, so that line is the error message here,
+ * as it is over the FFI tier. The same code drives both subprocess tiers
+ * (`sdks/lua/beachcomber/subprocess_backend.lua` is the Lua half).
  *
  * `get` is one spawn: `comb get -f json <key> <key>:age <key>:stale
  * [--path P | --global] [--force] [--wait]`. Multi-key `-f json` prints a
@@ -224,6 +225,28 @@ function cliPut(
   return { ok: true, data: null };
 }
 
+/**
+ * One `comb refresh <key> [--path P | --global]`: exit 0 is the daemon's ok;
+ * exit 2 is its refusal, printed alone on stderr — `nothing to refresh:
+ * <key> has no sources` for a key with no Source behind it — or the CLI's
+ * own line when it could not reach the daemon at all.
+ */
+function cliRefresh(handle: SubprocessClientHandle, key: string, path_: string | undefined): Envelope {
+  const args = ['refresh', key, ...pathArgs(path_)];
+  const { code, stderr } = runComb(handle.combBin, args, handle);
+  if (code !== 0) {
+    const trimmed = stderr.trim();
+    // The daemon's own refusal is the CLI's only stderr line. Anything else
+    // — nothing printed, or `Failed to start daemon: …` — means the CLI
+    // never reached the daemon at all.
+    if (trimmed === '' || trimmed.startsWith('Failed to start daemon')) {
+      return envelopeFromFailure(stderr);
+    }
+    return { ok: false, error: { kind: 'server_error', message: trimmed } };
+  }
+  return { ok: true, data: null };
+}
+
 function cliStatus(handle: SubprocessClientHandle): Envelope {
   const { code, stdout, stderr } = runComb(handle.combBin, ['status', '-f', 'json'], handle);
   if (code !== 0) return envelopeFromFailure(stderr);
@@ -265,14 +288,8 @@ export function createSubprocessTransport(): Transport {
     async putNull(handle, key, path_) {
       return cliPut(handle as SubprocessClientHandle, key, null, undefined, path_, true);
     },
-    async refresh(_handle, key) {
-      // `get --force` is not a faithful stand-in: `refresh` on a key naming
-      // no Source is a documented error ("nothing to refresh: <key> has no
-      // sources"), while `comb get --force` on the same key errors
-      // differently ("cannot --force static namespace '<name>': no source
-      // to re-execute from"). There is no other `comb` CLI equivalent for a
-      // bare refresh.
-      unsupported(`refresh(${key})`);
+    async refresh(handle, key, path_) {
+      return cliRefresh(handle as SubprocessClientHandle, key, path_);
     },
     async status(handle) {
       return cliStatus(handle as SubprocessClientHandle);
