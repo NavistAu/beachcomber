@@ -35,7 +35,7 @@ need to know which one you got.
 **Capability ceiling of the subprocess transport.** `comb` has no CLI
 surface for `hello` or `introspect`; `resolve` and `eval` are not wired over
 this tier (`comb get`/`comb eval` resolve through the same library, so a
-shell-out would be faithful — nobody has needed it); `watch` was tried and rejected — see `beachcomber/subprocess_backend.lua`'s
+shell-out would be faithful — nobody has needed it); `watch` was tried and rejected (see `beachcomber/subprocess_backend.lua`'s
 header comment: piped through `io.popen`, the CLI's stdout buffering means a
 `read("*l")` blocks forever even though the daemon already sent the event).
 Those `Client` methods return `nil, err` with `err.kind == "unsupported"`
