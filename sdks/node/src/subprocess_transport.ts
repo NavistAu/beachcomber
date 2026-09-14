@@ -146,9 +146,13 @@ function hasMetaSuffix(key: string): boolean {
  * null on a miss), from one `comb get -f json` for the value, its age and
  * its staleness (the file header). Exit 0 is a hit. Exit 2 with the CLI's
  * miss line for `key` (`Error querying <key>: no data (cache miss)`) is a
- * miss; with another line for `key` it is that refusal, in the daemon's
- * words. A rendered value's `:age`/`:stale` companions miss on their own —
- * the value slot is filled and only they fail — and that is a hit with age 0.
+ * miss; with another `Error querying <key>: ` line it is that refusal, in
+ * the daemon's words. Exit 2 with a null value slot and no such line is the
+ * resolver's own error — a template that does not compile, a cycle, a
+ * failed `exec()` — which the CLI prints as `<key>: <msg>`; a rendered value
+ * is never null (a missing ref renders `""`), so that slot is never a hit.
+ * Exit 2 with the value slot filled is a rendered value whose `:age`/`:stale`
+ * companions missed on their own — a hit with age 0.
  */
 function cliGet(
   handle: SubprocessClientHandle,
@@ -167,23 +171,28 @@ function cliGet(
 
   const trimmed = stdout.trim();
   const decoded: unknown = trimmed === '' ? undefined : JSON.parse(trimmed);
+  const value = meta ? decoded : (decoded as unknown[] | undefined)?.[0];
   if (code !== 0) {
-    // The CLI prints one `Error querying <k>: <msg>` line per failed key; the
-    // `<key>:age` line starts `Error querying <key>:age: `, so the trailing
-    // `: ` keeps it from matching `<key>`.
+    const lines = stderr.split('\n');
+    // The CLI prints one `Error querying <k>: <msg>` line per key the daemon
+    // answered with an error; the `<key>:age` line starts `Error querying
+    // <key>:age: `, so the trailing `: ` keeps it from matching `<key>`.
     const prefix = `Error querying ${key}: `;
-    const own = stderr.split('\n').find((line) => line.startsWith(prefix));
-    if (own === `${prefix}no data (cache miss)`) {
+    const own = lines.find((line) => line.startsWith(prefix))?.slice(prefix.length);
+    if (own === 'no data (cache miss)') {
       return { ok: true, data: { data: null, age_ms: null, stale: null } };
     }
-    // The daemon refused `key`, or the CLI failed before answering at all
-    // (no daemon, a bad argument) — either way the message is the CLI's.
-    if (own !== undefined || decoded === undefined) return envelopeFromFailure(own ?? stderr);
+    if (own !== undefined) return envelopeFromFailure(own);
+    if (decoded === undefined || value === null) {
+      // The resolver failed on `key` (its `<key>: <msg>` line), or the CLI
+      // did before answering at all (no daemon, a bad argument).
+      return envelopeFromFailure(lines.find((line) => line.startsWith(`${key}: `)) ?? stderr);
+    }
     // Only the `:age`/`:stale` companions missed: `key` itself rendered.
   }
-  if (meta) return { ok: true, data: { data: decoded, age_ms: 0, stale: false } };
-  const [data, ageMs, stale] = decoded as [unknown, number | null, boolean | null];
-  return { ok: true, data: { data, age_ms: ageMs ?? 0, stale: stale ?? false } };
+  if (meta) return { ok: true, data: { data: value, age_ms: 0, stale: false } };
+  const [, ageMs, stale] = decoded as [unknown, number | null, boolean | null];
+  return { ok: true, data: { data: value, age_ms: ageMs ?? 0, stale: stale ?? false } };
 }
 
 function cliPut(

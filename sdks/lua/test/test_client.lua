@@ -347,7 +347,10 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     if pid_pipe then pid_pipe:close() end
     local deadline = os.time() + 5
     while os.time() < deadline do
-      if os.execute("test -S " .. socket_path) then
+      -- Lua 5.1/LuaJIT return the raw status (256 on failure, truthy); 5.2+
+      -- return true/nil.
+      local rc = os.execute("test -S " .. socket_path)
+      if rc == true or rc == 0 then
         return { pid = pid, socket = socket_path, tmpdir = tmpdir }
       end
       os.execute("sleep 0.05 2>/dev/null || true")

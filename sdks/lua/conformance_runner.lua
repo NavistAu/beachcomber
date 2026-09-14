@@ -108,7 +108,10 @@ local function start_daemon()
   local deadline = os.time() + 5
   local ready = false
   while os.time() < deadline do
-    if os.execute("test -S " .. socket_path) then
+    -- Lua 5.1/LuaJIT return the raw status (256 on failure, truthy); 5.2+
+    -- return true/nil.
+    local rc = os.execute("test -S " .. socket_path)
+    if rc == true or rc == 0 then
       ready = true
       break
     end

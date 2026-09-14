@@ -66,6 +66,8 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     await put('sp:template', { t: '{{ 1 + 1 }}' }, '/tmp');
     await put('spg', { g: 1 });
     await put('chain', { a: 1 });
+    await put('bad', { n: 1 }, '/tmp');
+    await put('bad:template', { bad: '{{ 1 + }}', cyc: '{{ bad.cyc }}' }, '/tmp');
   });
 
   after(() => {
@@ -111,7 +113,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
   it("a daemon rejection is a ServerError in the daemon's words", async () => {
     await assert.rejects(
       () => get('a:b:c.x', '/tmp'),
-      (err: unknown) => err instanceof ServerError && /invalid facet key/.test(err.message),
+      (err: unknown) => err instanceof ServerError && err.serverMessage.startsWith('invalid facet key: a:b:c'),
     );
   });
 
@@ -157,8 +159,29 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
   it("--force on a static namespace is the daemon's refusal", async () => {
     await assert.rejects(
       () => get('sp.n', '/tmp', BC_GET_FORCE),
-      (err: unknown) => err instanceof ServerError && /cannot --force static namespace/.test(err.message),
+      (err: unknown) => err instanceof ServerError && err.serverMessage.startsWith('cannot --force static namespace'),
     );
     assert.equal(lastArgv(), 'get -f json sp.n sp.n:age sp.n:stale --path /tmp --force');
+  });
+
+  it("a template that does not compile is the resolver's error, not a null hit", async () => {
+    await assert.rejects(
+      () => get('bad.bad', '/tmp'),
+      (err: unknown) => err instanceof ServerError && /expression compile error/.test(err.message),
+    );
+  });
+
+  it("a namespace read with one bad leaf is the resolver's error, not a null hit", async () => {
+    await assert.rejects(
+      () => get('bad', '/tmp'),
+      (err: unknown) => err instanceof ServerError && /expression compile error/.test(err.message),
+    );
+  });
+
+  it("a template cycle is the resolver's error", async () => {
+    await assert.rejects(
+      () => get('bad.cyc', '/tmp'),
+      (err: unknown) => err instanceof ServerError && /cycle/.test(err.message),
+    );
   });
 });

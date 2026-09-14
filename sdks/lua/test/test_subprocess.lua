@@ -51,7 +51,10 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     os.execute("chmod +x " .. stand_in)
     local deadline = os.time() + 5
     while os.time() < deadline do
-      if os.execute("test -S " .. socket_path) then
+      -- Lua 5.1/LuaJIT return the raw status (256 on failure, truthy); 5.2+
+      -- return true/nil.
+      local rc = os.execute("test -S " .. socket_path)
+      if rc == true or rc == 0 then
         return { pid = pid, socket = socket_path, tmpdir = tmpdir, comb = stand_in, argv_log = argv_log, home = tmpdir }
       end
       os.execute("sleep 0.05 2>/dev/null || true")
@@ -79,6 +82,9 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "a :age suffix is the age, a number",
     "wait reaches the wire as --wait, in one comb get with the two companions",
     "--force on a static namespace is the daemon's refusal",
+    "a template that does not compile is the resolver's error, not a null hit",
+    "a namespace read with one bad leaf is the resolver's error, not a null hit",
+    "a template cycle is the resolver's error",
   }
   if not comb_bin then
     for _, name in ipairs(names) do skip(name, "no comb built") end
@@ -93,10 +99,16 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   local backend = require("beachcomber.subprocess_backend").new({ comb_bin = guard.comb, socket_path = guard.socket })
   local c = Client.new(backend)
   local proj = guard.tmpdir .. "/proj/sub"
+
+  -- The seeds and every case run under one pcall so the daemon and its
+  -- tempdir are always cleaned up, whatever fails (the Node suite's `after`).
+  local ran, failure = pcall(function()
   os.execute("mkdir -p " .. proj)
   assert_true(c:put("sp", { n = 1, s = "str", o = { k = "v" } }, nil, "/tmp"))
   assert_true(c:put("sp:template", { t = "{{ 1 + 1 }}" }, nil, "/tmp"))
   assert_true(c:put("spg", { g = 1 }))
+  assert_true(c:put("bad", { n = 1 }, nil, "/tmp"))
+  assert_true(c:put("bad:template", { bad = "{{ 1 + }}", cyc = "{{ bad.cyc }}" }, nil, "/tmp"))
 
   test(names[1], function()
     local r, err = c:get("sp.n", "/tmp")
@@ -136,7 +148,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     local r, err = c:get("a:b:c.x", "/tmp")
     assert_nil(r)
     assert_eq(err.kind, "server_error")
-    assert_true(tostring(err):find("invalid facet key", 1, true) ~= nil, "expected the daemon's words, got: " .. tostring(err))
+    assert_eq(err.message:sub(1, #"invalid facet key: a:b:c"), "invalid facet key: a:b:c", "the daemon's words alone")
   end)
 
   test(names[7], function()
@@ -185,10 +197,33 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     local r, err = c:get_with_flags("sp.n", "/tmp", true, false)
     assert_nil(r)
     assert_eq(err.kind, "server_error")
-    assert_true(tostring(err):find("cannot --force static namespace", 1, true) ~= nil, "expected the daemon's refusal, got: " .. tostring(err))
+    assert_eq(err.message:sub(1, #"cannot --force static namespace"), "cannot --force static namespace", "the daemon's words alone")
     assert_eq(last_argv(guard), "get -f json sp.n sp.n:age sp.n:stale --path /tmp --force")
+  end)
+
+  test(names[14], function()
+    local r, err = c:get("bad.bad", "/tmp")
+    assert_nil(r)
+    assert_eq(err.kind, "server_error")
+    assert_true(err.message:find("expression compile error", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
+  end)
+
+  test(names[15], function()
+    local r, err = c:get("bad", "/tmp")
+    assert_nil(r)
+    assert_eq(err.kind, "server_error")
+    assert_true(err.message:find("expression compile error", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
+  end)
+
+  test(names[16], function()
+    local r, err = c:get("bad.cyc", "/tmp")
+    assert_nil(r)
+    assert_eq(err.kind, "server_error")
+    assert_true(err.message:find("cycle", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
+  end)
   end)
 
   c:close()
   os.execute("kill " .. tostring(guard.pid) .. " 2>/dev/null; rm -rf " .. guard.tmpdir)
+  if not ran then error(failure, 0) end
 end

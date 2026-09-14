@@ -102,15 +102,16 @@ local function run(cmd)
   return body, code == "0", err
 end
 
---- The CLI's own line for `key` on a `comb get` failure — `Error querying
--- <key>: <msg>`, one per failed key — or nil when it printed none for it.
--- The `<key>:age` line starts `Error querying <key>:age: `, so the trailing
--- `: ` keeps it from matching `<key>`.
-local function own_line(stderr, key)
-  local prefix = "Error querying " .. key .. ": "
+--- The rest of the first line of `stderr` that starts with `prefix`, or nil.
+--
+-- `comb get` prints one `Error querying <k>: <msg>` line per key the daemon
+-- answered with an error, and `<k>: <msg>` for a key the resolver failed
+-- on. The `<key>:age` line starts `Error querying <key>:age: `, so a
+-- prefix ending in `: ` never matches a companion's line.
+local function line_after(stderr, prefix)
   for line in stderr:gmatch("[^\n]+") do
     if line:sub(1, #prefix) == prefix then
-      return line
+      return line:sub(#prefix + 1)
     end
   end
   return nil
@@ -180,9 +181,13 @@ end
 --- One `comb get -f json` for the value, its age and its staleness (the
 -- header comment): exit 0 is a hit; exit 2 with the CLI's miss line for
 -- `key` (`Error querying <key>: no data (cache miss)`) is a miss; exit 2
--- with another line for `key` is that refusal, in the daemon's words. A
--- rendered value's `:age`/`:stale` companions miss on their own — the
--- value slot is filled and only they fail — and that is a hit with age 0.
+-- with another `Error querying <key>: ` line is that refusal, in the
+-- daemon's words. Exit 2 with a null value slot and no such line is the
+-- resolver's own error — a template that does not compile, a cycle, a
+-- failed `exec()` — which the CLI prints as `<key>: <msg>`; a rendered
+-- value is never null (a missing ref renders `""`), so that slot is never
+-- a hit. Exit 2 with the value slot filled is a rendered value whose
+-- `:age`/`:stale` companions missed on their own — a hit with age 0.
 function Backend:get(key, path, flags)
   flags = flags or {}
   local meta = has_meta_suffix(key)
@@ -195,34 +200,39 @@ function Backend:get(key, path, flags)
   if flags.wait then cmd = cmd .. " --wait" end
   local out, ok, err = run(cmd)
   local decoded = json.decode(out or "")
+  local value = decoded
+  if not meta and type(decoded) == "table" then value = decoded[1] end
 
   if not ok then
-    local own = own_line(err or "", key)
-    if own == "Error querying " .. key .. ": no data (cache miss)" then
+    err = err or ""
+    local own = line_after(err, "Error querying " .. key .. ": ")
+    if own == "no data (cache miss)" then
       return { ok = true, data = nil } -- miss
     end
-    if own or decoded == nil then
-      -- The daemon refused `key`, or the CLI failed before answering at all
-      -- (no daemon, a bad argument) — either way the message is the CLI's.
-      return { ok = false, error = { kind = "server_error", message = own or (err or ""):gsub("%s+$", "") } }
+    if own then
+      return { ok = false, error = { kind = "server_error", message = own } }
+    end
+    if decoded == nil or value == json.NULL then
+      -- The resolver failed on `key` (its `<key>: <msg>` line), or the CLI
+      -- did before answering at all (no daemon, a bad argument).
+      local message = line_after(err, key .. ": ")
+      if message then message = key .. ": " .. message else message = err:gsub("%s+$", "") end
+      return { ok = false, error = { kind = "server_error", message = message } }
     end
     -- Only the `:age`/`:stale` companions missed: `key` itself rendered.
   end
 
+  if value == json.NULL then value = nil end -- a null the daemon answers a suffix with, as the ffi backend collapses it
   if meta then
-    -- A suffix the daemon answers with null (`:age` of a node with no
-    -- freshness) is nil here, as the ffi backend collapses it.
-    if decoded == json.NULL then decoded = nil end
-    return { ok = true, data = decoded, age_ms = 0, stale = false }
+    return { ok = true, data = value, age_ms = 0, stale = false }
   end
   if type(decoded) ~= "table" then
     return { ok = false, error = { kind = "parse_error", message = "malformed comb get output: " .. tostring(out) } }
   end
-  local data, age_ms, stale = decoded[1], decoded[2], decoded[3]
-  if data == json.NULL then data = nil end
+  local age_ms, stale = decoded[2], decoded[3]
   if age_ms == json.NULL or age_ms == nil then age_ms = 0 end
   if stale == json.NULL or stale == nil then stale = false end
-  return { ok = true, data = data, age_ms = age_ms, stale = stale }
+  return { ok = true, data = value, age_ms = age_ms, stale = stale }
 end
 
 function Backend:put(key, data, ttl, path)
