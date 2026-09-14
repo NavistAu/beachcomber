@@ -82,7 +82,9 @@ def test_refresh_of_a_put_namespace_raises(client: Client) -> None:
     client.put("widget4", {"v": 1})
     with pytest.raises(ServerError) as excinfo:
         client.refresh("widget4")
-    assert "has no sources" in excinfo.value.message
+    # The daemon's words alone, as `comb refresh` prints them — no
+    # `server error: ` prefix from the envelope.
+    assert excinfo.value.message.startswith("nothing to refresh: widget4 has no sources")
 
 
 def test_status_returns_cache_rows(client: Client) -> None:

@@ -222,7 +222,8 @@ freshness of its own). The CLI renders with `exec()` on, so the client's
 from a template, or that needs the raw template half, needs the FFI
 transport. `refresh` is one `comb refresh <key> [--path P | --global]`,
 the daemon's op itself; its refusal (`nothing to refresh: <key> has no
-sources`) is the error message, in the daemon's own words. The tier does
+sources`) is `ServerError.serverMessage`, the daemon's own words — the
+same text the FFI transport reports. The tier does
 **not** implement `hello`, `introspect`, `resolve`, or `eval` —
 `comb`'s CLI has no faithful JSON equivalent for them (see
 `src/subprocess_transport.ts` for why each one specifically can't be

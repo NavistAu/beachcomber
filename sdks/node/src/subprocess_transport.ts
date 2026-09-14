@@ -28,8 +28,9 @@
  * `refresh` is one spawn of `comb refresh <key> [--path P | --global]`: the
  * daemon's `refresh` op itself, which re-executes only the Sources the key
  * demands and refuses a key with none behind it. `comb refresh` prints the
- * daemon's refusal alone on stderr, so that line is the error message here,
- * as it is over the FFI tier. The same code drives both subprocess tiers
+ * daemon's refusal alone on stderr, so that line is the error message here
+ * — the same text a `server_error` envelope carries over the FFI tier. The
+ * same code drives both subprocess tiers
  * (`sdks/lua/beachcomber/subprocess_backend.lua` is the Lua half).
  *
  * `get` is one spawn: `comb get -f json <key> <key>:age <key>:stale

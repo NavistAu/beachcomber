@@ -364,6 +364,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "resolve of a missing key is nil with no Error",
     "eval rendering none is the empty string, not the null sentinel",
     "resolve renders a put template",
+    "refresh of a static namespace is the daemon's words alone",
   }
   if not has_ffi then
     for _, name in ipairs(live_tests) do skip(name, "no ffi (PUC Lua)") end
@@ -399,6 +400,19 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
         local value, err = c:resolve("revtpl.label", { cwd = "/tmp", env = { MYVAR = "x" } })
         assert_nil(err)
         assert_eq(value, "resolved-x")
+      end)
+
+      test(live_tests[4], function()
+        -- The same text `comb refresh` prints and the subprocess tier
+        -- reports (test_subprocess.lua) — no `server error: ` prefix.
+        assert_true(c:put("revstatic", { v = 1 }))
+        local ok, err = c:refresh("revstatic")
+        assert_nil(ok)
+        assert_eq(err.kind, "server_error")
+        -- A prefix: on a connection with detected version skew the library
+        -- appends ` (client is …, daemon is …)`.
+        local refusal = "nothing to refresh: revstatic has no sources"
+        assert_true(err.message:sub(1, #refusal) == refusal, err.message)
       end)
 
       c:close()

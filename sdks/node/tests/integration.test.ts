@@ -89,6 +89,19 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     assert.equal(result.rest, undefined);
   });
 
+  it("refresh of a static namespace is the daemon's refusal, in its own words", async () => {
+    await client.put('itest_static', { v: 1 }, { path: '/tmp' });
+    // `serverMessage` is the daemon's words alone — the same text `comb
+    // refresh` prints and the subprocess tier reports — with no `server
+    // error: ` prefix from the envelope.
+    await assert.rejects(
+      () => client.refresh('itest_static', '/tmp'),
+      (err: unknown) =>
+        err instanceof ServerError &&
+        err.serverMessage.startsWith('nothing to refresh: itest_static has no sources'),
+    );
+  });
+
   it('status returns an array of cache rows', async () => {
     await client.put('itest_status', { k: 'v' }, { path: '/tmp' });
     const rows = await client.status();

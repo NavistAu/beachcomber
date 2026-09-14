@@ -13,9 +13,10 @@ const skip = !daemonAvailable();
 
 // The subprocess tier's `refresh` is one `comb refresh <key> [--path P |
 // --global]` — the daemon's op itself, so a key with no Source behind it
-// (a `put`-created namespace) refuses in the daemon's own words, exactly as
-// it does over the ffi tier. These drive the transport directly and unwrap
-// its envelope exactly as `Client.refresh` does.
+// (a `put`-created namespace) refuses in the daemon's own words: the same
+// `serverMessage` the ffi tier reports (integration.test.ts asserts that
+// half). These drive the transport directly and unwrap its envelope
+// exactly as `Client.refresh` does.
 describe('subprocess transport refresh against a real daemon', { skip }, () => {
   let daemon: TestDaemon;
   let tp: Transport;

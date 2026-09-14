@@ -195,6 +195,42 @@ fn refresh_returns_ok_envelope() {
     unsafe { bc_client_free(client) };
 }
 
+/// A `server_error` envelope's message is the daemon's words alone — the
+/// same text `comb refresh` prints — since `kind` already says whose words
+/// they are. The C SDK reads this envelope verbatim, so this is its proof.
+#[test]
+fn refresh_refusal_envelope_carries_the_daemons_words_alone() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let key = cs("sourceless");
+    let data = cs(r#"{"v":1}"#);
+
+    let put_v = read(unsafe {
+        bc_put(
+            client,
+            key.as_ptr(),
+            data.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+        )
+    });
+    assert_eq!(put_v["ok"], serde_json::json!(true));
+
+    let v = read(unsafe { bc_refresh(client, key.as_ptr(), ptr::null()) });
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["error"]["kind"], serde_json::json!("server_error"));
+    // A prefix, not equality: on a connection with detected version skew
+    // the client appends ` (client is …, daemon is …)`, which a dirty tree
+    // can produce between this crate and the in-process daemon.
+    let message = v["error"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("nothing to refresh: sourceless has no sources"),
+        "the daemon's words alone, got {message:?}"
+    );
+
+    unsafe { bc_client_free(client) };
+}
+
 #[test]
 fn status_returns_an_array_envelope() {
     let daemon = DaemonGuard::spawn();

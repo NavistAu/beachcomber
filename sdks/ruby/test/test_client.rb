@@ -130,6 +130,15 @@ class TestClient < Minitest::Test
     assert_nil result
   end
 
+  # The daemon's refusal reaches the caller in its own words — the same text
+  # `comb refresh` prints — directly after this SDK's own prefix, with no
+  # `server error: ` from the envelope between them.
+  def test_refresh_refusal_is_the_daemons_words
+    @server.enqueue('{"ok":false,"error":"nothing to refresh: sp has no sources"}')
+    err = assert_raises(Beachcomber::ServerError) { @client.refresh('sp') }
+    assert err.message.start_with?('beachcomber: nothing to refresh: sp has no sources'), err.message
+  end
+
   # --- status ---
 
   def test_status_sends_op

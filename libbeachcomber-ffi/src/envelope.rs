@@ -89,7 +89,14 @@ impl From<CombError> for FfiError {
             CombError::ServerError(_) => ErrorKind::ServerError,
             CombError::Timeout => ErrorKind::Timeout,
         };
-        FfiError::new(kind, e.to_string())
+        // A server error's message is the daemon's words alone — the same
+        // text `comb` prints — since `kind` already says whose words they
+        // are. Every other variant's Display names its condition.
+        let message = match e {
+            CombError::ServerError(s) => s,
+            other => other.to_string(),
+        };
+        FfiError::new(kind, message)
     }
 }
 

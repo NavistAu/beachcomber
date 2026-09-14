@@ -142,6 +142,27 @@ func TestClient_Refresh(t *testing.T) {
 	}
 }
 
+// A put-created namespace has no Source to re-execute, so the daemon
+// refuses; ServerError.Message is its words alone — the same text `comb
+// refresh` prints — with no `server error: ` prefix from the envelope.
+func TestClient_Refresh_RefusalIsTheDaemonsWords(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Put("sourceless", map[string]interface{}{"v": float64(1)}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	err := c.Refresh("sourceless", "")
+	var se *beachcomber.ServerError
+	if !errors.As(err, &se) {
+		t.Fatalf("expected *ServerError, got %T: %v", err, err)
+	}
+	if se.Kind != "server_error" {
+		t.Errorf("Kind = %q, want server_error", se.Kind)
+	}
+	if !strings.HasPrefix(se.Message, "nothing to refresh: sourceless has no sources") {
+		t.Errorf("Message = %q, want the daemon's words alone", se.Message)
+	}
+}
+
 func TestClient_Status(t *testing.T) {
 	c := requireClient(t)
 	if err := c.Put("statusprobe", map[string]interface{}{"x": float64(1)}, "", ""); err != nil {

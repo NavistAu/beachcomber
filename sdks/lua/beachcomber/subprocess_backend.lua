@@ -26,8 +26,8 @@
 -- `refresh` is one spawn of `comb refresh <key> [--path P | --global]`: the
 -- daemon's `refresh` op itself, which re-executes only the Sources the key
 -- demands and refuses a key with none behind it. `comb refresh` prints the
--- daemon's refusal alone on stderr, so that line is the error message here,
--- as it is over the ffi tier.
+-- daemon's refusal alone on stderr, so that line is the error message here
+-- — the same text a `server_error` envelope carries over the ffi tier.
 --
 -- `get` is one spawn: `comb get -f json <key> <key>:age <key>:stale
 -- [--path P | --global] [--force] [--wait]`. Multi-key `-f json` prints a

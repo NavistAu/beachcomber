@@ -7,6 +7,7 @@ use std::os::raw::c_char;
 use std::panic::AssertUnwindSafe;
 
 use beachcomber::envelope::{ErrorKind, FfiError, bc_string_free, call_ffi};
+use libbeachcomber::CombError;
 use serde_json::json;
 
 /// Reads a `char *` envelope into an owned `String` without freeing it.
@@ -50,6 +51,19 @@ fn every_error_kind_serialises_its_slug() {
         assert_eq!(parsed["error"]["message"], json!("boom"), "kind {slug}");
         unsafe { bc_string_free(ptr) };
     }
+}
+
+#[test]
+fn a_server_error_envelope_carries_the_daemons_words_alone() {
+    let refusal = "nothing to refresh: fx2 has no sources";
+    let err = FfiError::from(CombError::ServerError(refusal.to_string()));
+    assert_eq!(err.kind, ErrorKind::ServerError);
+    assert_eq!(err.message, refusal, "no `server error: ` prefix");
+
+    // Every other variant keeps its Display, which names the condition.
+    let err = FfiError::from(CombError::Timeout);
+    assert_eq!(err.kind, ErrorKind::Timeout);
+    assert_eq!(err.message, "operation timed out");
 }
 
 #[test]
