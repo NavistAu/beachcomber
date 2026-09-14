@@ -96,7 +96,7 @@ fn refresh_of_a_facet_key_is_an_error() {
 }
 
 #[test]
-fn refresh_global_addresses_the_global_entry() {
+fn refresh_global_is_accepted_for_a_global_source() {
     let d = TestDaemon::spawn();
 
     comb(&d, &d.home)
@@ -191,7 +191,7 @@ fn refresh_resolves_a_relative_path_against_the_callers_cwd() {
     let canonical = canonical.to_str().unwrap();
 
     comb(&d, cwd)
-        .args(["refresh", "git.branch", "."])
+        .args(["refresh", "git.lines_added", "."])
         .assert()
         .success();
 
@@ -209,7 +209,7 @@ fn refresh_resolves_a_relative_path_against_the_callers_cwd() {
             .collect()
     };
     let paths = poll_until(
-        "git rows after `refresh git.branch .`",
+        "git rows after `refresh git.lines_added .`",
         "at least one",
         Duration::from_secs(5),
         Duration::from_millis(20),
@@ -236,18 +236,21 @@ fn refresh_takes_the_path_as_a_flag_and_rejects_two_spellings_at_once() {
         .success()
         .stdout(predicates::str::is_empty())
         .stderr(predicates::str::is_empty());
-    comb(&d, &d.home)
-        .args(["refresh", "hostname", home, "--path", home])
-        .assert()
-        .code(2);
-    comb(&d, &d.home)
-        .args(["refresh", "hostname", "--global", "--path", home])
-        .assert()
-        .code(2);
-    comb(&d, &d.home)
-        .args(["refresh", "hostname", "--global", home])
-        .assert()
-        .code(2);
+    // Each rejection is clap's, not the daemon's: a daemon refusal also exits
+    // 2, so the conflict text is what proves the two spellings never both
+    // reach the wire.
+    let rejected: [&[&str]; 3] = [
+        &["refresh", "hostname", home, "--path", home],
+        &["refresh", "hostname", "--global", "--path", home],
+        &["refresh", "hostname", "--global", home],
+    ];
+    for args in rejected {
+        comb(&d, &d.home)
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains("cannot be used with"));
+    }
 }
 
 /// The cwd is read only when it is needed, and when it is needed and gone the

@@ -186,7 +186,7 @@ enum Commands {
         key: String,
         /// Path context for directory-scoped providers (defaults to the current working directory)
         path: Option<String>,
-        /// The path as a flag, as `put --path` takes it
+        /// Path context as a flag — the positional's other spelling; cannot be combined with [PATH] or --global
         #[arg(long = "path", value_name = "PATH", conflicts_with_all = ["path", "global"])]
         path_flag: Option<String>,
         /// Refresh at the global entry ($HOME) instead of a directory

@@ -93,7 +93,7 @@ Read a node raw — both halves, nothing rendered (see `Result`). `key` is `"pro
 
 ### `Client:refresh(key [, path])` → `true | nil, error`
 
-Re-execute the Sources `key` demands — every Source of the namespace for a bare `provider`, the one Source owning the field for `provider.field`. A key that names no Source (a `put`-created namespace, a facet key, an unknown name, a field no Source owns) is an error. `ffi` transport only: `comb` has no `refresh` subcommand, so over `subprocess` this returns `nil, err` with `err.kind == "unsupported"`.
+Re-execute the Sources `key` demands — every Source of the namespace for a bare `provider`, the one Source owning the field for `provider.field`. A key that names no Source (a `put`-created namespace, a facet key, an unknown name, a field no Source owns) is an error. Over `subprocess` this is one `comb refresh <key>`; the daemon's refusal comes back as `err.kind == "server_error"` in the daemon's words.
 
 ### `Client:set_context(path)` → `true | nil, error`
 
