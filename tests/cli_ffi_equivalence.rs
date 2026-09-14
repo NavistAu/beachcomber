@@ -21,7 +21,7 @@ mod common;
 use common::daemon::TestDaemon;
 use common::git::has_git;
 use libbeachcomber_ffi::envelope::bc_string_free;
-use libbeachcomber_ffi::{BcClient, bc_client_free, bc_client_new, bc_eval, bc_resolve};
+use libbeachcomber_ffi::{BcClient, bc_client_free, bc_client_new, bc_eval, bc_hello, bc_resolve};
 use serde_json::{Value, json};
 use std::ffi::{CStr, CString, c_char};
 use std::path::Path;
@@ -75,9 +75,11 @@ const KEYS: &[(&str, Expect, bool)] = &[
     ("python", Expect::Hit(None), false),
     ("hostname.name", Expect::Hit(None), false),
     ("hostname", Expect::Hit(None), false),
-    ("git.branch", Expect::Hit(Some(r#""main""#)), true),
+    // The template wins over the cached branch; `main!` is a value the
+    // repository itself can never hold, so a dropped template half shows.
+    ("git.branch", Expect::Hit(Some(r#""main!""#)), true),
     ("git", Expect::Hit(None), true),
-    ("git.lines_added", Expect::Hit(None), true),
+    ("git.lines_added", Expect::Hit(Some("0")), true),
     ("env.SCANLINE_FOO", Expect::Hit(Some(r#""hi""#)), false),
     ("env.NOPE", Expect::Hit(Some(r#""""#)), false),
     // Compared as a class only: both must be numbers, the numbers differ.
@@ -280,7 +282,12 @@ fn comb_get_json_and_bc_resolve_answer_identically() {
     );
     cli_put(&daemon, &cwd, "scanline", r#"{"lit":1}"#);
     if git {
-        cli_put(&daemon, &cwd, "git:template.branch", r#""{{ \"main\" }}""#);
+        cli_put(
+            &daemon,
+            &cwd,
+            "git:template.branch",
+            r#""{{ \"main\" ~ \"!\" }}""#,
+        );
     }
     cli_put(
         &daemon,
@@ -290,6 +297,15 @@ fn comb_get_json_and_bc_resolve_answer_identically() {
     );
 
     let client = ffi_client(&daemon);
+    // A dead transport must fail here, naming the socket — not 24 keys later
+    // as a nextest timeout with no table.
+    let hello = envelope(unsafe { bc_hello(client) });
+    assert_eq!(
+        hello["ok"],
+        Value::Bool(true),
+        "the FFI client cannot reach the daemon at {}: {hello}",
+        daemon.socket.path.display()
+    );
     let env = env_json();
     let mut report: Vec<String> = Vec::new();
     let mut table: Vec<String> = Vec::new();
