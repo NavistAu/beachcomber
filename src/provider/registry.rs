@@ -9,8 +9,10 @@ pub struct ProviderRegistry {
     sources: HashMap<(String, String), Arc<dyn Source>>,
     /// Provider metadata snapshot, indexed by provider name.
     providers: HashMap<String, ProviderMetadata>,
-    /// (provider_name, field_name) → source_name. Built once at registration.
+    /// (provider_name, field_name) → source_name for static fields. Built once at registration.
     field_to_source: HashMap<(String, String), String>,
+    /// Provider name → sources declaring a dynamic field sentinel.
+    dynamic_sources: HashMap<String, Vec<String>>,
     /// Virtual provider names registered via `comb put`. Orthogonal to the source model.
     virtual_names: DashMap<String, ()>,
 }
@@ -27,6 +29,7 @@ impl ProviderRegistry {
             sources: HashMap::new(),
             providers: HashMap::new(),
             field_to_source: HashMap::new(),
+            dynamic_sources: HashMap::new(),
             virtual_names: DashMap::new(),
         }
     }
@@ -60,11 +63,22 @@ impl ProviderRegistry {
                 ));
             }
         }
-        // Populate field_to_source map.
+        // Populate static field ownership and dynamic source candidates.
         for sm in &meta.sources {
+            let mut has_dynamic_field = false;
             for f in &sm.fields {
-                self.field_to_source
-                    .insert((meta.name.clone(), f.name.clone()), sm.name.clone());
+                if f.name.starts_with('<') {
+                    has_dynamic_field = true;
+                } else {
+                    self.field_to_source
+                        .insert((meta.name.clone(), f.name.clone()), sm.name.clone());
+                }
+            }
+            if has_dynamic_field {
+                self.dynamic_sources
+                    .entry(meta.name.clone())
+                    .or_default()
+                    .push(sm.name.clone());
             }
         }
         // Insert sources.
@@ -90,11 +104,28 @@ impl ProviderRegistry {
             .cloned()
     }
 
-    /// Given a field name on a provider, return the name of the source that owns it.
-    pub fn source_for_field(&self, provider: &str, field: &str) -> Option<&str> {
-        self.field_to_source
+    /// Given a field name on a provider, return all applicable source candidates.
+    /// Exact static ownership takes precedence over dynamic sentinels.
+    pub fn sources_for_field(&self, provider: &str, field: &str) -> Vec<&str> {
+        if let Some(source) = self
+            .field_to_source
             .get(&(provider.to_string(), field.to_string()))
-            .map(|s| s.as_str())
+        {
+            return vec![source.as_str()];
+        }
+
+        self.dynamic_sources
+            .get(provider)
+            .map(|sources| sources.iter().map(String::as_str).collect())
+            .unwrap_or_default()
+    }
+
+    /// Given a field name on a provider, return its sole source when unambiguous.
+    /// Dynamic fields may have multiple candidates; callers that need to handle
+    /// those must use [`Self::sources_for_field`].
+    pub fn source_for_field(&self, provider: &str, field: &str) -> Option<&str> {
+        let sources = self.sources_for_field(provider, field);
+        (sources.len() == 1).then_some(sources[0])
     }
 
     /// Return the slice of SourceMetadata for all sources declared by a provider.
@@ -432,9 +463,43 @@ mod tests {
             sources: vec![ms("refs", vec!["branch"]), ms("diff", vec!["lines_added"])],
         };
         reg.register(Box::new(p)).unwrap();
-        assert_eq!(reg.source_for_field("git", "branch"), Some("refs"));
-        assert_eq!(reg.source_for_field("git", "lines_added"), Some("diff"));
-        assert_eq!(reg.source_for_field("git", "nonexistent"), None);
+        assert_eq!(reg.sources_for_field("git", "branch"), vec!["refs"]);
+        assert_eq!(reg.sources_for_field("git", "lines_added"), vec!["diff"]);
+        assert!(reg.sources_for_field("git", "nonexistent").is_empty());
+    }
+
+    #[test]
+    fn register_resolves_single_dynamic_source() {
+        let mut reg = ProviderRegistry::new();
+        let p = FakeProvider {
+            name: "public_ip".into(),
+            sources: vec![ms("endpoint", vec!["<field>"])],
+        };
+        reg.register(Box::new(p)).unwrap();
+
+        assert_eq!(reg.sources_for_field("public_ip", "body"), vec!["endpoint"]);
+        assert_eq!(reg.source_for_field("public_ip", "body"), Some("endpoint"));
+    }
+
+    #[test]
+    fn register_keeps_all_dynamic_source_candidates() {
+        let mut reg = ProviderRegistry::new();
+        let p = FakeProvider {
+            name: "mise".into(),
+            sources: vec![
+                ms("global", vec!["<tool>"]),
+                ms("project", vec!["<tool>"]),
+                ms("fixed", vec!["rust"]),
+            ],
+        };
+        reg.register(Box::new(p)).unwrap();
+
+        assert_eq!(
+            reg.sources_for_field("mise", "python"),
+            vec!["global", "project"]
+        );
+        assert_eq!(reg.sources_for_field("mise", "rust"), vec!["fixed"]);
+        assert_eq!(reg.source_for_field("mise", "python"), None);
     }
 
     #[test]

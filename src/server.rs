@@ -254,7 +254,7 @@ async fn handle_watch(
     match &plan.target {
         crate::query::KeyParse::Field(provider, field) => {
             let head = field.split('.').next().unwrap_or(field.as_str());
-            if let Some(source_name) = registry.source_for_field(provider, head) {
+            for source_name in registry.sources_for_field(provider, head) {
                 maybe_read_always(
                     registry,
                     cache,
@@ -364,6 +364,9 @@ async fn inline_execute_source(
         SourceScope::Global => None,
         SourceScope::PathScoped => path.map(|s| s.to_string()),
     };
+    if matches!(scope, SourceScope::PathScoped) && path.is_none() {
+        return false;
+    }
     let expected_interval_secs = match source.metadata().invalidation {
         InvalidationStrategy::Poll { interval_secs } => Some(interval_secs),
         InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(interval_secs),
@@ -610,7 +613,8 @@ async fn handle_request(
                 KeyParse::Field(provider, field) => {
                     // For read-always sources: re-execute before reading, even on a hit.
                     let head = field.split('.').next().unwrap_or(field.as_str());
-                    if let Some(source_name) = registry.source_for_field(provider, head) {
+                    let source_names = registry.sources_for_field(provider, head);
+                    for source_name in &source_names {
                         maybe_read_always(
                             registry,
                             cache,
@@ -622,19 +626,16 @@ async fn handle_request(
                     }
                     // Cold-miss execute for non-read-always sources (read-always already ran above).
                     let mut hit = cache.get_field(provider, read_path.as_deref(), field);
-                    if hit.is_none()
-                        && let Some(source_name) = registry.source_for_field(provider, head)
-                    {
-                        let source_name = source_name.to_string();
-                        if inline_execute_source(
-                            registry,
-                            cache,
-                            provider,
-                            &source_name,
-                            read_path.as_deref(),
-                        )
-                        .await
-                        {
+                    if hit.is_none() {
+                        for source_name in source_names {
+                            inline_execute_source(
+                                registry,
+                                cache,
+                                provider,
+                                &source_name,
+                                read_path.as_deref(),
+                            )
+                            .await;
                             hit = cache.get_field(provider, read_path.as_deref(), field);
                         }
                     }

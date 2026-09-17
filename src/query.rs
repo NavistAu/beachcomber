@@ -198,10 +198,13 @@ impl QueryPlan {
                 // The owning source is matched on the top-level field name (nested
                 // sub-paths like "project.rust" are owned by whoever owns "project").
                 let head = f.split('.').next().unwrap_or(f);
-                match registry.source_for_field(p, head) {
-                    Some(src) => SourceDemand::Sources(vec![src.to_string()]),
-                    None => SourceDemand::Sources(Vec::new()),
-                }
+                SourceDemand::Sources(
+                    registry
+                        .sources_for_field(p, head)
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                )
             }
         };
 
@@ -291,6 +294,18 @@ mod tests {
         match plan.demand {
             SourceDemand::Sources(v) => assert_eq!(v, vec!["head".to_string()]),
             other => panic!("expected Sources([head]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_dynamic_field_demands_all_candidate_sources() {
+        let reg = ProviderRegistry::with_defaults();
+        let plan = QueryPlan::build("mise.rust", None, &reg);
+        match plan.demand {
+            SourceDemand::Sources(v) => {
+                assert_eq!(v, vec!["global".to_string(), "project".to_string()])
+            }
+            other => panic!("expected dynamic candidate sources, got {other:?}"),
         }
     }
 

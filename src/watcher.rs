@@ -54,9 +54,13 @@ impl FsWatcher {
     }
 
     pub fn watch(&mut self, path: &Path) -> notify::Result<()> {
+        self.watch_with_mode(path, RecursiveMode::Recursive)
+    }
+
+    pub fn watch_with_mode(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
         debug!("Watching: {:?}", path);
         self.watch_calls.fetch_add(1, Ordering::Relaxed);
-        self.watcher.watch(path, RecursiveMode::Recursive)
+        self.watcher.watch(path, mode)
     }
 
     pub fn unwatch(&mut self, path: &Path) -> notify::Result<()> {

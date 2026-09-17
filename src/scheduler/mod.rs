@@ -1,5 +1,6 @@
 pub mod lifecycle;
 
+use notify::RecursiveMode;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1275,9 +1276,10 @@ async fn register_path_watch(
     }
 
     let path_for_call = path.clone();
+    let mode = watch_mode_for_path(&path);
     let (fs_watcher, result) = tokio::task::spawn_blocking(move || {
         let mut fs_watcher = fs_watcher;
-        let result = fs_watcher.watch(&path_for_call);
+        let result = fs_watcher.watch_with_mode(&path_for_call, mode);
         (fs_watcher, result)
     })
     .await
@@ -1292,6 +1294,24 @@ async fn register_path_watch(
             warn!("Failed to watch {:?}: {}", path, e);
             (fs_watcher, false)
         }
+    }
+}
+
+/// Avoid recursively traversing broad user roots. Rootless container storage and
+/// similar application data commonly contain directories owned by unmapped UIDs;
+/// recursive notify registration descends into them and returns EACCES. A
+/// non-recursive watch still observes direct changes without making the scheduler
+/// walk an entire home directory.
+fn watch_mode_for_path(path: &std::path::Path) -> RecursiveMode {
+    let is_home = std::env::var_os("HOME").is_some_and(|home| std::path::Path::new(&home) == path);
+    if path == std::path::Path::new("/") || is_home {
+        warn!(
+            "Using non-recursive filesystem watch for broad path {:?}",
+            path
+        );
+        RecursiveMode::NonRecursive
+    } else {
+        RecursiveMode::Recursive
     }
 }
 
@@ -1452,6 +1472,18 @@ mod tests {
             &root,
             Path::new("/proj"),
         ));
+    }
+
+    #[test]
+    fn broad_watch_roots_are_nonrecursive() {
+        assert_eq!(
+            watch_mode_for_path(Path::new("/")),
+            RecursiveMode::NonRecursive
+        );
+        assert_eq!(
+            watch_mode_for_path(Path::new("/tmp/project")),
+            RecursiveMode::Recursive
+        );
     }
 }
 
