@@ -252,7 +252,10 @@ impl<'a> ResolvedWatch<'a> {
         // unrelated later change happened to correct it. Re-resolve once
         // more, now that every stream is open, and reuse `reresolve`'s
         // bookkeeping to fold the result into `last`/`deps` without emitting
-        // it; `next`'s pending-initial answer is this final value.
+        // it; `next`'s pending-initial answer is this final value. This
+        // re-read is unforced: it returns what a forced open just
+        // materialised in the daemon's cache, which is what keeps `force`
+        // at open meaningful.
         watch.reresolve()?;
         Ok(watch)
     }
@@ -270,6 +273,10 @@ impl<'a> ResolvedWatch<'a> {
     /// `Timeout` before that pass runs, so a frame already queued when `next`
     /// is called is still seen. This is the contract the FFI documents for
     /// `timeout_ms == 0` (a single ~1ms attempt).
+    ///
+    /// The deadline is checked per pass, not per read, so a finite `timeout`
+    /// can be overrun by up to one pass: N streams × 1 ms plus a re-resolve
+    /// round trip per frame consumed in that pass.
     ///
     /// Ends with [`Eof`](WatchOutcome::Eof), not a hang, once nothing is left
     /// that could ever answer — the daemon closing every stream, or a
