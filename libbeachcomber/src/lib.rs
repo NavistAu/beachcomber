@@ -26,6 +26,7 @@ pub mod filters;
 pub mod render;
 pub mod resolve;
 pub mod virtual_fields;
+pub mod watch;
 
 /// This crate's build identity, derived by `build.rs` from `CARGO_PKG_VERSION`
 /// plus git sha/dirty state. Shares its derivation with the root crate's
@@ -497,6 +498,10 @@ pub struct WatchEvent {
 /// stream; drop it to disconnect.
 pub struct WatchStream {
     reader: BufReader<UnixStream>,
+    /// The bytes of a frame that arrived split across two bounded reads, kept
+    /// so [`WatchStream::read_frame_with_timeout`] resumes mid-line rather
+    /// than losing half an event.
+    pending: String,
 }
 
 impl WatchStream {
@@ -556,6 +561,38 @@ impl WatchStream {
     /// connection close with no partial line pending.
     pub fn read_line_buffered(&mut self, buf: &mut String) -> std::io::Result<usize> {
         self.reader.read_line(buf)
+    }
+
+    /// Read one whole frame, waiting at most `d` for it.
+    ///
+    /// The three outcomes a fan-in polling several streams in turn has to
+    /// tell apart ([`crate::watch::ResolvedWatch`]): `Ok(Some(line))` is a
+    /// frame, `Ok(None)` the daemon closing the connection, and an `Err`
+    /// whose `kind()` is `WouldBlock` or `TimedOut` the wait expiring with
+    /// nothing to read. This is [`Self::read_line_buffered`] over
+    /// [`Self::set_read_timeout`], against a buffer the stream keeps, so a
+    /// frame split across two waits is resumed rather than dropped.
+    pub(crate) fn read_frame_with_timeout(
+        &mut self,
+        d: Duration,
+    ) -> std::io::Result<Option<String>> {
+        // A socket that has just lost its peer can fail the timeout call
+        // itself (macOS `EINVAL` on an abruptly reset unix socket) rather
+        // than surfacing the loss on the read. There is no connection left to
+        // wait on either way, which is what `Ok(None)` says.
+        if self.set_read_timeout(Some(d)).is_err() {
+            return Ok(None);
+        }
+        // `read_line_buffered`'s body, inlined: the buffer it appends to is a
+        // field of the same stream, so it cannot be passed back in.
+        match self.reader.read_line(&mut self.pending) {
+            Ok(0) => Ok(None),
+            Ok(_) if self.pending.ends_with('\n') => Ok(Some(std::mem::take(&mut self.pending))),
+            // `read_line` stops short of a newline only at end of input: a
+            // partial last frame, which is no frame at all.
+            Ok(_) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -945,7 +982,19 @@ impl Client {
         stream.write_all(msg.as_bytes())?;
         Ok(WatchStream {
             reader: BufReader::new(stream),
+            pending: String::new(),
         })
+    }
+
+    /// Subscribe to changes in the *value* of `key` — what [`resolve`] makes
+    /// of it, not one address's raw contents. See [`watch::ResolvedWatch`],
+    /// which this opens.
+    pub fn watch_resolved<'a>(
+        &'a self,
+        key: &str,
+        inputs: &resolve::Inputs<'_>,
+    ) -> Result<watch::ResolvedWatch<'a>, watch::WatchError> {
+        watch::ResolvedWatch::open(self, key, inputs)
     }
 
     /// Ask the daemon for its protocol and build versions.
