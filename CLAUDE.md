@@ -52,8 +52,12 @@ CI skips with: `cargo nextest run -E 'not test(uptime_provider_executes)'`.
 
 **Watcher tests** use `FsWatcher::new_polling` (Phase 13 stabilization), so they run reliably under sandboxed hosts that can't use FSEvents / inotify. Production code still uses `FsWatcher::new` which picks the kernel-native backend.
 
-Full test suites, formatting, builds, etc, should _always_ execute fully in under 30s. If they take longer the command
-should fail and it should trigger investigation.
+**Verification budget (hard rules, not targets):**
+
+- The full test suite runs in under 30s or it fails. `global-timeout = "30s"` in `.config/nextest.toml` enforces this; raising it, or any other limit, requires explicit owner sign-off. Invoke suite runs with a 30s command timeout — never a generous one "for the compile".
+- Verification happens at milestones — a task's commit gate, a plan's close-out — not after every edit. One milestone's verification bundle (fmt + clippy + tests) gets 60s of wall clock total.
+- Between milestones, run only the test binaries the change touches (`cargo nextest run -E 'binary(=foo)'`).
+- A verification that overruns its budget is a failure to investigate, not a reason to raise the budget or rerun with a longer timeout.
 
 ## Architecture
 
