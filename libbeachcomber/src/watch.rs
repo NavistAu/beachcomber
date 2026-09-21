@@ -35,6 +35,11 @@ use std::time::{Duration, Instant};
 /// past its deadline a [`ResolvedWatch::next`] can run.
 const POLL_TICK: Duration = Duration::from_millis(50);
 
+/// The read attempted when the deadline is already spent but `next` still
+/// owes the current pass a read — a `Some(Duration::ZERO)` poll, or a
+/// deadline that elapsed between two streams of the same pass.
+const MIN_TICK: Duration = Duration::from_millis(1);
+
 /// What [`ResolvedWatch::next`] found.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WatchOutcome {
@@ -88,6 +93,12 @@ struct OwnedInputs {
     cwd: String,
     env: HashMap<String, String>,
     slot: Slot,
+    /// `force`/`wait` belong to the opening resolution — the one call
+    /// [`OwnedInputs::as_inputs`] backs — and a subscription must not repeat
+    /// them on its own re-resolves ([`OwnedInputs::as_reresolve_inputs`]).
+    /// For a provider that changes on every execution (uptime, timestamps),
+    /// replaying `force` into an internal re-resolve is a self-sustaining
+    /// storm: frame → re-resolve(force) → execute → new value → frame.
     force: bool,
     wait: bool,
     allow_exec: bool,
@@ -112,6 +123,19 @@ impl OwnedInputs {
             slot: self.slot.clone(),
             force: self.force,
             wait: self.wait,
+            allow_exec: self.allow_exec,
+        }
+    }
+
+    /// [`Self::as_inputs`], with `force`/`wait` cleared — what every internal
+    /// re-resolve must use instead (see the field doc above).
+    fn as_reresolve_inputs(&self) -> Inputs<'_> {
+        Inputs {
+            cwd: &self.cwd,
+            env: &self.env,
+            slot: self.slot.clone(),
+            force: false,
+            wait: false,
             allow_exec: self.allow_exec,
         }
     }
@@ -197,13 +221,19 @@ impl<'a> ResolvedWatch<'a> {
                 streams.push((dep_key.clone(), dep_path.clone(), stream));
             }
         }
-        // The template tree is watched whether or not the key has one today:
-        // a `put` can give it one while this watch is open.
+        // The daemon's own chain subscription on the addressed key already
+        // wakes this watch when a `put` gives the key a template it didn't
+        // have (src/server.rs's `chain_watch`, which subscribes the template
+        // chain alongside the data chain for the key being watched). This
+        // stream only matters when the addressed key's own watch was
+        // refused at open — `open_stream` above dropped it, e.g. an
+        // unregistered provider — because then it is the only subscription
+        // left that can fire once a later `put` makes the key answerable.
         let provider = namespace(key);
         let template_stream =
             open_stream(client, &format!("{provider}:template"), path.as_deref())?;
 
-        Ok(Self {
+        let mut watch = Self {
             client,
             inputs,
             key: key.to_string(),
@@ -214,7 +244,17 @@ impl<'a> ResolvedWatch<'a> {
             deps,
             cancelled: Arc::new(AtomicBool::new(false)),
             pending_initial: true,
-        })
+        };
+        // A change landing between the resolve above and the streams just
+        // opened is consumed as one of those streams' initial frame rather
+        // than ever being emitted — that frame is what seeds subscriptions,
+        // not a change `next` reports — so `last` would stay stale until an
+        // unrelated later change happened to correct it. Re-resolve once
+        // more, now that every stream is open, and reuse `reresolve`'s
+        // bookkeeping to fold the result into `last`/`deps` without emitting
+        // it; `next`'s pending-initial answer is this final value.
+        watch.reresolve()?;
+        Ok(watch)
     }
 
     /// Block up to `timeout` (`None` blocks until something happens) for the
@@ -224,23 +264,51 @@ impl<'a> ResolvedWatch<'a> {
     /// Only a change is emitted: a frame whose re-resolution comes out the
     /// same value is not one, so a template edited to another spelling of the
     /// same answer, or a poll that found nothing new, keeps the wait going.
+    ///
+    /// `Some(Duration::ZERO)` is a poll: one non-blocking-ish pass over every
+    /// open stream, then `Timeout` if none of them had anything — never a
+    /// `Timeout` before that pass runs, so a frame already queued when `next`
+    /// is called is still seen. This is the contract the FFI documents for
+    /// `timeout_ms == 0` (a single ~1ms attempt).
+    ///
+    /// Ends with [`Eof`](WatchOutcome::Eof), not a hang, once nothing is left
+    /// that could ever answer — the daemon closing every stream, or a
+    /// re-resolve dropping the last of them.
     pub fn next(&mut self, timeout: Option<Duration>) -> Result<WatchOutcome, WatchError> {
         if self.pending_initial {
             self.pending_initial = false;
             return Ok(WatchOutcome::Value(self.last.clone()));
         }
-        let deadline = timeout.map(|t| Instant::now() + t);
+        // `checked_add`: a timeout large enough to overflow `Instant`
+        // arithmetic is treated as no deadline at all (effectively forever)
+        // rather than panicking.
+        let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+        // At least one full pass over the streams happens before the
+        // deadline can end the wait: otherwise `Some(Duration::ZERO)` would
+        // expire before a single read, and a watch with zero open streams
+        // would busy-spin here instead of ending.
+        let mut first_pass = true;
         loop {
             if self.cancelled.load(Ordering::SeqCst) {
                 return Ok(WatchOutcome::Cancelled);
             }
+            if self.stream_count() == 0 {
+                // Nothing left that can ever fire.
+                return Ok(WatchOutcome::Eof);
+            }
+            if !first_pass && tick(deadline).is_none() {
+                return Ok(WatchOutcome::Timeout);
+            }
+            first_pass = false;
+
             // The count is re-read each time round: a re-resolve can open and
             // drop subscriptions while this loop is walking them.
             let mut index = 0;
             while index < self.stream_count() {
-                let Some(tick) = tick(deadline) else {
-                    return Ok(WatchOutcome::Timeout);
-                };
+                // A deadline already spent — `Some(ZERO)`'s first pass, or
+                // one that elapsed between two streams of the same pass —
+                // still gets a minimal read rather than being skipped.
+                let tick = tick(deadline).unwrap_or(MIN_TICK);
                 let frame = match self.stream(index).read_frame_with_timeout(tick) {
                     Ok(Some(frame)) => frame,
                     Ok(None) => return Ok(WatchOutcome::Eof),
@@ -303,7 +371,7 @@ impl<'a> ResolvedWatch<'a> {
     fn reresolve(&mut self) -> Result<bool, WatchError> {
         let mut fetch = ClientFetch::new(self.client);
         let resolved = {
-            let inputs = self.inputs.as_inputs();
+            let inputs = self.inputs.as_reresolve_inputs();
             resolve_with_deps(&self.key, &inputs, &mut fetch)
         };
         let (value, deps) = resolved.map_err(|e| watch_error(e, &mut fetch))?;
@@ -408,4 +476,65 @@ fn is_timeout_like(e: &std::io::Error) -> bool {
         e.kind(),
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn owned(force: bool, wait: bool) -> OwnedInputs {
+        OwnedInputs::new(&Inputs {
+            cwd: "/",
+            env: &HashMap::new(),
+            slot: Slot::Global,
+            force,
+            wait,
+            allow_exec: false,
+        })
+    }
+
+    /// Pins item 3: `force`/`wait` are opening instructions.
+    /// [`OwnedInputs::as_inputs`] (the resolve `open` itself performs) keeps
+    /// them, but [`OwnedInputs::as_reresolve_inputs`] (every internal
+    /// re-resolve) must clear them, or a forced watch on a
+    /// per-execution-changing provider would re-execute it, and so re-fire
+    /// itself, on every frame.
+    #[test]
+    fn reresolve_inputs_clear_force_and_wait_but_open_inputs_keep_them() {
+        let owned = owned(true, true);
+
+        let opening = owned.as_inputs();
+        assert!(opening.force, "the opening resolve keeps force");
+        assert!(opening.wait, "the opening resolve keeps wait");
+
+        let reresolve = owned.as_reresolve_inputs();
+        assert!(!reresolve.force, "a re-resolve must not replay force");
+        assert!(!reresolve.wait, "a re-resolve must not replay wait");
+    }
+
+    /// Pins item 1: a watch with nothing left that could ever fire — no dep
+    /// streams and no template stream — ends with `Eof` rather than
+    /// busy-spinning the deadline check that used to live only inside the
+    /// per-stream loop (which never ran at zero streams). No daemon needed:
+    /// the fix returns before any stream is ever touched.
+    #[test]
+    fn next_ends_when_no_streams_remain() {
+        let client = Client::new();
+        let mut w = ResolvedWatch {
+            client: &client,
+            inputs: owned(false, false),
+            key: "p.field".to_string(),
+            kind: Kind::Resolved,
+            streams: Vec::new(),
+            template_stream: None,
+            last: None,
+            deps: Vec::new(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            pending_initial: false,
+        };
+        match w.next(Some(Duration::from_millis(50))) {
+            Ok(WatchOutcome::Eof) => {}
+            other => panic!("expected Eof with nothing left to poll, got {other:?}"),
+        }
+    }
 }

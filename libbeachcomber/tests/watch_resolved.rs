@@ -169,24 +169,18 @@ fn a_provider_key_emits_the_resolved_value_and_follows_its_template() {
             None,
         )
         .expect("put another spelling");
-    assert!(
-        matches!(
-            w.next(Some(Duration::from_millis(500))),
-            Ok(WatchOutcome::Timeout)
-        ),
-        "only a changed value is emitted, not every frame"
-    );
+    match w.next(Some(Duration::from_millis(500))) {
+        Ok(WatchOutcome::Timeout) => {}
+        other => panic!("only a changed value is emitted, not every frame; got {other:?}"),
+    }
 
     writer
         .put("unrelated", json!({"k": 1}), None, None)
         .expect("put unrelated");
-    assert!(
-        matches!(
-            w.next(Some(Duration::from_millis(500))),
-            Ok(WatchOutcome::Timeout)
-        ),
-        "a key this resolution never read must not wake the watch"
-    );
+    match w.next(Some(Duration::from_millis(500))) {
+        Ok(WatchOutcome::Timeout) => {}
+        other => panic!("a key this resolution never read must not wake the watch; got {other:?}"),
+    }
 }
 
 /// The subscription set is the latest resolution's: a ref the template names
@@ -263,6 +257,40 @@ fn a_miss_is_an_empty_value() {
     wait_for(&mut w, json!(7));
 }
 
+/// `Some(Duration::ZERO)` still sees a frame that is already queued: it
+/// makes one read pass before answering rather than checking the clock
+/// first. No fixed sleep — a `put`'s frame lands on the daemon's own
+/// schedule, so this polls with a zero timeout in a bounded loop until it is
+/// seen; without the fix that poll can never see it and the loop times out.
+#[test]
+fn zero_timeout_polls_a_frame_already_queued() {
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
+    let writer = client_for(&guard.path);
+    let env = shell_env();
+
+    writer
+        .put("my", json!({"a": 1}), None, None)
+        .expect("put namespace");
+
+    let mut w = ResolvedWatch::open(&client, "my.a", &inputs(&env)).expect("open");
+    assert_eq!(value(w.next(Some(SOON))), Some(json!(1)));
+
+    writer.put("my.a", json!(2), None, None).expect("put my.a");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match w.next(Some(Duration::ZERO)) {
+            Ok(WatchOutcome::Value(Some(v))) if v == json!(2) => return,
+            Ok(WatchOutcome::Timeout) => assert!(
+                Instant::now() < deadline,
+                "a zero-timeout poll never saw the queued frame"
+            ),
+            other => panic!("expected Timeout or Value(2), got {other:?}"),
+        }
+    }
+}
+
 /// The cancel handle ends a `next` that is already blocking, from another
 /// thread.
 #[test]
@@ -281,13 +309,10 @@ fn the_cancel_handle_ends_a_blocking_next() {
 
     let cancel = w.cancel_handle();
     let setter = std::thread::spawn(move || cancel.store(true, Ordering::SeqCst));
-    assert!(
-        matches!(
-            w.next(Some(Duration::from_secs(5))),
-            Ok(WatchOutcome::Cancelled)
-        ),
-        "a set cancel handle ends the wait"
-    );
+    match w.next(Some(Duration::from_secs(5))) {
+        Ok(WatchOutcome::Cancelled) => {}
+        other => panic!("a set cancel handle ends the wait; got {other:?}"),
+    }
     setter.join().expect("join");
 }
 
@@ -307,10 +332,10 @@ fn the_daemon_closing_ends_the_watch() {
     assert_eq!(value(w.next(Some(SOON))), Some(json!(1)));
 
     drop(guard);
-    assert!(
-        matches!(w.next(Some(SOON)), Ok(WatchOutcome::Eof)),
-        "the daemon closing is an EOF, not a timeout"
-    );
+    match w.next(Some(SOON)) {
+        Ok(WatchOutcome::Eof) => {}
+        other => panic!("the daemon closing is an EOF, not a timeout; got {other:?}"),
+    }
 }
 
 /// A template that does not compile is someone's to go and fix: the watch

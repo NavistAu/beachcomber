@@ -500,8 +500,11 @@ pub struct WatchStream {
     reader: BufReader<UnixStream>,
     /// The bytes of a frame that arrived split across two bounded reads, kept
     /// so [`WatchStream::read_frame_with_timeout`] resumes mid-line rather
-    /// than losing half an event.
-    pending: String,
+    /// than losing half an event. Bytes, not a `String`: a frame can split
+    /// mid-UTF-8-codepoint at a tick boundary, and only a complete line is
+    /// ever decoded, so a `String` buffer would force decoding (and
+    /// discarding) partial, possibly-invalid bytes on every call.
+    pending: Vec<u8>,
 }
 
 impl WatchStream {
@@ -569,9 +572,10 @@ impl WatchStream {
     /// tell apart ([`crate::watch::ResolvedWatch`]): `Ok(Some(line))` is a
     /// frame, `Ok(None)` the daemon closing the connection, and an `Err`
     /// whose `kind()` is `WouldBlock` or `TimedOut` the wait expiring with
-    /// nothing to read. This is [`Self::read_line_buffered`] over
-    /// [`Self::set_read_timeout`], against a buffer the stream keeps, so a
-    /// frame split across two waits is resumed rather than dropped.
+    /// nothing to read. Buffers bytes in `pending` rather than a `String`, so
+    /// a frame split across two waits — even mid-UTF-8-codepoint — resumes
+    /// rather than being dropped; a complete line that turns out not to be
+    /// valid UTF-8 is an `Err` of kind `InvalidData`, not a silent drop.
     pub(crate) fn read_frame_with_timeout(
         &mut self,
         d: Duration,
@@ -583,12 +587,15 @@ impl WatchStream {
         if self.set_read_timeout(Some(d)).is_err() {
             return Ok(None);
         }
-        // `read_line_buffered`'s body, inlined: the buffer it appends to is a
-        // field of the same stream, so it cannot be passed back in.
-        match self.reader.read_line(&mut self.pending) {
+        match self.reader.read_until(b'\n', &mut self.pending) {
             Ok(0) => Ok(None),
-            Ok(_) if self.pending.ends_with('\n') => Ok(Some(std::mem::take(&mut self.pending))),
-            // `read_line` stops short of a newline only at end of input: a
+            Ok(_) if self.pending.ends_with(b"\n") => {
+                let line = std::mem::take(&mut self.pending);
+                String::from_utf8(line)
+                    .map(Some)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            }
+            // `read_until` stops short of a newline only at end of input: a
             // partial last frame, which is no frame at all.
             Ok(_) => Ok(None),
             Err(e) => Err(e),
@@ -982,7 +989,7 @@ impl Client {
         stream.write_all(msg.as_bytes())?;
         Ok(WatchStream {
             reader: BufReader::new(stream),
-            pending: String::new(),
+            pending: Vec::new(),
         })
     }
 
