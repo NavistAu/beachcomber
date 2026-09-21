@@ -4,16 +4,13 @@
 [profile.default]
 # Hard cap on total suite wall-clock. If the run exceeds this, nextest sends
 # SIGTERM to the test process group, waits 10s for shutdown, then SIGKILLs.
-# The whole run fails spectacularly — which is what we want if something hangs.
+# The whole run fails spectacularly — which is what we want.
 #
-# 30s → 90s (2026-08-29): at 1081 tests the suite already overran 30s on
-# `develop`, so CLAUDE.md's own documented `cargo nextest run` was a coin flip
-# between a green run and a suite-wide SIGKILL that looks nothing like a test
-# failure. This is a hang detector, not a performance budget — the per-test
-# slow-timeout below is what polices individual tests, and the "everything
-# under 30s" guidance in CLAUDE.md is a target for a single suite's runtime,
-# not a wall the runner should hit on a busy laptop.
-global-timeout = "90s"
+# 30s is the ENFORCED performance budget, per CLAUDE.md: a suite that cannot
+# finish in 30s is a failure that must be investigated, not accommodated.
+# Raising this value is not a fix and needs explicit owner sign-off (the
+# 2026-08-29 bump to 90s was unauthorised and was reverted 2026-09-22).
+global-timeout = "30s"
 
 # Per-test slow detection and termination. Any single test exceeding the period
 # is reported as SLOW; after terminate-after periods it's hard-killed.
