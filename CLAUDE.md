@@ -54,9 +54,11 @@ CI skips with: `cargo nextest run -E 'not test(uptime_provider_executes)'`.
 
 **Verification budget (hard rules, not targets):**
 
+This is a small daemon+CLI project. Verification and formatting should take a few seconds; 30s is the generous hard ceiling, not the expectation.
+
 - The full test suite runs in under 30s or it fails. `global-timeout = "30s"` in `.config/nextest.toml` enforces this; raising it, or any other limit, requires explicit owner sign-off. Invoke suite runs with a 30s command timeout — never a generous one "for the compile".
-- Verification happens at milestones — a task's commit gate, a plan's close-out — not after every edit. One milestone's verification bundle (fmt + clippy + tests) gets 60s of wall clock total.
-- Between milestones, run only the test binaries the change touches (`cargo nextest run -E 'binary(=foo)'`).
+- Verification happens at milestones — a task's commit gate, a plan's close-out — not after every edit. Iterate with `cargo check`; do not run integration tests a change cannot affect.
+- Between milestones, run only what the change touches: unit tests via `cargo nextest run --lib`, or a module of the integration suite via `-E 'test(<module>::)'`.
 - A verification that overruns its budget is a failure to investigate, not a reason to raise the budget or rerun with a longer timeout.
 
 ## Architecture
@@ -108,7 +110,7 @@ All Rust dependencies are vendored in `vendor/`. The project builds offline.
 See `docs/provider-development.md`. Short version:
 
 1. `src/provider/yourprovider.rs` — implement `Provider` trait
-2. `tests/provider_yourprovider.rs` — integration tests
+2. `tests/suite/provider_yourprovider.rs` — integration tests, registered as a `mod` in `tests/suite.rs`
 3. Register in `src/provider/mod.rs` and `src/provider/registry.rs`
 4. Prefer reading files over spawning processes (see performance tiers in `docs/performance.md`)
 
@@ -118,7 +120,7 @@ See `docs/releasing.md` for the full release checklist. Short version: on `devel
 
 ## Key Conventions
 
-- One test file per functional area in `tests/`
+- Unit tests live in `src/` as `#[cfg(test)]` modules next to the code they test. Integration tests (anything needing `TestDaemon`, a socket, or the built `comb` binary via `CARGO_BIN_EXE`) are modules of the single `tests/suite.rs` binary — one module per functional area under `tests/suite/`. Never add a new top-level file in `tests/`: each one is a separate executable that relinks the whole crate.
 - Benchmarks in `benches/` use criterion
 - `cargo clippy -- -D warnings` must pass with zero warnings
 - Provider fields are `serde_json::Value` — providers return `HashMap<String, Value>`
