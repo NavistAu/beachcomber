@@ -23,7 +23,7 @@ pub enum OutputFormat {
 
 impl OutputFormat {
     /// The `render_data` format name for this output format.
-    pub fn server_format(&self) -> &str {
+    pub fn render_format(&self) -> &str {
         match self {
             OutputFormat::Text => "text",
             OutputFormat::Sh => "sh",

@@ -54,7 +54,7 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: OutputF
                             "{}",
                             libbeachcomber::render::render_data(
                                 response.data.as_ref(),
-                                format.server_format()
+                                format.render_format()
                             )
                         );
                     }

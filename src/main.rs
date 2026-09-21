@@ -198,9 +198,14 @@ enum Commands {
     Watch {
         /// Provider key (e.g., "git.branch")
         key: String,
-        /// Path context for directory-scoped providers
-        #[arg(long)]
+        /// Path context for directory-scoped providers (defaults to the current working directory)
         path: Option<String>,
+        /// Path context as a flag — the positional's other spelling; cannot be combined with [PATH] or --global
+        #[arg(long = "path", value_name = "PATH", conflicts_with_all = ["path", "global"])]
+        path_flag: Option<String>,
+        /// Watch the global entry ($HOME) instead of a directory
+        #[arg(long, conflicts_with = "path")]
+        global: bool,
         /// Output format (text, json, sh)
         #[arg(short, long, default_value = "text")]
         format: String,
@@ -440,11 +445,23 @@ fn main() -> ExitCode {
             };
             run_refresh(&config, &key, effective_path.as_deref())
         }
-        Commands::Watch { key, path, format } => {
-            // Known gap: `watch` has neither `get`/`put`'s cwd default nor
-            // `--global`; a later plan gives it the shared resolver.
+        Commands::Watch {
+            key,
+            path,
+            path_flag,
+            global,
+            format,
+        } => {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
-            run_watch(&config, &key, path.as_deref(), output_format)
+            // The two spellings of the path conflict, so at most one is set.
+            let effective_path = match effective_cli_path(global, path_flag.or(path)) {
+                Ok(p) => p,
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    return ExitCode::from(2);
+                }
+            };
+            run_watch(&config, &key, effective_path.as_deref(), output_format)
         }
         Commands::Eval { template, path } => {
             // `eval` is a query like `get`, so it addresses the same path: the
