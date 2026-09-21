@@ -1,0 +1,260 @@
+use crate::protocol::{Request, Response};
+
+#[test]
+fn parse_get_request_with_path() {
+    let json = r#"{"op": "get", "key": "git.branch", "path": "/home/user/project"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Get { key, path, .. } => {
+            assert_eq!(key, "git.branch");
+            assert_eq!(path.as_deref(), Some("/home/user/project"));
+        }
+        _ => panic!("Expected Get request"),
+    }
+}
+
+#[test]
+fn parse_get_request_global() {
+    let json = r#"{"op": "get", "key": "battery"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Get { key, path, .. } => {
+            assert_eq!(key, "battery");
+            assert!(path.is_none(), "Global request should have no path");
+        }
+        _ => panic!("Expected Get request"),
+    }
+}
+
+/// Task 1.8 retired the wire-level `format` field from `Get`/`Watch`. A
+/// stale client that still sends one is not rejected — unrecognised fields
+/// on these requests have never been an error — the field is simply
+/// ignored and the request behaves exactly like one that omitted it.
+#[test]
+fn parse_get_request_with_stale_format_field_is_ignored() {
+    let json = r#"{"op": "get", "key": "git.branch", "path": "/project", "format": "text"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Get { key, path, .. } => {
+            assert_eq!(key, "git.branch");
+            assert_eq!(path.as_deref(), Some("/project"));
+        }
+        _ => panic!("Expected Get request"),
+    }
+}
+
+#[test]
+fn parse_refresh_request() {
+    let json = r#"{"op": "refresh", "key": "git", "path": "/project"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Refresh { key, path } => {
+            assert_eq!(key, "git");
+            assert_eq!(path.as_deref(), Some("/project"));
+        }
+        _ => panic!("Expected Refresh request"),
+    }
+}
+
+#[test]
+fn response_ok_serializes() {
+    let response = Response::ok(serde_json::json!({"branch": "main"}), 50, false);
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["data"]["branch"], "main");
+    assert_eq!(json["age_ms"], 50);
+    assert_eq!(json["stale"], false);
+}
+
+#[test]
+fn response_error_serializes() {
+    let response = Response::error("unknown provider");
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"], "unknown provider");
+}
+
+#[test]
+fn response_miss_serializes() {
+    let response = Response::miss();
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["ok"], true);
+    assert!(json["data"].is_null(), "Cache miss should have null data");
+}
+
+#[test]
+fn key_splits_provider_and_field() {
+    let (provider, field) = crate::protocol::split_key("git.branch");
+    assert_eq!(provider, "git");
+    assert_eq!(field, Some("branch"));
+}
+
+#[test]
+fn key_without_field() {
+    let (provider, field) = crate::protocol::split_key("battery");
+    assert_eq!(provider, "battery");
+    assert_eq!(field, None);
+}
+
+#[test]
+fn key_with_dotted_field() {
+    let (provider, field) = crate::protocol::split_key("mise.project");
+    assert_eq!(provider, "mise");
+    assert_eq!(field, Some("project"));
+}
+
+#[test]
+fn parse_put_request() {
+    let json = r#"{"op":"put","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Put {
+            key,
+            data,
+            ttl,
+            path,
+            replace,
+        } => {
+            assert_eq!(key, "myapp");
+            let data = data.unwrap();
+            assert_eq!(data["status"], "healthy");
+            assert_eq!(data["version"], "1.2.3");
+            assert!(ttl.is_none());
+            assert!(path.is_none());
+            assert!(!replace, "replace defaults to false — a put deep-merges");
+        }
+        _ => panic!("Expected Put request"),
+    }
+}
+
+#[test]
+fn parse_put_request_with_replace() {
+    let json = r#"{"op":"put","key":"myapp","data":{"a":1},"replace":true}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Put { key, replace, .. } => {
+            assert_eq!(key, "myapp");
+            assert!(replace);
+        }
+        _ => panic!("Expected Put request"),
+    }
+}
+
+#[test]
+fn parse_put_request_with_ttl_and_path() {
+    let json =
+        r#"{"op":"put","key":"myapp","data":{"count":42},"ttl":"30s","path":"/home/user/project"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Put {
+            key,
+            data,
+            ttl,
+            path,
+            ..
+        } => {
+            assert_eq!(key, "myapp");
+            let data = data.unwrap();
+            assert_eq!(data["count"], 42);
+            assert_eq!(ttl.as_deref(), Some("30s"));
+            assert_eq!(path.as_deref(), Some("/home/user/project"));
+        }
+        _ => panic!("Expected Put request"),
+    }
+}
+
+#[test]
+fn parse_put_null_request() {
+    let json = r#"{"op":"put","key":"myapp"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Put { key, data, .. } => {
+            assert_eq!(key, "myapp");
+            assert!(data.is_none(), "data should be None for null put");
+        }
+        _ => panic!("Expected Put request"),
+    }
+}
+
+#[test]
+fn parse_watch_request() {
+    let json = r#"{"op":"watch","key":"git.branch","path":"/home/user/project"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Watch { key, path } => {
+            assert_eq!(key, "git.branch");
+            assert_eq!(path.as_deref(), Some("/home/user/project"));
+        }
+        _ => panic!("Expected Watch request"),
+    }
+}
+
+/// Task 1.8 retired the wire-level `format` field from `Get`/`Watch`. A
+/// stale client that still sends one is not rejected — the field is simply
+/// ignored and the request behaves exactly like one that omitted it.
+#[test]
+fn parse_watch_request_with_stale_format_field_is_ignored() {
+    let json = r#"{"op":"watch","key":"git.branch","format":"text"}"#;
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Watch { key, .. } => {
+            assert_eq!(key, "git.branch");
+        }
+        _ => panic!("Expected Watch request"),
+    }
+}
+
+#[test]
+fn refresh_request_deserializes_from_refresh_op() {
+    let payload = serde_json::json!({"op": "refresh", "key": "git", "path": null});
+    let req: Request = serde_json::from_value(payload).unwrap();
+    match req {
+        Request::Refresh { key, path } => {
+            assert_eq!(key, "git");
+            assert_eq!(path, None);
+        }
+        _ => panic!("expected Refresh variant"),
+    }
+}
+
+#[test]
+fn put_request_deserializes_from_put_op() {
+    let payload = serde_json::json!({"op": "put", "key": "k", "data": {"a": 1}});
+    let req: crate::protocol::Request = serde_json::from_value(payload).unwrap();
+    assert!(matches!(req, crate::protocol::Request::Put { .. }));
+}
+
+#[test]
+fn introspect_request_deserializes_daemon_subject() {
+    let payload = serde_json::json!({"op": "introspect", "subject": "daemon"});
+    let req: crate::protocol::Request = serde_json::from_value(payload).unwrap();
+    match req {
+        crate::protocol::Request::Introspect { subject, .. } => {
+            assert_eq!(subject, crate::protocol::IntrospectSubject::Daemon);
+        }
+        _ => panic!("expected Introspect variant"),
+    }
+}
+
+#[test]
+fn introspect_request_deserializes_all_subjects() {
+    use crate::protocol::{IntrospectSubject, Request};
+    for (wire, expected) in &[
+        ("daemon", IntrospectSubject::Daemon),
+        ("providers", IntrospectSubject::Providers),
+        ("config", IntrospectSubject::Config),
+        ("cache", IntrospectSubject::Cache),
+        ("lifecycle", IntrospectSubject::Lifecycle),
+        ("watches", IntrospectSubject::Watches),
+        ("timers", IntrospectSubject::Timers),
+        ("demand", IntrospectSubject::Demand),
+        ("procs", IntrospectSubject::Procs),
+    ] {
+        let payload = serde_json::json!({"op": "introspect", "subject": wire});
+        let req: Request = serde_json::from_value(payload).unwrap();
+        match req {
+            Request::Introspect { subject, .. } => assert_eq!(subject, *expected),
+            _ => panic!("expected Introspect variant for subject {wire}"),
+        }
+    }
+}

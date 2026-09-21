@@ -8,6 +8,8 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(test)]
+mod network_tests;
 
 pub struct NetworkProvider;
 

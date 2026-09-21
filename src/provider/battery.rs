@@ -403,3 +403,39 @@ pub fn battery_state_source_with_executor(executor: Arc<dyn ProcessExecutor>) ->
 pub fn battery_upower_source_with_executor(executor: Arc<dyn ProcessExecutor>) -> Box<dyn Source> {
     Box::new(BatteryUpower::with_executor(executor))
 }
+
+// `parse_pmset_output` is the macOS pmset parser. These tests exercise it
+// directly, so the whole module is macOS-only; on Linux it compiles to
+// nothing (Linux battery parsing is covered by the seam tests).
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::parse_pmset_output;
+    use crate::provider::Value;
+
+    #[test]
+    fn pmset_charging_with_estimate() {
+        let sample =
+            " -InternalBattery-0 (id=1234567)\t85%; charging; 1:23 remaining present: true\n";
+        let r = parse_pmset_output(sample).expect("parses");
+        assert_eq!(r.get("percent").unwrap(), &Value::Int(85));
+        assert_eq!(r.get("charging").unwrap(), &Value::Bool(true));
+        assert_eq!(r.get("time_remaining_secs").unwrap(), &Value::Int(4980)); // 1*3600 + 23*60
+        assert_eq!(r.get("status").unwrap().as_text(), "charging");
+    }
+
+    #[test]
+    fn pmset_discharging_no_estimate() {
+        let sample = " -InternalBattery-0\t72%; discharging; (no estimate) present: true\n";
+        let r = parse_pmset_output(sample).expect("parses");
+        assert_eq!(r.get("percent").unwrap(), &Value::Int(72));
+        assert_eq!(r.get("time_remaining_secs").unwrap(), &Value::Int(0));
+        assert_eq!(r.get("status").unwrap().as_text(), "calculating");
+    }
+
+    #[test]
+    fn pmset_charged_state() {
+        let sample = " -InternalBattery-0\t100%; charged; 0:00 remaining present: true\n";
+        let r = parse_pmset_output(sample).expect("parses");
+        assert_eq!(r.get("status").unwrap().as_text(), "charged");
+    }
+}

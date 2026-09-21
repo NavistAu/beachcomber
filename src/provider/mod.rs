@@ -24,6 +24,41 @@ pub mod uptime_linux;
 pub use uptime_linux as uptime;
 pub mod user;
 
+#[cfg(test)]
+mod aws_tests;
+#[cfg(test)]
+mod battery_seam_tests;
+#[cfg(test)]
+mod gcloud_tests;
+#[cfg(test)]
+mod git_seam_tests;
+#[cfg(test)]
+mod http_seam_tests;
+#[cfg(test)]
+mod http_tests;
+#[cfg(test)]
+mod library_ffi_seam_tests;
+#[cfg(test)]
+mod library_tests;
+#[cfg(test)]
+mod mise_tests;
+#[cfg(test)]
+mod provider_trait_tests;
+#[cfg(test)]
+mod provider_types_tests;
+#[cfg(test)]
+mod providers_builtin_tests;
+#[cfg(test)]
+mod providers_cloud_tests;
+#[cfg(test)]
+mod providers_devtools_tests;
+#[cfg(test)]
+mod providers_system_tests;
+#[cfg(test)]
+mod registry_tests;
+#[cfg(test)]
+mod script_tests;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -968,5 +1003,12 @@ mod tests {
         overlay.insert("some".to_string(), Value::Int(9));
         deep_merge(&mut base, overlay);
         assert_eq!(base.get("some"), Some(&Value::Int(9)));
+    }
+
+    #[test]
+    fn non_file_sources_watch_no_explicit_files() {
+        for s in super::git::GitProvider.sources() {
+            assert!(s.watched_files(Some("/tmp")).is_empty());
+        }
     }
 }
