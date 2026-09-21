@@ -1,0 +1,295 @@
+//! `refresh` re-executes the Sources a key demands — each at its own scope —
+//! and refuses a key no Source answers (spec §3.7).
+//!
+//! Most servers here are built without a scheduler, so a refresh runs inline on
+//! the connection task and the response is written only once the Sources have
+//! run. That is what lets those cases advance the clock by a known amount and
+//! assert exact ages. The scheduler-backed case at the bottom cannot: it runs
+//! the refresh in the background on a multi-threaded runtime, so it lets the
+//! records age in real time and waits for `git.commit:age` to fall back below
+//! what it was.
+//!
+//! `git` is the fixture because it is the one built-in with several Sources
+//! over one namespace. The fields under test are `commit` (source `refs`) and
+//! `lines_added` (source `diff`): `branch`'s source, `head`, is `read_always`,
+//! so its record is rewritten by every read and its age can never say which op
+//! refreshed it.
+
+use crate::common::git::GitRepoFixture;
+use crate::common::poll::poll_until_async;
+use beachcomber::cache::Cache;
+use beachcomber::protocol::Response;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::server::Server;
+use serde_json::json;
+use std::sync::Arc;
+use std::time::Duration;
+use tempfile::TempDir;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
+
+fn setup() -> (
+    TempDir,
+    std::path::PathBuf,
+    Arc<Cache>,
+    Arc<ProviderRegistry>,
+    Arc<beachcomber::watcher_registry::WatcherRegistry>,
+) {
+    let tmp = TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+    (tmp, sock, cache, registry, watchers)
+}
+
+async fn send_recv(stream: &mut UnixStream, request: &serde_json::Value) -> Response {
+    let mut line = request.to_string();
+    line.push('\n');
+    stream.write_all(line.as_bytes()).await.unwrap();
+    let mut reader = BufReader::new(&mut *stream);
+    let mut resp = String::new();
+    reader.read_line(&mut resp).await.unwrap();
+    serde_json::from_str(&resp).unwrap()
+}
+
+fn get(key: &str, path: &str) -> serde_json::Value {
+    json!({"op": "get", "key": key, "path": path})
+}
+
+fn refresh(key: &str, path: &str) -> serde_json::Value {
+    json!({"op": "refresh", "key": key, "path": path})
+}
+
+/// The `data` of a warm `get`, asserted present.
+async fn warm(stream: &mut UnixStream, key: &str, path: &str) -> serde_json::Value {
+    let resp = send_recv(stream, &get(key, path)).await;
+    assert!(resp.ok, "get {key}: {:?}", resp.error);
+    resp.data
+        .unwrap_or_else(|| panic!("get {key} should hit at {path}"))
+}
+
+/// The `:age` of a key, in ms. Reading an age never re-executes the Sources
+/// under test — neither `refs` nor `diff` is `read_always`.
+async fn age(stream: &mut UnixStream, key: &str, path: &str) -> u64 {
+    let resp = send_recv(stream, &get(&format!("{key}:age"), path)).await;
+    assert!(resp.ok, "get {key}:age: {:?}", resp.error);
+    resp.data
+        .as_ref()
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_else(|| panic!("{key}:age should be a number, got {:?}", resp.data))
+}
+
+/// Age every record in the cache by 10 s. The cache stamps records with
+/// `tokio::time::Instant`, so the offset survives `resume`. The margin is
+/// what the "re-executed" assertions below lean on: a re-executed record's
+/// age is the real time between its write and the next `:age` read, and
+/// under a loaded suite that gap can pass 100 ms. Ten seconds is below every
+/// git source's poll interval, so nothing turns stale.
+async fn advance_10s() {
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::time::resume();
+}
+
+#[tokio::test]
+async fn refreshing_a_field_re_executes_only_its_owning_source() {
+    if !crate::common::git::has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let repo = GitRepoFixture::new();
+    let path = repo.path_str();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    warm(&mut s, "git.commit", path).await;
+    warm(&mut s, "git.lines_added", path).await;
+    advance_10s().await;
+
+    let refs_before = age(&mut s, "git.commit", path).await;
+    let diff_before = age(&mut s, "git.lines_added", path).await;
+    assert!(
+        refs_before >= 10_000 && diff_before >= 10_000,
+        "both records should carry the advanced clock, got refs={refs_before} diff={diff_before}"
+    );
+
+    let resp = send_recv(&mut s, &refresh("git.commit", path)).await;
+    assert!(resp.ok, "refresh git.commit: {:?}", resp.error);
+    assert!(
+        age(&mut s, "git.commit", path).await < refs_before,
+        "refresh git.commit must re-execute `refs`"
+    );
+    assert!(
+        age(&mut s, "git.lines_added", path).await >= diff_before,
+        "refresh git.commit must leave `diff` alone"
+    );
+
+    // The same rule for a field whose source is read-always: `head` is the
+    // only source `git.branch` demands, so `diff` is still untouched.
+    let resp = send_recv(&mut s, &refresh("git.branch", path)).await;
+    assert!(resp.ok, "refresh git.branch: {:?}", resp.error);
+    assert!(
+        age(&mut s, "git.lines_added", path).await >= diff_before,
+        "refresh git.branch must leave `diff` alone"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn refreshing_a_namespace_re_executes_every_source() {
+    if !crate::common::git::has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let repo = GitRepoFixture::new();
+    let path = repo.path_str();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    warm(&mut s, "git.commit", path).await;
+    warm(&mut s, "git.lines_added", path).await;
+    advance_10s().await;
+
+    let refs_before = age(&mut s, "git.commit", path).await;
+    let diff_before = age(&mut s, "git.lines_added", path).await;
+
+    let resp = send_recv(&mut s, &refresh("git", path)).await;
+    assert!(resp.ok, "refresh git: {:?}", resp.error);
+    assert!(
+        age(&mut s, "git.commit", path).await < refs_before,
+        "a namespace refresh re-executes `refs`"
+    );
+    assert!(
+        age(&mut s, "git.lines_added", path).await < diff_before,
+        "a namespace refresh re-executes `diff`"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_key_no_source_answers_cannot_be_refreshed() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    // `refs` is a source name, and a source name is never a field: no source
+    // owns it, so there is nothing for a refresh to re-execute.
+    let resp = send_recv(&mut s, &json!({"op": "refresh", "key": "git.refs"})).await;
+    assert!(!resp.ok, "refresh git.refs should error");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("nothing to refresh: git.refs has no sources")
+    );
+
+    // An unknown namespace has no sources either — and says so, rather than
+    // borrowing `get`'s "unknown provider".
+    let resp = send_recv(&mut s, &json!({"op": "refresh", "key": "nope"})).await;
+    assert!(!resp.ok, "refresh nope should error");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("nothing to refresh: nope has no sources")
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_global_refresh_of_a_path_scoped_provider_is_ok_and_stays_a_miss() {
+    // SAFETY: nextest gives every test its own process, so no other thread is
+    // reading the environment concurrently. `$HOME` is the global path, and it
+    // has to be somewhere that is not a repository for this to mean anything.
+    let home = TempDir::new().unwrap();
+    unsafe { std::env::set_var("HOME", home.path().canonicalize().unwrap()) };
+
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    // git declares sources, so the refresh is accepted; each runs at `$HOME`,
+    // finds no work tree, and writes nothing.
+    let resp = send_recv(&mut s, &json!({"op": "refresh", "key": "git"})).await;
+    assert!(resp.ok, "refresh git --global: {:?}", resp.error);
+
+    let resp = send_recv(&mut s, &json!({"op": "get", "key": "git.branch"})).await;
+    assert!(resp.ok, "get git.branch --global: {:?}", resp.error);
+    assert!(
+        resp.data.is_none(),
+        "a non-repository $HOME answers nothing, got {:?}",
+        resp.data
+    );
+
+    handle.abort();
+}
+
+/// The scheduler runs a refresh in the background, and this runtime is
+/// multi-threaded, so the clock cannot be advanced under it. Both records are
+/// left to age in real time instead — nothing writes to the repository while we
+/// wait, so no file watch can refresh either source behind our back — and a
+/// re-executed record is then the one whose age has fallen back to nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scheduler_backed_refresh_runs_the_demanded_source_alone() {
+    if !crate::common::git::has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    // SAFETY: nextest gives every test its own process, so no other thread is
+    // reading the environment concurrently. A real scheduler runs behind this
+    // daemon and `$HOME` is the global path it polls, so it must not be the
+    // developer's own.
+    let home = TempDir::new().unwrap();
+    unsafe { std::env::set_var("HOME", home.path().canonicalize().unwrap()) };
+
+    let tmp = TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let (handle, ready) = beachcomber::daemon::start_in_process_polling(
+        sock.clone(),
+        beachcomber::config::Config::default(),
+    );
+    ready.await.expect("daemon ready");
+
+    let repo = GitRepoFixture::new();
+    let path = repo.path_str();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    warm(&mut s, "git.lines_added", path).await;
+    warm(&mut s, "git.commit", path).await;
+
+    let refs_before = poll_until_async(
+        "git.commit:age",
+        "at least 50ms",
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        async || age(&mut s, "git.commit", path).await,
+        |a| *a >= 50,
+    )
+    .await;
+    let diff_before = age(&mut s, "git.lines_added", path).await;
+
+    let resp = send_recv(&mut s, &refresh("git.commit", path)).await;
+    assert!(resp.ok, "refresh git.commit: {:?}", resp.error);
+
+    poll_until_async(
+        "git.commit:age after refresh git.commit",
+        "back below its pre-refresh age",
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        async || age(&mut s, "git.commit", path).await,
+        |a| *a < refs_before,
+    )
+    .await;
+    assert!(
+        age(&mut s, "git.lines_added", path).await >= diff_before,
+        "refresh git.commit demands `refs` alone: `diff` must not have run"
+    );
+
+    handle.abort();
+}

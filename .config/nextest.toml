@@ -34,13 +34,16 @@ leak-timeout = { period = "1s", result = "fail" }
 # Daemon-spawning tests share per-process state (socket paths, filesystem
 # watchers). Cap their parallelism so they do not collide.
 #
-# Matched by binary, not by test() name substring: test() only sees the test
-# function name, not the binary it lives in, so a filter like test(check_subjects)
-# never matches anything unless a test function is literally named that — it
-# does not mean "tests in check_subjects.rs". That previously let tests in
-# check_subjects.rs, status_shape.rs and e2e_git.rs escape the cap entirely.
+# Matched by module path within the `suite` binary: every former test file is
+# now a module of that single integration-test binary, so its tests carry a
+# `<module>::` prefix (e.g. `check_subjects::daemon_exits_when_bind_fails`).
+# The anchored regex lists exactly the module names that used to be their own
+# binaries in this group. `binary(suite) and` scopes the match to that binary
+# only — several of these module names (e.g. `scheduler`) also exist as
+# private module paths inside the crate's own unit tests, which must NOT be
+# pulled into this cap.
 [[profile.default.overrides]]
-filter = 'binary(~e2e) + binary(~scheduler) + binary(=check_subjects) + binary(=status_shape) + binary(=get_force) + binary(=get_wait) + binary(=put_null) + binary(=metadata_suffixes) + binary(=client) + binary(=client_hello) + binary(=daemon_exit_with_parent)'
+filter = 'binary(suite) and test(/^(e2e|e2e_git|e2e_providers|scheduler|scheduler_dedup|scheduler_failure|scheduler_timeout|integration_scheduler|check_subjects|status_shape|get_force|get_wait|put_null|metadata_suffixes|client|client_hello|daemon_exit_with_parent)::/)'
 test-group = "daemon"
 
 # --- Retries for environment-sensitive tests ---

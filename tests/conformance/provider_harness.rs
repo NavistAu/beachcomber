@@ -7,7 +7,7 @@
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{Source, SourceResult, SourceScope};
 
-use crate::conformance::fixtures::ConformanceFixture;
+use crate::provider_conformance::conformance::fixtures::ConformanceFixture;
 
 /// Iterate every `(provider_name, source_name, source)` triple registered by
 /// the default built-in registry. Yields owned data so callers can iterate
