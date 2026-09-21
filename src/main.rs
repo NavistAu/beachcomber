@@ -277,7 +277,7 @@ fn preprocess_args() -> (Vec<String>, Option<String>) {
     (args, fmt_template)
 }
 
-/// The path a `get`, `put`, `refresh` or `eval` addresses: `Ok(None)` for `--global` (the
+/// The path a `get`, `put`, `refresh`, `watch` or `eval` addresses: `Ok(None)` for `--global` (the
 /// daemon's global entry, which is `$HOME`), otherwise the requested path made
 /// absolute, otherwise the current working directory.
 ///

@@ -14,15 +14,17 @@
 //! `assert_cmd` like `tests/cli_refresh.rs` does for the same cases.
 
 use crate::common::daemon::TestDaemon;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// A `comb` at `cwd`, pointed at `d`'s socket and its temp `$HOME`/config dir.
-fn comb(d: &TestDaemon, cwd: &Path) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
+/// One isolated `Command` for `comb`, pointed at `d`'s socket and its temp
+/// `$HOME`/config dir, running at `cwd` — the env block `comb` and
+/// `spawn_watch` both need.
+fn isolated_comb(d: &TestDaemon, cwd: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
     cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
         .env("RUST_LOG", "error")
         .env("HOME", &d.home)
@@ -30,6 +32,11 @@ fn comb(d: &TestDaemon, cwd: &Path) -> assert_cmd::Command {
         .env("XDG_STATE_HOME", d.home.join(".local/state"))
         .current_dir(cwd);
     cmd
+}
+
+/// A `comb` at `cwd`, pointed at `d`'s socket and its temp `$HOME`/config dir.
+fn comb(d: &TestDaemon, cwd: &Path) -> assert_cmd::Command {
+    assert_cmd::Command::from_std(isolated_comb(d, cwd))
 }
 
 /// A running `comb watch` child, killed and reaped on drop so an early
@@ -44,26 +51,22 @@ impl Drop for WatchChild {
 }
 
 /// Spawn `comb watch <args>` at `cwd`, isolated like `comb` above, with piped
-/// stdout.
+/// stdout and stderr.
 fn spawn_watch(d: &TestDaemon, cwd: &Path, args: &[&str]) -> WatchChild {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
-        .current_dir(cwd)
-        .arg("watch")
+    let mut cmd = isolated_comb(d, cwd);
+    cmd.arg("watch")
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     WatchChild(cmd.spawn().expect("spawn comb watch"))
 }
 
 /// Read one line from `child`'s stdout on a background thread, waiting up to
-/// 2s. `None` if nothing arrives in time — distinct from `Some("")`, a miss
-/// frame's blank line.
-fn first_line(child: &mut WatchChild) -> Option<String> {
+/// 5s (the suite's norm for spawn+connect+first-frame waits), consuming
+/// `child` in the process. A miss frame's blank line comes back as `""`; a
+/// timeout panics naming what `child` wrote to stderr rather than failing as
+/// a bare `None`.
+fn first_line(mut child: WatchChild) -> String {
     let stdout = child.0.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -72,7 +75,18 @@ fn first_line(child: &mut WatchChild) -> Option<String> {
             let _ = tx.send(line.trim_end_matches('\n').to_string());
         }
     });
-    rx.recv_timeout(Duration::from_secs(2)).ok()
+    match rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(line) => line,
+        Err(_) => {
+            let _ = child.0.kill();
+            let mut stderr = String::new();
+            if let Some(mut s) = child.0.stderr.take() {
+                let _ = s.read_to_string(&mut stderr);
+            }
+            let _ = child.0.wait();
+            panic!("comb watch produced no output within 5s; stderr:\n{stderr}");
+        }
+    }
 }
 
 #[test]
@@ -86,8 +100,8 @@ fn watch_defaults_to_the_callers_cwd() {
         .assert()
         .success();
 
-    let mut child = spawn_watch(&d, &project, &["my.a"]);
-    assert_eq!(first_line(&mut child).as_deref(), Some("1"));
+    let child = spawn_watch(&d, &project, &["my.a"]);
+    assert_eq!(first_line(child), "1");
 }
 
 #[test]
@@ -106,8 +120,8 @@ fn watch_from_a_sibling_directory_is_a_miss() {
     // A put scoped to `project` doesn't merge into `other`'s chain, so the
     // initial watch frame is a miss — `run_watch` prints `render_data(None, _)`,
     // an empty line, not nothing.
-    let mut child = spawn_watch(&d, &other, &["my.a"]);
-    assert_eq!(first_line(&mut child).as_deref(), Some(""));
+    let child = spawn_watch(&d, &other, &["my.a"]);
+    assert_eq!(first_line(child), "");
 }
 
 #[test]
@@ -121,8 +135,8 @@ fn watch_global_reads_the_home_entry_from_anywhere() {
         .assert()
         .success();
 
-    let mut child = spawn_watch(&d, &elsewhere, &["--global", "g.v"]);
-    assert_eq!(first_line(&mut child).as_deref(), Some("2"));
+    let child = spawn_watch(&d, &elsewhere, &["--global", "g.v"]);
+    assert_eq!(first_line(child), "2");
 }
 
 #[test]
@@ -137,8 +151,8 @@ fn watch_takes_a_relative_positional_path() {
         .assert()
         .success();
 
-    let mut child = spawn_watch(&d, &ws, &["my.a", "./project"]);
-    assert_eq!(first_line(&mut child).as_deref(), Some("1"));
+    let child = spawn_watch(&d, &ws, &["my.a", "./project"]);
+    assert_eq!(first_line(child), "1");
 }
 
 #[test]
@@ -153,8 +167,8 @@ fn watch_takes_the_path_as_a_flag() {
         .success();
 
     let project_str = project.to_str().unwrap();
-    let mut child = spawn_watch(&d, &d.home, &["my.a", "--path", project_str]);
-    assert_eq!(first_line(&mut child).as_deref(), Some("1"));
+    let child = spawn_watch(&d, &d.home, &["my.a", "--path", project_str]);
+    assert_eq!(first_line(child), "1");
 }
 
 /// `--path <dir>` is the positional's other spelling, and the three ways of
@@ -200,6 +214,37 @@ fn watch_from_a_deleted_cwd_with_no_path_is_an_error() {
         .args([
             "-c",
             r#"cd "$1" && rmdir "$1" && exec "$COMB" watch my.a"#,
+            "sh",
+        ])
+        .arg(&gone);
+    cmd.assert().code(2).stderr(predicates::str::contains(
+        "cannot determine the current directory",
+    ));
+}
+
+/// The same deleted-cwd case, but with an explicit relative positional (`.`)
+/// rather than relying on the default — covers the relative branch of
+/// `effective_cli_path`, where `watch_from_a_deleted_cwd_with_no_path_is_an_error`
+/// above covers the `None` branch.
+#[test]
+fn watch_from_a_deleted_cwd_with_a_relative_path_is_an_error() {
+    let d = TestDaemon::spawn();
+    let gone = d.home.join("gone");
+    std::fs::create_dir_all(&gone).unwrap();
+
+    // `sh` enters the directory, removes it from under itself, and execs
+    // `comb` there; `Command::current_dir` on a missing directory would fail
+    // at spawn instead.
+    let mut cmd = assert_cmd::Command::new("sh");
+    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
+        .env("RUST_LOG", "error")
+        .env("HOME", &d.home)
+        .env("XDG_CONFIG_HOME", &d.xdg)
+        .env("XDG_STATE_HOME", d.home.join(".local/state"))
+        .env("COMB", env!("CARGO_BIN_EXE_comb"))
+        .args([
+            "-c",
+            r#"cd "$1" && rmdir "$1" && exec "$COMB" watch my.a ."#,
             "sh",
         ])
         .arg(&gone);
