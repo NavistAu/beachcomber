@@ -118,23 +118,35 @@ fn watch_next_first_call_yields_an_event_outcome() {
 
 /// The entire point of `open_owned`/`Arc<Client>`: a `BcWatch` holds its own
 /// share of the client, so freeing the client handle does not invalidate a
-/// watch still in use — free order between the two is independent. Nothing
-/// currently fails if this regresses to a borrow.
+/// watch still in use — free order between the two is independent. The
+/// pending-initial answer is spent before the free (it is served from the
+/// watch's own cached value and touches no client), so the post-free frame
+/// must re-resolve through the shared client — a read of freed heap if that
+/// share were a borrow.
 #[test]
 fn watch_next_works_after_the_client_that_opened_it_is_freed() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
+    let writer = client_for(&daemon.path);
     put_static(client, "watch_free_order_test", r#"{"field":"v1"}"#);
     let watch = open_watch(client, "watch_free_order_test.field", None);
 
+    let first = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(first["data"], serde_json::json!("v1"), "{first}");
+
     unsafe { bc_client_free(client) };
 
-    let v = read(unsafe { bc_watch_next(watch, 2000) });
+    // A put from any connection fires the watch — the daemon broadcasts per
+    // (provider, path), not per connection — and the frame forces a
+    // re-resolve through the client the watch holds a share of.
+    put_static(writer, "watch_free_order_test", r#"{"field":"v2"}"#);
+    let v = read(unsafe { bc_watch_next(watch, 5000) });
     assert_eq!(v["ok"], serde_json::json!(true), "{v}");
     assert_eq!(v["outcome"], serde_json::json!("event"), "{v}");
-    assert_eq!(v["data"], serde_json::json!("v1"));
+    assert_eq!(v["data"], serde_json::json!("v2"), "{v}");
 
     unsafe { bc_watch_free(watch) };
+    unsafe { bc_client_free(writer) };
 }
 
 /// The equivalence Plan 3 models the whole surface on: a watch's first event
