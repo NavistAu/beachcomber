@@ -114,7 +114,7 @@ All Rust dependencies are vendored in `vendor/`. The project builds offline.
 See `docs/provider-development.md`. Short version:
 
 1. `src/provider/yourprovider.rs` — implement `Provider` trait
-2. `tests/suite/provider_yourprovider.rs` — integration tests, registered as a `mod` in `tests/suite.rs`
+2. `tests/suite/provider_yourprovider.rs` — integration tests, registered as a `mod` in `tests/suite/main.rs`
 3. Register in `src/provider/mod.rs` and `src/provider/registry.rs`
 4. Prefer reading files over spawning processes (see performance tiers in `docs/performance.md`)
 
@@ -124,7 +124,7 @@ See `docs/releasing.md` for the full release checklist. Short version: on `devel
 
 ## Key Conventions
 
-- Unit tests live in `src/` as `#[cfg(test)]` modules next to the code they test. Integration tests (anything needing `TestDaemon`, a socket, or the built `comb` binary via `CARGO_BIN_EXE`) are modules of the single `tests/suite.rs` binary — one module per functional area under `tests/suite/`. Never add a new top-level file in `tests/`: each one is a separate executable that relinks the whole crate.
+- Unit tests live in `src/` as `#[cfg(test)]` modules next to the code they test. Integration tests (anything needing `TestDaemon`, a socket, or the built `comb` binary via `CARGO_BIN_EXE`) are modules of the single `tests/suite/main.rs` binary — one module per functional area under `tests/suite/`. Never add a new top-level file in `tests/`: each one is a separate executable that relinks the whole crate.
 - Benchmarks in `benches/` use criterion
 - `cargo clippy -- -D warnings` must pass with zero warnings
 - Provider fields are `serde_json::Value` — providers return `HashMap<String, Value>`
