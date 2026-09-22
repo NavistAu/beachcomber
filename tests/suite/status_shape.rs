@@ -1910,6 +1910,50 @@ fn human_rows_leave_the_right_margin_unpainted() {
             );
         }
     }
+
+    // A `config:<file>` source label is a whole path — long enough that, at
+    // the old flat 24-char cap, it alone pushed a modest, realistic
+    // config-seeded row (Static, like the ones
+    // `list_rows_marks_config_seeded_source_static` covers) past the margin
+    // at cap 80 (79 chars — the flex columns' floors are non-negotiable, so
+    // the row simply overflowed). Budget-aware SOURCE truncation
+    // (MAX_SOURCE_WIDTH.min(cap / 5)) leaves enough room that it does not.
+    let config_row = beachcomber::cache::CacheRow {
+        provider: "myapp".into(),
+        path: Some("/repo".into()),
+        source: "config:~/.config/beachcomber/defaults/env.toml".into(),
+        field: "greeting".into(),
+        value: serde_json::json!("1.2.3-rc1"),
+        age_ms: 5_000,
+        stale: false,
+        kind: Some(beachcomber::cache::RowKind::Static),
+        poll_interval_secs: None,
+        keep_alive_polls: None,
+        fsevents_reinstate: None,
+        polls_elapsed: None,
+        next_poll_in_secs: None,
+        failure: None,
+    };
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(80),
+        no_trunc: false,
+        ascii: true,
+        depth: None,
+    };
+    let out = render_preset("human", &[config_row], &opts);
+    for line in out.lines() {
+        assert!(
+            line.chars().count() <= 78,
+            "line is {} chars, must leave the 2-col right margin free under cap 80 with a long SOURCE label: {line:?}",
+            line.chars().count()
+        );
+        assert!(
+            !line.ends_with(' '),
+            "line must not end in trailing whitespace: {line:?}"
+        );
+    }
 }
 
 #[test]
@@ -1948,6 +1992,50 @@ fn human_caps_path_column_keeping_the_tail() {
     assert!(
         !out.contains("/private/tmp/x"),
         "path head should be truncated away: {out}"
+    );
+}
+
+#[test]
+fn human_caps_source_column_keeping_the_tail() {
+    // SOURCE truncates like PATH — from the head, keeping the tail that
+    // tells one config file from another.
+    let mut row = sample_lifecycle_row();
+    row.source = "config:~/.config/beachcomber/conf.d/mine.toml".into(); // 45 chars
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: true,
+        depth: None,
+    };
+    let out = render_preset("human", &[row], &opts);
+    assert!(
+        out.contains("...mber/conf.d/mine.toml"),
+        "SOURCE cell should truncate from the head and keep its tail: {out}"
+    );
+    assert!(
+        !out.contains("config:~/.config/beachcomber/conf.d/mine.toml"),
+        "the full 45-char label must not survive at cap 120: {out}"
+    );
+}
+
+#[test]
+fn no_trunc_keeps_the_full_source_label() {
+    let mut row = sample_lifecycle_row();
+    row.source = "config:~/.config/beachcomber/conf.d/mine.toml".into();
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: true,
+        max_width: Some(120),
+        no_trunc: true,
+        ascii: true,
+        depth: None,
+    };
+    let out = render_preset("human", &[row], &opts);
+    assert!(
+        out.contains("config:~/.config/beachcomber/conf.d/mine.toml"),
+        "--no-trunc must keep the full SOURCE label: {out}"
     );
 }
 
@@ -2488,6 +2576,31 @@ fn scalar_values_are_not_highlighted() {
 }
 
 #[test]
+fn a_template_rows_structured_value_keeps_its_cyan_marking() {
+    // Design decision 5: cyan marks the whole VALUE cell for a rendered
+    // (Template) row — including when the value is an object or array and
+    // takes its own JSON highlighting, nested inside the cyan wrap rather
+    // than pre-empting it.
+    let mut row = wide_value_row();
+    row.kind = Some(beachcomber::cache::RowKind::Template);
+    row.value = serde_json::json!({"name": "claude"});
+    row.path = Some("/repo".into());
+    let opts = RenderOpts {
+        is_tty: false,
+        no_color: false,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: true,
+        depth: Some(1), // keep the object whole so there is something to highlight
+    };
+    let out = render_preset("human", &[row], &opts);
+    assert!(
+        out.contains("\x1b[36m{"),
+        "the JSON body must still be wrapped in cyan for a Template row: {out:?}"
+    );
+}
+
+#[test]
 fn highlighting_survives_a_truncated_value() {
     // Truncation runs first, so the tokenizer sees a string cut mid-token and
     // must not panic or emit a half escape sequence.
@@ -2527,7 +2640,7 @@ fn highlighting_survives_a_truncated_value() {
 #[test]
 fn three_flexible_columns_share_the_budget_by_priority() {
     // All three flexible columns oversized at once: a 75-char destructured
-    // field name, a 150-char session path and a 200-char value, at cap 120.
+    // field name, a 150-char session path and a 200-char value, at cap 128.
     // FIELD takes its flex-relative ceiling and middle-truncates (keeping
     // head and leaf), PATH falls to its 20-char floor keeping its tail,
     // VALUE takes what remains, and the row still fits the budget.

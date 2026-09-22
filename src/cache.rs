@@ -1455,6 +1455,27 @@ mod tests {
         );
     }
 
+    /// `RowKind::Template` is produced by the CLI's own rendering, never by
+    /// the cache (see the doc comment on the variant) — `list_rows` must
+    /// never emit one.
+    #[test]
+    fn list_rows_never_emits_row_kind_template() {
+        let cache = Cache::new();
+        cache.put_source(
+            "myapp",
+            None,
+            "put",
+            make_fields(&[("greeting", "hello")]),
+            None,
+        );
+
+        let rows = cache.list_rows();
+        assert!(
+            !rows.iter().any(|r| r.kind == Some(RowKind::Template)),
+            "list_rows must never emit RowKind::Template: {rows:?}"
+        );
+    }
+
     // ── static labels beside provider sources ────────────────────────────────
 
     /// A source label is just a `CacheSourceEntry` name, so a `put` record and a

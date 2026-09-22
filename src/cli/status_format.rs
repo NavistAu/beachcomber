@@ -969,7 +969,7 @@ const H_PATH: usize = 4;
 const H_AGE: usize = 5;
 const H_POLL: usize = 6;
 
-/// Ceiling on the SOURCE column in the human/table presets, lifted by
+/// Ceiling on the SOURCE column in the human preset, lifted by
 /// `--no-trunc`.
 ///
 /// SOURCE would otherwise take its natural width like PROVIDER, because a
@@ -1221,20 +1221,25 @@ fn render_table(
     // values in this snapshot, capped at TTL_P_WIDTH_MAX / TTL_TOTAL_WIDTH_MAX.
     let ttl_widths = compute_ttl_widths(rows);
 
-    let source_cap = trunc.map(|_| MAX_SOURCE_WIDTH);
+    // Budget-aware: SOURCE competes with VALUE/PATH for the same `trunc`
+    // total, so a 24-char config label alone must not starve those columns
+    // at a narrow cap.
+    let source_cap = trunc.map(|c| MAX_SOURCE_WIDTH.min(c / 5));
 
     for row in rows {
         let path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
         let value = value_to_string(&row.value);
         // Sanitizing swaps one char for one char, so it never changes a
         // natural width. Only the taint marker does.
-        let marker_width = if row_is_tainted(row, &path, &value) {
+        let taint_width = if row_is_tainted(row, &path, &value) {
             MARKER_WIDTH
         } else {
             0
-        } + template_marker(row.kind.as_ref(), color_enabled, ascii)
-            .chars()
-            .count();
+        };
+        let marker_width = taint_width
+            + template_marker(row.kind.as_ref(), color_enabled, ascii)
+                .chars()
+                .count();
         nat_provider = nat_provider.max(row.provider.chars().count());
         nat_path = nat_path.max(path.chars().count());
         nat_field = nat_field.max(row.field.chars().count());
@@ -1518,14 +1523,20 @@ fn render_table(
                     value.chars().skip(MARKER_WIDTH).collect(),
                 )
             };
-            // Cyan is the colour build's mark for a rendered row (design
-            // decision 5). A structured body keeps its JSON highlighting —
-            // that is already colour, and the SOURCE cell still says
-            // `template`.
-            let body = if body.starts_with(['{', '[']) {
-                highlight_json(&body)
-            } else if matches!(row.kind, Some(crate::cache::RowKind::Template)) {
+            // Cyan is the colour build's mark for a rendered row — the whole
+            // VALUE cell (design decision 5), not just a plain-string body.
+            // A structured body still gets its own JSON highlighting nested
+            // inside, so the cyan wrap goes around it rather than being
+            // pre-empted by it.
+            let body = if matches!(row.kind, Some(crate::cache::RowKind::Template)) {
+                let body = if body.starts_with(['{', '[']) {
+                    highlight_json(&body)
+                } else {
+                    body
+                };
                 ansi::wrap(&body, ansi::Color::Cyan, true)
+            } else if body.starts_with(['{', '[']) {
+                highlight_json(&body)
             } else {
                 body
             };
@@ -1661,6 +1672,22 @@ pub fn apply_filters(rows: Vec<CacheRow>, filters: &[String]) -> Result<Vec<Cach
         .into_iter()
         .filter(|r| preds.iter().all(|p| p.matches(r)))
         .collect())
+}
+
+/// Whether `provider` could survive every `provider=`/`provider=<glob>`
+/// predicate in `filters`. Used to skip resolving (and `exec()`ing) a
+/// template row's leaves before rendering, when `--filter provider=` has
+/// already ruled the provider out — `apply_filters` runs the real,
+/// authoritative filter afterward, over the rendered rows, so a filter
+/// string this can't parse or a predicate it doesn't recognise is not this
+/// function's error to raise: it answers "could still pass" and lets
+/// `apply_filters` give the answer, and the syntax error, its usual way.
+pub fn provider_could_pass(filters: &[String], provider: &str) -> bool {
+    filters.iter().all(|f| match parse_filter(f) {
+        Ok(Predicate::ProviderEq(v)) => provider == v,
+        Ok(Predicate::ProviderGlob(pat)) => simple_glob_match(&pat, provider),
+        _ => true,
+    })
 }
 
 enum Predicate {

@@ -11,7 +11,6 @@ use crate::config::Config;
 use libbeachcomber::resolve::{Inputs, Slot, resolve};
 use std::collections::HashMap;
 use std::io::IsTerminal;
-use std::path::Path;
 use std::process::ExitCode;
 
 /// The namespace facet holding value expressions (canon
@@ -27,29 +26,37 @@ const TEMPLATE_SOURCE: &str = "template";
 /// The daemon holds templates as data and never evaluates them (canon
 /// `field_resolution.md` invariant 7), so `status` shows raw expressions
 /// where a user wants values. Each leaf under a `<p>:template` row visible
-/// from `cwd` — the row's own path, an ancestor of it, or the global entry
-/// (canon invariant 2) — is resolved as `<p>.<leaf>` would be by `comb get`,
-/// with `exec()` on: `comb status` is one of the surfaces that opted in
-/// (canon `field_resolution.md` invariant 15).
+/// from `cwd` — the row's own path, an ancestor of it up to `$HOME`, or the
+/// global entry (canon invariant 2) — is resolved as `<p>.<leaf>` would be by
+/// `comb get`, with `exec()` on: `comb status` is one of the surfaces that
+/// opted in (canon `field_resolution.md` invariant 15).
 ///
 /// A leaf that resolves to nothing is not a row. A leaf that fails carries
 /// its failure as its value — the cell is where the user looks for it, and a
 /// broken expression is exactly what this view exists to show.
-pub fn render_template_rows(
+fn render_template_rows(
     rows: &[CacheRow],
     cwd: &str,
     env: &HashMap<String, String>,
     client: &libbeachcomber::Client,
+    filters: &[String],
 ) -> Vec<CacheRow> {
+    let chain = crate::query::path_chain(Some(cwd));
     let mut addrs: Vec<(String, String)> = Vec::new();
     for row in rows {
         let Some(provider) = row.provider.strip_suffix(TEMPLATE_FACET) else {
             continue;
         };
-        let visible = match row.path.as_deref() {
-            None => true,
-            Some(p) => Path::new(cwd).starts_with(p),
-        };
+        // `--filter provider=` rules a provider out outright, so its
+        // templates are skipped here rather than resolved — and any
+        // exec() in them run — only to be dropped once apply_filters runs
+        // post-render. Field/path predicates need the rendered, flattened
+        // rows to evaluate (see the comment in `run_status`), so only the
+        // provider predicate is checked this early.
+        if !crate::cli::status_format::provider_could_pass(filters, provider) {
+            continue;
+        }
+        let visible = chain.iter().any(|l| l.as_deref() == row.path.as_deref());
         if visible {
             collect_leaves(provider, &row.field, &row.value, &mut addrs);
         }
@@ -105,12 +112,13 @@ fn collect_leaves(
     out: &mut Vec<(String, String)>,
 ) {
     match value {
-        serde_json::Value::Object(map) if !map.is_empty() => {
+        serde_json::Value::Object(map) => {
             for (key, child) in map {
                 collect_leaves(provider, &format!("{field}.{key}"), child, out);
             }
         }
-        _ => out.push((provider.to_string(), field.to_string())),
+        serde_json::Value::String(_) => out.push((provider.to_string(), field.to_string())),
+        _ => {}
     }
 }
 
@@ -164,17 +172,24 @@ pub fn run_status(
     match client.status() {
         Ok(mut rows) => {
             // The daemon never evaluates a template, so the rendered rows are
-            // added here, from this shell's directory and environment.
-            let cwd = std::env::current_dir()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let rendered = render_template_rows(
-                &rows,
-                &cwd,
-                &crate::cli::shell_env(),
-                &crate::client::build_client(&socket_path),
-            );
-            rows.extend(rendered);
+            // added here, from this shell's directory and environment. A
+            // template resolves relative to `cwd` (canon invariant 2); with
+            // no cwd to resolve against, there is no correct directory to
+            // stamp a rendered row with, so rendering is skipped rather than
+            // resolving every leaf as if the caller stood at "" — which
+            // stamped rows with `path: Some("")`, an empty PATH cell that
+            // reads as a lie. The daemon's own rows still print.
+            if let Ok(cwd) = std::env::current_dir() {
+                let cwd = cwd.to_string_lossy().into_owned();
+                let rendered = render_template_rows(
+                    &rows,
+                    &cwd,
+                    &crate::cli::shell_env(),
+                    &crate::client::build_client(&socket_path),
+                    filters,
+                );
+                rows.extend(rendered);
+            }
 
             // Destructure before filtering and sorting, so both operate on the
             // field names the user can actually see in the output.

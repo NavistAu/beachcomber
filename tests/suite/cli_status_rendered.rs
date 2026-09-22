@@ -100,6 +100,8 @@ fn rendered_leaves_sit_beside_the_raw_templates_and_the_cached_data() {
     // that stands in for the cyan the colour build uses.
     assert_row(&out, "scanline widgets.foo template > hi ");
     assert_row(&out, "scanline theme template > dark ");
+    // A depth-2 leaf renders too, not just the top-level ones.
+    assert_row(&out, "scanline widgets.clock.format template > %H:%M ");
     // The template itself is still data the daemon holds, put by the user.
     assert_row(
         &out,
@@ -138,6 +140,18 @@ fn colour_marks_the_rendered_value_cyan_rather_than_with_a_glyph() {
         !out.contains('\u{25b8}'),
         "the glyph stands in for colour, never beside it:\n{out}"
     );
+}
+
+#[test]
+fn colour_off_with_no_ascii_marks_the_rendered_value_with_the_unicode_glyph() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    seed_scanline(&d, &cwd);
+
+    // Default glyph set (no --ascii), colour off: the Unicode marker prefixes
+    // the rendered VALUE.
+    let out = status(&d, &cwd, &["--color", "never", "--no-trunc"]);
+    assert_row(&out, "scanline widgets.foo template \u{25b8} hi ");
 }
 
 #[test]
@@ -272,4 +286,25 @@ fn a_cached_field_with_a_template_over_it_shows_both_rows() {
     assert_eq!(rendered.len(), 1, "the rendered row joins it: {rows:#?}");
     assert_eq!(rendered[0]["value"], "overridden");
     assert_eq!(rendered[0]["kind"]["kind"], "template");
+}
+
+#[test]
+fn a_template_put_at_the_global_entry_renders_at_a_cwd_below_home() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    put(
+        &d,
+        &cwd,
+        &["--global", "globalscan:template.leaf", r#""{{ \"hi\" }}""#],
+    );
+
+    let rows = json_rows(&d, &cwd, &["--filter", "provider=globalscan"]);
+    let rendered: Vec<&serde_json::Value> =
+        rows.iter().filter(|r| r["source"] == "template").collect();
+    assert_eq!(
+        rendered.len(),
+        1,
+        "a global template must render at a cwd below $HOME: {rows:#?}"
+    );
+    assert_eq!(rendered[0]["value"], "hi");
 }
