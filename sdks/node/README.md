@@ -134,15 +134,18 @@ Note: the daemon's `put` op does not consult connection context (only
 `get`/`refresh` do) — pass an explicit `path` to `session.put()` regardless
 of `setContext`.
 
-#### `client.watch(key, path?)`
+#### `client.watch(key, { cwd, env? })`
 
-Open a watch stream. The stream is an `AsyncIterable<WatchEvent>`; call
+Watch a key's *value* — what `resolve` answers for it — and receive it
+again whenever it changes, so a template edited under the watch fires it
+just as a changed cache record does. `cwd` and `env` mean what they mean
+for `resolve`. The stream is an `AsyncIterable<WatchEvent>`; call
 `stream.close()` to stop watching.
 
 ```typescript
-const stream = await client.watch('git.branch', '/some/repo');
+const stream = await client.watch('git.branch', { cwd: '/some/repo' });
 for await (const event of stream) {
-  console.log(event.data);
+  console.log(event.data); // the resolved value, null for a miss
 }
 ```
 
@@ -209,7 +212,7 @@ programmatic handling.
 and watch — all with exact envelope fidelity.
 
 **Subprocess (`comb` CLI fallback)** covers `get`, `put`, `putNull`,
-`refresh`, `status`, `watch`, and session context. `get` is one `comb get
+`refresh`, `status`, and session context. `get` is one `comb get
 -f json <key> <key>:age <key>:stale`, so its answer is the resolver's — the
 directory chain up to `$HOME`, `$HOME` as the global entry, metadata
 suffixes, `force`/`wait`, the daemon's refusals — with one divergence:

@@ -66,7 +66,7 @@ int main(void) {
     bc_session_close(s);
 
     /* Watch — blocking poll */
-    BcWatch *w = bc_watch_open(c, "git.branch", "/path/to/repo");
+    BcWatch *w = bc_watch_open(c, "git.branch", "/path/to/repo", NULL);
     r = bc_watch_next(w, 5000 /* ms; -1 blocks, 0 polls */);
     printf("%s\n", r); /* {"ok":true,"outcome":"event"|"timeout"|"eof"|"cancelled",...} */
     bc_string_free(r);
@@ -118,7 +118,8 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
 - `exec()` inside a template runs only on a client created with
   `bc_client_new("{\"exec\":true}")`; it is off by default, and a template
   that calls it then fails with `exec() is disabled in this context`.
-- `bc_watch_open` + `bc_watch_next(w, timeout_ms)` + `bc_watch_cancel` /
+- `bc_watch_open(c, key, cwd, env_json)` + `bc_watch_next(w, timeout_ms)` +
+  `bc_watch_cancel` /
   `bc_watch_free`: blocking poll, five machine-readable outcomes
   (`event`/`timeout`/`eof`/`cancelled`/the ordinary `ok:false` error
   envelope). `bc_watch_cancel` is the one call safe to invoke from another

@@ -35,7 +35,6 @@ export type WatchOutcome = 'event' | 'timeout' | 'eof' | 'cancelled';
 
 export interface WatchNextResult {
   outcome: WatchOutcome;
+  /** On `event`: the resolved value, `null` for a miss. */
   data?: unknown;
-  ageMs?: number | null;
-  stale?: boolean | null;
 }

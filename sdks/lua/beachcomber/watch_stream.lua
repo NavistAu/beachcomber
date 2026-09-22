@@ -1,5 +1,9 @@
 --- WatchStream — a stream of watch events from the beachcomber daemon.
 --
+-- Each event is the resolved value of the watched key, re-resolved whenever
+-- any key the resolution reads changes, including the provider's template
+-- tree.
+--
 -- Returned by Client:watch(). Thin, transport-agnostic wrapper around a
 -- backend watch handle (beachcomber.ffi_backend's Watch or
 -- beachcomber.subprocess_backend's Watch), both of which expose
@@ -19,7 +23,8 @@ end
 --- active backend's Watch:next_event for exact semantics — the subprocess
 --- transport does not honour a timeout and always blocks for the next line).
 -- @param timeout_ms number?  -1 (default) blocks indefinitely, 0 polls, >0 waits that long.
--- @return event table {data, age_ms, stale}, or nil on eof/cancelled, or nil, Error on error
+-- @return event table {data}, carrying the resolved value (nil for a miss),
+--         or nil on eof/cancelled, or nil, Error on error
 function WatchStream:next_event(timeout_ms)
   if self._closed then return nil end
   local ev, err, outcome = self._handle:next_event(timeout_ms)

@@ -274,8 +274,10 @@ if (!fs.existsSync(DIST_CLIENT)) {
 
         case 'watch': {
           const key = args.key || '';
-          const pathArg = args.path;
-          const stream = await client.watch(key, pathArg);
+          const stream = await client.watch(key, {
+            cwd: resolveCtx.cwd,
+            env: resolveCtx.env,
+          });
           let event = null;
           try {
             for await (const ev of stream) {
@@ -290,11 +292,11 @@ if (!fs.existsSync(DIST_CLIENT)) {
             // Had an event before close threw — treat as success.
           }
           if (event) {
+            // A watch event carries a resolved value, which can come from
+            // several records at once: no age, no staleness.
             return makeOk({
               data: event.data,
               dataAsText: valueAsText(event.data),
-              ageMs: event.ageMs,
-              stale: event.stale,
             });
           }
           return makeOk();

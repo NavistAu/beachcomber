@@ -172,7 +172,7 @@ module Beachcomber
         bc_session_get: fnew('bc_session_get', [VOIDP, VOIDP, VOIDP, INT], VOIDP),
         bc_session_put: fnew('bc_session_put', [VOIDP, VOIDP, VOIDP, VOIDP, VOIDP], VOIDP),
         bc_session_set_context: fnew('bc_session_set_context', [VOIDP, VOIDP], VOIDP),
-        bc_watch_open: fnew('bc_watch_open', [VOIDP, VOIDP, VOIDP], VOIDP),
+        bc_watch_open: fnew('bc_watch_open', [VOIDP, VOIDP, VOIDP, VOIDP], VOIDP),
         bc_watch_next: fnew('bc_watch_next', [VOIDP, INT], VOIDP),
         bc_watch_cancel: fnew('bc_watch_cancel', [VOIDP], VOID),
         bc_watch_free: fnew('bc_watch_free', [VOIDP], VOID),
@@ -231,9 +231,9 @@ module Beachcomber
       @fn[:bc_session_open].call(client_handle)
     end
 
-    def self.new_watch(client_handle, key, path)
+    def self.new_watch(client_handle, key, cwd, env_json)
       load!
-      @fn[:bc_watch_open].call(client_handle, key, path)
+      @fn[:bc_watch_open].call(client_handle, key, cwd, env_json)
     end
 
     # Void-returning teardown calls (null-safe on the C side; harmless if

@@ -73,8 +73,12 @@ export type IntrospectResponse =
   | { subject: 'daemon'; daemon: DaemonHealth }
   | { subject: Exclude<IntrospectSubject, 'daemon'>; other: unknown };
 
+/**
+ * One emitted change on a watch. `data` is the resolved value — what
+ * `comb get` would print for the watched key — or `null` when nothing is
+ * stored there. A value resolved from several cache records has no single
+ * age or staleness, so a watch reports neither.
+ */
 export interface WatchEvent {
   data: unknown;
-  ageMs: number;
-  stale: boolean;
 }

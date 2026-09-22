@@ -2,6 +2,10 @@ module Beachcomber
   # Iterates events from a bc_watch_open handle. Create via
   # {Client#watch} rather than directly.
   #
+  # Each event is the *resolved value* of the watched key — what `comb get`
+  # would print for it — re-resolved whenever any key the resolution reads
+  # changes, including the provider's template tree.
+  #
   # bc_watch_next distinguishes five outcomes: event, timeout, eof,
   # cancelled, error. #next_event folds timeout/eof/cancelled into a single
   # nil (matching the previous socket-based API's "nil means the stream is
@@ -27,8 +31,10 @@ module Beachcomber
     # Waits for the next event. +timeout_ms+: -1 (default) blocks
     # indefinitely, 0 polls once, >0 waits that long.
     #
-    # @return [WatchEvent, nil] nil on end-of-stream (daemon closed the
-    #   connection, the watch was cancelled, or the wait elapsed).
+    # @return [WatchEvent, nil] the resolved value on an emitted change;
+    #   nil on end-of-stream (daemon closed the connection, the watch was
+    #   cancelled, or the wait elapsed). An event whose +data+ is nil is a
+    #   miss, not the end of the stream.
     def next_event(timeout_ms = -1)
       json = Beachcomber::FFI.raw_call(:bc_watch_next, @handle, timeout_ms)
       envelope = JSON.parse(json)
@@ -40,12 +46,7 @@ module Beachcomber
 
       case envelope['outcome']
       when 'event'
-        payload = envelope['data']
-        WatchEvent.new(
-          data: payload['data'],
-          age_ms: (payload['age_ms'] || 0).to_i,
-          stale: payload['stale'] == true,
-        )
+        WatchEvent.new(data: envelope['data'])
       when 'timeout', 'eof', 'cancelled'
         nil
       else

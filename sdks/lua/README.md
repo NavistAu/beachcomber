@@ -211,12 +211,18 @@ transport only.
 tags — the former keeps the expression's natural type, the latter is
 always a string (a source with no tags at all is its literal text).
 
-### `Client:watch(key [, path])` → `WatchStream | nil, Error`
+### `Client:watch(key [, opts])` → `WatchStream | nil, Error`
 
-ffi transport only. `stream:next_event([timeout_ms])` → event table
-`{data, age_ms, stale}`, or `nil` on eof/cancelled, or `nil, Error` on a
-real error; `-1` (default) blocks indefinitely, `0` polls, `>0` waits that
-long. `stream:cancel()`, `stream:close()`, `stream:each()` for a for-loop.
+ffi transport only. Watches the key's *value* — what `Client:resolve`
+answers for it — so a template edited under the watch fires it just as a
+changed cache record does. `opts` is `Client:resolve`'s: `opts.cwd`
+(default: context path, then `"."`), `opts.env`.
+
+`stream:next_event([timeout_ms])` → event table `{data}` carrying the
+resolved value (`nil` for a miss), or `nil` on eof/cancelled, or `nil,
+Error` on a real error; `-1` (default) blocks indefinitely, `0` polls, `>0`
+waits that long. `stream:cancel()`, `stream:close()`, `stream:each()` for a
+for-loop.
 
 ### `Client:session()` → session object | nil, Error
 

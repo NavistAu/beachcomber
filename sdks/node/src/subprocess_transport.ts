@@ -8,20 +8,30 @@
  * absent by configuration (see `transport_select.ts`).
  *
  * Coverage is deliberately narrower than the FFI transport. `comb`'s CLI
- * has direct equivalents for get/put/put_null/refresh/status/watch, and
- * session semantics are emulated client-side (remembering a context path
- * between calls — there is no real persistent connection to share, since
- * each op is its own process). `hello` and `introspect` have **no**
- * faithful CLI equivalent: `comb` exposes no JSON-emitting subcommand for
- * either.
+ * has direct equivalents for get/put/put_null/refresh/status, and session
+ * semantics are emulated client-side (remembering a context path between
+ * calls — there is no real persistent connection to share, since each op is
+ * its own process). `hello` and `introspect` have **no** faithful CLI
+ * equivalent: `comb` exposes no JSON-emitting subcommand for either.
  *
  * `resolve`/`eval` are simply not implemented over this tier. `comb get
  * --path <cwd> -f json` and `comb eval <template> <cwd>` resolve through
  * the same `libbeachcomber::resolve` the FFI does, so a faithful shell-out
  * exists; nobody has wired it yet.
  *
+ * `watch` went the same way in Plan 4 Task 3, when it became a *resolved*
+ * watch: every event is what `resolve` answers, re-resolved with the
+ * caller's own `cwd` and `env`. `comb watch <key> -f json` renders it
+ * through the same library, but it reads its environment from its own
+ * process — and a spawn cannot be given only the caller's `env` without
+ * also losing the `HOME`/`XDG_*` that decide where the daemon's config and
+ * the global entry are. So the env a caller hands in could not be honoured
+ * faithfully here, which is exactly why `resolve` is unsupported too. The
+ * Lua SDK's subprocess backend refuses `watch` for its own reason (a
+ * blocking line read with no timeout), and the two tiers now agree.
+ *
  * Rather than fake structured data from scraped human-readable text or
- * silently return the wrong answer, all four ops throw
+ * silently return the wrong answer, all of these ops throw
  * `UnsupportedTransportError` naming the FFI transport as the
  * full-fidelity path.
  *
@@ -64,9 +74,9 @@
  * for the global entry by name, with `--global`.
  */
 
-import { spawn, spawnSync } from 'child_process';
-import { ServerError, UnsupportedTransportError } from './errors.js';
-import type { Envelope, WatchNextResult } from './envelope.js';
+import { spawnSync } from 'child_process';
+import { UnsupportedTransportError } from './errors.js';
+import type { Envelope } from './envelope.js';
 import type { NewClientOptions, Transport } from './transport.js';
 
 interface SubprocessClientHandle {
@@ -78,14 +88,6 @@ interface SubprocessClientHandle {
 interface SubprocessSessionHandle {
   client: SubprocessClientHandle;
   contextPath: string | undefined;
-}
-
-interface SubprocessWatchHandle {
-  child: ReturnType<typeof spawn>;
-  buffer: string;
-  lines: string[];
-  closed: boolean;
-  cancelled: boolean;
 }
 
 function unsupported(op: string): never {
@@ -334,72 +336,17 @@ export function createSubprocessTransport(): Transport {
       return { ok: true, data: null };
     },
 
-    openWatch(handle, key, path_): SubprocessWatchHandle {
-      const h = handle as SubprocessClientHandle;
-      const args = ['watch', key, '-f', 'json'];
-      if (path_ !== undefined) args.push('--path', path_);
-      const env = { ...process.env };
-      if (h.socketPath) env['BEACHCOMBER_SOCKET'] = h.socketPath;
-      const child = spawn(h.combBin, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
-      const w: SubprocessWatchHandle = { child, buffer: '', lines: [], closed: false, cancelled: false };
-      child.stdout.on('data', (chunk: Buffer) => {
-        w.buffer += chunk.toString('utf8');
-        let idx: number;
-        while ((idx = w.buffer.indexOf('\n')) !== -1) {
-          const line = w.buffer.slice(0, idx).trim();
-          w.buffer = w.buffer.slice(idx + 1);
-          if (line) w.lines.push(line);
-        }
-      });
-      child.on('close', () => {
-        w.closed = true;
-      });
-      return w;
+    openWatch() {
+      unsupported('watch');
     },
-    async watchNext(watch, timeoutMs): Promise<WatchNextResult> {
-      const w = watch as SubprocessWatchHandle;
-      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : null;
-      const pollTick = 20;
-      for (;;) {
-        if (w.cancelled) return { outcome: 'cancelled' };
-        if (w.lines.length > 0) {
-          const line = w.lines.shift() as string;
-          const parsed = JSON.parse(line) as {
-            ok: boolean;
-            data?: unknown;
-            age_ms?: number | null;
-            stale?: boolean | null;
-            error?: string;
-          };
-          if (!parsed.ok) {
-            throw new ServerError(parsed.error ?? 'watch error');
-          }
-          return {
-            outcome: 'event',
-            data: parsed.data ?? null,
-            ageMs: parsed.age_ms ?? null,
-            stale: parsed.stale ?? null,
-          };
-        }
-        if (w.closed) return { outcome: 'eof' };
-        if (timeoutMs === 0) return { outcome: 'timeout' };
-        if (deadline !== null && Date.now() >= deadline) return { outcome: 'timeout' };
-        await new Promise((r) => setTimeout(r, pollTick));
-      }
+    async watchNext() {
+      unsupported('watch');
     },
-    watchCancel(watch) {
-      const w = watch as SubprocessWatchHandle;
-      w.cancelled = true;
+    watchCancel() {
+      unsupported('watch');
     },
-    freeWatch(watch) {
-      const w = watch as SubprocessWatchHandle;
-      if (!w.closed) {
-        try {
-          w.child.kill('SIGTERM');
-        } catch {
-          // best-effort
-        }
-      }
+    freeWatch() {
+      unsupported('watch');
     },
   };
 

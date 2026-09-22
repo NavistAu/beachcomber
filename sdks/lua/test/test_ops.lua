@@ -223,25 +223,44 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
   suite("Client:watch and WatchStream")
 
-  test("watch opens via the backend and returns a WatchStream", function()
+  test("watch opens via the backend with the cwd and env, and returns a WatchStream", function()
     local opened_with
     local watch_handle = {
-      next_event = function(_, timeout_ms) return { data = 42, age_ms = 5, stale = false }, nil, "event" end,
+      next_event = function(_, timeout_ms) return { data = 42 }, nil, "event" end,
       cancel = function(_) end,
       close = function(_) end,
     }
     local backend = make_backend({
-      watch_open = function(_, key, path) opened_with = { key = key, path = path }; return watch_handle end,
+      watch_open = function(_, key, cwd, env)
+        opened_with = { key = key, cwd = cwd, env = env }
+        return watch_handle
+      end,
     })
-    local stream, err = Client.new(backend):watch("fixture.count", "/repo")
+    local stream, err = Client.new(backend):watch("fixture.count", { cwd = "/repo", env = { X = "1" } })
     assert_nil(err)
     assert_not_nil(stream)
     assert_eq(opened_with.key, "fixture.count")
-    assert_eq(opened_with.path, "/repo")
+    assert_eq(opened_with.cwd, "/repo")
+    assert_eq(opened_with.env.X, "1")
 
     local ev = stream:next_event()
     assert_eq(ev.data, 42)
-    assert_eq(ev.age_ms, 5)
+  end)
+
+  test("watch defaults its cwd the way resolve does", function()
+    local opened_with
+    local backend = make_backend({
+      watch_open = function(_, key, cwd)
+        opened_with = cwd
+        return { next_event = function() return nil, nil, "eof" end, close = function() end }
+      end,
+    })
+    local client = Client.new(backend)
+    client:watch("k")
+    assert_eq(opened_with, ".")
+    client:set_context("/ctx")
+    client:watch("k")
+    assert_eq(opened_with, "/ctx")
   end)
 
   test("WatchStream:next_event returns nil, Error on outcome=error", function()

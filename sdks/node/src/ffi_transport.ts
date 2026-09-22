@@ -127,7 +127,7 @@ function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('k
     bc_session_get: [BcString, [BcSession, 'str', 'str', 'uint32']],
     bc_session_put: [BcString, [BcSession, 'str', 'str', 'str', 'str']],
     bc_session_set_context: [BcString, [BcSession, 'str']],
-    bc_watch_open: [BcWatch, [BcClient, 'str', 'str']],
+    bc_watch_open: [BcWatch, [BcClient, 'str', 'str', 'str']],
     bc_watch_next: [BcString, [BcWatch, 'int32']],
     bc_watch_cancel: ['void', [BcWatch]],
     bc_watch_free: ['void', [BcWatch]],
@@ -171,13 +171,8 @@ function parseWatchNext(raw: unknown): WatchNextResult {
     throw errorFromEnvelope(v.error);
   }
   if (v.outcome === 'event') {
-    const d = v.data as { data?: unknown; age_ms?: number | null; stale?: boolean | null } | undefined;
-    return {
-      outcome: 'event',
-      data: d?.data ?? null,
-      ageMs: d?.age_ms ?? null,
-      stale: d?.stale ?? null,
-    };
+    // The payload is the resolved value itself (null for a miss).
+    return { outcome: 'event', data: v.data ?? null };
   }
   return { outcome: v.outcome };
 }
@@ -269,8 +264,8 @@ export function createFfiTransport(): Transport {
       return parseEnvelope(await callAsync(fns.bc_session_set_context, session, path));
     },
 
-    openWatch(handle, key, path) {
-      return fns.bc_watch_open(handle, key, nullIfUndefined(path));
+    openWatch(handle, key, cwd, envJson) {
+      return fns.bc_watch_open(handle, key, cwd, nullIfUndefined(envJson));
     },
     async watchNext(watch, timeoutMs) {
       const raw = await callAsync(fns.bc_watch_next, watch, timeoutMs);

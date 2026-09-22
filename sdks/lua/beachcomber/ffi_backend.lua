@@ -228,8 +228,9 @@ end
 local Watch = {}
 Watch.__index = Watch
 
-function Backend:watch_open(key, path)
-  local wptr = self._C.bc_watch_open(self._client, key, path)
+function Backend:watch_open(key, cwd, env_vars)
+  local env_json = json.encode(env_vars or {})
+  local wptr = self._C.bc_watch_open(self._client, key, cwd, env_json)
   if wptr == nil then
     return nil, Error.new("io_error", "bc_watch_open returned NULL (allocation failure)")
   end
@@ -239,6 +240,8 @@ end
 
 --- @param timeout_ms number?  -1 (default) blocks indefinitely, 0 polls, >0 waits that long.
 --- @return event_table_or_nil, Error_or_nil, outcome_string ("event"|"timeout"|"eof"|"cancelled"|"error")
+-- The event's `data` is the resolved value — what `comb get` would print for
+-- the watched key — or nil when nothing is stored there.
 function Watch:next_event(timeout_ms)
   timeout_ms = timeout_ms or -1
   local ptr = self._C.bc_watch_next(self._w, timeout_ms)
@@ -247,10 +250,9 @@ function Watch:next_event(timeout_ms)
     return nil, Error.from(env.error), "error"
   end
   if env.outcome == "event" then
-    local d = env.data or {}
-    local data = d.data
+    local data = env.data
     if data == json.NULL then data = nil end -- see unwrap_get's comment above
-    return { data = data, age_ms = d.age_ms, stale = d.stale }, nil, "event"
+    return { data = data }, nil, "event"
   end
   return nil, nil, env.outcome
 end

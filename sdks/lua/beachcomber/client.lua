@@ -14,7 +14,7 @@
 -- put_null(key,path), status(), close(), and optionally
 -- refresh(key,path), introspect(subject,duration_secs), hello(),
 -- resolve(key,cwd,env),
--- eval(template,cwd,env), watch_open(key,path) — each returning a
+-- eval(template,cwd,env), watch_open(key,cwd,env) — each returning a
 -- canonical response table `{ok, data, age_ms, stale, error={kind,message}}`.
 -- A backend that omits an optional method signals the capability doesn't
 -- exist over that transport; Client turns that into Error.unsupported().
@@ -257,15 +257,21 @@ function Client:eval(template_str, opts)
   return resp.data
 end
 
---- Subscribe to changes for a key, returning a WatchStream.
--- @param key  string
--- @param path string?
+--- Subscribe to a key's *value* — what Client:resolve answers for it — and
+-- receive it again whenever it changes, so a template edited under the watch
+-- fires it just as a changed cache record does. Returns a WatchStream.
+-- @param key  string  "provider.field" or a bare provider name
+-- @param opts table?  Same shape as Client:resolve's opts: opts.cwd (default:
+--                      context path, then "."), opts.env (the caller's
+--                      environment for env.* refs)
 -- @return WatchStream, or nil, Error
-function Client:watch(key, path)
+function Client:watch(key, opts)
   if not self._backend.watch_open then
     return nil, Error.unsupported("watch", self:transport())
   end
-  local handle, err = self._backend:watch_open(key, self:_path(path))
+  opts = opts or {}
+  local cwd = opts.cwd or self._context_path or "."
+  local handle, err = self._backend:watch_open(key, cwd, opts.env or {})
   if not handle then return nil, err end
   return WatchStream.new(handle)
 end

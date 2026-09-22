@@ -235,7 +235,7 @@ func TestClient_Introspect_NonDaemon(t *testing.T) {
 
 func TestClient_Watch_NextEvent(t *testing.T) {
 	c := requireClient(t)
-	ws, err := c.Watch("hostname.short", "")
+	ws, err := c.Watch("hostname.short", "/tmp", nil)
 	if err != nil {
 		t.Fatalf("Watch: %v", err)
 	}
@@ -247,6 +247,47 @@ func TestClient_Watch_NextEvent(t *testing.T) {
 	}
 	if ev == nil {
 		t.Fatal("expected an initial event, got nil")
+	}
+}
+
+// The first event is what Resolve answers for the same key, cwd and env —
+// template rendered, environment applied — and a put to the template the
+// value is rendered from fires the watch again.
+func TestClient_Watch_ResolvedValueAndTemplateRefire(t *testing.T) {
+	c := requireClient(t)
+	env := map[string]string{"GO_WATCH_TPL": "v1"}
+	if err := c.Put("gowatchtpl:template", map[string]interface{}{"f": "{{ env.GO_WATCH_TPL }}"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	resolved, err := c.Resolve("gowatchtpl.f", "/tmp", env)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	ws, err := c.Watch("gowatchtpl.f", "/tmp", env)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer ws.Close()
+
+	ev, err := ws.NextEvent()
+	if err != nil {
+		t.Fatalf("NextEvent: %v", err)
+	}
+	if ev == nil || ev.Data != resolved.Data {
+		t.Fatalf("first event %v must equal Resolve's %v", ev, resolved.Data)
+	}
+
+	if err := c.Put("gowatchtpl:template", map[string]interface{}{"f": "{{ env.GO_WATCH_TPL }}!"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	ev, err = ws.NextEvent()
+	if err != nil {
+		t.Fatalf("NextEvent after template put: %v", err)
+	}
+	if ev == nil || ev.Data != "v1!" {
+		t.Fatalf("expected the re-rendered value, got %v", ev)
 	}
 }
 

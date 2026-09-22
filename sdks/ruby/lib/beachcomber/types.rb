@@ -14,7 +14,11 @@ module Beachcomber
     :watch_backend, :reaper, :verdicts,
     keyword_init: true
   )
-  WatchEvent = Struct.new(:data, :age_ms, :stale, keyword_init: true)
+  # One emitted change on a watch. +data+ is the resolved value — what
+  # `comb get` would print for the watched key — or nil when nothing is
+  # stored there. A value resolved from several cache records has no
+  # single age or staleness, so a watch reports neither.
+  WatchEvent = Struct.new(:data, keyword_init: true)
 
   module IntrospectSubject
     DAEMON    = "daemon"

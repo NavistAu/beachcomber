@@ -199,7 +199,8 @@ class ConformanceRunner
       # context is session-scoped; not testable here without a session — skip
       [nil, nil]
     when 'watch'
-      stream = @client.watch(args['key'], path: args['path'])
+      cwd    = fixture['cwd'] || @default_cwd
+      stream = @client.watch(args['key'], cwd: cwd, env: fixture['env'])
       event  = stream.next_event
       stream.close
       [event, nil]
@@ -430,19 +431,18 @@ class ConformanceRunner
     end
   end
 
-  # age_ms is present exactly when the response is a cache hit (get) or a
-  # delivered watch event — mirroring the reference runner's
-  # CanonicalResponse, where every other op leaves age_ms as None. Ruby's
-  # Result#age_ms is never nil (it defaults a missing wire value to 0), so
-  # presence can't be read off the accessor directly — it has to be derived
-  # from the op/result shape the same way the reference does.
+  # age_ms is present exactly when the response is a cache hit (get) —
+  # mirroring the reference runner's CanonicalResponse, where every other op
+  # leaves age_ms as None. Ruby's Result#age_ms is never nil (it defaults a
+  # missing wire value to 0), so presence can't be read off the accessor
+  # directly — it has to be derived from the op/result shape the same way the
+  # reference does. A watch event carries a resolved value, which can come
+  # from several records at once and so has no age.
   def check_age_ms_present(name, expected, result, op)
     actual =
       case op
       when 'get'
         result.respond_to?(:hit?) ? result.hit? : false
-      when 'watch'
-        result.is_a?(Beachcomber::WatchEvent)
       else
         false
       end
@@ -451,15 +451,13 @@ class ConformanceRunner
     end
   end
 
-  # stale is only meaningful alongside a get hit or a delivered watch event —
-  # same reasoning as check_age_ms_present.
+  # stale is only meaningful alongside a get hit — same reasoning as
+  # check_age_ms_present.
   def check_stale(name, expected, result, op)
     actual =
       case op
       when 'get'
         result.respond_to?(:hit?) && result.hit? ? result.stale? : nil
-      when 'watch'
-        result.is_a?(Beachcomber::WatchEvent) ? result.stale : nil
       else
         nil
       end

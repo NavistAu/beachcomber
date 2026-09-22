@@ -116,23 +116,27 @@ type IntrospectResponse struct {
 	Other   interface{}
 }
 
-// WatchEvent is one event from a watch stream.
+// WatchEvent is one emitted change on a watch. Data is the resolved value —
+// what comb get would print for the watched key — or nil when nothing is
+// stored there. A value resolved from several cache records has no single
+// age or staleness, so a watch reports neither.
 type WatchEvent struct {
-	Data  interface{}
-	AgeMs uint64
-	Stale bool
+	Data interface{}
 }
 
 // WatchStream holds a handle to a watch subscription opened via bc_watch_open.
-// Call Close to cancel and free it.
+// Each event is the resolved value of the watched key, re-resolved whenever
+// any key the resolution reads changes, including the provider's template
+// tree. Call Close to cancel and free it.
 type WatchStream struct {
 	lib    *nativeLib
 	handle uintptr
 }
 
-// NextEvent blocks until the daemon emits the next change. Returns nil, nil
-// when the stream ends (daemon closed the connection, or the watch was
-// cancelled).
+// NextEvent blocks until the watched value changes. Returns nil, nil when
+// the stream ends (daemon closed the connection, or the watch was
+// cancelled); an event whose Data is nil is a miss, not the end of the
+// stream.
 func (w *WatchStream) NextEvent() (*WatchEvent, error) {
 	env, err := w.lib.callWatch(w.lib.bcWatchNext, w.handle, i32arg(-1))
 	if err != nil {
@@ -391,16 +395,21 @@ func (c *Client) Introspect(subject IntrospectSubject, durationSecs uint64) (*In
 	return parseIntrospectFromData(subject, data)
 }
 
-// Watch subscribes to changes on a key. The returned stream holds a watch
-// handle; call Close on it to cancel and free it.
-func (c *Client) Watch(key, path string) (*WatchStream, error) {
+// Watch subscribes to the value of key — what Resolve answers for it — and
+// emits it again whenever it changes, so a template edited under the watch
+// fires it just as a changed cache record does. cwd and env mean what they
+// mean for Resolve, and for the same reason: this library reads no ambient
+// state on the caller's behalf. cwd is required. The returned stream holds a
+// watch handle; call Close on it to cancel and free it.
+func (c *Client) Watch(key, cwd string, env map[string]string) (*WatchStream, error) {
 	if c.loadErr != nil {
 		return nil, c.loadErr
 	}
-	keyBuf, pathBuf := cBytes(key), optBytes(path)
-	r1, _, _ := purego.SyscallN(c.lib.bcWatchOpen, c.handle, ptrOf(keyBuf), ptrOf(pathBuf))
+	keyBuf, cwdBuf, envBuf := cBytes(key), cBytes(cwd), jsonMapBytes(env)
+	r1, _, _ := purego.SyscallN(c.lib.bcWatchOpen, c.handle, ptrOf(keyBuf), ptrOf(cwdBuf), ptrOf(envBuf))
 	runtime.KeepAlive(keyBuf)
-	runtime.KeepAlive(pathBuf)
+	runtime.KeepAlive(cwdBuf)
+	runtime.KeepAlive(envBuf)
 	if r1 == 0 {
 		return nil, &LibraryError{Message: "beachcomber: bc_watch_open: allocation failure", LibVersion: c.lib.version}
 	}

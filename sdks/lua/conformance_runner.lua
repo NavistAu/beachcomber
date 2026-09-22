@@ -147,9 +147,8 @@ end
 
 --- Run one op descriptor {op=, args=} through the Client's public API and
 -- return a canonical response table {ok, data, age_ms, stale, error}.
--- `resolve_ctx` supplies the fixture's top-level cwd/env for the `resolve`
--- and `eval` ops, neither of which is a wire op (see
--- tests/conformance/README.md).
+-- `resolve_ctx` supplies the fixture's top-level cwd/env for the `resolve`,
+-- `eval` and `watch` ops (see tests/conformance/README.md).
 local function run_op(client, descriptor, resolve_ctx)
   local op, args = descriptor.op, descriptor.args or {}
 
@@ -195,14 +194,16 @@ local function run_op(client, descriptor, resolve_ctx)
     return { ok = true, data = result.other }
 
   elseif op == "watch" then
-    local stream, err = client:watch(args.key, args.path)
+    local stream, err = client:watch(args.key, { cwd = resolve_ctx.cwd, env = resolve_ctx.env })
     if not stream then return fail(err) end
     local ev, everr = stream:next_event()
     stream:close()
     if not ev then
       return fail(everr or { kind = "eof", message = "watch stream closed with no event" })
     end
-    return { ok = true, data = ev.data, age_ms = ev.age_ms, stale = ev.stale }
+    -- A watch event carries a resolved value, which can come from several
+    -- records at once: no age, no staleness.
+    return { ok = true, data = ev.data }
 
   elseif op == "resolve" then
     local value, err = client:resolve(args.key, { cwd = resolve_ctx.cwd, env = resolve_ctx.env })

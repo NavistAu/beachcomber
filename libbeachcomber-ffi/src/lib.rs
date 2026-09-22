@@ -4,13 +4,14 @@
 
 use std::ffi::{CStr, CString, c_char};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 pub mod envelope;
 
 use envelope::{ErrorKind, FfiError, WatchOutcome, call_ffi, call_watch_next};
 use libbeachcomber::resolve::{self, FetchError, Inputs, ResolveError, Slot};
+use libbeachcomber::watch::{ResolvedWatch, WatchError, WatchOutcome as LibWatchOutcome};
 use libbeachcomber::{
     CacheRow, ClientFetch, CombResult, DaemonHealth, IntrospectResponse, IntrospectSubject,
 };
@@ -21,8 +22,14 @@ use std::collections::HashMap;
 /// Construction never fails from the caller's point of view: a malformed
 /// `options_json` is recorded here and surfaced on the handle's first
 /// operation instead of failing the constructor.
+///
+/// The client sits behind an [`Arc`] because a watch outlives the call that
+/// opened it: [`bc_watch_open`] hands a share to the
+/// [`ResolvedWatch`](libbeachcomber::watch::ResolvedWatch) it returns, so a
+/// `BcWatch` keeps its client alive rather than resting on a
+/// "free the client last" contract no other handle has.
 pub struct BcClient {
-    state: Result<libbeachcomber::Client, FfiError>,
+    state: Result<Arc<libbeachcomber::Client>, FfiError>,
 }
 
 static VERSION_CSTRING: OnceLock<CString> = OnceLock::new();
@@ -91,7 +98,7 @@ unsafe fn build_client(options_json: *const c_char) -> Result<libbeachcomber::Cl
 /// `options_json` must be NULL or a valid pointer to a NUL-terminated string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_client_new(options_json: *const c_char) -> *mut BcClient {
-    let state = unsafe { build_client(options_json) };
+    let state = unsafe { build_client(options_json) }.map(Arc::new);
     Box::into_raw(Box::new(BcClient { state }))
 }
 
@@ -137,7 +144,22 @@ fn check_get_flags(flags: u32) -> Result<(), FfiError> {
 /// [`bc_client_new`], not yet freed.
 unsafe fn client_ref<'a>(client: *mut BcClient) -> Result<&'a libbeachcomber::Client, FfiError> {
     let handle = unsafe { &*client };
-    handle.state.as_ref().map_err(|e| e.clone())
+    handle
+        .state
+        .as_ref()
+        .map(|client| &**client)
+        .map_err(|e| e.clone())
+}
+
+/// A share of the handle's underlying client, for an operation whose result
+/// outlives the call ([`bc_watch_open`]), or its deferred construction error.
+///
+/// # Safety
+/// `client` must be a valid, non-null pointer previously returned by
+/// [`bc_client_new`], not yet freed.
+unsafe fn client_arc(client: *mut BcClient) -> Result<Arc<libbeachcomber::Client>, FfiError> {
+    let handle = unsafe { &*client };
+    handle.state.as_ref().map(Arc::clone).map_err(|e| e.clone())
 }
 
 /// # Safety
@@ -731,15 +753,29 @@ pub unsafe extern "C" fn bc_session_set_context(
 
 // ── Watch (Task 3.7) ────────────────────────────────────────────────────
 
-/// How often [`bc_watch_next`]'s poll loop re-checks the cancellation flag
-/// (and, for `timeout_ms > 0`, re-checks the deadline) between read
-/// attempts. Bounds how long a call may block past [`bc_watch_cancel`]
-/// being invoked on another thread: the underlying blocking read is never
-/// asked to wait longer than this in one attempt, so cancellation is
-/// noticed within roughly one tick even under `timeout_ms = -1`.
-const WATCH_POLL_TICK: Duration = Duration::from_millis(50);
+/// A watch failure as an envelope error.
+///
+/// The same classification [`resolve_error`] makes of a resolution, plus the
+/// two failures only a watch has: a key that cannot be watched at all, which
+/// is the caller's input being wrong (`parse_error`, in the library's own
+/// words — no daemon was involved in deciding it), and a transport failure,
+/// which keeps the kind its `CombError` gave it.
+fn watch_error(e: WatchError) -> FfiError {
+    match e {
+        WatchError::EnvKey(m) => FfiError::new(ErrorKind::ParseError, m),
+        WatchError::Resolve(ResolveError::Config(m)) => FfiError::new(ErrorKind::ParseError, m),
+        WatchError::Resolve(ResolveError::Runtime(m)) => FfiError::new(ErrorKind::ServerError, m),
+        WatchError::Resolve(ResolveError::Fetch(FetchError::Rejected(m))) => {
+            FfiError::new(ErrorKind::ServerError, m)
+        }
+        WatchError::Resolve(ResolveError::Fetch(FetchError::Transport(m))) => {
+            FfiError::new(ErrorKind::IoError, m)
+        }
+        WatchError::Transport(e) => FfiError::from(e),
+    }
+}
 
-/// Opaque handle to a watch stream.
+/// Opaque handle to a watch.
 ///
 /// Guarded the same way [`BcSession`] is: an internal mutex that
 /// [`bc_watch_next`] takes with `try_lock`, yielding `kind: "busy"` for a
@@ -747,81 +783,119 @@ const WATCH_POLL_TICK: Duration = Duration::from_millis(50);
 /// **outside** that mutex — [`bc_watch_cancel`] is the one call in this
 /// crate documented as safe to invoke from another thread while an op is in
 /// flight, and it must not itself block on the lock a pending
-/// [`bc_watch_next`] is holding.
+/// [`bc_watch_next`] is holding. It is the watch's own
+/// [`cancel_handle`](ResolvedWatch::cancel_handle), not a second flag beside
+/// it: setting it is what ends a wait already inside
+/// [`ResolvedWatch::next`], which is where a blocked call actually sits.
+///
+/// `ended` latches the terminal state. A watch that has reported `eof` has
+/// nothing left that could ever answer, and one that failed ended on that
+/// failure — so neither resumes polling on the next call: the `eof` comes
+/// back from `ended`, and the failure comes back because it replaced the
+/// [`ResolvedWatch`] in `watch`.
 pub struct BcWatch {
-    stream: Mutex<Result<libbeachcomber::WatchStream, FfiError>>,
-    cancelled: AtomicBool,
+    watch: Mutex<Result<ResolvedWatch<'static>, FfiError>>,
+    cancelled: Arc<AtomicBool>,
+    ended: AtomicBool,
 }
 
-/// Opens a watch on `key`. Returns NULL only on allocation failure — any
-/// other failure (a `client` whose own construction failed, or the watch
-/// request itself failing) is recorded on the handle and surfaced on the
+/// Opens a watch on the *value* of `key` — what `bc_resolve(key, cwd,
+/// env_json)` answers — and emits it again whenever it changes. The fan-in
+/// underneath subscribes to every key the resolution read plus the
+/// provider's `<provider>:template`, so a template edited under the watch
+/// fires it exactly as a changed cache record does.
+///
+/// `cwd` and `env_json` mean what they mean for [`bc_resolve`], and for the
+/// same reason: this library reads no ambient state on the caller's behalf,
+/// so the directory a watch addresses and the environment its templates see
+/// are handed in. `cwd` is required — NULL is an error rather than a
+/// fallback to the process's own working directory — and is both the slot
+/// every subscription is opened at and the `cwd` every re-resolution runs
+/// with. `env_json` is nullable, meaning "no environment": every `env.*` is
+/// `""`. There is no global-entry form, as there is none for `bc_resolve`.
+/// `exec()` inside a template runs only on a client created with
+/// `{"exec":true}`.
+///
+/// Returns NULL only on allocation failure — any other failure (a `client`
+/// whose own construction failed, a key that cannot be watched, or the
+/// opening resolution failing) is recorded on the handle and surfaced on the
 /// first [`bc_watch_next`] call instead.
 ///
 /// # Safety
 /// `client` must be a valid, non-null pointer from [`bc_client_new`]; `key`
-/// must be non-null and NUL-terminated; `path` must be NULL or
+/// and `cwd` must be non-null and NUL-terminated; `env_json` must be NULL or
 /// NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_watch_open(
     client: *mut BcClient,
     key: *const c_char,
-    path: *const c_char,
+    cwd: *const c_char,
+    env_json: *const c_char,
 ) -> *mut BcWatch {
     let state = (|| {
-        let c = unsafe { client_ref(client) }?;
+        let c = unsafe { client_arc(client) }?;
         let key = unsafe { required_str(key, "key") }?;
-        let path = unsafe { optional_str(path) }?;
-        c.watch(key, path).map_err(FfiError::from)
+        let cwd = unsafe { required_str(cwd, "cwd") }?;
+        let env_vars = parse_env_json(unsafe { optional_str(env_json) }?)?;
+        let inputs = Inputs {
+            cwd,
+            env: &env_vars,
+            slot: Slot::Path(cwd.to_string()),
+            // A watch is a subscription, not a demand: it never forces an
+            // execution or waits on one.
+            force: false,
+            wait: false,
+            allow_exec: c.allow_exec(),
+        };
+        ResolvedWatch::open_owned(c, key, &inputs).map_err(watch_error)
     })();
+    // A watch that never opened has no wait to interrupt; the flag exists
+    // only so `bc_watch_cancel` stays null-safe-simple on every handle.
+    let cancelled = match &state {
+        Ok(watch) => watch.cancel_handle(),
+        Err(_) => Arc::new(AtomicBool::new(false)),
+    };
     Box::into_raw(Box::new(BcWatch {
-        stream: Mutex::new(state),
-        cancelled: AtomicBool::new(false),
+        watch: Mutex::new(state),
+        cancelled,
+        ended: AtomicBool::new(false),
     }))
 }
 
-fn is_timeout_like(e: &std::io::Error) -> bool {
-    matches!(
-        e.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-    )
-}
-
-fn watch_event_to_json(e: &libbeachcomber::WatchEvent) -> serde_json::Value {
-    serde_json::json!({
-        "data": e.data.as_ref().map(|d| d.as_value().clone()),
-        "age_ms": e.age_ms,
-        "stale": e.stale,
-    })
-}
-
-/// Waits for the next event on `w`. `timeout_ms`: `-1` blocks indefinitely,
-/// `0` polls (returns immediately if nothing is ready), `>0` waits that
-/// long. Distinguishes five outcomes, all machine-readable without string
-/// matching (see [`WatchOutcome`]): `event`, `timeout`, `eof`, `cancelled`
-/// (via `ok:true` plus an `outcome` field), and `error` (the ordinary
-/// `ok:false` envelope, already machine-readable via `error.kind`).
-/// `error` is reserved for the daemon actively rejecting the watched key
-/// (a malformed response line, or the `ServerError` a malformed or
-/// unregistered key produces — an address nothing answers is a miss frame,
-/// not an error) — any lower-level socket failure (a reset
+/// Waits for the next value on `w`. `timeout_ms`: `-1` blocks indefinitely,
+/// `0` polls (one pass over the open subscriptions, then `timeout` if none
+/// of them had anything), `>0` waits that long. Distinguishes five outcomes,
+/// all machine-readable without string matching (see [`WatchOutcome`]):
+/// `event` — whose `data` is the resolved value, `null` for a miss —
+/// `timeout`, `eof`, `cancelled` (via `ok:true` plus an `outcome` field),
+/// and `error` (the ordinary `ok:false` envelope, already machine-readable
+/// via `error.kind`).
+///
+/// Only a change is an event: a frame whose re-resolution comes out the same
+/// value keeps the wait going. The first call on a provider key answers with
+/// the value as it was when the watch opened, without waiting for a change —
+/// but do not assume it: on a facet key the first value comes over the wire,
+/// so the first call can just as well be `timeout`, `eof`, or the daemon's
+/// refusal of the key.
+///
+/// `error` is the daemon actively rejecting the watched key, or a template
+/// the resolution cannot render; any lower-level socket failure (a reset
 /// connection, or even a failing `set_read_timeout`, observed on macOS as
 /// `EINVAL` from `setsockopt` on an already-reset unix socket rather than
-/// the loss surfacing on the next read) is treated as `eof`: from a
-/// caller's point of view the stream is over either way, and a binding
-/// should not have to special-case platform-specific socket-teardown
-/// quirks as a distinct failure mode.
+/// the loss surfacing on the next read) is `eof`: from a caller's point of
+/// view the stream is over either way, and a binding should not have to
+/// special-case platform-specific socket-teardown quirks as a distinct
+/// failure mode.
 ///
-/// Internally this holds the socket's read timeout to at most
-/// [`WATCH_POLL_TICK`] per attempt and loops, re-checking the cancellation
-/// flag and (for `timeout_ms > 0`) the deadline between attempts, rather
-/// than issuing one read for the full requested wait — that is what lets
+/// Both terminal outcomes latch: after `eof`, or after an `error`, every
+/// later call reports the same thing rather than resuming the poll.
+///
+/// The wait itself is [`ResolvedWatch::next`]'s — a bounded read per open
+/// subscription in turn, re-checking the cancellation flag between passes,
+/// rather than one read for the full requested wait. That is what lets
 /// [`bc_watch_cancel`], called from another thread mid-wait, unblock a
-/// pending call within about one tick instead of only at the next natural
-/// wakeup. A timed-out attempt's partially-read bytes (if a line arrived
-/// split across attempts) are preserved across retries by
-/// [`libbeachcomber::WatchStream::read_line_buffered`] rather than
-/// discarded, so this cannot silently drop half of an event.
+/// pending call within about one poll tick instead of only at the next
+/// natural wakeup.
 ///
 /// # Safety
 /// `w` must be a valid, non-null pointer previously returned by
@@ -833,7 +907,10 @@ pub unsafe extern "C" fn bc_watch_next(w: *mut BcWatch, timeout_ms: i32) -> *mut
         if handle.cancelled.load(Ordering::SeqCst) {
             return Ok(WatchOutcome::Cancelled);
         }
-        let mut guard = match handle.stream.try_lock() {
+        if handle.ended.load(Ordering::SeqCst) {
+            return Ok(WatchOutcome::Eof);
+        }
+        let mut guard = match handle.watch.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::WouldBlock) => {
                 return Err(FfiError::new(
@@ -843,59 +920,30 @@ pub unsafe extern "C" fn bc_watch_next(w: *mut BcWatch, timeout_ms: i32) -> *mut
             }
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
-        let stream = guard.as_mut().map_err(|e| e.clone())?;
 
-        // `timeout_ms < 0` (canonically -1) blocks indefinitely: no deadline.
-        let deadline =
-            (timeout_ms > 0).then(|| Instant::now() + Duration::from_millis(timeout_ms as u64));
-
-        let mut line = String::new();
-        loop {
-            if handle.cancelled.load(Ordering::SeqCst) {
-                return Ok(WatchOutcome::Cancelled);
+        // `timeout_ms < 0` (canonically -1) blocks indefinitely.
+        let timeout = (timeout_ms >= 0).then(|| Duration::from_millis(timeout_ms as u64));
+        let outcome = {
+            let watch = guard.as_mut().map_err(|e| e.clone())?;
+            watch.next(timeout)
+        };
+        match outcome {
+            Ok(LibWatchOutcome::Value(value)) => Ok(WatchOutcome::Event(
+                value.unwrap_or(serde_json::Value::Null),
+            )),
+            Ok(LibWatchOutcome::Timeout) => Ok(WatchOutcome::Timeout),
+            Ok(LibWatchOutcome::Eof) => {
+                handle.ended.store(true, Ordering::SeqCst);
+                Ok(WatchOutcome::Eof)
             }
-            let attempt = if timeout_ms == 0 {
-                // A single minimal-wait attempt: "ready right now, or not".
-                Duration::from_millis(1)
-            } else if let Some(deadline) = deadline {
-                let now = Instant::now();
-                if now >= deadline {
-                    return Ok(WatchOutcome::Timeout);
-                }
-                (deadline - now).min(WATCH_POLL_TICK)
-            } else {
-                WATCH_POLL_TICK
-            };
-            // A socket that just lost its peer can fail to set a timeout at
-            // all (observed on macOS as `EINVAL` from `setsockopt` on an
-            // abruptly-reset unix socket) rather than surfacing the loss on
-            // the next read. Either way there is no connection left to wait
-            // on, so this is the same outcome a clean `read() == 0` would
-            // report: `eof`, not a distinct application-level `error`.
-            if stream.set_read_timeout(Some(attempt)).is_err() {
-                return Ok(WatchOutcome::Eof);
-            }
-
-            match stream.read_line_buffered(&mut line) {
-                Ok(0) => return Ok(WatchOutcome::Eof),
-                Ok(_) if line.ends_with('\n') => {
-                    let event =
-                        libbeachcomber::WatchStream::parse_line(&line).map_err(FfiError::from)?;
-                    return Ok(WatchOutcome::Event(watch_event_to_json(&event)));
-                }
-                // A partial final line with no trailing newline before EOF:
-                // there is no complete event to report.
-                Ok(_) => return Ok(WatchOutcome::Eof),
-                Err(e) if is_timeout_like(&e) => {
-                    if timeout_ms == 0 {
-                        return Ok(WatchOutcome::Timeout);
-                    }
-                    continue;
-                }
-                // Any other read failure (e.g. a reset connection) likewise
-                // means the stream is over, not that this particular call
-                // was rejected.
-                Err(_) => return Ok(WatchOutcome::Eof),
+            Ok(LibWatchOutcome::Cancelled) => Ok(WatchOutcome::Cancelled),
+            Err(e) => {
+                // The failure ended the watch: replacing the handle's
+                // `ResolvedWatch` with it is what makes every later call
+                // report it again instead of polling on.
+                let err = watch_error(e);
+                *guard = Err(err.clone());
+                Err(err)
             }
         }
     })
@@ -906,8 +954,8 @@ pub unsafe extern "C" fn bc_watch_next(w: *mut BcWatch, timeout_ms: i32) -> *mut
 /// different thread than the one driving `w`'s other operations — it never
 /// takes `w`'s internal lock, only sets an atomic flag a pending
 /// `bc_watch_next` polls for. A `bc_watch_next` call already in flight
-/// observes it within about [`WATCH_POLL_TICK`]; every call after this one
-/// observes it immediately.
+/// observes it within about one of [`ResolvedWatch::next`]'s poll ticks per
+/// open subscription; every call after this one observes it immediately.
 ///
 /// # Safety
 /// `w` must be either NULL or a pointer previously returned by

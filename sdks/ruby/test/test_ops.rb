@@ -223,30 +223,51 @@ class TestOps < Minitest::Test
 
   # --- watch ---
 
-  def test_watch_sends_watch_op
-    # The watch stream stays open; we use the MockServer's streaming behaviour.
-    # Build a minimal response then close the stream immediately.
-    @server.enqueue('{"ok":true,"data":"main","age_ms":10,"stale":false}')
-    stream = @client.watch('git.branch')
+  # A watch is a *resolved* watch: it resolves the key once, subscribes to
+  # every key that resolution read plus the provider's template tree, and
+  # re-resolves on every frame. So several requests reach the server, not
+  # one — the same canned answer is queued for each of them, and what these
+  # tests pin is the ops on the wire and the value the event carries.
+  def enqueue_many(response, count = 8)
+    count.times { @server.enqueue(response) }
+  end
+
+  def watch_requests
+    @server.requests.select { |r| r['op'] == 'watch' }
+  end
+
+  def test_watch_subscribes_to_the_key_and_to_its_template_tree
+    enqueue_many('{"ok":true,"data":"main","age_ms":10,"stale":false}')
+    stream = @client.watch('git.branch', cwd: '/repo')
     event = stream.next_event
     stream.close
 
-    req = @server.requests.last
-    assert_equal 'watch',      req['op']
-    assert_equal 'git.branch', req['key']
+    keys = watch_requests.map { |r| r['key'] }
+    assert_includes keys, 'git.branch'
+    assert_includes keys, 'git:template'
     assert_instance_of Beachcomber::WatchEvent, event
     assert_equal 'main', event.data
-    assert_equal 10,     event.age_ms
-    refute event.stale
   end
 
-  def test_watch_with_path_includes_path
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    stream = @client.watch('git.branch', path: '/repo')
+  def test_watch_addresses_the_given_cwd
+    enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    stream = @client.watch('git.branch', cwd: '/repo')
     stream.next_event
     stream.close
-    req = @server.requests.last
-    assert_equal '/repo', req['path']
+    refute_empty watch_requests
+    assert(watch_requests.all? { |r| r['path'] == '/repo' })
+  end
+
+  # A miss is an event carrying nil, not the end of the stream: the daemon's
+  # `{"ok":true}` is nothing stored at that address, and a later put can
+  # still give the key a value.
+  def test_watch_event_on_a_miss_carries_nil_rather_than_ending_the_stream
+    enqueue_many('{"ok":true}')
+    stream = @client.watch('nothing.here', cwd: '/repo')
+    event = stream.next_event
+    stream.close
+    assert_instance_of Beachcomber::WatchEvent, event
+    assert_nil event.data
   end
 
   def test_watch_stream_is_enumerable
@@ -254,8 +275,8 @@ class TestOps < Minitest::Test
   end
 
   def test_watch_cancel_unblocks_pending_next
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    stream = @client.watch('git.branch')
+    enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    stream = @client.watch('git.branch', cwd: '/repo')
     stream.next_event
     stream.cancel
     # After cancel, next_event returns nil (outcome: cancelled) rather than
@@ -291,14 +312,6 @@ class TestOps < Minitest::Test
   def test_eval_expression_evaluates_raw_template
     result = @client.eval_expression('{{ env.X | truncate(3) }}', cwd: '/tmp', env: { 'X' => 'abcdefgh' })
     assert_equal 'abc...', result
-  end
-
-  def test_watch_event_stale_flag
-    @server.enqueue('{"ok":true,"data":"old","age_ms":9000,"stale":true}')
-    stream = @client.watch('git.branch')
-    event = stream.next_event
-    stream.close
-    assert event.stale
   end
 
   # --- session additions ---

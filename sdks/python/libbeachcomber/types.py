@@ -70,6 +70,12 @@ class IntrospectResponse:
 
 @dataclass(frozen=True)
 class WatchEvent:
+    """One emitted change on a watch.
+
+    ``data`` is the resolved value — what ``comb get`` would print for the
+    watched key at that moment — or ``None`` when nothing is stored there.
+    A value resolved from several cache records has no single age or
+    staleness, so a watch reports neither.
+    """
+
     data: Any
-    age_ms: int
-    stale: bool

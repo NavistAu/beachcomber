@@ -365,14 +365,19 @@ module Beachcomber
       Beachcomber::FFI.call!(:bc_eval, @handle, template, cwd, json_or_nil(env))
     end
 
-    # Opens a persistent watch subscription. Returns a WatchStream
-    # (Enumerable). The caller is responsible for closing the stream.
+    # Opens a persistent watch on the *value* of +key+ — what {#resolve}
+    # answers for it — and emits it again whenever it changes. A template
+    # edited under the watch fires it just as a changed cache record does.
+    # Returns a WatchStream (Enumerable). The caller is responsible for
+    # closing the stream.
     #
-    # @param key [String]
-    # @param path [String, nil]
+    # @param key [String] "provider.field" or a bare provider name
+    # @param cwd [String] required, matching {#resolve} — the directory
+    #   every subscription addresses and every re-resolution runs at
+    # @param env [Hash, nil] the caller's environment for `env.*` refs
     # @return [WatchStream]
-    def watch(key, path: nil)
-      handle = Beachcomber::FFI.new_watch(@handle, key, path)
+    def watch(key, cwd:, env: nil)
+      handle = Beachcomber::FFI.new_watch(@handle, key, cwd, json_or_nil(env))
       raise Beachcomber::Error, 'bc_watch_open returned NULL (allocation failure)' if handle.nil? || handle.null?
 
       WatchStream.new(handle)

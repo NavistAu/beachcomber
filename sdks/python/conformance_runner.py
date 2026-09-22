@@ -153,7 +153,7 @@ def _run_op(
     Returns the raw response data (or None for ops that return nothing),
     or raises CombError / ServerError on failure.
 
-    `resolve_ctx` (only consulted for the `resolve` and `eval` ops) carries
+    `resolve_ctx` (consulted for the `resolve`, `eval` and `watch` ops) carries
     the fixture's `env`/`cwd` blocks — see tests/conformance/README.md.
     """
     if op == "resolve":
@@ -194,9 +194,11 @@ def _run_op(
             session.set_context(args.get("path", ""))
         return None
     if op == "watch":
+        assert resolve_ctx is not None
         key = args.get("key", "")
-        path = args.get("path")
-        with client.watch(key, path=path) as stream:
+        with client.watch(
+            key, cwd=resolve_ctx["cwd"], env=resolve_ctx["env"] or None
+        ) as stream:
             event = stream.next_event()
         return event
     if op == "introspect":
@@ -430,23 +432,20 @@ def _extract_data(result: Any) -> Any:
 
 
 def _extract_age_ms(result: Any) -> Optional[int]:
+    """A watch event has no age: it carries a resolved value, which can come
+    from several records at once."""
     from libbeachcomber.result import CombResult
-    from libbeachcomber.types import WatchEvent
 
     if isinstance(result, CombResult):
-        return result.age_ms
-    if isinstance(result, WatchEvent):
         return result.age_ms
     return None
 
 
 def _extract_stale(result: Any) -> Optional[bool]:
+    """See `_extract_age_ms`: a watch event has no staleness either."""
     from libbeachcomber.result import CombResult
-    from libbeachcomber.types import WatchEvent
 
     if isinstance(result, CombResult):
-        return result.stale
-    if isinstance(result, WatchEvent):
         return result.stale
     return None
 

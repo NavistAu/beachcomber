@@ -195,7 +195,7 @@ def test_session_get_put_set_context(client: Client) -> None:
 
 def test_watch_yields_initial_value(client: Client) -> None:
     client.put("watchwidget", {"v": 1})
-    with client.watch("watchwidget.v") as stream:
+    with client.watch("watchwidget.v", cwd="/tmp") as stream:
         event = stream.next_event()
         assert event is not None
         assert event.data == 1
@@ -203,8 +203,27 @@ def test_watch_yields_initial_value(client: Client) -> None:
 
 def test_watch_timeout_zero_returns_none_when_nothing_new(client: Client) -> None:
     client.put("watchwidget2", {"v": 1})
-    with client.watch("watchwidget2.v") as stream:
+    with client.watch("watchwidget2.v", cwd="/tmp") as stream:
         first = stream.next_event()
         assert first is not None
         second = stream.next_event(timeout_ms=0)
         assert second is None
+
+
+def test_watch_yields_the_resolved_value_and_refires_on_a_template_edit(
+    client: Client,
+) -> None:
+    """The event is what ``comb get`` would print, and the template the value
+    is rendered from is watched alongside the addressed key."""
+    client.put("watchtpl:template", {"f": "{{ env.WATCH_TPL }}"})
+    env = {"WATCH_TPL": "v1"}
+    with client.watch("watchtpl.f", cwd="/tmp", env=env) as stream:
+        first = stream.next_event()
+        assert first is not None
+        assert first.data == "v1"
+        assert first.data == client.resolve("watchtpl.f", cwd="/tmp", env=env).data
+
+        client.put("watchtpl:template", {"f": "{{ env.WATCH_TPL }}!"})
+        second = stream.next_event(timeout_ms=5000)
+        assert second is not None
+        assert second.data == "v1!"

@@ -187,11 +187,30 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
 
   it('watch yields the current value as its first event', async () => {
     await client.put('itest_watch', { count: 7 }, { path: '/tmp' });
-    const stream = await client.watch('itest_watch.count', '/tmp');
+    const stream = await client.watch('itest_watch.count', { cwd: '/tmp' });
     const iterator = stream[Symbol.asyncIterator]();
     const { value, done } = await iterator.next();
     assert.equal(done, false);
     assert.equal(value?.data, 7);
+    stream.close();
+  });
+
+  it('watch yields the resolved value and refires on a template edit', async () => {
+    // The event is what `resolve` answers for the same key, cwd and env,
+    // and the template the value is rendered from is watched alongside the
+    // addressed key.
+    const env = { NODE_WATCH_TPL: 'v1' };
+    await client.put('nodewatchtpl:template', { f: '{{ env.NODE_WATCH_TPL }}' });
+    const resolved = await client.resolve('nodewatchtpl.f', { cwd: '/tmp', env });
+
+    const stream = await client.watch('nodewatchtpl.f', { cwd: '/tmp', env });
+    const iterator = stream[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    assert.equal(first.value?.data, resolved);
+
+    await client.put('nodewatchtpl:template', { f: '{{ env.NODE_WATCH_TPL }}!' });
+    const second = await iterator.next();
+    assert.equal(second.value?.data, 'v1!');
     stream.close();
   });
 });

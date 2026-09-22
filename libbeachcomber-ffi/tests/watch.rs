@@ -1,6 +1,12 @@
 //! Watch: `bc_watch_open`, `bc_watch_next`, `bc_watch_cancel`,
-//! `bc_watch_free`. Task 3.7 of
-//! docs/superpowers/plans/2026-08-15-client-abi-and-sdk-refactor.md.
+//! `bc_watch_free`.
+//!
+//! Since Plan 4 Task 3 a watch is a *resolved* watch: `bc_watch_open` takes
+//! the same `cwd`/`env_json` pair `bc_resolve` does, every event is the
+//! value `bc_resolve` would return for that key, and the fan-in underneath
+//! subscribes to every key the resolution read plus the provider's
+//! `<p>:template`, so editing a template the value is rendered from fires
+//! the watch.
 //!
 //! Runs against a real in-process daemon spawned by `tests/common/daemon.rs`.
 
@@ -15,9 +21,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use beachcomber::envelope::bc_string_free;
 use beachcomber::{
-    BcClient, bc_client_free, bc_client_new, bc_put, bc_watch_cancel, bc_watch_free, bc_watch_next,
-    bc_watch_open,
+    BcClient, BcWatch, bc_client_free, bc_client_new, bc_put, bc_resolve, bc_watch_cancel,
+    bc_watch_free, bc_watch_next, bc_watch_open,
 };
+
+/// The directory every watch here addresses. Nothing is stored at it: each
+/// fixture `put`s globally, and the global entry is the last link of every
+/// path's chain (canon `field_resolution.md` §"Path resolution").
+const CWD: &str = "/tmp";
 
 fn client_for(sock: &Path) -> *mut BcClient {
     let json = format!(
@@ -37,6 +48,23 @@ fn read(ptr: *mut c_char) -> serde_json::Value {
     let body = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_string();
     unsafe { bc_string_free(ptr) };
     serde_json::from_str(&body).expect("envelope must be valid JSON")
+}
+
+/// `bc_watch_open` at [`CWD`] with an optional environment.
+fn open_watch(client: *mut BcClient, key: &str, env: Option<&str>) -> *mut BcWatch {
+    let key = cs(key);
+    let cwd = cs(CWD);
+    let env = env.map(cs);
+    let w = unsafe {
+        bc_watch_open(
+            client,
+            key.as_ptr(),
+            cwd.as_ptr(),
+            env.as_ref().map_or(ptr::null(), |e| e.as_ptr()),
+        )
+    };
+    assert!(!w.is_null());
+    w
 }
 
 /// Seeds a static namespace `key` with `data` (a JSON object literal, e.g.
@@ -70,19 +98,97 @@ unsafe impl<T> Sync for SendPtr<T> {}
 
 #[test]
 fn watch_next_first_call_yields_an_event_outcome() {
-    // The daemon's first watch frame is always the current value, so the
-    // very first `bc_watch_next` call — even with a generous wait — proves
-    // the "event" outcome without needing to trigger a change.
+    // A provider key is resolved once at open, so the very first
+    // `bc_watch_next` call answers with the current value without waiting for
+    // a change — and that value is the bare resolved value, not the daemon's
+    // `{data, age_ms, stale}` frame.
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    let key = cs("hostname.short");
-    let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null()) };
-    assert!(!watch.is_null());
+    put_static(client, "watch_first_test", r#"{"field":"v1"}"#);
+    let watch = open_watch(client, "watch_first_test.field", None);
 
     let v = read(unsafe { bc_watch_next(watch, 2000) });
     assert_eq!(v["ok"], serde_json::json!(true));
     assert_eq!(v["outcome"], serde_json::json!("event"));
-    assert!(v["data"].is_object());
+    assert_eq!(v["data"], serde_json::json!("v1"));
+
+    unsafe { bc_watch_free(watch) };
+    unsafe { bc_client_free(client) };
+}
+
+/// The equivalence Plan 3 models the whole surface on: a watch's first event
+/// is exactly what `bc_resolve` returns for the same key, `cwd` and
+/// `env_json` — template rendered, environment applied.
+#[test]
+fn watch_first_event_equals_bc_resolve_of_the_same_key() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let env = r#"{"EQ_VALUE":"rendered"}"#;
+    put_static(client, "eqprov:template", r#"{"f":"{{ env.EQ_VALUE }}"}"#);
+
+    let resolved = read(unsafe {
+        bc_resolve(
+            client,
+            cs("eqprov.f").as_ptr(),
+            cs(CWD).as_ptr(),
+            cs(env).as_ptr(),
+        )
+    });
+    assert_eq!(resolved["ok"], serde_json::json!(true), "{resolved}");
+    assert_eq!(resolved["data"], serde_json::json!("rendered"));
+
+    let watch = open_watch(client, "eqprov.f", Some(env));
+    let v = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(v["outcome"], serde_json::json!("event"), "{v}");
+    assert_eq!(
+        v["data"], resolved["data"],
+        "the first event must be bc_resolve's answer"
+    );
+
+    unsafe { bc_watch_free(watch) };
+    unsafe { bc_client_free(client) };
+}
+
+/// Editing the template the watched value is rendered from fires the watch:
+/// `tplprov:template` is not the address being watched, but the resolution
+/// read it, so the fan-in is subscribed to it.
+#[test]
+fn a_put_to_the_template_fires_the_watch() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    put_static(client, "tplprov:template", r#"{"f":"{{ 'v1' }}"}"#);
+    let watch = open_watch(client, "tplprov.f", None);
+
+    let first = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(first["data"], serde_json::json!("v1"), "{first}");
+
+    put_static(client, "tplprov:template", r#"{"f":"{{ 'v2' }}"}"#);
+
+    let v = read(unsafe { bc_watch_next(watch, 5000) });
+    assert_eq!(v["outcome"], serde_json::json!("event"), "{v}");
+    assert_eq!(v["data"], serde_json::json!("v2"));
+
+    unsafe { bc_watch_free(watch) };
+    unsafe { bc_client_free(client) };
+}
+
+/// A watch only emits when *its* value changes. A `put` to an unrelated
+/// namespace touches no key this resolution read, so the wait runs out.
+#[test]
+fn a_put_to_an_unrelated_key_does_not_fire_the_watch() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    put_static(client, "watch_unrelated_test", r#"{"field":"v1"}"#);
+    let watch = open_watch(client, "watch_unrelated_test.field", None);
+
+    let first = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(first["data"], serde_json::json!("v1"), "{first}");
+
+    put_static(client, "watch_elsewhere_test", r#"{"other":"v9"}"#);
+
+    let v = read(unsafe { bc_watch_next(watch, 300) });
+    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+    assert_eq!(v["outcome"], serde_json::json!("timeout"), "{v}");
 
     unsafe { bc_watch_free(watch) };
     unsafe { bc_client_free(client) };
@@ -93,9 +199,7 @@ fn watch_next_zero_timeout_polls_and_times_out_when_nothing_is_ready() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     put_static(client, "watch_timeout_test", r#"{"field":"v1"}"#);
-    let key = cs("watch_timeout_test.field");
-    let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null()) };
-    assert!(!watch.is_null());
+    let watch = open_watch(client, "watch_timeout_test.field", None);
 
     // Consume the initial-value event first so the next poll has nothing
     // pending.
@@ -115,9 +219,7 @@ fn watch_next_reports_eof_after_the_daemon_closes_the_connection() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     put_static(client, "watch_eof_test", r#"{"field":"v1"}"#);
-    let key = cs("watch_eof_test.field");
-    let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null()) };
-    assert!(!watch.is_null());
+    let watch = open_watch(client, "watch_eof_test.field", None);
 
     let first = read(unsafe { bc_watch_next(watch, 2000) });
     assert_eq!(first["outcome"], serde_json::json!("event"));
@@ -129,6 +231,11 @@ fn watch_next_reports_eof_after_the_daemon_closes_the_connection() {
     assert_eq!(v["ok"], serde_json::json!(true));
     assert_eq!(v["outcome"], serde_json::json!("eof"));
 
+    // The ended state is latched: a watch that has reported `eof` reports it
+    // again rather than resuming a poll over streams that can never answer.
+    let again = read(unsafe { bc_watch_next(watch, 0) });
+    assert_eq!(again["outcome"], serde_json::json!("eof"), "{again}");
+
     unsafe { bc_watch_free(watch) };
     unsafe { bc_client_free(client) };
 }
@@ -138,16 +245,40 @@ fn watch_next_on_an_invalid_key_yields_an_error_envelope() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     // An invalid facet key (two colons) is refused by the daemon on `watch`
-    // exactly as on `get`, so it errors as the stream's very first frame rather
-    // than the ordinary miss an unknown address would produce.
-    let key = cs("a:b:c.x");
-    let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null()) };
-    assert!(!watch.is_null());
+    // exactly as on `get`. A facet key has no template half to render, so the
+    // refusal arrives as the stream's first frame — on the first
+    // `bc_watch_next`, not at open.
+    let watch = open_watch(client, "a:b:c.x", None);
 
     let v = read(unsafe { bc_watch_next(watch, 2000) });
     assert_eq!(v["ok"], serde_json::json!(false));
     assert!(v["error"]["kind"].is_string());
     assert_ne!(v["error"]["kind"], serde_json::json!("busy"));
+
+    // Latched: the same error comes back rather than the watch resuming.
+    let again = read(unsafe { bc_watch_next(watch, 0) });
+    assert_eq!(again["error"], v["error"], "{again}");
+
+    unsafe { bc_watch_free(watch) };
+    unsafe { bc_client_free(client) };
+}
+
+/// `env.*` is constant for the life of a process, so there is nothing to
+/// watch. The refusal is the library's own words, made without reaching the
+/// daemon, and it is reported on the handle's first `bc_watch_next` like
+/// every other deferred open failure.
+#[test]
+fn watch_open_on_an_env_key_is_refused() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let watch = open_watch(client, "env.HOME", None);
+
+    let v = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+    assert_eq!(
+        v["error"]["message"],
+        serde_json::json!("env keys cannot be watched")
+    );
 
     unsafe { bc_watch_free(watch) };
     unsafe { bc_client_free(client) };
@@ -158,9 +289,7 @@ fn watch_cancel_from_another_thread_unblocks_a_pending_next() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     put_static(client, "watch_cancel_test", r#"{"field":"v1"}"#);
-    let key = cs("watch_cancel_test.field");
-    let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null()) };
-    assert!(!watch.is_null());
+    let watch = open_watch(client, "watch_cancel_test.field", None);
 
     // Consume the initial-value event so the next call genuinely blocks
     // waiting for a change that will never come.
@@ -193,9 +322,8 @@ fn watch_cancel_from_another_thread_unblocks_a_pending_next() {
 fn watch_next_called_concurrently_from_two_threads_yields_busy_for_one() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    let key = cs("hostname.short");
-    let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null()) };
-    assert!(!watch.is_null());
+    put_static(client, "watch_busy_test", r#"{"field":"v1"}"#);
+    let watch = open_watch(client, "watch_busy_test.field", None);
 
     let watch_ptr = SendPtr(watch);
     let ok_count = AtomicUsize::new(0);

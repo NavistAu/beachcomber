@@ -125,7 +125,7 @@ For latency-sensitive use, prefer `Session`.
 | `Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)` | Inspect a daemon subsystem. |
 | `Resolve(key, cwd string, env map[string]string) (*Result, error)` | The same value `comb get` returns for this key, cwd and env — the daemon holds the templates, the client renders them; a bare provider name is the whole merged namespace. |
 | `Eval(templateStr, cwd string, env map[string]string) (*Result, error)` | Render a template stored nowhere — the same value `comb eval` prints. |
-| `Watch(key, path string) (*WatchStream, error)` | Subscribe to live updates. |
+| `Watch(key, cwd string, env map[string]string) (*WatchStream, error)` | Subscribe to a key's resolved value. |
 | `Session() (*Session, error)` | Open a persistent connection. |
 
 `Resolve` and `Eval` require `cwd`: every fetch the resolution makes
@@ -190,7 +190,7 @@ string` (the address left over when the template walk stopped at a string —
 ### `WatchStream`
 
 ```go
-stream, err := client.Watch("git.branch", "/some/repo")
+stream, err := client.Watch("git.branch", "/some/repo", nil)
 if err != nil {
 	log.Fatal(err)
 }

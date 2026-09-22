@@ -517,7 +517,7 @@ static void stop_daemon(daemon_proc_t *dp) {
  * ---------------------------------------------------------------------- */
 
 /*
- * default_cwd: the directory `resolve`/`eval` fixtures get when they don't
+ * default_cwd: the directory `resolve`/`eval`/`watch` fixtures get when they don't
  * declare their own "cwd" — this run's shared per-run temp directory (real,
  * existing, but otherwise inert; fixtures that care about a specific cwd
  * always declare one explicitly).
@@ -585,9 +585,21 @@ static char *run_op(BcClient *client, BcSession *session,
     }
 
     if (strcmp(op_str, "watch") == 0) {
-        BcWatch *w = bc_watch_open(client, key ? key : "", path);
+        /* A watch is a resolved watch: the same fixture-level cwd / env
+         * "resolve" takes, and every event is the value bc_resolve would
+         * answer. */
+        const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
+        if (!cwd) cwd = default_cwd;
+
+        json_node_t *env_node = json_get(fixture_root, "env");
+        char *env_json = (env_node && env_node->type == JSON_OBJECT)
+                              ? serialise_node(env_node)
+                              : NULL;
+
+        BcWatch *w = bc_watch_open(client, key ? key : "", cwd, env_json);
         char *result = bc_watch_next(w, WATCH_TIMEOUT_MS);
         bc_watch_free(w);
+        free(env_json);
         return result;
     }
 
@@ -729,17 +741,19 @@ static int check_expect(const char *name, const json_node_t *expect,
         return 0;
     }
 
-    /* Only "get" and "watch" (event outcome) wrap their payload as
+    /* Only "get" wraps its payload as
      * {"data":{"data":<value>,"age_ms":...,"stale":...}}; every other op's
-     * envelope "data" field IS the value. A "get" payload also carries
-     * "template" and "rest" — the template half — only when set. */
+     * envelope "data" field IS the value — a watch event included, since
+     * Plan 4 Task 3 made it the resolved value rather than one address's
+     * frame. A "get" payload also carries "template" and "rest" — the
+     * template half — only when set. */
     json_node_t *data = json_get(root, "data");
     json_node_t *value = data;
     json_node_t *age_node = NULL;
     json_node_t *stale_node = NULL;
     json_node_t *template_node = NULL;
     json_node_t *rest_node = NULL;
-    int is_nested = strcmp(op_str, "get") == 0 || strcmp(op_str, "watch") == 0;
+    int is_nested = strcmp(op_str, "get") == 0;
     if (is_nested && data && data->type == JSON_OBJECT) {
         value = json_get(data, "data");
         age_node = json_get(data, "age_ms");

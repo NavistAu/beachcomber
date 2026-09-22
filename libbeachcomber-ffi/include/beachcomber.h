@@ -25,6 +25,12 @@
  * Construction never fails from the caller's point of view: a malformed
  * `options_json` is recorded here and surfaced on the handle's first
  * operation instead of failing the constructor.
+ *
+ * The client sits behind an [`Arc`] because a watch outlives the call that
+ * opened it: [`bc_watch_open`] hands a share to the
+ * [`ResolvedWatch`](libbeachcomber::watch::ResolvedWatch) it returns, so a
+ * `BcWatch` keeps its client alive rather than resting on a
+ * "free the client last" contract no other handle has.
  */
 typedef struct BcClient BcClient;
 
@@ -41,7 +47,7 @@ typedef struct BcClient BcClient;
 typedef struct BcSession BcSession;
 
 /**
- * Opaque handle to a watch stream.
+ * Opaque handle to a watch.
  *
  * Guarded the same way [`BcSession`] is: an internal mutex that
  * [`bc_watch_next`] takes with `try_lock`, yielding `kind: "busy"` for a
@@ -49,7 +55,16 @@ typedef struct BcSession BcSession;
  * **outside** that mutex — [`bc_watch_cancel`] is the one call in this
  * crate documented as safe to invoke from another thread while an op is in
  * flight, and it must not itself block on the lock a pending
- * [`bc_watch_next`] is holding.
+ * [`bc_watch_next`] is holding. It is the watch's own
+ * [`cancel_handle`](ResolvedWatch::cancel_handle), not a second flag beside
+ * it: setting it is what ends a wait already inside
+ * [`ResolvedWatch::next`], which is where a blocked call actually sits.
+ *
+ * `ended` latches the terminal state. A watch that has reported `eof` has
+ * nothing left that could ever answer, and one that failed ended on that
+ * failure — so neither resumes polling on the next call: the `eof` comes
+ * back from `ended`, and the failure comes back because it replaced the
+ * [`ResolvedWatch`] in `watch`.
  */
 typedef struct BcWatch BcWatch;
 
@@ -278,46 +293,70 @@ char *bc_session_put(BcSession *session,
 char *bc_session_set_context(BcSession *session, const char *path);
 
 /**
- * Opens a watch on `key`. Returns NULL only on allocation failure — any
- * other failure (a `client` whose own construction failed, or the watch
- * request itself failing) is recorded on the handle and surfaced on the
+ * Opens a watch on the *value* of `key` — what `bc_resolve(key, cwd,
+ * env_json)` answers — and emits it again whenever it changes. The fan-in
+ * underneath subscribes to every key the resolution read plus the
+ * provider's `<provider>:template`, so a template edited under the watch
+ * fires it exactly as a changed cache record does.
+ *
+ * `cwd` and `env_json` mean what they mean for [`bc_resolve`], and for the
+ * same reason: this library reads no ambient state on the caller's behalf,
+ * so the directory a watch addresses and the environment its templates see
+ * are handed in. `cwd` is required — NULL is an error rather than a
+ * fallback to the process's own working directory — and is both the slot
+ * every subscription is opened at and the `cwd` every re-resolution runs
+ * with. `env_json` is nullable, meaning "no environment": every `env.*` is
+ * `""`. There is no global-entry form, as there is none for `bc_resolve`.
+ * `exec()` inside a template runs only on a client created with
+ * `{"exec":true}`.
+ *
+ * Returns NULL only on allocation failure — any other failure (a `client`
+ * whose own construction failed, a key that cannot be watched, or the
+ * opening resolution failing) is recorded on the handle and surfaced on the
  * first [`bc_watch_next`] call instead.
  *
  * # Safety
  * `client` must be a valid, non-null pointer from [`bc_client_new`]; `key`
- * must be non-null and NUL-terminated; `path` must be NULL or
+ * and `cwd` must be non-null and NUL-terminated; `env_json` must be NULL or
  * NUL-terminated.
  */
-BcWatch *bc_watch_open(BcClient *client, const char *key, const char *path);
+BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json);
 
 /**
- * Waits for the next event on `w`. `timeout_ms`: `-1` blocks indefinitely,
- * `0` polls (returns immediately if nothing is ready), `>0` waits that
- * long. Distinguishes five outcomes, all machine-readable without string
- * matching (see [`WatchOutcome`]): `event`, `timeout`, `eof`, `cancelled`
- * (via `ok:true` plus an `outcome` field), and `error` (the ordinary
- * `ok:false` envelope, already machine-readable via `error.kind`).
- * `error` is reserved for the daemon actively rejecting the watched key
- * (a malformed response line, or the `ServerError` a malformed or
- * unregistered key produces — an address nothing answers is a miss frame,
- * not an error) — any lower-level socket failure (a reset
+ * Waits for the next value on `w`. `timeout_ms`: `-1` blocks indefinitely,
+ * `0` polls (one pass over the open subscriptions, then `timeout` if none
+ * of them had anything), `>0` waits that long. Distinguishes five outcomes,
+ * all machine-readable without string matching (see [`WatchOutcome`]):
+ * `event` — whose `data` is the resolved value, `null` for a miss —
+ * `timeout`, `eof`, `cancelled` (via `ok:true` plus an `outcome` field),
+ * and `error` (the ordinary `ok:false` envelope, already machine-readable
+ * via `error.kind`).
+ *
+ * Only a change is an event: a frame whose re-resolution comes out the same
+ * value keeps the wait going. The first call on a provider key answers with
+ * the value as it was when the watch opened, without waiting for a change —
+ * but do not assume it: on a facet key the first value comes over the wire,
+ * so the first call can just as well be `timeout`, `eof`, or the daemon's
+ * refusal of the key.
+ *
+ * `error` is the daemon actively rejecting the watched key, or a template
+ * the resolution cannot render; any lower-level socket failure (a reset
  * connection, or even a failing `set_read_timeout`, observed on macOS as
  * `EINVAL` from `setsockopt` on an already-reset unix socket rather than
- * the loss surfacing on the next read) is treated as `eof`: from a
- * caller's point of view the stream is over either way, and a binding
- * should not have to special-case platform-specific socket-teardown
- * quirks as a distinct failure mode.
+ * the loss surfacing on the next read) is `eof`: from a caller's point of
+ * view the stream is over either way, and a binding should not have to
+ * special-case platform-specific socket-teardown quirks as a distinct
+ * failure mode.
  *
- * Internally this holds the socket's read timeout to at most
- * [`WATCH_POLL_TICK`] per attempt and loops, re-checking the cancellation
- * flag and (for `timeout_ms > 0`) the deadline between attempts, rather
- * than issuing one read for the full requested wait — that is what lets
+ * Both terminal outcomes latch: after `eof`, or after an `error`, every
+ * later call reports the same thing rather than resuming the poll.
+ *
+ * The wait itself is [`ResolvedWatch::next`]'s — a bounded read per open
+ * subscription in turn, re-checking the cancellation flag between passes,
+ * rather than one read for the full requested wait. That is what lets
  * [`bc_watch_cancel`], called from another thread mid-wait, unblock a
- * pending call within about one tick instead of only at the next natural
- * wakeup. A timed-out attempt's partially-read bytes (if a line arrived
- * split across attempts) are preserved across retries by
- * [`libbeachcomber::WatchStream::read_line_buffered`] rather than
- * discarded, so this cannot silently drop half of an event.
+ * pending call within about one poll tick instead of only at the next
+ * natural wakeup.
  *
  * # Safety
  * `w` must be a valid, non-null pointer previously returned by
@@ -331,8 +370,8 @@ char *bc_watch_next(BcWatch *w, int32_t timeout_ms);
  * different thread than the one driving `w`'s other operations — it never
  * takes `w`'s internal lock, only sets an atomic flag a pending
  * `bc_watch_next` polls for. A `bc_watch_next` call already in flight
- * observes it within about [`WATCH_POLL_TICK`]; every call after this one
- * observes it immediately.
+ * observes it within about one of [`ResolvedWatch::next`]'s poll ticks per
+ * open subscription; every call after this one observes it immediately.
  *
  * # Safety
  * `w` must be either NULL or a pointer previously returned by

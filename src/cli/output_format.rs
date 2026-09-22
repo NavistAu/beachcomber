@@ -21,17 +21,6 @@ pub enum OutputFormat {
     Fmt(String),
 }
 
-impl OutputFormat {
-    /// The `render_data` format name for this output format.
-    pub fn render_format(&self) -> &str {
-        match self {
-            OutputFormat::Text => "text",
-            OutputFormat::Sh => "sh",
-            _ => "json",
-        }
-    }
-}
-
 /// Parse the `-f` / `--format` argument string into an `OutputFormat`.
 pub fn parse_output_format(format_str: &str, fmt_template: Option<&str>) -> OutputFormat {
     match format_str {

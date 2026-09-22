@@ -24,6 +24,7 @@ use crate::resolve::{FetchError, Inputs, ResolveError, Slot, resolve_with_deps};
 use crate::{Client, ClientFetch, CombError, WatchStream};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -78,6 +79,29 @@ impl std::fmt::Display for WatchError {
 }
 
 impl std::error::Error for WatchError {}
+
+/// The [`Client`] a watch drives: borrowed, or owned by the watch itself.
+///
+/// A watch outlives the call that opened it, and a handle that crosses the C
+/// ABI (`libbeachcomber-ffi`'s `BcWatch`) cannot carry a borrow — so
+/// [`ResolvedWatch::open_owned`] takes an [`Arc`] and the watch keeps the
+/// client alive for as long as it lives. Rust callers keep the cheaper borrow
+/// through [`ResolvedWatch::open`].
+enum ClientRef<'a> {
+    Borrowed(&'a Client),
+    Owned(Arc<Client>),
+}
+
+impl Deref for ClientRef<'_> {
+    type Target = Client;
+
+    fn deref(&self) -> &Client {
+        match self {
+            ClientRef::Borrowed(client) => client,
+            ClientRef::Owned(client) => client,
+        }
+    }
+}
 
 /// Which of the three key classes a watch is.
 enum Kind {
@@ -158,7 +182,7 @@ impl OwnedInputs {
 /// connections are held open for as long as this value lives; drop it to
 /// disconnect.
 pub struct ResolvedWatch<'a> {
-    client: &'a Client,
+    client: ClientRef<'a>,
     inputs: OwnedInputs,
     key: String,
     kind: Kind,
@@ -181,6 +205,14 @@ impl<'a> ResolvedWatch<'a> {
     /// [`next`](Self::next) answers with the current value without waiting for
     /// a change.
     pub fn open(client: &'a Client, key: &str, inputs: &Inputs<'_>) -> Result<Self, WatchError> {
+        Self::open_with(ClientRef::Borrowed(client), key, inputs)
+    }
+
+    fn open_with(
+        client: ClientRef<'a>,
+        key: &str,
+        inputs: &Inputs<'_>,
+    ) -> Result<Self, WatchError> {
         if key == "env" || key.starts_with("env.") {
             return Err(WatchError::EnvKey("env keys cannot be watched".to_string()));
         }
@@ -208,7 +240,7 @@ impl<'a> ResolvedWatch<'a> {
             });
         }
 
-        let mut fetch = ClientFetch::new(client);
+        let mut fetch = ClientFetch::new(&client);
         let resolved = {
             let borrowed = inputs.as_inputs();
             resolve_with_deps(key, &borrowed, &mut fetch)
@@ -217,7 +249,7 @@ impl<'a> ResolvedWatch<'a> {
 
         let mut streams = Vec::new();
         for (dep_key, dep_path) in &deps {
-            if let Some(stream) = open_stream(client, dep_key, dep_path.as_deref())? {
+            if let Some(stream) = open_stream(&client, dep_key, dep_path.as_deref())? {
                 streams.push((dep_key.clone(), dep_path.clone(), stream));
             }
         }
@@ -231,7 +263,7 @@ impl<'a> ResolvedWatch<'a> {
         // left that can fire once a later `put` makes the key answerable.
         let provider = namespace(key);
         let template_stream =
-            open_stream(client, &format!("{provider}:template"), path.as_deref())?;
+            open_stream(&client, &format!("{provider}:template"), path.as_deref())?;
 
         let mut watch = Self {
             client,
@@ -376,7 +408,7 @@ impl<'a> ResolvedWatch<'a> {
     /// Resolve again, move the subscriptions onto that resolution's deps, and
     /// report whether the value changed.
     fn reresolve(&mut self) -> Result<bool, WatchError> {
-        let mut fetch = ClientFetch::new(self.client);
+        let mut fetch = ClientFetch::new(&self.client);
         let resolved = {
             let inputs = self.inputs.as_reresolve_inputs();
             resolve_with_deps(&self.key, &inputs, &mut fetch)
@@ -395,7 +427,7 @@ impl<'a> ResolvedWatch<'a> {
             {
                 continue;
             }
-            if let Some(stream) = open_stream(self.client, dep_key, dep_path.as_deref())? {
+            if let Some(stream) = open_stream(&self.client, dep_key, dep_path.as_deref())? {
                 self.streams
                     .push((dep_key.clone(), dep_path.clone(), stream));
             }
@@ -407,6 +439,23 @@ impl<'a> ResolvedWatch<'a> {
         }
         self.last = value;
         Ok(true)
+    }
+}
+
+impl ResolvedWatch<'static> {
+    /// [`open`](Self::open), over a client this watch owns a share of.
+    ///
+    /// The watch borrows nothing, so it can be stored in a handle that
+    /// outlives every stack frame in sight — which is what a `bc_watch_*`
+    /// handle is. The [`Arc`] is what keeps the client alive; there is no
+    /// "the client must outlive the watch" contract for a caller to get
+    /// wrong.
+    pub fn open_owned(
+        client: Arc<Client>,
+        key: &str,
+        inputs: &Inputs<'_>,
+    ) -> Result<Self, WatchError> {
+        Self::open_with(ClientRef::Owned(client), key, inputs)
     }
 }
 
@@ -528,7 +577,7 @@ mod tests {
     fn next_ends_when_no_streams_remain() {
         let client = Client::new();
         let mut w = ResolvedWatch {
-            client: &client,
+            client: ClientRef::Borrowed(&client),
             inputs: owned(false, false),
             key: "p.field".to_string(),
             kind: Kind::Resolved,

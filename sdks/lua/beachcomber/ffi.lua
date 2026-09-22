@@ -41,7 +41,7 @@ char *bc_session_get(BcSession *session, const char *key, const char *path, uint
 char *bc_session_put(BcSession *session, const char *key, const char *json_data, const char *ttl, const char *path);
 char *bc_session_set_context(BcSession *session, const char *path);
 
-BcWatch *bc_watch_open(BcClient *client, const char *key, const char *path);
+BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json);
 char *bc_watch_next(BcWatch *w, int32_t timeout_ms);
 void bc_watch_cancel(BcWatch *w);
 void bc_watch_free(BcWatch *w);

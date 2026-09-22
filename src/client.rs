@@ -33,7 +33,7 @@ const SOCKET_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 /// the override unconditionally, before `auto_start` is ever consulted;
 /// `auto_start: false` is set anyway, belt-and-suspenders, so this stays
 /// safe even if that short-circuit ever moves.
-fn build_client(socket_path: &Path) -> libbeachcomber::Client {
+pub fn build_client(socket_path: &Path) -> libbeachcomber::Client {
     libbeachcomber::Client::with_config(libbeachcomber::ClientConfig {
         timeout: SOCKET_TIMEOUT,
         auto_start: false,
@@ -222,8 +222,6 @@ pub struct Client {
 /// avoiding the per-request connect/disconnect overhead.
 pub struct ClientSession {
     session: libbeachcomber::Session,
-    socket_path: PathBuf,
-    watch_stream: Option<libbeachcomber::WatchStream>,
 }
 
 impl ClientSession {
@@ -231,11 +229,7 @@ impl ClientSession {
         let session = build_client(socket_path)
             .session()
             .map_err(comb_error_to_io)?;
-        Ok(Self {
-            session,
-            socket_path: socket_path.to_path_buf(),
-            watch_stream: None,
-        })
+        Ok(Self { session })
     }
 
     pub fn set_context(&mut self, path: &str) -> std::io::Result<Response> {
@@ -288,65 +282,6 @@ impl ClientSession {
         path: Option<&str>,
     ) -> std::io::Result<Response> {
         unit_to_response(self.session.put_null(key, path))
-    }
-
-    /// Send a watch request. Call read_watch_event() in a loop to receive
-    /// updates.
-    ///
-    /// `libbeachcomber::Session` deliberately has no `watch`: the daemon
-    /// puts a watched connection into permanent streaming mode, so no
-    /// other op can share it afterward, which is the opposite of what
-    /// `Session` (multiple ops, one connection) is for. So this opens a
-    /// second, independent connection via `libbeachcomber::Client::watch`
-    /// and switches this adapter over to reading from that -- meaning a
-    /// `ClientSession` that calls `watch` holds two open sockets (this
-    /// session's original connection, now idle, plus the watch stream)
-    /// for its remaining lifetime, where the pre-adapter client issued
-    /// `watch` directly on the session's one connection. Every current
-    /// caller (`cli/commands/watch.rs`) opens a session purely to watch
-    /// and does nothing else with it first, so this is a spare idle
-    /// socket, not a correctness gap -- but it couldn't be closed without
-    /// adding watch-on-`Session` support to `libbeachcomber`, which is out
-    /// of scope for this task.
-    ///
-    /// The daemon streams JSON frames only (Task 1.8 retired server-side
-    /// `text`/`sh` rendering for watch), so this always requests the
-    /// default JSON framing; callers render non-JSON output formats locally
-    /// from each event's `data`.
-    pub fn watch(&mut self, key: &str, path: Option<&str>) -> std::io::Result<()> {
-        let stream = build_client(&self.socket_path)
-            .watch(key, path)
-            .map_err(comb_error_to_io)?;
-        self.watch_stream = Some(stream);
-        Ok(())
-    }
-
-    /// Read the next watch event, JSON-decoded. Returns `Ok(None)` on EOF.
-    ///
-    /// A daemon-level rejection (`ok: false`) is returned as
-    /// `Ok(Some(Response::error(..)))`, matching this adapter's usual
-    /// `to_response` convention -- only a genuine transport failure becomes
-    /// `Err`. Callers render `response.data` locally for non-JSON output
-    /// formats (Task 1.8: the daemon streams JSON frames only).
-    pub fn read_watch_event(&mut self) -> std::io::Result<Option<Response>> {
-        let stream = self
-            .watch_stream
-            .as_mut()
-            .ok_or_else(|| std::io::Error::other("read_watch_event called before watch"))?;
-        match stream.next_event() {
-            Ok(Some(ev)) => Ok(Some(Response {
-                ok: true,
-                data: ev.data.map(|d| d.as_value().clone()),
-                age_ms: Some(ev.age_ms as u128),
-                stale: Some(ev.stale),
-                error: None,
-                template: None,
-                rest: None,
-            })),
-            Ok(None) => Ok(None),
-            Err(CombError::ServerError(msg)) => Ok(Some(Response::error(msg))),
-            Err(e) => Err(comb_error_to_io(e)),
-        }
     }
 }
 

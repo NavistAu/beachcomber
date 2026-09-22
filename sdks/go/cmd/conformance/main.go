@@ -447,8 +447,11 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 
 	case "watch":
 		key, _ := op.Args["key"].(string)
-		path, _ := op.Args["path"].(string)
-		ws, err := c.Watch(key, path)
+		cwd := f.Cwd
+		if cwd == "" {
+			cwd = tmpDir
+		}
+		ws, err := c.Watch(key, cwd, f.Env)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -520,10 +523,9 @@ func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serve
 	isError := serverErr != nil
 
 	if we != nil {
+		// A watch event carries a resolved value, which can come from several
+		// records at once: no age, no staleness.
 		data = we.Data
-		ageMs = we.AgeMs
-		ageMsSet = we.AgeMs > 0
-		stale = we.Stale
 	} else if r != nil {
 		data = r.data
 		ageMs = r.ageMs

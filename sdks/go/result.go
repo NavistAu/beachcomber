@@ -344,22 +344,14 @@ func parseIntrospectFromData(subject IntrospectSubject, raw json.RawMessage) (*I
 	return resp, nil
 }
 
-// watchEventWire mirrors watch_event_to_json in libbeachcomber-ffi/src/lib.rs.
-type watchEventWire struct {
-	Data  json.RawMessage `json:"data"`
-	AgeMs uint64          `json:"age_ms"`
-	Stale bool            `json:"stale"`
-}
-
+// watchEventFromData reads bc_watch_next's event payload, which is the
+// resolved value itself (null for a miss) — see WatchOutcome::Event in
+// libbeachcomber-ffi/src/envelope.rs.
 func watchEventFromData(raw json.RawMessage) (*WatchEvent, error) {
-	var w watchEventWire
-	if err := json.Unmarshal(raw, &w); err != nil {
-		return nil, &ProtocolError{msg: "malformed watch event: " + err.Error()}
-	}
-	ev := &WatchEvent{AgeMs: w.AgeMs, Stale: w.Stale}
-	if len(w.Data) > 0 && string(w.Data) != "null" {
+	ev := &WatchEvent{}
+	if len(raw) > 0 && string(raw) != "null" {
 		var d interface{}
-		if err := json.Unmarshal(w.Data, &d); err != nil {
+		if err := json.Unmarshal(raw, &d); err != nil {
 			return nil, &ProtocolError{msg: "malformed watch event data: " + err.Error()}
 		}
 		ev.Data = d

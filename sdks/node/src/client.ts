@@ -237,6 +237,10 @@ function flagsOf(opts?: { force?: boolean; wait?: boolean }): number {
 /**
  * An AsyncIterable that yields WatchEvent values from an open watch handle.
  *
+ * Each event is the resolved value of the watched key — what `comb get`
+ * would print for it — re-resolved whenever any key the resolution reads
+ * changes, including the provider's template tree.
+ *
  * Iterate with `for await (const event of stream)`. Call `stream.close()`
  * to stop watching.
  */
@@ -253,7 +257,7 @@ export class WatchStream implements AsyncIterable<WatchEvent> {
       while (!this.closed) {
         const result = await this.tp.watchNext(this.handle, -1);
         if (result.outcome === 'event') {
-          yield { data: result.data ?? null, ageMs: result.ageMs ?? 0, stale: result.stale ?? false };
+          yield { data: result.data ?? null };
         } else if (result.outcome === 'eof' || result.outcome === 'cancelled') {
           return;
         }
@@ -529,14 +533,21 @@ export class Client {
   }
 
   /**
-   * Open a watch stream for a key. The stream is an AsyncIterable<WatchEvent>.
-   * Call `stream.close()` to stop watching.
+   * Watch a key's *value* — what `resolve` answers for it — and receive it
+   * again whenever it changes, so a template edited under the watch fires it
+   * just as a changed cache record does. The stream is an
+   * AsyncIterable<WatchEvent>; call `stream.close()` to stop watching.
+   *
+   * `cwd` and `env` mean what they mean for `resolve`, and for the same
+   * reason: this library never falls back to the process's own working
+   * directory or environment.
    *
    * @param key   Provider key, e.g. `"git.branch"`.
-   * @param path  Optional repository path.
+   * @param opts  `cwd` (required) and `env`, as `resolve` takes them.
    */
-  async watch(key: string, path?: string): Promise<WatchStream> {
-    const handle = this.tp.openWatch(this.handle, key, path);
+  async watch(key: string, opts: ResolveOptions): Promise<WatchStream> {
+    const envJson = opts.env !== undefined ? JSON.stringify(opts.env) : undefined;
+    const handle = this.tp.openWatch(this.handle, key, opts.cwd, envJson);
     return new WatchStream(this.tp, handle);
   }
 

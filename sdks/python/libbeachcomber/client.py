@@ -148,6 +148,10 @@ def _build_options_json(
 class WatchStream:
     """Iterator over watch events. Yields :class:`~beachcomber.types.WatchEvent` instances.
 
+    Each event is the *resolved value* of the watched key — what
+    ``comb get`` would print for it — re-resolved whenever any key the
+    resolution reads changes, including the provider's template tree.
+
     Create via :meth:`Client.watch` rather than directly. Wraps a native
     ``BcWatch`` handle; release it via :meth:`close` or by using the stream
     as a context manager.
@@ -176,20 +180,17 @@ class WatchStream:
                 polls without blocking, ``>0`` waits that long.
 
         Returns:
-            :class:`~beachcomber.types.WatchEvent` on the ``event``
-            outcome; ``None`` on ``timeout``, ``eof``, or ``cancelled``.
+            :class:`~beachcomber.types.WatchEvent` carrying the resolved
+            value on the ``event`` outcome; ``None`` on ``timeout``,
+            ``eof``, or ``cancelled``. An event whose ``data`` is ``None``
+            is a miss, not the end of the stream.
         """
         if self._ptr is None:
             return None
         env = self._lib.call_watch_next(self._ptr, timeout_ms)
         if env.get("outcome") != "event":
             return None
-        data = env.get("data") or {}
-        return WatchEvent(
-            data=data.get("data"),
-            age_ms=int(data.get("age_ms") or 0),
-            stale=bool(data.get("stale") or False),
-        )
+        return WatchEvent(data=env.get("data"))
 
     def cancel(self) -> None:
         """Unblock a pending or future :meth:`next_event` call from another thread."""
@@ -437,19 +438,35 @@ class Client:
             env_json.encode() if env_json is not None else None,
         )
 
-    def watch(self, key: str, path: Optional[str] = None) -> WatchStream:
-        """Subscribe to a key and receive live updates.
+    def watch(self, key: str, cwd: str, env: Optional[dict] = None) -> WatchStream:
+        """Subscribe to a key's *value* and receive it again whenever it changes.
+
+        Each event is the resolved value — what ``comb get`` would print for
+        this key, ``cwd`` and ``env`` — so a template edited under the watch
+        fires it just as a changed cache record does.
 
         Returns a :class:`WatchStream` iterator that yields
         :class:`~beachcomber.types.WatchEvent` instances. Release it via
         :meth:`WatchStream.close` or by using the stream as a context
         manager.
 
+        Args:
+            key: ``"provider.field"`` or a bare provider name.
+            cwd: Required, matching :meth:`resolve`'s ``cwd`` semantics —
+                the directory every subscription addresses and every
+                re-resolution runs at.
+            env: The caller's environment for ``env.*`` refs.
+
         Raises:
             CombError: subclass matching the failure kind.
         """
+        env_json = _opt_json(env)
         ptr = self._lib.call_ptr(
-            "bc_watch_open", self._ptr, key.encode(), path.encode() if path is not None else None
+            "bc_watch_open",
+            self._ptr,
+            key.encode(),
+            cwd.encode(),
+            env_json.encode() if env_json is not None else None,
         )
         if not ptr:
             raise CombError("bc_watch_open returned NULL")

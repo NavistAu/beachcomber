@@ -70,7 +70,12 @@ export interface Transport {
   ): Promise<Envelope>;
   sessionSetContext(session: SessionHandle, path: string): Promise<Envelope>;
 
-  openWatch(handle: ClientHandle, key: string, path: string | undefined): WatchHandle;
+  openWatch(
+    handle: ClientHandle,
+    key: string,
+    cwd: string,
+    envJson: string | undefined,
+  ): WatchHandle;
   watchNext(watch: WatchHandle, timeoutMs: number): Promise<WatchNextResult>;
   watchCancel(watch: WatchHandle): void;
   freeWatch(watch: WatchHandle): void;
