@@ -275,7 +275,7 @@ A tmux status bar polls every 10s. The user locks the laptop and doesn't touch i
 
 Provider: `mise`, emits both a pathless global entry and a path-scoped project entry (see `docs/provider-development.md`). Suppose the global entry is configured `keep-during-decay` because `~/.config/mise/config.toml` changes rarely but needs to be picked up promptly when it does.
 
-After the user hasn't queried `mise.global` for a while, the pathless entry enters Decay3. A filesystem change to `~/.config/mise/config.toml` fires an fsevent. Because watches are kept during decay for this provider, the fsevent executes the provider, writes a fresh global entry, and reinstates to Active. The user's next query hits a fresh value immediately.
+After the user hasn't queried the global `mise` entry for a while, the pathless entry enters Decay3. A filesystem change to `~/.config/mise/config.toml` fires an fsevent. Because watches are kept during decay for this provider, the fsevent executes the provider, writes a fresh global entry, and reinstates to Active. The user's next query hits a fresh value immediately.
 
 The project entry (path-scoped) is governed independently — it may be in any decay state at the same time and progresses on its own schedule.
 
