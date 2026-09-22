@@ -2576,7 +2576,7 @@ fn scalar_values_are_not_highlighted() {
 }
 
 #[test]
-fn a_template_rows_structured_value_keeps_its_cyan_marking() {
+fn a_template_rows_structured_value_opens_in_cyan() {
     // Design decision 5: cyan marks the whole VALUE cell for a rendered
     // (Template) row — including when the value is an object or array and
     // takes its own JSON highlighting, nested inside the cyan wrap rather

@@ -1523,11 +1523,12 @@ fn render_table(
                     value.chars().skip(MARKER_WIDTH).collect(),
                 )
             };
-            // Cyan is the colour build's mark for a rendered row — the whole
-            // VALUE cell (design decision 5), not just a plain-string body.
-            // A structured body still gets its own JSON highlighting nested
-            // inside, so the cyan wrap goes around it rather than being
-            // pre-empted by it.
+            // Cyan is the colour build's mark for a rendered row (design
+            // decision 5). A structured body still gets its own JSON
+            // highlighting nested inside; each highlighted token carries a
+            // full reset, so on-screen only the cell's opening brace stays
+            // cyan — the row is marked by that lead-in plus its SOURCE, not
+            // by an unbroken cyan span.
             let body = if matches!(row.kind, Some(crate::cache::RowKind::Template)) {
                 let body = if body.starts_with(['{', '[']) {
                     highlight_json(&body)
