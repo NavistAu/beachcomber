@@ -135,7 +135,7 @@ watch -c 'comb status --color=always'
 viddy 'comb status --color=always'
 ```
 
-`watch` needs its own `-c` to interpret the colour it is handed; without it the escape sequences render as literal text.
+`watch` needs its own `-c` to interpret the colour it is handed; without it the escape sequences render as literal text. Each refresh re-renders the caller's template leaves, `exec()` included, so a tight interval multiplies whatever the templates spawn.
 
 ```sh
 $ comb s
@@ -168,10 +168,10 @@ The daemon holds a template (`[providers."<p>:template"]`, the managed `defaults
 
 ```sh
 $ comb p scanline:template.greeting '"hi {{ env.USER }}"'
-$ USER=jane comb s --filter=provider=scanline
-PROVIDER            FIELD     SOURCE    VALUE               PATH  AGE  POLL  TTL
-scanline:template   greeting  put       hi {{ env.USER }}   -     0s      -  ---
-scanline            greeting  template  hi jane             -     0s      -  ---
+$ USER=jane comb s --filter='provider=scanline*'
+PROVIDER            FIELD     SOURCE    VALUE               PATH          AGE  POLL  TTL
+scanline:template   greeting  put       hi {{ env.USER }}   ~/ws/project  0s      -  ---
+scanline            greeting  template  hi jane             ~/ws/project  0s      -  ---
 ```
 
 A cached field with a template over it shows **both** rows at that same address — `git.branch` cached by the `head` Source plus a `git:template.branch` override both list, so the raw cached value and the effective rendered one are visible side by side rather than one hiding the other. A leaf whose expression fails to render shows the failure text as its value instead of dropping the row.

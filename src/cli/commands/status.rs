@@ -38,7 +38,7 @@ fn render_template_rows(
     rows: &[CacheRow],
     cwd: &str,
     env: &HashMap<String, String>,
-    client: &libbeachcomber::Client,
+    session: &mut crate::client::ClientSession,
     filters: &[String],
 ) -> Vec<CacheRow> {
     let chain = crate::query::path_chain(Some(cwd));
@@ -74,10 +74,9 @@ fn render_template_rows(
         wait: false,
         allow_exec: true,
     };
-    let mut fetch = libbeachcomber::ClientFetch::new(client);
     let mut out = Vec::new();
     for (provider, field) in addrs {
-        let value = match resolve(&format!("{provider}.{field}"), &inputs, &mut fetch) {
+        let value = match resolve(&format!("{provider}.{field}"), &inputs, session) {
             Ok(Some(value)) => value,
             Ok(None) => continue,
             Err(e) => serde_json::Value::String(e.to_string()),
@@ -179,13 +178,15 @@ pub fn run_status(
             // resolving every leaf as if the caller stood at "" — which
             // stamped rows with `path: Some("")`, an empty PATH cell that
             // reads as a lie. The daemon's own rows still print.
-            if let Ok(cwd) = std::env::current_dir() {
+            if let Ok(cwd) = std::env::current_dir()
+                && let Ok(mut session) = client.connect()
+            {
                 let cwd = cwd.to_string_lossy().into_owned();
                 let rendered = render_template_rows(
                     &rows,
                     &cwd,
                     &crate::cli::shell_env(),
-                    &crate::client::build_client(&socket_path),
+                    &mut session,
                     filters,
                 );
                 rows.extend(rendered);

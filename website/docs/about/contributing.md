@@ -65,7 +65,7 @@ See `docs/architecture.md` for a full overview. Key files:
 See `docs/provider-development.md` for a step-by-step walkthrough. The short version:
 
 1. Create `src/provider/yourprovider.rs` implementing the `Provider` trait
-2. Add tests in `tests/provider_yourprovider.rs`
+2. Add tests in `tests/suite/provider_yourprovider.rs`, registered as a `mod` in `tests/suite/main.rs`
 3. Register in `src/provider/mod.rs` and `src/provider/registry.rs`
 4. Run `cargo nextest run -E 'test(provider_yourprovider)'` and `cargo bench --bench providers`
 

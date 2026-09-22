@@ -14,7 +14,7 @@ The five "Open micro-decisions" listed at the bottom of this document are resolv
 - **TSV/CSV/sh/minijinja:** mirror the data model — every `CacheRow` field is its own column/key; the synthesised `TTL` column is human-preset only.
 - **Failure indicator IN scope:** `★`→`⚠` swap when provider is in failure-suppress; row turns red. Cell *content* (P × K) unchanged. Backoff/retry data in cell content is roadmap-deferred.
 - **CLI:** `--no-color` removed in favour of `--color=auto|always|never`; `--max-width` default bumped 40→120, with new `auto` value (`terminal_size` crate); new `--filter=lifecycle:…`, `--filter=fsevents_reinstate:…`, `--sort=lifecycle`, `--sort=poll_interval`.
-- **Tests:** mirror `tests/status_shape.rs`'s hand-maintained `assert!(out.contains(...))` style; do not introduce `insta`.
+- **Tests:** mirror `tests/suite/status_shape.rs`'s hand-maintained `assert!(out.contains(...))` style; do not introduce `insta`.
 
 ## Goal
 

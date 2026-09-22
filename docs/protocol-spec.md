@@ -492,6 +492,11 @@ Subjects: `daemon`, `providers`, `config`, `cache`, `lifecycle`, `watches`,
 }
 ```
 
+`active_watchers` counts open `Watch` connections, not distinct watched keys
+or clients: a resolved `comb watch` opens one `Watch` subscription per
+dependency its key's resolution reads, plus one on the provider's
+`<p>:template` facet, so a single client typically reads as 2 or more.
+
 Other subjects return different shapes; see `src/server.rs` for the current
 authoritative shape of each subject. Per-subject typed documentation is
 Phase 3+ work.

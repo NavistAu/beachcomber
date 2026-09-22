@@ -848,7 +848,7 @@ Some providers have different implementations per platform. Two patterns:
 
 **Submodule split (complex cases):** When platform differences are substantial, split into `provider_name/mod.rs` (shared), `provider_name/macos.rs`, `provider_name/linux.rs`. See `network/` for an example. The platform modules expose `pub(crate)` functions called from `mod.rs` via `#[cfg]` dispatch.
 
-For testing, gate platform-specific tests with `#[cfg(target_os = "...")]`. Make parse functions `pub(crate)` so they can be unit tested from `tests/` without exposing them publicly.
+For testing, gate platform-specific tests with `#[cfg(target_os = "...")]`. Make parse functions `pub(crate)` so they can be unit tested from a `#[cfg(test)]` module beside the code in `src/`, without exposing them publicly.
 
 ---
 

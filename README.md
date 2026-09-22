@@ -326,7 +326,7 @@ comb g git.branch:stale        # whether value is past refresh time
 
 Show all warm cache entries as a table — one row per provider field, with SOURCE naming what produced each value: a Source of the provider, `put`, `config:<file>`, or `template`. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, keep-alive count, and whether filesystem events will reinstate the entry (`◉`).
 
-`watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time.
+`watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time. Each refresh re-renders the caller's template leaves, `exec()` included, so a tight interval multiplies whatever the templates spawn.
 
 ```sh
 $ comb s

@@ -521,7 +521,7 @@ impl WatchStream {
     /// Parse one NDJSON watch-event line into a [`WatchEvent`]. Factored out
     /// of [`Self::next_event`] so the fan-in
     /// ([`crate::watch::ResolvedWatch`]), which reads frames itself through
-    /// [`Self::read_frame_with_timeout`] rather than through `next_event`,
+    /// `read_frame_with_timeout` rather than through `next_event`,
     /// reuses the same parsing instead of duplicating it.
     pub fn parse_line(line: &str) -> Result<WatchEvent, CombError> {
         let resp: serde_json::Value =
@@ -549,7 +549,7 @@ impl WatchStream {
     }
 
     /// Sets the underlying socket's read timeout. `None` blocks
-    /// indefinitely. [`Self::read_frame_with_timeout`] is the bounded read
+    /// indefinitely. `read_frame_with_timeout` is the bounded read
     /// built on it, and is what every poll loop in the workspace uses —
     /// there is deliberately no raw line-reading escape hatch beside it for
     /// a caller to rebuild that loop from.

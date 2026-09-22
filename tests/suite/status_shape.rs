@@ -2577,10 +2577,11 @@ fn scalar_values_are_not_highlighted() {
 
 #[test]
 fn a_template_rows_structured_value_opens_in_cyan() {
-    // Design decision 5: cyan marks the whole VALUE cell for a rendered
-    // (Template) row — including when the value is an object or array and
-    // takes its own JSON highlighting, nested inside the cyan wrap rather
-    // than pre-empting it.
+    // Design decision 5: cyan marks a rendered (Template) row's VALUE cell.
+    // A structured body still gets its own JSON highlighting, and each
+    // highlighted token carries a full reset, so on-screen only the cell's
+    // opening brace stays cyan — the row is marked by that lead-in plus its
+    // SOURCE, not by an unbroken cyan span.
     let mut row = wide_value_row();
     row.kind = Some(beachcomber::cache::RowKind::Template);
     row.value = serde_json::json!({"name": "claude"});
