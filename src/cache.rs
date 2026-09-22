@@ -1217,10 +1217,19 @@ pub struct CacheRow {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RowKind {
-    Lifecycle { decay: u8, watches_files: bool },
+    Lifecycle {
+        decay: u8,
+        watches_files: bool,
+    },
     Once,
     Static,
     Transient,
+    /// A row the CLI rendered from a template leaf for the caller's own
+    /// directory and environment. Produced by the CLI, never by the daemon:
+    /// a template is data the daemon holds at `<p>:template` and never
+    /// evaluates (canon `field_resolution.md` invariant 7), so `list_rows`
+    /// never emits this kind and nothing carrying it comes off the wire.
+    Template,
 }
 
 /// Failure state for a cache entry, embedded in status rows.

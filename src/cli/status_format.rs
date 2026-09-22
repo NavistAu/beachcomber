@@ -194,7 +194,11 @@ pub fn format_ttl_cell(
     let dot_ring = if ascii { "+" } else { "\u{2299}" }; // ⊙
 
     match kind {
-        None | Some(RowKind::Once) | Some(RowKind::Static) | Some(RowKind::Transient) => TtlCell {
+        None
+        | Some(RowKind::Once)
+        | Some(RowKind::Static)
+        | Some(RowKind::Transient)
+        | Some(RowKind::Template) => TtlCell {
             text: "---".into(),
             color: None,
         },
@@ -584,6 +588,7 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
         },
     );
     ctx.insert("field".into(), serde_json::Value::String(r.field.clone()));
+    ctx.insert("source".into(), serde_json::Value::String(r.source.clone()));
     ctx.insert("value".into(), r.value.clone());
     ctx.insert("age_ms".into(), serde_json::json!(r.age_ms));
     ctx.insert(
@@ -597,6 +602,7 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
         Some(RowKind::Once) => "once",
         Some(RowKind::Static) => "static",
         Some(RowKind::Transient) => "transient",
+        Some(RowKind::Template) => "template",
         None => "",
     };
     ctx.insert("kind".into(), serde_json::Value::String(kind_str.into()));
@@ -700,6 +706,7 @@ pub fn render_tsv(rows: &[CacheRow]) -> String {
             Some(RowKind::Once) => "once",
             Some(RowKind::Static) => "static",
             Some(RowKind::Transient) => "transient",
+            Some(RowKind::Template) => "template",
             None => "",
         };
         let decay = match &row.kind {
@@ -731,10 +738,11 @@ pub fn render_tsv(rows: &[CacheRow]) -> String {
             .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))
             .unwrap_or_default();
         out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             row.provider,
             path,
             row.field,
+            row.source,
             value,
             row.age_ms,
             row.stale,
@@ -759,7 +767,7 @@ pub fn render_csv(rows: &[CacheRow]) -> String {
     let mut out = String::new();
 
     // Header row
-    out.push_str("PROVIDER,PATH,FIELD,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,KEEP_ALIVE_POLLS,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS\n");
+    out.push_str("PROVIDER,PATH,FIELD,SOURCE,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,KEEP_ALIVE_POLLS,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS\n");
 
     for row in rows {
         let path = row.path.as_deref().unwrap_or("");
@@ -770,6 +778,7 @@ pub fn render_csv(rows: &[CacheRow]) -> String {
             Some(RowKind::Once) => "once",
             Some(RowKind::Static) => "static",
             Some(RowKind::Transient) => "transient",
+            Some(RowKind::Template) => "template",
             None => "",
         };
         let decay = match &row.kind {
@@ -799,10 +808,11 @@ pub fn render_csv(rows: &[CacheRow]) -> String {
             .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))
             .unwrap_or_default();
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_quote(&row.provider),
             csv_quote(path),
             csv_quote(&row.field),
+            csv_quote(&row.source),
             csv_quote(&value),
             row.age_ms,
             stale,
@@ -841,12 +851,16 @@ pub fn render_sh_env(rows: &[CacheRow]) -> String {
         let value = value_to_string(&row.value);
         let quoted = shell_quote(&value);
         out.push_str(&format!("{key}={quoted}\n"));
+        // source — which Source produced the value, `template` when the CLI
+        // rendered it here rather than the daemon caching it.
+        out.push_str(&format!("{key}_SOURCE={}\n", shell_quote(&row.source)));
         // kind
         let kind_str = match &row.kind {
             Some(RowKind::Lifecycle { .. }) => Some("lifecycle"),
             Some(RowKind::Once) => Some("once"),
             Some(RowKind::Static) => Some("static"),
             Some(RowKind::Transient) => Some("transient"),
+            Some(RowKind::Template) => Some("template"),
             None => None,
         };
         if let Some(kind_val) = kind_str {
@@ -933,29 +947,62 @@ fn sanitize_ident(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 // Column indices for the human/table preset.
-const COLS: usize = 7;
-// TTL is the last column (index 6); failure-state colouring skips only this
+const COLS: usize = 8;
+// TTL is the last column (index 7); failure-state colouring skips only this
 // one (its own warn-glyph + red already come from format_ttl_cell). POLL
-// (index 5) is a plain column and gets red-wrapped like the others.
-const TTL_COL_IDX: usize = 6;
+// (index 6) is a plain column and gets red-wrapped like the others.
+const TTL_COL_IDX: usize = 7;
 // PROVIDER and FIELD sit adjacent because together they are the cache key the
-// user typed (`git.branch`); PATH follows VALUE as the scope qualifier rather
-// than splitting the key. Human/table presets only — the machine presets
+// user typed (`git.branch`); SOURCE follows, naming what produced the VALUE
+// beside it (a Source, `put`, `config:<file>`, or `template` for a row this
+// CLI rendered); PATH follows VALUE as the scope qualifier rather than
+// splitting the key. Human/table presets only — the machine presets
 // (json/tsv/csv/sh) keep their own established column order.
-const HEADERS: [&str; COLS] = ["PROVIDER", "FIELD", "VALUE", "PATH", "AGE", "POLL", "TTL"];
+const HEADERS: [&str; COLS] = [
+    "PROVIDER", "FIELD", "SOURCE", "VALUE", "PATH", "AGE", "POLL", "TTL",
+];
 const H_PROVIDER: usize = 0;
 const H_FIELD: usize = 1;
-const H_VALUE: usize = 2;
-const H_PATH: usize = 3;
-const H_AGE: usize = 4;
-const H_POLL: usize = 5;
+const H_SOURCE: usize = 2;
+const H_VALUE: usize = 3;
+const H_PATH: usize = 4;
+const H_AGE: usize = 5;
+const H_POLL: usize = 6;
+
+/// Ceiling on the SOURCE column in the human/table presets, lifted by
+/// `--no-trunc`.
+///
+/// SOURCE would otherwise take its natural width like PROVIDER, because a
+/// Source name is short (`refs`, `head`, `put`, `template`). One kind is not:
+/// a `config:<file>` label is a whole path, and uncapped it pinned VALUE and
+/// PATH at their floors across every row of the table. Its tail
+/// (`…/defaults/aws.toml`) is what tells one config file from another, so the
+/// cell truncates from the head, like PATH does.
+const MAX_SOURCE_WIDTH: usize = 24;
+
+/// The glyph that marks a rendered row's VALUE cell when colour is off.
+///
+/// A rendered row is computed here, from this shell's environment and
+/// directory — it is not what the daemon holds. Colour says so with Cyan;
+/// without colour the cell needs a mark of its own, so the two builds carry
+/// the same information.
+fn template_marker(
+    kind: Option<&crate::cache::RowKind>,
+    color_enabled: bool,
+    ascii: bool,
+) -> &'static str {
+    if color_enabled || !matches!(kind, Some(crate::cache::RowKind::Template)) {
+        return "";
+    }
+    if ascii { "> " } else { "\u{25b8} " }
+}
 
 /// Render rows as aligned columns for the `human` preset.
 ///
 /// - `color_enabled`: apply per-cell ANSI colour (AGE yellow/green by stale, TTL by decay,
 ///   failure rows red on non-TTL cells, JSON syntax highlighting in structured VALUE cells).
 /// - `trunc`: maximum width for the VALUE column (in characters). `None` = no truncation.
-/// - `header`: prepend a PROVIDER / FIELD / VALUE / PATH / AGE / POLL / TTL header row.
+/// - `header`: prepend a PROVIDER / FIELD / SOURCE / VALUE / PATH / AGE / POLL / TTL header row.
 /// - `ascii`: use ASCII-only glyphs in the TTL cell instead of Unicode.
 pub fn render_human(rows: &[CacheRow], opts: &FormatOptions) -> String {
     render_table(rows, false, None, true, opts.ascii, true)
@@ -1159,10 +1206,11 @@ fn render_table(
 
     // -----------------------------------------------------------------------
     // Pass 1: measure natural widths of every column (no truncation).
-    // Columns: PROVIDER, FIELD, VALUE, PATH, AGE, POLL, TTL
+    // Columns: PROVIDER, FIELD, SOURCE, VALUE, PATH, AGE, POLL, TTL
     // -----------------------------------------------------------------------
     let mut nat_provider = HEADERS[H_PROVIDER].len();
     let mut nat_field = HEADERS[H_FIELD].len();
+    let mut nat_source = HEADERS[H_SOURCE].len();
     let mut nat_value = HEADERS[H_VALUE].len();
     let mut nat_path = HEADERS[H_PATH].len();
     let mut nat_age = HEADERS[H_AGE].len();
@@ -1173,6 +1221,8 @@ fn render_table(
     // values in this snapshot, capped at TTL_P_WIDTH_MAX / TTL_TOTAL_WIDTH_MAX.
     let ttl_widths = compute_ttl_widths(rows);
 
+    let source_cap = trunc.map(|_| MAX_SOURCE_WIDTH);
+
     for row in rows {
         let path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
         let value = value_to_string(&row.value);
@@ -1182,10 +1232,16 @@ fn render_table(
             MARKER_WIDTH
         } else {
             0
-        };
+        } + template_marker(row.kind.as_ref(), color_enabled, ascii)
+            .chars()
+            .count();
         nat_provider = nat_provider.max(row.provider.chars().count());
         nat_path = nat_path.max(path.chars().count());
         nat_field = nat_field.max(row.field.chars().count());
+        nat_source = nat_source.max(match source_cap {
+            Some(cap) => row.source.chars().count().min(cap),
+            None => row.source.chars().count(),
+        });
         nat_value = nat_value.max(value.chars().count() + marker_width);
         nat_age = nat_age.max(
             format_age_with_polls(row.age_ms, row.polls_elapsed, ascii)
@@ -1232,8 +1288,8 @@ fn render_table(
 
     // -----------------------------------------------------------------------
     // Split the total-table-width budget across the flexible columns.
-    // Layout: MARGIN provider(2sp)field(2sp)value(2sp)path(2sp)age(2sp)poll(2sp)ttl MARGIN
-    // Separators: 6 × 2 = 12
+    // Layout: MARGIN provider(2sp)field(2sp)source(2sp)value(2sp)path(2sp)age(2sp)poll(2sp)ttl MARGIN
+    // Separators: 7 × 2 = 14
     // Margins: 2 spaces each side (breathing room so the table doesn't hug
     // the terminal edge).
     // -----------------------------------------------------------------------
@@ -1243,13 +1299,13 @@ fn render_table(
     // shows the leaf that discriminates it.
     const MIN_PATH_WIDTH: usize = 20;
     const MIN_FIELD_WIDTH: usize = 20;
-    const SEP_TOTAL: usize = 12; // 6 separators × 2 spaces
+    const SEP_TOTAL: usize = 14; // 7 separators × 2 spaces
     const MARGIN: usize = 2; // left margin, printed; right margin, reserved only
     const MARGIN_TOTAL: usize = MARGIN * 2;
 
-    // VALUE, FIELD and PATH are the three flexible columns; PROVIDER, AGE,
-    // POLL and TTL always take their natural widths. Whatever the budget
-    // leaves after those four is `flex`.
+    // VALUE, FIELD and PATH are the three flexible columns; PROVIDER, SOURCE,
+    // AGE, POLL and TTL always take their natural widths. Whatever the budget
+    // leaves after those five is `flex`.
     //
     // All three are unbounded in practice — values are arbitrary JSON, paths
     // carry `#session` suffixes, and destructuring makes field names as deep
@@ -1266,7 +1322,8 @@ fn render_table(
     let (field_cap, path_cap, value_cap) = match trunc {
         None => (None, None, None),
         Some(total_cap) => {
-            let mut fixed = nat_provider + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
+            let mut fixed =
+                nat_provider + nat_source + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
             let mut flex = total_cap.saturating_sub(fixed);
             // A tight cap may not afford the AGE/POLL stability floors: if
             // the flexible columns can't stand on their own floors, give the
@@ -1278,7 +1335,13 @@ fn render_table(
             if flex < flex_floors && (nat_age > nat_age_raw || nat_poll > nat_poll_raw) {
                 nat_age = nat_age_raw;
                 nat_poll = nat_poll_raw;
-                fixed = nat_provider + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
+                fixed = nat_provider
+                    + nat_source
+                    + nat_age
+                    + nat_poll
+                    + nat_ttl
+                    + SEP_TOTAL
+                    + MARGIN_TOTAL;
                 flex = total_cap.saturating_sub(fixed);
             }
             if nat_value + nat_field + nat_path <= flex {
@@ -1332,6 +1395,7 @@ fn render_table(
             header_texts[4].len(),
             header_texts[5].len(),
             header_texts[6].len(),
+            header_texts[7].len(),
         ];
         let header_row: [String; COLS] =
             header_texts.map(|h| ansi::wrap(&h, ansi::Color::Bold, color_enabled));
@@ -1349,6 +1413,10 @@ fn render_table(
 
         let ell = ellipsis(ascii);
         let provider_text = sanitize_cell(&row.provider, ascii);
+        let mut source_text = sanitize_cell(&row.source, ascii);
+        if let Some(cap) = source_cap {
+            source_text = truncate_path(&source_text, cap, ell);
+        }
         let mut field_text = sanitize_cell(&row.field, ascii);
         if let Some(cap) = field_cap {
             field_text = truncate_middle(&field_text, cap, ell);
@@ -1367,7 +1435,11 @@ fn render_table(
             (true, true) => "! ",
             (true, false) => "\u{203c} ", // ‼
         };
-        let mut value = format!("{marker}{}", sanitize_cell(&value_raw, ascii));
+        // A rendered row is marked ahead of the taint marker: colour-off
+        // builds need to see "this was computed here" before anything else in
+        // the cell (design decision 5).
+        let tmpl_marker = template_marker(row.kind.as_ref(), color_enabled, ascii);
+        let mut value = format!("{tmpl_marker}{marker}{}", sanitize_cell(&value_raw, ascii));
         if let Some(max) = value_cap {
             value = truncate(&value, max, ell);
         }
@@ -1428,6 +1500,7 @@ fn render_table(
         let provider_vis = provider_text.chars().count();
         let path_vis = path.chars().count();
         let field_vis = field_text.chars().count();
+        let source_vis = source_text.chars().count();
         let value_vis = value.chars().count();
 
         // VALUE cell. Truncation has already happened above, so the colouring
@@ -1445,8 +1518,14 @@ fn render_table(
                     value.chars().skip(MARKER_WIDTH).collect(),
                 )
             };
+            // Cyan is the colour build's mark for a rendered row (design
+            // decision 5). A structured body keeps its JSON highlighting —
+            // that is already colour, and the SOURCE cell still says
+            // `template`.
             let body = if body.starts_with(['{', '[']) {
                 highlight_json(&body)
+            } else if matches!(row.kind, Some(crate::cache::RowKind::Template)) {
+                ansi::wrap(&body, ansi::Color::Cyan, true)
             } else {
                 body
             };
@@ -1463,6 +1542,7 @@ fn render_table(
         let mut row_cells: [String; COLS] = [
             provider_text,
             field_text,
+            source_text,
             value_cell,
             path,
             age_cell,
@@ -1484,6 +1564,7 @@ fn render_table(
         let row_vis: [usize; COLS] = [
             provider_vis,
             field_vis,
+            source_vis,
             value_vis,
             path_vis,
             age_vis,
@@ -1595,6 +1676,8 @@ enum Predicate {
     LifecycleOnce,
     /// Match Static rows.
     LifecycleStatic,
+    /// Match rendered (Template) rows.
+    LifecycleTemplate,
     /// Match on fsevents_reinstate flag value.
     FseventsReinstate(bool),
 }
@@ -1632,8 +1715,9 @@ fn parse_filter(s: &str) -> Result<Predicate, String> {
             "decay4" => Ok(Predicate::LifecycleDecay(4)),
             "once" => Ok(Predicate::LifecycleOnce),
             "static" => Ok(Predicate::LifecycleStatic),
+            "template" => Ok(Predicate::LifecycleTemplate),
             other => Err(format!(
-                "lifecycle= must be active|decay1|decay2|decay3|decay4|once|static, got {other}"
+                "lifecycle= must be active|decay1|decay2|decay3|decay4|once|static|template, got {other}"
             )),
         },
         "fsevents_reinstate" => match v {
@@ -1665,6 +1749,7 @@ impl Predicate {
             ),
             Predicate::LifecycleOnce => matches!(&r.kind, Some(RowKind::Once)),
             Predicate::LifecycleStatic => matches!(&r.kind, Some(RowKind::Static)),
+            Predicate::LifecycleTemplate => matches!(&r.kind, Some(RowKind::Template)),
             Predicate::FseventsReinstate(b) => r.fsevents_reinstate.unwrap_or(false) == *b,
         }
     }
@@ -1719,13 +1804,14 @@ pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, S
         "age" => rows.sort_by_key(|r| r.age_ms),
         "stale" => rows.sort_by_key(|r| r.stale),
         // Most-decayed first: Lifecycle{4} < Lifecycle{3} < ... < Lifecycle{0},
-        // then Once, Static, Transient, None.
+        // then Once, Static, Template, Transient, None.
         "lifecycle" => rows.sort_by_key(|r| match &r.kind {
             Some(RowKind::Lifecycle { decay, .. }) => (0u8, 4u8 - *decay),
             Some(RowKind::Once) => (1, 0),
             Some(RowKind::Static) => (2, 0),
-            Some(RowKind::Transient) => (3, 0),
-            None => (4, 0),
+            Some(RowKind::Template) => (3, 0),
+            Some(RowKind::Transient) => (4, 0),
+            None => (5, 0),
         }),
         // Slowest-pollers first (descending poll_interval); None last.
         "poll_interval" => {
@@ -2137,6 +2223,15 @@ mod ttl_cell_tests {
     }
 
     #[test]
+    fn template_renders_dashes() {
+        // A rendered row has no lifecycle of its own — it is computed at
+        // read time and never cached.
+        let cell = format_ttl_cell(Some(&RowKind::Template), None, None, None, None, false, &W6);
+        assert_eq!(cell.text, "---");
+        assert!(cell.color.is_none());
+    }
+
+    #[test]
     fn failure_shows_attempt_count_not_timing() {
         // TTL's failure content is just "how many attempts have failed" —
         // the retry countdown lives in the POLL column now (POLL literally
@@ -2330,12 +2425,13 @@ mod poll_cell_tests {
     }
 
     #[test]
-    fn once_static_transient_and_no_kind_show_dash() {
+    fn once_static_transient_template_and_no_kind_show_dash() {
         for kind in [
             None,
             Some(RowKind::Once),
             Some(RowKind::Static),
             Some(RowKind::Transient),
+            Some(RowKind::Template),
         ] {
             assert_eq!(
                 format_poll_cell(kind.as_ref(), Some(37), None, 0),

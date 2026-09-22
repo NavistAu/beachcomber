@@ -2,13 +2,117 @@
 //!
 //! Moved from `src/main.rs` in Task 2.3.
 
+use crate::cache::{CacheRow, RowKind};
 use crate::cli::status_format::{
     ColorMode, RenderOpts, apply_filters, apply_sort, default_depth, flatten_rows, render_preset,
     resolve_color, resolve_max_width,
 };
 use crate::config::Config;
+use libbeachcomber::resolve::{Inputs, Slot, resolve};
+use std::collections::HashMap;
 use std::io::IsTerminal;
+use std::path::Path;
 use std::process::ExitCode;
+
+/// The namespace facet holding value expressions (canon
+/// `field_resolution.md` "Facet").
+const TEMPLATE_FACET: &str = ":template";
+
+/// The SOURCE a rendered row reports: nothing produced it but this
+/// resolution, here.
+const TEMPLATE_SOURCE: &str = "template";
+
+/// One rendered row per template leaf the caller's directory can see.
+///
+/// The daemon holds templates as data and never evaluates them (canon
+/// `field_resolution.md` invariant 7), so `status` shows raw expressions
+/// where a user wants values. Each leaf under a `<p>:template` row visible
+/// from `cwd` — the row's own path, an ancestor of it, or the global entry
+/// (canon invariant 2) — is resolved as `<p>.<leaf>` would be by `comb get`,
+/// with `exec()` on: `comb status` is one of the surfaces that opted in
+/// (canon `field_resolution.md` invariant 15).
+///
+/// A leaf that resolves to nothing is not a row. A leaf that fails carries
+/// its failure as its value — the cell is where the user looks for it, and a
+/// broken expression is exactly what this view exists to show.
+pub fn render_template_rows(
+    rows: &[CacheRow],
+    cwd: &str,
+    env: &HashMap<String, String>,
+    client: &libbeachcomber::Client,
+) -> Vec<CacheRow> {
+    let mut addrs: Vec<(String, String)> = Vec::new();
+    for row in rows {
+        let Some(provider) = row.provider.strip_suffix(TEMPLATE_FACET) else {
+            continue;
+        };
+        let visible = match row.path.as_deref() {
+            None => true,
+            Some(p) => Path::new(cwd).starts_with(p),
+        };
+        if visible {
+            collect_leaves(provider, &row.field, &row.value, &mut addrs);
+        }
+    }
+    // The same leaf may be declared at several points on the chain; the
+    // resolver decides which one wins, so one address is one row.
+    addrs.sort();
+    addrs.dedup();
+
+    let inputs = Inputs {
+        cwd,
+        env,
+        slot: Slot::Cwd,
+        force: false,
+        wait: false,
+        allow_exec: true,
+    };
+    let mut fetch = libbeachcomber::ClientFetch::new(client);
+    let mut out = Vec::new();
+    for (provider, field) in addrs {
+        let value = match resolve(&format!("{provider}.{field}"), &inputs, &mut fetch) {
+            Ok(Some(value)) => value,
+            Ok(None) => continue,
+            Err(e) => serde_json::Value::String(e.to_string()),
+        };
+        out.push(CacheRow {
+            provider,
+            path: Some(cwd.to_string()),
+            source: TEMPLATE_SOURCE.to_string(),
+            field,
+            value,
+            age_ms: 0,
+            stale: false,
+            kind: Some(RowKind::Template),
+            poll_interval_secs: None,
+            keep_alive_polls: None,
+            fsevents_reinstate: None,
+            polls_elapsed: None,
+            next_poll_in_secs: None,
+            failure: None,
+        });
+    }
+    out
+}
+
+/// Every leaf address under `value`, as `(provider, dotted field path)`.
+/// An interior node of a template tree is not a value expression — only its
+/// leaves are.
+fn collect_leaves(
+    provider: &str,
+    field: &str,
+    value: &serde_json::Value,
+    out: &mut Vec<(String, String)>,
+) {
+    match value {
+        serde_json::Value::Object(map) if !map.is_empty() => {
+            for (key, child) in map {
+                collect_leaves(provider, &format!("{field}.{key}"), child, out);
+            }
+        }
+        _ => out.push((provider.to_string(), field.to_string())),
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_status(
@@ -56,9 +160,22 @@ pub fn run_status(
         depth,
     };
 
-    let client = crate::client::Client::new(socket_path);
+    let client = crate::client::Client::new(socket_path.clone());
     match client.status() {
-        Ok(rows) => {
+        Ok(mut rows) => {
+            // The daemon never evaluates a template, so the rendered rows are
+            // added here, from this shell's directory and environment.
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let rendered = render_template_rows(
+                &rows,
+                &cwd,
+                &crate::cli::shell_env(),
+                &crate::client::build_client(&socket_path),
+            );
+            rows.extend(rendered);
+
             // Destructure before filtering and sorting, so both operate on the
             // field names the user can actually see in the output.
             let rows = flatten_rows(rows, opts.depth.unwrap_or_else(|| default_depth(preset)));

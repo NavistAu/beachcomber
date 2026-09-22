@@ -19,16 +19,19 @@ use std::process::ExitCode;
 /// needs no translating and omits it.
 fn status_after_help() -> String {
     let ascii = std::env::args().any(|a| a == "--ascii");
-    let (star, warn, times, dot, ring) = if ascii {
-        ("*", "!", "x", "-", "+")
+    let (star, warn, times, dot, ring, rendered) = if ascii {
+        ("*", "!", "x", "-", "+", ">")
     } else {
-        ("\u{2605}", "\u{26a0}", "\u{00d7}", "\u{2219}", "\u{2299}")
+        (
+            "\u{2605}", "\u{26a0}", "\u{00d7}", "\u{2219}", "\u{2299}", "\u{25b8}",
+        )
     };
     let mut help = format!(
         "Reading the output:\n\
         \n\
-        \x20 PROVIDER  PATH              FIELD   VALUE  AGE    POLL  TTL\n\
-        \x20 git       ~/ws/beachcomber  branch  main   14s{times}2   37s  {star}  60s{times}12 (12m) {ring}\n\
+        \x20 PROVIDER  FIELD   SOURCE    VALUE       PATH              AGE    POLL  TTL\n\
+        \x20 git       branch  refs      main        ~/ws/beachcomber  14s{times}2   37s  {star}  60s{times}12 (12m) {ring}\n\
+        \x20 git       branch  template  {rendered} main-dev  ~/ws/beachcomber  0s       -   ---\n\
         \n\
         \x20 Each row is one cache ENTRY, returned by a Query ie `comb get`.\n\
         \x20 - ENTRY Refreshes VALUE by SOURCE(PROVIDER.FIELD @ PATH).\n\
@@ -38,6 +41,9 @@ fn status_after_help() -> String {
         \x20   - Idle entries halve their TTL.PollRate each TTL.PollLifetime.\n\
         \x20   - After 4 lifetimes, the ENTRY is Evicted from cache.\n\
         \n\
+        \x20 SOURCE refs        Which Source of the PROVIDER produced VALUE; `put` / `config:<file>` for stored data\n\
+        \x20        template    Rendered here, from this shell's directory and environment — never cached\n\
+        \x20 VALUE  {rendered} main-dev  A rendered VALUE, marked because it is computed, not stored (cyan with colour on)\n\
         \x20 AGE    43s         RefreshTime:  Time since VALUE Refreshed from SOURCE\n\
         \x20        {times}2          PollCount:    Polls since last Query\n\
         \x20 POLL                             Time until the next Poll / next Retry if Failing\n\
@@ -54,7 +60,7 @@ fn status_after_help() -> String {
     );
     if !ascii {
         help.push_str(
-            "\n\nWith --ascii: * ! x - + replace \u{2605} \u{26a0} \u{00d7} \u{2219} \u{2299}.",
+            "\n\nWith --ascii: * ! x - + > replace \u{2605} \u{26a0} \u{00d7} \u{2219} \u{2299} \u{25b8}.",
         );
     }
     help

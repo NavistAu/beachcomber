@@ -79,7 +79,7 @@ fn tsv_preset_is_tab_separated_no_header() {
     let out = render_tsv(&rows);
     let line = out.lines().next().expect("at least one line");
     let cols: Vec<&str> = line.split('\t').collect();
-    assert_eq!(cols.len(), 13, "got: {:?}", cols);
+    assert_eq!(cols.len(), 14, "got: {:?}", cols);
     assert!(!out.starts_with("PROVIDER"), "no header in tsv");
 }
 
@@ -321,6 +321,7 @@ fn cache_row_kind_serde_round_trip() {
         (RowKind::Once, json!({"kind": "once"})),
         (RowKind::Static, json!({"kind": "static"})),
         (RowKind::Transient, json!({"kind": "transient"})),
+        (RowKind::Template, json!({"kind": "template"})),
     ];
     for (variant, expected_json) in cases {
         let serialized = serde_json::to_value(&variant).unwrap();
@@ -1294,30 +1295,31 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
     }
 }
 
-// Task 1.18: TSV — 13 columns
+// Task 1.18: TSV — 14 columns (SOURCE follows FIELD)
 #[test]
-fn tsv_preset_13_columns_lifecycle_row() {
+fn tsv_preset_14_columns_lifecycle_row() {
     let rows = vec![sample_lifecycle_row()];
     let out = render_tsv(&rows);
     let line = out.lines().next().expect("at least one line");
     let cols: Vec<&str> = line.split('\t').collect();
-    assert_eq!(cols.len(), 13, "got: {:?}", cols);
+    assert_eq!(cols.len(), 14, "got: {:?}", cols);
     assert!(!out.starts_with("PROVIDER"), "no header in tsv");
     // Spot-check specific columns
     assert_eq!(cols[0], "git", "provider col");
-    assert_eq!(cols[6], "lifecycle", "kind col");
-    assert_eq!(cols[7], "0", "decay col");
-    assert_eq!(cols[8], "60", "poll_interval_secs col");
-    assert_eq!(cols[9], "12", "keep_alive_polls col");
-    assert_eq!(cols[10], "true", "fsevents_reinstate col");
+    assert_eq!(cols[3], "refs", "source col");
+    assert_eq!(cols[7], "lifecycle", "kind col");
+    assert_eq!(cols[8], "0", "decay col");
+    assert_eq!(cols[9], "60", "poll_interval_secs col");
+    assert_eq!(cols[10], "12", "keep_alive_polls col");
+    assert_eq!(cols[11], "true", "fsevents_reinstate col");
     assert_eq!(
-        cols[11], "",
+        cols[12], "",
         "failure_consecutive_failures empty when no failure"
     );
-    assert_eq!(cols[12], "", "failure_suppressed empty when no failure");
+    assert_eq!(cols[13], "", "failure_suppressed empty when no failure");
 }
 
-// Task 1.19: CSV — 13 columns with header
+// Task 1.19: CSV — 14 columns with header (SOURCE follows FIELD)
 #[test]
 fn csv_preset_has_full_header_and_all_columns() {
     let rows = vec![sample_lifecycle_row()];
@@ -1325,11 +1327,12 @@ fn csv_preset_has_full_header_and_all_columns() {
     let header = out.lines().next().unwrap();
     assert_eq!(
         header,
-        "PROVIDER,PATH,FIELD,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,KEEP_ALIVE_POLLS,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS"
+        "PROVIDER,PATH,FIELD,SOURCE,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,KEEP_ALIVE_POLLS,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS"
     );
     let body = out.lines().nth(1).unwrap();
     let cols: Vec<&str> = body.split(',').collect();
-    assert_eq!(cols.len(), 13);
+    assert_eq!(cols.len(), 14);
+    assert_eq!(cols[3], "refs", "source col");
 }
 
 // Task 1.20: sh — new env-var lines for lifecycle fields
@@ -1359,6 +1362,11 @@ fn sh_preset_exposes_new_fields() {
         out
     );
     assert!(out.contains("git_repo_branch_DECAY='0'"), "got: {}", out);
+    assert!(
+        out.contains("git_repo_branch_SOURCE='refs'"),
+        "got: {}",
+        out
+    );
 }
 
 // Task 1.21: minijinja row_context — exposes new fields
@@ -1367,6 +1375,7 @@ fn minijinja_row_context_exposes_new_fields() {
     let row = sample_lifecycle_row();
     // `row_context` is already a `serde_json::Value` object — inspect it directly.
     let v = row_context(&row);
+    assert_eq!(v.get("source").and_then(|v| v.as_str()), Some("refs"));
     assert_eq!(v.get("kind").and_then(|v| v.as_str()), Some("lifecycle"));
     assert_eq!(v.get("decay").and_then(|v| v.as_u64()), Some(0));
     assert_eq!(
@@ -1806,7 +1815,10 @@ fn human_preset_path_compaction_frees_width_for_value() {
     let opts = RenderOpts {
         is_tty: true,
         no_color: true,
-        max_width: Some(70),
+        // 70 before SOURCE joined the table; the new column and its separator
+        // cost 9 characters of the same budget, and this test is about what
+        // compaction frees, not about where the cap sits.
+        max_width: Some(79),
         no_trunc: false,
         ascii: false,
         depth: None,
@@ -1873,7 +1885,10 @@ fn human_rows_leave_the_right_margin_unpainted() {
     // Painting it made every row exactly `max_width` — exactly the terminal
     // width — which viddy wraps, because it reserves the last column for its
     // scrollbar. Rows must stop short of the cap and end in no trailing space.
-    for cap in [80usize, 100, 120, 160] {
+    // 80 was the tightest cap this fixture's floors could still be laid out
+    // within; SOURCE and its separator claim 8 more characters of the same
+    // budget, so the tightest feasible cap moved with them.
+    for cap in [88usize, 100, 120, 160] {
         let opts = RenderOpts {
             is_tty: false,
             no_color: true,
@@ -2081,7 +2096,10 @@ fn width_split_gives_value_priority_over_path() {
         "fixture should be a 150-char path"
     );
 
-    let cap = 120usize;
+    // 120 before SOURCE joined the table: the new column and its separator
+    // cost 8 characters, and these assertions are about how the flexible
+    // columns split what is left, not about where the cap sits.
+    let cap = 128usize;
     let opts = RenderOpts {
         is_tty: false,
         no_color: true,
@@ -2524,7 +2542,10 @@ fn three_flexible_columns_share_the_budget_by_priority() {
         "fixture should be a 150-char path"
     );
 
-    let cap = 120usize;
+    // 120 before SOURCE joined the table: the new column and its separator
+    // cost 8 characters, and these assertions are about how the flexible
+    // columns split what is left, not about where the cap sits.
+    let cap = 128usize;
     let opts = RenderOpts {
         is_tty: false,
         no_color: true,

@@ -17,6 +17,7 @@ mod cli_get_wait_propagation;
 mod cli_golden;
 mod cli_refresh;
 mod cli_resolve;
+mod cli_status_rendered;
 mod cli_virtual_fields;
 mod cli_virtual_fields_kinded;
 mod cli_watch;
