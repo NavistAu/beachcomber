@@ -448,6 +448,15 @@ after the watch request the client must not write again, and any further
 bytes from it — a pipelined line, a stray newline — end the watch just as a
 close does.
 
+This op is unchanged by, and knows nothing about, *resolved* watching — a
+value re-resolved over every key its resolution reads plus the provider's
+`<p>:template`, emitted only when that value actually changes. That layering
+is client-side: `libbeachcomber::watch` (`ResolvedWatch`) opens several `Watch`
+subscriptions like the one above and re-resolves on their frames, and `comb
+watch`, `bc_watch_open` and every SDK's `watch` are clients of it. The wire op
+itself still answers about exactly one address, both halves included, as
+described above.
+
 ### `Introspect`
 
 Diagnostic queries into daemon internals. Subject determines shape.

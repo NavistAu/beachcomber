@@ -79,9 +79,9 @@ Write a value into the cache as static data. Omit `data` or pass `null` to clear
 
 Inspect a daemon subsystem (`"daemon"` | `"providers"` | `"config"` | `"cache"` | `"lifecycle"` | `"watches"` | `"timers"` | `"demand"` | `"procs"`).
 
-#### `client.watch(key, path?)`
+#### `client.watch(key, opts)`
 
-Subscribe to live cache updates. Returns a `WatchStream` (async iterable) yielding `WatchEvent` values.
+Subscribe to a key's *resolved* value — what `resolve(key, opts)` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts.cwd` and `opts.env` mean what they mean for `resolve`, and `opts.cwd` is required. Returns a `WatchStream` (async iterable) yielding `WatchEvent` values, whose `data` carries no `ageMs`/`stale` — a value resolved from several cache records has no single age or staleness. FFI transport only: the subprocess fallback tier does not implement `watch`, joining `resolve`/`eval` there.
 
 #### `client.getWithFlags(key, path?, opts?)`
 

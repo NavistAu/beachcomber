@@ -229,6 +229,13 @@ bc_session_close(s);
 
 ### Watch
 
+Opens a watch on the *value* of a key — what `bc_resolve(key, cwd, env_json)`
+answers — and emits it again whenever it changes: the fan-in underneath
+subscribes to every key the resolution reads plus the provider's
+`<provider>:template`, so a template edited under the watch fires it exactly
+as a changed cache record does. An event carries no `age_ms`/`stale` — a
+value resolved from several cache records has no single age or staleness.
+
 Blocking poll with five machine-readable outcomes (see [The JSON
 envelope](#the-json-envelope)). `bc_watch_cancel` is the one call in this
 SDK documented as safe to invoke from another thread while a
@@ -236,13 +243,13 @@ SDK documented as safe to invoke from another thread while a
 
 | Function | Description |
 |---|---|
-| `BcWatch *bc_watch_open(BcClient *client, const char *key, const char *path)` | Open a watch on `key`. `path` is nullable. Returns NULL only on allocation failure. |
+| `BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json)` | Open a watch on `key`, resolved at `cwd` with `env_json`'s environment — the same two inputs `bc_resolve` takes. `cwd` is required; `env_json` is nullable ("no environment": every `env.*` is `""`). Returns NULL only on allocation failure. |
 | `char *bc_watch_next(BcWatch *w, int32_t timeout_ms)` | Wait for the next event. `timeout_ms`: `-1` blocks indefinitely, `0` polls, `>0` waits that long. |
 | `void bc_watch_cancel(BcWatch *w)` | Cancel a pending or future `bc_watch_next` call. Null-safe. Safe to call from another thread. |
 | `void bc_watch_free(BcWatch *w)` | Free a watch handle. Null-safe. |
 
 ```c
-BcWatch *w = bc_watch_open(c, "git.branch", "/path/to/repo");
+BcWatch *w = bc_watch_open(c, "git.branch", "/path/to/repo", NULL);
 char *r = bc_watch_next(w, 5000);   /* ms; -1 blocks, 0 polls */
 printf("%s\n", r);   /* {"ok":true,"outcome":"event"|"timeout"|"eof"|"cancelled",...} */
 bc_string_free(r);

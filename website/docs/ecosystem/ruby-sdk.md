@@ -62,7 +62,7 @@ Opens a fresh socket connection for each call. Simple and stateless.
 | `hello` | Handshake. Returns a `HelloInfo`. |
 | `put(key, data = nil, ttl: nil, path: nil)` | Write a value into the cache. Returns `nil`. |
 | `introspect(subject, duration_secs: nil)` | Inspect a daemon subsystem. Returns an `IntrospectResponse`. |
-| `watch(key, path: nil)` | Subscribe to live updates. Returns a `WatchStream` (Enumerable). |
+| `watch(key, cwd:, env: nil)` | Subscribe to a key's *resolved* value — what `resolve` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `cwd` is required, matching `resolve`. Returns a `WatchStream` (Enumerable) whose events carry no age or staleness. |
 | `status` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
 | `session { \|s\| }` | Open a persistent connection (see above). |
 | `resolve(key, cwd:, env: nil)` | The same value `comb get` returns for this key, cwd and env — the daemon holds the templates, the client renders them; a bare provider name is the whole merged namespace. |

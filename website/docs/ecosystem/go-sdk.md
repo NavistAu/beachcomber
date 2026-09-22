@@ -103,9 +103,9 @@ Write a value into the cache as static data.
 
 Inspect a daemon subsystem (`"daemon"`, `"providers"`, `"config"`, `"cache"`, `"lifecycle"`, `"watches"`, `"timers"`, `"demand"`, `"procs"`).
 
-#### `c.Watch(key, path string) (*WatchStream, error)`
+#### `c.Watch(key, cwd string, env map[string]string) (*WatchStream, error)`
 
-Subscribe to live cache updates. Returns a `WatchStream`; call `NextEvent()` in a loop and `Close()` when done.
+Subscribe to a key's *resolved* value — what `Resolve` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `cwd` and `env` mean what they mean for `Resolve`, and `cwd` is required. Returns a `WatchStream`; call `NextEvent()` in a loop and `Close()` when done. `WatchEvent.Data` carries no age or staleness — a value resolved from several cache records has no single one.
 
 #### `c.Resolve(key, cwd string, env map[string]string) (*Result, error)` / `c.Eval(templateStr, cwd string, env map[string]string) (*Result, error)`
 

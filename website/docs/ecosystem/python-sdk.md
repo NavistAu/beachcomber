@@ -116,9 +116,9 @@ Write a value into the cache as static data. `data=None` clears the entry.
 
 Inspect a daemon subsystem. `subject` is an `IntrospectSubject` enum value (`DAEMON`, `PROVIDERS`, `CONFIG`, `CACHE`, `LIFECYCLE`, `WATCHES`, `TIMERS`, `DEMAND`, `PROCS`). Returns an `IntrospectResponse`.
 
-#### `client.watch(key, path=None)`
+#### `client.watch(key, cwd, env=None)`
 
-Subscribe to live cache updates. Returns a `WatchStream` (context manager / iterator) yielding `WatchEvent` instances.
+Subscribe to a key's *resolved* value — the same value `resolve(key, cwd, env)` returns — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `cwd` is required, matching `resolve`'s semantics. Returns a `WatchStream` (context manager / iterator) yielding `WatchEvent` instances, whose `data` carries no `age_ms`/`stale` — a value resolved from several cache records has no single age or staleness.
 
 #### `client.get_with_flags(key, path=None, force=False, wait=False)`
 

@@ -45,13 +45,6 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       at a time". Useful for "what does beachcomber know about this dir right now?" as a diagnostic, onboarding, and
       integration-authoring tool. Format-aware output (json/text/human). Naming bikeshed: `inspect`, `dump`, `snapshot`,
       `all`, `info`.
-- [ ] **`comb status` shows the client view by default.** Status currently dumps raw daemon cache rows; a consumer
-      never sees those raw values — the client applies env overrides, cascades, and computed fields on top. Default
-      status should render what a client would actually resolve; `--raw` / `--daemon` (naming open) keeps today's
-      cache-truth view. Design wrinkle to settle first: client resolution is caller-env-relative while status spans
-      all cached paths — a per-shell env override applies to rows matching the caller's context but would be a lie
-      overlaid on other directories' rows; needs a rule (e.g. overlay only rows whose path matches the caller's
-      context). Depends on the env/cascade work.
 - [ ] `comb ui` — live TUI as a sister binary. `watch comb status` works but can't render nested-object values and has
       no interactivity; a proper TUI could add controls (force refresh, inspect lifecycle state, drill into a value).
       Keep TUI dependencies out of `comb` itself: separate `comb-ui` binary, dispatched git-style (`comb ui` execs

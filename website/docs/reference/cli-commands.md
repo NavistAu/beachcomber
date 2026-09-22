@@ -27,7 +27,7 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 | `comb s` | `comb status` | — |
 | `comb p` | `comb put` | — |
 | `comb r` | `comb refresh` | — |
-| `comb w` | `comb watch` | `.p` `.j` `.s` |
+| `comb w` | `comb watch` | all of them |
 | `comb e` | `comb eval` | — |
 | `comb i` | `comb init` | — |
 | `comb c` | `comb check` | — |
@@ -126,7 +126,7 @@ comb g git.branch:source         # → head (the Source that wrote the record)
 
 ## `comb s` (status)
 
-Show all warm cache entries as a table — one row per provider field. The `TTL` column encodes each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, keep-alive count, and whether filesystem events will reinstate the entry to Active (`◉`).
+Show all warm cache entries as a table — one row per provider field. SOURCE names what produced each row's value, and the `TTL` column encodes each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, keep-alive count, and whether filesystem events will reinstate the entry to Active (`◉`).
 
 For a live view, ask for colour explicitly — under `watch` and `viddy` stdout is a pipe, so `--color=auto` (the default) resolves to no colour:
 
@@ -139,11 +139,10 @@ viddy 'comb status --color=always'
 
 ```sh
 $ comb s
-PROVIDER  FIELD    VALUE    PATH    AGE   POLL  TTL
-git       branch   main     /repo   14s    46s  ★     60s×12 ◉
-git       dirty    true     /repo   14s    46s  ★     60s×12 ◉
-battery   percent  87       -        8s    22s  ★     30s×04
-hostname  short    artemis  -        3h      -  ---
+PROVIDER  FIELD    SOURCE  VALUE    PATH    AGE   POLL  TTL
+git       branch   head    main     /repo   14s    46s  ★     60s×12 ◉
+git       dirty    status  true     /repo   14s    46s  ★     60s×12 ◉
+hostname  short    host    artemis  -        3h      -  ---
 
 # Filter to entries in a specific lifecycle state
 comb s --filter=lifecycle=active
@@ -161,6 +160,28 @@ comb s -f json
 
 **Flags:** `--format <preset>` (`human` (default), `tsv`, `json`, `csv`, `table`, `sh`), `--filter <key=value>` (keys: `provider`, `path`, `field`, `stale`, `lifecycle`, `fsevents_reinstate`; e.g. `--filter=lifecycle=active`, `--filter=provider=git`, `--filter=fsevents_reinstate=true`), `--sort <default|provider|path|field|value|age|stale>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
 
+### SOURCE, and the caller's rendered template leaves
+
+SOURCE sits between FIELD and VALUE and names what produced the row: a Source of the provider (`head`, `refs`, `status`, …), the static label `put`, a config-seeded record's `config:<file>`, or `template` for a row this CLI computed itself, from the caller's own directory and environment.
+
+The daemon holds a template (`[providers."<p>:template"]`, the managed `defaults/`, or a `comb p <p>:template.<f>`) as data and never evaluates it, so `status` used to show a column of raw expressions — `{{ env.SCANLINE_FOO }}` — where the point of looking is to see what a prompt would actually get. Every template leaf visible from the caller's directory (its own path, an ancestor up to `$HOME`, or the global entry) is now resolved exactly as `comb get` would resolve it and added as its own row, beside the raw template row and any cached value at the same address:
+
+```sh
+$ comb p scanline:template.greeting '"hi {{ env.USER }}"'
+$ USER=jane comb s --filter=provider=scanline
+PROVIDER            FIELD     SOURCE    VALUE               PATH  AGE  POLL  TTL
+scanline:template   greeting  put       hi {{ env.USER }}   -     0s      -  ---
+scanline            greeting  template  hi jane             -     0s      -  ---
+```
+
+A cached field with a template over it shows **both** rows at that same address — `git.branch` cached by the `head` Source plus a `git:template.branch` override both list, so the raw cached value and the effective rendered one are visible side by side rather than one hiding the other. A leaf whose expression fails to render shows the failure text as its value instead of dropping the row.
+
+A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a custom `-f fmt` context) it carries `kind: template` and `source: template`, and it's selectable on its own with `--filter lifecycle=template`. `--filter provider=<name>` that rules a provider out entirely skips resolving that provider's templates — and any `exec()` inside them — rather than rendering them only to discard the rows afterward.
+
+Rendering resolves with this shell's own environment and directory, and `exec()` is enabled — `status` is one of the surfaces canon `field_resolution.md` invariant 15 names, alongside `comb get`, `comb eval` and `comb watch`.
+
+In the `human`/`table` preset, SOURCE keeps its tail past 24 characters (less at a narrow `--max-width`, since it shares the same truncation budget as VALUE and PATH) — a `config:<file>` label is a whole path, and its tail (`…/defaults/aws.toml`) is what tells one config file from another — unless `--no-trunc`.
+
 **Destructuring (`--depth`):** object values expand into one row per key, recursively, with the parent's path, age and lifecycle metadata carried down. `--depth 0` is unlimited, `1` shows top-level fields only, `2` goes one level down, and so on.
 
 | Preset | Default depth |
@@ -173,13 +194,13 @@ The human default stops at 2 deliberately: a provider caching a deep API respons
 ```sh
 $ comb p agent '{"session":{"name":"claude","ctx_pct":42}}'
 $ comb s --filter=provider=agent
-PROVIDER  FIELD            VALUE   PATH  AGE  POLL  TTL
-agent     session.ctx_pct  42      -     0s      -  ---
-agent     session.name     claude  -     0s      -  ---
+PROVIDER  FIELD            SOURCE  VALUE   PATH  AGE  POLL  TTL
+agent     session.ctx_pct  put     42      -     0s      -  ---
+agent     session.name     put     claude  -     0s      -  ---
 
 $ comb s --filter=provider=agent --depth 1
-PROVIDER  FIELD    VALUE                           PATH  AGE  POLL  TTL
-agent     session  {"ctx_pct":42,"name":"claude"}  -     0s      -  ---
+PROVIDER  FIELD    SOURCE  VALUE                           PATH  AGE  POLL  TTL
+agent     session  put     {"ctx_pct":42,"name":"claude"}  -     0s      -  ---
 ```
 
 `--filter` and `--sort` see the destructured field names, so `--filter=field=session.name` works on the expanded rows.
@@ -193,7 +214,7 @@ agent     session  {"ctx_pct":42,"name":"claude"}  -     0s      -  ---
 | `2`  | Decay2    | 2 remaining |
 | `1`  | Decay3    | 1 remaining |
 | `0`  | Decay4    | 0 remaining — next tick evicts |
-| `---` | Once / Static | no lifecycle (hostname, put entries) |
+| `---` | Once / Static / Template | no lifecycle (hostname, put entries, a rendered template row) |
 
 A `◉` trailing indicator means `fsevents_reinstate=true` — a filesystem event will reinstate the entry to Active even during decay. A `⚠` lead replaces `★` when the provider is in failure-suppress (row renders red).
 
@@ -282,21 +303,25 @@ A key with no Source behind it — a `put`-created namespace, a facet key (`p:te
 
 **Exit codes:** `0` on success, `2` on error (the daemon's refusal, or an unreachable daemon).
 
-## `comb w` (watch) `<key> [--path <path>] [-f format]`
+## `comb w` (watch) `<key> [path] [--path <path>] [--global] [-f format]`
 
-Stream cache changes to stdout. Opens a long-lived connection and emits an NDJSON line on each cache update for the watched key.
+Stream a key's *resolved* value — the value `comb get` would print — printing a new frame each time that value changes. `comb watch` is a client of `libbeachcomber::watch`, the same fan-in behind every SDK's `watch`: it re-resolves the key over every reference the resolution reads, plus the provider's `<p>:template`, so a template edited under the watch fires it just as a changed cache record does. Only an actual change in the resolved value emits a frame — a re-resolution that comes out the same value is not one.
 
 ```sh
-comb w git.branch --path /home/user/project   # default text output, one value per update
-comb w git --path /home/user/project          # whole-provider text output
-comb w.j git.branch                           # JSON envelope per update
+comb w git.branch --path /home/user/project   # one line per resolved change
+comb w git --path /home/user/project          # whole-provider, re-resolved on any change
+comb w.j git.branch                           # bare JSON value per line, one compact document per frame
 ```
 
-First line: current value (or cache miss). Subsequent lines: emitted on each change. Ctrl-C to stop.
+The path defaults to the current working directory, as `get`/`put`/`refresh` do, and a relative path is the caller's. `--global` cannot be combined with a path.
 
-Field-level filtering: `comb w git.branch` only emits when the branch value changes, not on every git provider update.
+The first line printed is the value as it is when the watch opens — not a wait for the first change, the same answer `comb get` would give right now. Every later line is one resolved change. A miss prints nothing at all, since there is no value to print, and the watch stays open: a later `put` that gives the key a value prints it the moment it lands.
 
-**Exit codes:** `0` on success (clean disconnect), `2` on error.
+Frames render per format exactly as `comb get` renders that same value, with one difference: under `-f json` a frame is the bare value compacted to one line, where `comb get -f json` pretty-prints. `comb watch env.X` is an error before any connection is made — exit `2`, `env keys cannot be watched` — since an environment value is constant for the process and there is nothing to subscribe to. A facet key (`p:template`) is already inside a facet, so it has no template half to resolve: its frames are the daemon's own raw stream, unrendered, exactly as `comb get p:template -f json` prints the raw tree.
+
+Ctrl-C to stop.
+
+**Exit codes:** `0` — the watch ends cleanly once nothing is left that could ever answer (every subscription the daemon held has closed). `2` — error (daemon unreachable, an env key, a key whose resolution fails).
 
 ## `comb e` (eval) `<template> [path]`
 

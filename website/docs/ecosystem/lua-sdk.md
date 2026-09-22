@@ -119,9 +119,9 @@ Clear a static-data entry (shorthand for `put` with `data=nil`).
 
 Inspect a daemon subsystem. `subject` is a string: `"daemon"`, `"providers"`, `"config"`, `"cache"`, `"lifecycle"`, `"watches"`, `"timers"`, `"demand"`, or `"procs"`.
 
-### `Client:watch(key, path)` → `WatchStream | nil, error`
+### `Client:watch(key [, opts])` → `WatchStream | nil, error`
 
-Subscribe to live cache updates. Returns a `WatchStream` — call `:next()` to receive `WatchEvent` tables and `:close()` when done.
+Subscribe to a key's *resolved* value — what `Client:resolve` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts.cwd` (default: the context path, then `"."`), `opts.env` — same shape as `resolve`'s opts. Returns a `WatchStream` — call `:next()` to receive `WatchEvent` tables (whose `data` carries no age or staleness) and `:close()` when done. `ffi` transport only.
 
 ### `Client:get_with_flags(key, path, force, wait)` → `Result | nil, error`
 

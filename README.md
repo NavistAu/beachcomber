@@ -324,17 +324,16 @@ comb g git.branch:stale        # whether value is past refresh time
 
 ### `comb s` (status)
 
-Show all warm cache entries as a table — one row per provider field. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, keep-alive count, and whether filesystem events will reinstate the entry (`◉`).
+Show all warm cache entries as a table — one row per provider field, with SOURCE naming what produced each value: a Source of the provider, `put`, `config:<file>`, or `template`. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, keep-alive count, and whether filesystem events will reinstate the entry (`◉`).
 
 `watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time.
 
 ```sh
 $ comb s
-PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ◉
-git       /repo   dirty    true     14s   ★     60s×12 ◉
-battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  3h    ---
+PROVIDER  PATH    FIELD    SOURCE  VALUE    AGE   TTL
+git       /repo   branch   head    main     14s   ★     60s×12 ◉
+git       /repo   dirty    status  true     14s   ★     60s×12 ◉
+hostname  -       short    host    artemis  3h    ---
 
 # Filter to entries in a specific lifecycle state
 comb s --filter=lifecycle=active
@@ -350,7 +349,9 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay1..4|once|static`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay1..4|once|static|template`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+
+A namespace holding a `[providers."<p>:template"]` template renders one extra row per leaf visible from the caller's directory — resolved with this shell's environment and `exec()` enabled, exactly as `comb get` would render it — beside the raw template row and any cached value at that address; a field that's both cached and templated shows both rows. A rendered row's SOURCE is `template`, its VALUE is marked (cyan, or a `▸ `/`> ` lead-in without colour), and `--filter=lifecycle=template` selects just those rows.
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
 
@@ -410,19 +411,19 @@ comb r hostname --global    # at the global entry ($HOME)
 
 Prints nothing on success; exits 2 with `nothing to refresh: <key> has no sources` for a key with no Source behind it (a `put`-created namespace, a facet key, an unknown name, an unowned field). `comb g --force` is the read-and-refresh form — the same Sources, then the value; `comb r` is the re-execution alone.
 
-### `comb w` (watch) `<key> [--path <path>]`
+### `comb w` (watch) `<key> [path] [--path <path>] [--global] [-f format]`
 
-Stream cache changes to stdout. Opens a long-lived connection and emits an NDJSON line each time the watched key is updated.
+Stream a key's *resolved* value — the value `comb get` would print — printing a new line each time it changes. A change is detected by re-resolving the key over every reference the resolution reads plus the provider's template, so an edited template fires the watch just as a changed cache record does.
 
 ```sh
 comb w git.branch --path ~/project        # stream plain text values (default)
-comb w.j git.branch --path ~/project     # stream JSON updates
-comb w.s git --path ~/project            # stream key=value pairs
+comb w.j git.branch --path ~/project      # bare JSON value per line, one per frame
+comb w.s git --path ~/project             # stream key=value pairs
 ```
 
-The first line is emitted immediately with the current value (or a cache miss if no data exists). Subsequent lines appear as the cache updates. Press Ctrl-C to stop.
+The path defaults to the current working directory, as `get`/`put`/`refresh` do, and a relative path is the caller's. `--global` cannot be combined with a path.
 
-Field-level filtering: watching `git.branch` only emits when the branch value changes, not on every git provider update.
+The first line is the value as it is when the watch opens; each later line is one resolved change. A miss prints nothing at all — there's no value to print — and the watch stays open for a later `put` to answer. `comb watch env.X` is an error, `env keys cannot be watched`, since an environment value never changes for the life of the process. A facet key (`p:template`) streams the daemon's raw entry, unrendered, as before. Press Ctrl-C to stop.
 
 ### `comb e` (eval) `<template> [path]`
 
