@@ -443,7 +443,10 @@ opened at a project path, and so does a write to the key's `template` facet.
 A frame is emitted whenever either half changes, so a template edited on its
 own delivers a frame carrying the new `template` and no new `data`. The
 daemon drops the subscription as soon as the client closes the connection,
-not on the next write to the watched key.
+not on the next write to the watched key. The connection is single-purpose:
+after the watch request the client must not write again, and any further
+bytes from it — a pipelined line, a stray newline — end the watch just as a
+close does.
 
 ### `Introspect`
 

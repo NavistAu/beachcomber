@@ -392,7 +392,13 @@ async fn handle_watch(
     // even `Ok(n>0)` (a protocol-violating extra write) all mean this
     // connection is done being useful, and the watch ends. This is what lets
     // a dead client's watch drop at once instead of lingering until the next
-    // write to the watched key.
+    // write to the watched key. ("At once" has one hole: a `sched.send` into
+    // a full scheduler queue parks this task until the queue drains.)
+    //
+    // The `notified()` future MUST be constructed inside the loop: a
+    // `notify_one` landing mid-write stores a permit that the next fresh
+    // `notified().await` consumes. Hoisting it out re-registers nothing and
+    // becomes a genuine lost-wakeup bug.
     let mut probe = [0u8; 1];
     loop {
         tokio::select! {
@@ -427,8 +433,13 @@ async fn handle_watch(
                     break; // Client disconnected
                 }
             }
-            _ = reader.read(&mut probe) => {
-                break; // Client gone: EOF, read error, or an unexpected write.
+            r = reader.read(&mut probe) => {
+                match r {
+                    Ok(0) => debug!("watch ended: client closed the connection"),
+                    Ok(n) => debug!("watch closed: client wrote {n} unexpected byte(s)"),
+                    Err(e) => debug!("watch read ended: {e}"),
+                }
+                break;
             }
         }
     }
