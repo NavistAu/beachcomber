@@ -228,8 +228,17 @@ class TestOps < Minitest::Test
   # re-resolves on every frame. So several requests reach the server, not
   # one — the same canned answer is queued for each of them, and what these
   # tests pin is the ops on the wire and the value the event carries.
+  #
+  # `count` is a guess at how many requests the fan-in makes. If it grows
+  # past that guess, MockServer's own queue-empty fallback
+  # ('{"ok":true}') would otherwise answer the extra request silently, so a
+  # wrong guess surfaces as some other assertion failing for an unrelated
+  # reason instead of naming the real problem. A queued response past
+  # `count` names it instead: the request that reaches it gets a
+  # `ServerError` a test can see and understand immediately.
   def enqueue_many(response, count = 8)
     count.times { @server.enqueue(response) }
+    @server.enqueue(%({"ok":false,"error":"mock: enqueue_many(#{count}) exhausted — the fan-in made more requests than expected"}))
   end
 
   def watch_requests

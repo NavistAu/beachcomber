@@ -3,10 +3,12 @@
 //! `comb watch` is a client of [`libbeachcomber::watch`] the way `comb get`
 //! is a client of `libbeachcomber::resolve`: it names a key, a path and a
 //! format, makes sure the daemon is running, and hands the rest to the
-//! library. Every frame it prints is a *value* — what `comb get` would print
-//! for that key at that moment — re-resolved by the library over every key
-//! the resolution reads plus the provider's `<p>:template`, so a template
-//! edited under the watch fires it just as a changed cache record does.
+//! library. Every frame it prints is a *value* — re-resolved by the library
+//! over every key the resolution reads plus the provider's `<p>:template`,
+//! so a template edited under the watch fires it just as a changed cache
+//! record does. Under `text`/`sh`/`csv`/`tsv`/`-f fmt` a frame renders
+//! exactly as `comb get` renders that same value; under `-f json` it is the
+//! same value compacted to one line per frame, where `get` pretty-prints.
 //!
 //! This module only renders what the library emits, per output format —
 //! reusing `libbeachcomber::render::render_data` for `text`/`sh` exactly as
@@ -76,9 +78,10 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: OutputF
             // Nothing left that could ever answer.
             Ok(WatchOutcome::Eof) => return ExitCode::SUCCESS,
             // `next(None)` has no deadline and this watch's cancel handle is
-            // never set, so neither can happen; keep waiting rather than
-            // inventing an exit for them.
-            Ok(WatchOutcome::Timeout | WatchOutcome::Cancelled) => {}
+            // never set, so neither is reachable today — but looping here
+            // instead of returning would busy-spin forever if either ever
+            // became reachable, so treat both as the watch being over.
+            Ok(WatchOutcome::Timeout | WatchOutcome::Cancelled) => return ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("{e}");
                 return ExitCode::from(2);
@@ -87,8 +90,10 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: OutputF
     }
 }
 
-/// One frame, rendered as `comb get` renders the same value, followed by the
-/// newline that separates frames on a stream.
+/// One frame, followed by the newline that separates frames on a stream.
+/// Under `text`/`sh`/`csv`/`tsv`/`-f fmt` this renders exactly as `comb get`
+/// renders the same value; under `-f json` it is the same value compacted
+/// to one line, where `get` pretty-prints.
 fn print_frame(format: &OutputFormat, value: &Value) -> Result<(), String> {
     let line = match format {
         OutputFormat::Text => render_data(Some(value), "text"),

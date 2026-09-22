@@ -227,13 +227,13 @@ transport. `refresh` is one `comb refresh <key> [--path P | --global]`,
 the daemon's op itself; its refusal (`nothing to refresh: <key> has no
 sources`) is `ServerError.serverMessage`, the daemon's own words — the
 same text the FFI transport reports. The tier does
-**not** implement `hello`, `introspect`, `resolve`, or `eval`: `comb` has
-no CLI surface for `hello` or `introspect`, and `resolve`/`eval` are not
-wired over this tier (`comb get`/`comb eval` resolve through the same
-library, so a shell-out would be faithful — nobody has needed it). Those
-calls throw `UnsupportedTransportError` rather than silently returning
-wrong data. An omitted `path` means the global entry, as under FFI (the
-transport passes `--global`).
+**not** implement `hello`, `introspect`, `resolve`, `eval`, or `watch`:
+`comb` has no CLI surface for `hello` or `introspect`, and `resolve`/`eval`
+are not wired over this tier (`comb get`/`comb eval` resolve through the
+same library, so a shell-out would be faithful — nobody has needed it).
+Those calls throw `UnsupportedTransportError` rather than silently
+returning wrong data. An omitted `path` means the global entry, as under
+FFI (the transport passes `--global`).
 
 ## Library discovery (FFI transport)
 

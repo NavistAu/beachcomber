@@ -330,8 +330,8 @@ if (!fs.existsSync(DIST_CLIENT)) {
       }
     } catch (err) {
       // The active transport lacks this op (the subprocess tier's hello,
-      // introspect, resolve and eval): the fixture is skipped by the main
-      // loop, never failed on a documented gap or passed vacuously.
+      // introspect, resolve, eval and watch): the fixture is skipped by the
+      // main loop, never failed on a documented gap or passed vacuously.
       if (err instanceof UnsupportedTransportError) throw err;
       return makeError(err instanceof Error ? err.message : String(err));
     }

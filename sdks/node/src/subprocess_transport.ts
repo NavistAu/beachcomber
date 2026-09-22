@@ -14,21 +14,22 @@
  * its own process). `hello` and `introspect` have **no** faithful CLI
  * equivalent: `comb` exposes no JSON-emitting subcommand for either.
  *
- * `resolve`/`eval` are simply not implemented over this tier. `comb get
- * --path <cwd> -f json` and `comb eval <template> <cwd>` resolve through
- * the same `libbeachcomber::resolve` the FFI does, so a faithful shell-out
- * exists; nobody has wired it yet.
+ * `resolve`/`eval` are not implemented over this tier. Both take an
+ * explicit `env` map the caller controls, but a spawned `comb get`/`comb
+ * eval` process reads its own environment — and a spawn cannot be given
+ * only the caller's `env` without also losing the `HOME`/`XDG_*` that
+ * decide where the daemon's config and the global entry are. So the env a
+ * caller hands in could not be honoured faithfully here.
  *
  * `watch` went the same way in Plan 4 Task 3, when it became a *resolved*
  * watch: every event is what `resolve` answers, re-resolved with the
  * caller's own `cwd` and `env`. `comb watch <key> -f json` renders it
  * through the same library, but it reads its environment from its own
- * process — and a spawn cannot be given only the caller's `env` without
- * also losing the `HOME`/`XDG_*` that decide where the daemon's config and
- * the global entry are. So the env a caller hands in could not be honoured
- * faithfully here, which is exactly why `resolve` is unsupported too. The
- * Lua SDK's subprocess backend refuses `watch` for its own reason (a
- * blocking line read with no timeout), and the two tiers now agree.
+ * process, which is exactly why `resolve` is unsupported too. The Lua
+ * SDK's subprocess backend refuses `watch` for its own, unrelated reason
+ * (`comb`'s stdout is block- rather than line-buffered through
+ * `io.popen`, so a blocking line read never returns), and the two tiers
+ * now agree regardless.
  *
  * Rather than fake structured data from scraped human-readable text or
  * silently return the wrong answer, all of these ops throw

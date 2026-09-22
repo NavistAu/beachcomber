@@ -116,6 +116,27 @@ fn watch_next_first_call_yields_an_event_outcome() {
     unsafe { bc_client_free(client) };
 }
 
+/// The entire point of `open_owned`/`Arc<Client>`: a `BcWatch` holds its own
+/// share of the client, so freeing the client handle does not invalidate a
+/// watch still in use — free order between the two is independent. Nothing
+/// currently fails if this regresses to a borrow.
+#[test]
+fn watch_next_works_after_the_client_that_opened_it_is_freed() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    put_static(client, "watch_free_order_test", r#"{"field":"v1"}"#);
+    let watch = open_watch(client, "watch_free_order_test.field", None);
+
+    unsafe { bc_client_free(client) };
+
+    let v = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+    assert_eq!(v["outcome"], serde_json::json!("event"), "{v}");
+    assert_eq!(v["data"], serde_json::json!("v1"));
+
+    unsafe { bc_watch_free(watch) };
+}
+
 /// The equivalence Plan 3 models the whole surface on: a watch's first event
 /// is exactly what `bc_resolve` returns for the same key, `cwd` and
 /// `env_json` — template rendered, environment applied.
@@ -275,9 +296,89 @@ fn watch_open_on_an_env_key_is_refused() {
 
     let v = read(unsafe { bc_watch_next(watch, 2000) });
     assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+    // The library's own refusal, made without reaching the daemon — the
+    // caller's input being wrong, not a server- or transport-level failure.
+    assert_eq!(v["error"]["kind"], serde_json::json!("parse_error"), "{v}");
     assert_eq!(
         v["error"]["message"],
         serde_json::json!("env keys cannot be watched")
+    );
+
+    unsafe { bc_watch_free(watch) };
+    unsafe { bc_client_free(client) };
+}
+
+/// `bc_watch_open` with a NULL `cwd` is a deferred error, not a NULL return:
+/// `cwd` is required the way it is for `bc_resolve`, and the refusal names
+/// the argument.
+#[test]
+fn watch_open_with_null_cwd_is_a_parse_error_naming_cwd() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let key = cs("watch_null_cwd_test.field");
+    let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null(), ptr::null()) };
+    assert!(!watch.is_null());
+
+    let v = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+    assert_eq!(v["error"]["kind"], serde_json::json!("parse_error"), "{v}");
+    assert_eq!(
+        v["error"]["message"],
+        serde_json::json!("cwd must not be NULL"),
+        "{v}"
+    );
+
+    unsafe { bc_watch_free(watch) };
+    unsafe { bc_client_free(client) };
+}
+
+/// Malformed `env_json` (not valid JSON) is the same deferred parse error as
+/// `bc_resolve` gives it, surfaced on the first `bc_watch_next`.
+#[test]
+fn watch_open_with_malformed_env_json_is_a_parse_error() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let key = cs("watch_bad_env_test.field");
+    let cwd = cs(CWD);
+    let bad_env = cs("not json");
+    let watch = unsafe { bc_watch_open(client, key.as_ptr(), cwd.as_ptr(), bad_env.as_ptr()) };
+    assert!(!watch.is_null());
+
+    let v = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+    assert_eq!(v["error"]["kind"], serde_json::json!("parse_error"), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("malformed env_json:")),
+        "{v}"
+    );
+
+    unsafe { bc_watch_free(watch) };
+    unsafe { bc_client_free(client) };
+}
+
+/// A `cwd` that is not valid UTF-8 is the same deferred parse error, cheap
+/// to build directly: `CString::new` only rejects an embedded NUL, so raw
+/// non-UTF-8 bytes make a perfectly valid C string that fails only at the
+/// `CStr::to_str` conversion inside `bc_watch_open`.
+#[test]
+fn watch_open_with_non_utf8_cwd_is_a_parse_error() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let key = cs("watch_non_utf8_cwd_test.field");
+    let bad_cwd = CString::new(vec![0xFF, 0xFE]).unwrap();
+    let watch = unsafe { bc_watch_open(client, key.as_ptr(), bad_cwd.as_ptr(), ptr::null()) };
+    assert!(!watch.is_null());
+
+    let v = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+    assert_eq!(v["error"]["kind"], serde_json::json!("parse_error"), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("cwd is not valid UTF-8:")),
+        "{v}"
     );
 
     unsafe { bc_watch_free(watch) };

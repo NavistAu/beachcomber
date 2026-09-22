@@ -8,6 +8,7 @@ mod common;
 use common::daemon::DaemonGuard;
 
 use libbeachcomber::resolve::{self, Inputs, Slot};
+use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
 use libbeachcomber::{
     Client, ClientConfig, ClientFetch, CombResult, IntrospectResponse, IntrospectSubject,
 };
@@ -292,28 +293,18 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
             }
             Err(e) => error_response(e),
         },
+        // `watch` is `resolve` over time (`libbeachcomber::watch`): it opens
+        // through the same `Inputs` the `resolve`/`eval` arms build from the
+        // fixture's `cwd`/`env`, and its first event is the value that
+        // `resolve` would answer for `key` right now — no daemon round trip
+        // needed to observe it.
         "watch" => {
             let key = descriptor.args["key"].as_str().unwrap_or("");
-            let path = descriptor.args["path"].as_str();
-            match client.watch(key, path) {
-                Ok(mut stream) => match stream.next_event() {
-                    Ok(Some(ev)) => {
-                        let data = ev.data.as_ref().map(|d| d.as_value().clone());
-                        let data_as_text = ev.data.as_ref().and_then(|d| d.as_text());
-                        CanonicalResponse {
-                            ok: true,
-                            data,
-                            data_as_text,
-                            age_ms: Some(ev.age_ms),
-                            stale: Some(ev.stale),
-                            error: None,
-                            template: None,
-                            rest: None,
-                        }
-                    }
-                    Ok(None) => CanonicalResponse {
+            match ResolvedWatch::open(client, key, &resolve.inputs()) {
+                Ok(mut watch) => match watch.next(Some(Duration::from_secs(5))) {
+                    Ok(WatchOutcome::Value(v)) => CanonicalResponse {
                         ok: true,
-                        data: None,
+                        data: v,
                         data_as_text: None,
                         age_ms: None,
                         stale: None,
@@ -321,9 +312,10 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                         template: None,
                         rest: None,
                     },
-                    Err(e) => error_response(e),
+                    Ok(other) => err_resp(format!("watch: unexpected outcome {other:?}")),
+                    Err(e) => err_resp(e.to_string()),
                 },
-                Err(e) => error_response(e),
+                Err(e) => err_resp(e.to_string()),
             }
         }
         "introspect" => {

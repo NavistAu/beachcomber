@@ -26,11 +26,6 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       integration could let the daemon precompute and cache these per-path env-derived values, turning those live reads
       back into cache hits where direnv is in play. Deferred until the env/cascade work lands; needs a way to ingest a
       directory's direnv-exported env and key the affected cache entries by `(path, that env)`.
-- [ ] **`watch` support for computed fields.** The env/cascade design adds client-side **computed fields** (jinja
-      expressions over `env.*` + `provider.field`, evaluated in the CLI). v1 wires them into `comb get` and `comb eval`
-      only. `comb watch <computed.field>` is deferred — users will reasonably expect `watch python.version` to behave
-      like `get python.version`, so this needs a client-side re-evaluation loop driven by the underlying daemon fields'
-      changes (and a story for `env.*`, which the daemon can't watch). Pick up after the env/cascade P1 lands.
 - [ ] **`eval`'s "JSON null" ambiguity across conformance runners.** A daemon-fetched ref that resolves to JSON `null`
       is treated as data-present in the Rust and C conformance runners but as a miss in Node, Ruby, Lua and Python.
       Settle whether `eval` has a genuine "miss" notion distinct from "resolved to null", and pin the answer with a

@@ -787,12 +787,11 @@ fn watch_error(e: WatchError) -> FfiError {
 /// [`cancel_handle`](ResolvedWatch::cancel_handle), not a second flag beside
 /// it: setting it is what ends a wait already inside
 /// [`ResolvedWatch::next`], which is where a blocked call actually sits.
-///
-/// `ended` latches the terminal state. A watch that has reported `eof` has
-/// nothing left that could ever answer, and one that failed ended on that
-/// failure — so neither resumes polling on the next call: the `eof` comes
-/// back from `ended`, and the failure comes back because it replaced the
-/// [`ResolvedWatch`] in `watch`.
+// `ended` latches the terminal state. A watch that has reported `eof` has
+// nothing left that could ever answer, and one that failed ended on that
+// failure — so neither resumes polling on the next call: the `eof` comes
+// back from `ended`, and the failure comes back because it replaced the
+// `ResolvedWatch` in `watch`.
 pub struct BcWatch {
     watch: Mutex<Result<ResolvedWatch<'static>, FfiError>>,
     cancelled: Arc<AtomicBool>,
