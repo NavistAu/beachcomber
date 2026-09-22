@@ -441,7 +441,9 @@ the same chain-resolved read `Get` returns — **both halves**, `data` and
 chain**: a `put` at an ancestor, or at the global entry, reaches a watch
 opened at a project path, and so does a write to the key's `template` facet.
 A frame is emitted whenever either half changes, so a template edited on its
-own delivers a frame carrying the new `template` and no new `data`.
+own delivers a frame carrying the new `template` and no new `data`. The
+daemon drops the subscription as soon as the client closes the connection,
+not on the next write to the watched key.
 
 ### `Introspect`
 

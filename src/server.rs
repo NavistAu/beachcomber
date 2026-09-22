@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tracing::{debug, info, warn};
 
@@ -213,6 +213,7 @@ async fn handle_connection(
                     &registry,
                     scheduler.as_ref(),
                     &watchers,
+                    &mut reader,
                     &mut writer,
                 )
                 .await;
@@ -260,6 +261,7 @@ async fn handle_watch(
     registry: &ProviderRegistry,
     scheduler: Option<&SchedulerHandle>,
     watchers: &Arc<WatcherRegistry>,
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) {
     let requested = path.as_deref().or(context_path.as_deref());
@@ -384,37 +386,50 @@ async fn handle_watch(
     // whose only change is the template is still a frame.
     let mut last = (initial.data.clone(), initial.template.clone());
 
-    // Stream loop
+    // Stream loop. A watch owns its connection for its whole lifetime — after
+    // the initial request the client never writes again — so any completion
+    // of the read races the write-triggered path: `Ok(0)` EOF, an error, or
+    // even `Ok(n>0)` (a protocol-violating extra write) all mean this
+    // connection is done being useful, and the watch ends. This is what lets
+    // a dead client's watch drop at once instead of lingering until the next
+    // write to the watched key.
+    let mut probe = [0u8; 1];
     loop {
-        chain_watch.changed.notified().await;
-        // Signal ongoing demand
-        if let Some(sched) = scheduler {
-            sched
-                .send(SchedulerMessage::QueryActivity {
-                    provider: provider_name.clone(),
-                    path: effective_path.clone(),
-                    demand: plan.demand.clone(),
-                })
-                .await;
-        }
+        tokio::select! {
+            _ = chain_watch.changed.notified() => {
+                // Signal ongoing demand
+                if let Some(sched) = scheduler {
+                    sched
+                        .send(SchedulerMessage::QueryActivity {
+                            provider: provider_name.clone(),
+                            path: effective_path.clone(),
+                            demand: plan.demand.clone(),
+                        })
+                        .await;
+                }
 
-        let response = read_watch_value(
-            cache,
-            registry,
-            &plan.target,
-            requested_path.as_deref(),
-            effective_path.as_deref(),
-        );
+                let response = read_watch_value(
+                    cache,
+                    registry,
+                    &plan.target,
+                    requested_path.as_deref(),
+                    effective_path.as_deref(),
+                );
 
-        // Field-level filtering: skip if neither half changed.
-        let current = (response.data.clone(), response.template.clone());
-        if current == last {
-            continue;
-        }
-        last = current;
+                // Field-level filtering: skip if neither half changed.
+                let current = (response.data.clone(), response.template.clone());
+                if current == last {
+                    continue;
+                }
+                last = current;
 
-        if write_watch_line(writer, &response).await.is_err() {
-            break; // Client disconnected
+                if write_watch_line(writer, &response).await.is_err() {
+                    break; // Client disconnected
+                }
+            }
+            _ = reader.read(&mut probe) => {
+                break; // Client gone: EOF, read error, or an unexpected write.
+            }
         }
     }
 }

@@ -10,6 +10,8 @@ use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+use crate::common::poll::poll_until_eq_async;
+
 fn setup() -> (
     TempDir,
     std::path::PathBuf,
@@ -348,5 +350,122 @@ async fn introspect_counts_one_watch_once() {
         "one open watch is one watcher, whatever its chain depth"
     );
 
+    handle.abort();
+}
+
+/// Query `introspect daemon` on a fresh probe connection and return
+/// `active_watchers` — the count of open `watch` streams (see `WatchGuard`).
+async fn active_watchers(sock: &std::path::Path) -> u64 {
+    let mut probe = UnixStream::connect(sock).await.unwrap();
+    probe
+        .write_all(b"{\"op\":\"introspect\",\"subject\":\"daemon\"}\n")
+        .await
+        .unwrap();
+    let mut probe_reader = BufReader::new(&mut probe);
+    let mut out = String::new();
+    probe_reader.read_line(&mut out).await.unwrap();
+    let resp: Response = serde_json::from_str(&out).unwrap();
+    resp.data.expect("introspect returns data")["active_watchers"]
+        .as_u64()
+        .unwrap()
+}
+
+/// A dead client's watch must not linger until the next write to the watched
+/// key: the daemon notices the read half completing (EOF here) and drops the
+/// subscription at once — proven by `active_watchers` returning to zero with
+/// no write to `git.branch` ever happening.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn watch_ends_when_client_disconnects_without_a_write() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    let stream = UnixStream::connect(&sock).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    writer
+        .write_all(b"{\"op\":\"watch\",\"key\":\"git.branch\"}\n")
+        .await
+        .unwrap();
+
+    let mut line = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        reader.read_line(&mut line),
+    )
+    .await
+    .expect("timed out waiting for initial value")
+    .unwrap();
+
+    assert_eq!(
+        active_watchers(&sock).await,
+        1,
+        "watch should be open before the client goes away"
+    );
+
+    // The client goes away. It never writes to git.branch again — if the
+    // daemon only noticed disconnects on the next write, this watch would
+    // linger forever.
+    drop(reader);
+    drop(writer);
+
+    poll_until_eq_async(
+        "active_watchers after the client disconnects",
+        std::time::Duration::from_secs(2),
+        std::time::Duration::from_millis(10),
+        async || active_watchers(&sock).await,
+        0,
+    )
+    .await;
+
+    handle.abort();
+}
+
+/// Inverse of the above: a client that stays connected keeps its watch open
+/// across the same wait — disconnect detection must not be trigger-happy
+/// against a live, merely-idle client.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn watch_stays_open_while_client_is_connected() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
+
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    let stream = UnixStream::connect(&sock).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    writer
+        .write_all(b"{\"op\":\"watch\",\"key\":\"git.branch\"}\n")
+        .await
+        .unwrap();
+
+    let mut line = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        reader.read_line(&mut line),
+    )
+    .await
+    .expect("timed out waiting for initial value")
+    .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+    loop {
+        assert_eq!(
+            active_watchers(&sock).await,
+            1,
+            "a connected client's watch must not be dropped"
+        );
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        // sleep-justified: proving the watch does NOT close has no condition to poll_until — sample active_watchers across the wait window instead.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    drop(reader);
+    drop(writer);
     handle.abort();
 }
