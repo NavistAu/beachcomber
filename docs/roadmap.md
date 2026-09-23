@@ -64,10 +64,6 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       Exposing `exec()` on the FFI/SDK surface is blocked on this: an `exec()` failure message carries the child's
       stderr verbatim, which can contain arbitrary text (including, incidentally, the substring `"compile error"`),
       so string-substring classification is unsafe once exec-sourced messages can reach it.
-- [ ] **Decay depth as a per-source config knob.** The decay ladder is fixed at Decay1..4 for every Source. A knob
-      setting its depth (0 = no ladder: `poll_count` polls, then evict) would let a Source get "one run at things" —
-      e.g. a cached template's `ttl(secs)`, which is sugar for `poll_interval = secs`, `poll_count = 1`. Until then
-      those entries walk the standard ladder; their decay polls drop an already-dropped hash, so they are harmless.
 
 ### CLI Ergonomics
 
