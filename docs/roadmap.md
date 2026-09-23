@@ -71,6 +71,10 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 
 ### CLI Ergonomics
 
+- [ ] **Response metadata on stderr for plain-text output.** Plain-text `comb get` prints the value alone, so a
+      shell caller cannot see envelope metadata (`age_ms`, `stale`, whether a refresh is still running after the
+      read-time validity check timed out — `docs/superpowers/specs/2026-09-23-read-validity-design.md`). A flag
+      could write that metadata to stderr while stdout stays the bare value. Flag name and stderr format open.
 - [ ] `comb inspect <path>` (working name) — dump every applicable provider's fields for the given directory in one
       shot. Globals + path-scoped providers evaluated against the path; single command replaces "ask every provider one
       at a time". Useful for "what does beachcomber know about this dir right now?" as a diagnostic, onboarding, and
