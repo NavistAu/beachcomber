@@ -5,11 +5,12 @@
 //
 // run_get hands `wait` to `libbeachcomber::resolve` through `Inputs`, which
 // forwards it on every fetch (pinned in libbeachcomber/tests/suite/resolve.rs);
-// tests/cli_get_multikey_force.rs runs the binary with `--force` the same way.
+// tests/suite/cli_get_multikey_force.rs runs the binary with `--force` the same way.
 //
 // Phase 1 Round 3 bug: run_get captured `wait` then discarded it via `_wait`,
 // so every CLI --wait invocation silently behaved as wait=false.
 
+use crate::common::daemon::isolate;
 use beachcomber::cache::Cache;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -86,16 +87,12 @@ async fn comb_get_wait_re_executes_stale_entry() {
     let (tmp, sock) = setup_stale().await;
 
     let stdout = tokio::task::spawn_blocking(move || {
-        let out = assert_cmd::Command::cargo_bin("comb")
-            .unwrap()
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+        isolate(&mut cmd, tmp.path(), &tmp.path().join("cfg"))
             .env("BEACHCOMBER_SOCKET", &sock)
             .env("RUST_LOG", "error")
-            .env("HOME", tmp.path())
-            .env("XDG_CONFIG_HOME", tmp.path().join("cfg"))
-            .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
-            .args(["get", "--wait", "hostname.name"])
-            .assert()
-            .success();
+            .args(["get", "--wait", "hostname.name"]);
+        let out = assert_cmd::Command::from_std(cmd).assert().success();
         String::from_utf8(out.get_output().stdout.clone()).unwrap()
     })
     .await

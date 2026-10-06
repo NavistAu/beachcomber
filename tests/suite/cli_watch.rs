@@ -12,10 +12,10 @@
 //! starts, so they use `assert_cmd` like `tests/suite/cli_refresh.rs` does
 //! for the same cases.
 
-use crate::common::daemon::TestDaemon;
+use crate::common::daemon::{TestDaemon, isolate};
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -26,25 +26,6 @@ const TREE: &str = r#"{"widgets":{"foo":"{{ 'hi' }}"}}"#;
 /// `TREE` with the leaf edited — what a `put` to the template makes the
 /// watched value become.
 const TREE_EDITED: &str = r#"{"widgets":{"foo":"{{ 'hi!' }}"}}"#;
-
-/// One isolated `Command` for `comb`, pointed at `d`'s socket and its temp
-/// `$HOME`/config dir, running at `cwd` — the env block `comb` and
-/// `spawn_watch` both need.
-fn isolated_comb(d: &TestDaemon, cwd: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
-        .current_dir(cwd);
-    cmd
-}
-
-/// A `comb` at `cwd`, pointed at `d`'s socket and its temp `$HOME`/config dir.
-fn comb(d: &TestDaemon, cwd: &Path) -> assert_cmd::Command {
-    assert_cmd::Command::from_std(isolated_comb(d, cwd))
-}
 
 /// A running `comb watch` child, killed and reaped on drop so an early
 /// `assert!` failure in a test body never leaks a daemon-attached process.
@@ -60,7 +41,7 @@ impl Drop for WatchChild {
 /// Spawn `comb watch <args>` at `cwd`, isolated like `comb` above, with piped
 /// stdout and stderr.
 fn spawn_watch(d: &TestDaemon, cwd: &Path, args: &[&str]) -> WatchChild {
-    let mut cmd = isolated_comb(d, cwd);
+    let mut cmd = d.command(cwd);
     cmd.arg("watch")
         .args(args)
         .stdout(Stdio::piped())
@@ -128,7 +109,7 @@ fn watch_defaults_to_the_callers_cwd() {
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
 
-    comb(&d, &project)
+    d.comb(&project)
         .args(["put", "my", r#"{"a":1}"#])
         .assert()
         .success();
@@ -150,13 +131,13 @@ fn watch_from_a_sibling_directory_does_not_see_that_directorys_value() {
     std::fs::create_dir_all(&project).unwrap();
     std::fs::create_dir_all(&other).unwrap();
 
-    comb(&d, &project)
+    d.comb(&project)
         .args(["put", "my", r#"{"a":1}"#])
         .assert()
         .success();
 
     let mut w = watch_lines(&d, &other, &["my.a"]);
-    comb(&d, &other)
+    d.comb(&other)
         .args(["put", "my", r#"{"a":2}"#])
         .assert()
         .success();
@@ -169,7 +150,7 @@ fn watch_global_reads_the_home_entry_from_anywhere() {
     let elsewhere = d.home.join("ws/other");
     std::fs::create_dir_all(&elsewhere).unwrap();
 
-    comb(&d, &d.home)
+    d.comb(&d.home)
         .args(["put", "--global", "g", r#"{"v":2}"#])
         .assert()
         .success();
@@ -184,7 +165,7 @@ fn watch_takes_a_relative_positional_path() {
     let project = ws.join("project");
     std::fs::create_dir_all(&project).unwrap();
 
-    comb(&d, &project)
+    d.comb(&project)
         .args(["put", "my", r#"{"a":1}"#])
         .assert()
         .success();
@@ -198,7 +179,7 @@ fn watch_takes_the_path_as_a_flag() {
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
 
-    comb(&d, &project)
+    d.comb(&project)
         .args(["put", "my", r#"{"a":1}"#])
         .assert()
         .success();
@@ -212,7 +193,7 @@ fn watch_takes_the_path_as_a_flag() {
 
 /// `--path <dir>` is the positional's other spelling, and the three ways of
 /// naming the entry exclude each other — mirrors
-/// `tests/cli_refresh.rs::refresh_takes_the_path_as_a_flag_and_rejects_two_spellings_at_once`.
+/// `tests/suite/cli_refresh.rs::refresh_takes_the_path_as_a_flag_and_rejects_two_spellings_at_once`.
 #[test]
 fn watch_rejects_two_spellings_of_a_path_at_once() {
     let d = TestDaemon::spawn();
@@ -224,7 +205,7 @@ fn watch_rejects_two_spellings_of_a_path_at_once() {
         &["watch", "my.a", "--global", home],
     ];
     for args in rejected {
-        comb(&d, &d.home)
+        d.comb(&d.home)
             .args(args)
             .assert()
             .code(2)
@@ -243,12 +224,10 @@ fn watch_from_a_deleted_cwd_with_no_path_is_an_error() {
     // `sh` enters the directory, removes it from under itself, and execs
     // `comb` there; `Command::current_dir` on a missing directory would fail
     // at spawn instead.
-    let mut cmd = assert_cmd::Command::new("sh");
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
+    let mut cmd = std::process::Command::new("sh");
+    isolate(&mut cmd, &d.home, &d.xdg)
+        .env("BEACHCOMBER_SOCKET", &d.socket.path)
         .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
         .env("COMB", env!("CARGO_BIN_EXE_comb"))
         .args([
             "-c",
@@ -256,9 +235,12 @@ fn watch_from_a_deleted_cwd_with_no_path_is_an_error() {
             "sh",
         ])
         .arg(&gone);
-    cmd.assert().code(2).stderr(predicates::str::contains(
-        "cannot determine the current directory",
-    ));
+    assert_cmd::Command::from_std(cmd)
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "cannot determine the current directory",
+        ));
 }
 
 /// The same deleted-cwd case, but with an explicit relative positional (`.`)
@@ -274,12 +256,10 @@ fn watch_from_a_deleted_cwd_with_a_relative_path_is_an_error() {
     // `sh` enters the directory, removes it from under itself, and execs
     // `comb` there; `Command::current_dir` on a missing directory would fail
     // at spawn instead.
-    let mut cmd = assert_cmd::Command::new("sh");
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
+    let mut cmd = std::process::Command::new("sh");
+    isolate(&mut cmd, &d.home, &d.xdg)
+        .env("BEACHCOMBER_SOCKET", &d.socket.path)
         .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
         .env("COMB", env!("CARGO_BIN_EXE_comb"))
         .args([
             "-c",
@@ -287,9 +267,12 @@ fn watch_from_a_deleted_cwd_with_a_relative_path_is_an_error() {
             "sh",
         ])
         .arg(&gone);
-    cmd.assert().code(2).stderr(predicates::str::contains(
-        "cannot determine the current directory",
-    ));
+    assert_cmd::Command::from_std(cmd)
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "cannot determine the current directory",
+        ));
 }
 
 // ── Plan 4 Task 3: every frame is the resolved value ────────────────────────
@@ -305,7 +288,7 @@ fn watch_emits_the_resolved_value_and_refires_when_its_template_changes() {
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
 
-    comb(&d, &project)
+    d.comb(&project)
         .args(["put", "scanline:template", TREE])
         .assert()
         .success();
@@ -313,7 +296,7 @@ fn watch_emits_the_resolved_value_and_refires_when_its_template_changes() {
     let mut w = watch_lines(&d, &project, &["scanline.widgets.foo"]);
     assert_eq!(w.next_line(), "hi");
 
-    comb(&d, &project)
+    d.comb(&project)
         .args(["put", "scanline:template", TREE_EDITED])
         .assert()
         .success();
@@ -327,7 +310,7 @@ fn watch_emits_the_resolved_value_and_refires_when_its_template_changes() {
 fn watch_refuses_an_env_key() {
     let d = TestDaemon::spawn();
 
-    comb(&d, &d.home)
+    d.comb(&d.home)
         .args(["watch", "env.HOME"])
         .assert()
         .code(2)
@@ -344,7 +327,7 @@ fn watch_on_a_template_facet_streams_the_raw_tree() {
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
 
-    comb(&d, &project)
+    d.comb(&project)
         .args(["put", "scanline:template", TREE])
         .assert()
         .success();
@@ -365,7 +348,7 @@ fn watch_json_frames_are_bare_values() {
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
 
-    comb(&d, &project)
+    d.comb(&project)
         .args(["put", "scanline:template", TREE])
         .assert()
         .success();
@@ -373,7 +356,7 @@ fn watch_json_frames_are_bare_values() {
     let mut w = watch_lines(&d, &project, &["scanline.widgets.foo", "-f", "json"]);
     assert_eq!(w.next_line(), r#""hi""#);
 
-    comb(&d, &project)
+    d.comb(&project)
         .args(["put", "scanline:template", TREE_EDITED])
         .assert()
         .success();

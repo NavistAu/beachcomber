@@ -1,3 +1,4 @@
+use crate::common::daemon::isolate;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
 
@@ -136,10 +137,11 @@ fn put_null_cli_validation_rejects_both() {
 #[test]
 fn put_cli_rejects_replace_with_null() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("XDG_CONFIG_HOME", tmp.path().join("config"))
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+    isolate(&mut cmd, tmp.path(), &tmp.path().join("config"))
         .env("BEACHCOMBER_SOCKET", tmp.path().join("test.sock"))
-        .args(["put", "myapp", "--null", "--replace"])
+        .args(["put", "myapp", "--null", "--replace"]);
+    assert_cmd::Command::from_std(cmd)
         .assert()
         .code(2)
         .stderr(predicates::str::contains(

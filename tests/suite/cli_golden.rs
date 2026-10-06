@@ -1,4 +1,5 @@
 use crate::common::daemon::TestDaemon;
+use std::path::Path;
 use std::time::Duration;
 
 #[test]
@@ -10,28 +11,6 @@ fn daemon_fixture_starts_and_exits() {
 
 // ── helper ────────────────────────────────────────────────────────────────────
 
-/// Build a `comb` Command pre-configured with `BEACHCOMBER_SOCKET` pointing
-/// directly at the test daemon's socket path, so `Config::resolve_socket_path()`
-/// resolves to the isolated test socket, and with the daemon's temp
-/// `$HOME`/`$XDG_CONFIG_HOME` so the developer's own config never leaks in.
-///
-/// The current_dir is fixed to "/" so that path-scoped static keys written with
-/// `--path /` are found by `get` (which always injects CWD as path context for
-/// static namespaces).
-fn comb(d: &TestDaemon) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path);
-    cmd.env("HOME", &d.home);
-    cmd.env("XDG_CONFIG_HOME", &d.xdg);
-    cmd.env("XDG_STATE_HOME", d.home.join(".local/state"));
-    // Suppress daemon-start output from bleeding into stdout assertions.
-    cmd.env("RUST_LOG", "error");
-    // Fix CWD to "/" so `get` injects a stable, known path context. Virtual
-    // keys must be stored with `--path /` (or `--path .` in this CWD).
-    cmd.current_dir("/");
-    cmd
-}
-
 // ── golden_get_returns_known_value ────────────────────────────────────────────
 
 #[test]
@@ -39,14 +18,14 @@ fn golden_get_returns_known_value() {
     let d = TestDaemon::spawn();
 
     // Seed a virtual key.  `get` always injects CWD as path context for virtual
-    // providers; we fix CWD to "/" (see `comb()` helper) so we must also put
+    // providers; we fix CWD to "/" (every `comb` here runs at "/") so we must also put
     // with `--path /` to store under the same cache key.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "myapp", r#"{"status":"healthy"}"#, "--path", "/"])
         .assert()
         .success();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["get", "myapp.status"])
         .assert()
         .success()
@@ -61,7 +40,7 @@ fn golden_status_shows_running_daemon() {
 
     // `comb status` talks to the daemon and prints cache rows or column headers.
     // With an empty cache it may print nothing, but it must exit 0.
-    comb(&d).args(["status"]).assert().success();
+    d.comb(Path::new("/")).args(["status"]).assert().success();
 }
 
 // ── golden_put_sets_a_value ───────────────────────────────────────────────────
@@ -72,12 +51,12 @@ fn golden_put_sets_a_value() {
 
     // put exits 0; a subsequent get returns the stored value.
     // `--path /` matches the "/" CWD injected by get's path resolution.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "testprov", r#"{"field":"golden"}"#, "--path", "/"])
         .assert()
         .success();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["get", "testprov.field"])
         .assert()
         .success()
@@ -89,19 +68,19 @@ fn golden_put_sets_a_value() {
 /// A `put` with no `--path` and a `get` with no `--path` must agree on where
 /// "no path" means. Both resolve through `effective_cli_path` in `main.rs`,
 /// which defaults an absent path (with no `--global`) to the process's
-/// current directory — `comb()` fixes that to "/" — so `put myvirtual
+/// current directory — `comb` runs at "/" — so `put myvirtual
 /// '{"field1":"hello"}'` and `get myvirtual.field1 -f json` land at and read
 /// from the same entry without either command naming a directory.
 #[test]
 fn get_json_finds_put_created_virtual_without_explicit_path() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "myvirtual", r#"{"field1":"hello"}"#])
         .assert()
         .success();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["get", "myvirtual.field1", "-f", "json"])
         .assert()
         .success()
@@ -123,12 +102,13 @@ fn get_json_finds_put_created_virtual_without_explicit_path() {
 fn single_key_get_error_paths_always_write_stderr() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "myvirtual2", r#"{"field1":"hello"}"#, "--path", "/"])
         .assert()
         .success();
 
-    let out = comb(&d)
+    let out = d
+        .comb(Path::new("/"))
         .args(["get", "myvirtual2.nosuchfield", "-f", "json", "--path", "/"])
         .output()
         .unwrap();
@@ -155,7 +135,7 @@ fn single_key_get_error_paths_always_write_stderr() {
 fn get_text_finds_put_created_virtual_without_explicit_path() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args([
             "put",
             "textvirt",
@@ -165,21 +145,21 @@ fn get_text_finds_put_created_virtual_without_explicit_path() {
         .success();
 
     // Scalar field.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["get", "textvirt.stdin"])
         .assert()
         .success()
         .stdout(predicates::str::contains(r#"{"session_id":"abc"}"#));
 
     // Nested field.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["get", "textvirt.context.pct"])
         .assert()
         .success()
         .stdout(predicates::str::contains("42"));
 
     // Whole provider: sorted `key=value` lines, nested objects flattened.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["get", "textvirt"])
         .assert()
         .success()
@@ -196,7 +176,7 @@ fn get_text_finds_put_created_virtual_without_explicit_path() {
 fn get_sh_finds_put_created_virtual_without_explicit_path() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args([
             "put",
             "shvirt",
@@ -207,13 +187,13 @@ fn get_sh_finds_put_created_virtual_without_explicit_path() {
 
     // `sh` shell-quotes every value it renders (canon field_resolution.md
     // invariant 8), so the expected forms carry their quotes.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["get", "-f", "sh", "shvirt.stdin"])
         .assert()
         .success()
         .stdout(predicates::str::contains("'raw-blob'"));
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["get", "-f", "sh", "shvirt"])
         .assert()
         .success()
@@ -231,12 +211,12 @@ fn get_sh_finds_put_created_virtual_without_explicit_path() {
 fn multi_key_get_text_finds_put_created_virtual_without_explicit_path() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "multivirt", r#"{"field1":"multi-hello"}"#])
         .assert()
         .success();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["get", "multivirt.field1", "hostname.name"])
         .assert()
         .success()
@@ -250,7 +230,7 @@ fn golden_watch_emits_value_then_exits() {
     let d = TestDaemon::spawn();
 
     // Seed a value so the watch has something to emit immediately.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "watchprov", r#"{"val":"stream-me"}"#, "--path", "/"])
         .assert()
         .success();
@@ -259,7 +239,7 @@ fn golden_watch_emits_value_then_exits() {
     // written before the process is killed, so stdout will contain it even
     // though the exit code is non-zero (killed by timeout).
     // `--path /` matches the `--path /` used in the put above.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["watch", "watchprov.val", "--path", "/"])
         .timeout(Duration::from_secs(2))
         .assert()
@@ -275,7 +255,7 @@ fn golden_eval_renders_template() {
     // A template with no provider.field references is rendered directly without
     // touching the daemon — cheapest golden path. This source carries a tag so
     // it also exercises the template-render path, not just literal text.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", "hello {{ 'world' }}"])
         .assert()
         .success()
@@ -290,7 +270,7 @@ fn golden_check_runs_diagnostics() {
 
     // `comb check daemon` contacts the running daemon and prints PASS/INFO lines.
     // Exit code is 0 when the daemon responds cleanly.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["check", "daemon"])
         .assert()
         .success()
@@ -305,13 +285,7 @@ fn golden_kill_terminates_daemon() {
 
     // `kill` needs --socket because it derives the pid file path from it.
     // The socket flag is only accepted on the Kill subcommand, not at top level.
-    assert_cmd::Command::cargo_bin("comb")
-        .unwrap()
-        .env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
+    d.comb(Path::new("/"))
         .args(["kill", "--socket"])
         .arg(&d.socket.path)
         .assert()
@@ -334,7 +308,7 @@ fn golden_init_prints_or_writes_config() {
 
     // `comb init` detects installed tools and prints suggestions.
     // It doesn't contact the daemon, so it always exits 0.
-    comb(&d).args(["init"]).assert().success();
+    d.comb(Path::new("/")).args(["init"]).assert().success();
 }
 
 // ── one expression syntax: `comb eval` over both forms ────────────────────────
@@ -350,14 +324,14 @@ fn golden_init_prints_or_writes_config() {
 fn eval_single_tag_prints_raw_string() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "evalprov", r#"{"s":"hello"}"#])
         .assert()
         .success();
 
     // Exactly one tag → the expression's natural type (a string), printed raw
     // with no trailing newline — byte-identical to the pre-Task-3 rendering.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", "{{ evalprov.s }}"])
         .assert()
         .success()
@@ -368,7 +342,7 @@ fn eval_single_tag_prints_raw_string() {
 fn eval_text_with_no_tags_prints_itself_even_when_it_looks_like_a_key() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "evalbare", r#"{"s":"hello"}"#])
         .assert()
         .success();
@@ -376,7 +350,7 @@ fn eval_text_with_no_tags_prints_itself_even_when_it_looks_like_a_key() {
     // No tags at all → literal text, not the expression `evalbare.s` — it
     // prints itself even though a matching field exists. `{{ }}` is how you
     // say "evaluate this".
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", "evalbare.s"])
         .assert()
         .success()
@@ -387,13 +361,13 @@ fn eval_text_with_no_tags_prints_itself_even_when_it_looks_like_a_key() {
 fn eval_template_with_literal_text() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "evaltmpl", r#"{"s":"main"}"#])
         .assert()
         .success();
 
     // Literal text around the tag → string-valued, rendered as written.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", "branch: {{ evaltmpl.s }}!"])
         .assert()
         .success()
@@ -404,18 +378,18 @@ fn eval_template_with_literal_text() {
 fn eval_single_tag_bool_prints_true() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "evalbool", r#"{"b":true,"c":false}"#])
         .assert()
         .success();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", "{{ evalbool.b }}"])
         .assert()
         .success()
         .stdout(predicates::str::diff("true"));
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", "{{ evalbool.c }}"])
         .assert()
         .success()
@@ -426,9 +400,9 @@ fn eval_single_tag_bool_prints_true() {
 fn eval_single_tag_object_prints_like_get_text() {
     let d = TestDaemon::spawn();
 
-    // `--path /` matches the "/" CWD the `comb()` helper fixes, so the
+    // `--path /` matches the "/" CWD these tests run `comb` at, so the
     // server-side `-f text` path finds the same entry `eval` does.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args([
             "put",
             "evalobj",
@@ -443,11 +417,15 @@ fn eval_single_tag_object_prints_like_get_text() {
     // `render_data` — sorted `key=value` lines, exactly what `comb get -f text`
     // gives for the same key. Before Task 3 this was minijinja's map
     // formatting (`{"a": 1, "b": "two"}`).
-    let expected = comb(&d).args(["get", "evalobj.o"]).output().unwrap();
+    let expected = d
+        .comb(Path::new("/"))
+        .args(["get", "evalobj.o"])
+        .output()
+        .unwrap();
     let expected = String::from_utf8(expected.stdout).unwrap();
     assert_eq!(expected, "a=1\nb=two");
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", "{{ evalobj.o }}", "/"])
         .assert()
         .success()
@@ -460,12 +438,12 @@ fn get_of_a_template_written_with_tags_renders_it() {
 
     // A template is data the daemon holds under `x:template`; `get x.y`
     // renders it with the caller's environment.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "x:template.y", r#""{{ env.A }}""#, "--path", "/"])
         .assert()
         .success();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .env("A", "from-env")
         .args(["get", "x.y"])
         .assert()
@@ -474,7 +452,7 @@ fn get_of_a_template_written_with_tags_renders_it() {
 
     // `comb eval '{{ x.y }}'` resolves the same ref through the same
     // library resolver, so it renders the identical value `get` does.
-    comb(&d)
+    d.comb(Path::new("/"))
         .env("A", "from-env")
         .args(["eval", "{{ x.y }}"])
         .assert()
@@ -489,20 +467,20 @@ fn eval_nested_virtual_dependency_is_fetched() {
     // `x.a` is a template naming `b.y`, itself a template naming `cache.d.w`:
     // the resolver must reach through two levels of stored template and
     // actually fetch `d.w`. `cache.c.z` names no such provider and is falsy.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "x:template.a", r#""{{ b.y or cache.c.z }}""#])
         .assert()
         .success();
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "b:template.y", r#""{{ cache.d.w }}""#])
         .assert()
         .success();
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "d", r#"{"w":"deep-value"}"#])
         .assert()
         .success();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", "{{ x.a }}"])
         .assert()
         .success()
@@ -515,7 +493,7 @@ fn eval_nested_virtual_dependency_is_fetched() {
 fn fmt_renders_literal_filter_and_conditional() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "fmtprov", r#"{"val":"formatted","n":3}"#])
         .assert()
         .success();
@@ -523,13 +501,13 @@ fn fmt_renders_literal_filter_and_conditional() {
     // `-f fmt` (reached through the `.f` suffix syntax) renders through
     // `eval::render_template` after Task 3. Literal text, filters and a
     // conditional must all still behave exactly as they did under `render_str`.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["g.f", "[{{ val }}/{{ n }}]", "fmtprov"])
         .assert()
         .success()
         .stdout(predicates::str::diff("[formatted/3]"));
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args([
             "g.f",
             "{% if n %}{{ val | truncate(4) }}{% endif %}",
@@ -549,24 +527,24 @@ fn eval_default_filter_fires_on_daemon_miss() {
     // A daemon-backed ref that misses leaves the key absent from the render
     // context, so it is *undefined* and `default` fires. Binding a miss to JSON
     // null instead would make `default` a no-op and print nothing.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", r#"{{ probe.missing | default("FB") }}"#])
         .assert()
         .success()
         .stdout(predicates::str::diff("FB"));
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", r#"[{{ probe.missing | default("FB") }}]"#])
         .assert()
         .success()
         .stdout(predicates::str::diff("[FB]"));
 
     // A hit still wins over the default.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "probehit", r#"{"f":"real"}"#])
         .assert()
         .success();
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", r#"{{ probehit.f | default("FB") }}"#])
         .assert()
         .success()
@@ -577,21 +555,21 @@ fn eval_default_filter_fires_on_daemon_miss() {
 fn fmt_missing_and_null_render_empty() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "nullfmt", r#"{"v":"x","n":null}"#, "--path", "/"])
         .assert()
         .success();
 
     // An unbound name chained into is undefined all the way down, and renders
     // empty rather than erroring (`UndefinedBehavior::Chainable`).
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["g.f", "[{{ nope.sub }}]", "nullfmt"])
         .assert()
         .success()
         .stdout(predicates::str::diff("[]"));
 
     // A field that really is JSON null renders empty too, not the word `none`.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["g.f", "[{{ n }}]", "nullfmt"])
         .assert()
         .success()
@@ -599,11 +577,11 @@ fn fmt_missing_and_null_render_empty() {
 
     // Same rule in the status formatter: a global row's null `path` is empty.
     // `put` defaults to the cwd like `get`, so the global entry needs asking for.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "--global", "globalfmt", r#"{"g":"v"}"#])
         .assert()
         .success();
-    comb(&d)
+    d.comb(Path::new("/"))
         .args([
             "status",
             "-f",
@@ -624,7 +602,7 @@ fn eval_plain_text_without_tags_prints_itself() {
 
     // Canon invariant 14: a source with no tags at all is its own literal
     // text. `{{ }}` is how you say "evaluate this".
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", "hello world"])
         .assert()
         .success()

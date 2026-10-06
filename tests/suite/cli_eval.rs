@@ -8,23 +8,11 @@
 //! Reference discovery is `libbeachcomber::eval::discover_refs`, covered in
 //! `libbeachcomber/tests/suite/eval_classify.rs` and `tests/template.rs`. The
 //! bulk of `eval`'s render-contract tests (literal text, typed single-tag
-//! results, the `default` filter on a miss, …) live in `tests/cli_golden.rs`.
+//! results, the `default` filter on a miss, …) live in `tests/suite/cli_golden.rs`.
 
-use crate::common::daemon::TestDaemon;
+use crate::common::daemon::{TestDaemon, isolate};
 use crate::common::socket::IsolatedSocket;
-use std::path::PathBuf;
-
-/// A `comb` at `/`, pointed at `d`'s socket and its temp `$HOME`/config dir.
-fn comb(d: &TestDaemon) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
-        .current_dir("/");
-    cmd
-}
+use std::path::{Path, PathBuf};
 
 // ── outcome 22: `comb eval` always starts the daemon ─────────────────────────
 
@@ -41,11 +29,9 @@ struct SpawnedDaemon {
 
 impl Drop for SpawnedDaemon {
     fn drop(&mut self) {
-        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+        let _ = isolate(&mut cmd, &self.home, &self.xdg)
             .env("RUST_LOG", "error")
-            .env("HOME", &self.home)
-            .env("XDG_CONFIG_HOME", &self.xdg)
-            .env("XDG_STATE_HOME", self.home.join(".local/state"))
             .args(["kill", "--socket"])
             .arg(&self.socket.path)
             .output();
@@ -68,15 +54,16 @@ fn eval_starts_the_daemon() {
     };
     assert!(!guard.socket.path.exists(), "no daemon before eval runs");
 
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &guard.socket.path)
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+    isolate(&mut cmd, &home, &xdg)
+        .env("BEACHCOMBER_SOCKET", &guard.socket.path)
         .env("RUST_LOG", "error")
         .env("FOO", "hi")
-        .env("HOME", &home)
-        .env("XDG_CONFIG_HOME", &xdg)
-        .env("XDG_STATE_HOME", home.join(".local/state"))
         .args(["eval", "{{ env.FOO }}"]);
-    cmd.assert().success().stdout(predicates::str::diff("hi"));
+    assert_cmd::Command::from_std(cmd)
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("hi"));
 
     assert!(
         guard.socket.path.exists(),
@@ -94,7 +81,7 @@ fn eval_starts_the_daemon() {
 fn eval_resolves_daemon_served_template_from_env() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .env("AWS_PROFILE", "prod-account")
         .args(["eval", "{{ aws.profile }}"])
         .assert()
@@ -109,7 +96,7 @@ fn eval_resolves_daemon_served_template_from_env() {
 fn eval_of_nested_template_field_matches_get() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args([
             "put",
             "scanline:template",
@@ -118,7 +105,8 @@ fn eval_of_nested_template_field_matches_get() {
         .assert()
         .success();
 
-    let get_out = comb(&d)
+    let get_out = d
+        .comb(Path::new("/"))
         .env("SCANLINE_FOO", "hi")
         .args(["get", "scanline.widgets.foo"])
         .output()
@@ -126,7 +114,7 @@ fn eval_of_nested_template_field_matches_get() {
     let get_out = String::from_utf8(get_out.stdout).unwrap();
     assert_eq!(get_out, "hi");
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .env("SCANLINE_FOO", "hi")
         .args(["eval", "{{ scanline.widgets.foo }}"])
         .assert()
@@ -142,7 +130,7 @@ fn eval_of_nested_template_field_matches_get() {
 fn eval_rejected_ref_is_falsy() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", r#"{{ cache.nope.x or "fb" }}"#])
         .assert()
         .success()
@@ -156,7 +144,7 @@ fn eval_rejected_ref_is_falsy() {
 fn eval_compile_error_exits_2_naming_it() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", "{{ 1 + }}"])
         .assert()
         .code(2)
@@ -169,7 +157,7 @@ fn eval_compile_error_exits_2_naming_it() {
 fn eval_exec_call_is_enabled_for_the_cli() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", r#"{{ exec("printf", "x") }}"#])
         .assert()
         .success()
@@ -185,7 +173,7 @@ fn eval_exec_call_is_enabled_for_the_cli() {
 fn eval_fg_filter_escapes_pass_through_unstripped() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .env("FOO", "hi")
         .args(["eval", "{{ env.FOO | fg('#00ff00') }}"])
         .assert()

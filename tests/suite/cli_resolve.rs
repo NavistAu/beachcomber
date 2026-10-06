@@ -7,7 +7,7 @@
 //!
 //! Outcomes pinned: 1, 2, 3, 4, 4a, 8, 20, 22, 23 of the design's §12.
 
-use crate::common::daemon::TestDaemon;
+use crate::common::daemon::{TestDaemon, isolate};
 use crate::common::git::{GitRepoFixture, has_git};
 use crate::common::socket::IsolatedSocket;
 use std::path::{Path, PathBuf};
@@ -20,15 +20,8 @@ const TREE: &str = r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":
 /// `$HOME`/`$XDG_CONFIG_HOME` so nothing reaches the developer's config, and
 /// the shell the design's examples assume.
 fn comb(d: &TestDaemon, cwd: &Path) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
-        .env("SCANLINE_FOO", "hi")
-        .env_remove("SCANLINE_THEME")
-        .current_dir(cwd);
+    let mut cmd = d.comb(cwd);
+    cmd.env("SCANLINE_FOO", "hi").env_remove("SCANLINE_THEME");
     cmd
 }
 
@@ -258,11 +251,9 @@ struct SpawnedDaemon {
 
 impl Drop for SpawnedDaemon {
     fn drop(&mut self) {
-        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+        let _ = isolate(&mut cmd, &self.home, &self.xdg)
             .env("RUST_LOG", "error")
-            .env("HOME", &self.home)
-            .env("XDG_CONFIG_HOME", &self.xdg)
-            .env("XDG_STATE_HOME", self.home.join(".local/state"))
             .args(["kill", "--socket"])
             .arg(&self.socket.path)
             .output();
@@ -286,15 +277,13 @@ fn env_keys_answer_from_the_shell_and_still_ensure_the_daemon() {
     );
 
     let comb = || {
-        let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-        cmd.env("BEACHCOMBER_SOCKET", &guard.socket.path)
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+        isolate(&mut cmd, &home, &xdg)
+            .env("BEACHCOMBER_SOCKET", &guard.socket.path)
             .env("RUST_LOG", "error")
-            .env("HOME", &home)
-            .env("XDG_CONFIG_HOME", &xdg)
-            .env("XDG_STATE_HOME", home.join(".local/state"))
             .env_remove("NOPE")
             .current_dir(&home);
-        cmd
+        assert_cmd::Command::from_std(cmd)
     };
 
     comb()

@@ -1,3 +1,4 @@
+use crate::common::daemon::isolate;
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::provider::Value;
@@ -115,16 +116,12 @@ async fn get_variadic_json_format_produces_array() {
     let (tmp, sock) = setup_server().await;
 
     let stdout = tokio::task::spawn_blocking(move || {
-        let out = assert_cmd::Command::cargo_bin("comb")
-            .unwrap()
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+        isolate(&mut cmd, tmp.path(), &tmp.path().join("cfg"))
             .env("BEACHCOMBER_SOCKET", &sock)
             .env("RUST_LOG", "error")
-            .env("HOME", tmp.path())
-            .env("XDG_CONFIG_HOME", tmp.path().join("cfg"))
-            .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
-            .args(["get", "-f", "json", "hostname.value", "user.value"])
-            .assert()
-            .success();
+            .args(["get", "-f", "json", "hostname.value", "user.value"]);
+        let out = assert_cmd::Command::from_std(cmd).assert().success();
         String::from_utf8(out.get_output().stdout.clone()).unwrap()
     })
     .await

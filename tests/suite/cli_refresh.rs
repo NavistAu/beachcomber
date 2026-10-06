@@ -9,28 +9,17 @@
 //! these tests prove the binary carries a key and a path to it and reports
 //! what it answers.
 
-use crate::common::daemon::TestDaemon;
+use crate::common::daemon::{TestDaemon, isolate};
 use crate::common::git::{GitRepoFixture, has_git};
 use crate::common::poll::poll_until;
 use std::path::Path;
 use std::time::Duration;
 
-/// A `comb` at `cwd`, pointed at `d`'s socket and its temp `$HOME`/config dir.
-fn comb(d: &TestDaemon, cwd: &Path) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
-        .current_dir(cwd);
-    cmd
-}
-
 /// `comb get -f json <key>` at `cwd`, parsed. A miss under `json` exits 2, so
 /// a key that has gone cold fails here loudly rather than reading as zero.
 fn get_json(d: &TestDaemon, cwd: &Path, key: &str) -> serde_json::Value {
-    let out = comb(d, cwd)
+    let out = d
+        .comb(cwd)
         .args(["get", "-f", "json", key])
         .output()
         .unwrap();
@@ -53,7 +42,7 @@ fn age(d: &TestDaemon, cwd: &Path, key: &str) -> u64 {
 fn refresh_of_a_provider_prints_nothing_and_exits_0() {
     let d = TestDaemon::spawn();
 
-    comb(&d, &d.home)
+    d.comb(&d.home)
         .args(["refresh", "hostname"])
         .assert()
         .success()
@@ -68,11 +57,11 @@ fn refresh_of_a_provider_prints_nothing_and_exits_0() {
 fn refresh_of_a_static_namespace_is_the_daemons_refusal() {
     let d = TestDaemon::spawn();
 
-    comb(&d, &d.home)
+    d.comb(&d.home)
         .args(["put", "my", r#"{"a":1}"#])
         .assert()
         .success();
-    comb(&d, &d.home)
+    d.comb(&d.home)
         .args(["refresh", "my"])
         .assert()
         .code(2)
@@ -86,7 +75,7 @@ fn refresh_of_a_static_namespace_is_the_daemons_refusal() {
 fn refresh_of_a_facet_key_is_an_error() {
     let d = TestDaemon::spawn();
 
-    comb(&d, &d.home)
+    d.comb(&d.home)
         .args(["refresh", "a:b:c.x"])
         .assert()
         .code(2)
@@ -97,7 +86,7 @@ fn refresh_of_a_facet_key_is_an_error() {
 fn refresh_global_is_accepted_for_a_global_source() {
     let d = TestDaemon::spawn();
 
-    comb(&d, &d.home)
+    d.comb(&d.home)
         .args(["refresh", "--global", "hostname.name"])
         .assert()
         .success()
@@ -131,7 +120,7 @@ fn refresh_of_a_field_re_executes_its_owning_source_alone() {
     let cwd = repo.path();
 
     // Two field reads: each demands its owning Source and nothing else.
-    comb(&d, cwd)
+    d.comb(cwd)
         .args(["get", "git.lines_added", "git.branch_default"])
         .assert()
         .success();
@@ -146,7 +135,7 @@ fn refresh_of_a_field_re_executes_its_owning_source_alone() {
     );
     let lineage_before = age(&d, cwd, "git.branch_default");
 
-    comb(&d, cwd)
+    d.comb(cwd)
         .args(["refresh", "git.lines_added"])
         .assert()
         .success()
@@ -188,16 +177,13 @@ fn refresh_resolves_a_relative_path_against_the_callers_cwd() {
     let canonical = cwd.canonicalize().unwrap();
     let canonical = canonical.to_str().unwrap();
 
-    comb(&d, cwd)
+    d.comb(cwd)
         .args(["refresh", "git.lines_added", "."])
         .assert()
         .success();
 
     let git_paths = || -> Vec<String> {
-        let out = comb(&d, cwd)
-            .args(["status", "-f", "json"])
-            .output()
-            .unwrap();
+        let out = d.comb(cwd).args(["status", "-f", "json"]).output().unwrap();
         String::from_utf8(out.stdout)
             .unwrap()
             .lines()
@@ -228,7 +214,7 @@ fn refresh_takes_the_path_as_a_flag_and_rejects_two_spellings_at_once() {
     let d = TestDaemon::spawn();
     let home = d.home.to_str().unwrap();
 
-    comb(&d, &d.home)
+    d.comb(&d.home)
         .args(["refresh", "hostname", "--path", home])
         .assert()
         .success()
@@ -243,7 +229,7 @@ fn refresh_takes_the_path_as_a_flag_and_rejects_two_spellings_at_once() {
         &["refresh", "hostname", "--global", home],
     ];
     for args in rejected {
-        comb(&d, &d.home)
+        d.comb(&d.home)
             .args(args)
             .assert()
             .code(2)
@@ -262,12 +248,10 @@ fn refresh_from_a_deleted_cwd_with_no_path_is_an_error() {
     // `sh` enters the directory, removes it from under itself, and execs
     // `comb` there; `Command::current_dir` on a missing directory would fail
     // at spawn instead.
-    let mut cmd = assert_cmd::Command::new("sh");
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
+    let mut cmd = std::process::Command::new("sh");
+    isolate(&mut cmd, &d.home, &d.xdg)
+        .env("BEACHCOMBER_SOCKET", &d.socket.path)
         .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
         .env("COMB", env!("CARGO_BIN_EXE_comb"))
         .args([
             "-c",
@@ -275,7 +259,10 @@ fn refresh_from_a_deleted_cwd_with_no_path_is_an_error() {
             "sh",
         ])
         .arg(&gone);
-    cmd.assert().code(2).stderr(predicates::str::contains(
-        "cannot determine the current directory",
-    ));
+    assert_cmd::Command::from_std(cmd)
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "cannot determine the current directory",
+        ));
 }

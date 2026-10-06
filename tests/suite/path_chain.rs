@@ -14,6 +14,7 @@
 //! not cargo's — under `NEXTEST=1 cargo test` these share one process and one
 //! `$HOME`, and `query::home_dir`'s `OnceLock` freezes whichever won the race.
 
+use crate::common::daemon::isolate;
 use crate::common::git::{GitRepoFixture, has_git};
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
@@ -1492,14 +1493,12 @@ async fn refresh_at_the_global_entry_writes_nothing_without_a_home_repository() 
 // ── (i)+(j) the CLI carries a path on every request ──────────────────────────
 
 fn comb(f: &Fixture, cwd: &Path, cfg: &Path) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &f.sock)
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+    isolate(&mut cmd, &f.home, cfg)
+        .env("BEACHCOMBER_SOCKET", &f.sock)
         .env("RUST_LOG", "error")
-        .env("HOME", &f.home)
-        .env("XDG_CONFIG_HOME", cfg)
-        .env("XDG_STATE_HOME", f.home.join(".local/state"))
         .current_dir(cwd);
-    cmd
+    assert_cmd::Command::from_std(cmd)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

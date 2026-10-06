@@ -7,6 +7,7 @@
 //! during the test-suite-health work. `--exit-with-parent` makes the daemon
 //! self-terminate when its spawner dies, even on SIGKILL.
 
+use crate::common::daemon::isolate;
 use crate::common::poll::poll_until;
 use std::process::Command;
 use std::time::Duration;
@@ -34,10 +35,7 @@ fn daemon_exits_when_parent_dies() {
     // the nextest-SIGKILL-of-a-test scenario that produced the orphans.
     // `HOME`/`XDG_CONFIG_HOME` keep the daemon's managed-defaults write out of
     // the developer's real config directory.
-    let mut parent = Command::new("sh")
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
+    let mut parent = isolate(&mut Command::new("sh"), tmp.path(), tmp.path())
         .arg("-c")
         .arg(format!(
             "{comb} daemon --exit-with-parent --socket {sock} & echo $! > {pid}; wait",

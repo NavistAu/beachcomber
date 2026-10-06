@@ -25,15 +25,8 @@ const TREE: &str = r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":
 /// `$HOME`/`$XDG_CONFIG_HOME` so nothing reaches the developer's config, and
 /// the shell the design's examples assume.
 fn comb(d: &TestDaemon, cwd: &Path) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
-        .env("SCANLINE_FOO", "hi")
-        .env_remove("SCANLINE_THEME")
-        .current_dir(cwd);
+    let mut cmd = d.comb(cwd);
+    cmd.env("SCANLINE_FOO", "hi").env_remove("SCANLINE_THEME");
     cmd
 }
 

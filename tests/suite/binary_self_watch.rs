@@ -1,5 +1,6 @@
 //! Integration test: daemon gracefully shuts down when its binary is modified.
 
+use crate::common::daemon::isolate;
 use crate::common::poll::poll_until;
 
 /// Canon §"Self-supervision": the mtime poll is the guarantee — it fires even
@@ -42,13 +43,14 @@ async fn daemon_shuts_down_when_binary_touched() {
     std::fs::copy(src, &target).expect("copy binary");
 
     let sock = tmpdir.path().join("sock");
-    let mut child = std::process::Command::new(&target)
-        .env("HOME", tmpdir.path())
-        .env("XDG_CONFIG_HOME", tmpdir.path())
-        .env("XDG_STATE_HOME", tmpdir.path().join(".local/state"))
-        .args(["daemon", "--socket", sock.to_str().unwrap()])
-        .spawn()
-        .expect("spawn daemon");
+    let mut child = isolate(
+        &mut std::process::Command::new(&target),
+        tmpdir.path(),
+        tmpdir.path(),
+    )
+    .args(["daemon", "--socket", sock.to_str().unwrap()])
+    .spawn()
+    .expect("spawn daemon");
 
     // Wait for socket to exist.
     poll_until(

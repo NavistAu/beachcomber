@@ -9,18 +9,7 @@
 //! template exists.
 
 use crate::common::daemon::TestDaemon;
-
-/// A `comb` at `/`, pointed at `d`'s socket and its temp `$HOME`/config dir.
-fn comb(d: &TestDaemon) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
-        .current_dir("/");
-    cmd
-}
+use std::path::Path;
 
 /// `comb eval '{{ exec("sh","-c","echo hi") }}'` runs the command and
 /// prints its output.
@@ -28,7 +17,7 @@ fn comb(d: &TestDaemon) -> assert_cmd::Command {
 fn eval_of_exec_call_prints_command_output() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["eval", r#"{{ exec("sh", "-c", "echo hi") }}"#])
         .assert()
         .success()
@@ -41,7 +30,7 @@ fn eval_of_exec_call_prints_command_output() {
 fn get_of_template_with_exec_prints_command_output() {
     let d = TestDaemon::spawn();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args([
             "put",
             "demo:template.shout",
@@ -50,7 +39,7 @@ fn get_of_template_with_exec_prints_command_output() {
         .assert()
         .success();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["get", "demo.shout"])
         .assert()
         .success()
@@ -82,7 +71,7 @@ fn get_of_exec_or_cache_cascade_spawns_command_exactly_once() {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args([
             "put",
             "demo:template.shout",
@@ -95,12 +84,12 @@ fn get_of_exec_or_cache_cascade_spawns_command_exactly_once() {
         .success();
 
     // Seed the daemon-backed fallback the cascade falls through to.
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["put", "otherprov", r#"{"otherfield":"daemon-value"}"#])
         .assert()
         .success();
 
-    comb(&d)
+    d.comb(Path::new("/"))
         .args(["get", "demo.shout"])
         .assert()
         .success()

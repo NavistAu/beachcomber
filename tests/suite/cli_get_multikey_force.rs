@@ -3,6 +3,7 @@
 // puts both on the wire. Phase 1 Round 3 bug: the CLI's session wrapper
 // dropped both.
 
+use crate::common::daemon::isolate;
 use beachcomber::cache::Cache;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -66,7 +67,7 @@ async fn session_get_formatted_with_flags_forwards_wait() {
     // Calling get_formatted_with_flags with wait=true on a fresh entry must
     // not error. This locks in that wait is an accepted parameter; the
     // behavioral wait=true semantics (stale-re-execute) are covered in
-    // tests/cli_get_wait_propagation.rs and tests/get_wait.rs.
+    // tests/suite/cli_get_wait_propagation.rs and tests/suite/get_wait.rs.
     let (_tmp, sock) = setup_seeded().await;
     let mut session = client_for(sock).session().unwrap();
 
@@ -88,16 +89,12 @@ async fn comb_get_multikey_forwards_force_to_every_fetch() {
     let (tmp, sock) = setup_seeded().await;
 
     let stdout = tokio::task::spawn_blocking(move || {
-        let out = assert_cmd::Command::cargo_bin("comb")
-            .unwrap()
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+        isolate(&mut cmd, tmp.path(), &tmp.path().join("cfg"))
             .env("BEACHCOMBER_SOCKET", &sock)
             .env("RUST_LOG", "error")
-            .env("HOME", tmp.path())
-            .env("XDG_CONFIG_HOME", tmp.path().join("cfg"))
-            .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
-            .args(["get", "--force", "hostname.name", "hostname.short"])
-            .assert()
-            .success();
+            .args(["get", "--force", "hostname.name", "hostname.short"]);
+        let out = assert_cmd::Command::from_std(cmd).assert().success();
         String::from_utf8(out.get_output().stdout.clone()).unwrap()
     })
     .await

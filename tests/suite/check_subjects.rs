@@ -2,6 +2,7 @@
 // and the `comb check` CLI aggregation behaviour.
 // Uses the in-process test daemon pattern from tests/put_null.rs.
 
+use crate::common::daemon::isolate;
 use crate::common::poll::poll_until;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
@@ -451,12 +452,16 @@ fn check_daemon_unreachable_exits_two() {
 
     let exe = comb_binary();
 
-    let output = std::process::Command::new(&exe)
-        // Point BEACHCOMBER_SOCKET at a temp path with no daemon behind it.
-        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
-        .args(["check", "--connect-timeout", "0", "daemon"])
-        .output()
-        .expect("run comb check daemon");
+    let output = isolate(
+        &mut std::process::Command::new(&exe),
+        tmp.path(),
+        &tmp.path().join("cfg"),
+    )
+    // Point BEACHCOMBER_SOCKET at a temp path with no daemon behind it.
+    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
+    .args(["check", "--connect-timeout", "0", "daemon"])
+    .output()
+    .expect("run comb check daemon");
 
     assert_eq!(
         output.status.code(),
@@ -483,11 +488,15 @@ fn check_connect_timeout_bounds_the_search() {
     let exe = comb_binary();
 
     let start = std::time::Instant::now();
-    let output = std::process::Command::new(&exe)
-        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
-        .args(["check", "daemon", "--connect-timeout", "300ms"])
-        .output()
-        .expect("run comb check daemon");
+    let output = isolate(
+        &mut std::process::Command::new(&exe),
+        tmp.path(),
+        &tmp.path().join("cfg"),
+    )
+    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
+    .args(["check", "daemon", "--connect-timeout", "300ms"])
+    .output()
+    .expect("run comb check daemon");
     let elapsed = start.elapsed();
 
     assert_eq!(
@@ -598,14 +607,15 @@ fn check_daemon_reports_watch_backend() {
     let exe = comb_binary();
 
     // The daemon writes managed defaults under `$XDG_CONFIG_HOME` on start.
-    let mut daemon = std::process::Command::new(&exe)
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
-        .args(["daemon", "--exit-with-parent", "--socket"])
-        .arg(&sock)
-        .spawn()
-        .expect("spawn daemon");
+    let mut daemon = isolate(
+        &mut std::process::Command::new(&exe),
+        tmp.path(),
+        tmp.path(),
+    )
+    .args(["daemon", "--exit-with-parent", "--socket"])
+    .arg(&sock)
+    .spawn()
+    .expect("spawn daemon");
 
     poll_until(
         "the spawned `comb daemon`'s socket path",
@@ -776,15 +786,16 @@ async fn env_override_daemon_does_not_arm_reaper() {
 
     let exe = comb_binary();
 
-    let mut daemon = std::process::Command::new(&exe)
-        .env("BEACHCOMBER_SOCKET", &sock)
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
-        .args(["daemon", "--exit-with-parent", "--socket"])
-        .arg(&sock)
-        .spawn()
-        .expect("spawn daemon");
+    let mut daemon = isolate(
+        &mut std::process::Command::new(&exe),
+        tmp.path(),
+        tmp.path(),
+    )
+    .env("BEACHCOMBER_SOCKET", &sock)
+    .args(["daemon", "--exit-with-parent", "--socket"])
+    .arg(&sock)
+    .spawn()
+    .expect("spawn daemon");
 
     poll_until(
         "the spawned `comb daemon`'s socket path",
@@ -836,16 +847,17 @@ fn daemon_exits_when_bind_fails() {
 
     let exe = comb_binary();
     let mut daemon = KillOnDrop(
-        std::process::Command::new(&exe)
-            .env("HOME", tmp.path())
-            .env("XDG_CONFIG_HOME", tmp.path())
-            .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
-            .args(["daemon", "--socket"])
-            .arg(&sock)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn daemon"),
+        isolate(
+            &mut std::process::Command::new(&exe),
+            tmp.path(),
+            tmp.path(),
+        )
+        .args(["daemon", "--socket"])
+        .arg(&sock)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn daemon"),
     );
 
     let exited = poll_until(
@@ -873,12 +885,15 @@ fn check_config_reports_its_own_local_verdict() {
     )
     .unwrap();
 
-    let output = std::process::Command::new(comb_binary())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
-        .args(["check", "--connect-timeout", "0", "config"])
-        .output()
-        .expect("run comb check config");
+    let output = isolate(
+        &mut std::process::Command::new(comb_binary()),
+        tmp.path(),
+        tmp.path(),
+    )
+    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
+    .args(["check", "--connect-timeout", "0", "config"])
+    .output()
+    .expect("run comb check config");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -900,14 +915,15 @@ fn check_config_fails_a_virtual_subtable_naming_the_template_facet() {
     )
     .unwrap();
 
-    let output = std::process::Command::new(comb_binary())
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
-        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
-        .args(["check", "--connect-timeout", "0", "config"])
-        .output()
-        .expect("run comb check config");
+    let output = isolate(
+        &mut std::process::Command::new(comb_binary()),
+        tmp.path(),
+        tmp.path(),
+    )
+    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
+    .args(["check", "--connect-timeout", "0", "config"])
+    .output()
+    .expect("run comb check config");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -935,14 +951,15 @@ fn comb_daemon_refused_by_config_validation_exits_two_and_binds_nothing() {
 
     // `.output()` waits for the process to exit: a refused daemon returns
     // on its own, so a hang here is the bug.
-    let output = std::process::Command::new(comb_binary())
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
-        .args(["daemon", "--exit-with-parent", "--socket"])
-        .arg(&sock)
-        .output()
-        .expect("run comb daemon");
+    let output = isolate(
+        &mut std::process::Command::new(comb_binary()),
+        tmp.path(),
+        tmp.path(),
+    )
+    .args(["daemon", "--exit-with-parent", "--socket"])
+    .arg(&sock)
+    .output()
+    .expect("run comb daemon");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(2), "stderr:\n{stderr}");

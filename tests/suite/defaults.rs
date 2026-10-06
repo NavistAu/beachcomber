@@ -6,6 +6,7 @@
 //! its own process, the assumption `tests/seed.rs` makes) so nothing lands in
 //! the developer's real `~/.config/beachcomber`.
 
+use crate::common::daemon::isolate;
 use beachcomber::daemon::defaults::{
     MARKER_PREFIX, Report, SHIPPED, is_current, write_managed_defaults,
 };
@@ -187,14 +188,15 @@ fn comb_daemon_refuses_to_start_when_the_defaults_directory_is_unwritable() {
     std::fs::create_dir(&cfg_dir).unwrap();
     std::fs::set_permissions(&cfg_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
-        .args(["daemon", "--exit-with-parent", "--socket"])
-        .arg(tmp.path().join("sock"))
-        .output()
-        .expect("run comb daemon");
+    let out = isolate(
+        &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
+        tmp.path(),
+        tmp.path(),
+    )
+    .args(["daemon", "--exit-with-parent", "--socket"])
+    .arg(tmp.path().join("sock"))
+    .output()
+    .expect("run comb daemon");
     std::fs::set_permissions(&cfg_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     assert_eq!(out.status.code(), Some(2), "no daemon: exit 2");
@@ -370,10 +372,7 @@ fn comb_check_config_reports_the_defaults_directory() {
 
     // Before any daemon has run: the directory is empty, and the check says so
     // without writing anything into it.
-    let out = std::process::Command::new(exe)
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
+    let out = isolate(&mut std::process::Command::new(exe), tmp.path(), tmp.path())
         .env("BEACHCOMBER_SOCKET", &sock)
         .args(["check", "--connect-timeout", "0", "config"])
         .output()
@@ -390,10 +389,7 @@ fn comb_check_config_reports_the_defaults_directory() {
     assert!(!defaults.exists(), "the check created nothing");
 
     // After a daemon has started: every shipped file is present at this version.
-    let mut daemon = std::process::Command::new(exe)
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
+    let mut daemon = isolate(&mut std::process::Command::new(exe), tmp.path(), tmp.path())
         .args(["daemon", "--exit-with-parent", "--socket"])
         .arg(&sock)
         .stdout(std::process::Stdio::null())
@@ -408,10 +404,7 @@ fn comb_check_config_reports_the_defaults_directory() {
         || sock.exists(),
         |bound| *bound,
     );
-    let out = std::process::Command::new(exe)
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
+    let out = isolate(&mut std::process::Command::new(exe), tmp.path(), tmp.path())
         .env("BEACHCOMBER_SOCKET", &sock)
         .args(["check", "--connect-timeout", "2s", "config"])
         .output()
@@ -450,14 +443,15 @@ fn comb_check_config_probes_without_creating_the_defaults_directory() {
     )
     .unwrap();
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("XDG_STATE_HOME", tmp.path().join(".local/state"))
-        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
-        .args(["check", "--connect-timeout", "0", "config"])
-        .output()
-        .expect("run comb check config");
+    let out = isolate(
+        &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
+        tmp.path(),
+        tmp.path(),
+    )
+    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
+    .args(["check", "--connect-timeout", "0", "config"])
+    .output()
+    .expect("run comb check config");
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(
@@ -487,14 +481,15 @@ fn comb_check_config_probes_without_creating_the_defaults_directory() {
 /// `comb check config` with `XDG_CONFIG_HOME` at `root`, no daemon behind the
 /// socket, so only the local verdicts are on the line.
 fn check_config_stdout(root: &Path) -> String {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
-        .env("HOME", root)
-        .env("XDG_CONFIG_HOME", root)
-        .env("XDG_STATE_HOME", root.join(".local/state"))
-        .env("BEACHCOMBER_SOCKET", root.join("no-daemon.sock"))
-        .args(["check", "--connect-timeout", "0", "config"])
-        .output()
-        .expect("run comb check config");
+    let out = isolate(
+        &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
+        root,
+        root,
+    )
+    .env("BEACHCOMBER_SOCKET", root.join("no-daemon.sock"))
+    .args(["check", "--connect-timeout", "0", "config"])
+    .output()
+    .expect("run comb check config");
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -547,13 +542,14 @@ fn comb_check_config_fails_an_unwritable_defaults_directory() {
 
 #[test]
 fn comb_init_write_config_is_a_clap_error() {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
-        .env("HOME", Path::new("/nonexistent"))
-        .env("XDG_CONFIG_HOME", Path::new("/nonexistent"))
-        .env("XDG_STATE_HOME", Path::new("/nonexistent/.local/state"))
-        .args(["init", "--write-config"])
-        .output()
-        .expect("run comb init");
+    let out = isolate(
+        &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
+        Path::new("/nonexistent"),
+        Path::new("/nonexistent"),
+    )
+    .args(["init", "--write-config"])
+    .output()
+    .expect("run comb init");
     assert_eq!(out.status.code(), Some(2));
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("unexpected argument"),

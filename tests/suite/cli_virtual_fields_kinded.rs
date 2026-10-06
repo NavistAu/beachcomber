@@ -100,14 +100,8 @@ fn daemon() -> (TestDaemon, PathBuf) {
 }
 
 fn comb(d: &TestDaemon, cwd: &Path) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
-        .env_remove("TF_WORKSPACE")
-        .current_dir(cwd);
+    let mut cmd = d.comb(cwd);
+    cmd.env_remove("TF_WORKSPACE");
     cmd
 }
 

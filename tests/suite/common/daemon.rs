@@ -1,8 +1,17 @@
 use crate::common::poll::poll_until;
 use crate::common::socket::IsolatedSocket;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::Duration;
+
+/// Point `cmd` at a throwaway `$HOME`, `$XDG_CONFIG_HOME` and
+/// `$XDG_STATE_HOME` (= `<home>/.local/state`) so nothing it runs can read or
+/// write the developer's real config, defaults or log.
+pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path) -> &'a mut Command {
+    cmd.env("HOME", home)
+        .env("XDG_CONFIG_HOME", xdg)
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+}
 
 #[allow(dead_code)]
 pub struct TestDaemon {
@@ -41,10 +50,8 @@ impl TestDaemon {
         // dies without running `Drop` (e.g. nextest SIGKILLs a timed-out test),
         // so a daemon can never be orphaned. Drop below still handles the normal
         // and panic-unwind paths.
-        let process = Command::new(env!("CARGO_BIN_EXE_comb"))
-            .env("HOME", &home)
-            .env("XDG_CONFIG_HOME", &xdg)
-            .env("XDG_STATE_HOME", home.join(".local/state"))
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
+        let process = isolate(&mut cmd, &home, &xdg)
             .args(["daemon", "--exit-with-parent", "--socket"])
             .arg(&socket.path)
             .spawn()
@@ -64,6 +71,24 @@ impl TestDaemon {
             xdg,
             process,
         }
+    }
+
+    /// `comb` at `cwd`, isolated to this daemon's home/xdg, with
+    /// `BEACHCOMBER_SOCKET` = this daemon's socket and `RUST_LOG=error`.
+    #[allow(dead_code)]
+    pub fn command(&self, cwd: &Path) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
+        isolate(&mut cmd, &self.home, &self.xdg)
+            .current_dir(cwd)
+            .env("BEACHCOMBER_SOCKET", &self.socket.path)
+            .env("RUST_LOG", "error");
+        cmd
+    }
+
+    /// `command(cwd)` wrapped as `assert_cmd::Command::from_std`.
+    #[allow(dead_code)]
+    pub fn comb(&self, cwd: &Path) -> assert_cmd::Command {
+        assert_cmd::Command::from_std(self.command(cwd))
     }
 }
 

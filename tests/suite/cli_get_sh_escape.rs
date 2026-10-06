@@ -12,25 +12,14 @@
 //!   `comb get -f sh <prov>` is the daemon's data as stored.
 
 use crate::common::daemon::TestDaemon;
-use assert_cmd::Command;
-
-/// A `comb` at `/`, pointed at `d`'s socket and its temp `$HOME`/config dir.
-fn comb(d: &TestDaemon) -> Command {
-    let mut cmd = Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
-        .current_dir("/");
-    cmd
-}
+use std::path::Path;
 
 /// Run `comb get -f <format> conda` with `CONDA_DEFAULT_ENV` set to `value`
 /// against a daemon whose managed defaults hold `conda:template.env`.
 fn conda_output(format: &str, value: &str) -> String {
     let d = TestDaemon::spawn();
-    let assert = comb(&d)
+    let assert = d
+        .comb(Path::new("/"))
         .env("CONDA_DEFAULT_ENV", value)
         .args(["get", "-f", format, "conda"])
         .assert()
@@ -86,7 +75,11 @@ const HOSTILE: &str = "it's a $HOME env";
 
 /// Run `comb get -f <format> <key>` against `d`.
 fn daemon_output(d: &TestDaemon, format: &str, key: &str) -> String {
-    let assert = comb(d).args(["get", "-f", format, key]).assert().success();
+    let assert = d
+        .comb(Path::new("/"))
+        .args(["get", "-f", format, key])
+        .assert()
+        .success();
     String::from_utf8(assert.get_output().stdout.clone()).unwrap()
 }
 
@@ -94,7 +87,7 @@ fn daemon_output(d: &TestDaemon, format: &str, key: &str) -> String {
 /// helper above queries from).
 fn seed(d: &TestDaemon) {
     let payload = serde_json::json!({ "one": HOSTILE, "two": 42 }).to_string();
-    comb(d)
+    d.comb(Path::new("/"))
         .args(["put", "shq", &payload, "--path", "/"])
         .assert()
         .success();
@@ -161,7 +154,7 @@ fn daemon_object_sh_escapes_every_value() {
 #[test]
 fn daemon_scalar_sh_escapes_newline() {
     let d = TestDaemon::spawn();
-    comb(&d)
+    d.comb(Path::new("/"))
         .args([
             "put",
             "shnl",

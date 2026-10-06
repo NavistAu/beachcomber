@@ -16,7 +16,7 @@
 //! process with the same map as `env_json`. Nothing ambient reaches one
 //! surface and not the other.
 
-use crate::common::daemon::TestDaemon;
+use crate::common::daemon::{TestDaemon, isolate};
 use crate::common::git::has_git;
 use libbeachcomber_ffi::envelope::bc_string_free;
 use libbeachcomber_ffi::{BcClient, bc_client_free, bc_client_new, bc_eval, bc_hello, bc_resolve};
@@ -105,10 +105,8 @@ const EVAL_KEYS: &[(&str, bool)] = &[
 /// find the isolated daemon and nothing else from this process.
 fn comb(daemon: &TestDaemon, cwd: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
-    cmd.env_clear()
-        .env("HOME", &daemon.home)
-        .env("XDG_CONFIG_HOME", &daemon.xdg)
-        .env("XDG_STATE_HOME", daemon.home.join(".local/state"))
+    cmd.env_clear();
+    isolate(&mut cmd, &daemon.home, &daemon.xdg)
         .env("BEACHCOMBER_SOCKET", &daemon.socket.path)
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .envs(ENV.iter().copied())

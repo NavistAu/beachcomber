@@ -53,7 +53,7 @@ test-helpers = []
 
 [dev-dependencies]
 beachcomber = { path = ".", features = ["test-helpers"] }
-# The C ABI, for `tests/cli_ffi_equivalence.rs`. Keyed by package name rather
+# The C ABI, for `tests/suite/cli_ffi_equivalence.rs`. Keyed by package name rather
 # than the default: its `[lib] name` is *also* `beachcomber` (it must match the
 # shipped dylib name), so the default key would collide with this crate's own
 # lib name inside its integration-test binaries.

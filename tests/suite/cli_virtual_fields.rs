@@ -145,13 +145,7 @@ fn daemon_with_home(files: &[(&str, &str)]) -> (TestDaemon, PathBuf) {
 /// A `comb` at `cwd` pointed at `d`, with the selectors cleared and `env`
 /// set on top.
 fn comb(d: &TestDaemon, cwd: &Path, env: &[(&str, &str)]) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::cargo_bin("comb").unwrap();
-    cmd.env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
-        .env("HOME", &d.home)
-        .env("XDG_CONFIG_HOME", &d.xdg)
-        .env("XDG_STATE_HOME", d.home.join(".local/state"))
-        .current_dir(cwd);
+    let mut cmd = d.comb(cwd);
     for var in SELECTORS {
         cmd.env_remove(var);
     }

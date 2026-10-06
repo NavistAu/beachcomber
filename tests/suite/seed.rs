@@ -6,6 +6,7 @@
 //! test in its own process, so `set_var` here is process-local — the same
 //! assumption `tests/path_chain.rs` makes.
 
+use crate::common::daemon::isolate;
 use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::Value as CacheValue;
@@ -812,12 +813,15 @@ fn comb_check_config_reports_a_facet_error() {
     )
     .unwrap();
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
-        .args(["check", "--connect-timeout", "0", "config"])
-        .output()
-        .expect("run comb check config");
+    let out = isolate(
+        &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
+        tmp.path(),
+        tmp.path(),
+    )
+    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
+    .args(["check", "--connect-timeout", "0", "config"])
+    .output()
+    .expect("run comb check config");
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -841,12 +845,15 @@ async fn comb_check_config_renders_both_views_as_one_list() {
     let out = tokio::task::spawn_blocking({
         let (cfg_root, sock) = (e.cfg_dir.parent().unwrap().to_path_buf(), e.sock.clone());
         move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_comb"))
-                .env("XDG_CONFIG_HOME", cfg_root)
-                .env("BEACHCOMBER_SOCKET", sock)
-                .args(["check", "--connect-timeout", "2s", "config"])
-                .output()
-                .expect("run comb check config")
+            isolate(
+                &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
+                &cfg_root,
+                &cfg_root,
+            )
+            .env("BEACHCOMBER_SOCKET", sock)
+            .args(["check", "--connect-timeout", "2s", "config"])
+            .output()
+            .expect("run comb check config")
         }
     })
     .await

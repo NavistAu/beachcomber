@@ -1,7 +1,7 @@
 /// Beachcomber test fixture cdylib.
 ///
 /// Exports both the Phase 4 multi-source ABI and the legacy single-source ABI
-/// so that `tests/provider_library_real_ffi.rs` can exercise every code path
+/// so that `tests/suite/provider_library_real_ffi.rs` can exercise every code path
 /// in `src/boundaries/library.rs` via `LibloadingLoader`.
 ///
 /// # Symbol inventory
@@ -137,7 +137,7 @@ pub extern "C" fn bc_execute_malformed(_path: *const c_char) -> *const c_char {
 ///
 /// The bytes `\xc3\x28` form an overlong / invalid UTF-8 sequence (a two-byte
 /// start byte followed by a byte outside the expected continuation range).
-/// Used by `tests/provider_library_real_ffi.rs` to assert that the strict-UTF-8
+/// Used by `tests/suite/provider_library_real_ffi.rs` to assert that the strict-UTF-8
 /// boundary returns `None` rather than substituting U+FFFD.
 #[unsafe(no_mangle)]
 pub extern "C" fn bc_metadata_invalid_utf8() -> *const c_char {
