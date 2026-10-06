@@ -1494,10 +1494,7 @@ async fn refresh_at_the_global_entry_writes_nothing_without_a_home_repository() 
 
 fn comb(f: &Fixture, cwd: &Path, cfg: &Path) -> assert_cmd::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
-    isolate(&mut cmd, &f.home, cfg)
-        .env("BEACHCOMBER_SOCKET", &f.sock)
-        .env("RUST_LOG", "error")
-        .current_dir(cwd);
+    isolate(&mut cmd, &f.home, cfg, &f.sock).current_dir(cwd);
     assert_cmd::Command::from_std(cmd)
 }
 

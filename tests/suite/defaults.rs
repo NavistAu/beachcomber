@@ -3,7 +3,7 @@
 //!
 //! The writer is exercised directly against a temp directory; the daemon-level
 //! tests own their `$HOME` and `$XDG_CONFIG_HOME` (nextest runs each test in
-//! its own process, the assumption `tests/seed.rs` makes) so nothing lands in
+//! its own process, the assumption `tests/suite/seed.rs` makes) so nothing lands in
 //! the developer's real `~/.config/beachcomber`.
 
 use crate::common::daemon::isolate;
@@ -192,6 +192,7 @@ fn comb_daemon_refuses_to_start_when_the_defaults_directory_is_unwritable() {
         &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
         tmp.path(),
         tmp.path(),
+        &tmp.path().join("sock"),
     )
     .args(["daemon", "--exit-with-parent", "--socket"])
     .arg(tmp.path().join("sock"))
@@ -372,11 +373,15 @@ fn comb_check_config_reports_the_defaults_directory() {
 
     // Before any daemon has run: the directory is empty, and the check says so
     // without writing anything into it.
-    let out = isolate(&mut std::process::Command::new(exe), tmp.path(), tmp.path())
-        .env("BEACHCOMBER_SOCKET", &sock)
-        .args(["check", "--connect-timeout", "0", "config"])
-        .output()
-        .expect("run comb check config");
+    let out = isolate(
+        &mut std::process::Command::new(exe),
+        tmp.path(),
+        tmp.path(),
+        &sock,
+    )
+    .args(["check", "--connect-timeout", "0", "config"])
+    .output()
+    .expect("run comb check config");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains(&format!(
@@ -389,13 +394,18 @@ fn comb_check_config_reports_the_defaults_directory() {
     assert!(!defaults.exists(), "the check created nothing");
 
     // After a daemon has started: every shipped file is present at this version.
-    let mut daemon = isolate(&mut std::process::Command::new(exe), tmp.path(), tmp.path())
-        .args(["daemon", "--exit-with-parent", "--socket"])
-        .arg(&sock)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn daemon");
+    let mut daemon = isolate(
+        &mut std::process::Command::new(exe),
+        tmp.path(),
+        tmp.path(),
+        &sock,
+    )
+    .args(["daemon", "--exit-with-parent", "--socket"])
+    .arg(&sock)
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .spawn()
+    .expect("spawn daemon");
     crate::common::poll::poll_until(
         "the spawned `comb daemon`'s socket path",
         "the daemon to have bound its socket",
@@ -404,11 +414,15 @@ fn comb_check_config_reports_the_defaults_directory() {
         || sock.exists(),
         |bound| *bound,
     );
-    let out = isolate(&mut std::process::Command::new(exe), tmp.path(), tmp.path())
-        .env("BEACHCOMBER_SOCKET", &sock)
-        .args(["check", "--connect-timeout", "2s", "config"])
-        .output()
-        .expect("run comb check config");
+    let out = isolate(
+        &mut std::process::Command::new(exe),
+        tmp.path(),
+        tmp.path(),
+        &sock,
+    )
+    .args(["check", "--connect-timeout", "2s", "config"])
+    .output()
+    .expect("run comb check config");
     let _ = daemon.kill();
     let _ = daemon.wait();
 
@@ -447,8 +461,8 @@ fn comb_check_config_probes_without_creating_the_defaults_directory() {
         &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
         tmp.path(),
         tmp.path(),
+        &tmp.path().join("no-daemon.sock"),
     )
-    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
     .args(["check", "--connect-timeout", "0", "config"])
     .output()
     .expect("run comb check config");
@@ -485,8 +499,8 @@ fn check_config_stdout(root: &Path) -> String {
         &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
         root,
         root,
+        &root.join("no-daemon.sock"),
     )
-    .env("BEACHCOMBER_SOCKET", root.join("no-daemon.sock"))
     .args(["check", "--connect-timeout", "0", "config"])
     .output()
     .expect("run comb check config");
@@ -546,6 +560,7 @@ fn comb_init_write_config_is_a_clap_error() {
         &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
         Path::new("/nonexistent"),
         Path::new("/nonexistent"),
+        Path::new("/nonexistent/sock"),
     )
     .args(["init", "--write-config"])
     .output()

@@ -47,6 +47,7 @@ async fn daemon_shuts_down_when_binary_touched() {
         &mut std::process::Command::new(&target),
         tmpdir.path(),
         tmpdir.path(),
+        &sock,
     )
     .args(["daemon", "--socket", sock.to_str().unwrap()])
     .spawn()

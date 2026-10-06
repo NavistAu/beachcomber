@@ -142,9 +142,13 @@ fn put_null_cli_validation_rejects_both() {
 fn put_cli_rejects_replace_with_null() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
-    isolate(&mut cmd, tmp.path(), &tmp.path().join("config"))
-        .env("BEACHCOMBER_SOCKET", tmp.path().join("test.sock"))
-        .args(["put", "myapp", "--null", "--replace"]);
+    isolate(
+        &mut cmd,
+        tmp.path(),
+        &tmp.path().join("config"),
+        &tmp.path().join("test.sock"),
+    )
+    .args(["put", "myapp", "--null", "--replace"]);
     assert_cmd::Command::from_std(cmd)
         .assert()
         .code(2)

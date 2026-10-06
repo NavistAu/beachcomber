@@ -11,7 +11,7 @@
 //! object reports the largest age among the records under it and is stale if
 //! any of them is. A response with no `data` carries neither field.
 //!
-//! Raw-socket style, mirroring `tests/put_node.rs` and `tests/facets.rs`.
+//! Raw-socket style, mirroring `tests/suite/put_node.rs` and `tests/suite/facets.rs`.
 //! Templates are written with `put` here — seeding them from config is Task 6.
 
 use crate::common::git::{GitRepoFixture, has_git};
@@ -782,7 +782,7 @@ impl Provider for TwinProvider {
 /// namespace reports the older of the two.
 ///
 /// The twin of `field_freshness_reflects_owning_source_last_refresh` in
-/// `tests/canon_provider_source.rs`, which pins the same rule through
+/// `src/scheduler/canon_provider_source_tests.rs`, which pins the same rule through
 /// `Cache::get_field`. This one survives that call being retired.
 #[tokio::test(start_paused = true)]
 async fn field_age_through_get_is_the_owning_sources_age() {

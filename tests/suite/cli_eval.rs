@@ -6,7 +6,7 @@
 //! skips starting one, `env.*`-only included.
 //!
 //! Reference discovery is `libbeachcomber::eval::discover_refs`, covered in
-//! `libbeachcomber/tests/suite/eval_classify.rs` and `tests/template.rs`. The
+//! `libbeachcomber/tests/suite/eval_classify.rs` and `tests/suite/get_template.rs`. The
 //! bulk of `eval`'s render-contract tests (literal text, typed single-tag
 //! results, the `default` filter on a miss, …) live in `tests/suite/cli_golden.rs`.
 
@@ -30,8 +30,7 @@ struct SpawnedDaemon {
 impl Drop for SpawnedDaemon {
     fn drop(&mut self) {
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
-        let _ = isolate(&mut cmd, &self.home, &self.xdg)
-            .env("RUST_LOG", "error")
+        let _ = isolate(&mut cmd, &self.home, &self.xdg, &self.socket.path)
             .args(["kill", "--socket"])
             .arg(&self.socket.path)
             .output();
@@ -55,9 +54,7 @@ fn eval_starts_the_daemon() {
     assert!(!guard.socket.path.exists(), "no daemon before eval runs");
 
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
-    isolate(&mut cmd, &home, &xdg)
-        .env("BEACHCOMBER_SOCKET", &guard.socket.path)
-        .env("RUST_LOG", "error")
+    isolate(&mut cmd, &home, &xdg, &guard.socket.path)
         .env("FOO", "hi")
         .args(["eval", "{{ env.FOO }}"]);
     assert_cmd::Command::from_std(cmd)

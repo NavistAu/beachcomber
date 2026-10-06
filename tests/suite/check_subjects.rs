@@ -1,6 +1,6 @@
 // Integration tests for the Request::Introspect per-subject payloads
 // and the `comb check` CLI aggregation behaviour.
-// Uses the in-process test daemon pattern from tests/put_null.rs.
+// Uses the in-process test daemon pattern from tests/suite/put_null.rs.
 
 use crate::common::daemon::isolate;
 use crate::common::poll::poll_until;
@@ -456,9 +456,8 @@ fn check_daemon_unreachable_exits_two() {
         &mut std::process::Command::new(&exe),
         tmp.path(),
         &tmp.path().join("cfg"),
+        &tmp.path().join("no-daemon.sock"),
     )
-    // Point BEACHCOMBER_SOCKET at a temp path with no daemon behind it.
-    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
     .args(["check", "--connect-timeout", "0", "daemon"])
     .output()
     .expect("run comb check daemon");
@@ -492,8 +491,8 @@ fn check_connect_timeout_bounds_the_search() {
         &mut std::process::Command::new(&exe),
         tmp.path(),
         &tmp.path().join("cfg"),
+        &tmp.path().join("no-daemon.sock"),
     )
-    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
     .args(["check", "daemon", "--connect-timeout", "300ms"])
     .output()
     .expect("run comb check daemon");
@@ -611,6 +610,7 @@ fn check_daemon_reports_watch_backend() {
         &mut std::process::Command::new(&exe),
         tmp.path(),
         tmp.path(),
+        &sock,
     )
     .args(["daemon", "--exit-with-parent", "--socket"])
     .arg(&sock)
@@ -627,11 +627,15 @@ fn check_daemon_reports_watch_backend() {
     );
     assert!(sock.exists(), "daemon never bound socket");
 
-    let output = std::process::Command::new(&exe)
-        .env("BEACHCOMBER_SOCKET", &sock)
-        .args(["check", "daemon"])
-        .output()
-        .expect("run comb check daemon");
+    let output = isolate(
+        &mut std::process::Command::new(&exe),
+        tmp.path(),
+        tmp.path(),
+        &sock,
+    )
+    .args(["check", "daemon"])
+    .output()
+    .expect("run comb check daemon");
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(
@@ -790,8 +794,8 @@ async fn env_override_daemon_does_not_arm_reaper() {
         &mut std::process::Command::new(&exe),
         tmp.path(),
         tmp.path(),
+        &sock,
     )
-    .env("BEACHCOMBER_SOCKET", &sock)
     .args(["daemon", "--exit-with-parent", "--socket"])
     .arg(&sock)
     .spawn()
@@ -851,6 +855,7 @@ fn daemon_exits_when_bind_fails() {
             &mut std::process::Command::new(&exe),
             tmp.path(),
             tmp.path(),
+            &sock,
         )
         .args(["daemon", "--socket"])
         .arg(&sock)
@@ -889,8 +894,8 @@ fn check_config_reports_its_own_local_verdict() {
         &mut std::process::Command::new(comb_binary()),
         tmp.path(),
         tmp.path(),
+        &tmp.path().join("no-daemon.sock"),
     )
-    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
     .args(["check", "--connect-timeout", "0", "config"])
     .output()
     .expect("run comb check config");
@@ -919,8 +924,8 @@ fn check_config_fails_a_virtual_subtable_naming_the_template_facet() {
         &mut std::process::Command::new(comb_binary()),
         tmp.path(),
         tmp.path(),
+        &tmp.path().join("no-daemon.sock"),
     )
-    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
     .args(["check", "--connect-timeout", "0", "config"])
     .output()
     .expect("run comb check config");
@@ -955,6 +960,7 @@ fn comb_daemon_refused_by_config_validation_exits_two_and_binds_nothing() {
         &mut std::process::Command::new(comb_binary()),
         tmp.path(),
         tmp.path(),
+        &sock,
     )
     .args(["daemon", "--exit-with-parent", "--socket"])
     .arg(&sock)

@@ -90,10 +90,12 @@ async fn comb_get_multikey_forwards_force_to_every_fetch() {
 
     let stdout = tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
-        isolate(&mut cmd, tmp.path(), &tmp.path().join("cfg"))
-            .env("BEACHCOMBER_SOCKET", &sock)
-            .env("RUST_LOG", "error")
-            .args(["get", "--force", "hostname.name", "hostname.short"]);
+        isolate(&mut cmd, tmp.path(), &tmp.path().join("cfg"), &sock).args([
+            "get",
+            "--force",
+            "hostname.name",
+            "hostname.short",
+        ]);
         let out = assert_cmd::Command::from_std(cmd).assert().success();
         String::from_utf8(out.get_output().stdout.clone()).unwrap()
     })

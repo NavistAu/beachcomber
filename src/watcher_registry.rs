@@ -104,7 +104,7 @@ impl WatcherRegistry {
             .remove_if(key, |_, tx| tx.receiver_count() == 0);
     }
 
-    /// Internal accessor exposed for integration tests in `tests/watch_registry.rs`
+    /// Internal accessor exposed for integration tests in `src/watch_registry_tests.rs`
     /// to assert post-GC map size. Not intended as a public API — Task 10 will add
     /// a proper `len()` for status reporting.
     #[doc(hidden)]

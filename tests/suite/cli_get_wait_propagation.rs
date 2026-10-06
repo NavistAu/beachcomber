@@ -88,10 +88,11 @@ async fn comb_get_wait_re_executes_stale_entry() {
 
     let stdout = tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
-        isolate(&mut cmd, tmp.path(), &tmp.path().join("cfg"))
-            .env("BEACHCOMBER_SOCKET", &sock)
-            .env("RUST_LOG", "error")
-            .args(["get", "--wait", "hostname.name"]);
+        isolate(&mut cmd, tmp.path(), &tmp.path().join("cfg"), &sock).args([
+            "get",
+            "--wait",
+            "hostname.name",
+        ]);
         let out = assert_cmd::Command::from_std(cmd).assert().success();
         String::from_utf8(out.get_output().stdout.clone()).unwrap()
     })

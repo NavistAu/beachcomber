@@ -225,9 +225,7 @@ fn watch_from_a_deleted_cwd_with_no_path_is_an_error() {
     // `comb` there; `Command::current_dir` on a missing directory would fail
     // at spawn instead.
     let mut cmd = std::process::Command::new("sh");
-    isolate(&mut cmd, &d.home, &d.xdg)
-        .env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
+    isolate(&mut cmd, &d.home, &d.xdg, &d.socket.path)
         .env("COMB", env!("CARGO_BIN_EXE_comb"))
         .args([
             "-c",
@@ -257,9 +255,7 @@ fn watch_from_a_deleted_cwd_with_a_relative_path_is_an_error() {
     // `comb` there; `Command::current_dir` on a missing directory would fail
     // at spawn instead.
     let mut cmd = std::process::Command::new("sh");
-    isolate(&mut cmd, &d.home, &d.xdg)
-        .env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
+    isolate(&mut cmd, &d.home, &d.xdg, &d.socket.path)
         .env("COMB", env!("CARGO_BIN_EXE_comb"))
         .args([
             "-c",

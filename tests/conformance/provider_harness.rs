@@ -2,7 +2,7 @@
 //! pair must pass these contract assertions.
 //!
 //! This module defines assertion functions and the enumeration helper.
-//! `tests/provider_conformance.rs` wires them into a single nextest test.
+//! `tests/suite/provider_conformance.rs` wires them into a single nextest test.
 
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{Source, SourceResult, SourceScope};

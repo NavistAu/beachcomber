@@ -262,7 +262,7 @@ async fn store_with_path_scope() {
 //
 // The chain's other halves — `$HOME` as the global path, provider records
 // staying at their Source's declared scope, and `watch` following the chain —
-// live in tests/path_chain.rs.
+// live in tests/suite/path_chain.rs.
 
 #[tokio::test]
 async fn a_global_put_is_visible_at_every_path() {
@@ -454,7 +454,7 @@ async fn global_put_is_visible_through_a_connection_context() {
 /// `watch` subscribes to every entry on the chain, so its initial frame is the
 /// same chain-resolved value `get` returns. (The streaming half — a change to a
 /// farther entry waking a watch at a nearer path — lives in
-/// tests/path_chain.rs.)
+/// tests/suite/path_chain.rs.)
 #[tokio::test]
 async fn watch_reads_through_the_chain() {
     let (tmp, sock, cache, registry, watchers) = setup();

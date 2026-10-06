@@ -4,7 +4,7 @@
 //!
 //! Each test owns its `$HOME` and its `$XDG_CONFIG_HOME`: nextest runs every
 //! test in its own process, so `set_var` here is process-local — the same
-//! assumption `tests/path_chain.rs` makes.
+//! assumption `tests/suite/path_chain.rs` makes.
 
 use crate::common::daemon::isolate;
 use beachcomber::cache::Cache;
@@ -817,8 +817,8 @@ fn comb_check_config_reports_a_facet_error() {
         &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
         tmp.path(),
         tmp.path(),
+        &tmp.path().join("no-daemon.sock"),
     )
-    .env("BEACHCOMBER_SOCKET", tmp.path().join("no-daemon.sock"))
     .args(["check", "--connect-timeout", "0", "config"])
     .output()
     .expect("run comb check config");
@@ -849,8 +849,8 @@ async fn comb_check_config_renders_both_views_as_one_list() {
                 &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
                 &cfg_root,
                 &cfg_root,
+                &sock,
             )
-            .env("BEACHCOMBER_SOCKET", sock)
             .args(["check", "--connect-timeout", "2s", "config"])
             .output()
             .expect("run comb check config")

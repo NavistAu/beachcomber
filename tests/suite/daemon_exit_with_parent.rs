@@ -35,7 +35,7 @@ fn daemon_exits_when_parent_dies() {
     // the nextest-SIGKILL-of-a-test scenario that produced the orphans.
     // `HOME`/`XDG_CONFIG_HOME` keep the daemon's managed-defaults write out of
     // the developer's real config directory.
-    let mut parent = isolate(&mut Command::new("sh"), tmp.path(), tmp.path())
+    let mut parent = isolate(&mut Command::new("sh"), tmp.path(), tmp.path(), &sock)
         .arg("-c")
         .arg(format!(
             "{comb} daemon --exit-with-parent --socket {sock} & echo $! > {pid}; wait",

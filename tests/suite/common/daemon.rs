@@ -4,13 +4,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::Duration;
 
-/// Point `cmd` at a throwaway `$HOME`, `$XDG_CONFIG_HOME` and
-/// `$XDG_STATE_HOME` (= `<home>/.local/state`) so nothing it runs can read or
-/// write the developer's real config, defaults or log.
-pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path) -> &'a mut Command {
+/// Point `cmd` at a throwaway `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME`
+/// (= `<home>/.local/state`) and `$BEACHCOMBER_SOCKET` (= `sock`), with
+/// `RUST_LOG=error`, so nothing it runs can read or write the developer's real
+/// config, defaults, log or daemon.
+pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path, sock: &Path) -> &'a mut Command {
     cmd.env("HOME", home)
         .env("XDG_CONFIG_HOME", xdg)
         .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env("BEACHCOMBER_SOCKET", sock)
+        .env("RUST_LOG", "error")
 }
 
 #[allow(dead_code)]
@@ -51,7 +54,7 @@ impl TestDaemon {
         // so a daemon can never be orphaned. Drop below still handles the normal
         // and panic-unwind paths.
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
-        let process = isolate(&mut cmd, &home, &xdg)
+        let process = isolate(&mut cmd, &home, &xdg, &socket.path)
             .args(["daemon", "--exit-with-parent", "--socket"])
             .arg(&socket.path)
             .spawn()
@@ -78,10 +81,7 @@ impl TestDaemon {
     #[allow(dead_code)]
     pub fn command(&self, cwd: &Path) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
-        isolate(&mut cmd, &self.home, &self.xdg)
-            .current_dir(cwd)
-            .env("BEACHCOMBER_SOCKET", &self.socket.path)
-            .env("RUST_LOG", "error");
+        isolate(&mut cmd, &self.home, &self.xdg, &self.socket.path).current_dir(cwd);
         cmd
     }
 

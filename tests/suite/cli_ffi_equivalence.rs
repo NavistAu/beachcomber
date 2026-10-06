@@ -106,8 +106,7 @@ const EVAL_KEYS: &[(&str, bool)] = &[
 fn comb(daemon: &TestDaemon, cwd: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
     cmd.env_clear();
-    isolate(&mut cmd, &daemon.home, &daemon.xdg)
-        .env("BEACHCOMBER_SOCKET", &daemon.socket.path)
+    isolate(&mut cmd, &daemon.home, &daemon.xdg, &daemon.socket.path)
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .envs(ENV.iter().copied())
         .current_dir(cwd);

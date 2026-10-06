@@ -252,8 +252,7 @@ struct SpawnedDaemon {
 impl Drop for SpawnedDaemon {
     fn drop(&mut self) {
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
-        let _ = isolate(&mut cmd, &self.home, &self.xdg)
-            .env("RUST_LOG", "error")
+        let _ = isolate(&mut cmd, &self.home, &self.xdg, &self.socket.path)
             .args(["kill", "--socket"])
             .arg(&self.socket.path)
             .output();
@@ -278,9 +277,7 @@ fn env_keys_answer_from_the_shell_and_still_ensure_the_daemon() {
 
     let comb = || {
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
-        isolate(&mut cmd, &home, &xdg)
-            .env("BEACHCOMBER_SOCKET", &guard.socket.path)
-            .env("RUST_LOG", "error")
+        isolate(&mut cmd, &home, &xdg, &guard.socket.path)
             .env_remove("NOPE")
             .current_dir(&home);
         assert_cmd::Command::from_std(cmd)

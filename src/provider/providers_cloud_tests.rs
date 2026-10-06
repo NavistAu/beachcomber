@@ -127,7 +127,7 @@ fn gcloud_reads_active_config_indirection() {
 
 // Note: gcloud_cloudsdk_active_config_name_overrides_active_config_file was removed in P1.
 // $CLOUDSDK_ACTIVE_CONFIG_NAME is now a client-side concern (P2 live.* path).
-// The daemon follows only active_config file. See tests/provider_gcloud.rs.
+// The daemon follows only active_config file. See src/provider/gcloud_tests.rs.
 
 #[test]
 fn gcloud_missing_active_config_returns_empty() {

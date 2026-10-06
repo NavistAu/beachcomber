@@ -8,7 +8,7 @@
 //! namespace: `put git '{"note":1}'` is fine, `put git '{"branch":"x"}'` is
 //! not, because `branch` is a record the `head` Source refreshes.
 //!
-//! Raw-socket style, mirroring `tests/store.rs` and `tests/key_addressing.rs`.
+//! Raw-socket style, mirroring `tests/suite/store.rs` and `tests/suite/key_addressing.rs`.
 
 use crate::common::git::{GitRepoFixture, has_git};
 use beachcomber::cache::Cache;

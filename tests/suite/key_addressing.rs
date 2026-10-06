@@ -5,8 +5,8 @@
 //! address (`docs/canon/provider_source.md` "Record"). `parse_key` in
 //! `src/query.rs` no longer disambiguates a second segment against the
 //! registry — it is always the field. These tests pin the resulting wire
-//! behaviour through a real socket, mirroring `tests/store.rs`/
-//! `tests/facets.rs`'s raw-socket style, against a real git repo (`git` has
+//! behaviour through a real socket, mirroring `tests/suite/store.rs`/
+//! `tests/suite/facets.rs`'s raw-socket style, against a real git repo (`git` has
 //! a `refs` source with an `ahead` field, so `git.refs`/`git.refs.ahead` is
 //! exactly the collision this change removes). This is an area file for
 //! key-addressing behaviour generally — later key-addressing tests join it

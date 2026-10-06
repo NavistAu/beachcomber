@@ -1,6 +1,6 @@
 //! Integration tests for the daemon's config-file self-watch
 //! (`src/daemon/config_watch.rs`), which mirrors the binary self-watch
-//! (`tests/binary_self_watch.rs`) but only restarts when the changed file
+//! (`tests/suite/binary_self_watch.rs`) but only restarts when the changed file
 //! parses cleanly.
 //!
 //! These use the polling backend (`fs_events: false`) so they run reliably

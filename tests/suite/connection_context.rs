@@ -297,7 +297,7 @@ async fn global_provider_ignores_context() {
 /// Test 4: a PathScoped provider's records never walk the chain.
 ///
 /// Static records resolve up the directory chain to `$HOME`, nearest winning
-/// (see tests/store.rs), but a `PathScoped` source's records do not:
+/// (see tests/suite/store.rs), but a `PathScoped` source's records do not:
 /// `Cache::read_merged` merges a `PathScoped` provider map only at the
 /// addressed entry, never at an ancestor or the global entry. /project/a and
 /// /project/b holding different values is the whole point of path scoping,

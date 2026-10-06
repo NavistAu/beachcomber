@@ -5,7 +5,7 @@
 //! behind it. `comb get --force` is the read-and-refresh form; `refresh` is
 //! the re-execution alone.
 //!
-//! The daemon op itself is covered over a raw socket in `tests/refresh.rs`;
+//! The daemon op itself is covered over a raw socket in `tests/suite/refresh.rs`;
 //! these tests prove the binary carries a key and a path to it and reports
 //! what it answers.
 
@@ -99,7 +99,7 @@ fn refresh_global_is_accepted_for_a_global_source() {
 /// scheduler runs the refresh in the background, and ages are real wall
 /// time, so the pre-refresh age is first let grow to a value a re-execution
 /// cannot reach, and the post-refresh read polls for the fall — the shape
-/// `tests/refresh.rs` uses for the same proof over a raw socket.
+/// `tests/suite/refresh.rs` uses for the same proof over a raw socket.
 ///
 /// The two fields are chosen for what their Sources do *not* do. `branch`'s
 /// `head` is `read_always`, so its record is rewritten by every read and its
@@ -249,9 +249,7 @@ fn refresh_from_a_deleted_cwd_with_no_path_is_an_error() {
     // `comb` there; `Command::current_dir` on a missing directory would fail
     // at spawn instead.
     let mut cmd = std::process::Command::new("sh");
-    isolate(&mut cmd, &d.home, &d.xdg)
-        .env("BEACHCOMBER_SOCKET", &d.socket.path)
-        .env("RUST_LOG", "error")
+    isolate(&mut cmd, &d.home, &d.xdg, &d.socket.path)
         .env("COMB", env!("CARGO_BIN_EXE_comb"))
         .args([
             "-c",
