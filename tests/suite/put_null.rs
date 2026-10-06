@@ -40,7 +40,7 @@ async fn put_null_clears_entry_but_keeps_provider() {
     );
 
     // 3. put --null: send a Put request with data=null to clear the cache entry.
-    let resp = client.put_null("nulltest", None, None).unwrap();
+    let resp = client.put_null("nulltest", None).unwrap();
     assert!(resp.ok, "put_null failed: {:?}", resp.error);
 
     // 4. get should now return miss (no data).
@@ -85,7 +85,7 @@ async fn put_null_at_a_node_clears_only_that_subtree() {
         .unwrap();
     assert!(resp.ok, "initial put failed: {:?}", resp.error);
 
-    let resp = client.put_null("nulltree.drop", None, None).unwrap();
+    let resp = client.put_null("nulltree.drop", None).unwrap();
     assert!(resp.ok, "node null put failed: {:?}", resp.error);
 
     let resp = fetch(&sock, "nulltree", None).expect("get failed").unwrap();

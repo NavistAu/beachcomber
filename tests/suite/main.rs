@@ -22,7 +22,6 @@ mod cli_virtual_fields;
 mod cli_virtual_fields_kinded;
 mod cli_watch;
 mod client;
-mod client_hello;
 mod config_self_watch;
 mod connection_context;
 mod daemon;

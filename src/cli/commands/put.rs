@@ -40,7 +40,7 @@ pub fn run_put(
     let client = crate::client::Client::new(socket_path);
 
     if null {
-        match client.put_null(key, ttl, path) {
+        match client.put_null(key, path) {
             Ok(response) => {
                 if response.ok {
                     ExitCode::SUCCESS

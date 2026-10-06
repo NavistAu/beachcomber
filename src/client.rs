@@ -1,6 +1,6 @@
 use crate::protocol::Response;
 use libbeachcomber::resolve::{Fetch, FetchError, Got};
-use libbeachcomber::{CombError, CombResult, HelloInfo, IntrospectResponse, IntrospectSubject};
+use libbeachcomber::{CombError, IntrospectResponse, IntrospectSubject};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -73,37 +73,8 @@ fn to_response<T>(
     }
 }
 
-fn combresult_to_response(r: Result<CombResult, CombError>) -> std::io::Result<Response> {
-    to_response(r, |v| match v {
-        CombResult::Hit {
-            data,
-            age_ms,
-            stale,
-            template,
-            rest,
-        } => Response::ok(data.as_value().clone(), age_ms, stale).with_template(template, rest),
-        CombResult::Template { template, rest } => {
-            Response::miss().with_template(Some(template), rest)
-        }
-        CombResult::Miss => Response::miss(),
-    })
-}
-
 fn unit_to_response(r: Result<(), CombError>) -> std::io::Result<Response> {
     to_response(r, |_| Response::miss())
-}
-
-fn hello_to_response(r: Result<HelloInfo, CombError>) -> std::io::Result<Response> {
-    to_response(r, |info| {
-        Response::ok(
-            serde_json::json!({
-                "protocol_version": info.protocol_version,
-                "daemon_version": info.daemon_version,
-            }),
-            0,
-            false,
-        )
-    })
 }
 
 fn row_kind_from_lib(k: libbeachcomber::RowKind) -> crate::cache::RowKind {
@@ -231,58 +202,6 @@ impl ClientSession {
             .map_err(comb_error_to_io)?;
         Ok(Self { session })
     }
-
-    pub fn set_context(&mut self, path: &str) -> std::io::Result<Response> {
-        unit_to_response(self.session.set_context(path))
-    }
-
-    /// Ask the daemon for its protocol and build versions. Clients should
-    /// call this on connection establishment to verify compatibility.
-    pub fn hello(&mut self) -> std::io::Result<Response> {
-        hello_to_response(self.session.hello())
-    }
-
-    pub fn put(
-        &mut self,
-        key: &str,
-        data: serde_json::Value,
-        ttl: Option<&str>,
-        path: Option<&str>,
-    ) -> std::io::Result<Response> {
-        unit_to_response(self.session.put(key, data, ttl, path))
-    }
-
-    /// `put`, with `replace` to drop the subtree at the addressed node instead
-    /// of merging into it.
-    pub fn put_with(
-        &mut self,
-        key: &str,
-        data: serde_json::Value,
-        ttl: Option<&str>,
-        path: Option<&str>,
-        replace: bool,
-    ) -> std::io::Result<Response> {
-        unit_to_response(self.session.put_with(key, data, ttl, path, replace))
-    }
-
-    /// Clear the cached entry for a static-data key without dropping the registry entry.
-    /// A subsequent `put` under the same key still works.
-    ///
-    /// `ttl` is accepted for signature compatibility but, like the
-    /// pre-adapter client, is inert here: the daemon's null-put path
-    /// (`Request::Put` with `data: None`, see `server.rs`) never reads
-    /// `ttl`, so dropping it before the wire is behavior-preserving --
-    /// it matches both the old client's actual effect and
-    /// `libbeachcomber::Session::put_null`'s signature, which has no
-    /// `ttl` parameter at all.
-    pub fn put_null(
-        &mut self,
-        key: &str,
-        _ttl: Option<&str>,
-        path: Option<&str>,
-    ) -> std::io::Result<Response> {
-        unit_to_response(self.session.put_null(key, path))
-    }
 }
 
 /// The CLI's transport for [`libbeachcomber::resolve`]: one daemon `get` per
@@ -333,30 +252,6 @@ impl Client {
         ClientSession::connect(&self.socket_path)
     }
 
-    pub fn get(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
-        self.get_with_flags(key, path, false, false)
-    }
-
-    pub fn get_with_flags(
-        &self,
-        key: &str,
-        path: Option<&str>,
-        force: bool,
-        wait: bool,
-    ) -> std::io::Result<Response> {
-        combresult_to_response(self.inner().get_with_flags(key, path, force, wait))
-    }
-
-    pub fn put(
-        &self,
-        key: &str,
-        data: serde_json::Value,
-        ttl: Option<&str>,
-        path: Option<&str>,
-    ) -> std::io::Result<Response> {
-        unit_to_response(self.inner().put(key, data, ttl, path))
-    }
-
     /// `put`, with `replace` to drop the subtree at the addressed node instead
     /// of merging into it.
     pub fn put_with(
@@ -373,27 +268,12 @@ impl Client {
     /// Clear the cached entry for a static-data key without dropping the registry entry.
     /// A subsequent `put` under the same key still works.
     ///
-    /// See `ClientSession::put_null` -- `ttl` is inert on the null-put path
-    /// and is dropped before reaching `libbeachcomber`, which has no `ttl`
-    /// parameter on this method.
-    pub fn put_null(
-        &self,
-        key: &str,
-        _ttl: Option<&str>,
-        path: Option<&str>,
-    ) -> std::io::Result<Response> {
+    pub fn put_null(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
         unit_to_response(self.inner().put_null(key, path))
     }
 
     pub fn refresh(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
         unit_to_response(self.inner().refresh(key, path))
-    }
-
-    /// Ask the daemon for its protocol and build versions. Opens a new
-    /// one-shot connection. Use `ClientSession::hello` instead if you
-    /// already hold a persistent session.
-    pub fn hello(&self) -> std::io::Result<Response> {
-        hello_to_response(self.inner().hello())
     }
 
     /// List all cache entries currently held by the daemon, mapped onto
