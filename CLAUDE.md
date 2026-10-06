@@ -7,13 +7,15 @@ Project-specific instructions for contributors using Claude Code.
 Before proposing changes or reasoning about behavior, read these. They are the authoritative project state — code alone will mislead you.
 
 - **`docs/roadmap.md`** — open, forward-looking work only: planned features and deferred design work, grouped by area. It is **not** a bug tracker, an engineering log, or a session scratchpad. Done items are deleted, not annotated — shipped work lives in `CHANGELOG.md`, fix histories in git. Investigation write-ups belong in commit messages; never append them here.
-- **`docs/canon/*`** — canonical spec major architechtural designs. Tests must match this document; code that disagrees is wrong.
-- **`docs/canon/provider_source.md`** — canonical Provider/Source/Field model. The authoritative spec for how providers declare sources, invalidation strategies, lifecycle keying, cache layout, and TOML config. Read this before touching any provider, scheduler, cache, or config code.
 - **`CHANGELOG.md`** — what shipped when, at what version.
 
-@docs/canon/ are 'canonical specs' in that they are long lived and only ever edited with explicit permission. Canon
-specs define test suite tdd, which defines the code, which is then communicated by the documentation/website. This is
-how we resolve 'are the docs or code correct?', its a strict line of truth.
+## `docs/canon/` is deprecated
+
+`docs/canon/` was meant to be the strict line of truth: canon specs define the tests, the tests define the code, the
+docs describe the code. As it stands it has not worked or helped, and we need to find another, better way of
+answering "are the docs or the code correct?". Until that approach exists, the files in `docs/canon/` are deprecated
+and historical: read them for background only. They do not bind tests or code, they do not need approval to diverge
+from, and they are not updated as behaviour changes. (Owner ruling, 2026-10-07.)
 
 ## Basics
 
