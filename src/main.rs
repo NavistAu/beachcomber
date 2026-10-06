@@ -110,19 +110,15 @@ enum Commands {
     /// (contains `/`, or starts with `.`, `~`, or `/`), it is treated as a path applied to
     /// every key. Use `--path` to set a path explicitly without ambiguity.
     /// When no path is given, the CLI's current working directory is used automatically.
-    #[command(visible_alias = "g")]
+    #[command(visible_alias = "g", mut_arg("path", |a| a.short('p')))]
     Get {
         /// Provider key(s) (e.g., "hostname.name", "git.branch"). If the last positional
         /// looks like a path (starts with `.`/`~`/`/`, or contains `/`), it is used as the
         /// path context instead of a key.
         #[arg(required = true, num_args = 1..)]
         keys: Vec<String>,
-        /// Path context for directory-scoped providers (overrides any trailing positional path)
-        #[arg(long, short)]
-        path: Option<String>,
-        /// Read the global entry ($HOME) instead of a directory
-        #[arg(long, conflicts_with = "path")]
-        global: bool,
+        #[command(flatten)]
+        path: PathArgs,
         /// Output format (text, json, sh, csv, tsv, CSV, TSV, fmt)
         #[arg(short, long, default_value = "text")]
         format: String,
@@ -178,40 +174,30 @@ enum Commands {
         /// Expected refresh interval (e.g., "30s", "5m")
         #[arg(long)]
         ttl: Option<String>,
-        /// Path scope for the data (defaults to the current working directory)
-        #[arg(long)]
-        path: Option<String>,
-        /// Write to the global entry ($HOME) instead of a directory
-        #[arg(long, conflicts_with = "path")]
-        global: bool,
+        #[command(flatten)]
+        path: PathArgs,
     },
     /// Re-execute the Sources a key demands, each at its own scope
     #[command(visible_alias = "r")]
     Refresh {
         /// Provider key (e.g., "git" or "git.branch")
         key: String,
-        /// Path context for directory-scoped providers (defaults to the current working directory)
-        path: Option<String>,
-        /// Path context as a flag — the positional's other spelling; cannot be combined with [PATH] or --global
-        #[arg(long = "path", value_name = "PATH", conflicts_with_all = ["path", "global"])]
-        path_flag: Option<String>,
-        /// Refresh at the global entry ($HOME) instead of a directory
-        #[arg(long, conflicts_with = "path")]
-        global: bool,
+        /// Path context as a positional, the flag's other spelling
+        #[arg(value_name = "PATH", conflicts_with_all = ["path", "global"])]
+        at: Option<String>,
+        #[command(flatten)]
+        path: PathArgs,
     },
     /// Watch a key and stream changes to stdout
     #[command(visible_alias = "w")]
     Watch {
         /// Provider key (e.g., "git.branch")
         key: String,
-        /// Path context for directory-scoped providers (defaults to the current working directory)
-        path: Option<String>,
-        /// Path context as a flag — the positional's other spelling; cannot be combined with [PATH] or --global
-        #[arg(long = "path", value_name = "PATH", conflicts_with_all = ["path", "global"])]
-        path_flag: Option<String>,
-        /// Watch the global entry ($HOME) instead of a directory
-        #[arg(long, conflicts_with = "path")]
-        global: bool,
+        /// Path context as a positional, the flag's other spelling
+        #[arg(value_name = "PATH", conflicts_with_all = ["path", "global"])]
+        at: Option<String>,
+        #[command(flatten)]
+        path: PathArgs,
         /// Output format (text, json, sh)
         #[arg(short, long, default_value = "text")]
         format: String,
@@ -293,12 +279,15 @@ fn preprocess_args() -> (Vec<String>, Option<String>) {
 /// cwd is read only when it is needed — an absolute path must keep working from
 /// a directory that no longer exists — and when it is needed and unreadable the
 /// answer is an error, never a silent read of the global entry.
-fn effective_cli_path(global: bool, requested: Option<String>) -> Result<Option<String>, String> {
+fn cli_path(global: bool, requested: Option<String>) -> Result<Option<String>, ExitCode> {
     if global {
         return Ok(None);
     }
     let cwd = || {
-        std::env::current_dir().map_err(|e| format!("cannot determine the current directory: {e}"))
+        std::env::current_dir().map_err(|e| {
+            eprintln!("cannot determine the current directory: {e}");
+            ExitCode::from(2)
+        })
     };
     Ok(Some(match requested {
         Some(p) if std::path::Path::new(&p).is_relative() => {
@@ -307,6 +296,17 @@ fn effective_cli_path(global: bool, requested: Option<String>) -> Result<Option<
         Some(p) => p,
         None => cwd()?.to_string_lossy().into_owned(),
     }))
+}
+
+/// `--path` / `--global`, shared by get, put, refresh and watch.
+#[derive(clap::Args)]
+struct PathArgs {
+    /// Path context for directory-scoped providers (defaults to the current working directory)
+    #[arg(long, value_name = "PATH")]
+    path: Option<String>,
+    /// Use the global entry ($HOME) instead of a directory
+    #[arg(long, conflicts_with = "path")]
+    global: bool,
 }
 
 fn main() -> ExitCode {
@@ -350,8 +350,7 @@ fn main() -> ExitCode {
         }
         Commands::Get {
             keys,
-            path,
-            global,
+            path: PathArgs { path, global },
             format,
             force,
             wait,
@@ -366,12 +365,9 @@ fn main() -> ExitCode {
                 eprintln!("cannot combine --global with a path");
                 return ExitCode::from(2);
             }
-            let effective_path = match effective_cli_path(global, resolved_path) {
+            let effective_path = match cli_path(global, resolved_path) {
                 Ok(p) => p,
-                Err(msg) => {
-                    eprintln!("{msg}");
-                    return ExitCode::from(2);
-                }
+                Err(code) => return code,
             };
             run_get(
                 &config,
@@ -415,15 +411,11 @@ fn main() -> ExitCode {
             null,
             replace,
             ttl,
-            path,
-            global,
+            path: PathArgs { path, global },
         } => {
-            let effective_path = match effective_cli_path(global, path) {
+            let effective_path = match cli_path(global, path) {
                 Ok(p) => p,
-                Err(msg) => {
-                    eprintln!("{msg}");
-                    return ExitCode::from(2);
-                }
+                Err(code) => return code,
             };
             run_put(
                 &config,
@@ -437,48 +429,35 @@ fn main() -> ExitCode {
         }
         Commands::Refresh {
             key,
-            path,
-            path_flag,
-            global,
+            at,
+            path: PathArgs { path, global },
         } => {
-            // The two spellings of the path conflict, so at most one is set.
-            let effective_path = match effective_cli_path(global, path_flag.or(path)) {
+            let effective_path = match cli_path(global, path.or(at)) {
                 Ok(p) => p,
-                Err(msg) => {
-                    eprintln!("{msg}");
-                    return ExitCode::from(2);
-                }
+                Err(code) => return code,
             };
             run_refresh(&config, &key, effective_path.as_deref())
         }
         Commands::Watch {
             key,
-            path,
-            path_flag,
-            global,
+            at,
+            path: PathArgs { path, global },
             format,
         } => {
             let output_format = parse_output_format(&format, fmt_template.as_deref());
-            // The two spellings of the path conflict, so at most one is set.
-            let effective_path = match effective_cli_path(global, path_flag.or(path)) {
+            let effective_path = match cli_path(global, path.or(at)) {
                 Ok(p) => p,
-                Err(msg) => {
-                    eprintln!("{msg}");
-                    return ExitCode::from(2);
-                }
+                Err(code) => return code,
             };
             run_watch(&config, &key, effective_path.as_deref(), output_format)
         }
         Commands::Eval { template, path } => {
             // `eval` is a query like `get`, so it addresses the same path: the
             // one given, else the caller's directory; it has no `--global`.
-            let path = match effective_cli_path(false, path) {
+            let path = match cli_path(false, path) {
                 Ok(Some(p)) => p,
                 Ok(None) => unreachable!("eval never asks for the global entry"),
-                Err(msg) => {
-                    eprintln!("{msg}");
-                    return ExitCode::from(2);
-                }
+                Err(code) => return code,
             };
             beachcomber::cli::commands::eval::run_eval(&config, &template, &path)
         }
