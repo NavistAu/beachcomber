@@ -10,8 +10,7 @@
 //!
 //! Runs against a real in-process daemon spawned by `tests/common/daemon.rs`.
 
-mod common;
-use common::daemon::DaemonGuard;
+use crate::common::daemon::DaemonGuard;
 
 use std::ffi::{CStr, CString, c_char};
 use std::path::Path;

@@ -5,8 +5,7 @@
 //! directory holding the managed defaults — and the client renders it with
 //! the supplied `cwd` and `env_json`. Runs against a real in-process daemon.
 
-mod common;
-use common::daemon::DaemonGuard;
+use crate::common::daemon::DaemonGuard;
 
 use std::ffi::{CStr, CString, c_char};
 use std::path::Path;
