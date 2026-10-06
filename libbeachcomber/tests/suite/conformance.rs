@@ -4,8 +4,7 @@
 // Each fixture spawns its own daemon for isolation. A fixture that
 // breaks any `expect` rule fails a Rust test bearing the fixture's `name`.
 
-mod common;
-use common::daemon::DaemonGuard;
+use crate::common::daemon::DaemonGuard;
 
 use libbeachcomber::resolve::{self, Inputs, Slot};
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};

@@ -10,8 +10,7 @@
 //! Nothing here sleeps: changes are driven with `put` on a second client and
 //! every wait is a deadline on `next`.
 
-mod common;
-use common::daemon::DaemonGuard;
+use crate::common::daemon::DaemonGuard;
 
 use libbeachcomber::resolve::{Inputs, ResolveError, Slot};
 use libbeachcomber::watch::{ResolvedWatch, WatchError, WatchOutcome};

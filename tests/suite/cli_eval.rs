@@ -6,7 +6,7 @@
 //! skips starting one, `env.*`-only included.
 //!
 //! Reference discovery is `libbeachcomber::eval::discover_refs`, covered in
-//! `libbeachcomber/tests/eval_classify.rs` and `tests/template.rs`. The
+//! `libbeachcomber/tests/suite/eval_classify.rs` and `tests/template.rs`. The
 //! bulk of `eval`'s render-contract tests (literal text, typed single-tag
 //! results, the `default` filter on a miss, …) live in `tests/cli_golden.rs`.
 

@@ -362,7 +362,7 @@ mod tests {
 
     // Both forms of canon `field_resolution.md` invariant 14 share this one
     // environment, so pinning `exec()` here pins it for the template form
-    // too; `tests/resolve.rs` §9 runs both forms through the resolver.
+    // too; `libbeachcomber/tests/suite/resolve.rs` §9 runs both forms through the resolver.
     #[test]
     fn exec_enabled_env_runs_command_with_scalar_args() {
         let result = eval_expr(r#"exec("/bin/echo", "hi", 42)"#, true).unwrap();

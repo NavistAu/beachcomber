@@ -4,7 +4,7 @@
 // served with wait=true must be the re-executed one, never the stale seed.
 //
 // run_get hands `wait` to `libbeachcomber::resolve` through `Inputs`, which
-// forwards it on every fetch (pinned in libbeachcomber/tests/resolve.rs);
+// forwards it on every fetch (pinned in libbeachcomber/tests/suite/resolve.rs);
 // tests/cli_get_multikey_force.rs runs the binary with `--force` the same way.
 //
 // Phase 1 Round 3 bug: run_get captured `wait` then discarded it via `_wait`,

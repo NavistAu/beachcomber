@@ -5,7 +5,7 @@
 //! exactly one `{{ expr }}` keeps the expression's natural type; one written
 //! with literal text or more than one tag is a string-valued template. A
 //! source with no tags at all is its own literal text — there is no
-//! bare-expression form. Evaluation against fetched data is `tests/resolve.rs`.
+//! bare-expression form. Evaluation against fetched data is `tests/suite/resolve.rs`.
 
 use libbeachcomber::eval::{
     Form, TagKind, classify, discover_refs, render_template, scan_tags, single_tag_expression,

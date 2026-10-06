@@ -1,7 +1,6 @@
 // Phase 3: typed-shape integration tests for the public SDK crate.
 
-mod common;
-use common::daemon::DaemonGuard;
+use crate::common::daemon::DaemonGuard;
 
 use libbeachcomber::{Client, ClientConfig};
 use std::time::Duration;

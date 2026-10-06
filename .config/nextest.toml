@@ -38,12 +38,12 @@ leak-timeout = { period = "1s", result = "fail" }
 # now a module of that single integration-test binary, so its tests carry a
 # `<module>::` prefix (e.g. `check_subjects::daemon_exits_when_bind_fails`).
 # The anchored regex lists exactly the module names that used to be their own
-# binaries in this group. `binary(suite) and` scopes the match to that binary
-# only — several of these module names (e.g. `scheduler`) also exist as
+# binaries in this group. `binary_id(beachcomber::suite) and` scopes the match to the root crate's `suite` binary
+# only (every crate has its own `suite` binary) — several of these module names (e.g. `scheduler`) also exist as
 # private module paths inside the crate's own unit tests, which must NOT be
 # pulled into this cap.
 [[profile.default.overrides]]
-filter = 'binary(suite) and test(/^(e2e|e2e_git|e2e_providers|scheduler|scheduler_dedup|scheduler_failure|scheduler_timeout|integration_scheduler|check_subjects|status_shape|get_force|get_wait|put_null|metadata_suffixes|client|client_hello|daemon_exit_with_parent)::/)'
+filter = 'binary_id(beachcomber::suite) and test(/^(e2e|e2e_git|e2e_providers|scheduler|scheduler_dedup|scheduler_failure|scheduler_timeout|integration_scheduler|check_subjects|status_shape|get_force|get_wait|put_null|metadata_suffixes|client|client_hello|daemon_exit_with_parent)::/)'
 test-group = "daemon"
 
 # --- Retries for environment-sensitive tests ---

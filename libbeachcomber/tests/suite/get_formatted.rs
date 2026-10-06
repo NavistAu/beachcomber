@@ -14,8 +14,7 @@
 // terminator wrong hangs a real client. The real daemon is the source of
 // truth for the framing here.
 
-mod common;
-use common::daemon::DaemonGuard;
+use crate::common::daemon::DaemonGuard;
 
 use libbeachcomber::{Client, ClientConfig, CombError};
 use std::time::Duration;

@@ -2,7 +2,7 @@
 
 Exercises the public API end to end through the native library — the wire
 protocol itself is the Rust client's concern and is covered by
-``libbeachcomber/tests/conformance.rs`` and this SDK's own
+``libbeachcomber/tests/suite/conformance.rs`` and this SDK's own
 ``conformance_runner.py``. These tests focus on the binding layer: typed
 result construction, exception/kind mapping, sessions, and watch.
 """

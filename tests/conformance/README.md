@@ -221,5 +221,5 @@ Each SDK ships a conformance runner that:
 SDK's typed `DaemonHealth.pid` accessor, not by reparsing the raw JSON.
 This is what catches typed-shape drift.
 
-The Rust runner at `libbeachcomber/tests/conformance.rs` is the reference
+The Rust runner at `libbeachcomber/tests/suite/conformance.rs` is the reference
 implementation; other SDK runners mirror its structure.

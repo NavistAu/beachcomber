@@ -11,8 +11,7 @@
 // way, the point is the same: the client must surface the failure instead of
 // discarding the response body.
 
-mod common;
-use common::daemon::DaemonGuard;
+use crate::common::daemon::DaemonGuard;
 
 use libbeachcomber::{Client, ClientConfig, CombError};
 use std::io::{BufRead, BufReader, Write};
