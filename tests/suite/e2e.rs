@@ -1,7 +1,10 @@
 use beachcomber::client::Client;
 use beachcomber::config::Config;
 use beachcomber::daemon;
+use libbeachcomber::resolve::FetchError;
 use tempfile::TempDir;
+
+use crate::common::fetch::fetch;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_get_hostname_via_daemon() {
@@ -12,9 +15,9 @@ async fn e2e_get_hostname_via_daemon() {
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
 
-    let client = Client::new(sock.clone());
-    let response = client.get("hostname", None).unwrap();
-    assert!(response.ok, "Response should be ok");
+    let response = fetch(&sock, "hostname", None)
+        .unwrap()
+        .expect("Response should be ok");
     let data = response.data.unwrap();
     assert!(data["name"].is_string(), "hostname.name should be a string");
     assert!(
@@ -34,9 +37,7 @@ async fn e2e_get_hostname_single_field() {
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
 
-    let client = Client::new(sock.clone());
-    let response = client.get("hostname.short", None).unwrap();
-    assert!(response.ok);
+    let response = fetch(&sock, "hostname.short", None).unwrap().unwrap();
     let short = response.data.unwrap();
     assert!(
         short.is_string(),
@@ -55,9 +56,7 @@ async fn e2e_get_user() {
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
 
-    let client = Client::new(sock.clone());
-    let response = client.get("user", None).unwrap();
-    assert!(response.ok);
+    let response = fetch(&sock, "user", None).unwrap().unwrap();
     let data = response.data.unwrap();
     assert!(data["name"].is_string());
     assert!(data["uid"].is_number());
@@ -79,8 +78,7 @@ async fn e2e_refresh_and_get() {
     let refresh_resp = client.refresh("hostname", None).unwrap();
     assert!(refresh_resp.ok);
 
-    let response = client.get("hostname.name", None).unwrap();
-    assert!(response.ok);
+    let response = fetch(&sock, "hostname.name", None).unwrap().unwrap();
     assert!(
         response.age_ms.unwrap() < 1000,
         "Data should be fresh after refresh"
@@ -98,9 +96,11 @@ async fn e2e_unknown_provider() {
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
 
-    let client = Client::new(sock.clone());
-    let response = client.get("nonexistent", None).unwrap();
-    assert!(!response.ok, "Unknown provider should return error");
+    let response = fetch(&sock, "nonexistent", None);
+    assert!(
+        matches!(response, Err(FetchError::Rejected(_))),
+        "Unknown provider should return error"
+    );
 
     handle.abort();
 }
@@ -124,9 +124,7 @@ async fn e2e_multiple_concurrent_clients() {
     for _ in 0..10 {
         let sock = sock.clone();
         handles.push(tokio::task::spawn_blocking(move || {
-            let client = Client::new(sock);
-            let response = client.get("hostname.name", None).unwrap();
-            assert!(response.ok);
+            let response = fetch(&sock, "hostname.name", None).unwrap().unwrap();
             response.data.unwrap().as_str().unwrap().to_string()
         }));
     }

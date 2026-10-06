@@ -4,6 +4,7 @@
 //
 // Also contains unit tests for the status_format preset renderers (T28).
 
+use crate::common::fetch::fetch;
 use crate::common::git::GitRepoFixture;
 use crate::common::poll::{poll_until, poll_until_async};
 use beachcomber::cache::CacheRow;
@@ -523,22 +524,27 @@ use beachcomber::client::Client;
 use beachcomber::config::Config;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 
-async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<()>) {
+async fn setup_daemon() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Client,
+    tokio::task::JoinHandle<()>,
+) {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
     let config = Config::default();
     let (handle, ready) = beachcomber::daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
-    let client = Client::new(sock);
-    (tmp, client, handle)
+    let client = Client::new(sock.clone());
+    (tmp, sock, client, handle)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_returns_rows_per_field() {
-    let (_tmp, client, handle) = setup_daemon().await;
+    let (_tmp, sock, client, handle) = setup_daemon().await;
 
     // Warm up a global provider so at least something is in cache.
-    let _ = client.get("hostname", None).expect("get hostname");
+    let _ = fetch(&sock, "hostname", None).expect("get hostname");
 
     // Poll status until the warmed provider shows up, rather than sleeping and
     // hoping the cache has settled.
@@ -1027,7 +1033,7 @@ async fn failure_states_message_returns_provider_map() {
 /// Status on a fresh daemon with an empty cache returns an empty array, not an error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_empty_cache_returns_empty_array() {
-    let (_tmp, client, handle) = setup_daemon().await;
+    let (_tmp, _sock, client, handle) = setup_daemon().await;
 
     let rows = client.status().expect("status");
     // May be empty — that's fine. Just verify the call succeeds.
@@ -1038,7 +1044,7 @@ async fn status_empty_cache_returns_empty_array() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_response_lifecycle_row_carries_kind_and_fields() {
-    let (_tmp, client, handle) = setup_daemon().await;
+    let (_tmp, sock, client, handle) = setup_daemon().await;
 
     // Use a small dedicated temp git repo (not CARGO_MANIFEST_DIR) so the diff/status
     // git subprocesses are instant. The real workspace carries a huge untracked
@@ -1049,7 +1055,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     // which would leave the diff source absent from the status output.
     let repo = GitRepoFixture::new();
     let repo_path = repo.path_str();
-    let _ = client.get("git", Some(repo_path)).expect("get git");
+    let _ = fetch(&sock, "git", Some(repo_path)).expect("get git");
 
     // Poll until the scheduler has populated lifecycle state for both git
     // sources (refs + diff) rather than sleeping a fixed duration and hoping.
@@ -1141,13 +1147,11 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_response_once_row_has_kind_once() {
-    let (_tmp, client, handle) = setup_daemon().await;
+    let (_tmp, sock, client, handle) = setup_daemon().await;
 
     // hostname is a Watch-only global provider with KeepAlive::Never — the equivalent
     // of the old "Once" semantics. It enters the lifecycle map immediately on demand.
-    let _ = client
-        .get("hostname.short", None)
-        .expect("get hostname.short");
+    let _ = fetch(&sock, "hostname.short", None).expect("get hostname.short");
 
     use beachcomber::cache::RowKind;
 
@@ -1198,11 +1202,17 @@ async fn status_response_once_row_has_kind_once() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_response_put_row_has_kind_static() {
-    let (_tmp, client, handle) = setup_daemon().await;
+    let (_tmp, _sock, client, handle) = setup_daemon().await;
 
     // Store a static entry via put.
     let _ = client
-        .put("custom", serde_json::json!({"color": "blue"}), None, None)
+        .put_with(
+            "custom",
+            serde_json::json!({"color": "blue"}),
+            None,
+            None,
+            false,
+        )
         .expect("put custom");
 
     // `put` writes the cache entry and registers the static namespace before it

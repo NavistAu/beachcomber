@@ -1,33 +1,38 @@
 use crate::common::daemon::isolate;
+use crate::common::fetch::fetch;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
 
 /// Spin up an in-process daemon on a temp socket and return the handle and client.
-async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<()>) {
+async fn setup_daemon() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Client,
+    tokio::task::JoinHandle<()>,
+) {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
     let config = Config::default();
     let (handle, ready) = beachcomber::daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
-    let client = Client::new(sock);
-    (tmp, client, handle)
+    let client = Client::new(sock.clone());
+    (tmp, sock, client, handle)
 }
 
 /// put --null clears a cache entry but the static namespace's registration survives,
 /// so a subsequent put under the same key still works.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn put_null_clears_entry_but_keeps_provider() {
-    let (_tmp, client, handle) = setup_daemon().await;
+    let (_tmp, sock, client, handle) = setup_daemon().await;
 
     // 1. Store a value.
     let resp = client
-        .put("nulltest", serde_json::json!({"v": 42}), None, None)
+        .put_with("nulltest", serde_json::json!({"v": 42}), None, None, false)
         .unwrap();
     assert!(resp.ok, "initial put failed: {:?}", resp.error);
 
     // 2. Verify get returns the value.
-    let resp = client.get("nulltest.v", None).unwrap();
-    assert!(resp.ok);
+    let resp = fetch(&sock, "nulltest.v", None).unwrap().unwrap();
     assert_eq!(
         resp.data.unwrap(),
         serde_json::json!(42),
@@ -39,22 +44,21 @@ async fn put_null_clears_entry_but_keeps_provider() {
     assert!(resp.ok, "put_null failed: {:?}", resp.error);
 
     // 4. get should now return miss (no data).
-    let resp = client.get("nulltest.v", None).unwrap();
-    assert!(resp.ok, "get after null returned error: {:?}", resp.error);
+    let data = fetch(&sock, "nulltest.v", None)
+        .expect("get after null returned error")
+        .and_then(|got| got.data);
     assert!(
-        resp.data.is_none(),
-        "expected miss after put --null, got: {:?}",
-        resp.data
+        data.is_none(),
+        "expected miss after put --null, got: {data:?}"
     );
 
     // 5. A subsequent put under the same key still works (registry survives).
     let resp = client
-        .put("nulltest", serde_json::json!({"v": 99}), None, None)
+        .put_with("nulltest", serde_json::json!({"v": 99}), None, None, false)
         .unwrap();
     assert!(resp.ok, "second put failed: {:?}", resp.error);
 
-    let resp = client.get("nulltest.v", None).unwrap();
-    assert!(resp.ok);
+    let resp = fetch(&sock, "nulltest.v", None).unwrap().unwrap();
     assert_eq!(
         resp.data.unwrap(),
         serde_json::json!(99),
@@ -68,14 +72,15 @@ async fn put_null_clears_entry_but_keeps_provider() {
 /// namespace survive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn put_null_at_a_node_clears_only_that_subtree() {
-    let (_tmp, client, handle) = setup_daemon().await;
+    let (_tmp, sock, client, handle) = setup_daemon().await;
 
     let resp = client
-        .put(
+        .put_with(
             "nulltree",
             serde_json::json!({"keep": 1, "drop": {"x": 2}}),
             None,
             None,
+            false,
         )
         .unwrap();
     assert!(resp.ok, "initial put failed: {:?}", resp.error);
@@ -83,8 +88,7 @@ async fn put_null_at_a_node_clears_only_that_subtree() {
     let resp = client.put_null("nulltree.drop", None, None).unwrap();
     assert!(resp.ok, "node null put failed: {:?}", resp.error);
 
-    let resp = client.get("nulltree", None).unwrap();
-    assert!(resp.ok, "get failed: {:?}", resp.error);
+    let resp = fetch(&sock, "nulltree", None).expect("get failed").unwrap();
     assert_eq!(
         resp.data.unwrap(),
         serde_json::json!({"keep": 1}),

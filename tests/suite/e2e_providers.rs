@@ -1,3 +1,4 @@
+use crate::common::fetch::fetch;
 use crate::common::poll::{poll_until, poll_until_eq};
 use beachcomber::client::Client;
 use beachcomber::config::Config;
@@ -14,16 +15,19 @@ async fn e2e_all_builtin_providers_registered() {
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
 
-    let client = Client::new(sock);
+    let client = Client::new(sock.clone());
 
-    let hostname = client.get("hostname", None).unwrap();
+    let hostname = fetch(&sock, "hostname", None).unwrap();
     assert!(
-        hostname.ok && hostname.data.is_some(),
+        hostname.is_some_and(|got| got.data.is_some()),
         "hostname should be cached"
     );
 
-    let user = client.get("user", None).unwrap();
-    assert!(user.ok && user.data.is_some(), "user should be cached");
+    let user = fetch(&sock, "user", None).unwrap();
+    assert!(
+        user.is_some_and(|got| got.data.is_some()),
+        "user should be cached"
+    );
 
     let load_refresh = client.refresh("load", None).unwrap();
     assert!(load_refresh.ok, "load refresh should succeed");
@@ -33,13 +37,13 @@ async fn e2e_all_builtin_providers_registered() {
         "a cached value",
         Duration::from_secs(5),
         Duration::from_millis(20),
-        || client.get("load", None).unwrap().data,
+        || fetch(&sock, "load", None).unwrap().and_then(|got| got.data),
         |data| data.is_some(),
     );
 
-    let load = client.get("load", None).unwrap();
+    let load = fetch(&sock, "load", None).unwrap();
     assert!(
-        load.ok && load.data.is_some(),
+        load.is_some_and(|got| got.data.is_some()),
         "load should have data after refresh"
     );
 
@@ -69,7 +73,7 @@ async fn e2e_script_provider_from_config() {
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
 
-    let client = Client::new(sock);
+    let client = Client::new(sock.clone());
 
     let refresh = client.refresh("test_echo", None).unwrap();
     assert!(refresh.ok, "Refresh script provider should succeed");
@@ -78,12 +82,17 @@ async fn e2e_script_provider_from_config() {
         "test_echo.greeting after refresh",
         Duration::from_secs(5),
         Duration::from_millis(20),
-        || client.get("test_echo.greeting", None).unwrap().data,
+        || {
+            fetch(&sock, "test_echo.greeting", None)
+                .unwrap()
+                .and_then(|got| got.data)
+        },
         Some(serde_json::json!("hello")),
     );
 
-    let result = client.get("test_echo.greeting", None).unwrap();
-    assert!(result.ok, "Should get script provider result");
+    let result = fetch(&sock, "test_echo.greeting", None)
+        .unwrap()
+        .expect("Should get script provider result");
     assert_eq!(result.data.unwrap(), serde_json::json!("hello"));
 
     handle.abort();

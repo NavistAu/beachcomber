@@ -1,8 +1,10 @@
+use crate::common::fetch::fetch;
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
+use libbeachcomber::resolve::FetchError;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -37,9 +39,7 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_get_full_provider() {
     let (_tmp, sock) = setup_server().await;
-    let client = Client::new(sock);
-    let response = client.get("hostname", None).unwrap();
-    assert!(response.ok);
+    let response = fetch(&sock, "hostname", None).unwrap().unwrap();
     let data = response.data.unwrap();
     assert_eq!(data["name"], "testhost.local");
     assert_eq!(data["short"], "testhost");
@@ -48,44 +48,42 @@ async fn client_get_full_provider() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_get_single_field() {
     let (_tmp, sock) = setup_server().await;
-    let client = Client::new(sock);
-    let response = client.get("hostname.short", None).unwrap();
-    assert!(response.ok);
+    let response = fetch(&sock, "hostname.short", None).unwrap().unwrap();
     assert_eq!(response.data.unwrap(), serde_json::json!("testhost"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_get_unknown_provider() {
     let (_tmp, sock) = setup_server().await;
-    let client = Client::new(sock);
-    let response = client.get("nonexistent", None).unwrap();
-    assert!(!response.ok);
-    assert!(response.error.unwrap().contains("unknown provider"));
+    match fetch(&sock, "nonexistent", None) {
+        Err(FetchError::Rejected(msg)) => assert!(msg.contains("unknown provider")),
+        other => panic!("expected a rejection, got {other:?}"),
+    }
 }
 
-/// The CLI adapter keeps the template half: a template-only node is an
-/// `ok` response with `template` set and no `data`, never a bare miss.
+/// The CLI transport keeps the template half: a template-only node is a hit
+/// with `template` set and no `data`, never a bare miss.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_get_carries_the_template_half() {
     let (_tmp, sock) = setup_server().await;
-    let client = Client::new(sock);
+    let client = Client::new(sock.clone());
     let resp = client
-        .put(
+        .put_with(
             "tpl:template",
             serde_json::json!({"t": "{{ 1 }}"}),
             None,
             None,
+            false,
         )
         .unwrap();
     assert!(resp.ok, "{:?}", resp.error);
 
-    let resp = client.get("tpl.t", None).unwrap();
-    assert!(resp.ok);
+    let resp = fetch(&sock, "tpl.t", None).unwrap().unwrap();
     assert!(resp.data.is_none(), "a template-only node has no data");
     assert_eq!(resp.template, Some(serde_json::json!("{{ 1 }}")));
     assert_eq!(resp.rest, None);
 
-    let resp = client.get("tpl.t.x", None).unwrap();
+    let resp = fetch(&sock, "tpl.t.x", None).unwrap().unwrap();
     assert_eq!(
         resp.rest.as_deref(),
         Some("x"),
@@ -112,12 +110,17 @@ async fn client_put_and_get() {
     let client = beachcomber::client::Client::new(sock.clone());
 
     let resp = client
-        .put("testapp", serde_json::json!({"status": "ok"}), None, None)
+        .put_with(
+            "testapp",
+            serde_json::json!({"status": "ok"}),
+            None,
+            None,
+            false,
+        )
         .unwrap();
     assert!(resp.ok);
 
-    let resp = client.get("testapp.status", None).unwrap();
-    assert!(resp.ok);
+    let resp = fetch(&sock, "testapp.status", None).unwrap().unwrap();
     assert_eq!(resp.data.unwrap(), "ok");
 
     handle.abort();

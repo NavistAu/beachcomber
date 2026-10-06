@@ -1,6 +1,6 @@
 use crate::common::daemon::isolate;
+use crate::common::fetch::fetch;
 use beachcomber::cache::Cache;
-use beachcomber::client::Client;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
@@ -93,12 +93,10 @@ async fn get_variadic_partial_failure_still_emits_successful_key() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_variadic_single_key_is_unchanged() {
-    // Single-key on a session must behave identically to Client::get.
+    // Single-key on a session must behave identically to the CLI's transport.
     let (_tmp, sock) = setup_server().await;
-    let client = Client::new(sock.clone());
 
-    let direct = client.get("hostname.value", None).unwrap();
-    assert!(direct.ok);
+    let direct = fetch(&sock, "hostname.value", None).unwrap().unwrap();
     assert_eq!(direct.data.as_ref().unwrap(), "myhost");
 
     let mut session = session_for(sock);

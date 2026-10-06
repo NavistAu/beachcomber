@@ -8,11 +8,12 @@
 ///
 /// Unit tests for the disambiguation logic itself live in src/main.rs
 /// under `#[cfg(test)] mod path_disambiguation_tests`.
+use crate::common::fetch::fetch;
 use beachcomber::cache::Cache;
-use beachcomber::client::Client;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
+use libbeachcomber::resolve::FetchError;
 use libbeachcomber::{ClientConfig, CombResult, Session};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -150,13 +151,11 @@ async fn no_context_path_scoped_query_returns_response() {
         return;
     }
     let (_sock_tmp, sock, _repo_tmp, _repo_path) = setup_server_with_git_repo().await;
-    let client = Client::new(sock);
-
     // Use get() without set_context — server receives no path.
-    let resp = client.get("git.branch", None).unwrap();
+    let resp = fetch(&sock, "git.branch", None);
 
-    // We just verify the server responds (ok or not-ok), not that it panics.
-    let _ = resp.ok;
+    // We just verify the server responds (hit, miss or rejection), not that it panics.
+    assert!(!matches!(resp, Err(FetchError::Transport(_))), "{resp:?}");
 }
 
 /// Passing explicit path to get() (not via set_context) also works.
@@ -167,16 +166,10 @@ async fn explicit_path_in_get_resolves_correctly() {
         return;
     }
     let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
-    let client = Client::new(sock);
-
     // Pass path directly to get() rather than using set_context.
-    let resp = client.get("git.branch", Some(&repo_path)).unwrap();
-
-    assert!(
-        resp.ok,
-        "expected ok response with explicit path: {:?}",
-        resp.error
-    );
+    let resp = fetch(&sock, "git.branch", Some(&repo_path))
+        .expect("expected ok response with explicit path")
+        .expect("expected a hit with explicit path");
     assert_eq!(resp.data.as_ref().unwrap(), "main");
 }
 
@@ -194,17 +187,11 @@ async fn subdir_query_resolves_to_repo_root() {
     let subdir = std::path::Path::new(&repo_path).join("src").join("lib");
     std::fs::create_dir_all(&subdir).unwrap();
 
-    let client = Client::new(sock);
-    let resp = client
-        .get("git.branch", Some(subdir.to_str().unwrap()))
-        .unwrap();
+    let resp = fetch(&sock, "git.branch", Some(subdir.to_str().unwrap()))
+        .expect("expected ok — subdir should canonicalise to repo root")
+        .expect("expected a hit — subdir should canonicalise to repo root");
 
     // Cache was seeded only at the repo root. If canonical_path didn't walk
     // up, this lookup would miss. Success proves subdir→root resolution.
-    assert!(
-        resp.ok,
-        "expected ok — subdir should canonicalise to repo root: {:?}",
-        resp.error
-    );
     assert_eq!(resp.data.as_ref().unwrap(), "main");
 }

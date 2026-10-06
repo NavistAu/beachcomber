@@ -6,6 +6,8 @@ use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
 use criterion::{Criterion, criterion_group, criterion_main};
+use libbeachcomber::resolve::{Inputs, Slot, resolve};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
@@ -77,9 +79,18 @@ fn bench_socket_roundtrip_cold(c: &mut Criterion) {
         b.to_async(&server.rt).iter(|| {
             let sock = server.sock.clone();
             async move {
-                let client = Client::new(sock);
-                let resp = client.get("hostname.name", None).unwrap();
-                criterion::black_box(resp);
+                // The path `comb get` takes: a session, then the resolver.
+                let mut session = Client::new(sock).connect().unwrap();
+                let inputs = Inputs {
+                    cwd: "/",
+                    env: &HashMap::new(),
+                    slot: Slot::Global,
+                    force: false,
+                    wait: false,
+                    allow_exec: true,
+                };
+                let value = resolve("hostname.name", &inputs, &mut session).unwrap();
+                criterion::black_box(value);
             }
         })
     });

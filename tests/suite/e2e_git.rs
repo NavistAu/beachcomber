@@ -1,3 +1,4 @@
+use crate::common::fetch::fetch;
 use crate::common::git::GitRepoFixture;
 use crate::common::poll::{poll_until, poll_until_async, poll_until_eq};
 use beachcomber::cache::Cache;
@@ -48,21 +49,24 @@ async fn setup_daemon() -> (
 async fn refresh_git_provider() {
     let repo = GitRepoFixture::new();
     let (_tmp, sock, _handle) = setup_daemon().await;
-    let client = Client::new(sock);
+    let client = Client::new(sock.clone());
 
     let resp = client.refresh("git", Some(repo.path_str())).unwrap();
     assert!(resp.ok);
 
-    let resp = poll_until(
+    let data = poll_until(
         "git.branch after refresh",
         "a get response carrying a string branch",
         Duration::from_secs(5),
         Duration::from_millis(20),
-        || client.get("git.branch", Some(repo.path_str())).unwrap(),
-        |r| r.ok && r.data.as_ref().is_some_and(|d| d.is_string()),
+        || {
+            fetch(&sock, "git.branch", Some(repo.path_str()))
+                .unwrap()
+                .and_then(|got| got.data)
+        },
+        |d| d.as_ref().is_some_and(|d| d.is_string()),
     );
-    assert!(resp.ok, "Should get git branch");
-    let branch = resp.data.unwrap();
+    let branch = data.expect("Should get git branch");
     assert!(branch.is_string(), "Branch should be a string");
 }
 
@@ -70,7 +74,7 @@ async fn refresh_git_provider() {
 async fn git_detects_dirty_state_via_refresh() {
     let repo = GitRepoFixture::new();
     let (_tmp, sock, _handle) = setup_daemon().await;
-    let client = Client::new(sock);
+    let client = Client::new(sock.clone());
     let repo_path = repo.path_str();
 
     // First refresh: clean state
@@ -79,7 +83,11 @@ async fn git_detects_dirty_state_via_refresh() {
         "git.dirty after refresh (clean repo)",
         Duration::from_secs(5),
         Duration::from_millis(20),
-        || client.get("git.dirty", Some(repo_path)).unwrap().data,
+        || {
+            fetch(&sock, "git.dirty", Some(repo_path))
+                .unwrap()
+                .and_then(|got| got.data)
+        },
         Some(serde_json::json!(false)),
     );
 
@@ -92,7 +100,11 @@ async fn git_detects_dirty_state_via_refresh() {
         "git.dirty after refresh (dirty repo)",
         Duration::from_secs(5),
         Duration::from_millis(20),
-        || client.get("git.dirty", Some(repo_path)).unwrap().data,
+        || {
+            fetch(&sock, "git.dirty", Some(repo_path))
+                .unwrap()
+                .and_then(|got| got.data)
+        },
         Some(serde_json::json!(true)),
     );
 }
@@ -101,7 +113,7 @@ async fn git_detects_dirty_state_via_refresh() {
 async fn git_returns_miss_for_non_repo() {
     let tmp = TempDir::new().unwrap();
     let (_daemon_tmp, sock, handle) = setup_daemon().await;
-    let client = Client::new(sock);
+    let client = Client::new(sock.clone());
 
     client
         .refresh("git", Some(tmp.path().to_str().unwrap()))
@@ -122,9 +134,8 @@ async fn git_returns_miss_for_non_repo() {
     )
     .await;
 
-    let resp = client
-        .get("git.branch", Some(tmp.path().to_str().unwrap()))
-        .unwrap();
-    assert!(resp.ok);
-    assert!(resp.data.is_none(), "Non-git dir should return miss");
+    let data = fetch(&sock, "git.branch", Some(tmp.path().to_str().unwrap()))
+        .unwrap()
+        .and_then(|got| got.data);
+    assert!(data.is_none(), "Non-git dir should return miss");
 }

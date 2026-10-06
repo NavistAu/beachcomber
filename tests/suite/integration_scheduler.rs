@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
+use crate::common::fetch::fetch;
 use crate::common::poll::poll_until_async;
 
 async fn setup_with_scheduler() -> (TempDir, std::path::PathBuf) {
@@ -36,30 +37,30 @@ async fn setup_with_scheduler() -> (TempDir, std::path::PathBuf) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_goes_through_scheduler() {
     let (_tmp, sock) = setup_with_scheduler().await;
-    let client = Client::new(sock);
+    let client = Client::new(sock.clone());
 
     let response = client.refresh("hostname", None).unwrap();
     assert!(response.ok);
 
-    let response = poll_until_async(
+    let data = poll_until_async(
         "client get hostname",
         "ok with data",
         Duration::from_secs(5),
         Duration::from_millis(10),
-        async || client.get("hostname", None).unwrap(),
-        |r| r.ok && r.data.is_some(),
+        async || {
+            fetch(&sock, "hostname", None)
+                .unwrap()
+                .and_then(|got| got.data)
+        },
+        |data| data.is_some(),
     )
     .await;
-    assert!(response.ok);
-    assert!(response.data.is_some());
+    assert!(data.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn once_providers_available_via_scheduler() {
     let (_tmp, sock) = setup_with_scheduler().await;
-    let client = Client::new(sock);
-
-    let response = client.get("hostname.name", None).unwrap();
-    assert!(response.ok);
+    let response = fetch(&sock, "hostname.name", None).unwrap().unwrap();
     assert!(response.data.is_some());
 }
