@@ -2,7 +2,7 @@
 //! `bc_introspect`, `bc_hello`. Task 3.4 of
 //! docs/superpowers/plans/2026-08-15-client-abi-and-sdk-refactor.md.
 //!
-//! Runs against a real in-process daemon spawned by `tests/common/daemon.rs`.
+//! Runs against a real in-process daemon spawned by `tests/suite/common/daemon.rs`.
 
 use crate::common::daemon::DaemonGuard;
 

@@ -1,4 +1,4 @@
-//! Same `DaemonGuard` spawn pattern as `libbeachcomber/tests/common/daemon.rs`
+//! Same `DaemonGuard` spawn pattern as `libbeachcomber/tests/suite/common/daemon.rs`
 //! (in-process daemon on an isolated socket, joined and shut down on Drop).
 //! Not literally shared via `#[path]`: this crate's own `[lib] name` is
 //! `beachcomber` too, so the root daemon crate is pulled in here under the

@@ -8,7 +8,7 @@
 //! `<p>:template`, so editing a template the value is rendered from fires
 //! the watch.
 //!
-//! Runs against a real in-process daemon spawned by `tests/common/daemon.rs`.
+//! Runs against a real in-process daemon spawned by `tests/suite/common/daemon.rs`.
 
 use crate::common::daemon::DaemonGuard;
 
