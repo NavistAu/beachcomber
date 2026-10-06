@@ -6,8 +6,8 @@ date: 2026-10-07
 y-statement: >-
   In the context of fields that a Source, a put, a template and a memo can
   each supply, facing a rules engine that had grown hard to reason about, we
-  decided for each writing to its own facet and reads coalescing put > memo >
-  template > source, and against the decision engine, to achieve one simple
+  decided for each writing to its own facet and reads coalescing memo > template >
+  put > source, and against the decision engine, to achieve one simple
   rule, accepting nothing of note.
 decision-makers: [Joshua Hogendorn]
 tags: [resolution, facets, phase-1]
@@ -42,7 +42,10 @@ approach needed simplifying, not more rules.
 ## Decision Outcome
 
 Chosen option: "facets", because the whole decision engine collapses to one
-coalesce, in this order of preference: put > memo > template > source.
+coalesce, in this order of preference: memo > template > put > source.
+A put sits below the template so that a template can enrich or act on a put
+value, reading it with `comb.*` and choosing to merge or replace; without a
+template, a put still wins over the Source.
 
 ### Consequences
 
