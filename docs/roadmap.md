@@ -18,6 +18,13 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 
 ### General
 
+- [ ] **Trust rules for config and plugins not supplied by the user.** Today comb reads config only from the user's
+      own config directory (`defaults/`, `config.toml`, `conf.d/`), and a template `put` needs a process already
+      running as the user, so every `exec()` sits behind a trust decision the user already made. Two planned features
+      break that: project-level comb config read from the directory being entered (vim's `exrc` problem), and
+      third-party plugins. Both need a trust registry in the style of `direnv allow` — what is trusted, keyed how, and
+      what an untrusted source may still do — not a global `exec` on/off switch (considered and rejected 2026-10-07).
+
 - [ ] **direnv-driven precompute of env-derived ("P2") values into the cache.** The env+cascade design (per-shell env
       vars are the final override on top of the daemon's path-cached values; cascades are jinja, first-non-empty +
       transforms, evaluated client-side) resolves the "env selects a _non-default source_" cases — a per-shell
