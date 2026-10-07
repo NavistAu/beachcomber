@@ -1198,17 +1198,15 @@ async fn handle_request(
             // `data: null` means "clear the addressed node" — the row goes, the
             // registry entry stays.
             if data.is_null() {
-                return match cache.remove_static_path(namespace, effective_path.as_deref(), node) {
-                    Ok(_) => Response {
-                        ok: true,
-                        data: None,
-                        age_ms: None,
-                        stale: None,
-                        error: None,
-                        template: None,
-                        rest: None,
-                    },
-                    Err(e) => Response::error(e.to_string()),
+                cache.remove_static_path(namespace, effective_path.as_deref(), node);
+                return Response {
+                    ok: true,
+                    data: None,
+                    age_ms: None,
+                    stale: None,
+                    error: None,
+                    template: None,
+                    rest: None,
                 };
             }
 
@@ -1224,11 +1222,7 @@ async fn handle_request(
                     } else {
                         format!("{node}.{tail}")
                     };
-                    if let Err(e) =
-                        cache.remove_static_path(namespace, effective_path.as_deref(), &at)
-                    {
-                        return Response::error(e.to_string());
-                    }
+                    cache.remove_static_path(namespace, effective_path.as_deref(), &at);
                 }
             }
 
@@ -1990,7 +1984,7 @@ mod tests {
                 false,
                 Some(1),
             )
-            .expect("no source owns p.x");
+            .expect("put accepted");
         tokio::time::advance(std::time::Duration::from_secs(5)).await;
         cache
             .write_static(
@@ -2002,7 +1996,7 @@ mod tests {
                 false,
                 Some(100),
             )
-            .expect("no source owns p.y");
+            .expect("put accepted");
 
         let read = cache
             .read_merged("p", None, None, &registry)
@@ -2049,7 +2043,7 @@ mod tests {
                 false,
                 None,
             )
-            .expect("no source owns p.tree");
+            .expect("put accepted");
         tokio::time::advance(std::time::Duration::from_secs(9)).await;
         // The near layer: a directory below it, filling that node in.
         cache
@@ -2062,7 +2056,7 @@ mod tests {
                 false,
                 None,
             )
-            .expect("no source owns p.tree.left");
+            .expect("put accepted");
 
         let read = cache
             .read_merged("p", Some("/x/y"), Some("/x/y"), &registry)

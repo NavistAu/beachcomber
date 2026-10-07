@@ -568,12 +568,7 @@ impl Cache {
     /// map remains.
     ///
     /// Returns whether anything was removed.
-    pub fn remove_static_path(
-        &self,
-        namespace: &str,
-        path: Option<&str>,
-        node: &str,
-    ) -> Result<bool, PutError> {
+    pub fn remove_static_path(&self, namespace: &str, path: Option<&str>, node: &str) -> bool {
         let key = make_cache_key(namespace, path);
 
         let mut removed = false;
@@ -587,7 +582,7 @@ impl Cache {
         if removed && let Some(ref watchers) = self.watchers {
             watchers.notify(namespace, path);
         }
-        Ok(removed)
+        removed
     }
 
     /// The namespaces at the **global entry** holding a record whose static
@@ -1457,11 +1452,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(
-            cache
-                .remove_static_path("git", Some("/repo"), "branch")
-                .unwrap()
-        );
+        assert!(cache.remove_static_path("git", Some("/repo"), "branch"));
 
         let read = cache
             .read_merged("git", Some("/repo"), Some("/repo"), &registry)
@@ -1486,7 +1477,7 @@ mod tests {
         write(PUT_SOURCE, "put");
         let read = cache.read_merged("p", None, None, &registry).unwrap();
         assert_eq!(read.fields.get("x"), Some(&Value::String("put".into())));
-        assert!(cache.remove_static_path("p", None, "x").unwrap());
+        assert!(cache.remove_static_path("p", None, "x"));
         let read = cache.read_merged("p", None, None, &registry).unwrap();
         assert_eq!(read.fields.get("x"), Some(&Value::String("seed".into())));
     }
@@ -1538,7 +1529,7 @@ mod tests {
         let write = |label: &str, node: &str, value: Value| {
             cache
                 .write_static("p", None, label, node, value, false, None)
-                .expect("no source owns anything under p");
+                .expect("put accepted");
         };
 
         write("config:a.toml", "tree.left", Value::Int(1));

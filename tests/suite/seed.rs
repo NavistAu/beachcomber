@@ -133,10 +133,24 @@ async fn row(
     provider: &str,
     field: &str,
 ) -> Option<(String, serde_json::Value, serde_json::Value)> {
+    row_from(stream, provider, field, None).await
+}
+
+/// `row`, restricted to the rows one source label holds: a field a `put` and a
+/// config seed both set has a row under each, in no fixed order.
+async fn row_from(
+    stream: &mut UnixStream,
+    provider: &str,
+    field: &str,
+    source: Option<&str>,
+) -> Option<(String, serde_json::Value, serde_json::Value)> {
     let resp = send_recv(stream, json!({"op": "status"})).await;
     assert_eq!(resp["ok"], json!(true), "status: {resp}");
     resp["data"].as_array()?.iter().find_map(|r| {
-        (r["provider"] == json!(provider) && r["field"] == json!(field)).then(|| {
+        (r["provider"] == json!(provider)
+            && r["field"] == json!(field)
+            && source.is_none_or(|s| r["source"] == json!(s)))
+        .then(|| {
             (
                 r["source"].as_str().unwrap_or_default().to_string(),
                 r["value"].clone(),
@@ -622,7 +636,7 @@ async fn a_put_record_wins_over_config_on_re_seed() {
         json!("mine"),
         "config must not overwrite the record the operator put there"
     );
-    let (source, value, kind) = row(&mut s, "scanline:template", "version")
+    let (source, value, kind) = row_from(&mut s, "scanline:template", "version", Some("put"))
         .await
         .expect("the record is still in the cache");
     assert_eq!(
@@ -667,9 +681,7 @@ fn removing_a_put_template_shows_the_seeded_one() {
             .and_then(|r| r.fields.get("version").cloned())
     };
     assert_eq!(version(), Some(CacheValue::String("mine".into())));
-    cache
-        .remove_static_path("p:template", None, "version")
-        .unwrap();
+    cache.remove_static_path("p:template", None, "version");
     assert_eq!(version(), Some(CacheValue::String("seeded".into())));
 }
 
@@ -713,9 +725,7 @@ fn a_reseed_keeps_a_put_template_on_top() {
         Some(&CacheValue::String("t".into()))
     );
     // The seed is stored beneath the put, not skipped.
-    cache
-        .remove_static_path("p:template", None, "version")
-        .unwrap();
+    cache.remove_static_path("p:template", None, "version");
     let read = cache
         .read_merged("p:template", None, None, &registry)
         .unwrap();

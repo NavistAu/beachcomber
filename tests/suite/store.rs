@@ -76,12 +76,12 @@ async fn a_put_over_a_source_field_is_accepted_and_wins() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
-    let req = r#"{"op":"put","key":"git","data":{"branch":"main"}}"#;
+    let req = r#"{"op":"put","key":"git","data":{"branch":"x"}}"#;
     let resp = send_recv(&mut stream, req).await;
     assert!(resp.ok, "put over a Source field: {:?}", resp.error);
 
     let resp = send_recv(&mut stream, r#"{"op":"get","key":"git.branch"}"#).await;
-    assert_eq!(resp.data.unwrap(), serde_json::json!("main"));
+    assert_eq!(resp.data.unwrap(), serde_json::json!("x"));
 
     handle.abort();
 }
