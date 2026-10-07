@@ -103,12 +103,7 @@ fn get_carries_the_template_half() {
     }
 
     client
-        .put(
-            "p:template",
-            serde_json::json!({"v": "{{ 2 }}"}),
-            None,
-            None,
-        )
+        .put("p:template.v", serde_json::json!("{{ 2 }}"), None, None)
         .expect("put template over data");
     match client.get("p.v", None).expect("get p.v with both halves") {
         CombResult::Hit {

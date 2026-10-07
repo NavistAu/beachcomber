@@ -68,11 +68,12 @@ class TestOps < Minitest::Test
     assert_equal '/repo', req['path']
   end
 
-  def test_put_omits_data_when_nil
+  def test_put_sends_null_data_when_nil
     @server.enqueue('{"ok":true}')
     @client.put('custom.value')
     req = @server.requests.last
-    refute req.key?('data')
+    assert req.key?('data')
+    assert_nil req['data']
   end
 
   def test_put_omits_ttl_when_not_given
