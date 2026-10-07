@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::provider::{Provider, ProviderMetadata, Source, SourceMetadata};
+use crate::provider::{Provider, ProviderMetadata, Source, SourceMetadata, is_sentinel};
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ pub struct ProviderRegistry {
     providers: HashMap<String, ProviderMetadata>,
     /// (provider_name, declared dotted field) → source_name, sentinels excluded.
     /// Built once at registration.
-    field_to_source: HashMap<(String, String), String>,
+    declared_sources: HashMap<(String, String), String>,
     /// provider_name → Sources declaring a sentinel field (`<tool>`), in
     /// declaration order. They answer for the provider node.
     sentinel_sources: HashMap<String, Vec<String>>,
@@ -30,7 +30,7 @@ impl ProviderRegistry {
         Self {
             sources: HashMap::new(),
             providers: HashMap::new(),
-            field_to_source: HashMap::new(),
+            declared_sources: HashMap::new(),
             sentinel_sources: HashMap::new(),
             static_names: DashMap::new(),
         }
@@ -68,13 +68,13 @@ impl ProviderRegistry {
         // Populate the declared-field map and the sentinel list.
         for sm in &meta.sources {
             for f in &sm.fields {
-                if f.name.starts_with('<') {
+                if is_sentinel(&f.name) {
                     let list = self.sentinel_sources.entry(meta.name.clone()).or_default();
                     if !list.contains(&sm.name) {
                         list.push(sm.name.clone());
                     }
                 } else {
-                    self.field_to_source
+                    self.declared_sources
                         .insert((meta.name.clone(), f.name.clone()), sm.name.clone());
                 }
             }
@@ -111,7 +111,7 @@ impl ProviderRegistry {
         let mut node = field;
         loop {
             if let Some(src) = self
-                .field_to_source
+                .declared_sources
                 .get(&(provider.to_string(), node.to_string()))
             {
                 return vec![src.as_str()];
@@ -485,12 +485,12 @@ mod tests {
     #[test]
     fn a_leaf_below_a_declared_field_finds_its_source() {
         let reg = registry_of(
-            "git",
+            "p",
             vec![ms("refs", vec!["branch"]), ms("diff", vec!["lines_added"])],
         );
-        assert_eq!(reg.sources_for_key("git", "branch"), vec!["refs"]);
-        assert_eq!(reg.sources_for_key("git", "branch.x"), vec!["refs"]);
-        assert_eq!(reg.sources_for_key("git", "lines_added"), vec!["diff"]);
+        assert_eq!(reg.sources_for_key("p", "branch"), vec!["refs"]);
+        assert_eq!(reg.sources_for_key("p", "branch.x"), vec!["refs"]);
+        assert_eq!(reg.sources_for_key("p", "lines_added"), vec!["diff"]);
     }
 
     #[test]

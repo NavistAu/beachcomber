@@ -541,6 +541,11 @@ impl SourceResult {
     }
 }
 
+/// A sentinel field name (`<tool>`) stands for runtime-resolved field names.
+pub(crate) fn is_sentinel(name: &str) -> bool {
+    name.starts_with('<')
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderMetadata {
     pub name: String,
@@ -571,7 +576,7 @@ impl ProviderMetadata {
         let mut field_owners: HashMap<String, String> = HashMap::new();
         for s in &self.sources {
             for f in &s.fields {
-                if f.name.starts_with('<') {
+                if is_sentinel(&f.name) {
                     // Dynamic sentinel — allowed to appear in multiple sources.
                     continue;
                 }
