@@ -55,6 +55,11 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
     tracing::info!("Socket: {:?}", socket_path);
     tracing::info!("Log file: {:?}", log_path);
 
+    if exit_with_parent && parent_pid == 1 {
+        tracing::info!("--exit-with-parent but the parent is already gone (ppid 1); exiting");
+        return ExitCode::SUCCESS;
+    }
+
     let pid_path = socket_path.with_file_name("pid");
     let binary_hash = match crate::singleton::hash_current_binary() {
         Ok(h) => h,

@@ -143,3 +143,50 @@ fn daemon_exits_when_parent_dies_during_startup() {
         "daemon (pid {daemon_pid}) must self-exit when its parent died during startup"
     );
 }
+
+/// The parent is already gone before `run_daemon` begins, so the daemon's
+/// parent at startup is pid 1: there is no parent to follow and it must exit
+/// at once. A gate file holds the daemon back until the parent has exited, so
+/// the ordering is deterministic.
+#[test]
+fn daemon_exits_at_once_when_already_orphaned_at_startup() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("sock");
+    let pidfile = tmp.path().join("daemon.pid");
+    let gate = tmp.path().join("go");
+    let comb = env!("CARGO_BIN_EXE_comb");
+
+    let mut parent = isolate(&mut Command::new("sh"), tmp.path(), tmp.path(), &sock)
+        .arg("-c")
+        .arg(format!(
+            "( while [ ! -e {gate} ]; do :; done; exec {comb} daemon --exit-with-parent --socket {sock} ) & echo $! > {pid}",
+            gate = gate.display(),
+            sock = sock.display(),
+            pid = pidfile.display(),
+        ))
+        .spawn()
+        .expect("spawn short-lived parent");
+    let _ = parent.wait();
+
+    let daemon_pid = std::fs::read_to_string(&pidfile)
+        .expect("read daemon pidfile")
+        .trim()
+        .to_string();
+    let _reaper = KillOnDrop(daemon_pid.clone());
+
+    // The parent has exited; release the daemon so it starts already orphaned.
+    std::fs::write(&gate, "").expect("open gate");
+
+    let still_alive = poll_until(
+        &format!("liveness of daemon pid {daemon_pid}"),
+        "it to exit at once, having no parent at startup (--exit-with-parent)",
+        Duration::from_secs(10),
+        Duration::from_millis(100),
+        || pid_alive(&daemon_pid),
+        |alive| !*alive,
+    );
+    assert!(
+        !still_alive,
+        "daemon (pid {daemon_pid}) must exit at once when orphaned at startup"
+    );
+}
