@@ -817,13 +817,14 @@ mod tests {
     }
 
     fn watch_only() -> SourceLifecycleConfig {
-        SourceLifecycleConfig {
-            strategy_kind: StrategyKind::Watch,
-            poll_interval: None,
-            poll_count: DEFAULT_POLL_COUNT,
-            fsevents_reinstate: false,
-            decay: DEFAULT_DECAY,
-        }
+        SourceLifecycleConfig::from_strategy(
+            &InvalidationStrategy::Watch {
+                patterns: vec![],
+                abs_paths: vec![],
+            },
+            false,
+            DEFAULT_DECAY,
+        )
     }
 
     /// A watch-only Source has no poll of its own and takes 60 s x 12.

@@ -80,6 +80,21 @@ const SOURCE_KNOB_KEYS: &[&str] = &[
     "poll_secs",
 ];
 
+/// Keys that no longer exist. They are a config error everywhere, with a
+/// message that says so, rather than an unknown key (or silently data).
+const REMOVED_KEYS: &[(&str, &str)] = &[(
+    "fsevent_lifespan",
+    "'fsevent_lifespan' was removed: the Active window is poll_interval x poll_count",
+)];
+
+/// The removal message for `key`, if it was removed.
+fn removed_key_message(key: &str) -> Option<&'static str> {
+    REMOVED_KEYS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, m)| *m)
+}
+
 /// Keys that configure a provider rather than carry data about one. A facet
 /// table holds data only, so any of these appearing in one is a config error —
 /// `[providers."git:template"] enabled = false` looks like it disables `git`
@@ -116,7 +131,9 @@ fn validate_facet_table(
 ) {
     let provider = namespace.split(':').next().unwrap_or(namespace);
     for key in table.keys() {
-        if is_facet_settings_key(key) {
+        if let Some(msg) = removed_key_message(key) {
+            errors.push(format!("[providers.\"{namespace}\"]: {msg}."));
+        } else if is_facet_settings_key(key) {
             errors.push(format!(
                 "[providers.\"{namespace}\"] is a facet table and holds data only, \
                  but '{key}' is a settings key. It belongs in [providers.{provider}]."
@@ -452,6 +469,12 @@ impl SourceOverrideConfig {
                     })?;
                     out.failback_interval = Some(s.to_string());
                 }
+                other if removed_key_message(other).is_some() => {
+                    return Err(format!(
+                        "{block_name}: {}.",
+                        removed_key_message(other).unwrap()
+                    ));
+                }
                 other => {
                     return Err(format!(
                         "{block_name}: unknown key '{other}'. Valid per-source keys are: \
@@ -765,6 +788,12 @@ impl ExternalSourceConfig {
                             })?
                             .to_string(),
                     );
+                }
+                other if removed_key_message(other).is_some() => {
+                    return Err(format!(
+                        "{block_name}: {}.",
+                        removed_key_message(other).unwrap()
+                    ));
                 }
                 other => {
                     return Err(format!(
@@ -1356,6 +1385,12 @@ impl Config {
                 || table.get("command").is_some()
                 || table.get("url").is_some()
                 || table.get("library_path").is_some();
+
+            for (key, msg) in REMOVED_KEYS {
+                if table.contains_key(*key) {
+                    errors.push(format!("[providers.{prov_name}]: {msg}."));
+                }
+            }
 
             if !is_external_backend {
                 // For non-external (built-in or declared) providers, reject old flat
