@@ -460,10 +460,10 @@ fn a_template_put_globally_is_visible_to_both_reads() {
 
 // ── a key the daemon rejects is an error, in the daemon's words ──────────────
 
-/// The daemon answers `ok: false` for an invalid facet key or an unknown
-/// provider. The key the user typed being refused is an error in every
-/// format, worded by the daemon — only a ref inside a template naming such a
-/// key is falsy (canon: a missing ref is falsy at any depth).
+/// The daemon answers `ok: false` for an invalid facet key. The key the user
+/// typed being refused is an error in every format, worded by the daemon —
+/// only a ref inside a template naming such a key is falsy (canon: a missing
+/// ref is falsy at any depth).
 #[test]
 fn a_daemon_rejected_key_is_an_error_in_every_format() {
     let d = TestDaemon::spawn();
@@ -478,12 +478,26 @@ fn a_daemon_rejected_key_is_an_error_in_every_format() {
             .stderr(predicates::str::contains("Error querying a:b:c.x: "))
             .stderr(predicates::str::contains("invalid facet key"));
     }
+}
+
+/// An unknown provider is a miss, not a rejected key: silent exit 0 under
+/// `text`, exit 2 under `json`.
+#[test]
+fn an_unknown_provider_is_a_miss() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+
     comb(&d, &cwd)
         .args(["get", "nope.x"])
         .assert()
         .code(0)
         .stdout(predicates::str::is_empty())
         .stderr(predicates::str::is_empty());
+    comb(&d, &cwd)
+        .args(["get", "-f", "json", "nope.x"])
+        .assert()
+        .code(2)
+        .stdout(predicates::str::is_empty());
 }
 
 #[test]

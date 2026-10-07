@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 // ── Step 1.1: Ref discovery returns kinded refs ───────────────────────────────
 
 #[test]
-fn discovers_env_cache_and_resolved_refs() {
+fn discovers_env_comb_and_resolved_refs() {
     let refs = discover_refs(
         r#"{{ env.AWS_REGION or comb.aws_profiles[env.AWS_PROFILE or "default"].region or aws.profile }}"#,
     );
@@ -34,7 +34,7 @@ fn discovers_env_cache_and_resolved_refs() {
 }
 
 #[test]
-fn discovers_cache_field_ref() {
+fn discovers_comb_field_ref() {
     let refs = discover_refs("{{ comb.mise.python or comb.python.venv_version }}");
     assert!(
         refs.contains(&Ref::CombField("mise".into(), "python".into())),
@@ -47,7 +47,7 @@ fn discovers_cache_field_ref() {
 }
 
 #[test]
-fn discovers_cache_provider_without_field() {
+fn discovers_comb_provider_without_field() {
     // "comb.aws_profiles" (two segments only) → CombProvider
     let refs = discover_refs("{{ comb.aws_profiles }}");
     assert!(
@@ -132,7 +132,7 @@ fn resolved_ref_renders_the_template_behind_the_key() {
 /// `comb.P` and `comb.P.F` in one expression bind the same provider: the
 /// whole object stays indexable and the field read through it.
 #[test]
-fn cache_provider_and_cache_field_same_provider_both_visible() {
+fn comb_provider_and_comb_field_same_provider_both_visible() {
     let (d, cwd) = daemon();
     put(
         &d,

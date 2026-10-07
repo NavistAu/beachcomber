@@ -279,7 +279,7 @@ async fn unknown_suffix_is_passed_through_as_field() {
     // "bogus" is not a known metadata suffix, so the server treats the whole key
     // as "hostname:bogus" where ":bogus" is NOT stripped — but protocol::split_key
     // splits on "." not ":", so provider_name becomes "hostname:bogus", which is
-    // an unknown provider. That means we get a miss.
+    // an unknown facet. That is a miss.
     let resp = send_one(&sock, r#"{"op":"get","key":"hostname:bogus"}"#).await;
     assert!(resp.ok, "an unknown facet is a miss");
     assert!(

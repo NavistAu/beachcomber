@@ -1119,25 +1119,6 @@ impl Cache {
         found.then_some(out)
     }
 
-    /// Whether an entry exists for `namespace` anywhere on the chain from
-    /// `path` to the global entry.
-    ///
-    /// An entry existing *is* the answer to "does this namespace hold a
-    /// record?", because every write path prunes an entry the moment its last
-    /// source map goes ([`Cache::remove_source`], [`Cache::write_static`],
-    /// [`Cache::remove_put`]) — there are no empty entries to mistake
-    /// for populated ones.
-    ///
-    /// The cheap half of [`Cache::read_merged`] — no merge, no clone — for the
-    /// one question that does not need the tree: whether a namespace exists at
-    /// all.
-    pub fn has_records_on_chain(&self, namespace: &str, path: Option<&str>) -> bool {
-        crate::query::path_chain(path).iter().any(|layer| {
-            self.entries
-                .contains_key(&make_cache_key(namespace, layer.as_deref()))
-        })
-    }
-
     /// Look up a specific field across all sources for (provider, path).
     /// Returns the field value from whichever source owns it, or `None` if not found.
     ///
