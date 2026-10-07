@@ -1731,16 +1731,18 @@ fn parse_filter(s: &str) -> Result<Predicate, String> {
         },
         "lifecycle" => match v {
             "active" => Ok(Predicate::LifecycleDecay(0)),
-            "decay1" => Ok(Predicate::LifecycleDecay(1)),
-            "decay2" => Ok(Predicate::LifecycleDecay(2)),
-            "decay3" => Ok(Predicate::LifecycleDecay(3)),
-            "decay4" => Ok(Predicate::LifecycleDecay(4)),
             "once" => Ok(Predicate::LifecycleOnce),
             "static" => Ok(Predicate::LifecycleStatic),
             "template" => Ok(Predicate::LifecycleTemplate),
-            other => Err(format!(
-                "lifecycle= must be active|decay1|decay2|decay3|decay4|once|static|template, got {other}"
-            )),
+            other => match other
+                .strip_prefix("decay")
+                .and_then(|n| n.parse::<u8>().ok())
+            {
+                Some(n) if n >= 1 => Ok(Predicate::LifecycleDecay(n)),
+                _ => Err(format!(
+                    "lifecycle= must be active|decay<N>|once|static|template, got {other}"
+                )),
+            },
         },
         "fsevents_reinstate" => match v {
             "true" => Ok(Predicate::FseventsReinstate(true)),

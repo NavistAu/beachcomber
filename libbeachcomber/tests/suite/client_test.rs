@@ -22,7 +22,10 @@ fn client_with_config() {
 #[test]
 fn socket_path_returns_something() {
     let path = libbeachcomber::socket_path();
-    assert!(path.to_string_lossy().contains("beachcomber"));
+    match std::env::var_os("BEACHCOMBER_SOCKET").filter(|v| !v.is_empty()) {
+        Some(isolated) => assert_eq!(path, std::path::PathBuf::from(isolated)),
+        None => assert!(path.to_string_lossy().contains("beachcomber")),
+    }
 }
 
 #[test]

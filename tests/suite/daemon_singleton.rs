@@ -18,7 +18,8 @@ fn resolve_socket_path_falls_back_to_tmp_not_tmpdir() {
     // temp_env restores both vars to their original values via Drop.
     let path = temp_env::with_vars(
         [
-            ("XDG_RUNTIME_DIR", None::<&str>),
+            ("BEACHCOMBER_SOCKET", None::<&str>),
+            ("XDG_RUNTIME_DIR", None),
             ("TMPDIR", Some("/per/shell/tmpdir")),
         ],
         || cfg.resolve_socket_path(),
@@ -42,6 +43,7 @@ fn resolve_socket_path_ignores_session_scoped_env() {
     // restores both vars to their original values via Drop.
     let path = temp_env::with_vars(
         [
+            ("BEACHCOMBER_SOCKET", None::<&str>),
             ("XDG_RUNTIME_DIR", Some("/per/session/runtime")),
             ("TMPDIR", Some("/per/shell/tmpdir")),
         ],

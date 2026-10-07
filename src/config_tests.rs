@@ -259,8 +259,7 @@ fn source_override_absent_returns_none() {
 
 #[test]
 fn socket_path_resolves_xdg_default() {
-    let config = Config::default();
-    let path = config.resolve_socket_path();
+    let path = Config::default_socket_path();
     assert!(
         path.to_string_lossy().contains("beachcomber"),
         "Socket path should include 'beachcomber': {path:?}",

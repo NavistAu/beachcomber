@@ -1834,7 +1834,7 @@ impl Config {
         Self::default_socket_path()
     }
 
-    fn default_socket_path() -> PathBuf {
+    pub(crate) fn default_socket_path() -> PathBuf {
         let uid = unsafe { libc::getuid() };
         PathBuf::from("/tmp")
             .join(format!("beachcomber-{uid}"))
