@@ -851,7 +851,7 @@ impl Client {
         Ok(())
     }
 
-    /// Store data at a key, deep-merging into whatever is already there.
+    /// Store data at a key, replacing whatever is stored at that address.
     /// `key` addresses any node: `namespace` or `namespace.node…`. At the root
     /// `data` must be a JSON object; below it, any JSON.
     pub fn put(
@@ -860,19 +860,6 @@ impl Client {
         data: serde_json::Value,
         ttl: Option<&str>,
         path: Option<&str>,
-    ) -> Result<(), CombError> {
-        self.put_with(key, data, ttl, path, false)
-    }
-
-    /// [`Client::put`], with `replace` to drop the subtree at the addressed
-    /// node instead of merging into it.
-    pub fn put_with(
-        &self,
-        key: &str,
-        data: serde_json::Value,
-        ttl: Option<&str>,
-        path: Option<&str>,
-        replace: bool,
     ) -> Result<(), CombError> {
         let socket_path = self.find_or_start_socket()?;
         let mut stream = self.connect(&socket_path)?;
@@ -887,9 +874,6 @@ impl Client {
         }
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
-        }
-        if replace {
-            request["replace"] = serde_json::json!(true);
         }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
         stream.write_all(msg.as_bytes())?;
@@ -1311,26 +1295,13 @@ impl Session {
         Ok(())
     }
 
-    /// Store data at a key, deep-merging into whatever is already there.
+    /// Store data at a key, replacing whatever is stored at that address.
     pub fn put(
         &mut self,
         key: &str,
         data: serde_json::Value,
         ttl: Option<&str>,
         path: Option<&str>,
-    ) -> Result<(), CombError> {
-        self.put_with(key, data, ttl, path, false)
-    }
-
-    /// [`Session::put`], with `replace` to drop the subtree at the addressed
-    /// node instead of merging into it.
-    pub fn put_with(
-        &mut self,
-        key: &str,
-        data: serde_json::Value,
-        ttl: Option<&str>,
-        path: Option<&str>,
-        replace: bool,
     ) -> Result<(), CombError> {
         let mut request = serde_json::json!({
             "op": "put",
@@ -1342,9 +1313,6 @@ impl Session {
         }
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
-        }
-        if replace {
-            request["replace"] = serde_json::json!(true);
         }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
         self.reader.get_mut().write_all(msg.as_bytes())?;

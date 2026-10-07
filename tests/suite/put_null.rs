@@ -1,4 +1,3 @@
-use crate::common::daemon::isolate;
 use crate::common::fetch::fetch;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
@@ -27,7 +26,7 @@ async fn put_null_clears_entry_but_keeps_provider() {
 
     // 1. Store a value.
     let resp = client
-        .put_with("nulltest", serde_json::json!({"v": 42}), None, None, false)
+        .put("nulltest", serde_json::json!({"v": 42}), None, None)
         .unwrap();
     assert!(resp.ok, "initial put failed: {:?}", resp.error);
 
@@ -54,7 +53,7 @@ async fn put_null_clears_entry_but_keeps_provider() {
 
     // 5. A subsequent put under the same key still works (registry survives).
     let resp = client
-        .put_with("nulltest", serde_json::json!({"v": 99}), None, None, false)
+        .put("nulltest", serde_json::json!({"v": 99}), None, None)
         .unwrap();
     assert!(resp.ok, "second put failed: {:?}", resp.error);
 
@@ -75,12 +74,11 @@ async fn put_null_at_a_node_clears_only_that_subtree() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
 
     let resp = client
-        .put_with(
+        .put(
             "nulltree",
             serde_json::json!({"keep": 1, "drop": {"x": 2}}),
             None,
             None,
-            false,
         )
         .unwrap();
     assert!(resp.ok, "initial put failed: {:?}", resp.error);
@@ -130,33 +128,6 @@ fn put_null_cli_validation_rejects_both() {
     assert!(!should_error, "expected data without --null to be valid");
 }
 
-/// `--replace` names what a write puts in place of the old subtree; `--null`
-/// removes it and puts nothing there. Combining them is an argument error,
-/// caught before any daemon contact — so this runs the real binary with no
-/// daemon around.
-///
-/// `$XDG_CONFIG_HOME` and `$BEACHCOMBER_SOCKET` both point into a temp dir:
-/// `Config::load()` would otherwise read the developer's own
-/// `~/.config/beachcomber`, and the socket path would be the real one.
-#[test]
-fn put_cli_rejects_replace_with_null() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
-    isolate(
-        &mut cmd,
-        tmp.path(),
-        &tmp.path().join("config"),
-        &tmp.path().join("test.sock"),
-    )
-    .args(["put", "myapp", "--null", "--replace"]);
-    assert_cmd::Command::from_std(cmd)
-        .assert()
-        .code(2)
-        .stderr(predicates::str::contains(
-            "cannot combine --null with --replace",
-        ));
-}
-
 /// One raw request line over a fresh connection, the reply parsed.
 fn raw(sock: &std::path::Path, request: &serde_json::Value) -> serde_json::Value {
     use std::io::{BufRead, BufReader, Write};
@@ -175,7 +146,7 @@ fn got(sock: &std::path::Path, key: &str) -> Option<serde_json::Value> {
 async fn put_data_null_removes_the_node() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
     let r = client
-        .put_with("ns", serde_json::json!({"a": 1}), None, None, false)
+        .put("ns", serde_json::json!({"a": 1}), None, None)
         .unwrap();
     assert!(r.ok);
     assert_eq!(got(&sock, "ns.a"), Some(serde_json::json!(1)));
@@ -202,59 +173,61 @@ async fn put_without_data_is_an_invalid_request() {
     handle.abort();
 }
 
+/// A null inside a put's data is absent from what the put states, and the put
+/// replaces the value at its address: nothing earlier merges into it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn nested_null_in_a_merging_put_removes_that_leaf() {
+async fn a_nested_null_is_absent_from_the_replacing_put() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
     client
-        .put_with("ns", serde_json::json!({"a": 1, "b": 2}), None, None, false)
+        .put("ns", serde_json::json!({"a": 1, "b": 2}), None, None)
         .unwrap();
     let r = client
-        .put_with("ns", serde_json::json!({"a": null}), None, None, false)
+        .put("ns", serde_json::json!({"a": null, "c": 3}), None, None)
         .unwrap();
     assert!(r.ok, "{:?}", r.error);
-    assert_eq!(got(&sock, "ns"), Some(serde_json::json!({"b": 2})));
+    assert_eq!(got(&sock, "ns"), Some(serde_json::json!({"c": 3})));
+
     client
-        .put_with(
+        .put(
             "ns",
             serde_json::json!({"arr": [1, 2, 3], "objs": [{"x": 1}]}),
             None,
             None,
-            false,
         )
         .unwrap();
     let r = client
-        .put_with(
+        .put(
             "ns",
             serde_json::json!({"arr": [1, null, 3], "objs": [{"x": null}]}),
             None,
             None,
-            false,
         )
         .unwrap();
     assert!(r.ok, "{:?}", r.error);
     assert_eq!(got(&sock, "ns.arr.1"), None);
     assert_eq!(got(&sock, "ns.objs.0.x"), None);
     assert_eq!(got(&sock, "ns.arr.0"), Some(serde_json::json!(1)));
+    assert_eq!(
+        got(&sock, "ns.c"),
+        None,
+        "the second put replaced the first"
+    );
     handle.abort();
 }
 
+/// `{"o":{"x":null}}` states all of `o`, which is empty: the sibling an earlier
+/// put left at `o.y` goes with the rest of the old `o`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn nested_null_under_replace_is_absent() {
+async fn a_put_whose_only_member_is_null_clears_the_siblings() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
     client
-        .put_with("ns", serde_json::json!({"a": 1, "b": 2}), None, None, false)
+        .put("ns", serde_json::json!({"o": {"y": 1}}), None, None)
         .unwrap();
-    let r = client
-        .put_with(
-            "ns",
-            serde_json::json!({"a": null, "c": 3}),
-            None,
-            None,
-            true,
-        )
+    client
+        .put("ns", serde_json::json!({"o": {"x": null}}), None, None)
         .unwrap();
-    assert!(r.ok, "{:?}", r.error);
-    assert_eq!(got(&sock, "ns"), Some(serde_json::json!({"c": 3})));
+    assert_eq!(got(&sock, "ns.o.y"), None);
+    assert_eq!(got(&sock, "ns.o"), Some(serde_json::json!({})));
     handle.abort();
 }
 
@@ -262,7 +235,7 @@ async fn nested_null_under_replace_is_absent() {
 async fn an_empty_string_is_a_value() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
     let r = client
-        .put_with("ns.a", serde_json::json!(""), None, None, false)
+        .put("ns.a", serde_json::json!(""), None, None)
         .unwrap();
     assert!(r.ok, "{:?}", r.error);
     assert_eq!(got(&sock, "ns.a"), Some(serde_json::json!("")));

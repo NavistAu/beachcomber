@@ -3,7 +3,7 @@
 //! A `put` key is `namespace` or `namespace.node…` — the same dotted address
 //! `get` takes (`docs/canon/field_resolution.md` invariant 12: a query may
 //! address any node of the value tree). Writes deep-merge into whatever is
-//! already there; `--replace` replaces the subtree at the addressed node;
+//! already there, only at the addressed node;
 //! `data: null` removes it. There is no ownership: a put layers over
 //! whatever a Source produced at the same address.
 //!
@@ -161,12 +161,12 @@ fn data_of(resp: Response, context: &str) -> serde_json::Value {
         .unwrap_or_else(|| panic!("{context}: expected data, got a miss"))
 }
 
-// ── (a) default is a deep merge ─────────────────────────────────────────────
+// ── (a) a put replaces at its address ──────────────────────────────────────
 
-/// Two puts at the same namespace merge. Before this change the second put
-/// replaced the whole `put` source map and `a` vanished.
+/// Two puts at the same namespace: the second states the namespace, so `a`
+/// is gone. A put one node down replaces only that node.
 #[tokio::test]
-async fn put_merges_into_the_existing_namespace() {
+async fn a_put_replaces_the_existing_value_at_its_address() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -189,37 +189,19 @@ async fn put_merges_into_the_existing_namespace() {
         send_recv(&mut s, &serde_json::json!({"op":"get","key":"my"})).await,
         "get my",
     );
-    assert_eq!(got, serde_json::json!({"a":1,"b":2}));
+    assert_eq!(got, serde_json::json!({"b":2}));
 
-    handle.abort();
-}
-
-// ── (b) replace at the root ─────────────────────────────────────────────────
-
-#[tokio::test]
-async fn put_replace_drops_the_previous_subtree() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-    let mut s = UnixStream::connect(&sock).await.unwrap();
-
-    send_recv(
-        &mut s,
-        &serde_json::json!({"op":"put","key":"my","data":{"a":1}}),
-    )
-    .await;
     let r = send_recv(
         &mut s,
-        &serde_json::json!({"op":"put","key":"my","data":{"b":2},"replace":true}),
+        &serde_json::json!({"op":"put","key":"my.c","data":3}),
     )
     .await;
-    assert!(r.ok, "replace put: {:?}", r.error);
-
+    assert!(r.ok, "put my.c: {:?}", r.error);
     let got = data_of(
         send_recv(&mut s, &serde_json::json!({"op":"get","key":"my"})).await,
         "get my",
     );
-    assert_eq!(got, serde_json::json!({"b":2}));
+    assert_eq!(got, serde_json::json!({"b":2,"c":3}));
 
     handle.abort();
 }
@@ -438,7 +420,7 @@ async fn put_of_an_empty_object_creates_no_entry() {
         .collect();
     assert!(mine.is_empty(), "no row for `e`, got {mine:?}");
 
-    // The same write with `replace` over an existing entry empties it. The
+    // The same write over an existing entry empties it. The
     // label's map is kept for the fill only when there is something to fill it
     // with, so nothing is left behind and the entry goes with it — the write is
     // `put r --null` by another name.
@@ -448,12 +430,8 @@ async fn put_of_an_empty_object_creates_no_entry() {
     )
     .await;
     assert!(r.ok, "seed put: {:?}", r.error);
-    let r = send_recv(
-        &mut s,
-        &serde_json::json!({"op":"put","key":"r","data":{},"replace":true}),
-    )
-    .await;
-    assert!(r.ok, "empty replace put: {:?}", r.error);
+    let r = send_recv(&mut s, &serde_json::json!({"op":"put","key":"r","data":{}})).await;
+    assert!(r.ok, "empty put: {:?}", r.error);
 
     let r = send_recv(&mut s, &serde_json::json!({"op":"get","key":"r"})).await;
     assert!(r.ok, "get r: {:?}", r.error);
@@ -571,7 +549,7 @@ async fn put_adds_a_static_record_to_a_provider_namespace() {
 
     let r = send_recv(
         &mut s,
-        &serde_json::json!({"op":"put","key":"git","data":{"note":1},"path":p}),
+        &serde_json::json!({"op":"put","key":"git.note","data":1,"path":p}),
     )
     .await;
     assert!(r.ok, "put git.note: {:?}", r.error);
@@ -737,7 +715,7 @@ async fn a_put_under_a_sentinel_source_layers_over_it() {
     // A name the Source has never emitted is accepted too.
     let r = send_recv(
         &mut s,
-        &serde_json::json!({"op":"put","key":"toolset","data":{"note":1}}),
+        &serde_json::json!({"op":"put","key":"toolset.note","data":1}),
     )
     .await;
     assert!(r.ok, "put toolset.note: {:?}", r.error);
@@ -762,16 +740,15 @@ async fn a_put_under_a_sentinel_source_layers_over_it() {
     handle.abort();
 }
 
-/// `--replace` acts on static records only. A Source's records under the node
-/// are not removed, so a root `--replace` on a
-/// warm provider namespace works — and is symmetric with `--null` there.
+/// A put of an object at a provider's root states the whole namespace at that
+/// directory: the Source's unlisted fields are hidden, not removed.
 ///
-/// A counting Source, because a value comparison cannot fail here: were
-/// `--replace` to wipe the `host` map, per-source coldness would re-execute it
-/// on the next `get` and hand back the same string. The run count is what tells
-/// "left alone" from "removed and rebuilt".
+/// A counting Source, because a value comparison cannot show "hidden" from
+/// "removed and rebuilt": were the put to wipe the `host` map, per-source
+/// coldness would re-execute it on the next `get` and bring `name` back. The
+/// run count is what tells the two apart.
 #[tokio::test]
-async fn replace_at_a_provider_root_leaves_the_source_records_alone() {
+async fn a_put_object_at_the_provider_node_hides_unlisted_source_fields() {
     let mut registry = ProviderRegistry::new();
     registry.register(Box::new(CountingProvider)).unwrap();
     let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
@@ -792,35 +769,44 @@ async fn replace_at_a_provider_root_leaves_the_source_records_alone() {
 
     let r = send_recv(
         &mut s,
-        &serde_json::json!({"op":"put","key":"counted","data":{"note":2},"replace":true}),
+        &serde_json::json!({"op":"put","key":"counted","data":{"note":2}}),
     )
     .await;
-    assert!(r.ok, "replace at a warm provider root: {:?}", r.error);
+    assert!(r.ok, "put at a warm provider root: {:?}", r.error);
 
     let all = data_of(
         send_recv(&mut s, &serde_json::json!({"op":"get","key":"counted"})).await,
         "get counted",
     );
-    assert_eq!(all["name"], name, "the source's record survives --replace");
-    assert_eq!(all["note"], serde_json::json!(2));
+    assert_eq!(
+        all,
+        serde_json::json!({"note": 2}),
+        "the put states the namespace"
+    );
     assert_eq!(
         HOST_RUNS.load(Ordering::SeqCst),
         1,
-        "--replace left the source's map in place, so the read found it warm"
+        "the put left the source's map in place, so the read found it warm"
     );
 
-    // A plain put merges over it.
+    // A put of a leaf replaces only that leaf and shows the rest.
     let r = send_recv(
         &mut s,
-        &serde_json::json!({"op":"put","key":"counted","data":{"note":3}}),
+        &serde_json::json!({"op":"put","key":"counted","data":null}),
     )
     .await;
-    assert!(r.ok, "merge put: {:?}", r.error);
+    assert!(r.ok, "remove the put: {:?}", r.error);
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"counted.note","data":3}),
+    )
+    .await;
+    assert!(r.ok, "leaf put: {:?}", r.error);
     let all = data_of(
         send_recv(&mut s, &serde_json::json!({"op":"get","key":"counted"})).await,
         "get counted",
     );
-    assert_eq!(all["name"], name);
+    assert_eq!(all["name"], name, "removing the put shows the Source again");
     assert_eq!(all["note"], serde_json::json!(3));
     assert_eq!(HOST_RUNS.load(Ordering::SeqCst), 1);
 
@@ -858,12 +844,11 @@ async fn put_at_a_node_under_a_facet_namespace() {
 
 // ── (i) status shows the static record ──────────────────────────────────────
 
-/// `Cache::list_rows` emits one row per *top-level* field of each source map,
-/// so a nested `put` shows up as a single row for the top-level object node
-/// (`field == "some"`, value the subtree) rather than one row per leaf. This
-/// pins that shape.
+/// `Cache::list_rows` emits one row per put address: a put at `my.some.value`
+/// is one row whose field is the address (`some.value`) and whose value is
+/// what the put wrote there. This pins that shape.
 #[tokio::test]
-async fn status_shows_a_nested_put_as_one_static_row() {
+async fn status_shows_a_nested_put_as_one_row_at_its_address() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -883,18 +868,18 @@ async fn status_shows_a_nested_put_as_one_static_row() {
     let mine: Vec<&serde_json::Value> = rows.iter().filter(|r| r["provider"] == "my").collect();
     assert_eq!(mine.len(), 1, "exactly one row for `my`, got {mine:?}");
     let row = mine[0];
-    assert_eq!(row["field"], serde_json::json!("some"));
-    assert_eq!(row["value"], serde_json::json!({"value":5}));
+    assert_eq!(row["field"], serde_json::json!("some.value"));
+    assert_eq!(row["value"], serde_json::json!(5));
     assert_eq!(row["source"], serde_json::json!("put"));
     assert_eq!(row["kind"]["kind"], serde_json::json!("static"));
 
     handle.abort();
 }
 
-// ── (j) replace at the root, then merge below it ────────────────────────────
+// ── (j) a put at the root, then a put below it ────────────────────────────
 
 #[tokio::test]
-async fn replace_at_the_root_then_merge_below_it() {
+async fn a_put_below_a_root_put_adds_to_it() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -902,7 +887,7 @@ async fn replace_at_the_root_then_merge_below_it() {
 
     send_recv(
         &mut s,
-        &serde_json::json!({"op":"put","key":"my","data":{"a":1},"replace":true}),
+        &serde_json::json!({"op":"put","key":"my","data":{"a":1}}),
     )
     .await;
     let r = send_recv(

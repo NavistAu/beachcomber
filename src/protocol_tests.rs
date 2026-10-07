@@ -113,27 +113,12 @@ fn parse_put_request() {
             data,
             ttl,
             path,
-            replace,
         } => {
             assert_eq!(key, "myapp");
             assert_eq!(data["status"], "healthy");
             assert_eq!(data["version"], "1.2.3");
             assert!(ttl.is_none());
             assert!(path.is_none());
-            assert!(!replace, "replace defaults to false — a put deep-merges");
-        }
-        _ => panic!("Expected Put request"),
-    }
-}
-
-#[test]
-fn parse_put_request_with_replace() {
-    let json = r#"{"op":"put","key":"myapp","data":{"a":1},"replace":true}"#;
-    let req: Request = serde_json::from_str(json).unwrap();
-    match req {
-        Request::Put { key, replace, .. } => {
-            assert_eq!(key, "myapp");
-            assert!(replace);
         }
         _ => panic!("Expected Put request"),
     }

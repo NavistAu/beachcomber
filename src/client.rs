@@ -252,17 +252,15 @@ impl Client {
         ClientSession::connect(&self.socket_path)
     }
 
-    /// `put`, with `replace` to drop the subtree at the addressed node instead
-    /// of merging into it.
-    pub fn put_with(
+    /// Store `data` at `key`, replacing whatever is stored at that address.
+    pub fn put(
         &self,
         key: &str,
         data: serde_json::Value,
         ttl: Option<&str>,
         path: Option<&str>,
-        replace: bool,
     ) -> std::io::Result<Response> {
-        unit_to_response(self.inner().put_with(key, data, ttl, path, replace))
+        unit_to_response(self.inner().put(key, data, ttl, path))
     }
 
     /// Clear the cached entry for a static-data key without dropping the registry entry.

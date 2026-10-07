@@ -302,8 +302,8 @@ Store static data at any node of the tree. `key` is `namespace` or
 `namespace.node…` — the same dotted address `get` takes, and `namespace` may
 itself be a facet address (`<provider>:<facet>`; invalid facet syntax is
 `invalid facet key: <key>`, the same check `get`/`refresh`/`watch` apply).
-The write deep-merges into whatever is already stored; `replace` drops the
-subtree at the addressed node first; omitting `data` removes it.
+The write replaces whatever a put left at the addressed node; `data: null`
+removes it.
 
 There is no ownership. A put over a record a provider's Source produces is
 accepted and wins at that directory; the Source keeps refreshing its own
@@ -312,8 +312,8 @@ layer beneath it, and removing the put shows that layer at once.
 An object key in `data` may not contain a `.`: it would name one record and
 address another. The node part of `key` is capped at ten segments.
 
-`replace` and omitting `data` act on **static records only** — a `put`
-never removes a record a Source produces.
+A put acts on **static records only** — it never removes a record a Source
+produces.
 
 **Request (set):**
 ```json
@@ -322,8 +322,7 @@ never removes a record a Source produces.
   "key": "myapp",
   "data": {"status": "healthy", "last_deploy": "2026-04-22T10:00:00Z"},
   "ttl": "30s",
-  "path": "/optional/scope",
-  "replace": false
+  "path": "/optional/scope"
 }
 ```
 

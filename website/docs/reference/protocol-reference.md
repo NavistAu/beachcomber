@@ -99,7 +99,7 @@ Response:
 {"op":"introspect","subject":"watches"}
 ```
 
-**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…` — the same dotted address `get` takes — and the write deep-merges into whatever is already stored there. `"replace": true` drops the subtree at the node first, and omitting `data` removes it; both act on static records only, so a `put` never removes a record a provider's Source produces. `data` at a namespace root must be a JSON object; below the root, any JSON. An optional `ttl` duration string (e.g. `"30s"`) marks entries stale if the writer stops updating. An optional `path` scopes the entry to a directory.
+**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…` — the same dotted address `get` takes — and the write replaces whatever a put left at that node; `"data": null` removes it. A `put` never removes a record a provider's Source produces: it layers over it. `data` at a namespace root must be a JSON object; below the root, any JSON. An optional `ttl` duration string (e.g. `"30s"`) marks entries stale if the writer stops updating. An optional `path` scopes the entry to a directory.
 
 ```json
 {"op":"put","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}

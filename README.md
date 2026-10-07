@@ -371,7 +371,7 @@ The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 2. `BEACHCOMBER_SOCKET` environment variable, if set
 3. `/tmp/beachcomber-<uid>/sock` — stable per-user default; no session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell, sandbox, and container of one user reaches the same single daemon
 
-### `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--global] [--replace] [--null]`
+### `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--global] [--null]`
 
 Write static data at any node of the tree. The key is `namespace` or `namespace.node…`, the same dotted address `comb g` takes. External processes can use this to expose state to prompt/statusline consumers without writing a script provider.
 
@@ -381,12 +381,11 @@ comb p myapp.deploy.count 3                                # any node, any JSON 
 comb p myapp '{"status":"healthy"}' --ttl 30s             # with TTL
 comb p myapp '{"status":"building"}' --path ~/project     # a directory instead of the cwd
 comb p myapp '{"status":"ok"}' --global                    # the global entry ($HOME)
-comb p myapp '{"status":"ok"}' --replace                   # drop the subtree first
 comb p myapp --null                                        # clear the entry
 comb p myapp:template.greeting '"hello {{ env.USER }}"'    # a template — comb g myapp.greeting renders it
 ```
 
-A write **deep-merges** into whatever is already stored at that node. `--replace` drops the subtree there first; `--null` removes it and writes nothing. Both act on static records only — a `put` never removes a record a provider's Source produces; it layers over it and wins at that directory. `data` at a namespace root must be a JSON object; below the root, any JSON. `--null` and `--replace` cannot be combined.
+A write **replaces** whatever a put left at that node: `comb p myapp '{"b":2}'` states all of `myapp`, and `comb p myapp.b 2` replaces only `myapp.b`. `--null` removes the node and writes nothing. A `put` never removes a record a provider's Source produces; it layers over it and hides it at that directory until the put is removed. `data` at a namespace root must be a JSON object; below the root, any JSON.
 
 Like `comb g`, a `put` defaults to the current working directory; `--global` addresses `$HOME` instead and cannot be combined with `--path`.
 
@@ -1889,7 +1888,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`refresh`:** Re-execute Sources out-of-band; does not return the new value. The key selects which Sources run, exactly as it selects which a `get` warms: `refresh git` re-executes every Source of `git`, `refresh git.branch` only the Source that owns `branch`. Each runs at the cache entry its own scope keys — the global entry for a `Global` Source whatever path the request carried, the addressed path for a `PathScoped` one — so `path` is optional and is only consulted by the path-scoped ones. A metadata suffix is stripped first: `refresh hostname:age` is `refresh hostname`. A key that names no Source has nothing to re-execute and is an error — a static namespace, a facet key, an unknown name, or a field no Source owns: `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`. Reading configuration afresh is not a refresh; the config watcher does that.
 
-**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write deep-merges into whatever is already stored there. `"replace": true` drops the subtree at the node first; omitting `data` removes it. Both act on static records only — a `put` never removes a record a provider's Source produces. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success.
+**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write replaces whatever a put left at that node; `"data": null` removes it. Both act on static records only — a `put` never removes a record a provider's Source produces. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success.
 
 ```json
 {"op":"put","key":"myapp","data":{"status":"healthy"}}

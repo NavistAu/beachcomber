@@ -168,9 +168,6 @@ enum Commands {
         /// Remove the node's static records, dropping the entry when none remain; provider records are untouched
         #[arg(long)]
         null: bool,
-        /// Replace the subtree at the node instead of merging into it
-        #[arg(long)]
-        replace: bool,
         /// Expected refresh interval (e.g., "30s", "5m")
         #[arg(long)]
         ttl: Option<String>,
@@ -409,7 +406,6 @@ fn main() -> ExitCode {
             key,
             data,
             null,
-            replace,
             ttl,
             path: PathArgs { path, global },
         } => {
@@ -422,7 +418,6 @@ fn main() -> ExitCode {
                 &key,
                 data.as_deref(),
                 null,
-                replace,
                 ttl.as_deref(),
                 effective_path.as_deref(),
             )

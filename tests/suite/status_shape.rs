@@ -1206,13 +1206,7 @@ async fn status_response_put_row_has_kind_static() {
 
     // Store a static entry via put.
     let _ = client
-        .put_with(
-            "custom",
-            serde_json::json!({"color": "blue"}),
-            None,
-            None,
-            false,
-        )
+        .put("custom", serde_json::json!({"color": "blue"}), None, None)
         .expect("put custom");
 
     // `put` writes the cache entry and registers the static namespace before it
@@ -1236,6 +1230,36 @@ async fn status_response_put_row_has_kind_static() {
         matches!(row.kind, Some(RowKind::Static)),
         "expected RowKind::Static for put entry, got {:?}",
         row.kind
+    );
+
+    handle.abort();
+}
+
+/// Status lists one put row per address, each with the address as its field.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_lists_one_put_row_per_address() {
+    let (_tmp, _sock, client, handle) = setup_daemon().await;
+
+    for (key, v) in [("fleet.a", 1), ("fleet.b", 2), ("fleet.c.d", 3)] {
+        client
+            .put(key, serde_json::json!(v), None, None)
+            .expect("put");
+    }
+
+    let rows = client.status().expect("status");
+    let mut fields: Vec<(String, serde_json::Value)> = rows
+        .iter()
+        .filter(|r| r.provider == "fleet")
+        .map(|r| (r.field.clone(), r.value.clone()))
+        .collect();
+    fields.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        fields,
+        [
+            ("a".to_string(), serde_json::json!(1)),
+            ("b".to_string(), serde_json::json!(2)),
+            ("c.d".to_string(), serde_json::json!(3))
+        ]
     );
 
     handle.abort();

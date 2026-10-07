@@ -11,17 +11,12 @@ pub fn run_put(
     key: &str,
     data_str: Option<&str>,
     null: bool,
-    replace: bool,
     ttl: Option<&str>,
     path: Option<&str>,
 ) -> ExitCode {
     // Validate argument combinations.
     if null && data_str.is_some() {
         eprintln!("cannot combine --null with a data argument");
-        return ExitCode::from(2);
-    }
-    if null && replace {
-        eprintln!("cannot combine --null with --replace");
         return ExitCode::from(2);
     }
     if !null && data_str.is_none() {
@@ -67,7 +62,7 @@ pub fn run_put(
         // Whether this JSON is legal here depends on the node the key
         // addresses — an object at the root, anything below it — which only the
         // daemon knows. It reports the mismatch.
-        match client.put_with(key, data, ttl, path, replace) {
+        match client.put(key, data, ttl, path) {
             Ok(response) => {
                 if response.ok {
                     ExitCode::SUCCESS

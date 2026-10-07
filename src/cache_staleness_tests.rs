@@ -199,3 +199,24 @@ async fn cache_entry_without_ttl_never_stale() {
         "entry with no TTL must never be stale regardless of elapsed time"
     );
 }
+
+/// Each put address carries its own stamp: writing `ns.b` does not reset the
+/// age of `ns.a`.
+#[tokio::test(start_paused = true)]
+async fn put_addresses_keep_their_own_age() {
+    use crate::cache::PUT_SOURCE;
+    let cache = Cache::new();
+    let registry = crate::provider::registry::ProviderRegistry::new();
+    let put = |node: &str, v: i64| {
+        cache
+            .write_static("ns", None, PUT_SOURCE, node, Value::Int(v), None)
+            .unwrap();
+    };
+    put("a", 1);
+    tokio::time::advance(std::time::Duration::from_secs(5)).await;
+    put("b", 2);
+
+    let read = cache.read_merged("ns", None, None, &registry).unwrap();
+    assert_eq!(read.records["a"].age_ms(), 5000);
+    assert_eq!(read.records["b"].age_ms(), 0);
+}

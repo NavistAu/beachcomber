@@ -32,10 +32,6 @@ pub enum Request {
         ttl: Option<String>,
         #[serde(default)]
         path: Option<String>,
-        /// Replace the subtree at the addressed node instead of merging into
-        /// it. Default false: a put deep-merges.
-        #[serde(default)]
-        replace: bool,
     },
     Watch {
         key: String,

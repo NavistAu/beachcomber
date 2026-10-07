@@ -671,7 +671,6 @@ fn removing_a_put_template_shows_the_seeded_one() {
             "put",
             "version",
             CacheValue::String("mine".into()),
-            false,
             None,
         )
         .unwrap();
@@ -681,7 +680,7 @@ fn removing_a_put_template_shows_the_seeded_one() {
             .and_then(|r| r.fields.get("version").cloned())
     };
     assert_eq!(version(), Some(CacheValue::String("mine".into())));
-    cache.remove_static_path("p:template", None, "version");
+    cache.remove_put("p:template", None, "version");
     assert_eq!(version(), Some(CacheValue::String("seeded".into())));
 }
 
@@ -698,7 +697,6 @@ fn a_reseed_keeps_a_put_template_on_top() {
             "put",
             "version",
             CacheValue::String("mine".into()),
-            false,
             None,
         )
         .unwrap();
@@ -725,7 +723,7 @@ fn a_reseed_keeps_a_put_template_on_top() {
         Some(&CacheValue::String("t".into()))
     );
     // The seed is stored beneath the put, not skipped.
-    cache.remove_static_path("p:template", None, "version");
+    cache.remove_put("p:template", None, "version");
     let read = cache
         .read_merged("p:template", None, None, &registry)
         .unwrap();

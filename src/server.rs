@@ -1165,7 +1165,6 @@ async fn handle_request(
             data,
             ttl,
             path,
-            replace,
         } => {
             // A put key addresses a node: `namespace` or `namespace.node…`.
             let (namespace, node) = protocol::split_key(key);
@@ -1198,7 +1197,7 @@ async fn handle_request(
             // `data: null` means "clear the addressed node" — the row goes, the
             // registry entry stays.
             if data.is_null() {
-                cache.remove_static_path(namespace, effective_path.as_deref(), node);
+                cache.remove_put(namespace, effective_path.as_deref(), node);
                 return Response {
                     ok: true,
                     data: None,
@@ -1208,22 +1207,6 @@ async fn handle_request(
                     template: None,
                     rest: None,
                 };
-            }
-
-            // A merging put removes the leaf of every null member, at its own
-            // address, before the write. Under `--replace` a null member is
-            // simply absent from the replacement.
-            if !*replace {
-                let mut tails = Vec::new();
-                null_member_tails(data, "", &mut tails);
-                for tail in tails {
-                    let at = if node.is_empty() {
-                        tail
-                    } else {
-                        format!("{node}.{tail}")
-                    };
-                    cache.remove_static_path(namespace, effective_path.as_deref(), &at);
-                }
             }
 
             // `MAX_JSON_DEPTH` is counted from the record, not from the
@@ -1257,7 +1240,6 @@ async fn handle_request(
                 crate::cache::PUT_SOURCE,
                 node,
                 value,
-                *replace,
                 interval_secs,
             ) {
                 return Response::error(e.to_string());
@@ -1908,31 +1890,6 @@ fn handle_introspect_procs(duration_secs: Option<u64>) -> Response {
     }
 }
 
-/// The dotted address, relative to `value`, of every null object member or
-/// array element in it (array elements are addressed by index).
-fn null_member_tails(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
-    let mut visit = |k: String, v: &serde_json::Value| {
-        let at = if prefix.is_empty() {
-            k
-        } else {
-            format!("{prefix}.{k}")
-        };
-        if v.is_null() {
-            out.push(at);
-        } else {
-            null_member_tails(v, &at, out);
-        }
-    };
-    match value {
-        serde_json::Value::Object(map) => map.iter().for_each(|(k, v)| visit(k.clone(), v)),
-        serde_json::Value::Array(items) => items
-            .iter()
-            .enumerate()
-            .for_each(|(i, v)| visit(i.to_string(), v)),
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1975,15 +1932,7 @@ mod tests {
         let registry = ProviderRegistry::new();
         // `put` carrying `--ttl 1s`, and a config seed with a long one.
         cache
-            .write_static(
-                "p",
-                None,
-                "put",
-                "",
-                Value::Object([("x".to_string(), Value::Int(1))].into_iter().collect()),
-                false,
-                Some(1),
-            )
+            .write_static("p", None, "put", "x", Value::Int(1), Some(1))
             .expect("put accepted");
         tokio::time::advance(std::time::Duration::from_secs(5)).await;
         cache
@@ -1993,7 +1942,6 @@ mod tests {
                 "config:t.toml",
                 "",
                 Value::Object([("y".to_string(), Value::Int(2))].into_iter().collect()),
-                false,
                 Some(100),
             )
             .expect("put accepted");
@@ -2040,22 +1988,13 @@ mod tests {
                 "put",
                 "tree",
                 Value::Object(HashMap::new()),
-                false,
                 None,
             )
             .expect("put accepted");
         tokio::time::advance(std::time::Duration::from_secs(9)).await;
         // The near layer: a directory below it, filling that node in.
         cache
-            .write_static(
-                "p",
-                Some("/x/y"),
-                "put",
-                "tree.left",
-                Value::Int(1),
-                false,
-                None,
-            )
+            .write_static("p", Some("/x/y"), "put", "tree.left", Value::Int(1), None)
             .expect("put accepted");
 
         let read = cache

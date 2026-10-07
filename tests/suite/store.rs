@@ -86,11 +86,10 @@ async fn a_put_over_a_source_field_is_accepted_and_wins() {
     handle.abort();
 }
 
-/// A second `put` merges into the first instead of replacing it. `--replace`
-/// (`"replace":true` on the wire) is how the old replace-everything behaviour
-/// is asked for now.
+/// A second `put` replaces the first at its address: nothing merges
+/// implicitly, so a record the second put does not name is gone.
 #[tokio::test]
-async fn store_merges_into_previous_data() {
+async fn a_second_put_replaces_the_first() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -108,17 +107,21 @@ async fn store_merges_into_previous_data() {
     let get = r#"{"op":"get","key":"myapp"}"#;
     let resp = send_recv(&mut stream, get).await;
     assert!(resp.ok);
-    let data = resp.data.unwrap();
-    assert_eq!(data["status"], "ready", "the second put wins per record");
-    assert_eq!(data["version"], "2.0");
-    assert_eq!(data["old_field"], "yes", "untouched records survive");
+    assert_eq!(
+        resp.data.unwrap(),
+        serde_json::json!({"status": "ready", "version": "2.0"}),
+        "the second put states the whole namespace"
+    );
 
-    // The same write with replace:true drops everything under the root first.
-    let v3 = r#"{"op":"put","key":"myapp","data":{"status":"done"},"replace":true}"#;
+    // A put one node down replaces only that node.
+    let v3 = r#"{"op":"put","key":"myapp.status","data":"done"}"#;
     let r = send_recv(&mut stream, v3).await;
     assert!(r.ok);
     let resp = send_recv(&mut stream, get).await;
-    assert_eq!(resp.data.unwrap(), serde_json::json!({"status": "done"}));
+    assert_eq!(
+        resp.data.unwrap(),
+        serde_json::json!({"status": "done", "version": "2.0"})
+    );
 
     handle.abort();
 }

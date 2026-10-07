@@ -68,12 +68,11 @@ async fn client_get_carries_the_template_half() {
     let (_tmp, sock) = setup_server().await;
     let client = Client::new(sock.clone());
     let resp = client
-        .put_with(
+        .put(
             "tpl:template",
             serde_json::json!({"t": "{{ 1 }}"}),
             None,
             None,
-            false,
         )
         .unwrap();
     assert!(resp.ok, "{:?}", resp.error);
@@ -110,13 +109,7 @@ async fn client_put_and_get() {
     let client = beachcomber::client::Client::new(sock.clone());
 
     let resp = client
-        .put_with(
-            "testapp",
-            serde_json::json!({"status": "ok"}),
-            None,
-            None,
-            false,
-        )
+        .put("testapp", serde_json::json!({"status": "ok"}), None, None)
         .unwrap();
     assert!(resp.ok);
 

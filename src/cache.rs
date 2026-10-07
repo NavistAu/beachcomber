@@ -2,7 +2,7 @@ use crate::provider::Value;
 use crate::provider::registry::ProviderRegistry;
 use crate::watcher_registry::WatcherRegistry;
 use dashmap::DashMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::time::Instant;
 
@@ -123,11 +123,33 @@ pub struct MergedRead {
     pub records: HashMap<String, RecordFreshness>,
 }
 
+/// When one put address was written, and its `--ttl`, if any.
+#[derive(Debug, Clone)]
+pub struct PutStamp {
+    pub written: Instant,
+    pub interval_secs: Option<u64>,
+}
+
+impl PutStamp {
+    pub fn age_ms(&self) -> u128 {
+        self.written.elapsed().as_millis()
+    }
+
+    pub fn is_stale(&self) -> bool {
+        self.interval_secs
+            .is_some_and(|interval| self.written.elapsed().as_secs() > interval)
+    }
+}
+
 /// A complete cache entry for a (provider, path) key. Holds one `CacheSourceEntry`
 /// per named source. Sources are disjoint by field name — validated at registration time.
 #[derive(Debug, Clone)]
 pub struct CacheEntry {
     pub sources: HashMap<String, CacheSourceEntry>,
+    /// One stamp per address a `put` wrote at (`""` for the namespace root).
+    /// The `put` map in `sources` holds the values; this holds when each
+    /// address was written and how long it is valid for.
+    pub puts: BTreeMap<String, PutStamp>,
     pub created_at: Instant,
 }
 
@@ -158,6 +180,22 @@ impl CacheEntry {
             .iter()
             .find(|(_, src)| occupies(&src.fields, tail))
             .map(|(name, _)| name.as_str())
+    }
+
+    /// The stamp governing the record at `tail`: the put address at or above
+    /// it, nearest first.
+    fn put_stamp_for(&self, tail: &str) -> Option<&PutStamp> {
+        let mut at = tail;
+        loop {
+            if let Some(stamp) = self.puts.get(at) {
+                return Some(stamp);
+            }
+            at = match at.rfind('.') {
+                Some(i) => &at[..i],
+                None if at.is_empty() => return None,
+                None => "",
+            };
+        }
     }
 
     /// Returns the `Instant` of the source that was refreshed least recently,
@@ -249,9 +287,10 @@ fn dotted_key(value: &Value) -> Option<&str> {
 
 /// Drop the subtree at `node` (`""` for everything) from the `put` map,
 /// pruning it if it empties, unless it is `keep` — the label a write is about
-/// to land in. Every other layer — Source maps and `config:` seeds — is left
-/// alone, so the layer below a removed put shows through at once. Returns
-/// whether anything was removed.
+/// to land in. Every put address at or below `node` goes with it, and so does
+/// any address the removal left holding nothing. Every other layer — Source
+/// maps and `config:` seeds — is left alone, so the layer below a removed put
+/// shows through at once. Returns whether anything was removed.
 fn drop_put_subtree(entry: &mut CacheEntry, node: &str, keep: Option<&str>) -> bool {
     let mut removed = false;
     entry.sources.retain(|name, src| {
@@ -265,6 +304,20 @@ fn drop_put_subtree(entry: &mut CacheEntry, node: &str, keep: Option<&str>) -> b
             removed |= crate::provider::remove_path(&mut src.fields, node).is_some();
         }
         !src.fields.is_empty() || keep == Some(name.as_str())
+    });
+    let below = format!("{node}.");
+    entry
+        .puts
+        .retain(|addr, _| !(node.is_empty() || addr == node || addr.starts_with(&below)));
+    let held = entry.sources.get(PUT_SOURCE).map(|src| &src.fields);
+    entry.puts.retain(|addr, _| {
+        held.is_some_and(|fields| {
+            if addr.is_empty() {
+                !fields.is_empty()
+            } else {
+                crate::provider::lookup_path(fields, addr).is_some()
+            }
+        })
     });
     removed
 }
@@ -287,15 +340,17 @@ fn apply_static_write(
     label: &str,
     node: &str,
     leaves: Vec<(String, Value)>,
-    replace: bool,
     interval_secs: Option<u64>,
     now: Instant,
 ) {
-    if replace {
-        // The label's map is kept only when there is something to fill it with;
-        // otherwise it would survive the drop and never be written, leaving a
-        // phantom empty static map (and, at the root, an entry the caller's
-        // emptiness check would no longer remove).
+    let is_put = label == PUT_SOURCE;
+    if is_put {
+        // A put states the value at its own address: whatever the put map held
+        // there, and every address below it, goes first. The label's map is
+        // kept only when there is something to fill it with; otherwise it
+        // would survive the drop and never be written, leaving a phantom empty
+        // static map (and, at the root, an entry the caller's emptiness check
+        // would no longer remove).
         drop_put_subtree(entry, node, (!leaves.is_empty()).then_some(label));
     }
 
@@ -336,6 +391,26 @@ fn apply_static_write(
             last_refreshed: now,
             expected_interval_secs: interval_secs,
         });
+    if is_put {
+        // A scalar standing on the way to `node` is about to become an object:
+        // the address that stamped it no longer states that value.
+        let mut at = node;
+        while let Some(i) = at.rfind('.') {
+            at = &at[..i];
+            if crate::provider::lookup_path(&src.fields, at)
+                .is_some_and(|v| !matches!(v, Value::Object(_)))
+            {
+                entry.puts.remove(at);
+            }
+        }
+        entry.puts.insert(
+            node.to_string(),
+            PutStamp {
+                written: now,
+                interval_secs,
+            },
+        );
+    }
     for (tail, v) in leaves {
         crate::provider::insert_path(&mut src.fields, &tail, v);
     }
@@ -407,6 +482,59 @@ fn merge_layer(
     }
 }
 
+/// Merge one layer's finished read into the chain's: the same per-leaf rules
+/// as [`merge_layer`], but each record keeps the freshness the layer gave it.
+fn merge_read(
+    fields: &mut HashMap<String, Value>,
+    records: &mut HashMap<String, RecordFreshness>,
+    overlay: &HashMap<String, Value>,
+    overlay_records: &HashMap<String, RecordFreshness>,
+    prefix: &str,
+) {
+    for (k, v) in overlay {
+        let tail = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{prefix}.{k}")
+        };
+        match (fields.get_mut(k), v) {
+            (Some(Value::Object(existing)), Value::Object(incoming)) => {
+                if !incoming.is_empty() {
+                    records.remove(&tail);
+                }
+                merge_read(existing, records, incoming, overlay_records, &tail);
+            }
+            (_, v) => {
+                if fields.insert(k.clone(), v.clone()).is_some() {
+                    forget_records(records, &tail);
+                }
+                copy_records(records, overlay_records, &tail, v);
+            }
+        }
+    }
+}
+
+/// Copy the freshness of every leaf of `value`, which sits at `tail`.
+fn copy_records(
+    records: &mut HashMap<String, RecordFreshness>,
+    from: &HashMap<String, RecordFreshness>,
+    tail: &str,
+    value: &Value,
+) {
+    match value {
+        Value::Object(map) if !map.is_empty() => {
+            for (k, v) in map {
+                copy_records(records, from, &format!("{tail}.{k}"), v);
+            }
+        }
+        _ => {
+            if let Some(fresh) = from.get(tail) {
+                records.insert(tail.to_string(), fresh.clone());
+            }
+        }
+    }
+}
+
 /// Record the freshness of every leaf of `value`, which sits at `tail`. A leaf
 /// is any non-object plus an empty object, mirroring [`walk_leaves`] — that is
 /// what a record is.
@@ -424,6 +552,36 @@ fn note_records(
         }
         _ => {
             records.insert(tail.to_string(), fresh.clone());
+        }
+    }
+}
+
+/// Record the freshness of every leaf of a put value at `tail`, from the put
+/// address that governs it. A leaf no stamp covers keeps the map's own.
+fn note_put_records(
+    entry: &CacheEntry,
+    label: &Arc<str>,
+    records: &mut HashMap<String, RecordFreshness>,
+    tail: &str,
+    value: &Value,
+) {
+    match value {
+        Value::Object(map) if !map.is_empty() => {
+            for (k, v) in map {
+                note_put_records(entry, label, records, &format!("{tail}.{k}"), v);
+            }
+        }
+        _ => {
+            if let Some(stamp) = entry.put_stamp_for(tail) {
+                records.insert(
+                    tail.to_string(),
+                    RecordFreshness {
+                        source: label.clone(),
+                        last_refreshed: stamp.written,
+                        expected_interval_secs: stamp.interval_secs,
+                    },
+                );
+            }
         }
     }
 }
@@ -484,6 +642,7 @@ impl Cache {
                     m.insert(source_name.to_string(), src);
                     m
                 },
+                puts: BTreeMap::new(),
                 created_at: Instant::now(),
             });
         if let Some(ref watchers) = self.watchers {
@@ -494,9 +653,10 @@ impl Cache {
     /// Write static data at `node`, the dotted tail below `namespace` (`""` for
     /// the namespace root), under the static source label `label`.
     ///
-    /// Every leaf of `value` becomes one record. Records deep-merge into
-    /// whatever is already stored; `replace` first drops the whole subtree at
-    /// `node` from the `put` map — nothing else is removed by a `put`.
+    /// Every leaf of `value` becomes one record. A `put` states the value at
+    /// `node`: the subtree there (and every put address below it) is dropped
+    /// from the `put` map first, so nothing merges implicitly — nothing else
+    /// is removed. A `config:` label adds its leaves to its own map.
     ///
     /// There is no ownership: every supplier writes a layer of its own and a
     /// read stacks them (source, then `config:` seeds, then `put`). Among
@@ -509,7 +669,6 @@ impl Cache {
         label: &str,
         node: &str,
         value: Value,
-        replace: bool,
         interval_secs: Option<u64>,
     ) -> Result<(), PutError> {
         if node.is_empty() && !matches!(value, Value::Object(_)) {
@@ -527,15 +686,7 @@ impl Cache {
 
         match self.entries.entry(key) {
             dashmap::Entry::Occupied(mut occupied) => {
-                apply_static_write(
-                    occupied.get_mut(),
-                    label,
-                    node,
-                    leaves,
-                    replace,
-                    interval_secs,
-                    now,
-                );
+                apply_static_write(occupied.get_mut(), label, node, leaves, interval_secs, now);
                 if occupied.get().sources.is_empty() {
                     occupied.remove();
                 }
@@ -549,9 +700,10 @@ impl Cache {
                 }
                 let mut fresh = CacheEntry {
                     sources: HashMap::new(),
+                    puts: BTreeMap::new(),
                     created_at: now,
                 };
-                apply_static_write(&mut fresh, label, node, leaves, replace, interval_secs, now);
+                apply_static_write(&mut fresh, label, node, leaves, interval_secs, now);
                 vacant.insert(fresh);
             }
         }
@@ -568,7 +720,7 @@ impl Cache {
     /// map remains.
     ///
     /// Returns whether anything was removed.
-    pub fn remove_static_path(&self, namespace: &str, path: Option<&str>, node: &str) -> bool {
+    pub fn remove_put(&self, namespace: &str, path: Option<&str>, node: &str) -> bool {
         let key = make_cache_key(namespace, path);
 
         let mut removed = false;
@@ -655,7 +807,7 @@ impl Cache {
                 changed |= drop_labelled(entry, drop_label_prefix);
                 for (label, leaves) in planned {
                     changed |= !leaves.is_empty();
-                    apply_static_write(entry, &label, "", leaves, false, None, now);
+                    apply_static_write(entry, &label, "", leaves, None, now);
                 }
                 if occupied.get().sources.is_empty() {
                     occupied.remove();
@@ -664,11 +816,12 @@ impl Cache {
             dashmap::Entry::Vacant(vacant) => {
                 let mut fresh = CacheEntry {
                     sources: HashMap::new(),
+                    puts: BTreeMap::new(),
                     created_at: now,
                 };
                 for (label, leaves) in planned {
                     changed |= !leaves.is_empty();
-                    apply_static_write(&mut fresh, &label, "", leaves, false, None, now);
+                    apply_static_write(&mut fresh, &label, "", leaves, None, now);
                 }
                 if !fresh.sources.is_empty() {
                     vacant.insert(fresh);
@@ -692,8 +845,45 @@ impl Cache {
     /// provider maps, not after all of them.
     fn merge_static_records(entry: &CacheEntry, out: &mut MergedRead) -> bool {
         let seeds = Self::merge_named(entry, out, |name| name.starts_with(CONFIG_SOURCE_PREFIX));
-        let puts = Self::merge_named(entry, out, |name| name == PUT_SOURCE);
+        let puts = Self::merge_puts(entry, out);
         seeds | puts
+    }
+
+    /// Stack the `put` map on top of everything merged so far. Every put
+    /// address first cuts the tree below it, in ascending address order, so a
+    /// put replaces the node it was written at instead of merging into it;
+    /// then the map lands, each record carrying the freshness of the nearest
+    /// stamp at or above it.
+    fn merge_puts(entry: &CacheEntry, out: &mut MergedRead) -> bool {
+        let Some(src) = entry.sources.get(PUT_SOURCE) else {
+            return false;
+        };
+        for addr in entry.puts.keys() {
+            if addr.is_empty() {
+                out.fields.clear();
+                out.records.clear();
+            } else {
+                crate::provider::remove_path(&mut out.fields, addr);
+                forget_records(&mut out.records, addr);
+            }
+        }
+        let label: Arc<str> = Arc::from(PUT_SOURCE);
+        let fallback = RecordFreshness {
+            source: label.clone(),
+            last_refreshed: src.last_refreshed,
+            expected_interval_secs: src.expected_interval_secs,
+        };
+        merge_layer(
+            &mut out.fields,
+            &mut out.records,
+            &src.fields,
+            &fallback,
+            "",
+        );
+        for (k, v) in &src.fields {
+            note_put_records(entry, &label, &mut out.records, k, v);
+        }
+        true
     }
 
     /// Merge the provider-produced maps of `entry` whose Source the registry
@@ -807,16 +997,39 @@ impl Cache {
             else {
                 continue;
             };
+            // A put replaces the node it was written at, but only among this
+            // layer's own lower maps: the directory chain keeps its per-leaf
+            // merge. So a layer holding put addresses is read on its own, cut,
+            // and then merged into what the farther layers gave.
+            let mut local = MergedRead {
+                fields: HashMap::new(),
+                records: HashMap::new(),
+            };
+            let target = if entry.puts.is_empty() {
+                &mut out
+            } else {
+                &mut local
+            };
+            let mut hit = false;
             // At the global link both arms run, PathScoped first.
             if layer.as_deref() == provider_entry {
-                found |=
-                    Self::merge_provider_records(&entry, namespace, PathScoped, registry, &mut out);
+                hit |=
+                    Self::merge_provider_records(&entry, namespace, PathScoped, registry, target);
             }
             if layer.is_none() {
-                found |=
-                    Self::merge_provider_records(&entry, namespace, Global, registry, &mut out);
+                hit |= Self::merge_provider_records(&entry, namespace, Global, registry, target);
             }
-            found |= Self::merge_static_records(&entry, &mut out);
+            hit |= Self::merge_static_records(&entry, target);
+            if hit && !entry.puts.is_empty() {
+                merge_read(
+                    &mut out.fields,
+                    &mut out.records,
+                    &local.fields,
+                    &local.records,
+                    "",
+                );
+            }
+            found |= hit;
         }
 
         found.then_some(out)
@@ -828,7 +1041,7 @@ impl Cache {
     /// An entry existing *is* the answer to "does this namespace hold a
     /// record?", because every write path prunes an entry the moment its last
     /// source map goes ([`Cache::remove_source`], [`Cache::write_static`],
-    /// [`Cache::remove_static_path`]) — there are no empty entries to mistake
+    /// [`Cache::remove_put`]) — there are no empty entries to mistake
     /// for populated ones.
     ///
     /// The cheap half of [`Cache::read_merged`] — no merge, no clone — for the
@@ -970,6 +1183,40 @@ impl Cache {
             };
             let ce = entry.value();
             for (source_name, src) in &ce.sources {
+                // The `put` map has one row per address, aged by that
+                // address's own stamp. The root address lists its top-level
+                // keys, one row each, as every namespace's records are.
+                if source_name == PUT_SOURCE {
+                    for (addr, stamp) in &ce.puts {
+                        let rows: Vec<(String, &Value)> = if addr.is_empty() {
+                            src.fields.iter().map(|(k, v)| (k.clone(), v)).collect()
+                        } else {
+                            crate::provider::lookup_path(&src.fields, addr)
+                                .map(|v| (addr.clone(), v))
+                                .into_iter()
+                                .collect()
+                        };
+                        for (field, v) in rows {
+                            out.push(CacheRow {
+                                provider: provider.clone(),
+                                path: path.clone(),
+                                source: source_name.clone(),
+                                field,
+                                value: serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+                                age_ms: stamp.age_ms(),
+                                stale: stamp.is_stale(),
+                                kind: Some(RowKind::Static),
+                                poll_interval_secs: None,
+                                keep_alive_polls: None,
+                                fsevents_reinstate: None,
+                                polls_elapsed: None,
+                                next_poll_in_secs: None,
+                                failure: None,
+                            });
+                        }
+                    }
+                    continue;
+                }
                 let age = src.age_ms();
                 let stale = src.is_stale();
                 // A row whose source is the synthetic `put` label or a
@@ -1359,7 +1606,6 @@ mod tests {
                 PUT_SOURCE,
                 "note",
                 Value::Int(1),
-                false,
                 None,
             )
             .expect("note is declared by no source");
@@ -1398,7 +1644,6 @@ mod tests {
                 PUT_SOURCE,
                 "branch",
                 Value::String("pinned".into()),
-                false,
                 None,
             )
             .expect("a put over a Source field is accepted");
@@ -1448,11 +1693,10 @@ mod tests {
                 PUT_SOURCE,
                 "branch",
                 Value::String("pinned".into()),
-                false,
                 None,
             )
             .unwrap();
-        assert!(cache.remove_static_path("git", Some("/repo"), "branch"));
+        assert!(cache.remove_put("git", Some("/repo"), "branch"));
 
         let read = cache
             .read_merged("git", Some("/repo"), Some("/repo"), &registry)
@@ -1463,6 +1707,154 @@ mod tests {
         );
     }
 
+    /// A directory-layer fixture: a `git` Source map `head` holding
+    /// `tools: {node: 18, go: 1}` at `/repo`, the shape a put replaces into.
+    fn cache_with_tools() -> Cache {
+        let cache = Cache::new();
+        let mut fields = HashMap::new();
+        crate::provider::insert_path(&mut fields, "tools.node", Value::Int(18));
+        crate::provider::insert_path(&mut fields, "tools.go", Value::Int(1));
+        cache.put_source("git", Some("/repo"), "head", fields, None);
+        cache
+    }
+
+    fn put(cache: &Cache, node: &str, value: Value) {
+        cache
+            .write_static("git", Some("/repo"), PUT_SOURCE, node, value, None)
+            .expect("put accepted");
+    }
+
+    fn read_tools(cache: &Cache) -> MergedRead {
+        let registry = crate::provider::registry::ProviderRegistry::with_defaults();
+        cache
+            .read_merged("git", Some("/repo"), Some("/repo"), &registry)
+            .expect("a layer holds records")
+    }
+
+    fn tools(entries: &[(&str, Value)]) -> Value {
+        Value::Object(
+            entries
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    /// A put at a leaf replaces that leaf; a put of an object at the node
+    /// replaces the whole node, hiding the Source's other members.
+    #[test]
+    fn a_put_at_a_node_replaces_the_sources_node() {
+        let cache = cache_with_tools();
+        put(&cache, "tools.node", Value::Int(20));
+        assert_eq!(
+            read_tools(&cache).fields["tools"],
+            tools(&[("node", Value::Int(20)), ("go", Value::Int(1))]),
+            "a leaf put replaces that leaf only"
+        );
+
+        put(
+            &cache,
+            "tools",
+            tools(&[("node", Value::String("20".into()))]),
+        );
+        let read = read_tools(&cache);
+        assert_eq!(
+            read.fields["tools"],
+            tools(&[("node", Value::String("20".into()))]),
+            "an object put replaces the node: the Source's `go` is hidden"
+        );
+        assert!(!read.records.contains_key("tools.go"));
+    }
+
+    /// A root put states the whole namespace at its directory.
+    #[test]
+    fn a_root_put_replaces_the_namespace_at_its_directory() {
+        let cache = cache_with_tools();
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "refs",
+            make_fields(&[("branch", "main")]),
+            None,
+        );
+        put(&cache, "", tools(&[("note", Value::Int(2))]));
+        let read = read_tools(&cache);
+        assert_eq!(read.fields.len(), 1, "{:?}", read.fields);
+        assert_eq!(read.fields["note"], Value::Int(2));
+        // The Source maps are still there, only hidden.
+        assert!(cache.get_source("git", Some("/repo"), "head").is_some());
+    }
+
+    /// A write at N absorbs every put address strictly below N, and a later
+    /// put at the same address replaces the earlier one, siblings included.
+    #[test]
+    fn a_write_absorbs_put_addresses_below_it() {
+        let cache = Cache::new();
+        put(&cache, "o.a", Value::Int(1));
+        put(&cache, "o.b", Value::Int(2));
+        let entry = cache.get_entry("git", Some("/repo")).unwrap();
+        assert_eq!(entry.puts.keys().collect::<Vec<_>>(), ["o.a", "o.b"]);
+
+        put(&cache, "o", tools(&[("c", Value::Int(3))]));
+        let entry = cache.get_entry("git", Some("/repo")).unwrap();
+        assert_eq!(entry.puts.keys().collect::<Vec<_>>(), ["o"]);
+        let registry = crate::provider::registry::ProviderRegistry::with_defaults();
+        let read = cache
+            .read_merged("git", Some("/repo"), Some("/repo"), &registry)
+            .unwrap();
+        assert_eq!(read.fields["o"], tools(&[("c", Value::Int(3))]));
+    }
+
+    /// `{"o":{"x":null}}` states all of `o`: it is empty afterwards, and the
+    /// earlier sibling `o.y` is gone with the rest of the old `o`.
+    #[test]
+    fn a_put_states_the_whole_value_at_its_address() {
+        let cache = Cache::new();
+        put(&cache, "o.y", Value::Int(1));
+        put(&cache, "o", tools(&[]));
+        let read = read_tools(&cache);
+        assert_eq!(read.fields["o"], tools(&[]));
+    }
+
+    /// Removing a leaf below an address keeps the address while it holds
+    /// anything, and drops it once nothing is left.
+    #[test]
+    fn null_below_an_address_removes_the_leaf_and_keeps_the_address() {
+        let cache = cache_with_tools();
+        put(
+            &cache,
+            "o",
+            tools(&[("x", Value::Int(1)), ("y", Value::Int(2))]),
+        );
+        assert!(cache.remove_put("git", Some("/repo"), "o.x"));
+        let entry = cache.get_entry("git", Some("/repo")).unwrap();
+        assert_eq!(entry.puts.keys().collect::<Vec<_>>(), ["o"]);
+        assert_eq!(
+            read_tools(&cache).fields["o"],
+            tools(&[("y", Value::Int(2))])
+        );
+
+        assert!(cache.remove_put("git", Some("/repo"), "o.y"));
+        let entry = cache.get_entry("git", Some("/repo")).unwrap();
+        assert!(entry.puts.is_empty(), "an address holding nothing is gone");
+        assert!(!read_tools(&cache).fields.contains_key("o"));
+    }
+
+    /// Removing a node drops the put subtree there and every address at or
+    /// below it, and nothing else.
+    #[test]
+    fn removing_drops_addresses_at_and_below() {
+        let cache = Cache::new();
+        put(&cache, "o", tools(&[("x", Value::Int(1))]));
+        put(&cache, "o.y", Value::Int(2));
+        put(&cache, "p", Value::Int(3));
+        assert!(cache.remove_put("git", Some("/repo"), "o"));
+        let entry = cache.get_entry("git", Some("/repo")).unwrap();
+        assert_eq!(entry.puts.keys().collect::<Vec<_>>(), ["p"]);
+        assert!(cache.remove_put("git", Some("/repo"), ""));
+        assert!(cache.get_entry("git", Some("/repo")).is_none());
+    }
+
     /// A put never evicts a config seed, and removing the put leaves the seed.
     #[test]
     fn a_put_does_not_evict_a_config_seed() {
@@ -1470,14 +1862,14 @@ mod tests {
         let registry = crate::provider::registry::ProviderRegistry::new();
         let write = |label: &str, v: &str| {
             cache
-                .write_static("p", None, label, "x", Value::String(v.into()), false, None)
+                .write_static("p", None, label, "x", Value::String(v.into()), None)
                 .unwrap();
         };
         write("config:a.toml", "seed");
         write(PUT_SOURCE, "put");
         let read = cache.read_merged("p", None, None, &registry).unwrap();
         assert_eq!(read.fields.get("x"), Some(&Value::String("put".into())));
-        assert!(cache.remove_static_path("p", None, "x"));
+        assert!(cache.remove_put("p", None, "x"));
         let read = cache.read_merged("p", None, None, &registry).unwrap();
         assert_eq!(read.fields.get("x"), Some(&Value::String("seed".into())));
     }
@@ -1507,6 +1899,7 @@ mod tests {
         );
         let entry = CacheEntry {
             sources,
+            puts: BTreeMap::new(),
             created_at: Instant::now(),
         };
 
@@ -1528,7 +1921,7 @@ mod tests {
         let registry = crate::provider::registry::ProviderRegistry::new();
         let write = |label: &str, node: &str, value: Value| {
             cache
-                .write_static("p", None, label, node, value, false, None)
+                .write_static("p", None, label, node, value, None)
                 .expect("put accepted");
         };
 
@@ -1576,6 +1969,7 @@ mod tests {
         }
         let entry = CacheEntry {
             sources,
+            puts: BTreeMap::new(),
             created_at: Instant::now(),
         };
 

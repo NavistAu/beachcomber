@@ -99,7 +99,7 @@ pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, layers: &[(PathBu
     for (namespace, writes) in plan(layers) {
         registry.register_static(&namespace);
         for (label, value) in writes {
-            if let Err(e) = cache.write_static(&namespace, None, &label, "", value, false, None) {
+            if let Err(e) = cache.write_static(&namespace, None, &label, "", value, None) {
                 tracing::warn!("{label}: could not seed {namespace}: {e}");
             }
         }
