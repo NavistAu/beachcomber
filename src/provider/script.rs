@@ -1,7 +1,7 @@
 use crate::config::{ExternalFieldDecl, ExternalSourceConfig, ScriptProviderConfig};
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::process::Command;
 use std::sync::OnceLock;
@@ -168,33 +168,27 @@ fn build_source_meta_from_legacy(_name: &str, config: &ScriptProviderConfig) -> 
         SourceScope::PathScoped
     };
 
-    let (invalidation, keep_alive) = match watch_patterns {
+    let invalidation = match watch_patterns {
         Some(patterns) => {
             if scope == SourceScope::Global {
                 let _ = patterns;
-                (
-                    InvalidationStrategy::Poll {
-                        interval_secs: poll_secs,
-                    },
-                    KeepAlive::Polls(2),
-                )
+                InvalidationStrategy::Poll {
+                    interval_secs: poll_secs,
+                    count: 2,
+                }
             } else {
-                (
-                    InvalidationStrategy::WatchAndPoll {
-                        patterns,
-                        abs_paths: vec![],
-                        interval_secs: poll_secs,
-                    },
-                    KeepAlive::Polls(2),
-                )
+                InvalidationStrategy::WatchAndPoll {
+                    patterns,
+                    abs_paths: vec![],
+                    interval_secs: poll_secs,
+                    count: 2,
+                }
             }
         }
-        None => (
-            InvalidationStrategy::Poll {
-                interval_secs: poll_secs,
-            },
-            KeepAlive::Polls(2),
-        ),
+        None => InvalidationStrategy::Poll {
+            interval_secs: poll_secs,
+            count: 2,
+        },
     };
 
     let fields = config
@@ -229,7 +223,6 @@ fn build_source_meta_from_legacy(_name: &str, config: &ScriptProviderConfig) -> 
         fields,
         scope,
         invalidation,
-        keep_alive,
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,
@@ -257,45 +250,25 @@ pub(crate) fn build_source_meta_from_external(cfg: &ExternalSourceConfig) -> Sou
     let patterns = cfg.fsevent_patterns.clone().unwrap_or_default();
     let abs_paths = cfg.fsevent_abs_paths.clone().unwrap_or_default();
 
-    let (invalidation, keep_alive) = match strategy_type {
-        "fsevent" => {
-            if scope == SourceScope::Global {
-                (
-                    InvalidationStrategy::Watch {
-                        patterns: vec![],
-                        abs_paths: abs_paths.clone(),
-                    },
-                    KeepAlive::Never,
-                )
+    let invalidation = match strategy_type {
+        "fsevent" => InvalidationStrategy::Watch {
+            patterns: if scope == SourceScope::Global {
+                vec![]
             } else {
-                let lifespan_secs = cfg
-                    .fsevent_lifespan
-                    .as_ref()
-                    .and_then(|s| crate::scheduler::parse_duration_secs_pub(s))
-                    .unwrap_or(300);
-                (
-                    InvalidationStrategy::Watch {
-                        patterns: patterns.clone(),
-                        abs_paths: abs_paths.clone(),
-                    },
-                    KeepAlive::Duration(lifespan_secs),
-                )
-            }
-        }
-        "fsevent_poll" => (
-            InvalidationStrategy::WatchAndPoll {
-                patterns: patterns.clone(),
-                abs_paths: abs_paths.clone(),
-                interval_secs: poll_secs,
+                patterns.clone()
             },
-            KeepAlive::Polls(poll_count),
-        ),
-        _ => (
-            InvalidationStrategy::Poll {
-                interval_secs: poll_secs,
-            },
-            KeepAlive::Polls(poll_count),
-        ),
+            abs_paths: abs_paths.clone(),
+        },
+        "fsevent_poll" => InvalidationStrategy::WatchAndPoll {
+            patterns: patterns.clone(),
+            abs_paths: abs_paths.clone(),
+            interval_secs: poll_secs,
+            count: poll_count,
+        },
+        _ => InvalidationStrategy::Poll {
+            interval_secs: poll_secs,
+            count: poll_count,
+        },
     };
 
     let fields = build_fields_from_decls(cfg.fields.as_deref());
@@ -312,7 +285,6 @@ pub(crate) fn build_source_meta_from_external(cfg: &ExternalSourceConfig) -> Sou
         fields,
         scope,
         invalidation,
-        keep_alive,
         failback: FailbackConfig {
             reattempts: failback_reattempts,
             interval_secs: failback_secs,

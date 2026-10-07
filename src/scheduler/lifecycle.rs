@@ -8,10 +8,16 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::provider::{InvalidationStrategy, KeepAlive};
+use crate::provider::InvalidationStrategy;
 
 /// Decay steps before eviction unless a lifecycle says otherwise.
 pub const DEFAULT_DECAY: u8 = 4;
+
+/// Poll interval a watch-only Source's Active window is measured in.
+pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 60;
+
+/// Polls in the Active window unless a strategy says otherwise.
+pub const DEFAULT_POLL_COUNT: u32 = 12;
 
 /// Lifecycle key. `path` is None for Global sources; Some(canonical_path) for
 /// PathScoped. `node` is the put address a lifecycle belongs to (`source` is
@@ -55,7 +61,8 @@ pub struct SourceLifecycleConfig {
     pub strategy_kind: StrategyKind,
     /// Some for Poll/WatchAndPoll, None for pure Watch.
     pub poll_interval: Option<Duration>,
-    pub keep_alive: KeepAlive,
+    /// Polls in the Active window; the window is `interval × count`.
+    pub poll_count: u32,
     pub fsevents_reinstate: bool,
     /// Decay steps before eviction, at least 1.
     pub decay: u8,
@@ -64,33 +71,44 @@ pub struct SourceLifecycleConfig {
 impl SourceLifecycleConfig {
     pub fn from_strategy(
         strategy: &InvalidationStrategy,
-        keep_alive: KeepAlive,
         fsevents_reinstate: bool,
         decay: u8,
     ) -> Self {
-        let (kind, poll_interval) = match strategy {
-            InvalidationStrategy::Poll { interval_secs } => (
+        let (kind, poll_interval, poll_count) = match strategy {
+            InvalidationStrategy::Poll {
+                interval_secs,
+                count,
+            } => (
                 StrategyKind::Poll,
                 Some(Duration::from_secs(*interval_secs)),
+                *count,
             ),
-            InvalidationStrategy::Watch { .. } => (StrategyKind::Watch, None),
-            InvalidationStrategy::WatchAndPoll { interval_secs, .. } => (
+            InvalidationStrategy::Watch { .. } => (StrategyKind::Watch, None, DEFAULT_POLL_COUNT),
+            InvalidationStrategy::WatchAndPoll {
+                interval_secs,
+                count,
+                ..
+            } => (
                 StrategyKind::WatchAndPoll,
                 Some(Duration::from_secs(*interval_secs)),
+                *count,
             ),
         };
         Self {
             strategy_kind: kind,
             poll_interval,
-            keep_alive,
+            poll_count,
             fsevents_reinstate,
             decay,
         }
     }
 
-    /// True for Watch + Global + KeepAlive::Never.
-    pub fn never_decays(&self) -> bool {
-        matches!(self.keep_alive, KeepAlive::Never)
+    /// The Active window: `interval × count`; a watch-only Source has no
+    /// interval of its own and takes the default one.
+    pub fn lifespan(&self) -> Duration {
+        self.poll_interval
+            .unwrap_or(Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS))
+            * self.poll_count
     }
 }
 
@@ -99,8 +117,7 @@ pub struct LifecycleEntry {
     pub state: LifecycleState,
     /// None for pure Watch sources (no poll path).
     pub poll_timer: Option<PollTimer>,
-    /// None for pure-watch globals (KeepAlive::Never).
-    pub decay_timer: Option<DecayTimer>,
+    pub decay_timer: DecayTimer,
     pub config: SourceLifecycleConfig,
 }
 
@@ -111,7 +128,7 @@ pub struct LifecycleRegistry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateTransition {
     NewlyActive,
-    ResetKeepAlive,
+    ResetActive,
     Reinstated { from: u8 },
 }
 
@@ -156,46 +173,7 @@ impl LifecycleRegistry {
         now: Instant,
     ) -> DemandOutcome {
         debug_assert!(config.decay >= 1, "decay depth must be at least 1");
-        if config.never_decays() {
-            // Pure-watch global: enter Active, never decay. No poll timer.
-            match self.entries.get_mut(&key) {
-                None => {
-                    self.entries.insert(
-                        key,
-                        LifecycleEntry {
-                            state: LifecycleState::Active,
-                            poll_timer: None,
-                            decay_timer: None,
-                            config,
-                        },
-                    );
-                    return DemandOutcome {
-                        transition: StateTransition::NewlyActive,
-                        watch_registration: WatchAction::Register,
-                    };
-                }
-                Some(_) => {
-                    // Already Active. No keep-alive to reset.
-                    return DemandOutcome {
-                        transition: StateTransition::ResetKeepAlive,
-                        watch_registration: WatchAction::Preserve,
-                    };
-                }
-            }
-        }
-
-        let keep_alive_duration = match (&config.keep_alive, &config.poll_interval) {
-            (KeepAlive::Polls(k), Some(p)) => *p * *k,
-            (KeepAlive::Duration(secs), _) => Duration::from_secs(*secs),
-            (KeepAlive::Polls(_), None) => {
-                // Misconfigured — should have been caught at registration. Defensive.
-                return DemandOutcome {
-                    transition: StateTransition::ResetKeepAlive,
-                    watch_registration: WatchAction::Preserve,
-                };
-            }
-            (KeepAlive::Never, _) => unreachable!("never_decays() handled above"),
-        };
+        let lifespan = config.lifespan();
 
         match self.entries.get_mut(&key) {
             None => {
@@ -209,10 +187,10 @@ impl LifecycleRegistry {
                     LifecycleEntry {
                         state: LifecycleState::Active,
                         poll_timer,
-                        decay_timer: Some(DecayTimer {
+                        decay_timer: DecayTimer {
                             last_demand: now,
-                            step_deadline: now + keep_alive_duration,
-                        }),
+                            step_deadline: now + lifespan,
+                        },
                         config,
                     },
                 );
@@ -223,13 +201,11 @@ impl LifecycleRegistry {
             }
             Some(entry) => match entry.state {
                 LifecycleState::Active => {
-                    if let Some(d) = entry.decay_timer.as_mut() {
-                        d.last_demand = now;
-                        d.step_deadline = now + keep_alive_duration;
-                    }
+                    entry.decay_timer.last_demand = now;
+                    entry.decay_timer.step_deadline = now + lifespan;
                     entry.config = config;
                     DemandOutcome {
-                        transition: StateTransition::ResetKeepAlive,
+                        transition: StateTransition::ResetActive,
                         watch_registration: WatchAction::Preserve,
                     }
                 }
@@ -246,10 +222,8 @@ impl LifecycleRegistry {
                             pt.interval = pi;
                         }
                     }
-                    if let Some(d) = entry.decay_timer.as_mut() {
-                        d.last_demand = now;
-                        d.step_deadline = now + keep_alive_duration;
-                    }
+                    entry.decay_timer.last_demand = now;
+                    entry.decay_timer.step_deadline = now + lifespan;
                     entry.config = config;
                     DemandOutcome {
                         transition: StateTransition::Reinstated { from },
@@ -306,9 +280,7 @@ impl LifecycleRegistry {
             }
 
             // Decay timer fires only when present.
-            let Some(dt) = entry.decay_timer.as_mut() else {
-                continue;
-            };
+            let dt = &mut entry.decay_timer;
             if now < dt.step_deadline {
                 continue;
             }
@@ -326,16 +298,7 @@ impl LifecycleRegistry {
                     if let LifecycleState::Decay(step) = new_state {
                         let rate_mult = 1u32 << step;
 
-                        // Step duration depends on keep-alive variant.
-                        let step_duration =
-                            match (&entry.config.keep_alive, &entry.config.poll_interval) {
-                                (KeepAlive::Polls(k), Some(p)) => *p * rate_mult * *k,
-                                (KeepAlive::Duration(secs), _) => {
-                                    Duration::from_secs(*secs) * rate_mult
-                                }
-                                _ => continue,
-                            };
-                        dt.step_deadline = now + step_duration;
+                        dt.step_deadline = now + entry.config.lifespan() * rate_mult;
 
                         // Adjust poll interval if there is a poll path.
                         if let Some(pt) = entry.poll_timer.as_mut()
@@ -430,7 +393,7 @@ mod tests {
         SourceLifecycleConfig {
             strategy_kind: StrategyKind::Poll,
             poll_interval: Some(Duration::from_secs(60)),
-            keep_alive: KeepAlive::Polls(12),
+            poll_count: 12,
             fsevents_reinstate: false,
             decay: DEFAULT_DECAY,
         }
@@ -452,9 +415,9 @@ mod tests {
         assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(60)));
     }
 
-    /// Scenario: Warm read resets keep-alive.
+    /// Scenario: Warm read resets Active window.
     #[test]
-    fn on_demand_on_active_resets_keep_alive() {
+    fn on_demand_on_active_resets_the_window() {
         let mut reg = LifecycleRegistry::new();
         let key = test_key("git", "/repo");
         let t0 = Instant::now();
@@ -465,12 +428,12 @@ mod tests {
 
         let outcome = reg.on_demand(key.clone(), cfg, t1);
 
-        assert_eq!(outcome.transition, StateTransition::ResetKeepAlive);
+        assert_eq!(outcome.transition, StateTransition::ResetActive);
         assert_eq!(outcome.watch_registration, WatchAction::Preserve);
         assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
 
         let entry = reg.entries.get(&key).expect("entry exists");
-        assert_eq!(entry.decay_timer.as_ref().unwrap().last_demand, t1);
+        assert_eq!(entry.decay_timer.last_demand, t1);
     }
 
     /// Scenario: Consumer request in a decay state reinstates to Active.
@@ -500,7 +463,7 @@ mod tests {
         assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(60)));
 
         let entry = reg.entries.get(&key).expect("entry exists");
-        assert_eq!(entry.decay_timer.as_ref().unwrap().last_demand, t1);
+        assert_eq!(entry.decay_timer.last_demand, t1);
     }
 
     /// Reinstatement when fsevents_reinstate = true: watches were preserved,
@@ -543,11 +506,11 @@ mod tests {
         assert!(outcome.refresh);
         assert!(matches!(
             outcome.transition,
-            Some(StateTransition::ResetKeepAlive)
+            Some(StateTransition::ResetActive)
         ));
 
         let entry = reg.entries.get(&key).expect("entry exists");
-        assert_eq!(entry.decay_timer.as_ref().unwrap().last_demand, t1);
+        assert_eq!(entry.decay_timer.last_demand, t1);
     }
 
     /// fsevent while decaying with fsevents_reinstate = true: reinstates to Active.
@@ -628,22 +591,21 @@ mod tests {
 
         let entry = reg.entries.get(&key).expect("entry exists");
         assert_eq!(
-            entry.decay_timer.as_ref().unwrap().last_demand,
-            t0,
+            entry.decay_timer.last_demand, t0,
             "decay timer should not reset on poll fire"
         );
     }
 
-    /// Scenario: Keep-alive expiry enters Decay1.
+    /// Scenario: Active window expiry enters Decay1.
     #[test]
-    fn tick_advances_active_to_decay1_when_keep_alive_elapses() {
+    fn tick_advances_active_to_decay1_when_the_window_elapses() {
         let mut reg = LifecycleRegistry::new();
         let key = test_key("git", "/repo");
         let t0 = Instant::now();
 
         reg.on_demand(key.clone(), test_config(), t0);
 
-        // Keep-alive = K*P = 12*60 = 720s.
+        // Active window = K*P = 12*60 = 720s.
         let t1 = t0 + Duration::from_secs(721);
         let actions = reg.tick(t1);
 
@@ -693,7 +655,7 @@ mod tests {
 
         reg.on_demand(key.clone(), test_config(), t0);
 
-        // Enter Decay1 at keep-alive = 720s.
+        // Enter Decay1 at Active window = 720s.
         let t_decay1 = t0 + Duration::from_secs(721);
         reg.tick(t_decay1);
 
@@ -732,15 +694,15 @@ mod tests {
         let t0 = Instant::now();
         reg.on_demand(key.clone(), test_config(), t0);
 
-        // Enter Decay1 just past keep-alive.
-        let after_keep_alive = t0 + Duration::from_secs(721);
-        reg.tick(after_keep_alive);
+        // Enter Decay1 just past Active window.
+        let after_window = t0 + Duration::from_secs(721);
+        reg.tick(after_window);
 
         // Decay1 has poll interval 2P = 120s and step_deadline should be
-        // after_keep_alive + K*2P = after_keep_alive + 1440s.
+        // after_window + K*2P = after_window + 1440s.
         let entry = reg.entries.get(&key).expect("entry exists");
-        let expected_deadline = after_keep_alive + Duration::from_secs(1440);
-        let actual_deadline = entry.decay_timer.as_ref().unwrap().step_deadline;
+        let expected_deadline = after_window + Duration::from_secs(1440);
+        let actual_deadline = entry.decay_timer.step_deadline;
 
         // Exact equality; step_deadline = now + K * P * rate_mult by construction.
         assert_eq!(
@@ -759,7 +721,7 @@ mod tests {
         reg.on_demand(key.clone(), test_config(), t0);
 
         // Walk through all 4 decay steps.
-        // Keep-alive = 720s → Decay1 at 721.
+        // Active window = 720s → Decay1 at 721.
         let t_decay1 = t0 + Duration::from_secs(721);
         reg.tick(t_decay1);
 
@@ -843,23 +805,28 @@ mod tests {
         assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(2)));
     }
 
-    /// Watch source with KeepAlive::Duration advances through decay steps.
-    #[test]
-    fn tick_advances_watch_duration_through_decay_steps() {
-        let mut reg = LifecycleRegistry::new();
-        let key = test_key("git", "/repo");
-        let cfg = SourceLifecycleConfig {
+    fn watch_only() -> SourceLifecycleConfig {
+        SourceLifecycleConfig {
             strategy_kind: StrategyKind::Watch,
             poll_interval: None,
-            keep_alive: KeepAlive::Duration(60),
+            poll_count: DEFAULT_POLL_COUNT,
             fsevents_reinstate: false,
             decay: DEFAULT_DECAY,
-        };
-        let t0 = Instant::now();
-        reg.on_demand(key.clone(), cfg, t0);
+        }
+    }
 
-        // After 60s, should enter Decay1
-        let actions = reg.tick(t0 + Duration::from_secs(60));
+    /// A watch-only Source has no poll of its own and takes 60 s x 12.
+    #[test]
+    fn a_watch_only_source_stays_active_for_twelve_minutes() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key("git", "/repo");
+        let t0 = Instant::now();
+        reg.on_demand(key.clone(), watch_only(), t0);
+
+        reg.tick(t0 + Duration::from_secs(719));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
+
+        let actions = reg.tick(t0 + Duration::from_secs(720));
         assert!(
             actions
                 .transitions
@@ -868,32 +835,49 @@ mod tests {
         );
     }
 
-    /// Pure-watch global (KeepAlive::Never) stays Active indefinitely.
+    /// Nothing is exempt from decay: a global watch Source decays 12 minutes
+    /// after its last read and is evicted at the end of its ladder.
     #[test]
-    fn never_decays_stays_active_forever() {
+    fn a_global_watch_source_now_decays() {
         let mut reg = LifecycleRegistry::new();
         let key = test_key_global("hostname");
-        let cfg = SourceLifecycleConfig {
-            strategy_kind: StrategyKind::Watch,
-            poll_interval: None,
-            keep_alive: KeepAlive::Never,
-            fsevents_reinstate: false,
-            decay: DEFAULT_DECAY,
-        };
+        let t0 = Instant::now();
+        reg.on_demand(key.clone(), watch_only(), t0);
+
+        reg.tick(t0 + Duration::from_secs(720));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
+
+        // Active 720 s, then Decay(n) lasts 720 x 2^n: 1440, 2880, 5760, 11520.
+        let mut t = 720;
+        for step in 1..=4u64 {
+            t += 720 * (1 << step);
+            reg.tick(t0 + Duration::from_secs(t));
+        }
+        assert_eq!(reg.state(&key), None);
+    }
+
+    /// The Active window is the poll interval times the count.
+    #[test]
+    fn the_active_window_is_interval_times_count() {
+        let mut cfg = ten_second_poll(DEFAULT_DECAY);
+        cfg.poll_count = 3;
+        assert_eq!(cfg.lifespan(), Duration::from_secs(30));
+
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key_global("p");
         let t0 = Instant::now();
         reg.on_demand(key.clone(), cfg, t0);
-
-        let actions = reg.tick(t0 + Duration::from_secs(86400));
-        assert!(actions.transitions.is_empty());
-        assert!(actions.evictions.is_empty());
+        reg.tick(t0 + Duration::from_secs(29));
         assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
+        reg.tick(t0 + Duration::from_secs(30));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
     }
 
     fn ten_second_poll(decay: u8) -> SourceLifecycleConfig {
         SourceLifecycleConfig {
             strategy_kind: StrategyKind::Poll,
             poll_interval: Some(Duration::from_secs(10)),
-            keep_alive: KeepAlive::Polls(1),
+            poll_count: 1,
             fsevents_reinstate: false,
             decay,
         }

@@ -1,5 +1,5 @@
 use crate::provider::library::parse_library_metadata_for_test;
-use crate::provider::{InvalidationStrategy, KeepAlive, SourceScope};
+use crate::provider::{InvalidationStrategy, SourceScope};
 
 #[test]
 fn library_metadata_parses_per_field_scope() {
@@ -90,8 +90,8 @@ fn library_metadata_mixed_explicit_and_legacy_default() {
 }
 
 #[test]
-fn library_metadata_once_becomes_pure_watch_global_never() {
-    // Legacy "once": true maps to Watch + Global + KeepAlive::Never.
+fn library_metadata_once_becomes_pure_watch_global() {
+    // Legacy "once": true maps to Watch + Global.
     let json = r#"{
         "name": "libonce",
         "fields": {"result": "string"},
@@ -104,7 +104,6 @@ fn library_metadata_once_becomes_pure_watch_global_never() {
         src.invalidation,
         InvalidationStrategy::Watch { .. }
     ));
-    assert!(matches!(src.keep_alive, KeepAlive::Never));
 }
 
 // ── Phase 4 library backend C ABI extension tests ───────────────────────────

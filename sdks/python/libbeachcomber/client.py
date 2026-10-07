@@ -97,7 +97,7 @@ def _parse_cache_rows(data: Any) -> list[CacheRow]:
                 stale=bool(row.get("stale", False)),
                 kind=row.get("kind"),
                 poll_interval_secs=row.get("poll_interval_secs"),
-                keep_alive_polls=row.get("keep_alive_polls"),
+                poll_count=row.get("poll_count"),
                 fsevents_reinstate=row.get("fsevents_reinstate"),
                 failure=row.get("failure"),
                 source=row.get("source"),

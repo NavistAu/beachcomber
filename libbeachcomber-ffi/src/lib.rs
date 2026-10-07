@@ -238,7 +238,7 @@ fn cache_row_to_json(r: &CacheRow) -> serde_json::Value {
         "stale": r.stale,
         "kind": r.kind,
         "poll_interval_secs": r.poll_interval_secs,
-        "keep_alive_polls": r.keep_alive_polls,
+        "poll_count": r.poll_count,
         "fsevents_reinstate": r.fsevents_reinstate,
         "polls_elapsed": r.polls_elapsed,
         "failure": r.failure,

@@ -2,8 +2,8 @@ use crate::boundaries::http::{HttpFetcher, HttpResponse, UreqHttpFetcher};
 use crate::config::{ExternalSourceConfig, HttpProviderConfig};
 use crate::provider::script::build_source_meta_from_external;
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -181,8 +181,8 @@ fn build_source_meta_legacy(_name: &str, config: &HttpProviderConfig) -> SourceM
         scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: poll_secs,
+            count: 2,
         },
-        keep_alive: KeepAlive::Polls(2),
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,

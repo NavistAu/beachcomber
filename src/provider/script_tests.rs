@@ -107,7 +107,7 @@ fn script_provider_custom_poll() {
     let p = ScriptProvider::new("poll_test", config);
     let meta = p.metadata();
     match &meta.sources[0].invalidation {
-        InvalidationStrategy::Poll { interval_secs } => {
+        InvalidationStrategy::Poll { interval_secs, .. } => {
             assert_eq!(*interval_secs, 10);
         }
         _ => panic!("Expected Poll invalidation"),

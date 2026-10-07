@@ -3,7 +3,6 @@
 // LifecycleRegistry with Active and Decay1..4 states. These tests exercise the
 // same behavioral contracts via the new API.
 
-use crate::provider::KeepAlive;
 use crate::scheduler::lifecycle::{
     DEFAULT_DECAY, LifecycleRegistry, LifecycleState, SourceLifecycleConfig, StateTransition,
     StrategyKind,
@@ -11,11 +10,11 @@ use crate::scheduler::lifecycle::{
 use std::time::{Duration, Instant};
 
 fn test_config() -> SourceLifecycleConfig {
-    // 1ms poll + Polls(1) keep-alive = 1ms per step for fast test progression.
+    // 1ms poll + count 1 = 1ms per step for fast test progression.
     SourceLifecycleConfig {
         strategy_kind: StrategyKind::Poll,
         poll_interval: Some(Duration::from_millis(1)),
-        keep_alive: KeepAlive::Polls(1),
+        poll_count: 1,
         fsevents_reinstate: false,
         decay: DEFAULT_DECAY,
     }
@@ -37,7 +36,7 @@ fn lifecycle_starts_in_active() {
     assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
 }
 
-// With `poll_interval=1ms, keep_alive=Polls(1)`, step durations double per
+// With `poll_interval=1ms, count=1`, step durations double per
 // decay step (2^n × P × K): {1, 2, 4, 8, 16} ms for Active→Decay1…Decay4.
 // Advancing 100 ms per tick is comfortably past every deadline.
 const STEP: Duration = Duration::from_millis(100);

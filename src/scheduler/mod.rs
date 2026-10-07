@@ -75,11 +75,9 @@ pub struct LifecycleSnapshot {
     pub decay: u8,
     /// Effective poll interval in seconds (may be doubled during decay). 0 for pure Watch.
     pub poll_interval_secs: u64,
-    /// K — keep-alive count. For `KeepAlive::Polls(K)` this is K. For
-    /// `KeepAlive::Duration(secs)` it's `secs / poll_interval_secs` if there is
-    /// a poll path (WatchAndPoll), otherwise 0 (pure Watch). For
-    /// `KeepAlive::Never` it's 0 (no decay).
-    pub keep_alive_polls: u32,
+    /// The `count` of `poll(interval, count)`: polls in the Active window.
+    /// `None` for pure Watch (no poll of its own).
+    pub poll_count: Option<u32>,
     /// Number of poll-equivalents that have fired in the current lifecycle
     /// step. Used by the status formatter to render the `{age}×{N}` suffix on
     /// the age column.
@@ -236,14 +234,12 @@ impl FailureState {
 
 /// Build a `LifecycleSnapshot` for a given lifecycle entry at `now`. Centralised
 /// so the two snapshot-reply sites (sync and async branches in the scheduler
-/// loop) compute polls_elapsed and keep_alive_polls identically.
+/// loop) compute polls_elapsed and poll_count identically.
 fn snapshot_entry(
     key: &lifecycle::Key,
     entry: &lifecycle::LifecycleEntry,
     now: Instant,
 ) -> LifecycleSnapshot {
-    use crate::provider::KeepAlive;
-
     let watches_files = matches!(
         entry.config.strategy_kind,
         lifecycle::StrategyKind::Watch | lifecycle::StrategyKind::WatchAndPoll
@@ -257,35 +253,21 @@ fn snapshot_entry(
     let decay = lifecycle::to_decay_level(&entry.state);
     let rate_mult: u64 = if decay == 0 { 1 } else { 1u64 << decay };
 
-    let base_poll_secs = entry.config.poll_interval.map(|d| d.as_secs()).unwrap_or(0);
-
-    // K and step duration both depend on the keep-alive variant.
-    let (keep_alive_polls, step_duration_secs) = match entry.config.keep_alive {
-        KeepAlive::Polls(k) => {
-            let dur = (k as u64) * base_poll_secs * rate_mult;
-            (k, dur)
-        }
-        KeepAlive::Duration(secs) => {
-            // For pure Watch (no poll path) polls don't apply; report 0.
-            // For WatchAndPoll, derive K = secs / base_poll_secs so the renderer
-            // can produce the {p}s×{k:02} format.
-            let k = secs.checked_div(base_poll_secs).unwrap_or(0) as u32;
-            (k, secs * rate_mult)
-        }
-        KeepAlive::Never => (0, 0),
-    };
+    let step_duration_secs = entry.config.lifespan().as_secs() * rate_mult;
+    let poll_count = entry.config.poll_interval.map(|_| entry.config.poll_count);
 
     // polls_elapsed: how many polls have fired in the current lifecycle step.
-    // Only meaningful when there is a poll path AND a decay timer.
-    let polls_elapsed = match (entry.decay_timer.as_ref(), poll_interval_secs) {
-        (Some(dt), p) if p > 0 && step_duration_secs > 0 => {
-            let step_start = dt
+    // Only meaningful when there is a poll path.
+    let polls_elapsed = match (poll_count, poll_interval_secs) {
+        (Some(count), p) if p > 0 && step_duration_secs > 0 => {
+            let step_start = entry
+                .decay_timer
                 .step_deadline
                 .checked_sub(Duration::from_secs(step_duration_secs))
                 .unwrap_or(now);
             let secs_in_step = now.saturating_duration_since(step_start).as_secs();
             let n = secs_in_step / p;
-            (n as u32).min(keep_alive_polls.max(1))
+            (n as u32).min(count.max(1))
         }
         _ => 0,
     };
@@ -300,7 +282,7 @@ fn snapshot_entry(
     LifecycleSnapshot {
         decay,
         poll_interval_secs,
-        keep_alive_polls,
+        poll_count,
         polls_elapsed,
         next_poll_in_secs,
         fsevents_reinstate: entry.config.fsevents_reinstate,
@@ -365,22 +347,16 @@ fn build_status(
         match entry.state {
             LifecycleState::Active => {
                 // Active entries have demand — report last_demand time.
-                if let Some(dt) = &entry.decay_timer {
-                    demand_info.push(DemandInfo {
-                        provider: provider.clone(),
-                        path: path.clone(),
-                        source: source.clone(),
-                        last_query_secs_ago: dt.last_demand.elapsed().as_secs(),
-                    });
-                }
+                demand_info.push(DemandInfo {
+                    provider: provider.clone(),
+                    path: path.clone(),
+                    source: source.clone(),
+                    last_query_secs_ago: entry.decay_timer.last_demand.elapsed().as_secs(),
+                });
             }
             LifecycleState::Decay(n) => {
                 // Decaying entries go in the lifecycle list.
-                let elapsed_secs = entry
-                    .decay_timer
-                    .as_ref()
-                    .map(|dt| dt.last_demand.elapsed().as_secs())
-                    .unwrap_or(0);
+                let elapsed_secs = entry.decay_timer.last_demand.elapsed().as_secs();
                 backoff_info.push(LifecycleInfo {
                     provider: provider.clone(),
                     path: path.clone(),
@@ -601,7 +577,7 @@ impl Scheduler {
         let key_for_cleanup = key.clone();
 
         let expected_interval_secs = match source.metadata().invalidation {
-            InvalidationStrategy::Poll { interval_secs } => Some(interval_secs),
+            InvalidationStrategy::Poll { interval_secs, .. } => Some(interval_secs),
             InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(interval_secs),
             InvalidationStrategy::Watch { .. } => None,
         };
@@ -906,7 +882,6 @@ impl Scheduler {
                                 };
                                 let cfg = SourceLifecycleConfig::from_strategy(
                                     &sm.invalidation,
-                                    sm.keep_alive,
                                     sm.fsevents_reinstate,
                                     lifecycle::DEFAULT_DECAY,
                                 );
@@ -1214,7 +1189,6 @@ impl Scheduler {
                                 };
                                 let cfg = SourceLifecycleConfig::from_strategy(
                                     &sm.invalidation,
-                                    sm.keep_alive,
                                     sm.fsevents_reinstate,
                                     lifecycle::DEFAULT_DECAY,
                                 );

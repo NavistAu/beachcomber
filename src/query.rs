@@ -595,8 +595,8 @@ mod resolve_path_tests {
     use super::*;
     use crate::provider::registry::ProviderRegistry;
     use crate::provider::{
-        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-        ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope,
+        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+        Source, SourceMetadata, SourceResult, SourceScope,
     };
 
     struct FakeSource(SourceMetadata);
@@ -616,18 +616,15 @@ mod resolve_path_tests {
 
     impl Provider for FakeProvider {
         fn metadata(&self) -> ProviderMetadata {
-            let (invalidation, keep_alive) = match self.scope {
-                SourceScope::Global => (
-                    InvalidationStrategy::Watch {
-                        patterns: vec![],
-                        abs_paths: vec![],
-                    },
-                    KeepAlive::Never,
-                ),
-                SourceScope::PathScoped => (
-                    InvalidationStrategy::Poll { interval_secs: 30 },
-                    KeepAlive::Polls(2),
-                ),
+            let invalidation = match self.scope {
+                SourceScope::Global => InvalidationStrategy::Watch {
+                    patterns: vec![],
+                    abs_paths: vec![],
+                },
+                SourceScope::PathScoped => InvalidationStrategy::Poll {
+                    interval_secs: 30,
+                    count: 2,
+                },
             };
             ProviderMetadata {
                 name: self.name.clone(),
@@ -639,7 +636,6 @@ mod resolve_path_tests {
                     }],
                     scope: self.scope,
                     invalidation,
-                    keep_alive,
                     failback: FailbackConfig {
                         reattempts: 3,
                         interval_secs: 30,

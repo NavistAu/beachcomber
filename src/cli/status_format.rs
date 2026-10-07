@@ -83,7 +83,7 @@ const TTL_P_MAX: u64 = 999_999;
 /// past this.
 pub const TTL_TOTAL_WIDTH_MAX: usize = 6;
 /// Clamp applied to the total-budget seconds (`poll_interval_secs *
-/// keep_alive_polls`) before humanizing, so the formatted string can never
+/// poll_count`) before humanizing, so the formatted string can never
 /// exceed `TTL_TOTAL_WIDTH_MAX` chars (`99h59m`).
 const TTL_TOTAL_MAX_SECS: u64 = 359_999;
 
@@ -124,7 +124,7 @@ pub fn compute_ttl_widths(rows: &[CacheRow]) -> TtlWidths {
         if !matches!(row.kind, Some(RowKind::Lifecycle { .. })) {
             continue;
         }
-        if let (Some(pv), Some(k)) = (row.poll_interval_secs, row.keep_alive_polls) {
+        if let (Some(pv), Some(k)) = (row.poll_interval_secs, row.poll_count) {
             p = p.max(pv.min(TTL_P_MAX).to_string().len());
             let total_secs = pv.saturating_mul(k as u64);
             total = total.max(format_duration_compact(total_secs).chars().count());
@@ -172,7 +172,7 @@ fn failure_retry_secs(
 pub fn format_ttl_cell(
     kind: Option<&crate::cache::RowKind>,
     poll_interval_secs: Option<u64>,
-    keep_alive_polls: Option<u32>,
+    poll_count: Option<u32>,
     fsevents_reinstate: Option<bool>,
     failure: Option<&crate::cache::FailureSnapshot>,
     ascii: bool,
@@ -237,7 +237,7 @@ pub fn format_ttl_cell(
             // stays in a consistent column across all rows.
             //
             // Width: p_width + "s×KK" (4) + " (" (2) + total_width + ")" (1).
-            let poll_seg = match (poll_interval_secs, keep_alive_polls) {
+            let poll_seg = match (poll_interval_secs, poll_count) {
                 (Some(p), Some(k)) => {
                     let total_secs = p.saturating_mul(k as u64);
                     let total_str = format_duration_compact(total_secs);
@@ -614,8 +614,8 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
     if let Some(p) = r.poll_interval_secs {
         ctx.insert("poll_interval_secs".into(), serde_json::json!(p));
     }
-    if let Some(k) = r.keep_alive_polls {
-        ctx.insert("keep_alive_polls".into(), serde_json::json!(k));
+    if let Some(k) = r.poll_count {
+        ctx.insert("poll_count".into(), serde_json::json!(k));
     }
     if let Some(rv) = r.fsevents_reinstate {
         ctx.insert("fsevents_reinstate".into(), serde_json::Value::Bool(rv));
@@ -719,10 +719,7 @@ pub fn render_tsv(rows: &[CacheRow]) -> String {
             .poll_interval_secs
             .map(|n| n.to_string())
             .unwrap_or_default();
-        let k = row
-            .keep_alive_polls
-            .map(|n| n.to_string())
-            .unwrap_or_default();
+        let k = row.poll_count.map(|n| n.to_string()).unwrap_or_default();
         let r = row
             .fsevents_reinstate
             .map(|b| b.to_string())
@@ -767,7 +764,7 @@ pub fn render_csv(rows: &[CacheRow]) -> String {
     let mut out = String::new();
 
     // Header row
-    out.push_str("PROVIDER,PATH,FIELD,SOURCE,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,KEEP_ALIVE_POLLS,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS\n");
+    out.push_str("PROVIDER,PATH,FIELD,SOURCE,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,POLL_COUNT,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS\n");
 
     for row in rows {
         let path = row.path.as_deref().unwrap_or("");
@@ -789,10 +786,7 @@ pub fn render_csv(rows: &[CacheRow]) -> String {
             .poll_interval_secs
             .map(|n| n.to_string())
             .unwrap_or_default();
-        let k = row
-            .keep_alive_polls
-            .map(|n| n.to_string())
-            .unwrap_or_default();
+        let k = row.poll_count.map(|n| n.to_string()).unwrap_or_default();
         let r = row
             .fsevents_reinstate
             .map(|b| b.to_string())
@@ -880,10 +874,10 @@ pub fn render_sh_env(rows: &[CacheRow]) -> String {
                 shell_quote(&p.to_string())
             ));
         }
-        // keep_alive_polls
-        if let Some(k) = row.keep_alive_polls {
+        // poll_count
+        if let Some(k) = row.poll_count {
             out.push_str(&format!(
-                "{key}_KEEP_ALIVE_POLLS={}\n",
+                "{key}_POLL_COUNT={}\n",
                 shell_quote(&k.to_string())
             ));
         }
@@ -1257,7 +1251,7 @@ fn render_table(
             format_ttl_cell(
                 row.kind.as_ref(),
                 row.poll_interval_secs,
-                row.keep_alive_polls,
+                row.poll_count,
                 row.fsevents_reinstate,
                 row.failure.as_ref(),
                 ascii,
@@ -1474,7 +1468,7 @@ fn render_table(
         let ttl = format_ttl_cell(
             row.kind.as_ref(),
             row.poll_interval_secs,
-            row.keep_alive_polls,
+            row.poll_count,
             row.fsevents_reinstate,
             row.failure.as_ref(),
             ascii,
@@ -2376,7 +2370,7 @@ mod ttl_cell_tests {
                 watches_files: false,
             }),
             poll_interval_secs: Some(poll),
-            keep_alive_polls: Some(keep),
+            poll_count: Some(keep),
             fsevents_reinstate: Some(false),
             polls_elapsed: None,
             next_poll_in_secs: Some(next),

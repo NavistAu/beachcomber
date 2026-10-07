@@ -53,7 +53,7 @@ type CacheRow struct {
 	Stale             bool
 	Kind              map[string]interface{} // e.g. {"kind":"lifecycle","decay":0,"watches_files":true}
 	PollIntervalSecs  *uint64
-	KeepAlivePolls    *uint32
+	PollCount         *uint32
 	FseventsReinstate *bool
 	PollsElapsed      *uint64
 	Failure           map[string]interface{} // e.g. {"consecutive_failures":3}

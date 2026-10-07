@@ -173,7 +173,7 @@ function parseCacheRows(data: unknown): CacheRow[] {
       stale: Boolean(r['stale']),
       kind: r['kind'] != null ? (r['kind'] as RowKind) : undefined,
       pollIntervalSecs: r['poll_interval_secs'] != null ? Number(r['poll_interval_secs']) : undefined,
-      keepAlivePolls: r['keep_alive_polls'] != null ? Number(r['keep_alive_polls']) : undefined,
+      pollCount: r['poll_count'] != null ? Number(r['poll_count']) : undefined,
       pollsElapsed: r['polls_elapsed'] != null ? Number(r['polls_elapsed']) : undefined,
       fseventsReinstate: r['fsevents_reinstate'] != null ? Boolean(r['fsevents_reinstate']) : undefined,
       failure: r['failure'] != null ? (r['failure'] as CacheRow['failure']) : undefined,

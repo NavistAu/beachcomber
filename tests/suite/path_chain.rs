@@ -20,8 +20,8 @@ use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use beachcomber::server::Server;
 use std::collections::HashMap;
@@ -301,8 +301,10 @@ fn source_meta(name: &str, field: &str, scope: SourceScope) -> SourceMetadata {
             field_type: FieldType::String,
         }],
         scope,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
-        keep_alive: KeepAlive::Polls(2),
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 60,
+            count: 2,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 30,

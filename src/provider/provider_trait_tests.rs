@@ -1,6 +1,6 @@
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 
 fn fake_source_metadata() -> SourceMetadata {
@@ -11,8 +11,10 @@ fn fake_source_metadata() -> SourceMetadata {
             field_type: FieldType::String,
         }],
         scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
-        keep_alive: KeepAlive::Polls(2),
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 30,
+            count: 2,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 30,
@@ -90,7 +92,7 @@ fn provider_execute_returns_result() {
 fn invalidation_strategy_poll() {
     let p = FakeProvider;
     match p.metadata().sources[0].invalidation {
-        InvalidationStrategy::Poll { interval_secs } => {
+        InvalidationStrategy::Poll { interval_secs, .. } => {
             assert_eq!(interval_secs, 30);
         }
         _ => panic!("Expected Poll invalidation strategy"),

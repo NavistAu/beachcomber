@@ -1220,7 +1220,7 @@ impl Cache {
                                 stale: stamp.is_stale(),
                                 kind: Some(RowKind::Static),
                                 poll_interval_secs: None,
-                                keep_alive_polls: None,
+                                poll_count: None,
                                 fsevents_reinstate: None,
                                 polls_elapsed: None,
                                 next_poll_in_secs: None,
@@ -1253,7 +1253,7 @@ impl Cache {
                         stale,
                         kind: kind.clone(),
                         poll_interval_secs: None,
-                        keep_alive_polls: None,
+                        poll_count: None,
                         fsevents_reinstate: None,
                         polls_elapsed: None,
                         next_poll_in_secs: None,
@@ -1319,7 +1319,7 @@ pub struct CacheRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll_interval_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keep_alive_polls: Option<u32>,
+    pub poll_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fsevents_reinstate: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

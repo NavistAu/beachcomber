@@ -398,7 +398,7 @@ present when the row's lifecycle discriminator is known: `{"kind":
 "lifecycle", "decay": N, "watches_files": bool}` for a lifecycle-tracked row,
 `{"kind": "once"}` / `{"kind": "static"}` / `{"kind": "transient"}`
 otherwise; omitted when unknown. A handful of further optional fields
-(`poll_interval_secs`, `keep_alive_polls`, `fsevents_reinstate`,
+(`poll_interval_secs`, `poll_count`, `fsevents_reinstate`,
 `polls_elapsed`, `next_poll_in_secs`, `failure`) are omitted here and carry
 diagnostic detail `comb status` renders as columns; see `src/cache.rs`'s
 `CacheRow` for the authoritative field list.

@@ -2,8 +2,8 @@ use crate::boundaries::library::{LibloadingLoader, LibraryLoader, LoadedLibrary}
 use crate::config::{ExternalSourceConfig, ScriptProviderConfig};
 use crate::provider::script::build_source_meta_from_external;
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope,
 };
 use std::sync::{Arc, OnceLock};
 use tracing::{debug, warn};
@@ -278,7 +278,7 @@ fn parse_library_source_meta(_name: &str, json_str: &str) -> Option<SourceMetada
         })
         .unwrap_or_default();
 
-    let (invalidation, keep_alive, scope) = parse_invalidation_and_keep_alive(obj, default_scope);
+    let (invalidation, scope) = parse_invalidation(obj, default_scope);
 
     let fields = if fields.is_empty() {
         vec![FieldSchema {
@@ -301,7 +301,6 @@ fn parse_library_source_meta(_name: &str, json_str: &str) -> Option<SourceMetada
         fields,
         scope,
         invalidation,
-        keep_alive,
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,
@@ -310,16 +309,18 @@ fn parse_library_source_meta(_name: &str, json_str: &str) -> Option<SourceMetada
     })
 }
 
-fn parse_invalidation_and_keep_alive(
+fn parse_invalidation(
     obj: &serde_json::Map<String, serde_json::Value>,
     scope: SourceScope,
-) -> (InvalidationStrategy, KeepAlive, SourceScope) {
+) -> (InvalidationStrategy, SourceScope) {
     let inv = match obj.get("invalidation").and_then(|v| v.as_object()) {
         Some(inv) => inv,
         None => {
             return (
-                InvalidationStrategy::Poll { interval_secs: 30 },
-                KeepAlive::Polls(2),
+                InvalidationStrategy::Poll {
+                    interval_secs: 30,
+                    count: 2,
+                },
                 scope,
             );
         }
@@ -332,7 +333,6 @@ fn parse_invalidation_and_keep_alive(
                 patterns: vec![],
                 abs_paths: vec![],
             },
-            KeepAlive::Never,
             SourceScope::Global,
         );
     }
@@ -356,40 +356,33 @@ fn parse_invalidation_and_keep_alive(
                 patterns,
                 abs_paths: vec![],
                 interval_secs: secs,
+                count: 2,
             },
-            KeepAlive::Polls(2),
             scope,
         ),
-        (Some(patterns), None) => {
-            let (inv_strat, ka) = if scope == SourceScope::Global {
-                (
-                    InvalidationStrategy::Watch {
-                        patterns: vec![],
-                        abs_paths: vec![],
-                    },
-                    KeepAlive::Never,
-                )
-            } else {
-                (
-                    InvalidationStrategy::Watch {
-                        patterns,
-                        abs_paths: vec![],
-                    },
-                    KeepAlive::Duration(120),
-                )
-            };
-            (inv_strat, ka, scope)
-        }
+        (Some(patterns), None) => (
+            InvalidationStrategy::Watch {
+                patterns: if scope == SourceScope::Global {
+                    vec![]
+                } else {
+                    patterns
+                },
+                abs_paths: vec![],
+            },
+            scope,
+        ),
         (None, Some(secs)) => (
             InvalidationStrategy::Poll {
                 interval_secs: secs,
+                count: 2,
             },
-            KeepAlive::Polls(2),
             scope,
         ),
         (None, None) => (
-            InvalidationStrategy::Poll { interval_secs: 30 },
-            KeepAlive::Polls(2),
+            InvalidationStrategy::Poll {
+                interval_secs: 30,
+                count: 2,
+            },
             scope,
         ),
     }
@@ -412,33 +405,26 @@ fn build_source_meta_from_config(_name: &str, config: &ScriptProviderConfig) -> 
         SourceScope::PathScoped
     };
 
-    let (invalidation, keep_alive) = match watch_patterns {
+    let invalidation = match watch_patterns {
         Some(patterns) => {
             if scope == SourceScope::Global {
-                (
-                    InvalidationStrategy::Watch {
-                        patterns: vec![],
-                        abs_paths: vec![],
-                    },
-                    KeepAlive::Never,
-                )
+                InvalidationStrategy::Watch {
+                    patterns: vec![],
+                    abs_paths: vec![],
+                }
             } else {
-                (
-                    InvalidationStrategy::WatchAndPoll {
-                        patterns,
-                        abs_paths: vec![],
-                        interval_secs: poll_secs,
-                    },
-                    KeepAlive::Polls(2),
-                )
+                InvalidationStrategy::WatchAndPoll {
+                    patterns,
+                    abs_paths: vec![],
+                    interval_secs: poll_secs,
+                    count: 2,
+                }
             }
         }
-        None => (
-            InvalidationStrategy::Poll {
-                interval_secs: poll_secs,
-            },
-            KeepAlive::Polls(2),
-        ),
+        None => InvalidationStrategy::Poll {
+            interval_secs: poll_secs,
+            count: 2,
+        },
     };
 
     let fields = config
@@ -473,7 +459,6 @@ fn build_source_meta_from_config(_name: &str, config: &ScriptProviderConfig) -> 
         fields,
         scope,
         invalidation,
-        keep_alive,
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,
@@ -499,8 +484,10 @@ fn fallback_source_meta(provider_name: &str, idx: usize) -> SourceMetadata {
             field_type: FieldType::String,
         }],
         scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
-        keep_alive: KeepAlive::Polls(2),
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 30,
+            count: 2,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,

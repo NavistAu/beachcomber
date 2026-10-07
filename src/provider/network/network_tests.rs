@@ -18,7 +18,7 @@ fn network_provider_metadata() {
     assert!(fields.contains(&"ssid"));
     assert!(fields.contains(&"online"));
     match src.invalidation {
-        InvalidationStrategy::Poll { interval_secs } => {
+        InvalidationStrategy::Poll { interval_secs, .. } => {
             assert_eq!(interval_secs, 10);
         }
         _ => panic!("Expected Poll invalidation"),

@@ -2,7 +2,7 @@ module Beachcomber
   HelloInfo = Struct.new(:protocol_version, :daemon_version, keyword_init: true)
   CacheRow = Struct.new(
     :provider, :field, :path, :value, :age_ms, :stale,
-    :kind, :poll_interval_secs, :keep_alive_polls, :fsevents_reinstate, :polls_elapsed,
+    :kind, :poll_interval_secs, :poll_count, :fsevents_reinstate, :polls_elapsed,
     :failure, :source,
     keyword_init: true
   )

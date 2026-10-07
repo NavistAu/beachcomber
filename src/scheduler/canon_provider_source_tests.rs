@@ -6,11 +6,12 @@
 
 use crate::cache::Cache;
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Source,
-    SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Source, SourceMetadata,
+    SourceResult, SourceScope, Value,
 };
 use crate::scheduler::lifecycle::{
-    DEFAULT_DECAY, LifecycleRegistry, LifecycleState, SourceLifecycleConfig, StrategyKind,
+    DEFAULT_DECAY, DEFAULT_POLL_COUNT, LifecycleRegistry, LifecycleState, SourceLifecycleConfig,
+    StrategyKind,
 };
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -24,7 +25,6 @@ fn make_source_meta(
     field_names: &[&str],
     scope: SourceScope,
     invalidation: InvalidationStrategy,
-    keep_alive: KeepAlive,
     fsevents_reinstate: bool,
 ) -> SourceMetadata {
     SourceMetadata {
@@ -38,7 +38,6 @@ fn make_source_meta(
             .collect(),
         scope,
         invalidation,
-        keep_alive,
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,
@@ -47,11 +46,11 @@ fn make_source_meta(
     }
 }
 
-fn watch_source_config(keep_alive: KeepAlive, fsevents_reinstate: bool) -> SourceLifecycleConfig {
+fn watch_source_config(fsevents_reinstate: bool) -> SourceLifecycleConfig {
     SourceLifecycleConfig {
         strategy_kind: StrategyKind::Watch,
         poll_interval: None,
-        keep_alive,
+        poll_count: DEFAULT_POLL_COUNT,
         fsevents_reinstate,
         decay: DEFAULT_DECAY,
     }
@@ -61,7 +60,7 @@ fn poll_source_config(interval: Duration, k: u32) -> SourceLifecycleConfig {
     SourceLifecycleConfig {
         strategy_kind: StrategyKind::Poll,
         poll_interval: Some(interval),
-        keep_alive: KeepAlive::Polls(k),
+        poll_count: k,
         fsevents_reinstate: false,
         decay: DEFAULT_DECAY,
     }
@@ -75,7 +74,7 @@ fn watch_and_poll_config(
     SourceLifecycleConfig {
         strategy_kind: StrategyKind::WatchAndPoll,
         poll_interval: Some(interval),
-        keep_alive: KeepAlive::Polls(k),
+        poll_count: k,
         fsevents_reinstate,
         decay: DEFAULT_DECAY,
     }
@@ -120,12 +119,12 @@ fn pure_watch_source_never_polls() {
     };
     let t0 = Instant::now();
 
-    // Pure-watch global: KeepAlive::Never
-    let cfg = watch_source_config(KeepAlive::Never, true);
+    // Pure-watch global: no poll timer.
+    let cfg = watch_source_config(true);
     reg.on_demand(key.clone(), cfg, t0);
 
-    // Tick well past any hypothetical poll interval — nothing should fire.
-    let far_future = t0 + Duration::from_secs(86400);
+    // Tick inside the Active window — nothing should fire.
+    let far_future = t0 + Duration::from_secs(600);
     let actions = reg.tick(far_future);
 
     // No polls should be due because Watch sources have no poll timer.
@@ -134,7 +133,7 @@ fn pure_watch_source_never_polls() {
         "pure-watch source must never appear in polls_due; got: {:?}",
         actions.polls_due
     );
-    // No lifecycle transitions either (never-decay global).
+    // No lifecycle transitions either (still inside the Active window).
     assert!(
         actions.transitions.is_empty(),
         "pure-watch global must not transition; got: {:?}",
@@ -162,7 +161,7 @@ fn watch_source_refreshes_on_filesystem_event() {
     };
     let t0 = Instant::now();
 
-    let cfg = watch_source_config(KeepAlive::Duration(120), true);
+    let cfg = watch_source_config(true);
     reg.on_demand(key.clone(), cfg, t0);
 
     // Simulate a filesystem event.
@@ -266,65 +265,15 @@ fn watch_and_poll_source_refreshes_on_both_paths() {
 // Scenario 4: Pure-watch global source never decays
 // ---------------------------------------------------------------------------
 
-/// Canon §"Behaviour assertions": Pure-watch global source never decays
-///
-/// Given a Source with strategy Watch and scope Global, when no demand or
-/// filesystem event fires for any duration, the Source instance remains Active
-/// and does not transition to any Decay step.
-#[test]
-fn pure_watch_global_source_never_decays() {
-    let mut reg = LifecycleRegistry::new();
-    // Global scope is expressed by path=None in the lifecycle key.
-    let key = crate::scheduler::lifecycle::Key {
-        provider: "mise".to_string(),
-        path: None,
-        source: "global".to_string(),
-        node: String::new(),
-    };
-    let t0 = Instant::now();
-
-    let cfg = SourceLifecycleConfig {
-        strategy_kind: StrategyKind::Watch,
-        poll_interval: None,
-        keep_alive: KeepAlive::Never,
-        fsevents_reinstate: true,
-        decay: DEFAULT_DECAY,
-    };
-    reg.on_demand(key.clone(), cfg, t0);
-    assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
-
-    // Tick far into the future with no demand.
-    for secs in [60, 3600, 86400, 86400 * 30] {
-        let actions = reg.tick(t0 + Duration::from_secs(secs));
-        assert!(
-            actions.transitions.is_empty(),
-            "pure-watch global must not transition at t={}s; got {:?}",
-            secs,
-            actions.transitions
-        );
-        assert!(
-            actions.evictions.is_empty(),
-            "pure-watch global must not evict at t={}s",
-            secs
-        );
-        assert_eq!(
-            reg.state(&key),
-            Some(&LifecycleState::Active),
-            "pure-watch global must remain Active at t={}s",
-            secs
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Scenario 5: Path-scoped Watch source decays per K-as-duration
 // ---------------------------------------------------------------------------
 
 /// Canon §"Behaviour assertions": Path-scoped Watch source decays per K-as-duration
 ///
-/// Given a Source with strategy Watch and scope PathScoped, keep_alive Duration(60s),
-/// when 60 seconds pass with no demand or filesystem event, the Source transitions
-/// to Decay1 and the Decay1 step duration is 120 seconds.
+/// Given a Source with strategy Watch and scope PathScoped, the default 60 s x 12 window,
+/// when 720 seconds pass with no demand or filesystem event, the Source transitions
+/// to Decay1 and the Decay1 step duration is 1440 seconds.
 #[test]
 fn path_scoped_watch_source_decays_per_k_duration() {
     let mut reg = LifecycleRegistry::new();
@@ -339,43 +288,43 @@ fn path_scoped_watch_source_decays_per_k_duration() {
     let cfg = SourceLifecycleConfig {
         strategy_kind: StrategyKind::Watch,
         poll_interval: None,
-        keep_alive: KeepAlive::Duration(60),
+        poll_count: DEFAULT_POLL_COUNT,
         fsevents_reinstate: false,
         decay: DEFAULT_DECAY,
     };
     reg.on_demand(key.clone(), cfg, t0);
     assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
 
-    // After exactly keep_alive seconds, should transition to Decay1.
-    // The lifecycle checks `now >= step_deadline`, so tick at t0+60 triggers.
-    let actions = reg.tick(t0 + Duration::from_secs(60));
+    // After exactly the Active window (60 s x 12), should transition to Decay1.
+    // The lifecycle checks `now >= step_deadline`, so tick at t0+720 triggers.
+    let actions = reg.tick(t0 + Duration::from_secs(720));
     assert!(
         actions
             .transitions
             .iter()
             .any(|(k, s)| { k == &key && matches!(s, LifecycleState::Decay(1)) }),
-        "path-scoped Watch source must enter Decay1 after keep_alive; transitions={:?}",
+        "path-scoped Watch source must enter Decay1 after the Active window; transitions={:?}",
         actions.transitions
     );
     assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
 
-    // Decay1 step duration = K_secs * 2^1 = 60 * 2 = 120s.
-    // Tick 119s after entering Decay1 — should still be in Decay1.
-    let t_still_decay1 = t0 + Duration::from_secs(60) + Duration::from_secs(119);
+    // Decay1 step duration = 720 * 2^1 = 1440s.
+    // Tick 1439s after entering Decay1 — should still be in Decay1.
+    let t_still_decay1 = t0 + Duration::from_secs(720) + Duration::from_secs(1439);
     reg.tick(t_still_decay1);
     assert_eq!(
         reg.state(&key),
         Some(&LifecycleState::Decay(1)),
-        "should still be in Decay1 after only 119s"
+        "should still be in Decay1 after only 1439s"
     );
 
-    // Tick 1s more — should now advance to Decay2 (step duration = 120s elapsed).
-    let t_decay2 = t0 + Duration::from_secs(60) + Duration::from_secs(121);
+    // Tick 1s more — should now advance to Decay2 (step duration = 1440s elapsed).
+    let t_decay2 = t0 + Duration::from_secs(720) + Duration::from_secs(1441);
     reg.tick(t_decay2);
     assert_eq!(
         reg.state(&key),
         Some(&LifecycleState::Decay(2)),
-        "Decay1 step duration must be exactly 120s"
+        "Decay1 step duration must be exactly 1440s"
     );
 }
 
@@ -556,7 +505,6 @@ fn fsevents_reinstate_default_is_true_for_watch_sources() {
             patterns: vec![".git".to_string()],
             abs_paths: vec![],
         },
-        KeepAlive::Duration(120),
         true, // default: true
     );
     let source = FakeSource(meta);
@@ -574,11 +522,11 @@ fn fsevents_reinstate_default_is_true_for_watch_sources() {
         node: String::new(),
     };
     let t0 = Instant::now();
-    let cfg = watch_source_config(KeepAlive::Duration(1), true);
+    let cfg = watch_source_config(true);
     reg.on_demand(key.clone(), cfg, t0);
 
     // Trigger Decay1.
-    let actions = reg.tick(t0 + Duration::from_millis(1500));
+    let actions = reg.tick(t0 + Duration::from_secs(721));
     assert!(
         !actions.watch_drops.contains(&key),
         "watches must survive decay when fsevents_reinstate=true; watch_drops={:?}",
@@ -586,7 +534,7 @@ fn fsevents_reinstate_default_is_true_for_watch_sources() {
     );
 
     // fsevent during Decay1 reinstates to Active.
-    let outcome = reg.on_fsevent(key.clone(), t0 + Duration::from_millis(2000));
+    let outcome = reg.on_fsevent(key.clone(), t0 + Duration::from_secs(722));
     assert!(
         outcome.refresh,
         "fsevent during Decay1 must trigger refresh (fsevents_reinstate=true)"
@@ -612,8 +560,8 @@ fn fsevents_reinstate_default_is_true_for_watch_and_poll_sources() {
             patterns: vec![".git/index".to_string()],
             abs_paths: vec![],
             interval_secs: 60,
+            count: 2,
         },
-        KeepAlive::Polls(2),
         true, // default: true
     );
     let source = FakeSource(meta);
@@ -737,7 +685,6 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
             patterns: vec![],
             abs_paths: vec![abs_path.clone()],
         },
-        KeepAlive::Never,
         true,
     );
     let source = FakeSource(meta);
@@ -924,7 +871,7 @@ fn watch_registration_failure_leaves_cache_stale() {
     // 3. No automatic poll occurs.
 
     // Verify: Watch-only source has no poll_interval in lifecycle config.
-    let cfg = watch_source_config(KeepAlive::Duration(120), true);
+    let cfg = watch_source_config(true);
     assert!(
         cfg.poll_interval.is_none(),
         "Watch-only source must have no poll_interval — no fallback poll path"

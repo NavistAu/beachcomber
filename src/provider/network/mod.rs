@@ -1,6 +1,6 @@
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -60,8 +60,10 @@ fn interfaces_source_metadata() -> SourceMetadata {
             },
         ],
         scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 10 },
-        keep_alive: KeepAlive::Polls(6),
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 10,
+            count: 6,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 30,

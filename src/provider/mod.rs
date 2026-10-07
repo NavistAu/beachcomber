@@ -386,6 +386,8 @@ pub enum SourceScope {
 pub enum InvalidationStrategy {
     Poll {
         interval_secs: u64,
+        /// Polls in the Active window: it lasts `interval_secs × count`.
+        count: u32,
     },
     Watch {
         patterns: Vec<String>,
@@ -395,17 +397,8 @@ pub enum InvalidationStrategy {
         patterns: Vec<String>,
         abs_paths: Vec<String>,
         interval_secs: u64,
+        count: u32,
     },
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum KeepAlive {
-    /// Valid for `Poll` and `WatchAndPoll`. Entry stays Active for K polls.
-    Polls(u32),
-    /// Valid for `Watch` (path-scoped). Entry stays Active for K_secs.
-    Duration(u64),
-    /// Valid only for `Watch` + `Global`. Entry never decays.
-    Never,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -419,7 +412,7 @@ pub struct FailbackConfig {
 /// reporting works correctly for sync-miss and rerun writes.
 pub fn expected_interval_secs(strategy: &InvalidationStrategy) -> Option<u64> {
     match strategy {
-        InvalidationStrategy::Poll { interval_secs } => Some(*interval_secs),
+        InvalidationStrategy::Poll { interval_secs, .. } => Some(*interval_secs),
         InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(*interval_secs),
         InvalidationStrategy::Watch { .. } => None,
     }
@@ -503,7 +496,6 @@ pub struct SourceMetadata {
     pub fields: Vec<FieldSchema>,
     pub scope: SourceScope,
     pub invalidation: InvalidationStrategy,
-    pub keep_alive: KeepAlive,
     pub failback: FailbackConfig,
     /// Whether watches survive decay. Default `true` for Watch/WatchAndPoll
     /// per canon §"fsevents_reinstate default". Meaningless for Poll.
@@ -603,21 +595,6 @@ fn validate_source(provider: &str, s: &SourceMetadata) -> Result<(), String> {
             provider, s.name
         ));
     }
-    // KeepAlive variant matches strategy
-    match (&s.invalidation, &s.keep_alive, &s.scope) {
-        (InvalidationStrategy::Poll { .. }, KeepAlive::Polls(_), _) => Ok(()),
-        (InvalidationStrategy::WatchAndPoll { .. }, KeepAlive::Polls(_), _) => Ok(()),
-        (InvalidationStrategy::Watch { .. }, KeepAlive::Duration(_), SourceScope::PathScoped) => {
-            Ok(())
-        }
-        (InvalidationStrategy::Watch { .. }, KeepAlive::Never, SourceScope::Global) => Ok(()),
-        _ => Err(format!(
-            "provider '{}' source '{}': KeepAlive variant does not match strategy/scope. \
-             Polls(K) requires Poll/WatchAndPoll; Duration(secs) requires Watch + PathScoped; \
-             Never requires Watch + Global.",
-            provider, s.name
-        )),
-    }?;
     // Global Watch sources should use abs_paths only
     if let (InvalidationStrategy::Watch { patterns, .. }, SourceScope::Global) =
         (&s.invalidation, &s.scope)
@@ -706,13 +683,20 @@ mod tests {
             patterns: vec![".git".into()],
             abs_paths: vec![],
             interval_secs: 60,
+            count: 2,
         };
         assert_eq!(watch_patterns(&strategy), vec![".git".to_string()]);
     }
 
     #[test]
     fn watch_patterns_empty_for_poll() {
-        assert!(watch_patterns(&InvalidationStrategy::Poll { interval_secs: 10 }).is_empty());
+        assert!(
+            watch_patterns(&InvalidationStrategy::Poll {
+                interval_secs: 10,
+                count: 2
+            })
+            .is_empty()
+        );
     }
 
     fn make_source(name: &str, fields: Vec<&str>) -> SourceMetadata {
@@ -726,8 +710,10 @@ mod tests {
                 })
                 .collect(),
             scope: SourceScope::Global,
-            invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
-            keep_alive: KeepAlive::Polls(2),
+            invalidation: InvalidationStrategy::Poll {
+                interval_secs: 30,
+                count: 2,
+            },
             failback: FailbackConfig {
                 reattempts: 3,
                 interval_secs: 30,
@@ -756,37 +742,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_polls_keep_alive_on_watch_strategy() {
-        let mut s = make_source("a", vec!["f1"]);
-        s.invalidation = InvalidationStrategy::Watch {
-            patterns: vec![],
-            abs_paths: vec!["/foo".into()],
-        };
-        s.keep_alive = KeepAlive::Polls(2);
-        let meta = ProviderMetadata {
-            name: "x".into(),
-            sources: vec![s],
-        };
-        assert!(meta.validate().is_err());
-    }
-
-    #[test]
-    fn validate_rejects_never_keep_alive_on_path_scoped() {
-        let mut s = make_source("a", vec!["f1"]);
-        s.invalidation = InvalidationStrategy::Watch {
-            patterns: vec!["foo".into()],
-            abs_paths: vec![],
-        };
-        s.scope = SourceScope::PathScoped;
-        s.keep_alive = KeepAlive::Never;
-        let meta = ProviderMetadata {
-            name: "x".into(),
-            sources: vec![s],
-        };
-        assert!(meta.validate().is_err());
-    }
-
-    #[test]
     fn validate_rejects_global_watch_with_patterns() {
         let mut s = make_source("a", vec!["f1"]);
         s.invalidation = InvalidationStrategy::Watch {
@@ -794,7 +749,6 @@ mod tests {
             abs_paths: vec![],
         };
         s.scope = SourceScope::Global;
-        s.keep_alive = KeepAlive::Never;
         let meta = ProviderMetadata {
             name: "x".into(),
             sources: vec![s],

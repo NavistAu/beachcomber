@@ -6,8 +6,8 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use beachcomber::query::SourceDemand;
 use beachcomber::scheduler::{Scheduler, SchedulerHandle, SchedulerMessage};
@@ -26,8 +26,10 @@ fn lc_counter_source_meta() -> SourceMetadata {
             field_type: FieldType::Int,
         }],
         scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 5 },
-        keep_alive: KeepAlive::Polls(2),
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 5,
+            count: 2,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 30,

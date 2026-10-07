@@ -23,7 +23,7 @@ class CacheRow:
     stale: bool
     kind: Optional[Dict[str, Any]] = None
     poll_interval_secs: Optional[int] = None
-    keep_alive_polls: Optional[int] = None
+    poll_count: Optional[int] = None
     fsevents_reinstate: Optional[bool] = None
     failure: Optional[Dict[str, Any]] = None
     source: Optional[str] = None

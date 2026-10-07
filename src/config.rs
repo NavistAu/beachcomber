@@ -68,7 +68,6 @@ const SOURCE_KNOB_KEYS: &[&str] = &[
     "poll_count",
     "fsevent_patterns",
     "fsevent_abs_paths",
-    "fsevent_lifespan",
     "fsevent_reinstates",
     "failback_count",
     "failback_interval",
@@ -343,7 +342,6 @@ pub struct SourceOverrideConfig {
     // fsevent_* keys
     pub fsevent_patterns: Option<Vec<String>>,
     pub fsevent_abs_paths: Option<Vec<String>>,
-    pub fsevent_lifespan: Option<String>,
     pub fsevent_reinstates: Option<bool>,
     // failback_* keys
     pub failback_count: Option<u32>,
@@ -436,12 +434,6 @@ impl SourceOverrideConfig {
                         .collect();
                     out.fsevent_abs_paths = Some(paths?);
                 }
-                "fsevent_lifespan" => {
-                    let s = val.as_str().ok_or_else(|| {
-                        format!("{block_name}: key 'fsevent_lifespan' must be a duration string")
-                    })?;
-                    out.fsevent_lifespan = Some(s.to_string());
-                }
                 "fsevent_reinstates" => {
                     let b = val.as_bool().ok_or_else(|| {
                         format!("{block_name}: key 'fsevent_reinstates' must be a boolean")
@@ -464,7 +456,7 @@ impl SourceOverrideConfig {
                     return Err(format!(
                         "{block_name}: unknown key '{other}'. Valid per-source keys are: \
                          type, scope, enabled, poll_interval, poll_count, fsevent_patterns, \
-                         fsevent_abs_paths, fsevent_lifespan, fsevent_reinstates, \
+                         fsevent_abs_paths, fsevent_reinstates, \
                          failback_count, failback_interval"
                     ));
                 }
@@ -504,25 +496,13 @@ impl SourceOverrideConfig {
         // fsevent_* keys only valid for fsevent and fsevent_poll
         if (self.fsevent_patterns.is_some()
             || self.fsevent_abs_paths.is_some()
-            || self.fsevent_lifespan.is_some()
             || self.fsevent_reinstates.is_some())
             && kind == StrategyKind::Poll
         {
             return Err(format!(
-                "{block_name}: keys fsevent_patterns/fsevent_abs_paths/fsevent_lifespan/\
+                "{block_name}: keys fsevent_patterns/fsevent_abs_paths/\
                      fsevent_reinstates are not valid for type = \"poll\". \
                      Use type = \"fsevent\" or \"fsevent_poll\"."
-            ));
-        }
-
-        // fsevent_lifespan is forbidden for global fsevent (pure-watch global never decays)
-        if let (Some(_), Some(scope)) = (&self.fsevent_lifespan, &self.scope)
-            && scope == "global"
-            && kind == StrategyKind::Fsevent
-        {
-            return Err(format!(
-                "{block_name}: fsevent_lifespan is forbidden for \
-                     scope = \"global\" + type = \"fsevent\" (pure-watch global never decays)."
             ));
         }
 
@@ -569,7 +549,6 @@ pub struct ExternalSourceConfig {
     pub poll_count: Option<u32>,
     pub fsevent_patterns: Option<Vec<String>>,
     pub fsevent_abs_paths: Option<Vec<String>>,
-    pub fsevent_lifespan: Option<String>,
     pub fsevent_reinstates: Option<bool>,
     pub failback_count: Option<u32>,
     pub failback_interval: Option<String>,
@@ -766,17 +745,6 @@ impl ExternalSourceConfig {
                         .collect();
                     out.fsevent_abs_paths = Some(v?);
                 }
-                "fsevent_lifespan" => {
-                    out.fsevent_lifespan = Some(
-                        val.as_str()
-                            .ok_or_else(|| {
-                                format!(
-                                    "{block_name}: 'fsevent_lifespan' must be a duration string"
-                                )
-                            })?
-                            .to_string(),
-                    );
-                }
                 "fsevent_reinstates" => {
                     out.fsevent_reinstates = Some(val.as_bool().ok_or_else(|| {
                         format!("{block_name}: 'fsevent_reinstates' must be a boolean")
@@ -804,7 +772,7 @@ impl ExternalSourceConfig {
                          Valid external-source keys are: type, scope, enabled, command, output, \
                          url, method, headers, body, extract, default_timeout, fields, \
                          poll_interval, poll_count, fsevent_patterns, fsevent_abs_paths, \
-                         fsevent_lifespan, fsevent_reinstates, failback_count, failback_interval"
+                         fsevent_reinstates, failback_count, failback_interval"
                     ));
                 }
             }

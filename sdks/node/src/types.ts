@@ -22,7 +22,7 @@ export interface CacheRow {
   stale: boolean;
   kind?: RowKind;
   pollIntervalSecs?: number;
-  keepAlivePolls?: number;
+  pollCount?: number;
   pollsElapsed?: number;
   fseventsReinstate?: boolean;
   failure?: { consecutive_failures: number; suppressed_until_unix_ms?: number };

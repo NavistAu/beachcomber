@@ -1,6 +1,6 @@
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,8 +35,8 @@ fn config_file_source_metadata() -> SourceMetadata {
             patterns: vec![],
             abs_paths: aws_config_abs_paths(),
             interval_secs: 60,
+            count: 2,
         },
-        keep_alive: KeepAlive::Polls(2),
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 30,

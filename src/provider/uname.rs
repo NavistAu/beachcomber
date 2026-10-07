@@ -1,6 +1,6 @@
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 
 pub struct UnameProvider;
@@ -44,7 +44,6 @@ fn system_source_metadata() -> SourceMetadata {
             patterns: vec![],
             abs_paths: vec![],
         },
-        keep_alive: KeepAlive::Never,
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,

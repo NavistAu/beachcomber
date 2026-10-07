@@ -199,7 +199,7 @@ fn status_row_exposes_lifecycle_fields() {
         "stale": false,
         "kind": {"kind": "lifecycle", "decay": 0, "watches_files": true},
         "poll_interval_secs": 5u64,
-        "keep_alive_polls": 3u32,
+        "poll_count": 3u32,
         "fsevents_reinstate": false,
         "failure": {"consecutive_failures": 0}
     });
@@ -217,7 +217,7 @@ fn status_row_exposes_lifecycle_fields() {
         other => panic!("expected Lifecycle, got {:?}", other),
     }
     assert_eq!(row.poll_interval_secs, Some(5));
-    assert_eq!(row.keep_alive_polls, Some(3));
+    assert_eq!(row.poll_count, Some(3));
     assert_eq!(row.fsevents_reinstate, Some(false));
     assert!(row.failure.is_some());
     assert_eq!(row.failure.unwrap().consecutive_failures, 0);

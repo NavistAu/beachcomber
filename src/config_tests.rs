@@ -195,7 +195,6 @@ fn parse_per_source_block() {
 type = "fsevent"
 scope = "path"
 fsevent_patterns = [".git"]
-fsevent_lifespan = "300s"
 failback_count = 3
 failback_interval = "60s"
 "#;
@@ -207,7 +206,6 @@ failback_interval = "60s"
         ov.fsevent_patterns.as_deref(),
         Some(&[".git".to_string()][..])
     );
-    assert_eq!(ov.fsevent_lifespan.as_deref(), Some("300s"));
     assert_eq!(ov.failback_count, Some(3));
     assert_eq!(ov.failback_interval.as_deref(), Some("60s"));
 }
@@ -560,20 +558,19 @@ poll_interval = "60s"
 }
 
 #[test]
-fn fsevent_lifespan_forbidden_for_global_fsevent() {
-    // fsevent_lifespan on scope=global + type=fsevent → error (pure-watch global never decays).
+fn fsevent_lifespan_is_a_config_error() {
+    // The Active window is interval x count; fsevent_lifespan was a second spelling of it.
     let toml_str = r#"
-[providers.hostname.host]
+[providers.git.refs]
 type = "fsevent"
-scope = "global"
+scope = "path"
 fsevent_lifespan = "300s"
 "#;
-    // This should fail during source_override() validation
     let config: Config = toml::from_str(toml_str).unwrap();
-    let result = config.source_override("hostname", "host");
+    let err = config.source_override("git", "refs").unwrap_err();
     assert!(
-        result.is_err(),
-        "fsevent_lifespan on global fsevent must error"
+        err.contains("unknown key 'fsevent_lifespan'"),
+        "error names the unknown key: {err:?}"
     );
 }
 
@@ -811,7 +808,6 @@ failback_interval = "60s"
 type = "fsevent"
 scope = "path"
 fsevent_patterns = [".git"]
-fsevent_lifespan = "300s"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     let known_providers = vec!["git".to_string()];

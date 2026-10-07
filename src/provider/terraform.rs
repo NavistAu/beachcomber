@@ -1,6 +1,6 @@
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::path::Path;
 
@@ -31,7 +31,6 @@ fn state_source_metadata() -> SourceMetadata {
             patterns: vec![".terraform/environment".into()],
             abs_paths: vec![],
         },
-        keep_alive: KeepAlive::Duration(120),
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,

@@ -392,7 +392,7 @@ class TestOps < Minitest::Test
           stale: false,
           kind: { kind: 'lifecycle', decay: 0, watches_files: true },
           poll_interval_secs: 30,
-          keep_alive_polls: 3,
+          poll_count: 3,
           fsevents_reinstate: false,
         }
       ]
@@ -403,7 +403,7 @@ class TestOps < Minitest::Test
     refute_nil git.kind
     assert_equal 'lifecycle', git.kind['kind']
     assert git.poll_interval_secs > 0
-    assert git.keep_alive_polls > 0
+    assert git.poll_count > 0
     refute_nil git.fsevents_reinstate
   end
 

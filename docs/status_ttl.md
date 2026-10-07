@@ -32,7 +32,7 @@ Encodes four per-entry lifecycle facts in one fixed-width column:
 
 - current lifecycle position (Active or which Decay step)
 - current poll interval `P` (scales with decay: `P × 2^step`)
-- keep-alive count `K` (provider-wide, constant across all steps — see `docs/cache-lifecycle.md`)
+- poll count (`poll_count`, `K`) (provider-wide, constant across all steps — see `docs/cache-lifecycle.md`)
 - whether fs-event reinstatement is armed (`fsevents_reinstate` provider flag)
 
 ### Format
@@ -164,7 +164,7 @@ Touches:
 
 - `src/cli/status_format.rs` — column logic, color, new TTL formatter, `--ascii` handling.
 - `src/main.rs` — default preset change, `--ascii` flag.
-- `src/cache.rs::CacheRow` — needs `poll_interval_secs`, `keep_alive_polls`, `fsevents_reinstate` fields added (wired from the lifecycle registry via the same path already used for `decay`).
+- `src/cache.rs::CacheRow` — needs `poll_interval_secs`, `poll_count`, `fsevents_reinstate` fields added (wired from the lifecycle registry via the same path already used for `decay`).
 - `src/server.rs::Request::Status` — populate the new CacheRow fields from `LifecycleRegistry::iter()` (same pattern as `get_lifecycle_decay_levels`).
 
 No protocol change — wire format is already JSON with extensible row structure. SDKs don't need to change (they already tolerate unknown fields).

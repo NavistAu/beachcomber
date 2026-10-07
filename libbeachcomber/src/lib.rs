@@ -332,7 +332,7 @@ pub struct CacheRow {
     /// Phase 2.7: how often the provider is polled, in seconds.
     pub poll_interval_secs: Option<u64>,
     /// Phase 2.7: number of polls before a demanded key decays.
-    pub keep_alive_polls: Option<u32>,
+    pub poll_count: Option<u32>,
     /// Phase 2.7: whether FSEvents will reinstate watching after a miss.
     pub fsevents_reinstate: Option<bool>,
     /// Number of polls that have fired in the current lifecycle step.
@@ -369,8 +369,8 @@ impl CacheRow {
             .get("kind")
             .and_then(|x| serde_json::from_value(x.clone()).ok());
         let poll_interval_secs = v.get("poll_interval_secs").and_then(|x| x.as_u64());
-        let keep_alive_polls = v
-            .get("keep_alive_polls")
+        let poll_count = v
+            .get("poll_count")
             .and_then(|x| x.as_u64().map(|n| n as u32));
         let fsevents_reinstate = v.get("fsevents_reinstate").and_then(|x| x.as_bool());
         let polls_elapsed = v
@@ -393,7 +393,7 @@ impl CacheRow {
             stale,
             kind,
             poll_interval_secs,
-            keep_alive_polls,
+            poll_count,
             fsevents_reinstate,
             polls_elapsed,
             next_poll_in_secs,

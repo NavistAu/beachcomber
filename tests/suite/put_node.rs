@@ -14,8 +14,8 @@ use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use beachcomber::server::Server;
 use std::sync::Arc;
@@ -60,8 +60,10 @@ impl Source for SentinelSource {
                 field_type: FieldType::String,
             }],
             scope: SourceScope::Global,
-            invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
-            keep_alive: KeepAlive::Polls(2),
+            invalidation: InvalidationStrategy::Poll {
+                interval_secs: 60,
+                count: 2,
+            },
             failback: FailbackConfig {
                 reattempts: 3,
                 interval_secs: 30,
@@ -97,8 +99,10 @@ impl Source for CountingSource {
                 field_type: FieldType::String,
             }],
             scope: SourceScope::Global,
-            invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
-            keep_alive: KeepAlive::Polls(2),
+            invalidation: InvalidationStrategy::Poll {
+                interval_secs: 60,
+                count: 2,
+            },
             failback: FailbackConfig {
                 reattempts: 3,
                 interval_secs: 30,

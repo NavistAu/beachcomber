@@ -51,7 +51,7 @@ module Beachcomber
         stale: row['stale'] == true,
         kind: row['kind'],
         poll_interval_secs: row['poll_interval_secs'],
-        keep_alive_polls: row['keep_alive_polls'],
+        poll_count: row['poll_count'],
         fsevents_reinstate: row['fsevents_reinstate'],
         polls_elapsed: row['polls_elapsed'],
         failure: row['failure'],

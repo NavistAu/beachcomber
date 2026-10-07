@@ -1,6 +1,6 @@
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value, expand_abs_path,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value, expand_abs_path,
 };
 use std::path::Path;
 use std::process::Command;
@@ -81,7 +81,6 @@ fn global_meta() -> SourceMetadata {
             patterns: vec![],
             abs_paths,
         },
-        keep_alive: KeepAlive::Never,
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,
@@ -102,7 +101,6 @@ fn project_meta() -> SourceMetadata {
             patterns: vec![".mise.toml".into(), "mise.toml".into()],
             abs_paths: vec![],
         },
-        keep_alive: KeepAlive::Duration(120),
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,

@@ -18,8 +18,8 @@ use crate::common::git::{GitRepoFixture, has_git};
 use beachcomber::cache::Cache;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use beachcomber::server::Server;
 use std::sync::Arc;
@@ -737,8 +737,10 @@ fn twin_meta(name: &str, field: &str) -> SourceMetadata {
             field_type: FieldType::Int,
         }],
         scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 600 },
-        keep_alive: KeepAlive::Polls(2),
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 600,
+            count: 2,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 30,

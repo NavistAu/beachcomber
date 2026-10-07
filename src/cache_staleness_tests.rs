@@ -67,7 +67,10 @@ fn no_interval_entry_is_never_stale() {
 #[test]
 fn expected_interval_secs_maps_all_strategies() {
     assert_eq!(
-        expected_interval_secs(&InvalidationStrategy::Poll { interval_secs: 30 }),
+        expected_interval_secs(&InvalidationStrategy::Poll {
+            interval_secs: 30,
+            count: 2
+        }),
         Some(30)
     );
     assert_eq!(
@@ -75,6 +78,7 @@ fn expected_interval_secs_maps_all_strategies() {
             patterns: vec![".git".into()],
             abs_paths: vec![],
             interval_secs: 60,
+            count: 2,
         }),
         Some(60)
     );

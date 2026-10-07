@@ -510,7 +510,7 @@ async fn inline_execute_source(
         SourceScope::PathScoped => path.map(|s| s.to_string()),
     };
     let expected_interval_secs = match source.metadata().invalidation {
-        InvalidationStrategy::Poll { interval_secs } => Some(interval_secs),
+        InvalidationStrategy::Poll { interval_secs, .. } => Some(interval_secs),
         InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(interval_secs),
         InvalidationStrategy::Watch { .. } => None,
     };
@@ -1337,7 +1337,7 @@ async fn handle_request(
                         // renderer doesn't fabricate `0s×00`.
                         if snap.poll_interval_secs > 0 {
                             row.poll_interval_secs = Some(snap.poll_interval_secs);
-                            row.keep_alive_polls = Some(snap.keep_alive_polls);
+                            row.poll_count = snap.poll_count;
                             row.polls_elapsed = Some(snap.polls_elapsed);
                             row.next_poll_in_secs = snap.next_poll_in_secs;
                         }
@@ -1522,7 +1522,7 @@ fn handle_introspect_daemon(
 fn summarize_invalidation(strategy: &crate::provider::InvalidationStrategy) -> String {
     use crate::provider::InvalidationStrategy;
     match strategy {
-        InvalidationStrategy::Poll { interval_secs } => format!("poll {interval_secs}s"),
+        InvalidationStrategy::Poll { interval_secs, .. } => format!("poll {interval_secs}s"),
         InvalidationStrategy::Watch { patterns, .. } => {
             if patterns.is_empty() {
                 "watch (abs_paths)".to_string()

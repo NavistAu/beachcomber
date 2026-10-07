@@ -1,7 +1,7 @@
 use crate::boundaries::process::{ProcessExecutor, RealProcessExecutor};
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::sync::{Arc, OnceLock};
 
@@ -32,8 +32,10 @@ fn state_meta() -> SourceMetadata {
             },
         ],
         scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
-        keep_alive: KeepAlive::Polls(4),
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 30,
+            count: 4,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,
@@ -187,8 +189,10 @@ fn level_meta() -> SourceMetadata {
             },
         ],
         scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
-        keep_alive: KeepAlive::Polls(4),
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 30,
+            count: 4,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,
@@ -212,8 +216,10 @@ fn upower_meta() -> SourceMetadata {
             },
         ],
         scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
-        keep_alive: KeepAlive::Polls(2),
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 60,
+            count: 2,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,

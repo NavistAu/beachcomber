@@ -1,6 +1,6 @@
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -33,8 +33,10 @@ fn state_source_metadata() -> SourceMetadata {
             field_type: FieldType::Bool,
         }],
         scope: SourceScope::Global,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
-        keep_alive: KeepAlive::Polls(2),
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 30,
+            count: 2,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 30,

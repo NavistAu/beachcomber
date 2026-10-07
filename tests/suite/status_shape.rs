@@ -24,7 +24,7 @@ fn sample_rows() -> Vec<CacheRow> {
             stale: false,
             kind: None,
             poll_interval_secs: None,
-            keep_alive_polls: None,
+            poll_count: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
             next_poll_in_secs: None,
@@ -40,7 +40,7 @@ fn sample_rows() -> Vec<CacheRow> {
             stale: false,
             kind: None,
             poll_interval_secs: None,
-            keep_alive_polls: None,
+            poll_count: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
             next_poll_in_secs: None,
@@ -56,7 +56,7 @@ fn sample_rows() -> Vec<CacheRow> {
             stale: false,
             kind: None,
             poll_interval_secs: None,
-            keep_alive_polls: None,
+            poll_count: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
             next_poll_in_secs: None,
@@ -151,7 +151,7 @@ fn human_preset_truncates_value_to_meet_total_cap() {
         stale: false,
         kind: None,
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -192,7 +192,7 @@ fn human_preset_color_on_stale_rows() {
         stale: true,
         kind: None,
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -225,7 +225,7 @@ fn json_preset_path_none_serializes_as_null() {
         stale: false,
         kind: None,
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -252,7 +252,7 @@ fn csv_preset_quotes_values_with_commas() {
         stale: false,
         kind: None,
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -289,7 +289,7 @@ fn custom_template_supports_truncate_filter() {
         stale: false,
         kind: None,
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -344,7 +344,7 @@ fn custom_template_supports_age_human() {
         stale: false,
         kind: None,
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -720,7 +720,7 @@ fn max_width_value_column_shrinks_not_others() {
         stale: false,
         kind: None,
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -768,7 +768,7 @@ fn max_width_total_row_width_does_not_exceed_cap() {
         stale: false,
         kind: None,
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -846,7 +846,7 @@ fn default_sort_is_path_provider_field() {
             stale: false,
             kind: None,
             poll_interval_secs: None,
-            keep_alive_polls: None,
+            poll_count: None,
             fsevents_reinstate: None,
             polls_elapsed: None,
             next_poll_in_secs: None,
@@ -932,7 +932,7 @@ fn cache_row_new_fields_serde_round_trip() {
             watches_files: true,
         }),
         poll_interval_secs: Some(60),
-        keep_alive_polls: Some(12),
+        poll_count: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -940,7 +940,7 @@ fn cache_row_new_fields_serde_round_trip() {
     };
     let v = serde_json::to_value(&row).unwrap();
     assert_eq!(v["poll_interval_secs"], 60);
-    assert_eq!(v["keep_alive_polls"], 12);
+    assert_eq!(v["poll_count"], 12);
     assert_eq!(v["fsevents_reinstate"], true);
     assert_eq!(v["kind"]["kind"], "lifecycle");
     assert!(v.get("failure").is_none(), "failure omitted when None");
@@ -1112,7 +1112,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
         refs_row.poll_interval_secs.is_none(),
         "Watch-only source should have None poll_interval_secs"
     );
-    assert!(refs_row.keep_alive_polls.is_none());
+    assert!(refs_row.poll_count.is_none());
     assert_eq!(refs_row.failure, None);
 
     // Cross-check the diff source: poll strategy → poll_interval_secs is Some, watches_files=false.
@@ -1134,8 +1134,8 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
         "Poll source should have Some poll_interval_secs"
     );
     assert!(
-        diff_row.keep_alive_polls.is_some(),
-        "Poll source should have Some keep_alive_polls"
+        diff_row.poll_count.is_some(),
+        "Poll source should have Some poll_count"
     );
     assert!(
         diff_row.polls_elapsed.is_some(),
@@ -1149,7 +1149,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
 async fn status_response_once_row_has_kind_once() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
 
-    // hostname is a Watch-only global provider with KeepAlive::Never — the equivalent
+    // hostname is a Watch-only global provider with 60s x 12 — the equivalent
     // of the old "Once" semantics. It enters the lifecycle map immediately on demand.
     let _ = fetch(&sock, "hostname.short", None).expect("get hostname.short");
 
@@ -1176,7 +1176,7 @@ async fn status_response_once_row_has_kind_once() {
         .find(|r| r.provider == "hostname")
         .expect("hostname row present");
 
-    // hostname uses Watch + KeepAlive::Never — shown as Lifecycle (decay=0, watches_files=true)
+    // hostname uses Watch + 60s x 12 — shown as Lifecycle (decay=0, watches_files=true)
     match row.kind.as_ref().expect("kind present") {
         RowKind::Lifecycle {
             decay,
@@ -1189,13 +1189,13 @@ async fn status_response_once_row_has_kind_once() {
         }
         other => panic!("expected RowKind::Lifecycle for hostname, got {:?}", other),
     }
-    // hostname uses Watch + KeepAlive::Never (pure-watch global) — no poll path
-    // → poll_interval_secs is None and keep_alive_polls is None.
+    // hostname uses Watch + pure-watch global — no poll path
+    // → poll_interval_secs is None and poll_count is None.
     assert!(
         row.poll_interval_secs.is_none(),
         "pure Watch source should have None poll_interval_secs"
     );
-    assert!(row.keep_alive_polls.is_none());
+    assert!(row.poll_count.is_none());
 
     handle.abort();
 }
@@ -1287,7 +1287,7 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
             watches_files: true,
         }),
         poll_interval_secs: Some(60),
-        keep_alive_polls: Some(12),
+        poll_count: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -1321,7 +1321,7 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
             watches_files: true,
         }),
         poll_interval_secs: Some(60),
-        keep_alive_polls: Some(12),
+        poll_count: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -1344,7 +1344,7 @@ fn tsv_preset_14_columns_lifecycle_row() {
     assert_eq!(cols[7], "lifecycle", "kind col");
     assert_eq!(cols[8], "0", "decay col");
     assert_eq!(cols[9], "60", "poll_interval_secs col");
-    assert_eq!(cols[10], "12", "keep_alive_polls col");
+    assert_eq!(cols[10], "12", "poll_count col");
     assert_eq!(cols[11], "true", "fsevents_reinstate col");
     assert_eq!(
         cols[12], "",
@@ -1361,7 +1361,7 @@ fn csv_preset_has_full_header_and_all_columns() {
     let header = out.lines().next().unwrap();
     assert_eq!(
         header,
-        "PROVIDER,PATH,FIELD,SOURCE,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,KEEP_ALIVE_POLLS,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS"
+        "PROVIDER,PATH,FIELD,SOURCE,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,POLL_COUNT,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS"
     );
     let body = out.lines().nth(1).unwrap();
     let cols: Vec<&str> = body.split(',').collect();
@@ -1381,7 +1381,7 @@ fn sh_preset_exposes_new_fields() {
         out
     );
     assert!(
-        out.contains("git_repo_branch_KEEP_ALIVE_POLLS='12'"),
+        out.contains("git_repo_branch_POLL_COUNT='12'"),
         "got: {}",
         out
     );
@@ -1416,7 +1416,7 @@ fn minijinja_row_context_exposes_new_fields() {
         v.get("poll_interval_secs").and_then(|v| v.as_u64()),
         Some(60)
     );
-    assert_eq!(v.get("keep_alive_polls").and_then(|v| v.as_u64()), Some(12));
+    assert_eq!(v.get("poll_count").and_then(|v| v.as_u64()), Some(12));
     assert_eq!(
         v.get("fsevents_reinstate").and_then(|v| v.as_bool()),
         Some(true)
@@ -1443,7 +1443,7 @@ fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
             watches_files: false,
         }),
         poll_interval_secs: Some(60),
-        keep_alive_polls: Some(12),
+        poll_count: Some(12),
         fsevents_reinstate: Some(false),
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -1464,7 +1464,7 @@ fn once_row(provider: &str) -> beachcomber::cache::CacheRow {
         stale: false,
         kind: Some(RowKind::Once),
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -1546,7 +1546,7 @@ fn wire_format_round_trip_full_cache_row() {
     assert_eq!(round.provider, original.provider);
     assert_eq!(round.kind, original.kind);
     assert_eq!(round.poll_interval_secs, original.poll_interval_secs);
-    assert_eq!(round.keep_alive_polls, original.keep_alive_polls);
+    assert_eq!(round.poll_count, original.poll_count);
     assert_eq!(round.fsevents_reinstate, original.fsevents_reinstate);
     assert_eq!(round.failure, original.failure);
 }
@@ -1568,7 +1568,7 @@ fn human_renders_p_zero_k_zero_without_panic() {
             watches_files: false,
         }),
         poll_interval_secs: Some(0),
-        keep_alive_polls: Some(0),
+        poll_count: Some(0),
         fsevents_reinstate: Some(false),
         polls_elapsed: None,
         next_poll_in_secs: Some(0),
@@ -1607,7 +1607,7 @@ fn failure_state_renders_warn_and_red_row() {
             watches_files: false,
         }),
         poll_interval_secs: Some(60),
-        keep_alive_polls: Some(12),
+        poll_count: Some(12),
         fsevents_reinstate: Some(false),
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -1649,7 +1649,7 @@ fn render_preset_ascii_flag_swaps_glyphs() {
             watches_files: true,
         }),
         poll_interval_secs: Some(60),
-        keep_alive_polls: Some(12),
+        poll_count: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -1709,7 +1709,7 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
             watches_files: true,
         }),
         poll_interval_secs: Some(60),
-        keep_alive_polls: Some(12),
+        poll_count: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -1755,7 +1755,7 @@ fn human_preset_compacts_home_path() {
         stale: false,
         kind: None,
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -1792,7 +1792,7 @@ fn machine_presets_keep_real_path_under_home() {
         stale: false,
         kind: None,
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -1840,7 +1840,7 @@ fn human_preset_path_compaction_frees_width_for_value() {
         stale: false,
         kind: None,
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -1905,7 +1905,7 @@ fn wide_value_row() -> CacheRow {
             watches_files: true,
         }),
         poll_interval_secs: Some(60),
-        keep_alive_polls: Some(12),
+        poll_count: Some(12),
         fsevents_reinstate: Some(true),
         polls_elapsed: Some(3),
         next_poll_in_secs: Some(42),
@@ -1962,7 +1962,7 @@ fn human_rows_leave_the_right_margin_unpainted() {
         stale: false,
         kind: Some(beachcomber::cache::RowKind::Static),
         poll_interval_secs: None,
-        keep_alive_polls: None,
+        poll_count: None,
         fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
@@ -2286,7 +2286,7 @@ fn nested_row() -> CacheRow {
         stale: true,
         kind: Some(beachcomber::cache::RowKind::Once),
         poll_interval_secs: Some(30),
-        keep_alive_polls: Some(4),
+        poll_count: Some(4),
         fsevents_reinstate: Some(true),
         polls_elapsed: Some(2),
         next_poll_in_secs: Some(9),
@@ -2343,7 +2343,7 @@ fn destructured_children_inherit_parent_metadata() {
         assert_eq!(child.age_ms, parent.age_ms);
         assert_eq!(child.stale, parent.stale);
         assert_eq!(child.poll_interval_secs, parent.poll_interval_secs);
-        assert_eq!(child.keep_alive_polls, parent.keep_alive_polls);
+        assert_eq!(child.poll_count, parent.poll_count);
         assert_eq!(child.next_poll_in_secs, parent.next_poll_in_secs);
         assert!(matches!(
             child.kind,

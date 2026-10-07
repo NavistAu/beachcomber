@@ -406,8 +406,7 @@ impl ProviderRegistry {
 mod tests {
     use super::*;
     use crate::provider::{
-        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, SourceResult,
-        SourceScope,
+        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, SourceResult, SourceScope,
     };
 
     struct FakeSource(SourceMetadata);
@@ -450,8 +449,10 @@ mod tests {
                 })
                 .collect(),
             scope: SourceScope::Global,
-            invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
-            keep_alive: KeepAlive::Polls(2),
+            invalidation: InvalidationStrategy::Poll {
+                interval_secs: 30,
+                count: 2,
+            },
             failback: FailbackConfig {
                 reattempts: 3,
                 interval_secs: 30,

@@ -1,8 +1,8 @@
 use beachcomber::cache::Cache;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use beachcomber::query::SourceDemand;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
@@ -135,11 +135,7 @@ impl Source for CountingSource {
     }
 }
 
-fn path_source(
-    name: &str,
-    invalidation: InvalidationStrategy,
-    keep_alive: KeepAlive,
-) -> SourceMetadata {
+fn path_source(name: &str, invalidation: InvalidationStrategy) -> SourceMetadata {
     // Meaningless on Poll (the registry rejects it there), the default on Watch.
     let fsevents_reinstate = !matches!(invalidation, InvalidationStrategy::Poll { .. });
     SourceMetadata {
@@ -150,7 +146,6 @@ fn path_source(
         }],
         scope: SourceScope::PathScoped,
         invalidation,
-        keep_alive,
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 30,
@@ -169,8 +164,8 @@ impl PollAndWatchProvider {
             "polled",
             InvalidationStrategy::Poll {
                 interval_secs: 3600,
+                count: 2,
             },
-            KeepAlive::Polls(2),
         )
     }
     fn watched() -> SourceMetadata {
@@ -180,7 +175,6 @@ impl PollAndWatchProvider {
                 patterns: vec!["foo.txt".into()],
                 abs_paths: vec![],
             },
-            KeepAlive::Duration(3600),
         )
     }
 }

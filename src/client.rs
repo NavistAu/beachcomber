@@ -115,7 +115,7 @@ fn cache_row_from_lib(r: libbeachcomber::CacheRow) -> crate::cache::CacheRow {
         stale: r.stale,
         kind: r.kind.map(row_kind_from_lib),
         poll_interval_secs: r.poll_interval_secs,
-        keep_alive_polls: r.keep_alive_polls,
+        poll_count: r.poll_count,
         fsevents_reinstate: r.fsevents_reinstate,
         polls_elapsed: r.polls_elapsed,
         next_poll_in_secs: r.next_poll_in_secs,

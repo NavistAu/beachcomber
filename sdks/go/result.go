@@ -240,9 +240,9 @@ func parseCacheRowsFromData(raw json.RawMessage) ([]CacheRow, error) {
 			pInt := uint64(p)
 			row.PollIntervalSecs = &pInt
 		}
-		if p, ok := m["keep_alive_polls"].(float64); ok {
+		if p, ok := m["poll_count"].(float64); ok {
 			pInt := uint32(p)
-			row.KeepAlivePolls = &pInt
+			row.PollCount = &pInt
 		}
 		if b, ok := m["fsevents_reinstate"].(bool); ok {
 			row.FseventsReinstate = &b

@@ -1,7 +1,7 @@
 use crate::boundaries::git::{GitExecutor, RealGitExecutor};
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive, Provider,
-    ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope, Value,
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, SourceScope, Value,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -126,7 +126,6 @@ fn head_meta() -> SourceMetadata {
             patterns: vec![".git".into()],
             abs_paths: vec![],
         },
-        keep_alive: KeepAlive::Duration(120),
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,
@@ -197,7 +196,6 @@ fn refs_meta() -> SourceMetadata {
             patterns: vec![".git".into()],
             abs_paths: vec![],
         },
-        keep_alive: KeepAlive::Duration(120),
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,
@@ -228,8 +226,10 @@ fn diff_meta() -> SourceMetadata {
             },
         ],
         scope: SourceScope::PathScoped,
-        invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
-        keep_alive: KeepAlive::Polls(4),
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 30,
+            count: 4,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,
@@ -270,10 +270,12 @@ fn lineage_meta() -> SourceMetadata {
         scope: SourceScope::PathScoped,
         // Poll, like `diff`: the computation is a handful of subprocess spawns,
         // far too costly to run on every `.git` event. The values only move when
-        // refs move, so 60s (twice `diff`'s interval) is ample; `Polls(2)` keeps
-        // the 120s keep-alive shared by every other git source.
-        invalidation: InvalidationStrategy::Poll { interval_secs: 60 },
-        keep_alive: KeepAlive::Polls(2),
+        // refs move, so 60s (twice `diff`'s interval) is ample; `count: 2` gives a
+        // 120s Active window.
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 60,
+            count: 2,
+        },
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 60,
@@ -312,8 +314,8 @@ fn status_meta() -> SourceMetadata {
             patterns: vec![".git/index".into()],
             abs_paths: vec![],
             interval_secs: 60,
+            count: 2,
         },
-        keep_alive: KeepAlive::Polls(2),
         failback: FailbackConfig {
             reattempts: 3,
             interval_secs: 30,
