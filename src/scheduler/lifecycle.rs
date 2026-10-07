@@ -10,9 +10,16 @@ use std::time::{Duration, Instant};
 
 use crate::provider::{InvalidationStrategy, KeepAlive};
 
-/// Lifecycle key: (provider_name, path, source_name).
-/// Path is None for Global sources; Some(canonical_path) for PathScoped.
-pub type Key = (String, Option<String>, String);
+/// Lifecycle key. `path` is None for Global sources; Some(canonical_path) for
+/// PathScoped. `node` is the put address a lifecycle belongs to (`source` is
+/// `"put"` then) and `""` for every Source instance.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Key {
+    pub provider: String,
+    pub path: Option<String>,
+    pub source: String,
+    pub node: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleState {
@@ -426,15 +433,21 @@ mod tests {
     use super::*;
 
     fn test_key(provider: &str, path: &str) -> Key {
-        (
-            provider.to_string(),
-            Some(path.to_string()),
-            "main".to_string(),
-        )
+        Key {
+            provider: provider.to_string(),
+            path: Some(path.to_string()),
+            source: "main".to_string(),
+            node: String::new(),
+        }
     }
 
     fn test_key_global(provider: &str) -> Key {
-        (provider.to_string(), None, "main".to_string())
+        Key {
+            provider: provider.to_string(),
+            path: None,
+            source: "main".to_string(),
+            node: String::new(),
+        }
     }
 
     fn test_config() -> SourceLifecycleConfig {

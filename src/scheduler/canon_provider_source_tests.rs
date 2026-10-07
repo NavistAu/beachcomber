@@ -109,7 +109,12 @@ impl Source for FakeSource {
 #[test]
 fn pure_watch_source_never_polls() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("mise".to_string(), None, "global".to_string());
+    let key = crate::scheduler::lifecycle::Key {
+        provider: "mise".to_string(),
+        path: None,
+        source: "global".to_string(),
+        node: String::new(),
+    };
     let t0 = Instant::now();
 
     // Pure-watch global: KeepAlive::Never
@@ -146,11 +151,12 @@ fn pure_watch_source_never_polls() {
 #[test]
 fn watch_source_refreshes_on_filesystem_event() {
     let mut reg = LifecycleRegistry::new();
-    let key = (
-        "git".to_string(),
-        Some("/repo".to_string()),
-        "refs".to_string(),
-    );
+    let key = crate::scheduler::lifecycle::Key {
+        provider: "git".to_string(),
+        path: Some("/repo".to_string()),
+        source: "refs".to_string(),
+        node: String::new(),
+    };
     let t0 = Instant::now();
 
     let cfg = watch_source_config(KeepAlive::Duration(120), true);
@@ -223,11 +229,12 @@ fn watch_source_refreshes_on_filesystem_event() {
 #[test]
 fn watch_and_poll_source_refreshes_on_both_paths() {
     let mut reg = LifecycleRegistry::new();
-    let key = (
-        "git".to_string(),
-        Some("/repo".to_string()),
-        "status".to_string(),
-    );
+    let key = crate::scheduler::lifecycle::Key {
+        provider: "git".to_string(),
+        path: Some("/repo".to_string()),
+        source: "status".to_string(),
+        node: String::new(),
+    };
     let t0 = Instant::now();
 
     // interval_secs=60, k=2
@@ -265,7 +272,12 @@ fn watch_and_poll_source_refreshes_on_both_paths() {
 fn pure_watch_global_source_never_decays() {
     let mut reg = LifecycleRegistry::new();
     // Global scope is expressed by path=None in the lifecycle key.
-    let key = ("mise".to_string(), None, "global".to_string());
+    let key = crate::scheduler::lifecycle::Key {
+        provider: "mise".to_string(),
+        path: None,
+        source: "global".to_string(),
+        node: String::new(),
+    };
     let t0 = Instant::now();
 
     let cfg = SourceLifecycleConfig {
@@ -312,11 +324,12 @@ fn pure_watch_global_source_never_decays() {
 #[test]
 fn path_scoped_watch_source_decays_per_k_duration() {
     let mut reg = LifecycleRegistry::new();
-    let key = (
-        "git".to_string(),
-        Some("/repo".to_string()),
-        "refs".to_string(),
-    );
+    let key = crate::scheduler::lifecycle::Key {
+        provider: "git".to_string(),
+        path: Some("/repo".to_string()),
+        source: "refs".to_string(),
+        node: String::new(),
+    };
     let t0 = Instant::now();
 
     let cfg = SourceLifecycleConfig {
@@ -475,17 +488,19 @@ fn sibling_sources_have_independent_lifecycles() {
     let t0 = Instant::now();
 
     // Source A: queried repeatedly (keep-alive reset continuously).
-    let key_a = (
-        "git".to_string(),
-        Some("/repo".to_string()),
-        "refs".to_string(),
-    );
+    let key_a = crate::scheduler::lifecycle::Key {
+        provider: "git".to_string(),
+        path: Some("/repo".to_string()),
+        source: "refs".to_string(),
+        node: String::new(),
+    };
     // Source B: never queried after initial activation.
-    let key_b = (
-        "git".to_string(),
-        Some("/repo".to_string()),
-        "diff".to_string(),
-    );
+    let key_b = crate::scheduler::lifecycle::Key {
+        provider: "git".to_string(),
+        path: Some("/repo".to_string()),
+        source: "diff".to_string(),
+        node: String::new(),
+    };
 
     // Both start Active. Polls(1) with 1s interval → keep-alive = 1s.
     let cfg_short = poll_source_config(Duration::from_secs(1), 1);
@@ -550,11 +565,12 @@ fn fsevents_reinstate_default_is_true_for_watch_sources() {
 
     // Verify in lifecycle: watches are NOT dropped on Active→Decay1 when fsevents_reinstate=true.
     let mut reg = LifecycleRegistry::new();
-    let key = (
-        "git".to_string(),
-        Some("/repo".to_string()),
-        "refs".to_string(),
-    );
+    let key = crate::scheduler::lifecycle::Key {
+        provider: "git".to_string(),
+        path: Some("/repo".to_string()),
+        source: "refs".to_string(),
+        node: String::new(),
+    };
     let t0 = Instant::now();
     let cfg = watch_source_config(KeepAlive::Duration(1), true);
     reg.on_demand(key.clone(), cfg, t0);
@@ -606,11 +622,12 @@ fn fsevents_reinstate_default_is_true_for_watch_and_poll_sources() {
 
     // Verify in lifecycle: watches survive Decay1 entry.
     let mut reg = LifecycleRegistry::new();
-    let key = (
-        "git".to_string(),
-        Some("/repo".to_string()),
-        "status".to_string(),
-    );
+    let key = crate::scheduler::lifecycle::Key {
+        provider: "git".to_string(),
+        path: Some("/repo".to_string()),
+        source: "status".to_string(),
+        node: String::new(),
+    };
     let t0 = Instant::now();
     let cfg = watch_and_poll_config(Duration::from_millis(1), 1, true);
     reg.on_demand(key.clone(), cfg, t0);
@@ -843,16 +860,18 @@ fn demand_for_field_is_demand_for_owning_source_only() {
     let t0 = Instant::now();
 
     // Both sources with 1s keep-alive (Polls(1), 1s interval).
-    let key_a = (
-        "myprovider".to_string(),
-        Some("/path".to_string()),
-        "source_a".to_string(),
-    );
-    let key_b = (
-        "myprovider".to_string(),
-        Some("/path".to_string()),
-        "source_b".to_string(),
-    );
+    let key_a = crate::scheduler::lifecycle::Key {
+        provider: "myprovider".to_string(),
+        path: Some("/path".to_string()),
+        source: "source_a".to_string(),
+        node: String::new(),
+    };
+    let key_b = crate::scheduler::lifecycle::Key {
+        provider: "myprovider".to_string(),
+        path: Some("/path".to_string()),
+        source: "source_b".to_string(),
+        node: String::new(),
+    };
 
     let cfg = poll_source_config(Duration::from_secs(1), 1);
     reg.on_demand(key_a.clone(), cfg.clone(), t0);

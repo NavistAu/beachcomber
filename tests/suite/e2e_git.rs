@@ -130,7 +130,7 @@ async fn git_returns_miss_for_non_repo() {
         Duration::from_secs(5),
         Duration::from_millis(20),
         async || handle.get_failure_states().await,
-        |states| states.keys().any(|(provider, _, _)| provider == "git"),
+        |states| states.keys().any(|key| key.provider == "git"),
     )
     .await;
 

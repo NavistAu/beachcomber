@@ -274,8 +274,12 @@ async fn integration_status_response_reports_decay_level() {
     // Fetch the lifecycle snapshots from the scheduler.
     let snapshots = handle.get_lifecycle_snapshots().await;
 
-    // Key is (provider, path, source_name)
-    let key = ("lc_counter".to_string(), None::<String>, "main".to_string());
+    let key = beachcomber::scheduler::lifecycle::Key {
+        provider: "lc_counter".to_string(),
+        path: None,
+        source: "main".to_string(),
+        node: String::new(),
+    };
     let decay_level = snapshots.get(&key).map(|s| s.decay);
 
     assert_eq!(

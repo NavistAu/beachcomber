@@ -23,7 +23,12 @@ fn test_config() -> SourceLifecycleConfig {
 #[test]
 fn lifecycle_starts_in_active() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), None, "refs".to_string());
+    let key = crate::scheduler::lifecycle::Key {
+        provider: "git".to_string(),
+        path: None,
+        source: "refs".to_string(),
+        node: String::new(),
+    };
     let t0 = Instant::now();
 
     reg.on_demand(key.clone(), test_config(), t0);
@@ -39,7 +44,12 @@ const STEP: Duration = Duration::from_millis(100);
 #[test]
 fn lifecycle_advances_through_decay_stages() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), None, "refs".to_string());
+    let key = crate::scheduler::lifecycle::Key {
+        provider: "git".to_string(),
+        path: None,
+        source: "refs".to_string(),
+        node: String::new(),
+    };
     let t0 = Instant::now();
     reg.on_demand(key.clone(), test_config(), t0);
 
@@ -75,7 +85,12 @@ fn lifecycle_advances_through_decay_stages() {
 #[test]
 fn lifecycle_resets_to_active_on_demand() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), None, "refs".to_string());
+    let key = crate::scheduler::lifecycle::Key {
+        provider: "git".to_string(),
+        path: None,
+        source: "refs".to_string(),
+        node: String::new(),
+    };
     let t0 = Instant::now();
     reg.on_demand(key.clone(), test_config(), t0);
 
@@ -101,7 +116,12 @@ fn lifecycle_resets_to_active_on_demand() {
 #[test]
 fn lifecycle_evicts_after_decay4() {
     let mut reg = LifecycleRegistry::new();
-    let key = ("git".to_string(), None, "refs".to_string());
+    let key = crate::scheduler::lifecycle::Key {
+        provider: "git".to_string(),
+        path: None,
+        source: "refs".to_string(),
+        node: String::new(),
+    };
     let t0 = Instant::now();
     reg.on_demand(key.clone(), test_config(), t0);
 

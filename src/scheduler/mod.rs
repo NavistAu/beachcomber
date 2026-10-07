@@ -305,7 +305,7 @@ fn snapshot_entry(
         next_poll_in_secs,
         fsevents_reinstate: entry.config.fsevents_reinstate,
         watches_files,
-        source: key.2.clone(),
+        source: key.source.clone(),
     }
 }
 
@@ -339,9 +339,9 @@ fn build_status(
         .lock()
         .unwrap()
         .iter()
-        .map(|(provider, path, source)| match path {
-            Some(pa) => format!("{provider}:{pa}:{source}"),
-            None => format!("{provider}:{source}"),
+        .map(|key| match &key.path {
+            Some(pa) => format!("{}:{pa}:{}", key.provider, key.source),
+            None => format!("{}:{}", key.provider, key.source),
         })
         .collect();
 
@@ -349,7 +349,8 @@ fn build_status(
     let mut poll_timer_info: Vec<PollTimerInfo> = Vec::new();
     let mut demand_info: Vec<DemandInfo> = Vec::new();
 
-    for ((provider, path, source), entry) in lifecycle.iter() {
+    for (key, entry) in lifecycle.iter() {
+        let (provider, path, source) = (&key.provider, &key.path, &key.source);
         // Poll timer info — only for entries with a poll path.
         if let Some(pt) = &entry.poll_timer {
             poll_timer_info.push(PollTimerInfo {
@@ -549,11 +550,12 @@ impl Scheduler {
             return;
         };
 
-        let key: lifecycle::Key = (
-            provider_name.to_string(),
-            path.map(|s| s.to_string()),
-            source_name.to_string(),
-        );
+        let key = lifecycle::Key {
+            provider: provider_name.to_string(),
+            path: path.map(|s| s.to_string()),
+            source: source_name.to_string(),
+            node: String::new(),
+        };
 
         // Check failure backoff — skip if suppressed.
         {
@@ -653,7 +655,7 @@ impl Scheduler {
                     }
                 }
 
-                let cache_path = key_for_cleanup.1.clone();
+                let cache_path = key_for_cleanup.path.clone();
                 match result {
                     Ok(Ok(source_result)) if !source_result.fields.is_empty() => {
                         cache.put_source(
@@ -714,14 +716,14 @@ impl Scheduler {
                 if suppressed {
                     debug!(
                         "Source '{}.{}' rerun dropped: suppressed by failure backoff",
-                        key_for_cleanup.0, key_for_cleanup.2
+                        key_for_cleanup.provider, key_for_cleanup.source
                     );
                     in_flight.lock().unwrap().remove(&key_for_cleanup);
                     break;
                 }
                 debug!(
                     "Re-running source '{}.{}' (refresh arrived during previous execution)",
-                    key_for_cleanup.0, key_for_cleanup.2
+                    key_for_cleanup.provider, key_for_cleanup.source
                 );
             }
         });
@@ -896,11 +898,12 @@ impl Scheduler {
                                     SourceScope::PathScoped => path.clone(),
                                 };
 
-                                let key: lifecycle::Key = (
-                                    provider.clone(),
-                                    effective_key_path.clone(),
-                                    sm.name.clone(),
-                                );
+                                let key = lifecycle::Key {
+                                    provider: provider.clone(),
+                                    path: effective_key_path.clone(),
+                                    source: sm.name.clone(),
+                                    node: String::new(),
+                                };
                                 let cfg = SourceLifecycleConfig::from_strategy(
                                     &sm.invalidation,
                                     sm.keep_alive,
@@ -1025,7 +1028,7 @@ impl Scheduler {
                     for key in affected_keys {
                         let outcome = lifecycle.on_fsevent(key.clone(), Instant::now());
                         if outcome.refresh {
-                            self.execute_source(&key.0, &key.2, key.1.as_deref());
+                            self.execute_source(&key.provider, &key.source, key.path.as_deref());
                         }
                     }
                     last_activity = Instant::now();
@@ -1080,9 +1083,9 @@ impl Scheduler {
                     for key in &actions.polls_due {
                         debug!(
                             "Poll tick: executing provider={} path={:?} source={}",
-                            key.0, key.1, key.2
+                            key.provider, key.path, key.source
                         );
-                        self.execute_source(&key.0, &key.2, key.1.as_deref());
+                        self.execute_source(&key.provider, &key.source, key.path.as_deref());
                     }
 
                     for key in &actions.watch_drops {
@@ -1092,12 +1095,12 @@ impl Scheduler {
                     for key in &actions.evictions {
                         debug!(
                             "Evicting source provider={} path={:?} source={}",
-                            key.0, key.1, key.2
+                            key.provider, key.path, key.source
                         );
                         // Evict only this source's contribution; the entry is removed
                         // only when its last source evicts (canon: lifecycle is keyed
                         // per (provider, path, source)).
-                        self.cache.remove_source(&key.0, key.1.as_deref(), &key.2);
+                        self.cache.remove_source(&key.provider, key.path.as_deref(), &key.source);
                         drop_watches_for_key(key, &mut watch_paths, &mut fs_watcher);
                     }
 
@@ -1202,11 +1205,12 @@ impl Scheduler {
                                     SourceScope::PathScoped => path.clone(),
                                 };
 
-                                let key: lifecycle::Key = (
-                                    provider.clone(),
-                                    effective_key_path.clone(),
-                                    sm.name.clone(),
-                                );
+                                let key = lifecycle::Key {
+                                    provider: provider.clone(),
+                                    path: effective_key_path.clone(),
+                                    source: sm.name.clone(),
+                                    node: String::new(),
+                                };
                                 let cfg = SourceLifecycleConfig::from_strategy(
                                     &sm.invalidation,
                                     sm.keep_alive,
@@ -1235,7 +1239,7 @@ impl Scheduler {
                     let actions = lifecycle.tick(Instant::now());
 
                     for key in &actions.polls_due {
-                        self.execute_source(&key.0, &key.2, key.1.as_deref());
+                        self.execute_source(&key.provider, &key.source, key.path.as_deref());
                     }
 
                     // No watches to drop in the no-watcher path.
@@ -1243,12 +1247,12 @@ impl Scheduler {
                     for key in &actions.evictions {
                         debug!(
                             "Evicting source provider={} path={:?} source={}",
-                            key.0, key.1, key.2
+                            key.provider, key.path, key.source
                         );
                         // Evict only this source's contribution; the entry is removed
                         // only when its last source evicts (canon: lifecycle is keyed
                         // per (provider, path, source)).
-                        self.cache.remove_source(&key.0, key.1.as_deref(), &key.2);
+                        self.cache.remove_source(&key.provider, key.path.as_deref(), &key.source);
                     }
 
                     for (key, new_state) in &actions.transitions {
@@ -1279,7 +1283,7 @@ impl Scheduler {
         for key in affected_keys {
             let outcome = lifecycle.on_fsevent(key.clone(), Instant::now());
             if outcome.refresh {
-                self.execute_source(&key.0, &key.2, key.1.as_deref());
+                self.execute_source(&key.provider, &key.source, key.path.as_deref());
             }
         }
     }
@@ -1358,7 +1362,12 @@ fn resolve_keys_from_paths(
             }
             for sub in subscriptions {
                 if event_matches_patterns(&sub.patterns, watch_path, changed_path) {
-                    keys.push((sub.provider.clone(), sub.path.clone(), sub.source.clone()));
+                    keys.push(lifecycle::Key {
+                        provider: sub.provider.clone(),
+                        path: sub.path.clone(),
+                        source: sub.source.clone(),
+                        node: String::new(),
+                    });
                 }
             }
         }
@@ -1374,8 +1383,9 @@ fn drop_watches_for_key(
 ) {
     let mut paths_to_unwatch = Vec::new();
     for (watch_path, subscriptions) in watch_paths.iter_mut() {
-        subscriptions
-            .retain(|sub| !(sub.provider == key.0 && sub.path == key.1 && sub.source == key.2));
+        subscriptions.retain(|sub| {
+            !(sub.provider == key.provider && sub.path == key.path && sub.source == key.source)
+        });
         if subscriptions.is_empty() {
             paths_to_unwatch.push(watch_path.clone());
         }

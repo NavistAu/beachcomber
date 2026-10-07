@@ -1319,8 +1319,13 @@ async fn handle_request(
                     // Look up the lifecycle snapshot for THIS row's owning source
                     // so glyphs and TTL columns reflect the source's strategy
                     // (refs vs diff vs status all differ within a single provider).
-                    let triple = (row.provider.clone(), row.path.clone(), row.source.clone());
-                    let matching_snap = lifecycle.get(&triple);
+                    let key = crate::scheduler::lifecycle::Key {
+                        provider: row.provider.clone(),
+                        path: row.path.clone(),
+                        source: row.source.clone(),
+                        node: String::new(),
+                    };
+                    let matching_snap = lifecycle.get(&key);
 
                     if let Some(snap) = matching_snap {
                         row.kind = Some(RowKind::Lifecycle {
@@ -1342,7 +1347,7 @@ async fn handle_request(
                     }
 
                     // Failure backoff: per-source.
-                    if let Some(snap) = failures.get(&triple) {
+                    if let Some(snap) = failures.get(&key) {
                         row.failure = Some(snap.clone());
                     }
                 }
