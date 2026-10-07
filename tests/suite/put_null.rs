@@ -213,6 +213,28 @@ async fn nested_null_in_a_merging_put_removes_that_leaf() {
         .unwrap();
     assert!(r.ok, "{:?}", r.error);
     assert_eq!(got(&sock, "ns"), Some(serde_json::json!({"b": 2})));
+    client
+        .put_with(
+            "ns",
+            serde_json::json!({"arr": [1, 2, 3], "objs": [{"x": 1}]}),
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    let r = client
+        .put_with(
+            "ns",
+            serde_json::json!({"arr": [1, null, 3], "objs": [{"x": null}]}),
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    assert!(r.ok, "{:?}", r.error);
+    assert_eq!(got(&sock, "ns.arr.1"), None);
+    assert_eq!(got(&sock, "ns.objs.0.x"), None);
+    assert_eq!(got(&sock, "ns.arr.0"), Some(serde_json::json!(1)));
     handle.abort();
 }
 

@@ -1914,21 +1914,28 @@ fn handle_introspect_procs(duration_secs: Option<u64>) -> Response {
     }
 }
 
-/// The dotted address, relative to `value`, of every null object member in it.
+/// The dotted address, relative to `value`, of every null object member or
+/// array element in it (array elements are addressed by index).
 fn null_member_tails(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
-    if let serde_json::Value::Object(map) = value {
-        for (k, v) in map {
-            let at = if prefix.is_empty() {
-                k.clone()
-            } else {
-                format!("{prefix}.{k}")
-            };
-            if v.is_null() {
-                out.push(at);
-            } else {
-                null_member_tails(v, &at, out);
-            }
+    let mut visit = |k: String, v: &serde_json::Value| {
+        let at = if prefix.is_empty() {
+            k
+        } else {
+            format!("{prefix}.{k}")
+        };
+        if v.is_null() {
+            out.push(at);
+        } else {
+            null_member_tails(v, &at, out);
         }
+    };
+    match value {
+        serde_json::Value::Object(map) => map.iter().for_each(|(k, v)| visit(k.clone(), v)),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .for_each(|(i, v)| visit(i.to_string(), v)),
+        _ => {}
     }
 }
 
