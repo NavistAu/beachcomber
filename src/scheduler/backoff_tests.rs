@@ -5,7 +5,7 @@
 
 use crate::provider::KeepAlive;
 use crate::scheduler::lifecycle::{
-    DecayStep, LifecycleRegistry, LifecycleState, SourceLifecycleConfig, StateTransition,
+    DEFAULT_DECAY, LifecycleRegistry, LifecycleState, SourceLifecycleConfig, StateTransition,
     StrategyKind,
 };
 use std::time::{Duration, Instant};
@@ -17,6 +17,7 @@ fn test_config() -> SourceLifecycleConfig {
         poll_interval: Some(Duration::from_millis(1)),
         keep_alive: KeepAlive::Polls(1),
         fsevents_reinstate: false,
+        decay: DEFAULT_DECAY,
     }
 }
 
@@ -55,31 +56,19 @@ fn lifecycle_advances_through_decay_stages() {
 
     let t1 = t0 + STEP;
     reg.tick(t1);
-    assert_eq!(
-        reg.state(&key),
-        Some(&LifecycleState::Decay(DecayStep::Step1))
-    );
+    assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
 
     let t2 = t1 + STEP;
     reg.tick(t2);
-    assert_eq!(
-        reg.state(&key),
-        Some(&LifecycleState::Decay(DecayStep::Step2))
-    );
+    assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(2)));
 
     let t3 = t2 + STEP;
     reg.tick(t3);
-    assert_eq!(
-        reg.state(&key),
-        Some(&LifecycleState::Decay(DecayStep::Step3))
-    );
+    assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(3)));
 
     let t4 = t3 + STEP;
     reg.tick(t4);
-    assert_eq!(
-        reg.state(&key),
-        Some(&LifecycleState::Decay(DecayStep::Step4))
-    );
+    assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(4)));
 }
 
 #[test]
@@ -96,19 +85,14 @@ fn lifecycle_resets_to_active_on_demand() {
 
     // Advance into decay.
     reg.tick(t0 + STEP);
-    assert_eq!(
-        reg.state(&key),
-        Some(&LifecycleState::Decay(DecayStep::Step1))
-    );
+    assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
 
     // New demand reinstates to Active.
     let t2 = t0 + STEP * 2;
     let outcome = reg.on_demand(key.clone(), test_config(), t2);
     assert!(matches!(
         outcome.transition,
-        StateTransition::Reinstated {
-            from: DecayStep::Step1
-        }
+        StateTransition::Reinstated { from: 1 }
     ));
     assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
 }

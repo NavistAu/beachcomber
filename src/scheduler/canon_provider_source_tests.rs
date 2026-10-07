@@ -10,7 +10,7 @@ use crate::provider::{
     SourceMetadata, SourceResult, SourceScope, Value,
 };
 use crate::scheduler::lifecycle::{
-    DecayStep, LifecycleRegistry, LifecycleState, SourceLifecycleConfig, StrategyKind,
+    DEFAULT_DECAY, LifecycleRegistry, LifecycleState, SourceLifecycleConfig, StrategyKind,
 };
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -53,6 +53,7 @@ fn watch_source_config(keep_alive: KeepAlive, fsevents_reinstate: bool) -> Sourc
         poll_interval: None,
         keep_alive,
         fsevents_reinstate,
+        decay: DEFAULT_DECAY,
     }
 }
 
@@ -62,6 +63,7 @@ fn poll_source_config(interval: Duration, k: u32) -> SourceLifecycleConfig {
         poll_interval: Some(interval),
         keep_alive: KeepAlive::Polls(k),
         fsevents_reinstate: false,
+        decay: DEFAULT_DECAY,
     }
 }
 
@@ -75,6 +77,7 @@ fn watch_and_poll_config(
         poll_interval: Some(interval),
         keep_alive: KeepAlive::Polls(k),
         fsevents_reinstate,
+        decay: DEFAULT_DECAY,
     }
 }
 
@@ -285,6 +288,7 @@ fn pure_watch_global_source_never_decays() {
         poll_interval: None,
         keep_alive: KeepAlive::Never,
         fsevents_reinstate: true,
+        decay: DEFAULT_DECAY,
     };
     reg.on_demand(key.clone(), cfg, t0);
     assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
@@ -337,6 +341,7 @@ fn path_scoped_watch_source_decays_per_k_duration() {
         poll_interval: None,
         keep_alive: KeepAlive::Duration(60),
         fsevents_reinstate: false,
+        decay: DEFAULT_DECAY,
     };
     reg.on_demand(key.clone(), cfg, t0);
     assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
@@ -348,14 +353,11 @@ fn path_scoped_watch_source_decays_per_k_duration() {
         actions
             .transitions
             .iter()
-            .any(|(k, s)| { k == &key && matches!(s, LifecycleState::Decay(DecayStep::Step1)) }),
+            .any(|(k, s)| { k == &key && matches!(s, LifecycleState::Decay(1)) }),
         "path-scoped Watch source must enter Decay1 after keep_alive; transitions={:?}",
         actions.transitions
     );
-    assert_eq!(
-        reg.state(&key),
-        Some(&LifecycleState::Decay(DecayStep::Step1))
-    );
+    assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
 
     // Decay1 step duration = K_secs * 2^1 = 60 * 2 = 120s.
     // Tick 119s after entering Decay1 — should still be in Decay1.
@@ -363,7 +365,7 @@ fn path_scoped_watch_source_decays_per_k_duration() {
     reg.tick(t_still_decay1);
     assert_eq!(
         reg.state(&key),
-        Some(&LifecycleState::Decay(DecayStep::Step1)),
+        Some(&LifecycleState::Decay(1)),
         "should still be in Decay1 after only 119s"
     );
 
@@ -372,7 +374,7 @@ fn path_scoped_watch_source_decays_per_k_duration() {
     reg.tick(t_decay2);
     assert_eq!(
         reg.state(&key),
-        Some(&LifecycleState::Decay(DecayStep::Step2)),
+        Some(&LifecycleState::Decay(2)),
         "Decay1 step duration must be exactly 120s"
     );
 }
@@ -524,7 +526,7 @@ fn sibling_sources_have_independent_lifecycles() {
 
     assert_eq!(
         reg.state(&key_b),
-        Some(&LifecycleState::Decay(DecayStep::Step1)),
+        Some(&LifecycleState::Decay(1)),
         "unqueried source must have decayed to Decay1"
     );
     assert_eq!(
@@ -895,7 +897,7 @@ fn demand_for_field_is_demand_for_owning_source_only() {
     );
     assert_eq!(
         reg.state(&key_b),
-        Some(&LifecycleState::Decay(DecayStep::Step1)),
+        Some(&LifecycleState::Decay(1)),
         "source_b received no demand; must have decayed independently"
     );
 }

@@ -374,7 +374,7 @@ fn build_status(
                     });
                 }
             }
-            LifecycleState::Decay(step) => {
+            LifecycleState::Decay(n) => {
                 // Decaying entries go in the lifecycle list.
                 let elapsed_secs = entry
                     .decay_timer
@@ -385,7 +385,7 @@ fn build_status(
                     provider: provider.clone(),
                     path: path.clone(),
                     source: source.clone(),
-                    stage: format!("Decay{}", step.as_u8()),
+                    stage: format!("Decay{n}"),
                     elapsed_secs,
                 });
             }
@@ -908,6 +908,7 @@ impl Scheduler {
                                     &sm.invalidation,
                                     sm.keep_alive,
                                     sm.fsevents_reinstate,
+                                    lifecycle::DEFAULT_DECAY,
                                 );
                                 let outcome = lifecycle.on_demand(key.clone(), cfg, now);
 
@@ -1215,6 +1216,7 @@ impl Scheduler {
                                     &sm.invalidation,
                                     sm.keep_alive,
                                     sm.fsevents_reinstate,
+                                    lifecycle::DEFAULT_DECAY,
                                 );
                                 let outcome = lifecycle.on_demand(key.clone(), cfg, now);
 

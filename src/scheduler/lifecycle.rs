@@ -1,7 +1,7 @@
 //! Cache entry lifecycle state machine.
 //!
 //! Executable form of the behaviour defined in `docs/cache-lifecycle.md`.
-//! State transitions: Cold → Active → Decay1..4 → Evicted. Per-entry state
+//! State transitions: Cold → Active → Decay(1..=depth) → Evicted (depth defaults to 4). Per-entry state
 //! held in `LifecycleEntry`; scheduler dispatches on demand/fsevent/tick
 //! via `LifecycleRegistry`.
 
@@ -9,6 +9,9 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::provider::{InvalidationStrategy, KeepAlive};
+
+/// Decay steps before eviction unless a lifecycle says otherwise.
+pub const DEFAULT_DECAY: u8 = 4;
 
 /// Lifecycle key. `path` is None for Global sources; Some(canonical_path) for
 /// PathScoped. `node` is the put address a lifecycle belongs to (`source` is
@@ -24,42 +27,8 @@ pub struct Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleState {
     Active,
-    Decay(DecayStep),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DecayStep {
-    Step1,
-    Step2,
-    Step3,
-    Step4,
-}
-
-impl DecayStep {
-    /// 1 through 4.
-    pub fn as_u8(self) -> u8 {
-        match self {
-            DecayStep::Step1 => 1,
-            DecayStep::Step2 => 2,
-            DecayStep::Step3 => 3,
-            DecayStep::Step4 => 4,
-        }
-    }
-
-    /// Poll rate multiplier relative to P: 2^n.
-    pub fn rate_multiplier(self) -> u32 {
-        1u32 << self.as_u8()
-    }
-
-    /// Next step, or None if Step4 (next is Evicted, handled by caller).
-    pub fn next(self) -> Option<DecayStep> {
-        match self {
-            DecayStep::Step1 => Some(DecayStep::Step2),
-            DecayStep::Step2 => Some(DecayStep::Step3),
-            DecayStep::Step3 => Some(DecayStep::Step4),
-            DecayStep::Step4 => None,
-        }
-    }
+    /// 1 through the config's `decay`; step n lasts `lifespan × 2^n`.
+    Decay(u8),
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +57,8 @@ pub struct SourceLifecycleConfig {
     pub poll_interval: Option<Duration>,
     pub keep_alive: KeepAlive,
     pub fsevents_reinstate: bool,
+    /// Decay steps before eviction, at least 1.
+    pub decay: u8,
 }
 
 impl SourceLifecycleConfig {
@@ -95,6 +66,7 @@ impl SourceLifecycleConfig {
         strategy: &InvalidationStrategy,
         keep_alive: KeepAlive,
         fsevents_reinstate: bool,
+        decay: u8,
     ) -> Self {
         let (kind, poll_interval) = match strategy {
             InvalidationStrategy::Poll { interval_secs } => (
@@ -112,6 +84,7 @@ impl SourceLifecycleConfig {
             poll_interval,
             keep_alive,
             fsevents_reinstate,
+            decay,
         }
     }
 
@@ -139,7 +112,7 @@ pub struct LifecycleRegistry {
 pub enum StateTransition {
     NewlyActive,
     ResetKeepAlive,
-    Reinstated { from: DecayStep },
+    Reinstated { from: u8 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +155,7 @@ impl LifecycleRegistry {
         config: SourceLifecycleConfig,
         now: Instant,
     ) -> DemandOutcome {
+        debug_assert!(config.decay >= 1, "decay depth must be at least 1");
         if config.never_decays() {
             // Pure-watch global: enter Active, never decay. No poll timer.
             match self.entries.get_mut(&key) {
@@ -259,7 +233,7 @@ impl LifecycleRegistry {
                         watch_registration: WatchAction::Preserve,
                     }
                 }
-                LifecycleState::Decay(step) => {
+                LifecycleState::Decay(from) => {
                     // Decay → Active: reset everything. Whether watches were
                     // dropped depends on the PAST config (fsevents_reinstate
                     // at the time we entered decay). We consult the current
@@ -278,7 +252,7 @@ impl LifecycleRegistry {
                     }
                     entry.config = config;
                     DemandOutcome {
-                        transition: StateTransition::Reinstated { from: step },
+                        transition: StateTransition::Reinstated { from },
                         watch_registration: if was_keep_during_decay {
                             WatchAction::Preserve
                         } else {
@@ -340,15 +314,17 @@ impl LifecycleRegistry {
             }
 
             let next_state: Option<LifecycleState> = match entry.state {
-                LifecycleState::Active => Some(LifecycleState::Decay(DecayStep::Step1)),
-                LifecycleState::Decay(step) => step.next().map(LifecycleState::Decay),
+                LifecycleState::Active => Some(LifecycleState::Decay(1)),
+                LifecycleState::Decay(n) => {
+                    (n < entry.config.decay).then_some(LifecycleState::Decay(n + 1))
+                }
             };
 
             match next_state {
                 Some(new_state) => {
                     entry.state = new_state;
                     if let LifecycleState::Decay(step) = new_state {
-                        let rate_mult = step.rate_multiplier();
+                        let rate_mult = 1u32 << step;
 
                         // Step duration depends on keep-alive variant.
                         let step_duration =
@@ -369,14 +345,14 @@ impl LifecycleRegistry {
                         }
 
                         // Drop watches on Active→Decay1 if !fsevents_reinstate.
-                        if step == DecayStep::Step1 && !entry.config.fsevents_reinstate {
+                        if step == 1 && !entry.config.fsevents_reinstate {
                             actions.watch_drops.push(key.clone());
                         }
                     }
                     actions.transitions.push((key.clone(), new_state));
                 }
                 None => {
-                    // Decay4 → Evicted.
+                    // Last decay step → Evicted.
                     actions.evictions.push(key.clone());
                 }
             }
@@ -413,12 +389,12 @@ impl LifecycleRegistry {
     }
 }
 
-/// Convert a `LifecycleState` to a numeric decay level: 0 = Active, 1–4 = Decay steps.
+/// Convert a `LifecycleState` to a numeric decay level: 0 = Active, n = Decay(n).
 /// Used by the scheduler and status renderer to populate `CacheRow::decay`.
 pub fn to_decay_level(state: &LifecycleState) -> u8 {
     match state {
         LifecycleState::Active => 0,
-        LifecycleState::Decay(step) => step.as_u8(),
+        LifecycleState::Decay(n) => *n,
     }
 }
 
@@ -456,6 +432,7 @@ mod tests {
             poll_interval: Some(Duration::from_secs(60)),
             keep_alive: KeepAlive::Polls(12),
             fsevents_reinstate: false,
+            decay: DEFAULT_DECAY,
         }
     }
 
@@ -510,19 +487,14 @@ mod tests {
         // Force the entry into Decay2 by mutating directly.
         {
             let entry = reg.entries.get_mut(&key).expect("entry exists");
-            entry.state = LifecycleState::Decay(DecayStep::Step2);
+            entry.state = LifecycleState::Decay(2);
             entry.poll_timer.as_mut().unwrap().interval = Duration::from_secs(240);
         }
 
         let t1 = t0 + Duration::from_secs(500);
         let outcome = reg.on_demand(key.clone(), cfg, t1);
 
-        assert_eq!(
-            outcome.transition,
-            StateTransition::Reinstated {
-                from: DecayStep::Step2
-            }
-        );
+        assert_eq!(outcome.transition, StateTransition::Reinstated { from: 2 });
         assert_eq!(outcome.watch_registration, WatchAction::Reinstate);
         assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
         assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(60)));
@@ -547,7 +519,7 @@ mod tests {
 
         {
             let entry = reg.entries.get_mut(&key).expect("entry exists");
-            entry.state = LifecycleState::Decay(DecayStep::Step3);
+            entry.state = LifecycleState::Decay(3);
         }
 
         let t1 = t0 + Duration::from_secs(1000);
@@ -593,7 +565,7 @@ mod tests {
 
         {
             let entry = reg.entries.get_mut(&key).expect("entry exists");
-            entry.state = LifecycleState::Decay(DecayStep::Step3);
+            entry.state = LifecycleState::Decay(3);
         }
 
         let t1 = t0 + Duration::from_secs(1000);
@@ -602,9 +574,7 @@ mod tests {
         assert!(outcome.refresh);
         assert!(matches!(
             outcome.transition,
-            Some(StateTransition::Reinstated {
-                from: DecayStep::Step3
-            })
+            Some(StateTransition::Reinstated { from: 3 })
         ));
         assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
     }
@@ -677,10 +647,7 @@ mod tests {
         let t1 = t0 + Duration::from_secs(721);
         let actions = reg.tick(t1);
 
-        assert_eq!(
-            reg.state(&key),
-            Some(&LifecycleState::Decay(DecayStep::Step1))
-        );
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
         assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(120)));
         assert!(
             actions.watch_drops.contains(&key),
@@ -690,7 +657,7 @@ mod tests {
             actions
                 .transitions
                 .iter()
-                .any(|(k, s)| k == &key && s == &LifecycleState::Decay(DecayStep::Step1))
+                .any(|(k, s)| k == &key && s == &LifecycleState::Decay(1))
         );
     }
 
@@ -710,10 +677,7 @@ mod tests {
         let t1 = t0 + Duration::from_secs(721);
         let actions = reg.tick(t1);
 
-        assert_eq!(
-            reg.state(&key),
-            Some(&LifecycleState::Decay(DecayStep::Step1))
-        );
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
         assert!(
             !actions.watch_drops.contains(&key),
             "watches should be preserved when fsevents_reinstate=true"
@@ -737,34 +701,25 @@ mod tests {
         // Decay1 step_deadline = t_decay1 + 1440. Tick past it.
         let t_decay2 = t_decay1 + Duration::from_secs(1441);
         let actions = reg.tick(t_decay2);
-        assert_eq!(
-            reg.state(&key),
-            Some(&LifecycleState::Decay(DecayStep::Step2))
-        );
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(2)));
         assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(240)));
         assert!(
             actions
                 .transitions
                 .iter()
-                .any(|(_, s)| s == &LifecycleState::Decay(DecayStep::Step2))
+                .any(|(_, s)| s == &LifecycleState::Decay(2))
         );
 
         // Step2 duration = K * 4P = 2880s.
         let t_decay3 = t_decay2 + Duration::from_secs(2881);
         reg.tick(t_decay3);
-        assert_eq!(
-            reg.state(&key),
-            Some(&LifecycleState::Decay(DecayStep::Step3))
-        );
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(3)));
         assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(480)));
 
         // Step3 duration = K * 8P = 5760s.
         let t_decay4 = t_decay3 + Duration::from_secs(5761);
         reg.tick(t_decay4);
-        assert_eq!(
-            reg.state(&key),
-            Some(&LifecycleState::Decay(DecayStep::Step4))
-        );
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(4)));
         assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(960)));
     }
 
@@ -820,10 +775,7 @@ mod tests {
         let t_decay4 = t_decay3 + Duration::from_secs(5761);
         reg.tick(t_decay4);
 
-        assert_eq!(
-            reg.state(&key),
-            Some(&LifecycleState::Decay(DecayStep::Step4))
-        );
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(4)));
 
         // Decay4 step_deadline = t_decay4 + 11520. Advance past it.
         let t_evict = t_decay4 + Duration::from_secs(11521);
@@ -880,7 +832,7 @@ mod tests {
 
         {
             let entry = reg.entries.get_mut(&key).expect("entry exists");
-            entry.state = LifecycleState::Decay(DecayStep::Step2);
+            entry.state = LifecycleState::Decay(2);
         }
 
         let t1 = t0 + Duration::from_secs(500);
@@ -888,10 +840,7 @@ mod tests {
 
         assert!(!outcome.refresh);
         assert!(outcome.transition.is_none());
-        assert_eq!(
-            reg.state(&key),
-            Some(&LifecycleState::Decay(DecayStep::Step2))
-        );
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(2)));
     }
 
     /// Watch source with KeepAlive::Duration advances through decay steps.
@@ -904,6 +853,7 @@ mod tests {
             poll_interval: None,
             keep_alive: KeepAlive::Duration(60),
             fsevents_reinstate: false,
+            decay: DEFAULT_DECAY,
         };
         let t0 = Instant::now();
         reg.on_demand(key.clone(), cfg, t0);
@@ -914,7 +864,7 @@ mod tests {
             actions
                 .transitions
                 .iter()
-                .any(|(_, s)| matches!(s, LifecycleState::Decay(DecayStep::Step1)))
+                .any(|(_, s)| matches!(s, LifecycleState::Decay(1)))
         );
     }
 
@@ -928,6 +878,7 @@ mod tests {
             poll_interval: None,
             keep_alive: KeepAlive::Never,
             fsevents_reinstate: false,
+            decay: DEFAULT_DECAY,
         };
         let t0 = Instant::now();
         reg.on_demand(key.clone(), cfg, t0);
@@ -936,5 +887,79 @@ mod tests {
         assert!(actions.transitions.is_empty());
         assert!(actions.evictions.is_empty());
         assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
+    }
+
+    fn ten_second_poll(decay: u8) -> SourceLifecycleConfig {
+        SourceLifecycleConfig {
+            strategy_kind: StrategyKind::Poll,
+            poll_interval: Some(Duration::from_secs(10)),
+            keep_alive: KeepAlive::Polls(1),
+            fsevents_reinstate: false,
+            decay,
+        }
+    }
+
+    /// Depth 1: valid for one poll, stale for one doubled step, then gone.
+    #[test]
+    fn depth_one_is_valid_then_stale_for_one_step_then_evicted() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key_global("p");
+        let t0 = Instant::now();
+        reg.on_demand(key.clone(), ten_second_poll(1), t0);
+
+        reg.tick(t0 + Duration::from_secs(9));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
+
+        reg.tick(t0 + Duration::from_secs(10));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
+
+        reg.tick(t0 + Duration::from_secs(29));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
+
+        let actions = reg.tick(t0 + Duration::from_secs(30));
+        assert_eq!(actions.evictions, vec![key.clone()]);
+        assert_eq!(reg.state(&key), None);
+    }
+
+    /// Depth 2: Decay(1), Decay(2), then evicted.
+    #[test]
+    fn depth_two_evicts_after_two_steps() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key_global("p");
+        let t0 = Instant::now();
+        reg.on_demand(key.clone(), ten_second_poll(2), t0);
+
+        reg.tick(t0 + Duration::from_secs(10));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
+        // Step 1 lasts 10 * 2 = 20 s.
+        reg.tick(t0 + Duration::from_secs(30));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(2)));
+        // Step 2 lasts 10 * 4 = 40 s.
+        reg.tick(t0 + Duration::from_secs(69));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(2)));
+        let actions = reg.tick(t0 + Duration::from_secs(70));
+        assert_eq!(actions.evictions, vec![key.clone()]);
+        assert_eq!(reg.state(&key), None);
+    }
+
+    /// Depth 4 is the standard ladder: Active, Decay(1..=4), evicted at 10 * 31 s.
+    #[test]
+    fn depth_four_walks_the_standard_ladder() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key_global("p");
+        let t0 = Instant::now();
+        reg.on_demand(key.clone(), ten_second_poll(DEFAULT_DECAY), t0);
+
+        let mut t = 10;
+        for n in 1..=4u8 {
+            reg.tick(t0 + Duration::from_secs(t));
+            assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(n)));
+            assert_eq!(to_decay_level(&LifecycleState::Decay(n)), n);
+            // Step n lasts 10 * 2^n s.
+            t += 10 * (1 << n);
+        }
+        let actions = reg.tick(t0 + Duration::from_secs(t));
+        assert_eq!(actions.evictions, vec![key.clone()]);
+        assert_eq!(t, 310);
     }
 }
