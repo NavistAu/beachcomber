@@ -270,13 +270,10 @@ async fn handle_watch(
 
     // Facet syntax is checked on the provider segment, after the metadata-suffix
     // stripping QueryPlan::build already did (mirrors the Get path).
-    let facet = match crate::query::parse_facet(&provider_name) {
-        Ok(facet) => facet,
-        Err(msg) => {
-            let _ = write_watch_line(writer, &Response::error(msg)).await;
-            return;
-        }
-    };
+    if let Err(msg) = crate::query::parse_facet(&provider_name) {
+        let _ = write_watch_line(writer, &Response::error(msg)).await;
+        return;
+    }
 
     let effective_path = plan.effective_path.clone();
     // Both halves resolve up the chain from the directory the caller named; only
@@ -298,32 +295,23 @@ async fn handle_watch(
             .await;
     }
 
-    // Subscribe to every entry both halves of the read walk, not just the
-    // addressed one: a `put` at an ancestor, at a directory below the provider's
-    // scope entry, or at the global entry changes what this watch resolves to,
-    // so it has to wake the stream — and so does a write to the template facet.
-    // The data half subscribes exactly what [`Cache::read_merged`] walks
-    // (`query::read_chain`, which carries the provider's scope entry even when
-    // it sits above `$HOME`); the template half is a static namespace, so its
-    // chain is the requested directory's. A facet key has no template half and
-    // subscribes only its own chain. One forwarder task per link funnels the
-    // per-key broadcasts into a single channel.
+    // Subscribe to every entry the read walk visits, not just the addressed
+    // one: a `put` at an ancestor, at a directory below the provider's scope
+    // entry, or at the global entry changes what this watch resolves to, so it
+    // has to wake the stream. That is exactly what [`Cache::read_merged`]
+    // walks (`query::read_chain`, which carries the provider's scope entry even
+    // when it sits above `$HOME`). Every write to `p` or to one of its facets
+    // notifies `p` (the watcher registry's one key per namespace), so this one
+    // chain also covers template edits and facet keys. One forwarder task per
+    // link funnels the per-key broadcasts into a single channel.
     let chain_watch = {
         let changed = Arc::new(tokio::sync::Notify::new());
         let mut tasks = Vec::new();
-        let mut links: Vec<(String, Option<String>)> =
+        let links: Vec<(String, Option<String>)> =
             crate::query::read_chain(requested_path.as_deref(), effective_path.as_deref())
                 .into_iter()
                 .map(|layer| (provider_name.clone(), layer))
                 .collect();
-        if facet.is_none() && !layered {
-            let facet_name = format!("{provider_name}:template");
-            links.extend(
-                crate::query::path_chain(requested_path.as_deref())
-                    .into_iter()
-                    .map(|layer| (facet_name.clone(), layer)),
-            );
-        }
         for (namespace, layer) in links {
             let mut sub = watchers.subscribe(namespace.as_str(), layer.as_deref());
             let changed = Arc::clone(&changed);

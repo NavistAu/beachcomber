@@ -4,9 +4,10 @@
 //! is a *value*, and a value is what [`resolve`](crate::resolve) makes of
 //! every key it reads — the addressed one, the refs its template names, and
 //! the template tree itself, any of which can change under it. So this module
-//! opens one daemon watch per key that resolution read plus one on the
-//! provider's `<p>:template`, polls them in turn, re-resolves on any frame and
-//! emits only when the resolved value changed (design §5.5).
+//! opens one daemon watch per key that resolution read, polls them in turn,
+//! re-resolves on any frame and emits only when the resolved value changed
+//! (design §5.5). The daemon notifies a namespace's watchers on every write
+//! to it or to one of its facets, so a template edit wakes the key's own watch.
 //!
 //! Three key classes, decided at [`ResolvedWatch::open`]:
 //!
@@ -188,8 +189,6 @@ pub struct ResolvedWatch<'a> {
     kind: Kind,
     /// One open daemon watch per subscribed `(key, path)`.
     streams: Vec<(String, Option<String>, WatchStream)>,
-    /// The watch on `<p>:template`; a facet key has none.
-    template_stream: Option<WatchStream>,
     /// The value last emitted, which is what a new resolution is compared to.
     last: Option<JsonValue>,
     deps: Vec<(String, Option<String>)>,
@@ -231,7 +230,6 @@ impl<'a> ResolvedWatch<'a> {
                 key: key.to_string(),
                 kind: Kind::Raw,
                 streams: vec![(key.to_string(), path.clone(), stream)],
-                template_stream: None,
                 last: None,
                 deps: vec![(key.to_string(), path)],
                 cancelled: Arc::new(AtomicBool::new(false)),
@@ -253,25 +251,12 @@ impl<'a> ResolvedWatch<'a> {
                 streams.push((dep_key.clone(), dep_path.clone(), stream));
             }
         }
-        // The daemon's own chain subscription on the addressed key already
-        // wakes this watch when a `put` gives the key a template it didn't
-        // have (src/server.rs's `chain_watch`, which subscribes the template
-        // chain alongside the data chain for the key being watched). This
-        // stream only matters when the addressed key's own watch was
-        // refused at open — `open_stream` above dropped it, e.g. an
-        // unregistered provider — because then it is the only subscription
-        // left that can fire once a later `put` makes the key answerable.
-        let provider = namespace(key);
-        let template_stream =
-            open_stream(&client, &format!("{provider}:template"), path.as_deref())?;
-
         let mut watch = Self {
             client,
             inputs,
             key: key.to_string(),
             kind: Kind::Resolved,
             streams,
-            template_stream,
             last,
             deps,
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -390,19 +375,13 @@ impl<'a> ResolvedWatch<'a> {
     }
 
     fn stream_count(&self) -> usize {
-        self.streams.len() + usize::from(self.template_stream.is_some())
+        self.streams.len()
     }
 
-    /// The `index`th stream: the subscriptions in order, the template watch
-    /// last. `index` must be below [`Self::stream_count`].
+    /// The `index`th stream, in subscription order. `index` must be below
+    /// [`Self::stream_count`].
     fn stream(&mut self, index: usize) -> &mut WatchStream {
-        if index < self.streams.len() {
-            &mut self.streams[index].2
-        } else {
-            self.template_stream
-                .as_mut()
-                .expect("index is below stream_count")
-        }
+        &mut self.streams[index].2
     }
 
     /// Resolve again, move the subscriptions onto that resolution's deps, and
@@ -476,7 +455,7 @@ fn namespace(key: &str) -> &str {
 /// The daemon answers a watch it refuses with one error frame, so that is
 /// where a refusal shows up: the stream is dropped (`Ok(None)`) while the key
 /// it names stays in [`ResolvedWatch::deps`] — a `put` can make it answerable
-/// later, and the template watch fires then. Taking the frame is also what
+/// later, and that watch fires then. Taking the frame is also what
 /// makes every later frame on the stream a change rather than the
 /// subscription's own opening echo.
 fn open_stream(
@@ -569,7 +548,7 @@ mod tests {
     }
 
     /// Pins item 1: a watch with nothing left that could ever fire — no dep
-    /// streams and no template stream — ends with `Eof` rather than
+    /// streams — ends with `Eof` rather than
     /// busy-spinning the deadline check that used to live only inside the
     /// per-stream loop (which never ran at zero streams). No daemon needed:
     /// the fix returns before any stream is ever touched.
@@ -582,7 +561,6 @@ mod tests {
             key: "p.field".to_string(),
             kind: Kind::Resolved,
             streams: Vec::new(),
-            template_stream: None,
             last: None,
             deps: Vec::new(),
             cancelled: Arc::new(AtomicBool::new(false)),

@@ -81,3 +81,22 @@ async fn notify_does_not_remove_entry_with_live_receiver() {
     let second = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
     assert!(second.is_ok());
 }
+
+#[tokio::test]
+async fn a_facet_write_notifies_its_base_namespace() {
+    let registry = Arc::new(WatcherRegistry::new());
+    let mut rx = registry.subscribe("p", Some("/d"));
+    registry.notify("p:template", Some("/d"));
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+    assert!(result.is_ok(), "a p:template write must wake a watch on p");
+}
+
+#[tokio::test]
+async fn a_facet_subscription_is_a_subscription_on_the_base_namespace() {
+    let registry = Arc::new(WatcherRegistry::new());
+    let mut rx = registry.subscribe("p:cache", None);
+    registry.notify("p", None);
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+    assert!(result.is_ok(), "a data write must wake a watch on p:cache");
+    assert_eq!(registry.entry_count(), 1, "one channel per base namespace");
+}

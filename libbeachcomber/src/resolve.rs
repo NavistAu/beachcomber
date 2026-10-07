@@ -164,14 +164,20 @@ pub fn resolve(
 }
 
 /// [`resolve`], plus the distinct `(key, path)` pairs it fetched, in
-/// first-fetch order.
+/// first-fetch order. A key the daemon rejects resolves to a miss here.
 pub fn resolve_with_deps(
     key: &str,
     inputs: &Inputs<'_>,
     fetch: &mut dyn Fetch,
 ) -> Result<(Option<JsonValue>, Fetched), ResolveError> {
     let mut r = Resolver::new(inputs, fetch);
-    let value = r.resolve(key)?;
+    // A key the daemon rejects (an unknown namespace) is a miss to a watch, as
+    // the daemon's own watch treats it: a `put` can make it answerable later,
+    // so it stays in the returned deps.
+    let value = match r.resolve(key) {
+        Err(ResolveError::Fetch(FetchError::Rejected(_))) => None,
+        other => other?,
+    };
     Ok((value, r.order))
 }
 

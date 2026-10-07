@@ -302,6 +302,106 @@ async fn watch_miss_then_update() {
     handle.abort();
 }
 
+/// Read one watch frame, failing on a deadline rather than hanging.
+async fn next_frame(reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>) -> Response {
+    let mut line = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        reader.read_line(&mut line),
+    )
+    .await
+    .expect("timed out waiting for a watch frame")
+    .unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+
+/// Open a watch on `key` and consume its initial frame.
+async fn open_watch(
+    sock: &std::path::Path,
+    key: &str,
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+    Response,
+) {
+    let stream = UnixStream::connect(sock).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let req = format!("{{\"op\":\"watch\",\"key\":\"{key}\"}}\n");
+    writer.write_all(req.as_bytes()).await.unwrap();
+    let first = next_frame(&mut reader).await;
+    (reader, writer, first)
+}
+
+#[tokio::test]
+async fn a_watch_on_a_namespace_nothing_answers_wakes_on_its_first_put() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let writer = cache.clone();
+    let handle = Server::new(sock.clone(), cache, registry, None, watchers)
+        .spawn()
+        .unwrap();
+
+    let (mut reader, _w, first) = open_watch(&sock, "nowhere.x").await;
+    assert!(first.ok, "a watch on an unknown namespace is accepted");
+    assert!(first.data.is_none(), "and its first frame is a miss");
+
+    writer
+        .write_static("nowhere", None, "put", "x", Value::String("1".into()), None)
+        .unwrap();
+    let frame = next_frame(&mut reader).await;
+    assert_eq!(frame.data.unwrap(), serde_json::json!("1"));
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_template_put_wakes_a_watch_on_the_field() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let writer = cache.clone();
+    let handle = Server::new(sock.clone(), cache, registry, None, watchers)
+        .spawn()
+        .unwrap();
+
+    let (mut reader, _w, first) = open_watch(&sock, "nowhere.x").await;
+    assert!(first.ok && first.data.is_none());
+
+    writer
+        .write_static(
+            "nowhere:template",
+            None,
+            "put",
+            "x",
+            Value::String("{{ 1 }}".into()),
+            None,
+        )
+        .unwrap();
+    let frame = next_frame(&mut reader).await;
+    assert!(frame.ok, "{:?}", frame.error);
+    assert!(
+        frame.template.is_some(),
+        "the template put produced a frame carrying the template: {frame:?}"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_watch_on_the_put_facet_wakes_on_a_data_write() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let writer = cache.clone();
+    let handle = Server::new(sock.clone(), cache, registry, None, watchers)
+        .spawn()
+        .unwrap();
+
+    let (mut reader, _w, first) = open_watch(&sock, "nowhere:put.x").await;
+    assert!(first.ok && first.data.is_none(), "{first:?}");
+
+    writer
+        .write_static("nowhere", None, "put", "x", Value::String("1".into()), None)
+        .unwrap();
+    let frame = next_frame(&mut reader).await;
+    assert_eq!(frame.data.unwrap(), serde_json::json!("1"));
+    handle.abort();
+}
+
 /// `active_watchers` counts open watch streams, one per client — not links of
 /// the watcher registry. A watch subscribes to every entry on its path's chain,
 /// so counting registry entries reported a single watch at depth six as six.

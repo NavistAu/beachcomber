@@ -800,9 +800,9 @@ pub struct BcWatch {
 
 /// Opens a watch on the *value* of `key` — what `bc_resolve(key, cwd,
 /// env_json)` answers — and emits it again whenever it changes. The fan-in
-/// underneath subscribes to every key the resolution read plus the
-/// provider's `<provider>:template`, so a template edited under the watch
-/// fires it exactly as a changed cache record does.
+/// underneath subscribes to every key the resolution read, and a write to a
+/// namespace's template notifies that namespace, so a template edited under
+/// the watch fires it exactly as a changed cache record does.
 ///
 /// `cwd` and `env_json` mean what they mean for [`bc_resolve`], and for the
 /// same reason: this library reads no ambient state on the caller's behalf,

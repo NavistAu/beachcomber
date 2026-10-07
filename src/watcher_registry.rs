@@ -4,7 +4,11 @@ use tokio::sync::broadcast;
 
 type WatchKey = String;
 
+/// The key of a namespace's watchers. A facet (`p:template`, `p:cache`) shares
+/// its base namespace's key: every write to `p` or to any of its facets
+/// notifies `p` at its path, and a watch on any key of `p` subscribes there.
 fn make_watch_key(provider: &str, path: Option<&str>) -> WatchKey {
+    let provider = provider.split(':').next().unwrap_or(provider);
     match path {
         Some(p) => format!("{provider}\0{p}"),
         None => provider.to_string(),

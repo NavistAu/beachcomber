@@ -237,6 +237,24 @@ fn subscriptions_follow_the_deps() {
     wait_for(&mut w, json!("3"));
 }
 
+/// A watch on a key nothing answers yet follows the template a later `put`
+/// gives it: the daemon's one subscription on the key's namespace is enough.
+#[test]
+fn a_watch_on_an_unknown_key_follows_a_later_template() {
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
+    let writer = client_for(&guard.path);
+    let env = shell_env();
+
+    let mut w = ResolvedWatch::open(&client, "scanline.widgets.foo", &inputs(&env)).expect("open");
+    assert_eq!(value(w.next(Some(SOON))), None);
+
+    writer
+        .put("scanline:template", scanline_tree(), None, None)
+        .expect("put template");
+    wait_for(&mut w, json!("hi"));
+}
+
 /// A miss is an answer: nothing is stored there, the watch stays open.
 #[test]
 fn a_miss_is_an_empty_value() {
