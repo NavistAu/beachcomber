@@ -320,7 +320,7 @@ comb g git.branch:stale        # whether value is past refresh time
 **Exit codes:**
 - `0` — success; also a miss under `text`/`sh`, which print nothing
 - `2` — a miss under `json`, `csv`, `tsv` or `fmt` (`Error querying <key>: no data (cache miss)` on stderr)
-- `2` — error (daemon unreachable, unknown provider, invalid key, a template that does not compile or cycles — named in the message)
+- `2` — error (daemon unreachable, invalid key, a template that does not compile or cycles — named in the message)
 
 ### `comb s` (status)
 
@@ -952,7 +952,7 @@ Not every `comb g` namespace is a daemon provider. The managed `defaults/` files
 | `kubecontext` | `defaults/kubecontext.toml` | `context`, `namespace` | `exec('kubectl', 'config', …)` |
 | `talos` | `defaults/talos.toml` | `context` | `exec('talosctl', 'config', 'info', …)` |
 
-Only `python` and `terraform` have a daemon provider of the same name, so only there does `comb g <namespace>` return cached fields deep-merged with rendered ones. `aws` and `gcloud` are templates only: their data lives in the differently named `aws_profiles` and `gcloud_configs` namespaces, which the templates reach through `cache.*` refs, and `comb g aws` is just the rendered template tree. `conda`, `op`, `kubecontext` and `talos` are templates only too, over the environment or a command. `kubecontext` and `talos` call the tool the shell would run — `kubectl config current-context`, `talosctl config info` — so they honour the shell's own `$KUBECONFIG`/`$TALOSCONFIG`, and the field names are unchanged: `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `exec()` is enabled — `comb get`/`eval`, or an SDK client constructed with `exec` on; anywhere else the field is the error `exec() is disabled in this context`.
+Only `python` and `terraform` have a daemon provider of the same name, so only there does `comb g <namespace>` return cached fields deep-merged with rendered ones. `aws` and `gcloud` are templates only: their data lives in the differently named `aws_profiles` and `gcloud_configs` namespaces, which the templates reach through `comb.*` refs, and `comb g aws` is just the rendered template tree. `conda`, `op`, `kubecontext` and `talos` are templates only too, over the environment or a command. `kubecontext` and `talos` call the tool the shell would run — `kubectl config current-context`, `talosctl config info` — so they honour the shell's own `$KUBECONFIG`/`$TALOSCONFIG`, and the field names are unchanged: `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `exec()` is enabled — `comb get`/`eval`, or an SDK client constructed with `exec` on; anywhere else the field is the error `exec() is disabled in this context`.
 
 ### Development Tools
 
@@ -1867,7 +1867,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240, "stale": false}
 {"ok": true, "data": "main", "age_ms": 1240, "stale": false}
 {"ok": true, "data": null, "age_ms": null, "stale": false}
-{"ok": false, "error": "unknown provider: git2"}
+{"ok": false, "error": "invalid facet key: a:b:c"}
 ```
 
 **Fields:**

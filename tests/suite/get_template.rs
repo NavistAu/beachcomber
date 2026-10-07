@@ -636,7 +636,7 @@ async fn a_nearer_template_shadows_a_farther_one() {
 // ── (d) a namespace with templates only ─────────────────────────────────────
 
 /// `scanline` is not a registered provider and holds no data at all, only a
-/// template facet. That is a hit, not `unknown provider`.
+/// template facet. That is a hit, not a miss.
 #[tokio::test]
 async fn a_namespace_with_only_templates_is_not_unknown() {
     let (_tmp, sock, cache, registry, watchers) = setup();
@@ -658,15 +658,18 @@ async fn a_namespace_with_only_templates_is_not_unknown() {
 }
 
 #[tokio::test]
-async fn a_namespace_with_neither_data_nor_templates_is_still_unknown() {
+async fn a_namespace_with_neither_data_nor_templates_is_a_miss() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
     let resp = get(&mut s, "definitely_nonexistent.field").await;
-    assert_eq!(resp["ok"], false, "got {resp}");
-    assert_eq!(resp["error"], "unknown provider: definitely_nonexistent");
+    assert_eq!(resp["ok"], true, "got {resp}");
+    assert!(
+        resp.get("data").is_none() && resp.get("error").is_none(),
+        "got {resp}"
+    );
 
     handle.abort();
 }

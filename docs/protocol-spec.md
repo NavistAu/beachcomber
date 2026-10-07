@@ -156,7 +156,7 @@ Read a cached value.
 
 **Response (error):**
 ```json
-{"ok": false, "error": "unknown provider: foo"}
+{"ok": false, "error": "invalid facet key: a:b:c"}
 ```
 
 #### Freshness
@@ -179,7 +179,8 @@ A `get` on a key whose namespace carries no facet does two lookups: the data at
 the addressed node, and the same node in the merged tree of that namespace's
 `template` facet (`<provider>:template`). Whichever exist come back, so a
 response may carry the template half with no `data` at all — a namespace holding
-only templates is a hit, not `unknown provider`. A sub-path neither half answers
+only templates is a hit. An unknown provider is a miss, as is any address nothing
+answers; only invalid facet syntax is an error. A sub-path neither half answers
 is a miss (`{"ok":true}`), at any depth: an address into an existing object that
 has no such key, or past a scalar, misses exactly as a missing top-level field
 does. There is no `unknown field` error.

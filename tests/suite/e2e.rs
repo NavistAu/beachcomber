@@ -1,7 +1,6 @@
 use beachcomber::client::Client;
 use beachcomber::config::Config;
 use beachcomber::daemon;
-use libbeachcomber::resolve::FetchError;
 use tempfile::TempDir;
 
 use crate::common::fetch::fetch;
@@ -98,8 +97,8 @@ async fn e2e_unknown_provider() {
 
     let response = fetch(&sock, "nonexistent", None);
     assert!(
-        matches!(response, Err(FetchError::Rejected(_))),
-        "Unknown provider should return error"
+        matches!(response, Ok(None)),
+        "an unknown provider is a miss, got {response:?}"
     );
 
     handle.abort();

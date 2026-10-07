@@ -68,7 +68,7 @@ impl Fetch for MapFetch {
             return Err(FetchError::Transport(format!("transport failed for {key}")));
         }
         if self.rejects.iter().any(|k| k == key) {
-            return Err(FetchError::Rejected(format!("unknown provider: {key}")));
+            return Err(FetchError::Rejected(format!("invalid facet key: {key}")));
         }
         Ok(self
             .entries
@@ -208,7 +208,7 @@ fn a_leaf_template_renders_from_the_env() {
 }
 
 #[test]
-fn a_leaf_template_renders_from_a_cache_ref() {
+fn a_leaf_template_renders_from_a_comb_ref() {
     assert_eq!(hit("scanline.widgets.bar"), json!(BRANCH_12));
 }
 
@@ -1075,7 +1075,7 @@ fn a_rejected_top_level_key_is_an_error_and_a_rejected_ref_is_falsy() {
     assert_eq!(
         resolve("c.z", &inputs(&env), &mut f),
         Err(ResolveError::Fetch(FetchError::Rejected(
-            "unknown provider: c.z".to_string()
+            "invalid facet key: c.z".to_string()
         )))
     );
 

@@ -4,7 +4,7 @@ use beachcomber::cache::Cache;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
-use libbeachcomber::{ClientConfig, CombError, CombResult, Session};
+use libbeachcomber::{ClientConfig, CombResult, Session};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -83,11 +83,11 @@ async fn get_variadic_partial_failure_still_emits_successful_key() {
 
     assert_eq!(good, "myhost");
 
-    // The server returns ok:false for the missing key rather than closing the
-    // connection, allowing the caller to continue fetching remaining keys.
+    // The unknown key is a miss, and the connection stays open for the
+    // remaining keys.
     match bad {
-        Err(CombError::ServerError(msg)) => assert!(msg.contains("unknown provider"), "{msg}"),
-        other => panic!("expected the daemon's rejection, got {other:?}"),
+        Ok(CombResult::Miss) => {}
+        other => panic!("expected a miss, got {other:?}"),
     }
 }
 

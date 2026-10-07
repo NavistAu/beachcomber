@@ -15,10 +15,11 @@ import (
 func TestClient_Get_Miss(t *testing.T) {
 	c := requireClient(t)
 	result, err := c.Get("nonexistent.provider", "")
-	// An unknown provider is a daemon-side error, not a miss; assert we get
-	// *some* typed outcome without crashing the binding either way.
-	if err == nil && !result.IsMiss() && !result.IsHit() {
-		t.Fatalf("unexpected result shape: %+v", result)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !result.IsMiss() {
+		t.Fatalf("an unknown provider is a miss, got %+v", result)
 	}
 }
 

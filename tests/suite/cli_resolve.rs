@@ -481,10 +481,9 @@ fn a_daemon_rejected_key_is_an_error_in_every_format() {
     comb(&d, &cwd)
         .args(["get", "nope.x"])
         .assert()
-        .code(2)
+        .code(0)
         .stdout(predicates::str::is_empty())
-        .stderr(predicates::str::contains("Error querying nope.x: "))
-        .stderr(predicates::str::contains("unknown provider"));
+        .stderr(predicates::str::is_empty());
 }
 
 #[test]

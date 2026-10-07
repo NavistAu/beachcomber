@@ -556,75 +556,29 @@ poll_interval = "60s"
     );
 }
 
-fn removed_key_errors(toml_str: &str) -> Vec<String> {
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let (_, errors) = config.validate_providers(&[], &std::collections::HashMap::new());
-    errors
-}
-
-fn assert_removed(errors: &[String]) {
+fn assert_unknown_key(err: &str) {
     assert!(
-        errors
-            .iter()
-            .any(|e| e.contains("fsevent_lifespan") && e.contains("removed")),
-        "error says the key was removed: {errors:?}"
+        err.contains("unknown key 'fsevent_lifespan'"),
+        "error is the ordinary unknown-key error: {err:?}"
     );
 }
 
 #[test]
-fn fsevent_lifespan_is_a_config_error() {
-    // The Active window is interval x count; fsevent_lifespan was a second spelling of it.
-    let toml_str = r#"
-[providers.git.refs]
-type = "fsevent"
-scope = "path"
-fsevent_lifespan = "300s"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let err = config.source_override("git", "refs").unwrap_err();
-    assert!(
-        err.contains("fsevent_lifespan") && err.contains("removed"),
-        "error says the key was removed: {err:?}"
-    );
-}
-
-#[test]
-fn fsevent_lifespan_is_rejected_at_the_flat_provider_level() {
-    assert_removed(&removed_key_errors(
-        "[providers.git]\nfsevent_lifespan = \"300s\"\n",
-    ));
-}
-
-#[test]
-fn fsevent_lifespan_is_rejected_in_a_built_in_source_block() {
-    assert_removed(&removed_key_errors(
+fn fsevent_lifespan_is_an_unknown_key_in_a_built_in_source_block() {
+    let config: Config = toml::from_str(
         "[providers.git.refs]\ntype = \"fsevent\"\nscope = \"path\"\nfsevent_lifespan = \"300s\"\n",
-    ));
+    )
+    .unwrap();
+    assert_unknown_key(&config.source_override("git", "refs").unwrap_err());
 }
 
 #[test]
-fn fsevent_lifespan_is_rejected_in_a_script_source_block() {
-    assert_removed(&removed_key_errors(
-        "[providers.myscript]\ntype = \"script\"\n\n[providers.myscript.main]\ncommand = \"true\"\nfsevent_lifespan = \"300s\"\n",
-    ));
-}
-
-#[test]
-fn fsevent_lifespan_is_rejected_in_an_external_source_block_parser() {
+fn fsevent_lifespan_is_an_unknown_key_in_an_external_source_block_parser() {
     let table: toml::Table =
         toml::from_str("command = \"true\"\nfsevent_lifespan = \"300s\"\n").unwrap();
-    let err = crate::config::ExternalSourceConfig::from_toml_table("p.main", &table).unwrap_err();
-    assert!(
-        err.contains("fsevent_lifespan") && err.contains("removed"),
-        "{err}"
+    assert_unknown_key(
+        &crate::config::ExternalSourceConfig::from_toml_table("p.main", &table).unwrap_err(),
     );
-}
-
-#[test]
-fn fsevent_lifespan_is_rejected_in_a_facet_table() {
-    assert_removed(&removed_key_errors(
-        "[providers.\"git:template\"]\nfsevent_lifespan = \"300s\"\n",
-    ));
 }
 
 #[test]

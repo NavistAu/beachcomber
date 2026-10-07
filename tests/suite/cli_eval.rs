@@ -1,6 +1,6 @@
 //! End-to-end tests for `comb eval`: it is a client of
 //! `libbeachcomber::resolve`, exactly as `comb get` is, so every ref inside
-//! its template — `env.*`, a plain `provider.field`, a `cache.*` ref, a
+//! its template — `env.*`, a plain `provider.field`, a `comb.*` ref, a
 //! nested template field — resolves through the one resolver. `comb` always
 //! requires the daemon (design §2, outcome 22): there is no source that
 //! skips starting one, `env.*`-only included.

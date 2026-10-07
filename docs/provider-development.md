@@ -2,7 +2,7 @@
 
 Step-by-step reference for writing new built-in providers. Built-in providers live in `src/provider/` and are compiled into the daemon. For a lower-effort path using shell scripts, see §6.
 
-For the authoritative model of how consumer queries resolve against providers — field types, the `cache.*` namespace, value expressions, and env-driven selection — see **`docs/canon/field_resolution.md`**.
+For the authoritative model of how consumer queries resolve against providers — field types, the `comb.*` namespace, value expressions, and env-driven selection — see **`docs/canon/field_resolution.md`**.
 
 ---
 
@@ -481,7 +481,7 @@ cargo test -p beachcomber provider::dockercontext
 Some providers serve raw data sets that clients consume through templates. The pattern separates two concerns:
 
 - **Data provider** — a daemon provider that caches all variants of an env-selected source. Its name is descriptive of the data it holds (e.g. `aws_profiles`, `gcloud_configs`). Each field is a variant keyed by name, each value an object of per-variant fields. The daemon caches the whole set regardless of any shell selector.
-- **Consumer namespace** — a `[providers."<ns>:template"]` table, shipped as a managed `defaults/<ns>.toml` file, whose templates present the user-facing surface (e.g. `aws`, `gcloud`). These reference `cache.<data_provider>[<selector>].<field>` to index the data provider by the active selector; the daemon serves the templates as data and the client renders them with the caller's environment.
+- **Consumer namespace** — a `[providers."<ns>:template"]` table, shipped as a managed `defaults/<ns>.toml` file, whose templates present the user-facing surface (e.g. `aws`, `gcloud`). These reference `comb.<data_provider>[<selector>].<field>` to index the data provider by the active selector; the daemon serves the templates as data and the client renders them with the caller's environment.
 
 ```
 # data provider: daemon-side, env-blind
@@ -500,9 +500,9 @@ region  = "{{ env.AWS_REGION or env.AWS_DEFAULT_REGION
 
 See `docs/canon/field_resolution.md` §"Env-driven selection" for the full model.
 
-### The `cache.*` reference convention
+### The `comb.*` reference convention
 
-Inside value expressions, `cache.<provider>.<field>` addresses the **raw cached value**, bypassing any field expression. This is distinct from `<provider>.<field>`, which evaluates that field's value expression (recursive, cycle-detected).
+Inside value expressions, `comb.<provider>.<field>` addresses the **raw cached value**, bypassing any field expression. This is distinct from `<provider>.<field>`, which evaluates that field's value expression (recursive, cycle-detected).
 
 This matters when a template needs to override a same-named cached value — a template at a cached field's path wins on read:
 

@@ -122,7 +122,7 @@ comb g git.branch:source         # → head (the Source that wrote the record)
 **Exit codes:**
 - `0` — success; also a miss under `text`/`sh`, which print nothing (e.g. `git` queried outside a git repository)
 - `2` — a miss under `json`, `csv`, `tsv` or `fmt` (`Error querying <key>: no data (cache miss)` on stderr)
-- `2` — error (daemon unreachable, unknown provider, invalid key, a template that does not compile or cycles — the message names the field)
+- `2` — error (daemon unreachable, invalid key, a template that does not compile or cycles — the message names the field)
 
 ## `comb s` (status)
 

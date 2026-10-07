@@ -242,15 +242,14 @@ class TestOps < Minitest::Test
     @server.requests.select { |r| r['op'] == 'watch' }
   end
 
-  def test_watch_subscribes_to_the_key_and_to_its_template_tree
+  def test_watch_subscribes_to_the_key
     enqueue_many('{"ok":true,"data":"main","age_ms":10,"stale":false}')
     stream = @client.watch('git.branch', cwd: '/repo')
     event = stream.next_event
     stream.close
 
     keys = watch_requests.map { |r| r['key'] }
-    assert_includes keys, 'git.branch'
-    assert_includes keys, 'git:template'
+    assert_equal ['git.branch'], keys.uniq
     assert_instance_of Beachcomber::WatchEvent, event
     assert_equal 'main', event.data
   end

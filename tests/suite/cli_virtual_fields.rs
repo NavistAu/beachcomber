@@ -73,7 +73,7 @@ fn ref_discovery_finds_all_refs_in_cascade() {
 fn nested_ref_discovery_keeps_every_segment_of_a_resolved_ref() {
     // A ref names a node at any depth, never the group above it:
     // `foo.object.key` is Resolved("foo", "object.key") and the resolver
-    // fetches exactly that leaf. Only `env.*` and `cache.*` cut at a fixed
+    // fetches exactly that leaf. Only `env.*` and `comb.*` cut at a fixed
     // depth, where deeper segments are attribute navigation into the value.
     use libbeachcomber::eval::discover_refs;
     use libbeachcomber::virtual_fields::Ref;

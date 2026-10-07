@@ -269,7 +269,7 @@ The reload is all or nothing, twice over. The edited files are checked against t
 
 ### Templates and value expressions
 
-A **template** is a string leaf of a `:template` facet: a value expression over `env.*`, `cache.*` and other fields' resolved values. The daemon stores it and serves it; the client — `comb get`, `comb eval`, and every SDK's `resolve`/`eval`, all through `libbeachcomber::resolve` — renders it with the caller's environment and directory. A field need not have a cached value to carry a template:
+A **template** is a string leaf of a `:template` facet: a value expression over `env.*`, `comb.*` and other fields' resolved values. The daemon stores it and serves it; the client — `comb get`, `comb eval`, and every SDK's `resolve`/`eval`, all through `libbeachcomber::resolve` — renders it with the caller's environment and directory. A field need not have a cached value to carry a template:
 
 ```toml
 [providers."scanline:template"]
@@ -290,7 +290,7 @@ bar = "{{ comb.git.branch | truncate(12) }}"
 | literal text and/or more than one tag | a string | `"{{ git.branch }}{% if git.dirty %}*{% endif %}"` → `main*` |
 | no tags at all | its own literal text | `"env.HOME"` → the string `env.HOME` |
 
-Inside an expression, `cache.<provider>.<field>` is the raw cached value; `<provider>.<field>` is that field as `comb get` would resolve it (templates included, recursively, cycle-detected); `env.X` is the caller's environment. A missing ref is undefined and falsy. Filters: minijinja's built-ins plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson`.
+Inside an expression, `comb.<provider>.<field>` is the raw cached value; `<provider>.<field>` is that field as `comb get` would resolve it (templates included, recursively, cycle-detected); `env.X` is the caller's environment. A missing ref is undefined and falsy. Filters: minijinja's built-ins plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson`.
 
 **Errors.** A template that does not compile, or a cycle, is a configuration error: a single-leaf query fails, and a namespace query fails naming the leaf (`comb g scanline` exits 2 with `scanline.widgets.foo: …`). A runtime failure — a failed or disabled `exec()` — fails a single-leaf query but is omitted from a namespace object.
 

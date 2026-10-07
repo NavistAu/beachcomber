@@ -83,7 +83,7 @@ const KEYS: &[(&str, Expect, bool)] = &[
     // Compared as a class only: both must be numbers, the numbers differ.
     ("git.branch:age", Expect::Hit(None), true),
     ("a:b:c.x", Expect::Error, false),
-    ("nope.x", Expect::Error, false),
+    ("nope.x", Expect::Miss, false),
     ("err.a", Expect::Error, false),
     ("err.bad", Expect::Error, false),
     ("err", Expect::Error, false),

@@ -193,13 +193,13 @@ fn bc_resolve_leaf_group_and_whole_namespace_from_a_put_template() {
     unsafe { bc_client_free(client) };
 }
 
-/// A template whose expression references a `cache.*` value resolves to
+/// A template whose expression references a `comb.*` value resolves to
 /// that value. `otherprov` is `put` globally (no `path`) while the resolve
 /// runs at a `cwd`: a static record is read up the directory chain, and the
 /// global entry is the last link of every chain (canon `field_resolution.md`
 /// §"Path resolution").
 #[test]
-fn bc_resolve_cache_ref_template() {
+fn bc_resolve_comb_ref_template() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
 
@@ -275,7 +275,7 @@ fn nested_template_dependency_is_followed() {
 
 /// `cwd` is threaded into every fetch, not merely required: a value `put` at
 /// an explicit `path` is seen only when `cwd` is that path — through a raw
-/// `bc_eval` ref and through a template's `cache.*` ref alike.
+/// `bc_eval` ref and through a template's `comb.*` ref alike.
 #[test]
 fn path_scoped_ref_resolves_at_cwd() {
     let daemon = DaemonGuard::spawn();
@@ -351,7 +351,7 @@ fn bc_eval_truncate_and_basename_filters() {
 }
 
 /// A ref the daemon rejects — an unregistered provider, as a plain ref or a
-/// `cache.*` ref — is a missing ref inside a template, falsy at any depth
+/// `comb.*` ref — is a missing ref inside a template, falsy at any depth
 /// (canon), so `or` and `default` both fire and nothing errors.
 #[test]
 fn bc_eval_rejected_ref_is_falsy() {

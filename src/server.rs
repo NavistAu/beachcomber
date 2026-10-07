@@ -929,23 +929,6 @@ async fn handle_request(
             // the requested path, which the plan already canonicalised.
             let template_path = plan.requested_path.as_deref();
 
-            // Unknown provider check. A namespace is known when a provider
-            // declares it, when a `put` registered it as static, or when its
-            // `template` facet holds a record anywhere on the chain — the one
-            // case the first two miss, because a `put p:template …` registers
-            // `p:template`, not `p`. A namespace that holds only templates
-            // (`scanline`, or an `aws` whose daemon provider was retired) still
-            // answers a `get` with its template half. A facet key is already
-            // inside a facet and has no template half to look for.
-            let is_known = registry.provider_metadata(provider_name).is_some()
-                || registry.is_static_namespace(provider_name)
-                || (facet.is_none()
-                    && cache
-                        .has_records_on_chain(&format!("{provider_name}:template"), template_path));
-            if !is_known {
-                return Response::error(format!("unknown provider: {provider_name}"));
-            }
-
             // `--force` re-executes below, per source and at each source's own
             // scope; nothing is evicted here. Evicting the addressed entry
             // wholesale used to take the static records with it and left a
@@ -1323,16 +1306,16 @@ async fn handle_request(
                 // `Cache::list_rows` already marked static rows (source ==
                 // PUT_SOURCE or "config:*") with RowKind::Static; only rows
                 // backed by a real Source need a lifecycle/transient lookup.
-                // A put row is looked up too: with a ttl its address is a
-                // lifecycle entry, and without one it stays static.
+                // A put row is looked up only when its address carries a ttl
+                // (`Cache::list_rows` leaves its kind unset); without one it
+                // stays static, whatever put sits above it.
                 let is_put = row.source == crate::cache::PUT_SOURCE;
-                let is_static = row.kind == Some(RowKind::Static);
 
-                if !is_static || is_put {
+                if row.kind != Some(RowKind::Static) {
                     // Look up the lifecycle snapshot for THIS row's owning source
                     // so glyphs and TTL columns reflect the source's strategy
                     // (refs vs diff vs status all differ within a single provider).
-                    // A put row's key is its address: the row's field, or the
+                    // A put row's key is its own address: the row's field, or the
                     // root address when the field is a root put's top-level key.
                     let key = crate::scheduler::lifecycle::Key {
                         provider: row.provider.clone(),
@@ -1344,24 +1327,13 @@ async fn handle_request(
                             String::new()
                         },
                     };
-                    // A put row's lifecycle is its nearest put address at or
-                    // above it: the field itself, then each ancestor, then the root.
                     let matching_snap = lifecycle.get(&key).or_else(|| {
-                        if !is_put {
-                            return None;
-                        }
-                        let mut node = key.node.as_str();
-                        while !node.is_empty() {
-                            node = node.rsplit_once('.').map_or("", |(parent, _)| parent);
-                            let ancestor = crate::scheduler::lifecycle::Key {
-                                node: node.to_string(),
+                        is_put
+                            .then(|| crate::scheduler::lifecycle::Key {
+                                node: String::new(),
                                 ..key.clone()
-                            };
-                            if let Some(snap) = lifecycle.get(&ancestor) {
-                                return Some(snap);
-                            }
-                        }
-                        None
+                            })
+                            .and_then(|root| lifecycle.get(&root))
                     });
 
                     if let Some(snap) = matching_snap {
@@ -1379,7 +1351,9 @@ async fn handle_request(
                             row.next_poll_in_secs = snap.next_poll_in_secs;
                         }
                         row.fsevents_reinstate = Some(snap.fsevents_reinstate);
-                    } else if !is_put {
+                    } else if is_put {
+                        row.kind = Some(RowKind::Static);
+                    } else {
                         row.kind = Some(RowKind::Transient);
                     }
 

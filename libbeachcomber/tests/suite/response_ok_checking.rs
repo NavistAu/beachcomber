@@ -86,7 +86,7 @@ fn session_put_null_on_an_over_deep_key_returns_err() {
 
 #[test]
 fn client_refresh_reports_daemon_rejection() {
-    let (_tmp, sock) = spawn_canned_responder(r#"{"ok":false,"error":"unknown provider: nope"}"#);
+    let (_tmp, sock) = spawn_canned_responder(r#"{"ok":false,"error":"invalid facet key: a:b:c"}"#);
     let client = client_for(&sock);
 
     let result = client.refresh("nope", None);
@@ -103,7 +103,7 @@ fn client_refresh_reports_daemon_rejection() {
 
 #[test]
 fn session_refresh_reports_daemon_rejection() {
-    let (_tmp, sock) = spawn_canned_responder(r#"{"ok":false,"error":"unknown provider: nope"}"#);
+    let (_tmp, sock) = spawn_canned_responder(r#"{"ok":false,"error":"invalid facet key: a:b:c"}"#);
     let client = client_for(&sock);
     let mut session = client.session().expect("session");
 

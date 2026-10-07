@@ -208,7 +208,7 @@ impl ClientSession {
 /// node on this session's connection.
 ///
 /// A node with nothing in it — no `data`, no `template` — is a miss. A key the
-/// daemon rejected (`ok: false`: an invalid facet, an unknown provider) is
+/// daemon rejected (`ok: false`: an invalid facet) is
 /// `Rejected` with the daemon's own words, for the resolver to decide whether
 /// it is the caller's key (an error) or a ref inside a template (falsy). Every
 /// other failure is the transport's, worded as `comb_error_to_io` words it for

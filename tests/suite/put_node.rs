@@ -384,9 +384,9 @@ async fn put_data_with_a_dotted_key_is_rejected() {
         Some("put data keys may not contain '.': x.y")
     );
 
-    // A refused put registers nothing either, so the namespace is still unknown.
+    // A refused put registers nothing either, so the namespace still misses.
     let r = send_recv(&mut s, &serde_json::json!({"op":"get","key":"dk"})).await;
-    assert_eq!(r.error.as_deref(), Some("unknown provider: dk"));
+    assert!(r.ok && r.data.is_none(), "{r:?}");
 
     handle.abort();
 }

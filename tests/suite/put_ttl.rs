@@ -99,6 +99,28 @@ async fn a_put_without_ttl_is_static() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_put_without_ttl_nested_under_a_ttld_one_is_static() {
+    let (_tmp, _sock, client, handle) = setup_daemon().await;
+    client
+        .put("build", serde_json::json!({"a": 1}), Some("60s"), None)
+        .unwrap();
+    client
+        .put("build.status", serde_json::json!("passing"), None, None)
+        .unwrap();
+    let rows = put_rows(&client, "build");
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0].field, "a");
+    assert!(
+        matches!(rows[0].kind, Some(RowKind::Lifecycle { .. })),
+        "{:?}",
+        rows[0]
+    );
+    assert_eq!(rows[1].field, "status");
+    assert_eq!(rows[1].kind, Some(RowKind::Static), "{:?}", rows[1]);
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reput_without_ttl_drops_the_lifecycle() {
     let (_tmp, _sock, client, handle) = setup_daemon().await;
     client

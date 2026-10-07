@@ -108,9 +108,9 @@ def test_introspect_daemon_subject(client: Client) -> None:
 
 def test_server_error_carries_kind_attribute(client: Client) -> None:
     with pytest.raises(ServerError) as excinfo:
-        client.get("nosuchprovider")
+        client.get("a:b:c.x")
     assert excinfo.value.kind == "server_error"
-    assert "unknown provider" in excinfo.value.message
+    assert "invalid facet key" in excinfo.value.message
 
 
 def test_bad_explicit_socket_path_raises_connection_failed(tmp_path) -> None:

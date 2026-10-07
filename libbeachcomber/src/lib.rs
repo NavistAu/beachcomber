@@ -1091,7 +1091,7 @@ impl Default for Client {
 /// its own connection.
 ///
 /// A node with nothing in it — no `data`, no `template` — is a miss. A key
-/// the daemon rejected (`ok: false`: an invalid facet, an unknown provider)
+/// the daemon rejected (`ok: false`: an invalid facet)
 /// is [`FetchError::Rejected`](resolve::FetchError::Rejected) in the daemon's
 /// own words. Every other failure is the transport's: it is reported as
 /// [`FetchError::Transport`](resolve::FetchError::Transport) and the

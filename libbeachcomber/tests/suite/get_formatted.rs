@@ -168,12 +168,12 @@ fn client_get_formatted_reports_daemon_rejection() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
 
-    let result = client.get_formatted("no_such_provider.x", None, "text");
+    let result = client.get_formatted("a:b:c.x", None, "text");
 
     match result {
         Err(CombError::ServerError(msg)) => {
             assert_eq!(
-                msg, "unknown provider: no_such_provider",
+                msg, "invalid facet key: a:b:c",
                 "the wire's `error: ` line prefix must be stripped, matching the bare \
                  message ServerError carries for the JSON-per-line ops"
             );
@@ -222,7 +222,7 @@ fn session_error_response_leaves_connection_usable_for_the_next_request() {
         .put("fmt_after_error", serde_json::json!({"x": 42}), None, None)
         .expect("put");
 
-    let err = session.get_formatted_with_flags("bogus_provider.x", None, "text", false, false);
+    let err = session.get_formatted_with_flags("a:b:c.x", None, "text", false, false);
     assert!(matches!(err, Err(CombError::ServerError(_))));
 
     let text = session

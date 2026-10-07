@@ -229,8 +229,8 @@ async fn server_handles_unknown_provider() {
     reader.read_line(&mut line).await.unwrap();
 
     let response: Response = serde_json::from_str(&line).unwrap();
-    assert!(!response.ok, "Unknown provider should return error");
-    assert!(response.error.unwrap().contains("unknown provider"));
+    assert!(response.ok, "an unknown provider is a miss, not an error");
+    assert!(response.data.is_none());
 
     handle.abort();
 }

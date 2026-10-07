@@ -1273,7 +1273,13 @@ impl Cache {
                 if source_name == PUT_SOURCE {
                     for (addr, stamp) in &ce.puts {
                         let rows: Vec<(String, &Value)> = if addr.is_empty() {
-                            src.fields.iter().map(|(k, v)| (k.clone(), v)).collect()
+                            // A top-level key with an address of its own is
+                            // that address's row, listed once.
+                            src.fields
+                                .iter()
+                                .filter(|(k, _)| !ce.puts.contains_key(*k))
+                                .map(|(k, v)| (k.clone(), v))
+                                .collect()
                         } else {
                             crate::provider::lookup_path(&src.fields, addr)
                                 .map(|v| (addr.clone(), v))
@@ -1289,7 +1295,9 @@ impl Cache {
                                 value: serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
                                 age_ms: stamp.age_ms(),
                                 stale: stamp.is_stale(),
-                                kind: Some(RowKind::Static),
+                                // Only an address written with a ttl is a lifecycle entry; the
+                                // server fills its kind in.
+                                kind: stamp.interval_secs.is_none().then_some(RowKind::Static),
                                 poll_interval_secs: None,
                                 poll_count: None,
                                 fsevents_reinstate: None,

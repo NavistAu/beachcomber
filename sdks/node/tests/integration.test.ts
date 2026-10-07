@@ -33,13 +33,13 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     assert.equal(typeof result.ageMs, 'number');
   });
 
-  it('get on an unknown provider throws ServerError with kind server_error', async () => {
+  it('get on an invalid facet key throws ServerError with kind server_error', async () => {
     await assert.rejects(
-      () => client.get('definitely_nonexistent_xyz.field', '/tmp'),
+      () => client.get('a:b:c.x', '/tmp'),
       (err: unknown) => {
         if (!(err instanceof ServerError)) return false;
         assert.equal(err.kind, 'server_error');
-        assert.match(err.message, /unknown provider/);
+        assert.match(err.message, /invalid facet key/);
         return true;
       },
     );

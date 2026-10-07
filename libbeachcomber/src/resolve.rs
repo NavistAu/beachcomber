@@ -92,7 +92,7 @@ impl Inputs<'_> {
 /// Neither is a miss. `Transport` is the daemon not being asked — a broken
 /// connection, a timeout — and stops a resolution wherever it happens.
 /// `Rejected` is the daemon answering `ok: false` to the key itself: an
-/// invalid facet, an unknown provider. The key the caller asked for being
+/// invalid facet. The key the caller asked for being
 /// rejected is an error the caller hears, in the daemon's own words; a ref
 /// inside a template naming a rejected key is a missing ref, and canon says a
 /// missing ref is falsy at any depth.
@@ -164,29 +164,22 @@ pub fn resolve(
 }
 
 /// [`resolve`], plus the distinct `(key, path)` pairs it fetched, in
-/// first-fetch order. A key the daemon rejects resolves to a miss here.
+/// first-fetch order.
 pub fn resolve_with_deps(
     key: &str,
     inputs: &Inputs<'_>,
     fetch: &mut dyn Fetch,
 ) -> Result<(Option<JsonValue>, Fetched), ResolveError> {
     let mut r = Resolver::new(inputs, fetch);
-    // A key the daemon rejects (an unknown namespace) is a miss to a watch, as
-    // the daemon's own watch treats it: a `put` can make it answerable later,
-    // so it stays in the returned deps.
-    let value = match r.resolve(key) {
-        Err(ResolveError::Fetch(FetchError::Rejected(_))) => None,
-        other => other?,
-    };
+    let value = r.resolve(key)?;
     Ok((value, r.order))
 }
 
 /// The distinct daemon keys a resolution of `key` reads — the watch fan-in's
 /// subscription set.
 ///
-/// A key the daemon rejected is included: it is an address the resolution
-/// asked about, and a `put` can make it a hit later, so the fan-in must
-/// tolerate a subscription the daemon refuses rather than drop the key.
+/// A key that is a miss is included: it is an address the resolution asked
+/// about, and a `put` can make it a hit later.
 pub fn deps(
     key: &str,
     inputs: &Inputs<'_>,

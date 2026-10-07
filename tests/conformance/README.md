@@ -120,7 +120,7 @@ The type rule the fixtures pin down:
   a number, and a source with no tags at all is its own literal text.
 
 A missing or unknown ref is falsy at any depth, never an error: an absent
-`env.*`, a cache miss, and a daemon-rejected key (an unregistered provider)
+`env.*`, a cache miss, and a daemon-rejected key (invalid facet syntax)
 all evaluate falsy, so `{{ nope.field or "x" }}` is `"x"`.
 
 `env` and `cwd` apply exactly as they do for `resolve`, with the same chain

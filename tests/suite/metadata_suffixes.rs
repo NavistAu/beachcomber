@@ -170,14 +170,13 @@ async fn source_names_the_source_behind_a_warm_provider_field() {
 }
 
 #[tokio::test]
-async fn source_on_an_unknown_provider_is_the_plain_get_error() {
+async fn source_on_an_unknown_provider_is_the_plain_get_miss() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
 
     let resp = send_one(&sock, r#"{"op":"get","key":"nope.x:source"}"#).await;
-    assert!(!resp.ok, "an unknown provider is an error, suffix or not");
-    assert_eq!(resp.error.as_deref(), Some("unknown provider: nope"));
+    assert!(resp.ok, "an unknown provider is a miss, suffix or not");
 
     handle.abort();
 }
@@ -280,13 +279,12 @@ async fn unknown_suffix_is_passed_through_as_field() {
     // "bogus" is not a known metadata suffix, so the server treats the whole key
     // as "hostname:bogus" where ":bogus" is NOT stripped — but protocol::split_key
     // splits on "." not ":", so provider_name becomes "hostname:bogus", which is
-    // an unknown provider. That means we get an "unknown provider" error.
+    // an unknown provider. That means we get a miss.
     let resp = send_one(&sock, r#"{"op":"get","key":"hostname:bogus"}"#).await;
-    assert!(!resp.ok, "unknown suffix should not be treated as metadata");
-    let err = resp.error.unwrap();
+    assert!(resp.ok, "an unknown facet is a miss");
     assert!(
-        err.contains("unknown provider"),
-        "expected 'unknown provider' error, got: {err}"
+        resp.data.is_none(),
+        "unknown suffix should not be treated as metadata"
     );
 
     handle.abort();

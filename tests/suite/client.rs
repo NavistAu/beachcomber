@@ -56,7 +56,11 @@ async fn client_get_single_field() {
 async fn client_get_unknown_provider() {
     let (_tmp, sock) = setup_server().await;
     match fetch(&sock, "nonexistent", None) {
-        Err(FetchError::Rejected(msg)) => assert!(msg.contains("unknown provider")),
+        Ok(None) => {}
+        other => panic!("expected a miss, got {other:?}"),
+    }
+    match fetch(&sock, "a:b:c.x", None) {
+        Err(FetchError::Rejected(msg)) => assert!(msg.contains("invalid facet key")),
         other => panic!("expected a rejection, got {other:?}"),
     }
 }
