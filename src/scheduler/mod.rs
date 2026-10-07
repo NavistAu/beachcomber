@@ -1394,7 +1394,7 @@ fn apply_put_written(
 /// Source takes its whole contribution.
 fn evict(cache: &Cache, key: &lifecycle::Key) {
     if key.source == crate::cache::PUT_SOURCE {
-        cache.remove_put(&key.provider, key.path.as_deref(), &key.node);
+        cache.evict_put(&key.provider, key.path.as_deref(), &key.node);
     } else {
         cache.remove_source(&key.provider, key.path.as_deref(), &key.source);
     }
@@ -1536,6 +1536,45 @@ mod tests {
         let rows = cache.list_rows();
         let fields: Vec<&str> = rows.iter().map(|r| r.field.as_str()).collect();
         assert_eq!(fields, vec!["eta"]);
+    }
+
+    /// Each put address keeps the lifecycle its own put set: `build` expiring
+    /// leaves `build.status`, which a deeper put owns.
+    #[test]
+    fn evicting_a_put_address_leaves_a_deeper_put_address() {
+        use crate::cache::PUT_SOURCE;
+        use crate::provider::Value;
+        use std::collections::HashMap;
+        let cache = Cache::new();
+        cache
+            .write_static(
+                "build",
+                None,
+                PUT_SOURCE,
+                "",
+                Value::Object(HashMap::from([
+                    ("eta".to_string(), Value::Int(1)),
+                    ("status".to_string(), Value::String("old".into())),
+                ])),
+                Some(60),
+            )
+            .unwrap();
+        cache
+            .write_static(
+                "build",
+                None,
+                PUT_SOURCE,
+                "status",
+                Value::String("x".into()),
+                Some(300),
+            )
+            .unwrap();
+
+        evict(&cache, &put_key(None, ""));
+
+        let rows = cache.list_rows();
+        let fields: Vec<&str> = rows.iter().map(|r| r.field.as_str()).collect();
+        assert_eq!(fields, vec!["status"]);
     }
 
     /// Pinning test for the watch-registration dedup fix: when multiple

@@ -20,12 +20,23 @@ fn client_with_config() {
 }
 
 #[test]
-fn socket_path_returns_something() {
-    let path = libbeachcomber::socket_path();
-    match std::env::var_os("BEACHCOMBER_SOCKET").filter(|v| !v.is_empty()) {
-        Some(isolated) => assert_eq!(path, std::path::PathBuf::from(isolated)),
-        None => assert!(path.to_string_lossy().contains("beachcomber")),
-    }
+fn socket_path_defaults_under_tmp_and_honours_the_env() {
+    let default = temp_env::with_var(
+        "BEACHCOMBER_SOCKET",
+        None::<&str>,
+        libbeachcomber::socket_path,
+    );
+    let uid = unsafe { libc::getuid() };
+    assert_eq!(
+        default,
+        std::path::PathBuf::from(format!("/tmp/beachcomber-{uid}/sock"))
+    );
+    let set = temp_env::with_var(
+        "BEACHCOMBER_SOCKET",
+        Some("/custom/sock"),
+        libbeachcomber::socket_path,
+    );
+    assert_eq!(set, std::path::PathBuf::from("/custom/sock"));
 }
 
 #[test]

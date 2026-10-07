@@ -1344,12 +1344,24 @@ async fn handle_request(
                             String::new()
                         },
                     };
+                    // A put row's lifecycle is its nearest put address at or
+                    // above it: the field itself, then each ancestor, then the root.
                     let matching_snap = lifecycle.get(&key).or_else(|| {
-                        let root = crate::scheduler::lifecycle::Key {
-                            node: String::new(),
-                            ..key.clone()
-                        };
-                        if is_put { lifecycle.get(&root) } else { None }
+                        if !is_put {
+                            return None;
+                        }
+                        let mut node = key.node.as_str();
+                        while !node.is_empty() {
+                            node = node.rsplit_once('.').map_or("", |(parent, _)| parent);
+                            let ancestor = crate::scheduler::lifecycle::Key {
+                                node: node.to_string(),
+                                ..key.clone()
+                            };
+                            if let Some(snap) = lifecycle.get(&ancestor) {
+                                return Some(snap);
+                            }
+                        }
+                        None
                     });
 
                     if let Some(snap) = matching_snap {

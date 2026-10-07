@@ -338,6 +338,54 @@ fn drop_put_subtree(entry: &mut CacheEntry, node: &str, keep: Option<&str>) -> b
     removed
 }
 
+/// Drop the leaves of the put address `node` that no deeper put address owns.
+/// Each put address keeps the lifecycle its own put set, so a deeper address
+/// (and its stamp) survives the expiry of one above it. Returns whether
+/// anything was removed.
+fn drop_put_address(entry: &mut CacheEntry, node: &str) -> bool {
+    let deeper: Vec<String> = entry
+        .puts
+        .keys()
+        .filter(|addr| *addr != node && is_at_or_below(addr, node))
+        .cloned()
+        .collect();
+    if deeper.is_empty() {
+        return drop_put_subtree(entry, node, None);
+    }
+    let kept: Vec<(String, Value)> = entry
+        .sources
+        .get(PUT_SOURCE)
+        .map(|src| {
+            deeper
+                .iter()
+                .filter_map(|addr| {
+                    crate::provider::lookup_path(&src.fields, addr)
+                        .map(|v| (addr.clone(), v.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let stamps: Vec<(String, PutStamp)> = deeper
+        .iter()
+        .filter_map(|addr| entry.puts.get(addr).map(|s| (addr.clone(), s.clone())))
+        .collect();
+    let removed = drop_put_subtree(entry, node, Some(PUT_SOURCE));
+    if let Some(src) = entry.sources.get_mut(PUT_SOURCE) {
+        for (addr, v) in kept {
+            crate::provider::insert_path(&mut src.fields, &addr, v);
+        }
+        if src.fields.is_empty() {
+            entry.sources.remove(PUT_SOURCE);
+        }
+    }
+    entry.puts.extend(stamps);
+    removed
+}
+
+fn drop_put_subtree_all(entry: &mut CacheEntry, node: &str) -> bool {
+    drop_put_subtree(entry, node, None)
+}
+
 /// Drop every static map whose label starts with `prefix`. The `is_static_label`
 /// half is not redundant: it makes it structurally impossible for a prefix that
 /// happens to match a Source's name to take that Source's records with it.
@@ -737,11 +785,27 @@ impl Cache {
     ///
     /// Returns whether anything was removed.
     pub fn remove_put(&self, namespace: &str, path: Option<&str>, node: &str) -> bool {
+        self.remove_put_with(namespace, path, node, drop_put_subtree_all)
+    }
+
+    /// Evict one put address on expiry: only the leaves no deeper put
+    /// address owns go.
+    pub fn evict_put(&self, namespace: &str, path: Option<&str>, node: &str) -> bool {
+        self.remove_put_with(namespace, path, node, drop_put_address)
+    }
+
+    fn remove_put_with(
+        &self,
+        namespace: &str,
+        path: Option<&str>,
+        node: &str,
+        drop: fn(&mut CacheEntry, &str) -> bool,
+    ) -> bool {
         let key = make_cache_key(namespace, path);
 
         let mut removed = false;
         if let dashmap::Entry::Occupied(mut occupied) = self.entries.entry(key) {
-            removed = drop_put_subtree(occupied.get_mut(), node, None);
+            removed = drop(occupied.get_mut(), node);
             if occupied.get().sources.is_empty() {
                 occupied.remove();
             }

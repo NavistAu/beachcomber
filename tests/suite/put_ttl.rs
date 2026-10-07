@@ -69,6 +69,24 @@ async fn each_put_address_gets_its_own_lifecycle() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_nested_row_takes_the_lifecycle_of_the_put_address_above_it() {
+    let (_tmp, _sock, client, handle) = setup_daemon().await;
+    client
+        .put("ci", serde_json::json!({"x": {"y": 1}}), Some("60s"), None)
+        .unwrap();
+    let rows = put_rows(&client, "ci");
+    assert!(!rows.is_empty());
+    for row in &rows {
+        assert!(
+            matches!(row.kind, Some(RowKind::Lifecycle { .. })),
+            "{row:?}"
+        );
+        assert_eq!(row.poll_interval_secs, Some(60), "{row:?}");
+    }
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_put_without_ttl_is_static() {
     let (_tmp, _sock, client, handle) = setup_daemon().await;
     client
@@ -105,7 +123,7 @@ async fn a_reput_without_ttl_drops_the_lifecycle() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn put_with_an_invalid_ttl_is_refused() {
-    let (_tmp, sock, client, handle) = setup_daemon().await;
+    let (_tmp, _sock, client, handle) = setup_daemon().await;
     let r = client
         .put("build.status", serde_json::json!("x"), Some("soon"), None)
         .unwrap();
@@ -117,7 +135,6 @@ async fn put_with_an_invalid_ttl_is_refused() {
     assert!(!r.ok);
     assert_eq!(r.error.as_deref(), Some("ttl must be at least 1s"));
     assert!(put_rows(&client, "build").is_empty(), "nothing was written");
-    let _ = sock;
     handle.abort();
 }
 
