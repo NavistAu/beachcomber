@@ -284,8 +284,11 @@ async fn handle_watch(
     // [`read_watch_value`].
     let requested_path = plan.requested_path.clone();
 
+    // A layer facet is a plain read: a watch on one warms nothing.
+    let layered = plan.layers != crate::cache::Layers::All;
+
     // Signal demand (source-aware: canon §150/§268).
-    if let Some(sched) = scheduler {
+    if !layered && let Some(sched) = scheduler {
         sched
             .send(SchedulerMessage::QueryActivity {
                 provider: provider_name.clone(),
@@ -313,7 +316,7 @@ async fn handle_watch(
                 .into_iter()
                 .map(|layer| (provider_name.clone(), layer))
                 .collect();
-        if facet.is_none() {
+        if facet.is_none() && !layered {
             let facet_name = format!("{provider_name}:template");
             links.extend(
                 crate::query::path_chain(requested_path.as_deref())
@@ -342,6 +345,7 @@ async fn handle_watch(
     // Re-execute any read-always source(s) for the initial snapshot so the
     // first value is fresh off disk, not stale cache.
     match &plan.target {
+        _ if layered => {}
         crate::query::KeyParse::Field(provider, field) => {
             let head = field.split('.').next().unwrap_or(field.as_str());
             if let Some(source_name) = registry.source_for_field(provider, head) {
@@ -376,6 +380,7 @@ async fn handle_watch(
         &plan.target,
         requested_path.as_deref(),
         effective_path.as_deref(),
+        plan.layers,
     );
     if write_watch_line(writer, &initial).await.is_err() {
         return;
@@ -404,7 +409,7 @@ async fn handle_watch(
         tokio::select! {
             _ = chain_watch.changed.notified() => {
                 // Signal ongoing demand
-                if let Some(sched) = scheduler {
+                if !layered && let Some(sched) = scheduler {
                     sched
                         .send(SchedulerMessage::QueryActivity {
                             provider: provider_name.clone(),
@@ -420,6 +425,7 @@ async fn handle_watch(
                     &plan.target,
                     requested_path.as_deref(),
                     effective_path.as_deref(),
+                    plan.layers,
                 );
 
                 // Field-level filtering: skip if neither half changed.
@@ -714,8 +720,13 @@ fn template_half(
     use crate::provider::Value;
     // A facet's records are static, so its chain head and its record scope are
     // the one path the caller named.
-    let Some(read) = cache.read_merged(&format!("{provider}:template"), path, path, registry)
-    else {
+    let Some(read) = cache.read_merged(
+        &format!("{provider}:template"),
+        path,
+        path,
+        registry,
+        crate::cache::Layers::All,
+    ) else {
         return TemplateHalf::default();
     };
     let writer = |tail: &str| read.records.get(tail).map(|r| Arc::clone(&r.source));
@@ -854,19 +865,22 @@ fn read_watch_value(
     target: &KeyParse,
     requested: Option<&str>,
     provider_entry: Option<&str>,
+    layers: crate::cache::Layers,
 ) -> Response {
     let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
     // A watch frame carries the same two halves a `get` does. A facet key is
     // already inside a facet and never gets one. Read first: the template
     // decides whether an unresolvable sub-path is a hit or a miss.
-    let half = if crate::query::parse_facet(provider).ok().flatten().is_some() {
+    let half = if layers != crate::cache::Layers::All
+        || crate::query::parse_facet(provider).ok().flatten().is_some()
+    {
         TemplateHalf::default()
     } else {
         // Templates are static records, so the template half resolves up the
         // chain from the directory the caller named, not the scope-resolved one.
         template_half(cache, registry, provider, target.rest(), requested)
     };
-    let merged = cache.read_merged(provider, requested, provider_entry, registry);
+    let merged = cache.read_merged(provider, requested, provider_entry, registry, layers);
     resolve_halves(&merged, target, half.template, half.rest)
 }
 
@@ -984,7 +998,7 @@ async fn handle_request(
             // The template half is read before the data half: `get box.widgets.foo`
             // where `box.widgets` is an object without a `foo` is a hit when a
             // template answers there, a miss otherwise.
-            let half = if facet.is_some() {
+            let half = if facet.is_some() || plan.layers != crate::cache::Layers::All {
                 TemplateHalf::default()
             } else {
                 template_half(
@@ -1016,8 +1030,13 @@ async fn handle_request(
             for source_name in &demanded {
                 ran |= warm_source(registry, cache, provider_name, source_name, at, how).await;
             }
-            let mut merged =
-                cache.read_merged(provider_name, plan.requested_path.as_deref(), at, registry);
+            let mut merged = cache.read_merged(
+                provider_name,
+                plan.requested_path.as_deref(),
+                at,
+                registry,
+                plan.layers,
+            );
             // A source whose map exists without holding this address is still
             // worth one attempt — `warm_source` only knows whether the source
             // has *anything* cached. Only a field read can tell: a namespace
@@ -1028,8 +1047,13 @@ async fn handle_request(
                 && let Some(source_name) = demanded.first()
                 && inline_execute_source(registry, cache, provider_name, source_name, at).await
             {
-                merged =
-                    cache.read_merged(provider_name, plan.requested_path.as_deref(), at, registry);
+                merged = cache.read_merged(
+                    provider_name,
+                    plan.requested_path.as_deref(),
+                    at,
+                    registry,
+                    plan.layers,
+                );
             }
 
             // Both halves, assembled the one way `watch` assembles them.
@@ -1169,6 +1193,10 @@ async fn handle_request(
             // A put key addresses a node: `namespace` or `namespace.node…`.
             let (namespace, node) = protocol::split_key(key);
             let node = node.unwrap_or("");
+
+            if namespace.ends_with(":put") || namespace.ends_with(":source") {
+                return Response::error("p:put and p:source are read-only; write p.<node>");
+            }
 
             // Facet syntax is checked on the namespace segment — `put` has no
             // metadata-suffix handling, so e.g. `a:age` is always a facet
@@ -1908,7 +1936,14 @@ mod tests {
 
         let registry = ProviderRegistry::with_defaults();
         let target = KeyParse::Field("git".to_string(), "branch".to_string());
-        let resp = read_watch_value(&cache, &registry, &target, Some("/repo"), Some("/repo"));
+        let resp = read_watch_value(
+            &cache,
+            &registry,
+            &target,
+            Some("/repo"),
+            Some("/repo"),
+            crate::cache::Layers::All,
+        );
         assert!(resp.ok);
         assert_eq!(
             resp.data.unwrap(),
@@ -1947,7 +1982,7 @@ mod tests {
             .expect("put accepted");
 
         let read = cache
-            .read_merged("p", None, None, &registry)
+            .read_merged("p", None, None, &registry, crate::cache::Layers::All)
             .expect("both maps");
 
         assert_eq!(
@@ -1998,7 +2033,13 @@ mod tests {
             .expect("put accepted");
 
         let read = cache
-            .read_merged("p", Some("/x/y"), Some("/x/y"), &registry)
+            .read_merged(
+                "p",
+                Some("/x/y"),
+                Some("/x/y"),
+                &registry,
+                crate::cache::Layers::All,
+            )
             .expect("both layers");
 
         assert_eq!(

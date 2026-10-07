@@ -323,13 +323,37 @@ pub struct QueryPlan {
     pub target: KeyParse,
     pub meta: Option<String>,
     pub demand: SourceDemand,
+    /// Which layers the read sees: `p:put` and `p:source` name one, anything
+    /// else sees them all.
+    pub layers: crate::cache::Layers,
+}
+
+/// Split a `:put` or `:source` layer facet off the provider segment of a key:
+/// `git:source.branch` is `("git.branch", Source)`. Any other key is returned
+/// unchanged with every layer. The segment is judged before a metadata suffix
+/// is, so a bare `p:source` is the facet, never `p` with the `:source` suffix.
+pub fn split_layer_facet(key: &str) -> (std::borrow::Cow<'_, str>, crate::cache::Layers) {
+    use crate::cache::Layers;
+    let (segment, rest) = match key.find('.') {
+        Some(i) => key.split_at(i),
+        None => (key, ""),
+    };
+    for (suffix, layers) in [(":put", Layers::Put), (":source", Layers::Source)] {
+        if let Some(base) = segment.strip_suffix(suffix)
+            && !base.is_empty()
+        {
+            return (format!("{base}{rest}").into(), layers);
+        }
+    }
+    (key.into(), Layers::All)
 }
 
 impl QueryPlan {
     /// Resolve a raw request key + optional path hint into a plan.
     /// `raw_key` may carry a metadata suffix (e.g. `git.branch:fresh`).
     pub fn build(raw_key: &str, path_hint: Option<&str>, registry: &ProviderRegistry) -> QueryPlan {
-        let (stripped_key, meta) = split_metadata_suffix(raw_key);
+        let (raw_key, layers) = split_layer_facet(raw_key);
+        let (stripped_key, meta) = split_metadata_suffix(&raw_key);
         let requested_path = normalise_path(path_hint);
         let effective_path = resolve_path(stripped_key, requested_path.as_deref(), registry);
         let target = parse_key(stripped_key);
@@ -340,6 +364,8 @@ impl QueryPlan {
         };
 
         let demand = match &target {
+            // The put layer is what `put` wrote: no Source has anything to warm.
+            _ if layers == crate::cache::Layers::Put => SourceDemand::Sources(Vec::new()),
             KeyParse::Provider(_) => SourceDemand::All,
             KeyParse::Field(p, f) => {
                 // A field's demand is its owning Source only (canon §150/§268).
@@ -360,6 +386,7 @@ impl QueryPlan {
             target,
             meta: meta.map(|s| s.to_string()),
             demand,
+            layers,
         }
     }
 }

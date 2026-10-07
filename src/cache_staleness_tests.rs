@@ -216,7 +216,9 @@ async fn put_addresses_keep_their_own_age() {
     tokio::time::advance(std::time::Duration::from_secs(5)).await;
     put("b", 2);
 
-    let read = cache.read_merged("ns", None, None, &registry).unwrap();
+    let read = cache
+        .read_merged("ns", None, None, &registry, crate::cache::Layers::All)
+        .unwrap();
     assert_eq!(read.records["a"].age_ms(), 5000);
     assert_eq!(read.records["b"].age_ms(), 0);
 }

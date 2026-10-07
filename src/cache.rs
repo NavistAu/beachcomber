@@ -109,6 +109,15 @@ impl RecordFreshness {
     }
 }
 
+/// Which layers of a namespace a read sees. `Put` is what `put` and config
+/// seeds stored; `Source` is what the provider's Sources stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layers {
+    All,
+    Put,
+    Source,
+}
+
 /// What a chain-resolved read of one namespace found: see [`Cache::read_merged`],
 /// which is the only thing that builds one.
 #[derive(Debug, Clone)]
@@ -982,6 +991,7 @@ impl Cache {
         requested: Option<&str>,
         provider_entry: Option<&str>,
         registry: &ProviderRegistry,
+        layers: Layers,
     ) -> Option<MergedRead> {
         use crate::provider::SourceScope::{Global, PathScoped};
         let chain = crate::query::read_chain(requested, provider_entry);
@@ -1005,22 +1015,25 @@ impl Cache {
                 fields: HashMap::new(),
                 records: HashMap::new(),
             };
-            let target = if entry.puts.is_empty() {
-                &mut out
-            } else {
-                &mut local
-            };
+            let cuts = layers != Layers::Source && !entry.puts.is_empty();
+            let target = if !cuts { &mut out } else { &mut local };
             let mut hit = false;
             // At the global link both arms run, PathScoped first.
-            if layer.as_deref() == provider_entry {
-                hit |=
-                    Self::merge_provider_records(&entry, namespace, PathScoped, registry, target);
+            if layers != Layers::Put {
+                if layer.as_deref() == provider_entry {
+                    hit |= Self::merge_provider_records(
+                        &entry, namespace, PathScoped, registry, target,
+                    );
+                }
+                if layer.is_none() {
+                    hit |=
+                        Self::merge_provider_records(&entry, namespace, Global, registry, target);
+                }
             }
-            if layer.is_none() {
-                hit |= Self::merge_provider_records(&entry, namespace, Global, registry, target);
+            if layers != Layers::Source {
+                hit |= Self::merge_static_records(&entry, target);
             }
-            hit |= Self::merge_static_records(&entry, target);
-            if hit && !entry.puts.is_empty() {
+            if hit && cuts {
                 merge_read(
                     &mut out.fields,
                     &mut out.records,
@@ -1656,7 +1669,7 @@ mod tests {
         );
 
         let read = cache
-            .read_merged("git", Some("/repo"), Some("/repo"), &registry)
+            .read_merged("git", Some("/repo"), Some("/repo"), &registry, Layers::All)
             .expect("both layers");
         assert_eq!(
             read.fields.get("branch"),
@@ -1699,7 +1712,7 @@ mod tests {
         assert!(cache.remove_put("git", Some("/repo"), "branch"));
 
         let read = cache
-            .read_merged("git", Some("/repo"), Some("/repo"), &registry)
+            .read_merged("git", Some("/repo"), Some("/repo"), &registry, Layers::All)
             .expect("the Source's layer");
         assert_eq!(
             read.fields.get("branch"),
@@ -1727,7 +1740,7 @@ mod tests {
     fn read_tools(cache: &Cache) -> MergedRead {
         let registry = crate::provider::registry::ProviderRegistry::with_defaults();
         cache
-            .read_merged("git", Some("/repo"), Some("/repo"), &registry)
+            .read_merged("git", Some("/repo"), Some("/repo"), &registry, Layers::All)
             .expect("a layer holds records")
     }
 
@@ -1800,7 +1813,7 @@ mod tests {
         assert_eq!(entry.puts.keys().collect::<Vec<_>>(), ["o"]);
         let registry = crate::provider::registry::ProviderRegistry::with_defaults();
         let read = cache
-            .read_merged("git", Some("/repo"), Some("/repo"), &registry)
+            .read_merged("git", Some("/repo"), Some("/repo"), &registry, Layers::All)
             .unwrap();
         assert_eq!(read.fields["o"], tools(&[("c", Value::Int(3))]));
     }
@@ -1867,10 +1880,14 @@ mod tests {
         };
         write("config:a.toml", "seed");
         write(PUT_SOURCE, "put");
-        let read = cache.read_merged("p", None, None, &registry).unwrap();
+        let read = cache
+            .read_merged("p", None, None, &registry, Layers::All)
+            .unwrap();
         assert_eq!(read.fields.get("x"), Some(&Value::String("put".into())));
         assert!(cache.remove_put("p", None, "x"));
-        let read = cache.read_merged("p", None, None, &registry).unwrap();
+        let read = cache
+            .read_merged("p", None, None, &registry, Layers::All)
+            .unwrap();
         assert_eq!(read.fields.get("x"), Some(&Value::String("seed".into())));
     }
 
@@ -1930,7 +1947,7 @@ mod tests {
         write("put", "tree.right", Value::Int(2));
 
         let read = cache
-            .read_merged("p", None, None, &registry)
+            .read_merged("p", None, None, &registry, Layers::All)
             .expect("both maps");
         assert_eq!(
             read.records["tree.left"].age_ms(),

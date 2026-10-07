@@ -103,20 +103,15 @@ async fn source_is_null_for_an_object_and_for_a_miss() {
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
 
-    // The namespace answers — otherwise the `null` below would be a miss's
-    // `null`, not an object's, and the test would pass for the wrong reason.
-    let resp = send_one(&sock, r#"{"op":"get","key":"hostname"}"#).await;
-    assert!(resp.ok, "expected ok response: {:?}", resp.error);
-    assert!(
-        resp.data.as_ref().is_some_and(|d| d.is_object()),
-        "hostname must be an object hit, got {:?}",
-        resp.data
-    );
+    // A put object is the node under test. (A bare `ns:source` is the source
+    // facet now, so the suffix is asked of an object node.)
+    let put = send_one(&sock, r#"{"op":"put","key":"o.node","data":{"a":1,"b":2}}"#).await;
+    assert!(put.ok, "expected ok response: {:?}", put.error);
 
-    // A whole namespace is assembled from several records and names no one
+    // An object node is assembled from several records and names no one
     // writer. `null` on the wire, which reads back as an absent `data` — the
     // shape `:age` already has on a miss.
-    let resp = send_one(&sock, r#"{"op":"get","key":"hostname:source"}"#).await;
+    let resp = send_one(&sock, r#"{"op":"get","key":"o.node:source"}"#).await;
     assert!(resp.ok, "expected ok response: {:?}", resp.error);
     assert!(resp.data.is_none(), "got {:?}", resp.data);
 

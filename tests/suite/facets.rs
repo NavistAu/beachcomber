@@ -3,6 +3,7 @@
 //! `docs/canon/field_resolution.md` "Facet" and
 //! `docs/canon/provider_source.md` "Cache entry" for the canon this pins.
 
+use crate::common::git::{GitRepoFixture, has_git};
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -361,6 +362,149 @@ async fn status_row_for_facet_key_put_is_static() {
         row["kind"]["kind"], "static",
         "row kind must be 'static', got {row}"
     );
+
+    handle.abort();
+}
+
+// The `:put` and `:source` facets read one layer of a namespace each.
+
+/// `git.branch` is a Source value ("main") once warmed by a plain get; the
+/// put at the same address hides it from a plain read only.
+async fn warmed_repo_with_a_put_branch(stream: &mut UnixStream, repo: &GitRepoFixture) {
+    let p = repo.path_str();
+    let warm = send_recv(
+        stream,
+        &serde_json::json!({"op":"get","key":"git.branch","path":p}).to_string(),
+    )
+    .await;
+    assert_eq!(warm.data.unwrap(), "main");
+    let put = send_recv(
+        stream,
+        &serde_json::json!({"op":"put","key":"git.branch","data":"put-branch","path":p})
+            .to_string(),
+    )
+    .await;
+    assert!(put.ok, "{:?}", put.error);
+}
+
+#[tokio::test]
+async fn the_put_facet_reads_only_the_put_layer() {
+    if !has_git() {
+        return;
+    }
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let repo = GitRepoFixture::new();
+    let p = repo.path_str();
+
+    // Before any put, the put layer is empty although the Source answers.
+    let before = send_recv(
+        &mut stream,
+        &serde_json::json!({"op":"get","key":"git:put.branch","path":p}).to_string(),
+    )
+    .await;
+    assert!(before.data.is_none(), "{before:?}");
+
+    warmed_repo_with_a_put_branch(&mut stream, &repo).await;
+
+    let put = send_recv(
+        &mut stream,
+        &serde_json::json!({"op":"get","key":"git:put.branch","path":p}).to_string(),
+    )
+    .await;
+    assert!(put.ok, "{:?}", put.error);
+    assert_eq!(put.data.unwrap(), "put-branch");
+    assert!(put.template.is_none(), "a layer facet has no template half");
+
+    let whole = send_recv(
+        &mut stream,
+        &serde_json::json!({"op":"get","key":"git:put","path":p}).to_string(),
+    )
+    .await;
+    assert_eq!(
+        whole.data.unwrap(),
+        serde_json::json!({"branch": "put-branch"})
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn the_source_facet_shows_a_value_a_put_hides() {
+    if !has_git() {
+        return;
+    }
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let repo = GitRepoFixture::new();
+    let p = repo.path_str();
+
+    warmed_repo_with_a_put_branch(&mut stream, &repo).await;
+
+    let plain = send_recv(
+        &mut stream,
+        &serde_json::json!({"op":"get","key":"git.branch","path":p}).to_string(),
+    )
+    .await;
+    assert_eq!(plain.data.unwrap(), "put-branch");
+    let source = send_recv(
+        &mut stream,
+        &serde_json::json!({"op":"get","key":"git:source.branch","path":p}).to_string(),
+    )
+    .await;
+    assert!(source.ok, "{:?}", source.error);
+    assert_eq!(source.data.unwrap(), "main");
+    assert!(source.template.is_none());
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn the_source_facet_warms_like_the_plain_key() {
+    if !has_git() {
+        return;
+    }
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let repo = GitRepoFixture::new();
+
+    let r = send_recv(
+        &mut stream,
+        &serde_json::json!({"op":"get","key":"git:source.branch","path":repo.path_str()})
+            .to_string(),
+    )
+    .await;
+    assert!(r.ok, "{:?}", r.error);
+    assert_eq!(r.data.unwrap(), "main");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_put_to_the_put_or_source_facet_is_refused() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    for key in ["p:put", "p:put.x", "p:source", "p:source.x"] {
+        let r = send_recv(
+            &mut stream,
+            &serde_json::json!({"op":"put","key":key,"data":1}).to_string(),
+        )
+        .await;
+        assert!(!r.ok, "put {key} must be refused");
+        assert_eq!(
+            r.error.as_deref(),
+            Some("p:put and p:source are read-only; write p.<node>")
+        );
+    }
 
     handle.abort();
 }

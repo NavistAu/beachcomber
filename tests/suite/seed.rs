@@ -7,7 +7,7 @@
 //! assumption `tests/suite/path_chain.rs` makes.
 
 use crate::common::daemon::isolate;
-use beachcomber::cache::Cache;
+use beachcomber::cache::{Cache, Layers};
 use beachcomber::config::Config;
 use beachcomber::provider::Value as CacheValue;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -508,7 +508,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
     beachcomber::daemon::seed::seed_facets(&cache, &registry, &layers());
     let leaf = |name: &str| {
         cache
-            .read_merged("scanline:template", None, None, &registry)
+            .read_merged("scanline:template", None, None, &registry, Layers::All)
             .and_then(|read| read.fields.get(name).cloned())
     };
     assert_eq!(leaf("title"), Some(CacheValue::String("t1".into())));
@@ -676,7 +676,7 @@ fn removing_a_put_template_shows_the_seeded_one() {
         .unwrap();
     let version = || {
         cache
-            .read_merged("p:template", None, None, &registry)
+            .read_merged("p:template", None, None, &registry, Layers::All)
             .and_then(|r| r.fields.get("version").cloned())
     };
     assert_eq!(version(), Some(CacheValue::String("mine".into())));
@@ -712,7 +712,7 @@ fn a_reseed_keeps_a_put_template_on_top() {
         )
         .unwrap();
     let read = cache
-        .read_merged("p:template", None, None, &registry)
+        .read_merged("p:template", None, None, &registry, Layers::All)
         .unwrap();
     assert_eq!(
         read.fields.get("version"),
@@ -725,7 +725,7 @@ fn a_reseed_keeps_a_put_template_on_top() {
     // The seed is stored beneath the put, not skipped.
     cache.remove_put("p:template", None, "version");
     let read = cache
-        .read_merged("p:template", None, None, &registry)
+        .read_merged("p:template", None, None, &registry, Layers::All)
         .unwrap();
     assert_eq!(
         read.fields.get("version"),
@@ -773,7 +773,7 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
             let mut reads = 0u64;
             while !stop.load(Ordering::Relaxed) {
                 let read = cache
-                    .read_merged("scanline:template", None, None, &registry)
+                    .read_merged("scanline:template", None, None, &registry, Layers::All)
                     .expect("the namespace is never empty");
                 assert!(
                     read.fields.contains_key("version"),
@@ -865,7 +865,7 @@ fn a_refused_write_leaves_the_previous_seed_untouched() {
     assert!(format!("{err}").contains("a.b"), "{err}");
 
     let read = cache
-        .read_merged("hostname", None, None, &registry)
+        .read_merged("hostname", None, None, &registry, Layers::All)
         .expect("the previous seed is still there");
     assert_eq!(
         read.fields.get("note"),
