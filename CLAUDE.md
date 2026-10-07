@@ -89,7 +89,7 @@ Key format: `provider.field` (e.g., `git.branch`). `split_key()` splits on first
 
 Responses: `{"ok":true,"data":...,"age_ms":...,"stale":...}` — fields omitted when null.
 
-A namespace `put` created is **static** — stored data with no `execute()` behind it. Ownership is per record, not per namespace: a static record sits beside a Source's records in the same cache entry, and only a record a Source produces is refused.
+A namespace `put` created is **static** — stored data with no `execute()` behind it. There is no ownership: every supplier writes a layer of its own and a read stacks them at each directory (source, then `config:` seeds, then `put`), so a `put` over a Source's field wins there and removing it shows the layer below at once.
 
 `path` is the directory a request addresses; omitting it (or naming `$HOME`) addresses the **global entry**. A read merges static records up the directory chain to `$HOME`, nearest winning, while a provider's own records stay at their Source's declared scope. See `docs/canon/field_resolution.md` §"Path resolution".
 

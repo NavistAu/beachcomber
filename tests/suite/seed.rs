@@ -633,6 +633,98 @@ async fn a_put_record_wins_over_config_on_re_seed() {
     assert_eq!(kind, json!({"kind": "static"}));
 }
 
+/// Removing a put template shows the seeded one at once, with no re-seed.
+#[test]
+fn removing_a_put_template_shows_the_seeded_one() {
+    let cache = Cache::new();
+    let registry = ProviderRegistry::with_defaults();
+    registry.register_static("p:template");
+    cache
+        .reseed_static(
+            "p:template",
+            None,
+            "config:",
+            vec![(
+                "config:/x/10.toml".to_string(),
+                template_tree("seeded", "t"),
+            )],
+        )
+        .unwrap();
+    cache
+        .write_static(
+            "p:template",
+            None,
+            "put",
+            "version",
+            CacheValue::String("mine".into()),
+            false,
+            None,
+        )
+        .unwrap();
+    let version = || {
+        cache
+            .read_merged("p:template", None, None, &registry)
+            .and_then(|r| r.fields.get("version").cloned())
+    };
+    assert_eq!(version(), Some(CacheValue::String("mine".into())));
+    cache
+        .remove_static_path("p:template", None, "version")
+        .unwrap();
+    assert_eq!(version(), Some(CacheValue::String("seeded".into())));
+}
+
+/// A re-seed leaves a put template on top of the new seed.
+#[test]
+fn a_reseed_keeps_a_put_template_on_top() {
+    let cache = Cache::new();
+    let registry = ProviderRegistry::with_defaults();
+    registry.register_static("p:template");
+    cache
+        .write_static(
+            "p:template",
+            None,
+            "put",
+            "version",
+            CacheValue::String("mine".into()),
+            false,
+            None,
+        )
+        .unwrap();
+    cache
+        .reseed_static(
+            "p:template",
+            None,
+            "config:",
+            vec![(
+                "config:/x/10.toml".to_string(),
+                template_tree("seeded", "t"),
+            )],
+        )
+        .unwrap();
+    let read = cache
+        .read_merged("p:template", None, None, &registry)
+        .unwrap();
+    assert_eq!(
+        read.fields.get("version"),
+        Some(&CacheValue::String("mine".into()))
+    );
+    assert_eq!(
+        read.fields.get("title"),
+        Some(&CacheValue::String("t".into()))
+    );
+    // The seed is stored beneath the put, not skipped.
+    cache
+        .remove_static_path("p:template", None, "version")
+        .unwrap();
+    let read = cache
+        .read_merged("p:template", None, None, &registry)
+        .unwrap();
+    assert_eq!(
+        read.fields.get("version"),
+        Some(&CacheValue::String("seeded".into()))
+    );
+}
+
 // ── the swap is one guard ────────────────────────────────────────────────────
 //
 // Driven against `Cache::reseed_static` directly rather than through the
@@ -662,7 +754,6 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
             None,
             "config:",
             vec![(label.clone(), template_tree("v1", "t1"))],
-            &registry,
         )
         .unwrap();
 
@@ -704,7 +795,6 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
                 None,
                 "config:",
                 vec![(label.clone(), template_tree("v1", &format!("t{i}")))],
-                &registry,
             )
             .unwrap();
     }
@@ -719,9 +809,9 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
 #[test]
 fn a_refused_write_leaves_the_previous_seed_untouched() {
     // The drop and the writes are one operation, so a write the cache refuses
-    // cannot leave the entry emptied behind it. `hostname.name` is produced by
-    // the provider's `host` source, so the second write is refused — and the
-    // first must not have landed, nor the previous seed have gone.
+    // cannot leave the entry emptied behind it. A dotted key is refused, so the
+    // second write is refused — and the first must not have landed, nor the
+    // previous seed have gone.
     let cache = Cache::new();
     let registry = ProviderRegistry::with_defaults();
     let old = "config:/x/old.toml".to_string();
@@ -738,7 +828,6 @@ fn a_refused_write_leaves_the_previous_seed_untouched() {
                     CacheValue::String("kept".into()),
                 )])),
             )],
-            &registry,
         )
         .unwrap();
 
@@ -758,15 +847,14 @@ fn a_refused_write_leaves_the_previous_seed_untouched() {
                 (
                     "config:/x/new.toml".to_string(),
                     CacheValue::Object(HashMap::from([(
-                        "name".to_string(),
+                        "a.b".to_string(),
                         CacheValue::String("boom".into()),
                     )])),
                 ),
             ],
-            &registry,
         )
-        .expect_err("a Source-owned record refuses the swap");
-    assert!(format!("{err}").contains("hostname.name"), "{err}");
+        .expect_err("a dotted key refuses the swap");
+    assert!(format!("{err}").contains("a.b"), "{err}");
 
     let read = cache
         .read_merged("hostname", None, None, &registry)

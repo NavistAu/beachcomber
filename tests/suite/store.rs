@@ -67,11 +67,9 @@ async fn store_and_get_roundtrip() {
     handle.abort();
 }
 
-/// A builtin provider's name is no longer refused wholesale — ownership is
-/// checked per record. `git.branch` belongs to the `head` Source, so writing it
-/// is refused by that record's name.
+/// A put over a Source's field is accepted and wins: layers, not ownership.
 #[tokio::test]
-async fn store_rejects_a_source_owned_record() {
+async fn a_put_over_a_source_field_is_accepted_and_wins() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -80,11 +78,10 @@ async fn store_rejects_a_source_owned_record() {
 
     let req = r#"{"op":"put","key":"git","data":{"branch":"main"}}"#;
     let resp = send_recv(&mut stream, req).await;
-    assert!(!resp.ok, "storing over a Source-owned record should fail");
-    assert_eq!(
-        resp.error.as_deref(),
-        Some("cannot write git.branch: owned by source head")
-    );
+    assert!(resp.ok, "put over a Source field: {:?}", resp.error);
+
+    let resp = send_recv(&mut stream, r#"{"op":"get","key":"git.branch"}"#).await;
+    assert_eq!(resp.data.unwrap(), serde_json::json!("main"));
 
     handle.abort();
 }

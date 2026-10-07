@@ -1198,12 +1198,7 @@ async fn handle_request(
             // `data: null` means "clear the addressed node" — the row goes, the
             // registry entry stays.
             if data.is_null() {
-                return match cache.remove_static_path(
-                    namespace,
-                    effective_path.as_deref(),
-                    node,
-                    registry,
-                ) {
+                return match cache.remove_static_path(namespace, effective_path.as_deref(), node) {
                     Ok(_) => Response {
                         ok: true,
                         data: None,
@@ -1229,12 +1224,9 @@ async fn handle_request(
                     } else {
                         format!("{node}.{tail}")
                     };
-                    if let Err(e) = cache.remove_static_path(
-                        namespace,
-                        effective_path.as_deref(),
-                        &at,
-                        registry,
-                    ) {
+                    if let Err(e) =
+                        cache.remove_static_path(namespace, effective_path.as_deref(), &at)
+                    {
                         return Response::error(e.to_string());
                     }
                 }
@@ -1273,7 +1265,6 @@ async fn handle_request(
                 value,
                 *replace,
                 interval_secs,
-                registry,
             ) {
                 return Response::error(e.to_string());
             }
@@ -1991,7 +1982,6 @@ mod tests {
                 Value::Object([("x".to_string(), Value::Int(1))].into_iter().collect()),
                 false,
                 Some(1),
-                &registry,
             )
             .expect("no source owns p.x");
         tokio::time::advance(std::time::Duration::from_secs(5)).await;
@@ -2004,7 +1994,6 @@ mod tests {
                 Value::Object([("y".to_string(), Value::Int(2))].into_iter().collect()),
                 false,
                 Some(100),
-                &registry,
             )
             .expect("no source owns p.y");
 
@@ -2052,7 +2041,6 @@ mod tests {
                 Value::Object(HashMap::new()),
                 false,
                 None,
-                &registry,
             )
             .expect("no source owns p.tree");
         tokio::time::advance(std::time::Duration::from_secs(9)).await;
@@ -2066,7 +2054,6 @@ mod tests {
                 Value::Int(1),
                 false,
                 None,
-                &registry,
             )
             .expect("no source owns p.tree.left");
 

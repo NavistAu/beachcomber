@@ -6,8 +6,8 @@
 //! order — `defaults/*.toml` lexically, then the main config file, then
 //! `conf.d/*.toml` lexically — with the deep-merge semantics
 //! `Cache::write_static` gives a `put`. A record two files
-//! set ends up labelled by the later one (a static write moves a record out of
-//! whichever static map held it), and a record only the earlier file set keeps
+//! set ends up labelled by the later one (a `config:` write moves a record out of
+//! whichever earlier `config:` map held it), and a record only the earlier file set keeps
 //! its own label.
 //!
 //! Settings still compose by deep merge. Facet tables deliberately do not: the
@@ -99,9 +99,7 @@ pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, layers: &[(PathBu
     for (namespace, writes) in plan(layers) {
         registry.register_static(&namespace);
         for (label, value) in writes {
-            if let Err(e) =
-                cache.write_static(&namespace, None, &label, "", value, false, None, registry)
-            {
+            if let Err(e) = cache.write_static(&namespace, None, &label, "", value, false, None) {
                 tracing::warn!("{label}: could not seed {namespace}: {e}");
             }
         }
@@ -118,8 +116,8 @@ pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, layers: &[(PathBu
 /// The consequences, in the order an operator meets them: a leaf edited in a
 /// file takes effect on the next read; a leaf deleted from a file disappears; a
 /// leaf a later file overrides stays overridden; and a `put` record is left
-/// exactly as it is, because only `config:` labels are dropped and
-/// `Cache::reseed_static` drops any planned leaf the `put` map still occupies.
+/// exactly as it is and stays on top, because only `config:` labels are
+/// dropped and the `put` layer reads above them.
 /// A `watch` wakes either way — `Cache::reseed_static` notifies the namespace
 /// whenever it drops or writes anything.
 pub fn reseed_facets(
@@ -152,9 +150,7 @@ pub fn reseed_facets(
 
     for (namespace, writes) in planned {
         registry.register_static(&namespace);
-        if let Err(e) =
-            cache.reseed_static(&namespace, None, CONFIG_SOURCE_PREFIX, writes, registry)
-        {
+        if let Err(e) = cache.reseed_static(&namespace, None, CONFIG_SOURCE_PREFIX, writes) {
             tracing::warn!("could not re-seed {namespace}: {e}");
         }
     }

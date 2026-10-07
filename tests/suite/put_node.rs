@@ -4,9 +4,8 @@
 //! `get` takes (`docs/canon/field_resolution.md` invariant 12: a query may
 //! address any node of the value tree). Writes deep-merge into whatever is
 //! already there; `--replace` replaces the subtree at the addressed node;
-//! `data: null` removes it. Ownership is checked per *record*, not per
-//! namespace: `put git '{"note":1}'` is fine, `put git '{"branch":"x"}'` is
-//! not, because `branch` is a record the `head` Source refreshes.
+//! `data: null` removes it. There is no ownership: a put layers over
+//! whatever a Source produced at the same address.
 //!
 //! Raw-socket style, mirroring `tests/suite/store.rs` and `tests/suite/key_addressing.rs`.
 
@@ -542,7 +541,7 @@ async fn put_null_at_a_node_removes_only_that_subtree() {
     handle.abort();
 }
 
-// ── (g)/(h) ownership is per record, not per namespace ──────────────────────
+// ── (g)/(h) a put layers beside a Source's records ────────────────────────────
 
 /// A record no Source declares can be stored under a real provider's
 /// namespace, and it reads back beside the provider's own records.
@@ -599,9 +598,8 @@ async fn put_adds_a_static_record_to_a_provider_namespace() {
     assert_eq!(all["branch"], serde_json::json!("main"));
     assert_eq!(all["note"], serde_json::json!(1));
 
-    // Ownership stays per record: the static one names `put`, the Source's
-    // still names the Source. Gaining a static record does not make the
-    // namespace static.
+    // Each record names its own supplier: the static one `put`, the Source's
+    // still the Source.
     let source_of_note = data_of(
         send_recv(
             &mut s,
@@ -625,54 +623,95 @@ async fn put_adds_a_static_record_to_a_provider_namespace() {
     handle.abort();
 }
 
-/// A record a Source declares is refused, whichever way it is addressed —
-/// including by `--null`. No warming needed: ownership comes from the
-/// registry, not from what happens to be cached.
+/// A put over a Source's field is accepted and wins at that directory: layers,
+/// not ownership. The Source's value is still there beneath it.
 #[tokio::test]
-async fn put_over_a_source_owned_record_is_refused() {
+async fn a_put_over_a_source_field_layers_over_it() {
+    if !has_git() {
+        return;
+    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
-
-    const EXPECTED: &str = "cannot write git.branch: owned by source head";
-
-    let r = send_recv(
-        &mut s,
-        &serde_json::json!({"op":"put","key":"git","data":{"branch":"x"}}),
-    )
-    .await;
-    assert!(!r.ok, "put git '{{branch}}' must be refused");
-    assert_eq!(r.error.as_deref(), Some(EXPECTED));
+    let repo = GitRepoFixture::new();
+    let p = repo.path_str();
 
     let r = send_recv(
         &mut s,
-        &serde_json::json!({"op":"put","key":"git.branch","data":"x"}),
+        &serde_json::json!({"op":"put","key":"git","data":{"branch":"x"},"path":p}),
     )
     .await;
-    assert!(!r.ok, "put git.branch must be refused");
-    assert_eq!(r.error.as_deref(), Some(EXPECTED));
+    assert!(r.ok, "put git.branch over a Source field: {:?}", r.error);
 
+    let branch = data_of(
+        send_recv(
+            &mut s,
+            &serde_json::json!({"op":"get","key":"git.branch","path":p}),
+        )
+        .await,
+        "get git.branch",
+    );
+    assert_eq!(branch, serde_json::json!("x"));
+
+    // Removing the put shows the Source's value at once.
     let r = send_recv(
         &mut s,
-        &serde_json::json!({"op":"put","key":"git.branch","data":null}),
+        &serde_json::json!({"op":"put","key":"git.branch","data":null,"path":p}),
     )
     .await;
-    assert!(!r.ok, "null put at git.branch must be refused");
-    assert_eq!(r.error.as_deref(), Some(EXPECTED));
+    assert!(r.ok, "null put: {:?}", r.error);
+    let branch = data_of(
+        send_recv(
+            &mut s,
+            &serde_json::json!({"op":"get","key":"git.branch","path":p}),
+        )
+        .await,
+        "get git.branch",
+    );
+    assert_eq!(branch, serde_json::json!("main"));
 
     handle.abort();
 }
 
-/// A Source with runtime-resolved field names declares a sentinel, so no
-/// declared name matches a `put` key and ownership cannot come from
-/// `source_for_field`. Such a Source owns every field name in its namespace,
-/// warm or cold — otherwise a cold `put toolset.node` lands first and the
-/// source's next refresh writes `node` into its own map too, leaving two
-/// records at one (key, path) that `get toolset.node` and `get toolset`
-/// disagree about.
+/// A global put is a default, never an override: the Source at the directory
+/// is nearer and wins.
 #[tokio::test]
-async fn put_under_a_sentinel_source_is_refused_warm_or_cold() {
+async fn a_nearer_source_beats_a_global_put() {
+    if !has_git() {
+        return;
+    }
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+    let repo = GitRepoFixture::new();
+    let p = repo.path_str();
+
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"git.branch","data":"g"}),
+    )
+    .await;
+    assert!(r.ok, "global put: {:?}", r.error);
+
+    let branch = data_of(
+        send_recv(
+            &mut s,
+            &serde_json::json!({"op":"get","key":"git.branch","path":p}),
+        )
+        .await,
+        "get git.branch",
+    );
+    assert_eq!(branch, serde_json::json!("main"));
+
+    handle.abort();
+}
+
+/// A Source with runtime-resolved field names declares a sentinel. A put under
+/// it is accepted, warm or cold, and layers over whatever the Source writes.
+#[tokio::test]
+async fn a_put_under_a_sentinel_source_layers_over_it() {
     let mut registry = ProviderRegistry::new();
     registry.register(Box::new(SentinelProvider)).unwrap();
     let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
@@ -680,69 +719,51 @@ async fn put_under_a_sentinel_source_is_refused_warm_or_cold() {
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
-    const EXPECTED: &str = "cannot write toolset.node: owned by source tools";
-
-    // Cold: nothing cached, and `node` is no declared field name.
+    // Cold: nothing cached.
     let r = send_recv(
         &mut s,
         &serde_json::json!({"op":"put","key":"toolset.node","data":"999"}),
     )
     .await;
-    assert!(!r.ok, "cold put under a sentinel source must be refused");
-    assert_eq!(r.error.as_deref(), Some(EXPECTED));
+    assert!(r.ok, "cold put under a sentinel source: {:?}", r.error);
 
-    // Warm the source (a sentinel field triggers no cold-miss execute of its
-    // own, so the whole-namespace read is what runs it), then try again.
+    // Warm the Source with the whole-namespace read; the put still wins.
     let all = data_of(
         send_recv(&mut s, &serde_json::json!({"op":"get","key":"toolset"})).await,
         "get toolset",
     );
-    assert_eq!(all["node"], serde_json::json!("22.0.0"));
+    assert_eq!(all["node"], serde_json::json!("999"));
 
-    let r = send_recv(
-        &mut s,
-        &serde_json::json!({"op":"put","key":"toolset.node","data":"999"}),
-    )
-    .await;
-    assert!(!r.ok, "warm put under a sentinel source must be refused");
-    assert_eq!(r.error.as_deref(), Some(EXPECTED));
-
-    // A name the source has never emitted is refused too — a sentinel claims
-    // every field name in the namespace, because any of them may show up.
+    // A name the Source has never emitted is accepted too.
     let r = send_recv(
         &mut s,
         &serde_json::json!({"op":"put","key":"toolset","data":{"note":1}}),
     )
     .await;
-    assert!(!r.ok, "a sentinel source owns every field name");
-    assert_eq!(
-        r.error.as_deref(),
-        Some("cannot write toolset.note: owned by source tools")
-    );
+    assert!(r.ok, "put toolset.note: {:?}", r.error);
 
-    // One record, one map.
-    let rows = data_of(
-        send_recv(&mut s, &serde_json::json!({"op":"status"})).await,
-        "status",
+    // Removing the put shows the Source's value at once.
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"toolset.node","data":null}),
+    )
+    .await;
+    assert!(r.ok, "null put: {:?}", r.error);
+    let node = data_of(
+        send_recv(
+            &mut s,
+            &serde_json::json!({"op":"get","key":"toolset.node"}),
+        )
+        .await,
+        "get toolset.node",
     );
-    let node_rows: Vec<&serde_json::Value> = rows
-        .as_array()
-        .expect("status data is an array")
-        .iter()
-        .filter(|r| r["provider"] == "toolset" && r["field"] == "node")
-        .collect();
-    assert_eq!(
-        node_rows.len(),
-        1,
-        "exactly one record for toolset.node, got {node_rows:?}"
-    );
-    assert_eq!(node_rows[0]["source"], serde_json::json!("tools"));
+    assert_eq!(node, serde_json::json!("22.0.0"));
 
     handle.abort();
 }
 
 /// `--replace` acts on static records only. A Source's records under the node
-/// are neither removed nor scanned for ownership, so a root `--replace` on a
+/// are not removed, so a root `--replace` on a
 /// warm provider namespace works — and is symmetric with `--null` there.
 ///
 /// A counting Source, because a value comparison cannot fail here: were

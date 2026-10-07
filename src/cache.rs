@@ -29,10 +29,6 @@ fn is_static_label(source_name: &str) -> bool {
 /// Why a static write was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PutError {
-    /// The record is produced by one of the provider's Sources, so the next
-    /// refresh would overwrite it. Records are refused one at a time — a
-    /// namespace is never refused wholesale.
-    Owned { record: String, source: String },
     /// The root of a namespace is a map of records, not a single value.
     RootNotObject,
     /// An object key with a `.` in it names one record but addresses another.
@@ -42,9 +38,6 @@ pub enum PutError {
 impl std::fmt::Display for PutError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PutError::Owned { record, source } => {
-                write!(f, "cannot write {record}: owned by source {source}")
-            }
             PutError::RootNotObject => write!(f, "put data at the root must be an object"),
             PutError::DottedKey { key } => {
                 write!(f, "put data keys may not contain '.': {key}")
@@ -254,77 +247,15 @@ fn dotted_key(value: &Value) -> Option<&str> {
     None
 }
 
-/// The Source that closes this whole namespace to `put`, if there is one.
-///
-/// A Source whose field names are only known once it runs declares a sentinel
-/// (`<tool>`, `<profile>`, `<field>` — see `ProviderMetadata::validate`) rather
-/// than a name a key could match, so no key can be shown *not* to belong to it:
-/// the namespace is closed to `put`. The rule has to hold on a cold entry too,
-/// or a `put` lands first and the Source's next refresh writes the same record
-/// into its own map, leaving two records at one (key, path). The first sentinel
-/// Source in declaration order names the error.
-fn sentinel_source<'a>(registry: &'a ProviderRegistry, namespace: &str) -> Option<&'a str> {
-    registry
-        .provider_sources(namespace)?
-        .iter()
-        .find(|sm| sm.fields.iter().any(|f| f.name.starts_with('<')))
-        .map(|sm| sm.name.as_str())
-}
-
-/// The Source that owns the record at `tail` under `namespace`, if any.
-///
-/// A record is Source-owned when the registry declares its head segment as a
-/// field of one of the provider's Sources — that is what the next refresh
-/// overwrites — when it currently sits in a source map the registry knows, or
-/// when `sentinel` says the namespace is closed to `put` at all. `put` and
-/// `config:<file>` are never in the registry, so a static record never comes
-/// back from here.
-fn source_owner(
-    registry: &ProviderRegistry,
-    namespace: &str,
-    entry: Option<&CacheEntry>,
-    tail: &str,
-    sentinel: Option<&str>,
-) -> Option<String> {
-    let head = tail.split('.').next().unwrap_or(tail);
-    if let Some(source) = registry.source_for_field(namespace, head) {
-        return Some(source.to_string());
-    }
-    if let Some(owner) = entry.and_then(|e| e.owner_of(tail))
-        && registry.source(namespace, owner).is_some()
-    {
-        return Some(owner.to_string());
-    }
-    sentinel.map(str::to_string)
-}
-
-/// The first of `tails` a Source owns, as the error refusing the write.
-fn refuse_owned<'t>(
-    registry: &ProviderRegistry,
-    namespace: &str,
-    entry: Option<&CacheEntry>,
-    tails: impl Iterator<Item = &'t str>,
-) -> Option<PutError> {
-    let sentinel = sentinel_source(registry, namespace);
-    for tail in tails {
-        if let Some(source) = source_owner(registry, namespace, entry, tail, sentinel) {
-            return Some(PutError::Owned {
-                record: format!("{namespace}.{tail}"),
-                source,
-            });
-        }
-    }
-    None
-}
-
-/// Drop the subtree at `node` (`""` for everything) from every static source
-/// map, pruning any map it empties except `keep` — the label a write is about
-/// to land in. Source maps are never touched: a `put` does not remove a record
-/// a Source produces. Returns whether anything was removed.
-fn drop_static_subtree(entry: &mut CacheEntry, node: &str, keep: Option<&str>) -> bool {
+/// Drop the subtree at `node` (`""` for everything) from the `put` map,
+/// pruning it if it empties, unless it is `keep` — the label a write is about
+/// to land in. Every other layer — Source maps and `config:` seeds — is left
+/// alone, so the layer below a removed put shows through at once. Returns
+/// whether anything was removed.
+fn drop_put_subtree(entry: &mut CacheEntry, node: &str, keep: Option<&str>) -> bool {
     let mut removed = false;
     entry.sources.retain(|name, src| {
-        if !is_static_label(name) {
+        if name != PUT_SOURCE {
             return true;
         }
         if node.is_empty() {
@@ -365,22 +296,31 @@ fn apply_static_write(
         // otherwise it would survive the drop and never be written, leaving a
         // phantom empty static map (and, at the root, an entry the caller's
         // emptiness check would no longer remove).
-        drop_static_subtree(entry, node, (!leaves.is_empty()).then_some(label));
+        drop_put_subtree(entry, node, (!leaves.is_empty()).then_some(label));
     }
 
-    // Rule 1: one record, one map. Only a static map ever gives a record up —
-    // the caller's ownership scan ran under this same guard, so no refresh can
-    // have slipped in behind it, and `is_static_label` makes that structural.
-    for (tail, _) in &leaves {
-        let owner = entry.owner_of(tail).map(str::to_string);
-        if let Some(owner) = owner
-            && owner != label
-            && is_static_label(&owner)
-            && let Some(src) = entry.sources.get_mut(&owner)
-        {
-            remove_occupant(&mut src.fields, tail);
-            if src.fields.is_empty() {
-                entry.sources.remove(&owner);
+    // Rule 1: one record, one map, among `config:` labels only. A later file's
+    // record moves out of an earlier file's map. The `put` map neither evicts
+    // a `config:` record nor is evicted by one: it is a layer of its own.
+    if label.starts_with(CONFIG_SOURCE_PREFIX) {
+        for (tail, _) in &leaves {
+            let holders: Vec<String> = entry
+                .sources
+                .iter()
+                .filter(|(name, src)| {
+                    name.starts_with(CONFIG_SOURCE_PREFIX)
+                        && name.as_str() != label
+                        && occupies(&src.fields, tail)
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            for holder in holders {
+                if let Some(src) = entry.sources.get_mut(&holder) {
+                    remove_occupant(&mut src.fields, tail);
+                    if src.fields.is_empty() {
+                        entry.sources.remove(&holder);
+                    }
+                }
             }
         }
     }
@@ -556,18 +496,11 @@ impl Cache {
     ///
     /// Every leaf of `value` becomes one record. Records deep-merge into
     /// whatever is already stored; `replace` first drops the whole subtree at
-    /// `node` from every *static* map — a Source's records are never removed by
-    /// a `put`. A record a Source produces is refused — the next refresh would
-    /// overwrite it — and nothing is written.
+    /// `node` from the `put` map — nothing else is removed by a `put`.
     ///
-    /// A record lives in exactly one source map, so a write first evicts the
-    /// record from whichever map holds it. Reads therefore never need a
-    /// precedence rule between labels.
-    ///
-    /// The ownership scan and the write run under one write guard. Scanning
-    /// under a read guard and mutating under a later one would let a Source
-    /// refresh land in between, so the eviction could drop a record the scan
-    /// had cleared as static.
+    /// There is no ownership: every supplier writes a layer of its own and a
+    /// read stacks them (source, then `config:` seeds, then `put`). Among
+    /// `config:` labels a record lives in one map, the latest file's.
     #[allow(clippy::too_many_arguments)]
     pub fn write_static(
         &self,
@@ -578,7 +511,6 @@ impl Cache {
         value: Value,
         replace: bool,
         interval_secs: Option<u64>,
-        registry: &ProviderRegistry,
     ) -> Result<(), PutError> {
         if node.is_empty() && !matches!(value, Value::Object(_)) {
             return Err(PutError::RootNotObject);
@@ -593,21 +525,8 @@ impl Cache {
         let key = make_cache_key(namespace, path);
         let now = Instant::now();
 
-        // The records this write claims are its own leaves. `replace` drops the
-        // static subtree at `node` as well, but a Source's records under it are
-        // left where they are, so they are not part of the scan — otherwise
-        // `put uptime {"note":2} --replace` on a warm namespace would be
-        // refused for records it never touches.
         match self.entries.entry(key) {
             dashmap::Entry::Occupied(mut occupied) => {
-                if let Some(err) = refuse_owned(
-                    registry,
-                    namespace,
-                    Some(occupied.get()),
-                    leaves.iter().map(|(tail, _)| tail.as_str()),
-                ) {
-                    return Err(err);
-                }
                 apply_static_write(
                     occupied.get_mut(),
                     label,
@@ -622,16 +541,6 @@ impl Cache {
                 }
             }
             dashmap::Entry::Vacant(vacant) => {
-                // Nothing cached, so only the registry can refuse — and
-                // dropping the vacant entry inserts nothing.
-                if let Some(err) = refuse_owned(
-                    registry,
-                    namespace,
-                    None,
-                    leaves.iter().map(|(tail, _)| tail.as_str()),
-                ) {
-                    return Err(err);
-                }
                 // A write with no leaves (`put ns '{}'`) has nothing to store
                 // and, with no entry here yet, nothing to drop either: it must
                 // not conjure an entry.
@@ -653,13 +562,10 @@ impl Cache {
         Ok(())
     }
 
-    /// Remove the static subtree at `node` — the dotted tail below `namespace`,
-    /// `""` for the namespace root, where every static record of the entry
-    /// goes. Source-produced records are never removed; addressing one
-    /// directly refuses the removal instead of silently doing nothing. The
-    /// entry is dropped when no source remains.
-    ///
-    /// One write guard covers the scan and the removal, as in `write_static`.
+    /// Remove the `put` subtree at `node` — the dotted tail below `namespace`,
+    /// `""` for the namespace root. The layers below (Sources, `config:` seeds)
+    /// are untouched and show through at once. The entry is dropped when no
+    /// map remains.
     ///
     /// Returns whether anything was removed.
     pub fn remove_static_path(
@@ -667,33 +573,14 @@ impl Cache {
         namespace: &str,
         path: Option<&str>,
         node: &str,
-        registry: &ProviderRegistry,
     ) -> Result<bool, PutError> {
         let key = make_cache_key(namespace, path);
-        // Only the addressed node is scanned: a Source's records beneath it are
-        // left in place, exactly as `replace` leaves them.
-        let scan = |entry: Option<&CacheEntry>| -> Option<PutError> {
-            if node.is_empty() {
-                return None;
-            }
-            refuse_owned(registry, namespace, entry, std::iter::once(node))
-        };
 
         let mut removed = false;
-        match self.entries.entry(key) {
-            dashmap::Entry::Occupied(mut occupied) => {
-                if let Some(err) = scan(Some(occupied.get())) {
-                    return Err(err);
-                }
-                removed = drop_static_subtree(occupied.get_mut(), node, None);
-                if occupied.get().sources.is_empty() {
-                    occupied.remove();
-                }
-            }
-            dashmap::Entry::Vacant(_) => {
-                if let Some(err) = scan(None) {
-                    return Err(err);
-                }
+        if let dashmap::Entry::Occupied(mut occupied) = self.entries.entry(key) {
+            removed = drop_put_subtree(occupied.get_mut(), node, None);
+            if occupied.get().sources.is_empty() {
+                occupied.remove();
             }
         }
 
@@ -735,13 +622,9 @@ impl Cache {
     /// One guard is the point. A drop followed by a separate write leaves a
     /// window in which a concurrent `get` sees neither — a re-seed would blink
     /// every template off and on again. Records a Source produces are never
-    /// touched (`prefix` only ever names static labels), and a record a Source
-    /// owns refuses the whole swap before anything is mutated.
-    ///
-    /// A record `put` wrote is never overwritten: once the config maps are
-    /// gone, any planned leaf the `put` map still occupies is dropped from the
-    /// plan. Configuration seeds a default; a `put` is the operator saying
-    /// otherwise, and a re-seed is not the moment to overrule them.
+    /// touched (`prefix` only ever names static labels), and neither is the
+    /// `put` map: it sits above the seeds, so configuration seeds a default
+    /// and a `put` is the operator saying otherwise.
     ///
     /// An empty `writes` is a removal: the namespace's config records go and
     /// nothing replaces them.
@@ -751,7 +634,6 @@ impl Cache {
         path: Option<&str>,
         drop_label_prefix: &str,
         writes: Vec<(String, Value)>,
-        registry: &ProviderRegistry,
     ) -> Result<(), PutError> {
         // Every write is validated and flattened before the guard is taken, so
         // a malformed one refuses without having held a lock.
@@ -769,29 +651,14 @@ impl Cache {
             walk_leaves("", value, &mut leaves);
             planned.push((label, leaves));
         }
-        fn claimed(planned: &[(String, Vec<(String, Value)>)]) -> impl Iterator<Item = &str> {
-            planned
-                .iter()
-                .flat_map(|(_, leaves)| leaves.iter().map(|(tail, _)| tail.as_str()))
-        }
-
         let key = make_cache_key(namespace, path);
         let now = Instant::now();
         let mut changed = false;
         match self.entries.entry(key) {
             dashmap::Entry::Occupied(mut occupied) => {
-                if let Some(err) =
-                    refuse_owned(registry, namespace, Some(occupied.get()), claimed(&planned))
-                {
-                    return Err(err);
-                }
                 let entry = occupied.get_mut();
                 changed |= drop_labelled(entry, drop_label_prefix);
                 for (label, leaves) in planned {
-                    let leaves: Vec<(String, Value)> = leaves
-                        .into_iter()
-                        .filter(|(tail, _)| entry.owner_of(tail) != Some(PUT_SOURCE))
-                        .collect();
                     changed |= !leaves.is_empty();
                     apply_static_write(entry, &label, "", leaves, false, None, now);
                 }
@@ -800,9 +667,6 @@ impl Cache {
                 }
             }
             dashmap::Entry::Vacant(vacant) => {
-                if let Some(err) = refuse_owned(registry, namespace, None, claimed(&planned)) {
-                    return Err(err);
-                }
                 let mut fresh = CacheEntry {
                     sources: HashMap::new(),
                     created_at: now,
@@ -825,15 +689,16 @@ impl Cache {
         Ok(())
     }
 
-    /// Merge the static maps of `entry` — those whose source is `put` or
-    /// `config:<file>` — into `out`, in source-name order. Returns whether
-    /// anything merged.
+    /// Merge the static maps of `entry` into `out`: `config:<file>` seeds in
+    /// label order, then the `put` map on top. Returns whether anything merged.
     ///
     /// One layer at a time: [`Cache::read_merged`] walks the chain itself
     /// because a layer's static maps have to land between its neighbours'
     /// provider maps, not after all of them.
     fn merge_static_records(entry: &CacheEntry, out: &mut MergedRead) -> bool {
-        Self::merge_named(entry, out, |name| is_static_label(name))
+        let seeds = Self::merge_named(entry, out, |name| name.starts_with(CONFIG_SOURCE_PREFIX));
+        let puts = Self::merge_named(entry, out, |name| name == PUT_SOURCE);
+        seeds | puts
     }
 
     /// Merge the provider-produced maps of `entry` whose Source the registry
@@ -1484,7 +1349,6 @@ mod tests {
     #[test]
     fn static_record_survives_its_entry_mate_being_evicted() {
         let cache = Cache::new();
-        let registry = crate::provider::registry::ProviderRegistry::with_defaults();
 
         cache.put_source(
             "git",
@@ -1502,7 +1366,6 @@ mod tests {
                 Value::Int(1),
                 false,
                 None,
-                &registry,
             )
             .expect("note is declared by no source");
 
@@ -1517,6 +1380,115 @@ mod tests {
             HashMap::from([("note".to_string(), Value::Int(1))]),
             "only the static record remains"
         );
+    }
+
+    /// A Source refreshing under a put changes only its own layer: the merged
+    /// read keeps showing the put, and the Source's map shows the new value.
+    #[test]
+    fn a_source_refresh_does_not_disturb_a_put_over_it() {
+        let cache = Cache::new();
+        let registry = crate::provider::registry::ProviderRegistry::with_defaults();
+
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "head",
+            make_fields(&[("branch", "main")]),
+            None,
+        );
+        cache
+            .write_static(
+                "git",
+                Some("/repo"),
+                PUT_SOURCE,
+                "branch",
+                Value::String("pinned".into()),
+                false,
+                None,
+            )
+            .expect("a put over a Source field is accepted");
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "head",
+            make_fields(&[("branch", "dev")]),
+            None,
+        );
+
+        let read = cache
+            .read_merged("git", Some("/repo"), Some("/repo"), &registry)
+            .expect("both layers");
+        assert_eq!(
+            read.fields.get("branch"),
+            Some(&Value::String("pinned".into()))
+        );
+        assert_eq!(&*read.records["branch"].source, PUT_SOURCE);
+        let head = cache
+            .get_source("git", Some("/repo"), "head")
+            .expect("the Source's own layer");
+        assert_eq!(
+            head.fields.get("branch"),
+            Some(&Value::String("dev".into()))
+        );
+    }
+
+    /// Removing a put deletes only the put layer; the Source's value shows
+    /// through at once.
+    #[test]
+    fn removing_a_put_shows_the_layer_below_at_once() {
+        let cache = Cache::new();
+        let registry = crate::provider::registry::ProviderRegistry::with_defaults();
+
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "head",
+            make_fields(&[("branch", "main")]),
+            None,
+        );
+        cache
+            .write_static(
+                "git",
+                Some("/repo"),
+                PUT_SOURCE,
+                "branch",
+                Value::String("pinned".into()),
+                false,
+                None,
+            )
+            .unwrap();
+        assert!(
+            cache
+                .remove_static_path("git", Some("/repo"), "branch")
+                .unwrap()
+        );
+
+        let read = cache
+            .read_merged("git", Some("/repo"), Some("/repo"), &registry)
+            .expect("the Source's layer");
+        assert_eq!(
+            read.fields.get("branch"),
+            Some(&Value::String("main".into()))
+        );
+    }
+
+    /// A put never evicts a config seed, and removing the put leaves the seed.
+    #[test]
+    fn a_put_does_not_evict_a_config_seed() {
+        let cache = Cache::new();
+        let registry = crate::provider::registry::ProviderRegistry::new();
+        let write = |label: &str, v: &str| {
+            cache
+                .write_static("p", None, label, "x", Value::String(v.into()), false, None)
+                .unwrap();
+        };
+        write("config:a.toml", "seed");
+        write(PUT_SOURCE, "put");
+        let read = cache.read_merged("p", None, None, &registry).unwrap();
+        assert_eq!(read.fields.get("x"), Some(&Value::String("put".into())));
+        assert!(cache.remove_static_path("p", None, "x").unwrap());
+        let read = cache.read_merged("p", None, None, &registry).unwrap();
+        assert_eq!(read.fields.get("x"), Some(&Value::String("seed".into())));
     }
 
     /// `owner_of` names the map holding the record — including when the record
@@ -1565,7 +1537,7 @@ mod tests {
         let registry = crate::provider::registry::ProviderRegistry::new();
         let write = |label: &str, node: &str, value: Value| {
             cache
-                .write_static("p", None, label, node, value, false, None, &registry)
+                .write_static("p", None, label, node, value, false, None)
                 .expect("no source owns anything under p");
         };
 

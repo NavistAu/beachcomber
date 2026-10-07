@@ -386,7 +386,7 @@ comb p myapp --null                                        # clear the entry
 comb p myapp:template.greeting '"hello {{ env.USER }}"'    # a template — comb g myapp.greeting renders it
 ```
 
-A write **deep-merges** into whatever is already stored at that node. `--replace` drops the subtree there first; `--null` removes it and writes nothing. Both act on static records only — a `put` never removes a record a provider's Source produces, and a record one of them owns is refused per record (`cannot write <namespace>.<node>: owned by source <source>`). `data` at a namespace root must be a JSON object; below the root, any JSON. `--null` and `--replace` cannot be combined.
+A write **deep-merges** into whatever is already stored at that node. `--replace` drops the subtree there first; `--null` removes it and writes nothing. Both act on static records only — a `put` never removes a record a provider's Source produces; it layers over it and wins at that directory. `data` at a namespace root must be a JSON object; below the root, any JSON. `--null` and `--replace` cannot be combined.
 
 Like `comb g`, a `put` defaults to the current working directory; `--global` addresses `$HOME` instead and cannot be combined with `--path`.
 
@@ -397,7 +397,7 @@ comb g myapp.status        # → healthy
 comb g myapp                 # → full JSON
 ```
 
-Ownership is per record, not per namespace — `comb p git '{"note":1}'` is accepted and merges beside git's own fields, but `comb p git '{"branch":"x"}'` is rejected because a Source already owns `branch`.
+There is no ownership — `comb p git '{"note":1}'` merges beside git's own fields, and `comb p git '{"branch":"x"}'` is accepted too: it wins over the Source's `branch` until removed.
 
 ### `comb r` (refresh) `<key> [path] [--path <path>] [--global]`
 
@@ -1889,7 +1889,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`refresh`:** Re-execute Sources out-of-band; does not return the new value. The key selects which Sources run, exactly as it selects which a `get` warms: `refresh git` re-executes every Source of `git`, `refresh git.branch` only the Source that owns `branch`. Each runs at the cache entry its own scope keys — the global entry for a `Global` Source whatever path the request carried, the addressed path for a `PathScoped` one — so `path` is optional and is only consulted by the path-scoped ones. A metadata suffix is stripped first: `refresh hostname:age` is `refresh hostname`. A key that names no Source has nothing to re-execute and is an error — a static namespace, a facet key, an unknown name, or a field no Source owns: `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`. Reading configuration afresh is not a refresh; the config watcher does that.
 
-**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write deep-merges into whatever is already stored there. `"replace": true` drops the subtree at the node first; omitting `data` removes it. Both act on static records only — a `put` never removes a record a provider's Source produces. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success; a record one of the provider's Sources produces is refused per record, as `cannot write <namespace>.<node>: owned by source <source>`.
+**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write deep-merges into whatever is already stored there. `"replace": true` drops the subtree at the node first; omitting `data` removes it. Both act on static records only — a `put` never removes a record a provider's Source produces. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success.
 
 ```json
 {"op":"put","key":"myapp","data":{"status":"healthy"}}

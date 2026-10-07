@@ -2,8 +2,8 @@
 // must not swallow `{"ok": false, "error": "..."}` into a bare `Ok(())`.
 //
 // `put_null` is exercised against a real in-process daemon (DaemonGuard):
-// asking it to `put --null` a builtin provider name is a genuine rejection
-// (the daemon refuses to let a virtual put shadow a real provider). `refresh`
+// asking it to `put --null` a key nested past ten segments is a genuine
+// rejection (`put key is nested too deeply`). `refresh`
 // and `set_context` have no such real rejection path today — the daemon
 // always answers `ok: true` for them — so those are exercised against a
 // one-shot fake responder that plays back a scripted `ok: false` line, the
@@ -46,18 +46,19 @@ fn spawn_canned_responder(response: &'static str) -> (tempfile::TempDir, PathBuf
     (tmp, sock)
 }
 
-/// A provider's name is no longer refused wholesale — `hostname.name` is,
-/// because the `host` Source produces it.
+/// A key nested past ten segments is refused by the daemon.
+const TOO_DEEP: &str = "a.b.c.d.e.f.g.h.i.j.k.l.m";
+
 #[test]
-fn client_put_null_on_a_source_owned_record_returns_err() {
+fn client_put_null_on_an_over_deep_key_returns_err() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
 
-    let result = client.put_null("hostname.name", None);
+    let result = client.put_null(TOO_DEEP, None);
 
     assert!(
         result.is_err(),
-        "put --null on a Source-owned record should be rejected, got {result:?}"
+        "put --null on an over-deep key should be rejected, got {result:?}"
     );
     assert!(
         matches!(result, Err(CombError::ServerError(_))),
@@ -66,16 +67,16 @@ fn client_put_null_on_a_source_owned_record_returns_err() {
 }
 
 #[test]
-fn session_put_null_on_a_source_owned_record_returns_err() {
+fn session_put_null_on_an_over_deep_key_returns_err() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
     let mut session = client.session().expect("session");
 
-    let result = session.put_null("hostname.name", None);
+    let result = session.put_null(TOO_DEEP, None);
 
     assert!(
         result.is_err(),
-        "put --null on a Source-owned record should be rejected, got {result:?}"
+        "put --null on an over-deep key should be rejected, got {result:?}"
     );
     assert!(
         matches!(result, Err(CombError::ServerError(_))),
