@@ -319,7 +319,9 @@ fn json_to_source_result(value: &serde_json::Value) -> Option<SourceResult> {
         serde_json::Value::Null => return None,
         scalar_or_array => {
             let mut r = SourceResult::new();
-            r.insert("value", Value::from_json(scalar_or_array));
+            if let Some(v) = Value::from_json(scalar_or_array) {
+                r.insert("value", v);
+            }
             r
         }
     };

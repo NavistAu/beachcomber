@@ -488,10 +488,6 @@ for _, fpath in ipairs(fixture_paths) do
       -- roadmap-logged gap in this binding, not a runner or daemon bug.
       -- Reported as SKIP with the defect named so the gate stays green on
       -- honest terms; remove the entry when the defect is fixed.
-      --
-      -- mapping_null_value_becomes_empty_string was here (nested JSON null
-      -- collapsing to key-absent before put() ran) — fixed by the M.NULL
-      -- sentinel in beachcomber.json; see its doc comment.
       local KNOWN_DEFECTS = {}
       local defect = fixture.name and KNOWN_DEFECTS[fixture.name]
       local outcome, reason

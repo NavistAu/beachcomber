@@ -835,7 +835,7 @@ impl Client {
         let socket_path = self.find_or_start_socket()?;
         let mut stream = self.connect(&socket_path)?;
 
-        let mut request = serde_json::json!({ "op": "put", "key": key });
+        let mut request = serde_json::json!({ "op": "put", "key": key, "data": null });
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
         }
@@ -1297,7 +1297,7 @@ impl Session {
 
     /// Clear the cached entry for a static-data key without dropping the registry entry.
     pub fn put_null(&mut self, key: &str, path: Option<&str>) -> Result<(), CombError> {
-        let mut request = serde_json::json!({ "op": "put", "key": key });
+        let mut request = serde_json::json!({ "op": "put", "key": key, "data": null });
         if let Some(p) = path {
             request["path"] = serde_json::json!(p);
         }

@@ -1195,9 +1195,9 @@ async fn handle_request(
             // request carrying no path at all, is the global entry.
             let effective_path: Option<String> = crate::query::normalise_path(path.as_deref());
 
-            // data=None means "clear the addressed node" — the row goes, the
+            // `data: null` means "clear the addressed node" — the row goes, the
             // registry entry stays.
-            let Some(data) = data else {
+            if data.is_null() {
                 return match cache.remove_static_path(
                     namespace,
                     effective_path.as_deref(),
@@ -1215,7 +1215,30 @@ async fn handle_request(
                     },
                     Err(e) => Response::error(e.to_string()),
                 };
-            };
+            }
+
+            // A merging put removes the leaf of every null member, at its own
+            // address, before the write. Under `--replace` a null member is
+            // simply absent from the replacement.
+            if !*replace {
+                let mut tails = Vec::new();
+                null_member_tails(data, "", &mut tails);
+                for tail in tails {
+                    let at = if node.is_empty() {
+                        tail
+                    } else {
+                        format!("{node}.{tail}")
+                    };
+                    if let Err(e) = cache.remove_static_path(
+                        namespace,
+                        effective_path.as_deref(),
+                        &at,
+                        registry,
+                    ) {
+                        return Response::error(e.to_string());
+                    }
+                }
+            }
 
             // `MAX_JSON_DEPTH` is counted from the record, not from the
             // namespace: at the root each top-level value is converted on its
@@ -1235,7 +1258,7 @@ async fn handle_request(
                 None if node.is_empty() => {
                     return Response::error(crate::cache::PutError::RootNotObject.to_string());
                 }
-                _ => crate::provider::Value::from_json(data),
+                _ => crate::provider::Value::from_json(data).expect("null data handled above"),
             };
 
             let interval_secs = ttl
@@ -1897,6 +1920,24 @@ fn handle_introspect_procs(duration_secs: Option<u64>) -> Response {
             )
         }
         Err(e) => Response::error(format!("procs snapshot failed: {e}")),
+    }
+}
+
+/// The dotted address, relative to `value`, of every null object member in it.
+fn null_member_tails(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
+    if let serde_json::Value::Object(map) = value {
+        for (k, v) in map {
+            let at = if prefix.is_empty() {
+                k.clone()
+            } else {
+                format!("{prefix}.{k}")
+            };
+            if v.is_null() {
+                out.push(at);
+            } else {
+                null_member_tails(v, &at, out);
+            }
+        }
     }
 }
 

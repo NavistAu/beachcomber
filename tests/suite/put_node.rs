@@ -526,7 +526,11 @@ async fn put_null_at_a_node_removes_only_that_subtree() {
         &serde_json::json!({"op":"put","key":"my","data":{"some":{"value":5},"a":1}}),
     )
     .await;
-    let r = send_recv(&mut s, &serde_json::json!({"op":"put","key":"my.some"})).await;
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"my.some","data":null}),
+    )
+    .await;
     assert!(r.ok, "null put at my.some: {:?}", r.error);
 
     let got = data_of(
@@ -649,7 +653,11 @@ async fn put_over_a_source_owned_record_is_refused() {
     assert!(!r.ok, "put git.branch must be refused");
     assert_eq!(r.error.as_deref(), Some(EXPECTED));
 
-    let r = send_recv(&mut s, &serde_json::json!({"op":"put","key":"git.branch"})).await;
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"git.branch","data":null}),
+    )
+    .await;
     assert!(!r.ok, "null put at git.branch must be refused");
     assert_eq!(r.error.as_deref(), Some(EXPECTED));
 

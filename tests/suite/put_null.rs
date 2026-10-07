@@ -156,3 +156,106 @@ fn put_cli_rejects_replace_with_null() {
             "cannot combine --null with --replace",
         ));
 }
+
+/// One raw request line over a fresh connection, the reply parsed.
+fn raw(sock: &std::path::Path, request: &serde_json::Value) -> serde_json::Value {
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(sock).unwrap();
+    writeln!(stream, "{request}").unwrap();
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+
+fn got(sock: &std::path::Path, key: &str) -> Option<serde_json::Value> {
+    fetch(sock, key, None).unwrap().and_then(|g| g.data)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn put_data_null_removes_the_node() {
+    let (_tmp, sock, client, handle) = setup_daemon().await;
+    let r = client
+        .put_with("ns", serde_json::json!({"a": 1}), None, None, false)
+        .unwrap();
+    assert!(r.ok);
+    assert_eq!(got(&sock, "ns.a"), Some(serde_json::json!(1)));
+
+    let r = raw(
+        &sock,
+        &serde_json::json!({"op":"put","key":"ns.a","data":null}),
+    );
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(got(&sock, "ns.a"), None);
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn put_without_data_is_an_invalid_request() {
+    let (_tmp, sock, _client, handle) = setup_daemon().await;
+    let r = raw(&sock, &serde_json::json!({"op":"put","key":"ns.a"}));
+    assert_eq!(r["ok"], false, "{r}");
+    let err = r["error"].as_str().unwrap();
+    assert!(
+        err.contains("invalid request") && err.contains("missing field"),
+        "{err}"
+    );
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nested_null_in_a_merging_put_removes_that_leaf() {
+    let (_tmp, sock, client, handle) = setup_daemon().await;
+    client
+        .put_with("ns", serde_json::json!({"a": 1, "b": 2}), None, None, false)
+        .unwrap();
+    let r = client
+        .put_with("ns", serde_json::json!({"a": null}), None, None, false)
+        .unwrap();
+    assert!(r.ok, "{:?}", r.error);
+    assert_eq!(got(&sock, "ns"), Some(serde_json::json!({"b": 2})));
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nested_null_under_replace_is_absent() {
+    let (_tmp, sock, client, handle) = setup_daemon().await;
+    client
+        .put_with("ns", serde_json::json!({"a": 1, "b": 2}), None, None, false)
+        .unwrap();
+    let r = client
+        .put_with(
+            "ns",
+            serde_json::json!({"a": null, "c": 3}),
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    assert!(r.ok, "{:?}", r.error);
+    assert_eq!(got(&sock, "ns"), Some(serde_json::json!({"c": 3})));
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_string_is_a_value() {
+    let (_tmp, sock, client, handle) = setup_daemon().await;
+    let r = client
+        .put_with("ns.a", serde_json::json!(""), None, None, false)
+        .unwrap();
+    assert!(r.ok, "{:?}", r.error);
+    assert_eq!(got(&sock, "ns.a"), Some(serde_json::json!("")));
+    handle.abort();
+}
+
+#[test]
+fn comb_put_json_null_removes() {
+    use crate::common::daemon::TestDaemon;
+    let d = TestDaemon::spawn();
+    let cwd = std::path::Path::new("/");
+    d.comb(cwd).args(["put", "ns.a", "1"]).assert().success();
+    d.comb(cwd).args(["put", "ns.a", "null"]).assert().success();
+    d.comb(cwd)
+        .args(["get", "-f", "json", "ns.a"])
+        .assert()
+        .failure();
+}

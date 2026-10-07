@@ -95,14 +95,15 @@ impl Value {
     ///
     /// Objects become [`Value::Object`]. Arrays become [`Value::Object`] keyed by
     /// decimal index, matching how array segments are already addressed by path
-    /// elsewhere. Null becomes an empty string. Depth is capped at
-    /// [`MAX_JSON_DEPTH`].
-    pub fn from_json(value: &serde_json::Value) -> Value {
+    /// elsewhere. Null is absent: `None`, and a null object member or array
+    /// element is omitted (surviving elements keep their original index keys).
+    /// Depth is capped at [`MAX_JSON_DEPTH`].
+    pub fn from_json(value: &serde_json::Value) -> Option<Value> {
         Self::from_json_at(value, 0)
     }
 
-    fn from_json_at(value: &serde_json::Value, depth: usize) -> Value {
-        match value {
+    fn from_json_at(value: &serde_json::Value, depth: usize) -> Option<Value> {
+        Some(match value {
             serde_json::Value::String(s) => Value::String(s.clone()),
             serde_json::Value::Bool(b) => Value::Bool(*b),
             serde_json::Value::Number(n) => {
@@ -114,7 +115,7 @@ impl Value {
                     Value::String(n.to_string())
                 }
             }
-            serde_json::Value::Null => Value::String(String::new()),
+            serde_json::Value::Null => return None,
             serde_json::Value::Object(_) | serde_json::Value::Array(_)
                 if depth >= MAX_JSON_DEPTH =>
             {
@@ -122,17 +123,17 @@ impl Value {
             }
             serde_json::Value::Object(map) => Value::Object(
                 map.iter()
-                    .map(|(k, v)| (k.clone(), Self::from_json_at(v, depth + 1)))
+                    .filter_map(|(k, v)| Some((k.clone(), Self::from_json_at(v, depth + 1)?)))
                     .collect(),
             ),
             serde_json::Value::Array(items) => Value::Object(
                 items
                     .iter()
                     .enumerate()
-                    .map(|(i, v)| (i.to_string(), Self::from_json_at(v, depth + 1)))
+                    .filter_map(|(i, v)| Some((i.to_string(), Self::from_json_at(v, depth + 1)?)))
                     .collect(),
             ),
-        }
+        })
     }
 
     pub fn as_text(&self) -> String {
@@ -532,7 +533,9 @@ impl SourceResult {
     pub fn from_json_object(map: &serde_json::Map<String, serde_json::Value>) -> Self {
         let mut result = Self::new();
         for (key, val) in map {
-            result.insert(key.clone(), Value::from_json(val));
+            if let Some(v) = Value::from_json(val) {
+                result.insert(key.clone(), v);
+            }
         }
         result
     }

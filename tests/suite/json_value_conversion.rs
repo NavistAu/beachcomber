@@ -29,7 +29,10 @@ fn fixture() -> serde_json::Value {
 fn assert_fixture_shape(r: &SourceResult) {
     assert_eq!(r.fields.get("flat"), Some(&Value::String("top".into())));
     assert_eq!(r.fields.get("ratio"), Some(&Value::Float(1.5)));
-    assert_eq!(r.fields.get("nothing"), Some(&Value::String(String::new())));
+    assert!(
+        !r.fields.contains_key("nothing"),
+        "a null member is absent, not an empty string"
+    );
 
     let widget = match r.fields.get("widget") {
         Some(Value::Object(m)) => m,
@@ -89,7 +92,7 @@ fn depth_beyond_the_cap_is_stringified_not_dropped() {
         deepest = serde_json::json!({ "down": deepest });
     }
 
-    let mut node = &Value::from_json(&deepest);
+    let mut node = &Value::from_json(&deepest).unwrap();
     let mut walked = 0usize;
     while let Value::Object(map) = node {
         match map.get("down") {

@@ -349,3 +349,15 @@ fn unknown_output_format_falls_through_to_json_parser() {
     let result = sources[0].execute(None);
     assert!(result.fields.is_empty());
 }
+
+#[test]
+fn a_null_field_from_a_script_is_absent() {
+    let config = ScriptProviderConfig {
+        command: r#"echo '{"gone":null,"here":"x"}'"#.to_string(),
+        ..Default::default()
+    };
+    let p = ScriptProvider::new("null_test", config);
+    let result = p.sources()[0].execute(None);
+    assert!(!result.fields.contains_key("gone"));
+    assert_eq!(result.fields.get("here").unwrap().as_text(), "x");
+}

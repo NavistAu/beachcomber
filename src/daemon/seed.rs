@@ -170,7 +170,8 @@ fn plan(layers: &[(PathBuf, toml::Value)]) -> HashMap<String, Writes> {
         for (namespace, table) in Config::facet_tables(layer) {
             let is_template =
                 crate::query::parse_facet(namespace).ok().flatten() == Some("template");
-            let value = Value::from_json(&facet_json(table, is_template));
+            let value =
+                Value::from_json(&facet_json(table, is_template)).expect("TOML has no null");
             out.entry(namespace.to_string())
                 .or_default()
                 .push((label.clone(), value));

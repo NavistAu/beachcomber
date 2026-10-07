@@ -112,6 +112,43 @@ fn put_get_put_null_round_trip() {
     unsafe { bc_client_free(client) };
 }
 
+#[test]
+fn bc_put_with_null_data_removes() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let provider_key = cs("nullrm");
+    let node_key = cs("nullrm.field");
+    let data = cs(r#"{"field":"hello"}"#);
+    let null = cs("null");
+
+    let v = read(unsafe {
+        bc_put(
+            client,
+            provider_key.as_ptr(),
+            data.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+        )
+    });
+    assert_eq!(v["ok"], serde_json::json!(true));
+
+    let v = read(unsafe {
+        bc_put(
+            client,
+            node_key.as_ptr(),
+            null.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+        )
+    });
+    assert_eq!(v["ok"], serde_json::json!(true));
+
+    let v = read(unsafe { bc_get(client, node_key.as_ptr(), ptr::null(), 0) });
+    assert_eq!(v["data"]["data"], serde_json::Value::Null);
+
+    unsafe { bc_client_free(client) };
+}
+
 /// The `get` envelope carries the template half (one-tree design §3.4, plan
 /// 3 design decision 3): keys are added, never changed. A template-only node
 /// is the null triple plus `template`; a valued node with a template has
