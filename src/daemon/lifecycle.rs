@@ -144,6 +144,15 @@ mod tests {
     }
 
     #[test]
+    fn reparent_during_startup_triggers_exit_when_armed() {
+        // The ppid captured before startup is the real parent; by the time the
+        // watch is armed the parent is gone and we already sit under pid 1.
+        assert!(should_exit_on_reparent(4321, 1));
+        // The old late capture saw 1 == 1 and never fired.
+        assert!(!should_exit_on_reparent(1, 1));
+    }
+
+    #[test]
     fn wait_decision_last_valid_attempt_still_sleeps() {
         // attempt == max_attempts - 1 is the last valid slot; still returns Sleep.
         let d = next_wait_decision(7, 8, 500);

@@ -7,6 +7,9 @@ use std::process::ExitCode;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) -> ExitCode {
+    // Captured before any startup work: a parent that dies during startup must
+    // still be noticed, and once we are re-parented getppid() no longer names it.
+    let parent_pid = unsafe { libc::getppid() };
     let log_path = config.resolve_log_path();
 
     // Ensure log directory exists.
@@ -117,7 +120,7 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
         // Tie our lifetime to the spawning process when asked (tests). Survives a
         // SIGKILL of the parent, where Drop-based cleanup in the spawner cannot run.
         if exit_with_parent {
-            spawn_parent_death_watch(cancel.clone());
+            spawn_parent_death_watch(cancel.clone(), parent_pid);
         }
 
         let cancel_for_self_watch = cancel.clone();
@@ -225,17 +228,16 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
 }
 
 /// Cancel `cancel` when this daemon's parent process dies, detected via
-/// re-parenting: `getppid()` changes from the value captured at startup (the
+/// re-parenting: `getppid()` changes from `initial_ppid`, captured at the top of
+/// `run_daemon` (so a parent that died mid-startup is caught at once; the
 /// kernel re-parents orphans to launchd/init). Backs `--exit-with-parent` so a
 /// test-spawned daemon does not leak when its spawner is SIGKILLed without
 /// running cleanup — the cause of the 48-day orphaned-daemon pile-up that bloated
 /// `fseventsd`. Polls rather than using a signal so it is portable (macOS has no
 /// `PR_SET_PDEATHSIG`).
-fn spawn_parent_death_watch(cancel: tokio_util::sync::CancellationToken) {
-    let initial_ppid = unsafe { libc::getppid() };
+fn spawn_parent_death_watch(cancel: tokio_util::sync::CancellationToken, initial_ppid: i32) {
     std::thread::spawn(move || {
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
             let current_ppid = unsafe { libc::getppid() };
             if crate::daemon::lifecycle::should_exit_on_reparent(initial_ppid, current_ppid) {
                 tracing::info!(
@@ -244,6 +246,7 @@ fn spawn_parent_death_watch(cancel: tokio_util::sync::CancellationToken) {
                 cancel.cancel();
                 break;
             }
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
     });
 }
