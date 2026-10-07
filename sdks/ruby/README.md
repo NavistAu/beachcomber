@@ -46,7 +46,7 @@ Opens a fresh socket connection for each call. Simple and stateless.
 | `get_with_flags(key, path: nil, force: false, wait: false)` | Read with protocol flags. Returns a `Result`. |
 | `refresh(key, path: nil)` | Force recomputation. Returns `nil`. |
 | `hello` | Handshake. Returns a `HelloInfo`. |
-| `put(key, data = nil, ttl: nil, path: nil)` | Write a value into the cache. Returns `nil`. |
+| `put(key, data, ttl: nil, path: nil)` | Write a value into the cache. Returns `nil`. |
 | `introspect(subject, duration_secs: nil)` | Inspect a daemon subsystem. Returns an `IntrospectResponse`. |
 | `watch(key, cwd:, env: nil)` | Subscribe to a key's resolved value. Returns a `WatchStream` (Enumerable). |
 | `status` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
@@ -86,7 +86,7 @@ end
 | `get_with_flags(key, path: nil, force: false, wait: false)` | Read with protocol flags. |
 | `refresh(key, path: nil)` | Force recomputation. |
 | `hello` | Handshake. Returns a `HelloInfo`. |
-| `put(key, data = nil, ttl: nil, path: nil)` | Write a value into the cache. |
+| `put(key, data, ttl: nil, path: nil)` | Write a value into the cache. |
 | `introspect(subject, duration_secs: nil)` | Inspect a daemon subsystem. Returns an `IntrospectResponse`. |
 | `status` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
 | `close` | Close the connection (called automatically by `Client#session`). |

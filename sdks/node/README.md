@@ -76,9 +76,9 @@ Source (a static namespace, a facet, an unknown name, a field no Source
 owns) rejects with `nothing to refresh: <key> has no sources`. Works over
 both transports — see "Transports and their limits" below.
 
-#### `client.put(key, data?, opts?)` / `client.putNull(key, path?)`
+#### `client.put(key, data, opts?)` / `client.putNull(key, path?)`
 
-Store data as static data, or clear a node's static records with `putNull` —
+Store data as static data (`data` is required; `put(key, null)` removes the node), or clear a node's static records with `putNull` —
 the entry itself is dropped once no records, static or provider-produced,
 remain at it.
 

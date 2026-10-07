@@ -331,8 +331,8 @@ export class Session {
   }
 
   /** Store data in the cache under the given key. */
-  async put(key: string, data?: unknown, opts?: { ttl?: string; path?: string }): Promise<void> {
-    const jsonData = JSON.stringify(data ?? {});
+  async put(key: string, data: unknown, opts?: { ttl?: string; path?: string }): Promise<void> {
+    const jsonData = JSON.stringify(data);
     unwrap(await this.tp.sessionPut(this.handle, key, jsonData, opts?.ttl, opts?.path));
   }
 
@@ -464,8 +464,8 @@ export class Client {
    * @param data  Object payload to store.
    * @param opts  Optional ttl string and path.
    */
-  async put(key: string, data?: unknown, opts?: { ttl?: string; path?: string }): Promise<void> {
-    const jsonData = JSON.stringify(data ?? {});
+  async put(key: string, data: unknown, opts?: { ttl?: string; path?: string }): Promise<void> {
+    const jsonData = JSON.stringify(data);
     unwrap(await this.tp.put(this.handle, key, jsonData, opts?.ttl, opts?.path));
   }
 

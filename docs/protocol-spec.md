@@ -305,15 +305,12 @@ itself be a facet address (`<provider>:<facet>`; invalid facet syntax is
 The write replaces whatever a put left at the addressed node; `data: null`
 removes it.
 
-There is no ownership. A put over a record a provider's Source produces is
-accepted and wins at that directory; the Source keeps refreshing its own
-layer beneath it, and removing the put shows that layer at once.
+A put replaces the node at that directory, hiding Source and seed values.
+The Source keeps refreshing its own layer beneath it, and removing the put
+shows that layer at once.
 
 An object key in `data` may not contain a `.`: it would name one record and
 address another. The node part of `key` is capped at ten segments.
-
-A put acts on **static records only** — it never removes a record a Source
-produces.
 
 **Request (set):**
 ```json

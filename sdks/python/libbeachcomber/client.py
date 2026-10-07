@@ -327,7 +327,7 @@ class Client:
     def put(
         self,
         key: str,
-        data: Optional[Any] = None,
+        data: Any,
         ttl: Optional[str] = None,
         path: Optional[str] = None,
     ) -> None:
@@ -566,7 +566,7 @@ class Session:
     def put(
         self,
         key: str,
-        data: Optional[Any] = None,
+        data: Any,
         ttl: Optional[str] = None,
         path: Optional[str] = None,
     ) -> None:

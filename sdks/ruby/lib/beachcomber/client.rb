@@ -187,7 +187,7 @@ module Beachcomber
     # @param ttl [Numeric, String, nil] time-to-live
     # @param path [String, nil]
     # @return [nil]
-    def put(key, data = nil, ttl: nil, path: nil)
+    def put(key, data, ttl: nil, path: nil)
       Beachcomber::FFI.call!(:bc_session_put, @handle, key, JSON.generate(data), ttl&.to_s, path)
       nil
     end
@@ -312,7 +312,7 @@ module Beachcomber
     # @param ttl [Numeric, String, nil] time-to-live (e.g. "60s")
     # @param path [String, nil]
     # @return [nil]
-    def put(key, data = nil, ttl: nil, path: nil)
+    def put(key, data, ttl: nil, path: nil)
       if data.nil?
         Beachcomber::FFI.call!(:bc_put_null, @handle, key, path)
       else

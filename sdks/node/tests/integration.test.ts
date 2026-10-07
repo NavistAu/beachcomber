@@ -53,6 +53,13 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     assert.equal(result.template, undefined);
   });
 
+  it('put(key, null) removes the node', async () => {
+    await client.put('itest_putnull', { x: 1 }, { path: '/tmp' });
+    await client.put('itest_putnull', null, { path: '/tmp' });
+    const result = await client.get('itest_putnull.x', '/tmp');
+    assert.equal(result.isMiss, true);
+  });
+
   // The template half (design §3.4): get returns both halves, unrendered.
   it('get on a template-only node is neither a hit nor a miss', async () => {
     await client.put('itest_tpl1:template', { t: '{{ 1 }}' });
