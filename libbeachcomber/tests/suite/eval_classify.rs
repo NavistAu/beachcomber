@@ -25,7 +25,7 @@ fn classify_no_tags_is_template() {
     assert_eq!(classify("  git.branch  "), Form::Template);
 
     assert_eq!(single_tag_expression("hello"), None);
-    assert_eq!(discover_refs("env.A or cache.git.branch"), vec![]);
+    assert_eq!(discover_refs("env.A or comb.git.branch"), vec![]);
 }
 
 #[test]
@@ -188,11 +188,11 @@ fn discover_refs_template_with_statement_tag() {
 
     // All four ref kinds are classified the same way in a template as in an
     // expression, and `cwd` / bare names are ignored.
-    let refs = refs_set("{% if env.A %}{{ cache.c.z }}{{ cache.p }}{{ cwd }}{{ bare }}{% endif %}");
+    let refs = refs_set("{% if env.A %}{{ comb.c.z }}{{ comb.p }}{{ cwd }}{{ bare }}{% endif %}");
     let expected: HashSet<Ref> = [
         Ref::Env("A".into()),
-        Ref::CacheField("c".into(), "z".into()),
-        Ref::CacheProvider("p".into()),
+        Ref::CombField("c".into(), "z".into()),
+        Ref::CombProvider("p".into()),
     ]
     .into_iter()
     .collect();
@@ -210,13 +210,13 @@ fn discover_refs_order_is_deterministic() {
     ];
     assert_eq!(discover_refs("{{ a.b or c.d or e.f }}"), expected);
 
-    // Variants sort in declaration order: Env < CacheField < CacheProvider < Resolved.
+    // Variants sort in declaration order: Env < CombField < CombProvider < Resolved.
     assert_eq!(
-        discover_refs("{{ z.f or cache.p or cache.c.z or env.A }}"),
+        discover_refs("{{ z.f or comb.p or comb.c.z or env.A }}"),
         vec![
             Ref::Env("A".into()),
-            Ref::CacheField("c".into(), "z".into()),
-            Ref::CacheProvider("p".into()),
+            Ref::CombField("c".into(), "z".into()),
+            Ref::CombProvider("p".into()),
             Ref::Resolved("z".into(), "f".into()),
         ]
     );
@@ -232,8 +232,8 @@ fn discover_refs_uncompilable_template_yields_no_refs() {
 fn discover_refs_keeps_every_segment_of_a_resolved_ref() {
     // A ref names a node at any depth, never the group above it: `a.b` and
     // `a.b.c` are two addresses, so they are two refs. Only `env.*` and
-    // `cache.*` cut at a fixed depth — `env.A.B` is the variable `A` with
-    // attribute navigation into it, and `cache.P.F.G` is the cached field
+    // `comb.*` cut at a fixed depth — `env.A.B` is the variable `A` with
+    // attribute navigation into it, and `comb.P.F.G` is the cached field
     // `P.F` — so those collapse.
     assert_eq!(
         discover_refs("{{ a.b }}{{ a.b.c }}"),
@@ -247,13 +247,32 @@ fn discover_refs_keeps_every_segment_of_a_resolved_ref() {
         vec![Ref::Env("A".into())]
     );
     assert_eq!(
-        discover_refs("{{ cache.p.f }}{{ cache.p.f.g }}"),
-        vec![Ref::CacheField("p".into(), "f".into())]
+        discover_refs("{{ comb.p.f }}{{ comb.p.f.g }}"),
+        vec![Ref::CombField("p".into(), "f".into())]
     );
     // And the same ref twice is one ref.
     assert_eq!(
         discover_refs("{{ a.b.c }}{{ a.b.c }}"),
         vec![Ref::Resolved("a".into(), "b.c".into())]
+    );
+}
+
+#[test]
+fn comb_names_classify_as_daemon_reads() {
+    assert_eq!(
+        discover_refs("{{ comb.p.f }}{{ comb.q }}"),
+        vec![
+            Ref::CombField("p".into(), "f".into()),
+            Ref::CombProvider("q".into()),
+        ]
+    );
+}
+
+#[test]
+fn cache_is_an_ordinary_provider_name() {
+    assert_eq!(
+        discover_refs("{{ cache.x }}"),
+        vec![Ref::Resolved("cache".into(), "x".into())]
     );
 }
 

@@ -61,7 +61,7 @@ impl Source for TerraformState {
         // Read from .terraform/environment file only. $TF_WORKSPACE is a
         // per-shell override rendered client-side by the workspace template
         // in defaults/terraform.toml:
-        //   workspace = "{{ env.TF_WORKSPACE or cache.terraform.workspace }}"
+        //   workspace = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}"
         let workspace = read_workspace_file(&tf_dir);
 
         let mut result = SourceResult::new();
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn terraform_workspace_field_present() {
         // Confirms that the daemon field is named 'workspace'.
-        // This is the field the virtual cascade 'workspace = "env.TF_WORKSPACE or cache.terraform.workspace"' references.
+        // This is the field the virtual cascade 'workspace = "env.TF_WORKSPACE or comb.terraform.workspace"' references.
         let dir = make_tf_root(Some("staging"));
         let sources = TerraformProvider.sources();
         let result = sources[0].execute(Some(dir.path().to_str().unwrap()));

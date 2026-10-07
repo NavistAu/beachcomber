@@ -6,7 +6,7 @@
 -- own freshly-spawned daemon on a private socket (tests/conformance/
 -- README.md, "Isolation": fixtures may reuse provider keys such as
 -- `myappcache` across files, so a shared daemon leaks cache state between
--- them — see e.g. resolve/cascade_falls_through_to_cache.json and
+-- them — see e.g. resolve/cascade_falls_through_to_comb.json and
 -- resolve/cascade_miss_yields_empty_string.json, which both `put` the same
 -- key with different values and would otherwise observe each other's
 -- writes depending on run order).

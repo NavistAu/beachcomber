@@ -277,10 +277,10 @@ theme = "{{ env.SCANLINE_THEME or 'dark' }}"
 
 [providers."scanline:template".widgets]
 foo = "{{ env.SCANLINE_FOO }}"
-bar = "{{ cache.git.branch | truncate(12) }}"
+bar = "{{ comb.git.branch | truncate(12) }}"
 ```
 
-**Addressing.** Every node is addressable at any depth, templated or cached alike: `comb g scanline.widgets.foo` renders one leaf, `comb g scanline.widgets` renders the group as an object, and `comb g scanline` returns the whole namespace — its cached fields deep-merged with its rendered template tree. Where a template sits at the same path as a cached field, the template wins on read (`defaults/terraform.toml` does this to `terraform.workspace`, reading the cached value back through `cache.terraform.workspace`). The raw template text is read through the facet: `comb g scanline:template.widgets.foo` prints `{{ env.SCANLINE_FOO }}`. An address can run past a template into what it renders — with `stats = "{{ {'cpu': 40} }}"`, `comb g scanline.stats.cpu` is `40`.
+**Addressing.** Every node is addressable at any depth, templated or cached alike: `comb g scanline.widgets.foo` renders one leaf, `comb g scanline.widgets` renders the group as an object, and `comb g scanline` returns the whole namespace — its cached fields deep-merged with its rendered template tree. Where a template sits at the same path as a cached field, the template wins on read (`defaults/terraform.toml` does this to `terraform.workspace`, reading the cached value back through `comb.terraform.workspace`). The raw template text is read through the facet: `comb g scanline:template.widgets.foo` prints `{{ env.SCANLINE_FOO }}`. An address can run past a template into what it renders — with `stats = "{{ {'cpu': 40} }}"`, `comb g scanline.stats.cpu` is `40`.
 
 **Expressions.** One rule, everywhere a template is evaluated:
 
@@ -301,7 +301,7 @@ Inside an expression, `cache.<provider>.<field>` is the raw cached value; `<prov
 ```toml
 # ~/.config/beachcomber/conf.d/10-mine.toml
 [providers."python:template"]
-version = "{{ env.MY_PY or cache.python.venv_version }}"   # venv_name still comes from defaults/python.toml
+version = "{{ env.MY_PY or comb.python.venv_version }}"   # venv_name still comes from defaults/python.toml
 ```
 
 `comb check config` reports the directory, its file count and version, and warns about files in it that `comb` did not write. A directory the daemon cannot write is a refusal to start.

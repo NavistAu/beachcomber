@@ -273,7 +273,7 @@ fn comb_get_json_and_bc_resolve_answer_identically() {
         &daemon,
         &cwd,
         "scanline:template",
-        r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":{"foo":"{{ env.SCANLINE_FOO }}","bar":"{{ cache.hostname.name | truncate(3) }}"},"stats":"{{ {\"cpu\": 40, \"mem\": 12} }}","list":"{{ [\"a\",\"b\"] }}"}"#,
+        r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":{"foo":"{{ env.SCANLINE_FOO }}","bar":"{{ comb.hostname.name | truncate(3) }}"},"stats":"{{ {\"cpu\": 40, \"mem\": 12} }}","list":"{{ [\"a\",\"b\"] }}"}"#,
     );
     cli_put(&daemon, &cwd, "scanline", r#"{"lit":1}"#);
     if git {

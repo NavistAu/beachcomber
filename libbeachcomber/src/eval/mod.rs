@@ -121,7 +121,7 @@ fn analyze(src: &str) -> Analysis<'_> {
 /// run, so **every discovery path in this crate returns its refs sorted** —
 /// this function and the `discover_expression_refs` it delegates to. That is
 /// for reproducibility alone: nothing downstream depends on the order.
-/// [`crate::resolve`] in particular binds a `cache.P` / `cache.P.F` collision
+/// [`crate::resolve`] in particular binds a `comb.P` / `comb.P.F` collision
 /// the same way whichever it binds first.
 pub fn discover_refs(src: &str) -> Vec<Ref> {
     match analyze(src) {

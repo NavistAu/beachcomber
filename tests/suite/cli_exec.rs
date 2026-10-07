@@ -49,7 +49,7 @@ fn get_of_template_with_exec_prints_command_output() {
 /// An exec()-backed template runs its command exactly once per `comb get`,
 /// whatever else its cascade reaches for.
 ///
-/// `demo.shout`'s expression is `exec(<script>) or cache.otherprov.otherfield`:
+/// `demo.shout`'s expression is `exec(<script>) or comb.otherprov.otherfield`:
 /// the script always prints nothing (falsy), so the cascade always falls
 /// through to the daemon-backed term. The script's only side effect is
 /// appending one line to `counter`; counting `counter`'s lines after one
@@ -76,7 +76,7 @@ fn get_of_exec_or_cache_cascade_spawns_command_exactly_once() {
             "put",
             "demo:template.shout",
             &format!(
-                "\"{{{{ exec(\\\"{}\\\") or cache.otherprov.otherfield }}}}\"",
+                "\"{{{{ exec(\\\"{}\\\") or comb.otherprov.otherfield }}}}\"",
                 script.display()
             ),
         ])

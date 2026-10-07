@@ -182,7 +182,7 @@ fn a_cascade_takes_the_first_non_empty_term() {
     put(
         &d,
         &cwd,
-        &["t:template.v", r#""{{ env.TF_X or cache.seed.v }}""#],
+        &["t:template.v", r#""{{ env.TF_X or comb.seed.v }}""#],
     );
     put(&d, &cwd, &["seed", r#"{"v":"staging"}"#]);
 
@@ -195,7 +195,7 @@ fn a_cascade_falls_through_to_the_cache_when_env_is_empty() {
     put(
         &d,
         &cwd,
-        &["t:template.v", r#""{{ env.TF_X or cache.seed.v }}""#],
+        &["t:template.v", r#""{{ env.TF_X or comb.seed.v }}""#],
     );
     put(&d, &cwd, &["seed", r#"{"v":"staging"}"#]);
 
@@ -330,7 +330,7 @@ fn aws_profile_aws_vault_wins_when_aws_profile_unset() {
 // ── aws.region ────────────────────────────────────────────────────────────────
 
 /// A daemon whose `~/.aws/config` holds the profiles
-/// `cache.aws_profiles[...]` indexes: the `aws_profiles` provider reads it.
+/// `comb.aws_profiles[...]` indexes: the `aws_profiles` provider reads it.
 fn aws_daemon() -> (TestDaemon, PathBuf) {
     daemon_with_home(&[(
         ".aws/config",

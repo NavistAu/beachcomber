@@ -27,23 +27,23 @@ use std::collections::HashSet;
 ///
 /// The reference kinds of canon `field_resolution.md`:
 /// - `env.X` → `Env(X)`
-/// - `cache.P.F` → `CacheField(P, F)` (the raw cached value, never a template)
-/// - `cache.P` → `CacheProvider(P)` (the whole provider object)
-/// - `P.rest…` (P ∉ {env, cache}) → `Resolved(P, "rest…")` (the node at that
+/// - `comb.P.F` → `CombField(P, F)` (the raw cached value, never a template)
+/// - `comb.P` → `CombProvider(P)` (the whole provider object)
+/// - `P.rest…` (P ∉ {env, comb}) → `Resolved(P, "rest…")` (the node at that
 ///   address, resolved — rendered if a template stands there)
 ///
-/// `Ord` is derived: variants sort in declaration order (Env < CacheField <
-/// CacheProvider < Resolved), then field-wise. Discovery runs off minijinja's
+/// `Ord` is derived: variants sort in declaration order (Env < CombField <
+/// CombProvider < Resolved), then field-wise. Discovery runs off minijinja's
 /// `HashSet` of undeclared variables, so sorting is what makes ref order
 /// reproducible across runs — see `crate::eval::discover_refs`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Ref {
     /// `env.X` — the calling shell's environment variable X.
     Env(String),
-    /// `cache.P.F` — the raw cached field value, bypassing any template.
-    CacheField(String, String),
-    /// `cache.P` — the whole provider object from the cache.
-    CacheProvider(String),
+    /// `comb.P.F` — the raw cached field value, bypassing any template.
+    CombField(String, String),
+    /// `comb.P` — the whole provider object from the cache.
+    CombProvider(String),
     /// `P.rest…` — the resolved node at that address. The second component is
     /// the whole remaining address (`"widgets.b"`), not one segment: a ref
     /// names a node at any depth, never the group above it.
@@ -55,14 +55,14 @@ pub enum Ref {
 /// Classify one dotted name from minijinja's undeclared-variable analysis.
 ///
 /// - `env.X` → `Ref::Env(X)`
-/// - `cache.P.F` → `Ref::CacheField(P, F)`
-/// - `cache.P` → `Ref::CacheProvider(P)`
+/// - `comb.P.F` → `Ref::CombField(P, F)`
+/// - `comb.P` → `Ref::CombProvider(P)`
 /// - `cwd` → `None` (path-expression variable)
-/// - `P.rest…` (P ∉ {env, cache, cwd}) → `Ref::Resolved(P, "rest…")`
+/// - `P.rest…` (P ∉ {env, comb, cwd}) → `Ref::Resolved(P, "rest…")`
 /// - bare single name → `None`
 ///
-/// For `env.*` and `cache.*`, segments beyond the second (third for
-/// `cache.*`) are MiniJinja attribute navigation into the fetched value, not
+/// For `env.*` and `comb.*`, segments beyond the second (third for
+/// `comb.*`) are MiniJinja attribute navigation into the fetched value, not
 /// part of the ref. For every other name the whole remainder is the ref:
 /// `scanline.widgets.b` names that leaf, and [`crate::resolve`] fetches it
 /// — never the group above it.
@@ -79,9 +79,9 @@ pub(crate) fn classify_dotted(name: &str) -> Option<Ref> {
 
     match first {
         "env" => Some(Ref::Env(second.to_string())),
-        "cache" => Some(match third {
-            Some(field) => Ref::CacheField(second.to_string(), field.to_string()),
-            None => Ref::CacheProvider(second.to_string()),
+        "comb" => Some(match third {
+            Some(field) => Ref::CombField(second.to_string(), field.to_string()),
+            None => Ref::CombProvider(second.to_string()),
         }),
         // Path-expression variable, never a ref.
         "cwd" => None,
@@ -392,9 +392,9 @@ mod tests {
 
     #[test]
     fn exec_undefined_arg_names_its_1_based_position() {
-        // `cache.missing.value` is bound to nothing, so it evaluates as
+        // `comb.missing.value` is bound to nothing, so it evaluates as
         // chainable undefined — landing as exec()'s 2nd positional (1-based).
-        let err = eval_expr(r#"exec("/bin/echo", cache.missing.value)"#, true).unwrap_err();
+        let err = eval_expr(r#"exec("/bin/echo", comb.missing.value)"#, true).unwrap_err();
         assert!(err.contains("argument 2"), "unexpected error: {err}");
     }
 

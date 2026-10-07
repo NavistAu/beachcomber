@@ -1734,12 +1734,12 @@ mod tests {
                 ),
             ),
             (
-                r#"{"ok":true,"data":"default","age_ms":812,"stale":false,"template":"{{ env.TF_WORKSPACE or cache.terraform.workspace }}"}"#,
+                r#"{"ok":true,"data":"default","age_ms":812,"stale":false,"template":"{{ env.TF_WORKSPACE or comb.terraform.workspace }}"}"#,
                 hit(
                     json!("default"),
                     812,
                     false,
-                    Some(json!("{{ env.TF_WORKSPACE or cache.terraform.workspace }}")),
+                    Some(json!("{{ env.TF_WORKSPACE or comb.terraform.workspace }}")),
                 ),
             ),
             (
@@ -1829,11 +1829,11 @@ mod tests {
         );
         assert_eq!(
             node(
-                r#"{"ok":true,"data":"default","age_ms":812,"stale":false,"template":"{{ env.TF_WORKSPACE or cache.terraform.workspace }}"}"#
+                r#"{"ok":true,"data":"default","age_ms":812,"stale":false,"template":"{{ env.TF_WORKSPACE or comb.terraform.workspace }}"}"#
             ),
             Got {
                 data: Some(json!("default")),
-                template: Some(json!("{{ env.TF_WORKSPACE or cache.terraform.workspace }}")),
+                template: Some(json!("{{ env.TF_WORKSPACE or comb.terraform.workspace }}")),
                 rest: None,
                 age_ms: Some(812),
                 stale: Some(false),

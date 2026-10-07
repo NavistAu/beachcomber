@@ -1,4 +1,4 @@
-//! Kinded refs: `discover_refs` tells `env.*`, `cache.P.F`, `cache.P` and a
+//! Kinded refs: `discover_refs` tells `env.*`, `comb.P.F`, `comb.P` and a
 //! resolved `P.F` apart, and the resolver binds each kind its own way. The
 //! discovery half is pure library; the binding half runs `comb get` against a
 //! test daemon with the templates `put` to `<p>:template`.
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 #[test]
 fn discovers_env_cache_and_resolved_refs() {
     let refs = discover_refs(
-        r#"{{ env.AWS_REGION or cache.aws_profiles[env.AWS_PROFILE or "default"].region or aws.profile }}"#,
+        r#"{{ env.AWS_REGION or comb.aws_profiles[env.AWS_PROFILE or "default"].region or aws.profile }}"#,
     );
     assert!(
         refs.contains(&Ref::Env("AWS_REGION".into())),
@@ -24,8 +24,8 @@ fn discovers_env_cache_and_resolved_refs() {
         "must discover Env(AWS_PROFILE); got: {refs:?}"
     );
     assert!(
-        refs.contains(&Ref::CacheProvider("aws_profiles".into())),
-        "must discover CacheProvider(aws_profiles); got: {refs:?}"
+        refs.contains(&Ref::CombProvider("aws_profiles".into())),
+        "must discover CombProvider(aws_profiles); got: {refs:?}"
     );
     assert!(
         refs.contains(&Ref::Resolved("aws".into(), "profile".into())),
@@ -35,32 +35,32 @@ fn discovers_env_cache_and_resolved_refs() {
 
 #[test]
 fn discovers_cache_field_ref() {
-    let refs = discover_refs("{{ cache.mise.python or cache.python.venv_version }}");
+    let refs = discover_refs("{{ comb.mise.python or comb.python.venv_version }}");
     assert!(
-        refs.contains(&Ref::CacheField("mise".into(), "python".into())),
-        "must discover CacheField(mise, python); got: {refs:?}"
+        refs.contains(&Ref::CombField("mise".into(), "python".into())),
+        "must discover CombField(mise, python); got: {refs:?}"
     );
     assert!(
-        refs.contains(&Ref::CacheField("python".into(), "venv_version".into())),
-        "must discover CacheField(python, venv_version); got: {refs:?}"
+        refs.contains(&Ref::CombField("python".into(), "venv_version".into())),
+        "must discover CombField(python, venv_version); got: {refs:?}"
     );
 }
 
 #[test]
 fn discovers_cache_provider_without_field() {
-    // "cache.aws_profiles" (two segments only) → CacheProvider
-    let refs = discover_refs("{{ cache.aws_profiles }}");
+    // "comb.aws_profiles" (two segments only) → CombProvider
+    let refs = discover_refs("{{ comb.aws_profiles }}");
     assert!(
-        refs.contains(&Ref::CacheProvider("aws_profiles".into())),
-        "must discover CacheProvider(aws_profiles); got: {refs:?}"
+        refs.contains(&Ref::CombProvider("aws_profiles".into())),
+        "must discover CombProvider(aws_profiles); got: {refs:?}"
     );
-    // Must NOT produce a CacheField entry for it
+    // Must NOT produce a CombField entry for it
     let has_field = refs
         .iter()
-        .any(|r| matches!(r, Ref::CacheField(p, _) if p == "aws_profiles"));
+        .any(|r| matches!(r, Ref::CombField(p, _) if p == "aws_profiles"));
     assert!(
         !has_field,
-        "must not produce CacheField for two-segment cache ref; got: {refs:?}"
+        "must not produce CombField for two-segment cache ref; got: {refs:?}"
     );
 }
 
@@ -129,7 +129,7 @@ fn resolved_ref_renders_the_template_behind_the_key() {
     assert_eq!(get(&d, &cwd, &[("TF_WORKSPACE", "myws")], "t.v"), "myws");
 }
 
-/// `cache.P` and `cache.P.F` in one expression bind the same provider: the
+/// `comb.P` and `comb.P.F` in one expression bind the same provider: the
 /// whole object stays indexable and the field read through it.
 #[test]
 fn cache_provider_and_cache_field_same_provider_both_visible() {
@@ -144,7 +144,7 @@ fn cache_provider_and_cache_field_same_provider_both_visible() {
         &d,
         &cwd,
         "t:template",
-        r#"{"project":"{{ cache.cfgs[cache.cfgs.active].project }}","account":"{{ cache.cfgs[cache.cfgs.active].account }}"}"#,
+        r#"{"project":"{{ comb.cfgs[comb.cfgs.active].project }}","account":"{{ comb.cfgs[comb.cfgs.active].account }}"}"#,
     );
 
     assert_eq!(get(&d, &cwd, &[], "t.project"), "proj-default");

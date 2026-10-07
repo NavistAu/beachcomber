@@ -492,7 +492,7 @@ aws_profiles.staging  → Object{ region: "us-west-2" }
 [providers."aws:template"]
 profile = "{{ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or 'default' }}"
 region  = "{{ env.AWS_REGION or env.AWS_DEFAULT_REGION
-              or cache.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT
+              or comb.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT
                                      or env.AWS_DEFAULT_PROFILE or 'default' ].region }}"
 ```
 
@@ -509,10 +509,10 @@ This matters when a template needs to override a same-named cached value — a t
 ```
 # defaults/terraform.toml: the template at terraform.workspace overrides the cached workspace without a cycle
 [providers."terraform:template"]
-workspace = "{{ env.TF_WORKSPACE or cache.terraform.workspace }}"
+workspace = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}"
 ```
 
-`cache.terraform.workspace` is the stored value; `terraform.workspace` is the resolved field. No self-reference, no rename needed.
+`comb.terraform.workspace` is the stored value; `terraform.workspace` is the resolved field. No self-reference, no rename needed.
 
 ---
 

@@ -464,15 +464,15 @@ fn get_of_a_template_written_with_tags_renders_it() {
 fn eval_nested_virtual_dependency_is_fetched() {
     let d = TestDaemon::spawn();
 
-    // `x.a` is a template naming `b.y`, itself a template naming `cache.d.w`:
+    // `x.a` is a template naming `b.y`, itself a template naming `comb.d.w`:
     // the resolver must reach through two levels of stored template and
-    // actually fetch `d.w`. `cache.c.z` names no such provider and is falsy.
+    // actually fetch `d.w`. `comb.c.z` names no such provider and is falsy.
     d.comb(Path::new("/"))
-        .args(["put", "x:template.a", r#""{{ b.y or cache.c.z }}""#])
+        .args(["put", "x:template.a", r#""{{ b.y or comb.c.z }}""#])
         .assert()
         .success();
     d.comb(Path::new("/"))
-        .args(["put", "b:template.y", r#""{{ cache.d.w }}""#])
+        .args(["put", "b:template.y", r#""{{ comb.d.w }}""#])
         .assert()
         .success();
     d.comb(Path::new("/"))

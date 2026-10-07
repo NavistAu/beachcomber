@@ -1,5 +1,5 @@
 [providers."python:template"]
 # The interpreter version in effect: an explicit selector, then a tool manager, then the venv.
-version = "{{ env.PYENV_VERSION or env.MISE_PYTHON_VERSION or cache.mise.python or cache.asdf.python or cache.python.venv_version }}"
+version = "{{ env.PYENV_VERSION or env.MISE_PYTHON_VERSION or comb.mise.python or comb.asdf.python or comb.python.venv_version }}"
 # The active virtualenv's name: a local .venv, else the basename of $VIRTUAL_ENV.
-venv_name = "{{ cache.python.local_venv_name or (env.VIRTUAL_ENV | basename) }}"
+venv_name = "{{ comb.python.local_venv_name or (env.VIRTUAL_ENV | basename) }}"

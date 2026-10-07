@@ -1649,7 +1649,7 @@ async fn cli_carries_the_cwd_for_a_templates_dependency_fetch() {
         // Both the template and the value it reads live at the project; the
         // read is from a directory beneath it.
         comb(&f, &project, &cfg)
-            .args(["put", "myvirt:template.w", r#""{{ cache.seed.v }}""#])
+            .args(["put", "myvirt:template.w", r#""{{ comb.seed.v }}""#])
             .assert()
             .success();
         comb(&f, &project, &cfg)

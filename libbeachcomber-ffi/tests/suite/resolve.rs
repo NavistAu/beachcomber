@@ -207,7 +207,7 @@ fn bc_resolve_cache_ref_template() {
     put(
         client,
         "myprov:template",
-        r#"{"myfield":"{{ cache.otherprov.otherfield }}"}"#,
+        r#"{"myfield":"{{ comb.otherprov.otherfield }}"}"#,
         None,
     );
 
@@ -217,7 +217,7 @@ fn bc_resolve_cache_ref_template() {
     unsafe { bc_client_free(client) };
 }
 
-/// A cascade `env.X or cache.p.f` takes the env term when present and falls
+/// A cascade `env.X or comb.p.f` takes the env term when present and falls
 /// through when absent; a total miss yields `""`, not an error and not a
 /// miss (canon invariant 9).
 #[test]
@@ -227,7 +227,7 @@ fn bc_resolve_env_or_cache_cascade_falls_through_to_empty_string_on_miss() {
     put(
         client,
         "myapp:template",
-        r#"{"workspace":"{{ env.MYAPP_ENV or cache.myappcache.workspace }}"}"#,
+        r#"{"workspace":"{{ env.MYAPP_ENV or comb.myappcache.workspace }}"}"#,
         None,
     );
 
@@ -246,7 +246,7 @@ fn bc_resolve_env_or_cache_cascade_falls_through_to_empty_string_on_miss() {
 }
 
 /// A template naming another provider's templated field follows it: `a.x`
-/// references `b.y`, itself a template over `cache.d.w`. `cache.c.z` names no
+/// references `b.y`, itself a template over `comb.d.w`. `comb.c.z` names no
 /// registered provider — a missing ref, falsy — and is never reached once
 /// `b.y` is truthy. Both `bc_eval` of `{{ a.x }}` and `bc_resolve` of `a.x`
 /// reach `deep-value`.
@@ -259,10 +259,10 @@ fn nested_template_dependency_is_followed() {
     put(
         client,
         "a:template",
-        r#"{"x":"{{ b.y or cache.c.z }}"}"#,
+        r#"{"x":"{{ b.y or comb.c.z }}"}"#,
         None,
     );
-    put(client, "b:template", r#"{"y":"{{ cache.d.w }}"}"#, None);
+    put(client, "b:template", r#"{"y":"{{ comb.d.w }}"}"#, None);
 
     let v = eval(client, "{{ a.x }}", "/tmp", None);
     assert_eq!(hit(&v), &serde_json::json!("deep-value"));
@@ -289,7 +289,7 @@ fn path_scoped_ref_resolves_at_cwd() {
     put(
         client,
         "myprov:template",
-        r#"{"myfield":"{{ cache.pp.f }}"}"#,
+        r#"{"myfield":"{{ comb.pp.f }}"}"#,
         None,
     );
 
@@ -364,7 +364,7 @@ fn bc_eval_rejected_ref_is_falsy() {
     let v = eval(client, r#"{{ nope.field | default("x") }}"#, "/tmp", None);
     assert_eq!(hit(&v), &serde_json::json!("x"));
 
-    let v = eval(client, "{{ cache.nope.x or 'fb' }}", "/tmp", None);
+    let v = eval(client, "{{ comb.nope.x or 'fb' }}", "/tmp", None);
     assert_eq!(hit(&v), &serde_json::json!("fb"));
 
     unsafe { bc_client_free(client) };
@@ -451,7 +451,7 @@ fn bc_eval_deeply_nested_templates_error_rather_than_crash() {
     let mut leaves: Vec<String> = (0..1999)
         .map(|i| format!(r#""f{i}":"{{{{ chain.f{} }}}}""#, i + 1))
         .collect();
-    leaves.push(r#""f1999":"{{ cache.leaf.v }}""#.to_string());
+    leaves.push(r#""f1999":"{{ comb.leaf.v }}""#.to_string());
     put(
         client,
         "chain:template",

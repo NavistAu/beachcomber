@@ -424,12 +424,12 @@ impl<'a> Resolver<'a> {
     /// would have enclosed it — so `default` and `or` fire on it; a key the
     /// daemon rejects is the same missing ref. An env miss binds `""` (canon
     /// invariant 6), so `or` fires and `default` does not. Where a whole
-    /// `cache.P` and a `cache.P.F` disagree, the whole object wins: it is the
+    /// `comb.P` and a `comb.P.F` disagree, the whole object wins: it is the
     /// authoritative snapshot, whichever ref is bound first.
     fn bind(&mut self, refs: &[Ref]) -> Result<JsonValue, ResolveError> {
         let mut top = Map::new();
         top.insert("env".to_string(), JsonValue::Object(Map::new()));
-        top.insert("cache".to_string(), JsonValue::Object(Map::new()));
+        top.insert("comb".to_string(), JsonValue::Object(Map::new()));
 
         for r in refs {
             match r {
@@ -439,14 +439,14 @@ impl<'a> Resolver<'a> {
                         env.insert(var.clone(), value);
                     }
                 }
-                Ref::CacheField(provider, field) => {
+                Ref::CombField(provider, field) => {
                     let Some(value) = self
                         .fetch_ref(&format!("{provider}.{field}"))?
                         .and_then(|g| g.data)
                     else {
                         continue;
                     };
-                    if let Some(JsonValue::Object(cache)) = top.get_mut("cache") {
+                    if let Some(JsonValue::Object(cache)) = top.get_mut("comb") {
                         let entry = cache
                             .entry(provider.clone())
                             .or_insert_with(|| JsonValue::Object(Map::new()));
@@ -455,11 +455,11 @@ impl<'a> Resolver<'a> {
                         }
                     }
                 }
-                Ref::CacheProvider(provider) => {
+                Ref::CombProvider(provider) => {
                     let Some(value) = self.fetch_ref(provider)?.and_then(|g| g.data) else {
                         continue;
                     };
-                    if let Some(JsonValue::Object(cache)) = top.get_mut("cache") {
+                    if let Some(JsonValue::Object(cache)) = top.get_mut("comb") {
                         match (cache.get_mut(provider), value) {
                             (Some(JsonValue::Object(existing)), JsonValue::Object(whole)) => {
                                 for (k, v) in whole {

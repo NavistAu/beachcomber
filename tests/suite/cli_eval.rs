@@ -128,7 +128,7 @@ fn eval_rejected_ref_is_falsy() {
     let d = TestDaemon::spawn();
 
     d.comb(Path::new("/"))
-        .args(["eval", r#"{{ cache.nope.x or "fb" }}"#])
+        .args(["eval", r#"{{ comb.nope.x or "fb" }}"#])
         .assert()
         .success()
         .stdout(predicates::str::diff("fb"));

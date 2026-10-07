@@ -254,7 +254,7 @@ async fn get_a_cached_field_with_a_template_returns_both_halves() {
     put(
         &mut s,
         "git:template.branch",
-        serde_json::json!("{{ env.GIT_BRANCH or cache.git.branch }}"),
+        serde_json::json!("{{ env.GIT_BRANCH or comb.git.branch }}"),
     )
     .await;
 
@@ -273,7 +273,7 @@ async fn get_a_cached_field_with_a_template_returns_both_halves() {
             "ok": true,
             "data": "main",
             "stale": false,
-            "template": "{{ env.GIT_BRANCH or cache.git.branch }}"
+            "template": "{{ env.GIT_BRANCH or comb.git.branch }}"
         })
     );
 

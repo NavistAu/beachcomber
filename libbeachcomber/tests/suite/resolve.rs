@@ -137,8 +137,8 @@ fn inputs(env: &HashMap<String, String>) -> Inputs<'_> {
 
 const THEME: &str = "{{ env.SCANLINE_THEME or 'dark' }}";
 const FOO: &str = "{{ env.SCANLINE_FOO }}";
-const BAR: &str = "{{ cache.git.branch | truncate(12) }}";
-const WORKSPACE: &str = "{{ env.TF_WORKSPACE or cache.terraform.workspace }}";
+const BAR: &str = "{{ comb.git.branch | truncate(12) }}";
+const WORKSPACE: &str = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}";
 const STATS: &str = "{{ {'cpu': 40, 'mem': 12} }}";
 
 /// The branch `truncate(12)` cuts. The design table writes the truncation as
@@ -241,7 +241,7 @@ fn data_with_no_template_is_returned_as_is() {
 #[test]
 fn a_template_over_data_reads_its_own_cached_value_through_cache() {
     // The cascade's first arm (env.TF_WORKSPACE) is unset, so the second
-    // (cache.terraform.workspace) answers — the very `data` half the same
+    // (comb.terraform.workspace) answers — the very `data` half the same
     // response carried, fetched once.
     let env = spec_env();
     let mut f = spec_fetch();
@@ -319,8 +319,8 @@ fn a_key_two_leaves_share_is_fetched_once_and_reported_once() {
         "scanline",
         Some(CWD),
         tmpl(json!({
-            "a": "{{ cache.git.branch }}",
-            "b": "{{ cache.git.branch | truncate(4) }}",
+            "a": "{{ comb.git.branch }}",
+            "b": "{{ comb.git.branch | truncate(4) }}",
         })),
     )
     .seed("git.branch", Some(CWD), data(json!(BRANCH)));
@@ -367,7 +367,7 @@ fn deps_of_a_template_with_two_refs_list_both_in_fetch_order() {
     f.seed(
         "k.two",
         Some(CWD),
-        tmpl(json!("{{ cache.git.branch }}/{{ terraform.workspace }}")),
+        tmpl(json!("{{ comb.git.branch }}/{{ terraform.workspace }}")),
     );
     let (value, d) = resolve_with_deps("k.two", &inputs(&env), &mut f).unwrap();
     assert_eq!(value, Some(json!(format!("{BRANCH}/default"))));
@@ -842,7 +842,7 @@ fn a_compile_failure_in_one_leaf_fails_the_whole_group_naming_the_leaf() {
 #[test]
 fn an_all_empty_cascade_is_the_empty_string_alone_and_in_a_group() {
     let env = spec_env();
-    let empty = "{{ env.NOPE or cache.nothing.here }}";
+    let empty = "{{ env.NOPE or comb.nothing.here }}";
     let mut f = MapFetch::default();
     f.seed("k.empty", Some(CWD), tmpl(json!(empty))).seed(
         "k",
@@ -864,7 +864,7 @@ fn an_all_empty_cascade_is_the_empty_string_alone_and_in_a_group() {
 
 #[test]
 fn a_whole_provider_object_wins_over_a_disagreeing_cache_field() {
-    // `cache.p` and `cache.p.f` are separate daemon reads and can disagree.
+    // `comb.p` and `comb.p.f` are separate daemon reads and can disagree.
     // The whole object is the authoritative snapshot, and that holds
     // whichever ref is bound first, so the value is the same every run.
     let env = spec_env();
@@ -877,26 +877,26 @@ fn a_whole_provider_object_wins_over_a_disagreeing_cache_field() {
     let i = inputs(&env);
 
     // The field ref alone: nothing to override it, so its own value stands.
-    assert_eq!(eval("{{ cache.p.f }}", &i, &mut f).unwrap(), json!("field"));
+    assert_eq!(eval("{{ comb.p.f }}", &i, &mut f).unwrap(), json!("field"));
     // Both refs, written in either order: the object supplies `f`.
     assert_eq!(
-        eval("{{ cache.p.f or cache.p }}", &i, &mut f).unwrap(),
+        eval("{{ comb.p.f or comb.p }}", &i, &mut f).unwrap(),
         json!("whole")
     );
     assert_eq!(
-        eval("{{ cache.p and cache.p.f }}", &i, &mut f).unwrap(),
+        eval("{{ comb.p and comb.p.f }}", &i, &mut f).unwrap(),
         json!("whole")
     );
     // …and the object itself is not damaged by the field binding.
     assert_eq!(
-        eval("{{ cache.p.f and cache.p }}", &i, &mut f).unwrap(),
+        eval("{{ comb.p.f and comb.p }}", &i, &mut f).unwrap(),
         json!({ "f": "whole" })
     );
 
     // A field the object does not carry is still filled in by its own ref.
     f.seed("p", Some(CWD), data(json!({ "other": 1 })));
     assert_eq!(
-        eval("{{ cache.p.f or cache.p }}", &i, &mut f).unwrap(),
+        eval("{{ comb.p.f or comb.p }}", &i, &mut f).unwrap(),
         json!("field")
     );
 }
@@ -907,7 +907,7 @@ fn a_miss_binds_nothing_so_default_fires_at_any_depth() {
     // to leave the key absent from the context — the value, and the object
     // that would have enclosed it. Binding a miss to JSON null would make
     // every `| default(...)` in the wild silently render empty; pre-creating
-    // an empty `cache.nope` to hold a missed field would make the
+    // an empty `comb.nope` to hold a missed field would make the
     // whole-provider ref *defined* and render `{}`. Chaining through a miss
     // stays undefined, so it is falsy at any depth (canon).
     let env = spec_env();
@@ -916,10 +916,10 @@ fn a_miss_binds_nothing_so_default_fires_at_any_depth() {
     for (src, want) in [
         (r#"{{ probe.missing | default("FB") }}"#, "FB"),
         (r#"[{{ probe.missing | default("FB") }}]"#, "[FB]"),
-        (r#"{{ cache.probe.missing | default("FB") }}"#, "FB"),
-        (r#"{{ cache.probe | default("FB") }}"#, "FB"),
+        (r#"{{ comb.probe.missing | default("FB") }}"#, "FB"),
+        (r#"{{ comb.probe | default("FB") }}"#, "FB"),
         (
-            r#"{{ cache.nope.f }}|{{ cache.nope | default("FB") }}"#,
+            r#"{{ comb.nope.f }}|{{ comb.nope | default("FB") }}"#,
             "|FB",
         ),
         (r#"{{ p.f }}|{{ p | default("FB") }}"#, "|FB"),
@@ -939,7 +939,7 @@ fn a_miss_binds_nothing_so_default_fires_at_any_depth() {
     );
     assert_eq!(
         eval(
-            r#"{{ cache.nope.f }}|{{ cache.nope | default("FB") }}"#,
+            r#"{{ comb.nope.f }}|{{ comb.nope | default("FB") }}"#,
             &i,
             &mut f
         )
@@ -990,11 +990,11 @@ fn the_single_tag_form_keeps_structured_shapes() {
     f.seed("p", Some(CWD), data(json!({ "a": 1, "b": "two" })));
     let i = inputs(&env);
     assert_eq!(
-        eval("{{ cache.p }}", &i, &mut f).unwrap(),
+        eval("{{ comb.p }}", &i, &mut f).unwrap(),
         json!({ "a": 1, "b": "two" })
     );
     assert_eq!(
-        eval("{{ [1, cache.p] }}", &i, &mut f).unwrap(),
+        eval("{{ [1, comb.p] }}", &i, &mut f).unwrap(),
         json!([1, { "a": 1, "b": "two" }])
     );
     assert_eq!(
@@ -1006,7 +1006,7 @@ fn the_single_tag_form_keeps_structured_shapes() {
         json!([2, 1])
     );
     assert!(matches!(
-        eval("p={{ cache.p }}", &i, &mut f).unwrap(),
+        eval("p={{ comb.p }}", &i, &mut f).unwrap(),
         Value::String(_)
     ));
 }
@@ -1021,7 +1021,7 @@ fn a_statement_tag_template_renders_over_a_template_ref_and_a_data_ref() {
     f.seed(
         "git.branch",
         Some(CWD),
-        both(json!("main"), json!("{{ env.BRANCH or cache.git.branch }}")),
+        both(json!("main"), json!("{{ env.BRANCH or comb.git.branch }}")),
     )
     .seed("git.dirty", Some(CWD), data(json!(true)));
 
@@ -1046,7 +1046,7 @@ fn a_fetch_error_stops_the_resolution_where_it_happened() {
         "k",
         Some(CWD),
         // Sorted leaf order puts `a` first; its ref fails, so `b`'s never runs.
-        tmpl(json!({ "a": "{{ boom.x }}", "b": "{{ cache.git.branch }}" })),
+        tmpl(json!({ "a": "{{ boom.x }}", "b": "{{ comb.git.branch }}" })),
     )
     .seed("git.branch", Some(CWD), data(json!(BRANCH)));
     f.fails.push("boom.x".to_string());
@@ -1081,11 +1081,7 @@ fn a_rejected_top_level_key_is_an_error_and_a_rejected_ref_is_falsy() {
 
     let mut f = MapFetch::default();
     f.rejects.push("c.z".to_string());
-    f.seed(
-        "k",
-        Some(CWD),
-        tmpl(json!("{{ cache.c.z or c.z or 'fb' }}")),
-    );
+    f.seed("k", Some(CWD), tmpl(json!("{{ comb.c.z or c.z or 'fb' }}")));
     assert_eq!(resolve("k", &inputs(&env), &mut f), Ok(Some(json!("fb"))));
     assert_eq!(
         f.keys(),
@@ -1100,7 +1096,7 @@ fn a_rejected_top_level_key_is_an_error_and_a_rejected_ref_is_falsy() {
     f.seed(
         "g",
         Some(CWD),
-        tmpl(json!({ "a": "{{ cache.c.z | default('fb') }}", "b": "x" })),
+        tmpl(json!({ "a": "{{ comb.c.z | default('fb') }}", "b": "x" })),
     );
     assert_eq!(
         resolve("g", &inputs(&env), &mut f),

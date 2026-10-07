@@ -1,8 +1,8 @@
 {
   "name": "resolve_cascade_miss_yields_empty_string",
-  "description": "env.X or cache.P.F cascade yields empty string, not an error and not a miss, when both terms miss.",
+  "description": "env.X or comb.P.F cascade yields empty string, not an error and not a miss, when both terms miss.",
   "setup": [
-    { "op": "put", "args": { "key": "myapp:template", "data": { "workspace": "{{ env.MYAPP_ENV or cache.myappcache.workspace }}" } } }
+    { "op": "put", "args": { "key": "myapp:template", "data": { "workspace": "{{ env.MYAPP_ENV or comb.myappcache.workspace }}" } } }
   ],
   "test": { "op": "resolve", "args": { "key": "myapp.workspace" } },
   "expect": { "status": "hit", "data_type": "string", "data_equals": "" }

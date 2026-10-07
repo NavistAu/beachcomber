@@ -50,7 +50,7 @@ There is no `virtual` block. A fixture declares a template the way any
 caller does — by a `setup` `put` to `<provider>:template`:
 
 ```json
-{ "op": "put", "args": { "key": "widget:template", "data": { "label": "{{ cache.widgetdata.label }}" } } }
+{ "op": "put", "args": { "key": "widget:template", "data": { "label": "{{ comb.widgetdata.label }}" } } }
 ```
 
 A nested field (`widget.group.label`) is a nested object in `data`. The
@@ -75,8 +75,8 @@ template with the fixture's `env` and `cwd`. `args.key` is the only
 argument, and it resolves exactly as `comb get <key>` does:
 
 - `"provider.field"` — the cached value, or, where a template is in effect
-  at that address, the rendered template. Refs of the form `cache.P.F` /
-  `cache.P` inside it are fetched from the daemon; a plain `P.F` ref is
+  at that address, the rendered template. Refs of the form `comb.P.F` /
+  `comb.P` inside it are fetched from the daemon; a plain `P.F` ref is
   resolved the same way recursively, so a template may reference another
   provider's templated field. `env.X` comes from the fixture's `env` map,
   never the ambient process environment.
@@ -106,7 +106,7 @@ so `{ "op": "eval", "args": { "template": "{{ p.f }}" } }` and
 `args.template` is the only argument:
 
 ```json
-{ "op": "eval", "args": { "template": "{{ env.A or cache.p.f }}" } }
+{ "op": "eval", "args": { "template": "{{ env.A or comb.p.f }}" } }
 ```
 
 The type rule the fixtures pin down:

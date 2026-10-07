@@ -194,7 +194,7 @@ fn subscriptions_follow_the_deps() {
     writer
         .put(
             "scanline:template",
-            json!({"widgets": {"foo": "{{ cache.q.v }}"}}),
+            json!({"widgets": {"foo": "{{ comb.q.v }}"}}),
             None,
             None,
         )
@@ -218,7 +218,7 @@ fn subscriptions_follow_the_deps() {
     writer
         .put(
             "scanline:template.widgets.foo",
-            json!("{{ cache.r.v }}"),
+            json!("{{ comb.r.v }}"),
             None,
             None,
         )

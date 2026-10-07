@@ -109,7 +109,7 @@ natural type), or literal text/several tags (always a string — a source
 with no tags at all is its literal text).
 
 ```typescript
-await client.put('myapp:template', { workspace: '{{ env.MYAPP_ENV or cache.myappcache.workspace }}' });
+await client.put('myapp:template', { workspace: '{{ env.MYAPP_ENV or comb.myappcache.workspace }}' });
 const value = await client.resolve('myapp.workspace', {
   cwd: '/some/repo',
   env: { MYAPP_ENV: 'prod' },

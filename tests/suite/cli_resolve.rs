@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// The §3.1 tree, as `comb put scanline:template` takes it, plus a third
 /// level (`widgets.clock.format`) for the flattening outcome.
-const TREE: &str = r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":{"foo":"{{ env.SCANLINE_FOO }}","bar":"{{ cache.hostname.name | truncate(3) }}","clock":{"format":"{{ '%H:%M' }}"}}}"#;
+const TREE: &str = r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":{"foo":"{{ env.SCANLINE_FOO }}","bar":"{{ comb.hostname.name | truncate(3) }}","clock":{"format":"{{ '%H:%M' }}"}}}"#;
 
 /// A `comb` at `cwd`, pointed at `d`'s socket, with the daemon's temp
 /// `$HOME`/`$XDG_CONFIG_HOME` so nothing reaches the developer's config, and
@@ -52,7 +52,7 @@ fn json(d: &TestDaemon, cwd: &Path, args: &[&str]) -> serde_json::Value {
     serde_json::from_str(&stdout(d, cwd, args)).expect("stdout is JSON")
 }
 
-/// What `cache.hostname.name | truncate(3)` renders to on this host.
+/// What `comb.hostname.name | truncate(3)` renders to on this host.
 fn short_host(d: &TestDaemon, cwd: &Path) -> String {
     let name = stdout(d, cwd, &["hostname.name"]);
     assert!(!name.is_empty(), "hostname.name must resolve on this host");
@@ -494,7 +494,7 @@ fn a_rejected_ref_inside_a_template_is_falsy() {
     put(
         &d,
         &cwd,
-        &["t:template.v", r#""{{ cache.nope.x or 'fb' }}""#],
+        &["t:template.v", r#""{{ comb.nope.x or 'fb' }}""#],
     );
 
     assert_eq!(stdout(&d, &cwd, &["t.v"]), "fb");

@@ -1,10 +1,10 @@
 {
   "name": "eval_nested_virtual_dependency",
-  "description": "A template naming another provider's templated field follows it: {{ a.x }} resolves a.x, whose template references b.y, whose template references cache.d.w, so d.w is fetched before a.x can render. cache.c.z names no registered provider and is falsy, so the cascade falls through to b.y. Both templates and d are put globally while the query runs at a cwd, which the chain reaches because the global entry is the last link of every path's chain (canon field_resolution.md §\"Path resolution\").",
+  "description": "A template naming another provider's templated field follows it: {{ a.x }} resolves a.x, whose template references b.y, whose template references comb.d.w, so d.w is fetched before a.x can render. comb.c.z names no registered provider and is falsy, so the cascade falls through to b.y. Both templates and d are put globally while the query runs at a cwd, which the chain reaches because the global entry is the last link of every path's chain (canon field_resolution.md §\"Path resolution\").",
   "cwd": "/nonexistent/proj",
   "setup": [
-    { "op": "put", "args": { "key": "a:template", "data": { "x": "{{ b.y or cache.c.z }}" } } },
-    { "op": "put", "args": { "key": "b:template", "data": { "y": "{{ cache.d.w }}" } } },
+    { "op": "put", "args": { "key": "a:template", "data": { "x": "{{ b.y or comb.c.z }}" } } },
+    { "op": "put", "args": { "key": "b:template", "data": { "y": "{{ comb.d.w }}" } } },
     { "op": "put", "args": { "key": "d", "data": { "w": "deep-value" } } }
   ],
   "test": { "op": "eval", "args": { "template": "{{ a.x }}" } },

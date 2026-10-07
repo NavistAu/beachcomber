@@ -2,6 +2,6 @@
 # The profile in effect: the shell's selector, then aws-vault's, then the default profile name.
 profile = '{{ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" }}'
 # The region in effect: the shell's selector, else the profile's region from ~/.aws/config.
-region = '{{ env.AWS_REGION or env.AWS_DEFAULT_REGION or cache.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" ].region }}'
+region = '{{ env.AWS_REGION or env.AWS_DEFAULT_REGION or comb.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" ].region }}'
 # When the session's credentials expire, as the shell's credential helper set it.
 expiration = "{{ env.AWS_CREDENTIAL_EXPIRATION or env.AWS_SESSION_EXPIRATION }}"

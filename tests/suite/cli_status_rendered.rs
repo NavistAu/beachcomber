@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The §3.1 tree, as `comb put scanline:template` takes it.
-const TREE: &str = r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":{"foo":"{{ env.SCANLINE_FOO }}","bar":"{{ cache.hostname.name | truncate(3) }}","clock":{"format":"{{ '%H:%M' }}"}}}"#;
+const TREE: &str = r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":{"foo":"{{ env.SCANLINE_FOO }}","bar":"{{ comb.hostname.name | truncate(3) }}","clock":{"format":"{{ '%H:%M' }}"}}}"#;
 
 /// A `comb` at `cwd`, pointed at `d`'s socket, with the daemon's temp
 /// `$HOME`/`$XDG_CONFIG_HOME` so nothing reaches the developer's config, and

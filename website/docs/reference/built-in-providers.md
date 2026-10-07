@@ -191,10 +191,10 @@ Not every `comb g` namespace is a daemon provider. The managed `defaults/` files
 
 | Namespace | Default file | Fields | Renders from |
 |---|---|---|---|
-| `aws` | `defaults/aws.toml` | `profile`, `region`, `expiration` | `$AWS_PROFILE`/`$AWS_VAULT`/`$AWS_DEFAULT_PROFILE`, `$AWS_REGION`, `$AWS_CREDENTIAL_EXPIRATION`, falling back to `cache.aws_profiles[<profile>].region` |
-| `gcloud` | `defaults/gcloud.toml` | `project`, `account` | `$CLOUDSDK_CORE_PROJECT`, `$CLOUDSDK_ACTIVE_CONFIG_NAME`, falling back to `cache.gcloud_configs[<active>]` |
-| `python` | `defaults/python.toml` | `version`, `venv_name` | `$PYENV_VERSION`/`$MISE_PYTHON_VERSION`, `cache.mise.python`, `cache.asdf.python`, `cache.python.venv_version`; `cache.python.local_venv_name`, `$VIRTUAL_ENV` |
-| `terraform` | `defaults/terraform.toml` | `workspace` | `$TF_WORKSPACE`, falling back to the cached `cache.terraform.workspace` — a template at a cached field's path wins on read |
+| `aws` | `defaults/aws.toml` | `profile`, `region`, `expiration` | `$AWS_PROFILE`/`$AWS_VAULT`/`$AWS_DEFAULT_PROFILE`, `$AWS_REGION`, `$AWS_CREDENTIAL_EXPIRATION`, falling back to `comb.aws_profiles[<profile>].region` |
+| `gcloud` | `defaults/gcloud.toml` | `project`, `account` | `$CLOUDSDK_CORE_PROJECT`, `$CLOUDSDK_ACTIVE_CONFIG_NAME`, falling back to `comb.gcloud_configs[<active>]` |
+| `python` | `defaults/python.toml` | `version`, `venv_name` | `$PYENV_VERSION`/`$MISE_PYTHON_VERSION`, `comb.mise.python`, `comb.asdf.python`, `comb.python.venv_version`; `comb.python.local_venv_name`, `$VIRTUAL_ENV` |
+| `terraform` | `defaults/terraform.toml` | `workspace` | `$TF_WORKSPACE`, falling back to the cached `comb.terraform.workspace` — a template at a cached field's path wins on read |
 | `conda` | `defaults/conda.toml` | `env` | `$CONDA_DEFAULT_ENV` |
 | `op` | `defaults/op.toml` | `signed_in` (bool) | whether `$OP_SERVICE_ACCOUNT_TOKEN` is set — never the token itself |
 | `kubecontext` | `defaults/kubecontext.toml` | `context`, `namespace` | `exec('kubectl', 'config', …)` |
