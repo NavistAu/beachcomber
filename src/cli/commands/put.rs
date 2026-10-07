@@ -5,30 +5,13 @@
 use crate::config::Config;
 use std::process::ExitCode;
 
-#[allow(clippy::too_many_arguments)]
 pub fn run_put(
     config: &Config,
     key: &str,
-    data_str: Option<&str>,
-    null: bool,
+    data_str: &str,
     ttl: Option<&str>,
     path: Option<&str>,
 ) -> ExitCode {
-    // Validate argument combinations.
-    if null && data_str.is_some() {
-        eprintln!("cannot combine --null with a data argument");
-        return ExitCode::from(2);
-    }
-    if !null && data_str.is_none() {
-        eprintln!("put requires either a data argument or --null");
-        return ExitCode::from(2);
-    }
-
-    if null && ttl.is_some() {
-        eprintln!("a ttl on an absent value has no meaning");
-        return ExitCode::from(2);
-    }
-
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
@@ -39,47 +22,29 @@ pub fn run_put(
 
     let client = crate::client::Client::new(socket_path);
 
-    if null {
-        match client.put_null(key, path) {
-            Ok(response) => {
-                if response.ok {
-                    ExitCode::SUCCESS
-                } else {
-                    eprintln!("Error: {}", response.error.unwrap_or_default());
-                    ExitCode::from(2)
-                }
-            }
-            Err(e) => {
-                eprintln!("Error: {e}");
+    let data: serde_json::Value = match serde_json::from_str(data_str) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Invalid JSON: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // Whether this JSON is legal here depends on the node the key
+    // addresses — an object at the root, anything below it — which only the
+    // daemon knows. It reports the mismatch.
+    match client.put(key, data, ttl, path) {
+        Ok(response) => {
+            if response.ok {
+                ExitCode::SUCCESS
+            } else {
+                eprintln!("Error: {}", response.error.unwrap_or_default());
                 ExitCode::from(2)
             }
         }
-    } else {
-        let data_str = data_str.unwrap();
-        let data: serde_json::Value = match serde_json::from_str(data_str) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("Invalid JSON: {e}");
-                return ExitCode::from(2);
-            }
-        };
-
-        // Whether this JSON is legal here depends on the node the key
-        // addresses — an object at the root, anything below it — which only the
-        // daemon knows. It reports the mismatch.
-        match client.put(key, data, ttl, path) {
-            Ok(response) => {
-                if response.ok {
-                    ExitCode::SUCCESS
-                } else {
-                    eprintln!("Error: {}", response.error.unwrap_or_default());
-                    ExitCode::from(2)
-                }
-            }
-            Err(e) => {
-                eprintln!("Error: {e}");
-                ExitCode::from(2)
-            }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            ExitCode::from(2)
         }
     }
 }

@@ -363,27 +363,6 @@ pub unsafe extern "C" fn bc_put(
     })
 }
 
-/// Clear the cached entry for a static-data key without dropping the
-/// registry entry. `path` is nullable.
-///
-/// # Safety
-/// `client` must be a valid pointer from [`bc_client_new`]; `key` must be
-/// non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn bc_put_null(
-    client: *mut BcClient,
-    key: *const c_char,
-    path: *const c_char,
-) -> *mut c_char {
-    call_ffi(move || {
-        let c = unsafe { client_ref(client) }?;
-        let key = unsafe { required_str(key, "key") }?;
-        let path = unsafe { optional_str(path) }?;
-        c.put_null(key, path)?;
-        Ok(serde_json::Value::Null)
-    })
-}
-
 /// Re-execute the Sources `key` demands — every Source of the namespace for
 /// a bare `provider`, only the one owning the field for `provider.field` —
 /// each at the cache entry its own scope keys. `path` is nullable. A key

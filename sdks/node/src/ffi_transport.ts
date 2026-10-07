@@ -35,7 +35,6 @@ const OP_SYMBOLS = [
   'bc_client_free',
   'bc_get',
   'bc_put',
-  'bc_put_null',
   'bc_refresh',
   'bc_status',
   'bc_introspect',
@@ -115,7 +114,6 @@ function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('k
     bc_client_free: ['void', [BcClient]],
     bc_get: [BcString, [BcClient, 'str', 'str', 'uint32']],
     bc_put: [BcString, [BcClient, 'str', 'str', 'str', 'str']],
-    bc_put_null: [BcString, [BcClient, 'str', 'str']],
     bc_refresh: [BcString, [BcClient, 'str', 'str']],
     bc_status: [BcString, [BcClient]],
     bc_introspect: [BcString, [BcClient, 'str', 'str']],
@@ -212,9 +210,6 @@ export function createFfiTransport(): Transport {
       return parseEnvelope(
         await callAsync(fns.bc_put, handle, key, jsonData, nullIfUndefined(ttl), nullIfUndefined(path)),
       );
-    },
-    async putNull(handle, key, path) {
-      return parseEnvelope(await callAsync(fns.bc_put_null, handle, key, nullIfUndefined(path)));
     },
     async refresh(handle, key, path) {
       return parseEnvelope(await callAsync(fns.bc_refresh, handle, key, nullIfUndefined(path)));

@@ -45,6 +45,14 @@ class TestOps < Minitest::Test
     assert_equal 'hello',        req['data']
   end
 
+  def test_put_nil_sends_null_data
+    @server.enqueue('{"ok":true}')
+    @client.put('custom.value', nil)
+    req = @server.requests.last
+    assert req.key?('data')
+    assert_nil req['data']
+  end
+
   def test_put_returns_nil
     @server.enqueue('{"ok":true}')
     result = @client.put('custom.value', 42)

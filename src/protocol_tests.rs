@@ -147,7 +147,7 @@ fn parse_put_request_with_ttl_and_path() {
 }
 
 #[test]
-fn parse_put_null_request() {
+fn parse_put_with_null_data_request() {
     let json = r#"{"op":"put","key":"myapp","data":null}"#;
     let req: Request = serde_json::from_str(json).unwrap();
     match req {

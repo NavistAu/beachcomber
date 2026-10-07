@@ -1,4 +1,4 @@
-//! Operations: `bc_get`, `bc_put`, `bc_put_null`, `bc_refresh`, `bc_status`,
+//! Operations: `bc_get`, `bc_put`, `bc_refresh`, `bc_status`,
 //! `bc_introspect`, `bc_hello`. Task 3.4 of
 //! docs/superpowers/plans/2026-08-15-client-abi-and-sdk-refactor.md.
 //!
@@ -14,7 +14,7 @@ use std::time::Duration;
 use beachcomber::envelope::bc_string_free;
 use beachcomber::{
     BC_GET_FORCE, BC_GET_WAIT, BcClient, bc_client_free, bc_client_new, bc_get, bc_hello,
-    bc_introspect, bc_put, bc_put_null, bc_refresh, bc_status,
+    bc_introspect, bc_put, bc_refresh, bc_status,
 };
 
 fn client_for(sock: &Path) -> *mut BcClient {
@@ -82,7 +82,7 @@ fn get_accepts_the_documented_flag_combination() {
 }
 
 #[test]
-fn put_get_put_null_round_trip() {
+fn put_get_round_trip() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     // `put`'s key names the static namespace; `data`'s top-level keys become
@@ -105,9 +105,6 @@ fn put_get_put_null_round_trip() {
     let get_v = read(unsafe { bc_get(client, field_key.as_ptr(), ptr::null(), 0) });
     assert_eq!(get_v["ok"], serde_json::json!(true));
     assert_eq!(get_v["data"]["data"], serde_json::json!("hello"));
-
-    let put_null_v = read(unsafe { bc_put_null(client, provider_key.as_ptr(), ptr::null()) });
-    assert_eq!(put_null_v["ok"], serde_json::json!(true));
 
     unsafe { bc_client_free(client) };
 }

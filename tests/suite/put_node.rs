@@ -427,7 +427,7 @@ async fn put_of_an_empty_object_creates_no_entry() {
     // The same write over an existing entry empties it. The
     // label's map is kept for the fill only when there is something to fill it
     // with, so nothing is left behind and the entry goes with it — the write is
-    // `put r --null` by another name.
+    // `put r null` by another name.
     let r = send_recv(
         &mut s,
         &serde_json::json!({"op":"put","key":"r","data":{"a":1}}),
@@ -493,10 +493,10 @@ async fn put_below_the_root_accepts_any_json() {
     handle.abort();
 }
 
-// ── (f) --null at a node removes only that subtree ──────────────────────────
+// ── (f) a null put at a node removes only that subtree ──────────────────────────
 
 #[tokio::test]
-async fn put_null_at_a_node_removes_only_that_subtree() {
+async fn a_null_put_at_a_node_removes_only_that_subtree() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();

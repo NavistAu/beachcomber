@@ -45,14 +45,6 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     );
   });
 
-  it('putNull clears a cached value', async () => {
-    await client.put('itest_null', { x: 1 }, { path: '/tmp' });
-    await client.putNull('itest_null', '/tmp');
-    const result = await client.get('itest_null.x', '/tmp');
-    assert.equal(result.isMiss, true);
-    assert.equal(result.template, undefined);
-  });
-
   it('put(key, null) removes the node', async () => {
     await client.put('itest_putnull', { x: 1 }, { path: '/tmp' });
     await client.put('itest_putnull', null, { path: '/tmp' });

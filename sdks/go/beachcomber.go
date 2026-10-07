@@ -355,8 +355,9 @@ func (c *Client) Hello() (*HelloInfo, error) {
 	return parseHelloFromData(data)
 }
 
-// Put stores data into the cache as static data. data should be a JSON object.
-// ttl and path are optional; pass "" to omit them.
+// Put stores data into the cache as static data: a JSON object at a namespace
+// root, any JSON below it. nil removes the node. ttl and path are optional;
+// pass "" to omit them.
 func (c *Client) Put(key string, data interface{}, ttl, path string) error {
 	if c.loadErr != nil {
 		return c.loadErr

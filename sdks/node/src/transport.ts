@@ -40,7 +40,6 @@ export interface Transport {
     ttl: string | undefined,
     path: string | undefined,
   ): Promise<Envelope>;
-  putNull(handle: ClientHandle, key: string, path: string | undefined): Promise<Envelope>;
   refresh(handle: ClientHandle, key: string, path: string | undefined): Promise<Envelope>;
   status(handle: ClientHandle): Promise<Envelope>;
   introspect(handle: ClientHandle, subject: string, optionsJson: string | undefined): Promise<Envelope>;

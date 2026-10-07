@@ -535,7 +535,7 @@ async fn age_past_the_poll_interval() {
 }
 
 /// `--wait` re-executes the stale source and leaves everything else at the
-/// entry alone. Canon `cache-lifecycle.md` lets only `put --null` and daemon
+/// entry alone. Canon `cache-lifecycle.md` lets only `put <node> null` and daemon
 /// exit remove a static record; `--wait` used to evict the whole entry and take
 /// them with it.
 #[tokio::test]

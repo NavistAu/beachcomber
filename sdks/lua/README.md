@@ -39,7 +39,7 @@ shell-out would be faithful — nobody has needed it); `watch` was tried and rej
 header comment: piped through `io.popen`, the CLI's stdout buffering means a
 `read("*l")` blocks forever even though the daemon already sent the event).
 Those `Client` methods return `nil, err` with `err.kind == "unsupported"`
-over `subprocess`; get/put/put_null/refresh/status/context all work over
+over `subprocess`; get/put/refresh/status/context all work over
 either transport. `refresh` over `subprocess` is one `comb refresh <key>`,
 the daemon's op itself, and its refusal (`nothing to refresh: <key> has no
 sources`) is the error message. `get` over `subprocess` is one `comb get -f
@@ -185,9 +185,8 @@ Cache rows (one per warm cache entry): `provider`, `field`, `path`,
 `value`, `age_ms`, `stale`, plus lifecycle fields.
 
 ### `Client:put(key, data [, ttl [, path]])` → `true | false, Error`
-### `Client:put_null(key [, path])` → `true | false, Error`
 
-Write to / clear a static-data entry's cached value.
+Write a static-data entry's value. `data = nil` (or `beachcomber.null`) removes the node.
 
 ### `Client:hello()` → `table {protocol_version, daemon_version} | nil, Error`
 ### `Client:introspect(subject [, duration_secs])` → `table {subject, daemon, other} | nil, Error`
@@ -258,7 +257,7 @@ address whose value `resolve` renders — `get` is the raw half,
 ### `Error`
 
 Every failing call returns `nil, Error` (or `false, Error` for
-put/put_null). `Error.kind` is a machine-readable slug mirroring the ABI
+put). `Error.kind` is a machine-readable slug mirroring the ABI
 envelope's `error.kind` (`"server_error"`, `"daemon_not_running"`,
 `"unsupported"` for a capability the active transport lacks, ...);
 `Error.message` is human-readable; `tostring(err)` gives both.

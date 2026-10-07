@@ -65,7 +65,7 @@ def test_get_full_provider_object_subscriptable(client: Client) -> None:
     assert result["b"] == "two"
 
 
-def test_put_null_clears_entry(client: Client) -> None:
+def test_put_none_clears_entry(client: Client) -> None:
     client.put("widget3", {"v": 1})
     assert client.get("widget3.v").is_hit
     client.put("widget3", None)

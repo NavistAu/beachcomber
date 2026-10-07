@@ -1,6 +1,6 @@
 // Integration tests for the Request::Introspect per-subject payloads
 // and the `comb check` CLI aggregation behaviour.
-// Uses the in-process test daemon pattern from tests/suite/put_null.rs.
+// Uses the in-process test daemon pattern from tests/suite/put_remove.rs.
 
 use crate::common::daemon::isolate;
 use crate::common::poll::poll_until;

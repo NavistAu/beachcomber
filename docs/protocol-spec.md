@@ -334,12 +334,14 @@ path's chain ends at.
 
 **Request (clear):**
 ```json
-{"op": "put", "key": "myapp"}
+{"op": "put", "key": "myapp", "data": null}
 ```
 
-(Omit `data` to clear the addressed node while keeping the registration. At
-the namespace root that is every static record of the entry; the entry
-itself survives if a Source still contributes to it.)
+(A `put` whose `data` is JSON `null` removes the put layer at the addressed
+node: the node and every put address at or below it. The layer below shows
+through; the entry itself survives if a Source still contributes to it.
+There is no other spelling of removal: a request without a `data` field is
+invalid, `invalid request: missing field `data``.)
 
 **Response:**
 ```json

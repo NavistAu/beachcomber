@@ -18,10 +18,10 @@ async fn setup_daemon() -> (
     (tmp, sock, client, handle)
 }
 
-/// put --null clears a cache entry but the static namespace's registration survives,
+/// A put of null clears a cache entry but the static namespace's registration survives,
 /// so a subsequent put under the same key still works.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn put_null_clears_entry_but_keeps_provider() {
+async fn put_of_null_clears_entry_but_keeps_provider() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
 
     // 1. Store a value.
@@ -38,9 +38,11 @@ async fn put_null_clears_entry_but_keeps_provider() {
         "expected v=42 after initial put"
     );
 
-    // 3. put --null: send a Put request with data=null to clear the cache entry.
-    let resp = client.put_null("nulltest", None).unwrap();
-    assert!(resp.ok, "put_null failed: {:?}", resp.error);
+    // 3. Put null: a Put request with data=null clears the cache entry.
+    let resp = client
+        .put("nulltest", serde_json::Value::Null, None, None)
+        .unwrap();
+    assert!(resp.ok, "put of null failed: {:?}", resp.error);
 
     // 4. get should now return miss (no data).
     let data = fetch(&sock, "nulltest.v", None)
@@ -48,7 +50,7 @@ async fn put_null_clears_entry_but_keeps_provider() {
         .and_then(|got| got.data);
     assert!(
         data.is_none(),
-        "expected miss after put --null, got: {data:?}"
+        "expected miss after put null, got: {data:?}"
     );
 
     // 5. A subsequent put under the same key still works (registry survives).
@@ -67,10 +69,10 @@ async fn put_null_clears_entry_but_keeps_provider() {
     handle.abort();
 }
 
-/// `--null` at a node clears only that subtree — sibling records at the same
+/// A null put at a node clears only that subtree — sibling records at the same
 /// namespace survive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn put_null_at_a_node_clears_only_that_subtree() {
+async fn put_of_null_at_a_node_clears_only_that_subtree() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
 
     let resp = client
@@ -83,7 +85,9 @@ async fn put_null_at_a_node_clears_only_that_subtree() {
         .unwrap();
     assert!(resp.ok, "initial put failed: {:?}", resp.error);
 
-    let resp = client.put_null("nulltree.drop", None).unwrap();
+    let resp = client
+        .put("nulltree.drop", serde_json::Value::Null, None, None)
+        .unwrap();
     assert!(resp.ok, "node null put failed: {:?}", resp.error);
 
     let resp = fetch(&sock, "nulltree", None).expect("get failed").unwrap();
@@ -94,38 +98,6 @@ async fn put_null_at_a_node_clears_only_that_subtree() {
     );
 
     handle.abort();
-}
-
-/// Sending a Put with both data and null=true (via raw JSON) should return an error
-/// from the server perspective — but the CLI-level validation is tested via the
-/// argument parsing logic in main.rs. Here we test the server rejects an ambiguous
-/// null+data combination by checking that a null data field alone works.
-///
-/// The CLI error case (--null with a data argument) is validated at argument parse
-/// time before any server communication, so we test it by simulating that check.
-#[test]
-fn put_null_cli_validation_rejects_both() {
-    // Simulate the CLI guard: if --null is set and data is also provided, it's an error.
-    let null_flag = true;
-    let data_arg: Option<&str> = Some("{\"v\":1}");
-
-    let should_error = null_flag && data_arg.is_some();
-    assert!(
-        should_error,
-        "expected CLI to reject --null combined with a data argument"
-    );
-
-    // Also verify: --null without data is valid.
-    let null_flag = true;
-    let data_arg: Option<&str> = None;
-    let should_error = null_flag && data_arg.is_some();
-    assert!(!should_error, "expected --null without data to be valid");
-
-    // And: data without --null is valid.
-    let null_flag = false;
-    let data_arg: Option<&str> = Some("{\"v\":1}");
-    let should_error = !null_flag && data_arg.is_none();
-    assert!(!should_error, "expected data without --null to be valid");
 }
 
 /// One raw request line over a fresh connection, the reply parsed.
@@ -261,20 +233,44 @@ fn comb_put_json_null_with_ttl_exits_2() {
     let d = TestDaemon::spawn();
     let cwd = std::path::Path::new("/");
     d.comb(cwd).args(["put", "ns.a", "1"]).assert().success();
-    for args in [
-        ["put", "ns.a", "null", "--ttl", "30s"].as_slice(),
-        ["put", "ns.a", "--null", "--ttl", "30s"].as_slice(),
-    ] {
-        d.comb(cwd)
-            .args(args)
-            .assert()
-            .code(2)
-            .stderr(predicates::str::contains(
-                "a ttl on an absent value has no meaning",
-            ));
-    }
+    d.comb(cwd)
+        .args(["put", "ns.a", "null", "--ttl", "30s"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "a ttl on an absent value has no meaning",
+        ));
     d.comb(cwd)
         .args(["get", "-f", "json", "ns.a"])
         .assert()
         .success();
+}
+
+#[test]
+fn comb_put_dash_dash_null_is_an_unknown_argument() {
+    use crate::common::daemon::TestDaemon;
+    let d = TestDaemon::spawn();
+    let cwd = std::path::Path::new("/");
+    d.comb(cwd).args(["put", "ns.a", "1"]).assert().success();
+    d.comb(cwd)
+        .args(["put", "ns.a", "--null"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("unexpected argument '--null'"));
+    d.comb(cwd)
+        .args(["get", "-f", "json", "ns.a"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn comb_put_without_data_is_a_usage_error() {
+    use crate::common::daemon::TestDaemon;
+    let d = TestDaemon::spawn();
+    let cwd = std::path::Path::new("/");
+    d.comb(cwd)
+        .args(["put", "ns.a"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("<DATA>"));
 }

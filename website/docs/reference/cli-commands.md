@@ -222,7 +222,7 @@ The default output preset is `human` (coloured table) regardless of whether stdo
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts, watch backend). The watch backend line reports `native fs events` when the startup self-test confirmed kernel event delivery, or a WARN with `polling` when it didn't — provider file-watching still works, invalidating on a 1s scan instead of kernel events.
 
-## `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--global] [--null]`
+## `comb p` (put) `<key> <json-data> [--ttl <duration>] [--path <path>] [--global]`
 
 Write static data into the cache. External processes use this to expose state to prompt/statusline consumers without writing a script provider.
 
@@ -239,16 +239,16 @@ comb p myapp '{"status":"building"}' --path /home/user/project
 # Put once for every directory
 comb p myapp '{"status":"healthy"}' --global
 
-# Clear a previously written entry
-comb p myapp --null
+# Remove a previously written entry
+comb p myapp null
 
 # Write a template — the next `comb g myapp.greeting` renders it
 comb p myapp:template.greeting '"hello {{ env.USER }}"'
 ```
 
-**Replace:** a write replaces whatever a put left at the node, so `comb p myapp '{"version":"1.2.4"}'` states all of `myapp` and a `status` written earlier is gone, while `comb p myapp.version '"1.2.4"'` replaces only that node. A `put` never removes a record a provider's Source produces: it layers over it and hides it until the put is removed. `--null` removes the node and writes nothing in its place.
+**Replace:** a write replaces whatever a put left at the node, so `comb p myapp '{"version":"1.2.4"}'` states all of `myapp` and a `status` written earlier is gone, while `comb p myapp.version '"1.2.4"'` replaces only that node. A `put` never removes a record a provider's Source produces: it layers over it and hides it until the put is removed. `comb p myapp null` removes the node and writes nothing in its place.
 
-`data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root any JSON is legal, so `comb p myapp.deploy.count 3` and `comb p myapp.status '"healthy"'` are both fine. `--null` is the one case that takes no data argument at all.
+`data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root any JSON is legal, so `comb p myapp.deploy.count 3` and `comb p myapp.status '"healthy"'` are both fine. `data` is required: `comb p myapp` is a usage error, and removal is the JSON value `null`.
 
 **Path:** `put` defaults to the current working directory, exactly as `get` does, so a plain `comb p` followed by a plain `comb g` in the same directory round-trips. `--global` writes `$HOME`, the entry every directory's chain ends at, which is how you publish one value for the whole machine; it cannot be combined with `--path`.
 

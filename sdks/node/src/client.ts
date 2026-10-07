@@ -461,20 +461,12 @@ export class Client {
    * Store data in the cache under the given key.
    *
    * @param key   Provider key (e.g. "myapp").
-   * @param data  Object payload to store.
+   * @param data  JSON payload to store; `null` removes the node.
    * @param opts  Optional ttl string and path.
    */
   async put(key: string, data: unknown, opts?: { ttl?: string; path?: string }): Promise<void> {
     const jsonData = JSON.stringify(data);
     unwrap(await this.tp.put(this.handle, key, jsonData, opts?.ttl, opts?.path));
-  }
-
-  /**
-   * Clear the cached entry for a static-data key without dropping the
-   * registry entry.
-   */
-  async putNull(key: string, path?: string): Promise<void> {
-    unwrap(await this.tp.putNull(this.handle, key, path));
   }
 
   /** Query daemon protocol and version information. */

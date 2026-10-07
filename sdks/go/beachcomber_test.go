@@ -78,6 +78,23 @@ func TestClient_PutThenGet(t *testing.T) {
 	}
 }
 
+func TestClient_PutNilRemovesTheNode(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Put("gonilrm", map[string]interface{}{"val": float64(1)}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := c.Put("gonilrm", nil, "", ""); err != nil {
+		t.Fatalf("Put nil: %v", err)
+	}
+	result, err := c.Get("gonilrm.val", "")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if result.IsHit() {
+		t.Fatal("expected a miss after Put(key, nil)")
+	}
+}
+
 // The template half (design §3.4): Get returns both halves, unrendered.
 func TestClient_Get_TemplateOnlyIsNeitherHitNorMiss(t *testing.T) {
 	c := requireClient(t)

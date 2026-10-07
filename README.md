@@ -371,7 +371,7 @@ The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 2. `BEACHCOMBER_SOCKET` environment variable, if set
 3. `/tmp/beachcomber-<uid>/sock` — stable per-user default; no session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell, sandbox, and container of one user reaches the same single daemon
 
-### `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--global] [--null]`
+### `comb p` (put) `<key> <json-data> [--ttl <duration>] [--path <path>] [--global]`
 
 Write static data at any node of the tree. The key is `namespace` or `namespace.node…`, the same dotted address `comb g` takes. External processes can use this to expose state to prompt/statusline consumers without writing a script provider.
 
@@ -381,11 +381,11 @@ comb p myapp.deploy.count 3                                # any node, any JSON 
 comb p myapp '{"status":"healthy"}' --ttl 30s             # with TTL
 comb p myapp '{"status":"building"}' --path ~/project     # a directory instead of the cwd
 comb p myapp '{"status":"ok"}' --global                    # the global entry ($HOME)
-comb p myapp --null                                        # clear the entry
+comb p myapp null                                          # remove the entry
 comb p myapp:template.greeting '"hello {{ env.USER }}"'    # a template — comb g myapp.greeting renders it
 ```
 
-A write **replaces** whatever a put left at that node: `comb p myapp '{"b":2}'` states all of `myapp`, and `comb p myapp.b 2` replaces only `myapp.b`. `--null` removes the node and writes nothing. A `put` never removes a record a provider's Source produces; it layers over it and hides it at that directory until the put is removed. `data` at a namespace root must be a JSON object; below the root, any JSON.
+A write **replaces** whatever a put left at that node: `comb p myapp '{"b":2}'` states all of `myapp`, and `comb p myapp.b 2` replaces only `myapp.b`. `comb p myapp null` removes the node and writes nothing; `data` is required, so a put without it is a usage error. A `put` never removes a record a provider's Source produces; it layers over it and hides it at that directory until the put is removed. `data` at a namespace root must be a JSON object; below the root, any JSON.
 
 Like `comb g`, a `put` defaults to the current working directory; `--global` addresses `$HOME` instead and cannot be combined with `--path`.
 

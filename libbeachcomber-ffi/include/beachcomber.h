@@ -129,16 +129,6 @@ char *bc_put(BcClient *client,
              const char *path);
 
 /**
- * Clear the cached entry for a static-data key without dropping the
- * registry entry. `path` is nullable.
- *
- * # Safety
- * `client` must be a valid pointer from [`bc_client_new`]; `key` must be
- * non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
- */
-char *bc_put_null(BcClient *client, const char *key, const char *path);
-
-/**
  * Re-execute the Sources `key` demands — every Source of the namespace for
  * a bare `provider`, only the one owning the field for `provider.field` —
  * each at the cache entry its own scope keys. `path` is nullable. A key
@@ -289,9 +279,9 @@ char *bc_session_set_context(BcSession *session, const char *path);
 /**
  * Opens a watch on the *value* of `key` — what `bc_resolve(key, cwd,
  * env_json)` answers — and emits it again whenever it changes. The fan-in
- * underneath subscribes to every key the resolution read plus the
- * provider's `<provider>:template`, so a template edited under the watch
- * fires it exactly as a changed cache record does.
+ * underneath subscribes to every key the resolution read, and a write to a
+ * namespace's template notifies that namespace, so a template edited under
+ * the watch fires it exactly as a changed cache record does.
  *
  * `cwd` and `env_json` mean what they mean for [`bc_resolve`], and for the
  * same reason: this library reads no ambient state on the caller's behalf,

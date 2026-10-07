@@ -1,8 +1,8 @@
 // Regression coverage for methods that read the daemon's response line but
 // must not swallow `{"ok": false, "error": "..."}` into a bare `Ok(())`.
 //
-// `put_null` is exercised against a real in-process daemon (DaemonGuard):
-// asking it to `put --null` a key nested past ten segments is a genuine
+// a null `put` is exercised against a real in-process daemon (DaemonGuard):
+// asking it to put a key nested past ten segments is a genuine
 // rejection (`put key is nested too deeply`). `refresh`
 // and `set_context` have no such real rejection path today — the daemon
 // always answers `ok: true` for them — so those are exercised against a
@@ -50,15 +50,15 @@ fn spawn_canned_responder(response: &'static str) -> (tempfile::TempDir, PathBuf
 const TOO_DEEP: &str = "a.b.c.d.e.f.g.h.i.j.k.l.m";
 
 #[test]
-fn client_put_null_on_an_over_deep_key_returns_err() {
+fn client_put_of_null_on_an_over_deep_key_returns_err() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
 
-    let result = client.put_null(TOO_DEEP, None);
+    let result = client.put(TOO_DEEP, serde_json::Value::Null, None, None);
 
     assert!(
         result.is_err(),
-        "put --null on an over-deep key should be rejected, got {result:?}"
+        "put null on an over-deep key should be rejected, got {result:?}"
     );
     assert!(
         matches!(result, Err(CombError::ServerError(_))),
@@ -67,16 +67,16 @@ fn client_put_null_on_an_over_deep_key_returns_err() {
 }
 
 #[test]
-fn session_put_null_on_an_over_deep_key_returns_err() {
+fn session_put_of_null_on_an_over_deep_key_returns_err() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
     let mut session = client.session().expect("session");
 
-    let result = session.put_null(TOO_DEEP, None);
+    let result = session.put(TOO_DEEP, serde_json::Value::Null, None, None);
 
     assert!(
         result.is_err(),
-        "put --null on an over-deep key should be rejected, got {result:?}"
+        "put null on an over-deep key should be rejected, got {result:?}"
     );
     assert!(
         matches!(result, Err(CombError::ServerError(_))),

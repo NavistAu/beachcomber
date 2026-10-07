@@ -1,4 +1,4 @@
---- Tests for Client:hello/put/put_null/introspect/resolve/eval/watch, and
+--- Tests for Client:hello/put/introspect/resolve/eval/watch, and
 --- for the unsupported-capability path (a backend that omits an optional
 --- method) — against a mock backend, matching test_client.lua's pattern.
 
@@ -65,7 +65,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_true(tostring(err):find("mock", 1, true) ~= nil, "unsupported error should name the transport")
   end)
 
-  -- ── put / put_null ────────────────────────────────────────────────────────
+  -- ── put ────────────────────────────────────────────────────────
 
   suite("Client:put")
 
@@ -92,18 +92,19 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_true(tostring(err):find("object", 1, true) ~= nil)
   end)
 
-  suite("Client:put_null")
-
-  test("put_null forwards key and path", function()
-    local seen
+  test("put(key, nil) forwards a nil data, which encodes as null", function()
+    local seen = { called = false }
     local backend = make_backend({
-      put_null = function(_, key, path) seen = { key = key, path = path }; return { ok = true } end,
+      put = function(_, key, data, ttl, path) seen = { called = true, key = key, data = data, path = path }; return { ok = true } end,
     })
-    local ok, err = Client.new(backend):put_null("mykey", "/somepath")
+    local ok, err = Client.new(backend):put("mykey", nil, nil, "/somepath")
     assert_nil(err)
     assert_true(ok)
+    assert_true(seen.called)
     assert_eq(seen.key, "mykey")
+    assert_nil(seen.data)
     assert_eq(seen.path, "/somepath")
+    assert_eq(require("beachcomber.json").encode(nil), "null")
   end)
 
   -- ── introspect ────────────────────────────────────────────────────────────

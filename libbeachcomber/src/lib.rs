@@ -829,28 +829,6 @@ impl Client {
         }
     }
 
-    /// Clear the cached entry for a static-data key without dropping the registry entry.
-    /// A subsequent `put` under the same key still works.
-    pub fn put_null(&self, key: &str, path: Option<&str>) -> Result<(), CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-
-        let mut request = serde_json::json!({ "op": "put", "key": key, "data": null });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        self.probe_skew_after(reader.get_mut());
-        check_ok(&line, self.skew_ref())?;
-        Ok(())
-    }
-
     /// Store data at a key, replacing whatever is stored at that address.
     /// `key` addresses any node: `namespace` or `namespace.node…`. At the root
     /// `data` must be a JSON object; below it, any JSON.
@@ -1269,22 +1247,6 @@ impl Session {
     /// Set connection context so subsequent queries don't need explicit paths.
     pub fn set_context(&mut self, path: &str) -> Result<(), CombError> {
         let request = serde_json::json!({ "op": "context", "path": path });
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        check_ok(&line, self.version_skew.as_ref())?;
-        Ok(())
-    }
-
-    /// Clear the cached entry for a static-data key without dropping the registry entry.
-    pub fn put_null(&mut self, key: &str, path: Option<&str>) -> Result<(), CombError> {
-        let mut request = serde_json::json!({ "op": "put", "key": key, "data": null });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
         self.reader.get_mut().write_all(msg.as_bytes())?;
 

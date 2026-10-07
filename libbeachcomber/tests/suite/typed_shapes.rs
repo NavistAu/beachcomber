@@ -19,9 +19,11 @@ fn status_returns_typed_cache_rows() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
 
-    client.put_null("phase3_marker", None).ok(); // ensure something virtual registered
+    client
+        .put("phase3_marker", serde_json::Value::Null, None, None)
+        .ok(); // ensure something virtual registered
 
-    // The put_null call above may be ignored if the op fails; status should
+    // The null put above may be ignored if the op fails; status should
     // still succeed. What we're really asserting is the typed shape.
     let rows = client.status().expect("status");
 

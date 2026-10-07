@@ -47,10 +47,10 @@ int main(void) {
     r = bc_get(c, "git.branch", "/path/to/repo", BC_GET_FORCE | BC_GET_WAIT);
     bc_string_free(r);
 
-    /* Put / clear a static-data entry */
+    /* Put / remove a static-data entry ("null" removes) */
     r = bc_put(c, "myapp", "{\"theme\":\"dark\",\"version\":3}", NULL, NULL);
     bc_string_free(r);
-    r = bc_put_null(c, "myapp", NULL);
+    r = bc_put(c, "myapp", "null", NULL, NULL);
     bc_string_free(r);
 
     /* The same value `comb get myapp.theme` prints at that cwd */
@@ -93,7 +93,7 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
   — except `bc_version()` (static, never freed) and the handle constructors
   (`bc_client_new`, `bc_session_open`, `bc_watch_open`).
 - Free every other returned string with `bc_string_free()`.
-- `BcClient` (`bc_get`/`bc_put`/`bc_put_null`/`bc_refresh`/`bc_status`/
+- `BcClient` (`bc_get`/`bc_put`/`bc_refresh`/`bc_status`/
   `bc_introspect`/`bc_hello`/`bc_resolve`/`bc_eval`/`bc_watch_open`)
   reconnects per call. `BcSession` (`bc_session_open` on a `BcClient`, then
   `bc_session_get`/`put`/`set_context`) holds one persistent connection —

@@ -76,11 +76,9 @@ Source (a static namespace, a facet, an unknown name, a field no Source
 owns) rejects with `nothing to refresh: <key> has no sources`. Works over
 both transports — see "Transports and their limits" below.
 
-#### `client.put(key, data, opts?)` / `client.putNull(key, path?)`
+#### `client.put(key, data, opts?)`
 
-Store data as static data (`data` is required; `put(key, null)` removes the node), or clear a node's static records with `putNull` —
-the entry itself is dropped once no records, static or provider-produced,
-remain at it.
+Store data as static data. `data` is required; `put(key, null)` removes the node, and the entry itself is dropped once no records, static or provider-produced, remain at it.
 
 #### `client.status()`
 
@@ -207,11 +205,11 @@ programmatic handling.
 
 ## Transports and their limits
 
-**FFI (`koffi`)** implements the full ABI: `get`, `put`, `putNull`,
+**FFI (`koffi`)** implements the full ABI: `get`, `put`,
 `refresh`, `status`, `hello`, `introspect`, `resolve`, `eval`, sessions,
 and watch — all with exact envelope fidelity.
 
-**Subprocess (`comb` CLI fallback)** covers `get`, `put`, `putNull`,
+**Subprocess (`comb` CLI fallback)** covers `get`, `put`,
 `refresh`, `status`, and session context. `get` is one `comb get
 -f json <key> <key>:age <key>:stale`, so its answer is the resolver's — the
 directory chain up to `$HOME`, `$HOME` as the global entry, metadata

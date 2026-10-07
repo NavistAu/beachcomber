@@ -313,11 +313,7 @@ module Beachcomber
     # @param path [String, nil]
     # @return [nil]
     def put(key, data, ttl: nil, path: nil)
-      if data.nil?
-        Beachcomber::FFI.call!(:bc_put_null, @handle, key, path)
-      else
-        Beachcomber::FFI.call!(:bc_put, @handle, key, JSON.generate(data), ttl&.to_s, path)
-      end
+      Beachcomber::FFI.call!(:bc_put, @handle, key, JSON.generate(data), ttl&.to_s, path)
       nil
     end
 

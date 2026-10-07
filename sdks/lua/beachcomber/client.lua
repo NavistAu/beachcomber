@@ -4,14 +4,14 @@
 -- `ffi` over the cdylib) or `beachcomber.subprocess_backend` (shells out
 -- to `comb`; the sanctioned PUC Lua fallback) — and exposes the public API
 -- surface unchanged from the pre-ABI raw-socket implementation:
--- get/get_with_flags/refresh/set_context/status/hello/put/put_null/
+-- get/get_with_flags/refresh/set_context/status/hello/put/
 -- introspect/watch/close, plus Result:is_hit()/get_str(). `transport()` is
 -- new: every method above works identically regardless of which value it
 -- returns, but a caller that cares about latency can check it rather than
 -- discover a 5ms-per-call transport in a profile.
 --
 -- A backend implements: name(), get(key,path,flags), put(key,data,ttl,path),
--- put_null(key,path), status(), close(), and optionally
+-- status(), close(), and optionally
 -- refresh(key,path), introspect(subject,duration_secs), hello(),
 -- resolve(key,cwd,env),
 -- eval(template,cwd,env), watch_open(key,cwd,env) — each returning a
@@ -186,16 +186,6 @@ end
 -- @return true, or false, Error
 function Client:put(key, data, ttl, path)
   local resp = self._backend:put(key, data, ttl, self:_path(path))
-  if not resp.ok then return false, Error.from(resp.error) end
-  return true
-end
-
---- Clear a static-data entry's cached value.
--- @param key  string
--- @param path string?
--- @return true, or false, Error
-function Client:put_null(key, path)
-  local resp = self._backend:put_null(key, self:_path(path))
   if not resp.ok then return false, Error.from(resp.error) end
   return true
 end

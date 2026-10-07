@@ -99,7 +99,7 @@ Handshake — returns a `HelloInfo` with daemon and protocol version strings.
 
 #### `client.put(key, data, ttl, path)`
 
-Write a JSON value into the cache as static data. `ttl` and `path` are `Option<&str>`. Pass `None` for `data` (via `put_null`) to clear the entry.
+Write a JSON value into the cache as static data. `ttl` and `path` are `Option<&str>`. Pass `serde_json::Value::Null` as `data` to remove the node.
 
 #### `client.introspect(subject, duration_secs)`
 
@@ -140,10 +140,6 @@ match result {
 ```
 
 `data` provides typed accessors: `as_text()`, `get_str(field)`, `get_bool(field)`, `get_i64(field)`, `get_f64(field)`.
-
-#### `client.put_null(key, path)`
-
-Clear a static-data entry (equivalent to `put` with no data).
 
 ### `libbeachcomber::resolve`
 

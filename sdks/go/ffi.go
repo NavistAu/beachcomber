@@ -31,7 +31,7 @@ import (
 // even when a later symbol is missing).
 var requiredSymbolNames = []string{
 	"bc_client_new", "bc_client_free",
-	"bc_get", "bc_put", "bc_put_null", "bc_refresh", "bc_status", "bc_introspect", "bc_hello",
+	"bc_get", "bc_put", "bc_refresh", "bc_status", "bc_introspect", "bc_hello",
 	"bc_resolve", "bc_eval",
 	"bc_session_open", "bc_session_close", "bc_session_get", "bc_session_put", "bc_session_set_context",
 	"bc_watch_open", "bc_watch_next", "bc_watch_cancel", "bc_watch_free",
@@ -47,7 +47,7 @@ type nativeLib struct {
 	version string
 
 	bcClientNew, bcClientFree                                  uintptr
-	bcGet, bcPut, bcPutNull, bcRefresh, bcStatus, bcIntrospect uintptr
+	bcGet, bcPut, bcRefresh, bcStatus, bcIntrospect uintptr
 	bcHello, bcResolve, bcEval                                 uintptr
 	bcSessionOpen, bcSessionClose, bcSessionGet                uintptr
 	bcSessionPut, bcSessionSetContext                          uintptr
@@ -135,7 +135,7 @@ func loadNativeLib() (*nativeLib, error) {
 
 	dst := map[string]*uintptr{
 		"bc_client_new": &l.bcClientNew, "bc_client_free": &l.bcClientFree,
-		"bc_get": &l.bcGet, "bc_put": &l.bcPut, "bc_put_null": &l.bcPutNull,
+		"bc_get": &l.bcGet, "bc_put": &l.bcPut,
 		"bc_refresh": &l.bcRefresh, "bc_status": &l.bcStatus, "bc_introspect": &l.bcIntrospect,
 		"bc_hello": &l.bcHello, "bc_resolve": &l.bcResolve, "bc_eval": &l.bcEval,
 		"bc_session_open": &l.bcSessionOpen, "bc_session_close": &l.bcSessionClose,

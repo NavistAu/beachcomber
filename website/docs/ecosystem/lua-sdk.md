@@ -109,11 +109,7 @@ Handshake — returns a table with `daemon_version` and `protocol_version` field
 
 ### `Client:put(key, data, ttl, path)` → `true | nil, error`
 
-Write a value into the cache as static data. Pass `nil` for `data` to clear the entry.
-
-### `Client:put_null(key, path)` → `true | nil, error`
-
-Clear a static-data entry (shorthand for `put` with `data=nil`).
+Write a value into the cache as static data. Pass `nil` (or `beachcomber.null`) for `data` to remove the node.
 
 ### `Client:introspect(subject, duration_secs)` → `table | nil, error`
 

@@ -59,7 +59,7 @@ local function unwrap_get(env)
   return { ok = true, data = data, age_ms = age_ms, stale = stale, template = d.template, rest = d.rest }
 end
 
---- put/put_null/refresh/status/introspect/hello-shaped result: `{data:...}`
+--- put/refresh/status/introspect/hello-shaped result: `{data:...}`
 -- on ok. Deliberately does NOT collapse json.NULL — none of these ops
 -- encode a "miss" as a literal null the way bc_get/bc_watch_next do (see
 -- unwrap_get above), so their `data` stays whatever it decoded to; an op
@@ -147,11 +147,6 @@ function Backend:put(key, data, ttl, path)
     return { ok = false, error = { kind = "parse_error", message = "json encode error: " .. tostring(enc_err) } }
   end
   local ptr = self._C.bc_put(self._client, key, json_data, ttl, path)
-  return plain(decode(self._C, ptr))
-end
-
-function Backend:put_null(key, path)
-  local ptr = self._C.bc_put_null(self._client, key, path)
   return plain(decode(self._C, ptr))
 end
 

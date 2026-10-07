@@ -95,6 +95,13 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     assert.equal(typeof r.ageMs, 'number');
   });
 
+  it('put(key, null) removes the node, over the CLI', async () => {
+    await put('spnull', { x: 1 }, '/tmp');
+    assert.equal((await get('spnull.x', '/tmp')).isHit, true);
+    await put('spnull', null, '/tmp');
+    assert.equal((await get('spnull.x', '/tmp')).isMiss, true);
+  });
+
   it('a string field is a hit with the raw string', async () => {
     const r = await get('sp.s', '/tmp');
     assert.equal(r.isHit, true);

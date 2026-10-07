@@ -263,13 +263,6 @@ impl Client {
         unit_to_response(self.inner().put(key, data, ttl, path))
     }
 
-    /// Clear the cached entry for a static-data key without dropping the registry entry.
-    /// A subsequent `put` under the same key still works.
-    ///
-    pub fn put_null(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
-        unit_to_response(self.inner().put_null(key, path))
-    }
-
     pub fn refresh(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {
         unit_to_response(self.inner().refresh(key, path))
     }

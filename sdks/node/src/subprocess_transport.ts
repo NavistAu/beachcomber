@@ -8,7 +8,7 @@
  * absent by configuration (see `transport_select.ts`).
  *
  * Coverage is deliberately narrower than the FFI transport. `comb`'s CLI
- * has direct equivalents for get/put/put_null/refresh/status, and session
+ * has direct equivalents for get/put/refresh/status, and session
  * semantics are emulated client-side (remembering a context path between
  * calls — there is no real persistent connection to share, since each op is
  * its own process). `hello` and `introspect` have **no** faithful CLI
@@ -215,17 +215,11 @@ function cliGet(
 function cliPut(
   handle: SubprocessClientHandle,
   key: string,
-  jsonData: string | null,
+  jsonData: string,
   ttl: string | undefined,
   path_: string | undefined,
-  nullify: boolean,
 ): Envelope {
-  const args = ['put', key];
-  if (nullify) {
-    args.push('--null');
-  } else {
-    args.push(jsonData as string);
-  }
+  const args = ['put', key, jsonData];
   if (ttl !== undefined) args.push('--ttl', ttl);
   args.push(...pathArgs(path_));
   const { code, stderr } = runComb(handle.combBin, args, handle);
@@ -291,10 +285,7 @@ export function createSubprocessTransport(): Transport {
       return cliGet(h, key, path_, (flags & 0x1) !== 0, (flags & 0x2) !== 0);
     },
     async put(handle, key, jsonData, ttl, path_) {
-      return cliPut(handle as SubprocessClientHandle, key, jsonData, ttl, path_, false);
-    },
-    async putNull(handle, key, path_) {
-      return cliPut(handle as SubprocessClientHandle, key, null, undefined, path_, true);
+      return cliPut(handle as SubprocessClientHandle, key, jsonData, ttl, path_);
     },
     async refresh(handle, key, path_) {
       return cliRefresh(handle as SubprocessClientHandle, key, path_);
@@ -330,7 +321,7 @@ export function createSubprocessTransport(): Transport {
       // No contextPath fallback: the daemon's put op never consults
       // connection context (only get/refresh do), and the FFI tier passes
       // the caller's path through untouched. An omitted path means global.
-      return cliPut(s.client, key, jsonData, ttl, path_, false);
+      return cliPut(s.client, key, jsonData, ttl, path_);
     },
     async sessionSetContext(session, path_) {
       (session as SubprocessSessionHandle).contextPath = path_;

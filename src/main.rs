@@ -158,17 +158,14 @@ enum Commands {
         #[arg(long)]
         depth: Option<usize>,
     },
-    /// Put data at any node, deep-merging into what is already there
+    /// Put data at any node, replacing what is there; null data removes the node
     #[command(visible_alias = "p")]
     Put {
         /// Node to write (e.g., "myapp" or "myapp.deploy.status")
         key: String,
-        /// JSON data (an object at the root, any JSON below it); omit when using --null
-        data: Option<String>,
-        /// Remove the node's static records, dropping the entry when none remain; provider records are untouched
-        #[arg(long)]
-        null: bool,
-        /// Expire the node: valid for this long (e.g., "30s", "5m"), stale for one decay step, then removed; the next put renews it. At least 1s; not with --null
+        /// JSON data (an object at the root, any JSON below it); `null` removes the node's put, dropping the entry when none remain; provider records are untouched
+        data: String,
+        /// Expire the node: valid for this long (e.g., "30s", "5m"), stale for one decay step, then removed; the next put renews it. At least 1s; not with null data
         #[arg(long)]
         ttl: Option<String>,
         #[command(flatten)]
@@ -405,7 +402,6 @@ fn main() -> ExitCode {
         Commands::Put {
             key,
             data,
-            null,
             ttl,
             path: PathArgs { path, global },
         } => {
@@ -416,8 +412,7 @@ fn main() -> ExitCode {
             run_put(
                 &config,
                 &key,
-                data.as_deref(),
-                null,
+                &data,
                 ttl.as_deref(),
                 effective_path.as_deref(),
             )

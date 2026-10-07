@@ -269,15 +269,6 @@ function Backend:put(key, data, ttl, path)
   return { ok = true }
 end
 
-function Backend:put_null(key, path)
-  local cmd = self._comb .. " put --null " .. shell_escape(key) .. path_arg(path)
-  local _, ok, err = run(cmd)
-  if not ok then
-    return { ok = false, error = { kind = "server_error", message = (err or ""):gsub("%s+$", "") } }
-  end
-  return { ok = true }
-end
-
 --- One `comb refresh`: exit 0 is the daemon's ok; exit 2 is its refusal,
 -- printed alone on stderr — `nothing to refresh: <key> has no sources` for a
 -- key with no Source behind it — or the CLI's own line when it could not
