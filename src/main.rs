@@ -168,7 +168,7 @@ enum Commands {
         /// Remove the node's static records, dropping the entry when none remain; provider records are untouched
         #[arg(long)]
         null: bool,
-        /// Expected refresh interval (e.g., "30s", "5m")
+        /// Expire the node: valid for this long (e.g., "30s", "5m"), stale for one decay step, then removed; the next put renews it. At least 1s; not with --null
         #[arg(long)]
         ttl: Option<String>,
         #[command(flatten)]

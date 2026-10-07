@@ -343,6 +343,17 @@ impl LifecycleRegistry {
         self.entries.remove(key);
     }
 
+    /// Remove every `put` lifecycle key for `(provider, path)` at `node` or
+    /// below it (`""` is the namespace root: every one).
+    pub fn remove_put_keys(&mut self, provider: &str, path: Option<&str>, node: &str) {
+        self.entries.retain(|key, _| {
+            !(key.source == crate::cache::PUT_SOURCE
+                && key.provider == provider
+                && key.path.as_deref() == path
+                && crate::cache::is_at_or_below(&key.node, node))
+        });
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

@@ -24,6 +24,11 @@ pub fn run_put(
         return ExitCode::from(2);
     }
 
+    if null && ttl.is_some() {
+        eprintln!("a ttl on an absent value has no meaning");
+        return ExitCode::from(2);
+    }
+
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 

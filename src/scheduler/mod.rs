@@ -56,6 +56,15 @@ pub enum SchedulerMessage {
         path: Option<String>,
         demand: SourceDemand,
     },
+    /// A `put` wrote at `node`. The put's lifecycle is its ttl: `Some(N)` makes
+    /// the address a lifecycle entry (poll N x 1, decay 1), replacing every put
+    /// entry at or below `node`; `None` just removes them. Reads never renew it.
+    PutWritten {
+        provider: String,
+        path: Option<String>,
+        node: String,
+        ttl_secs: Option<u64>,
+    },
     /// Request a snapshot of all (provider, path, source) entries with non-zero failure counts.
     /// Returns an empty map when no failures are tracked.
     GetFailureStates {
@@ -321,9 +330,16 @@ fn build_status(
         .lock()
         .unwrap()
         .iter()
-        .map(|key| match &key.path {
-            Some(pa) => format!("{}:{pa}:{}", key.provider, key.source),
-            None => format!("{}:{}", key.provider, key.source),
+        .map(|key| {
+            let mut name = match &key.path {
+                Some(pa) => format!("{}:{pa}:{}", key.provider, key.source),
+                None => format!("{}:{}", key.provider, key.source),
+            };
+            if !key.node.is_empty() {
+                name.push('.');
+                name.push_str(&key.node);
+            }
+            name
         })
         .collect();
 
@@ -804,6 +820,10 @@ impl Scheduler {
                             self.refresh_sources(&provider, path.as_deref(), &demand);
                             last_activity = Instant::now();
                         }
+                        Some(SchedulerMessage::PutWritten { provider, path, node, ttl_secs }) => {
+                            apply_put_written(&mut lifecycle, &provider, path.as_deref(), &node, ttl_secs, Instant::now());
+                            last_activity = Instant::now();
+                        }
                         Some(SchedulerMessage::FsEvent { paths }) => {
                             self.handle_fs_event(paths, &watch_paths, &mut lifecycle);
                             last_activity = Instant::now();
@@ -1061,6 +1081,10 @@ impl Scheduler {
                             "Poll tick: executing provider={} path={:?} source={}",
                             key.provider, key.path, key.source
                         );
+                        if key.source == crate::cache::PUT_SOURCE {
+                            // A put's poll is its expiry clock; nothing to run.
+                            continue;
+                        }
                         self.execute_source(&key.provider, &key.source, key.path.as_deref());
                     }
 
@@ -1076,7 +1100,7 @@ impl Scheduler {
                         // Evict only this source's contribution; the entry is removed
                         // only when its last source evicts (canon: lifecycle is keyed
                         // per (provider, path, source)).
-                        self.cache.remove_source(&key.provider, key.path.as_deref(), &key.source);
+                        evict(&self.cache, key);
                         drop_watches_for_key(key, &mut watch_paths, &mut fs_watcher);
                     }
 
@@ -1119,6 +1143,10 @@ impl Scheduler {
                         None | Some(SchedulerMessage::Shutdown) => break,
                         Some(SchedulerMessage::Refresh { provider, path, demand }) => {
                             self.refresh_sources(&provider, path.as_deref(), &demand);
+                            last_activity = Instant::now();
+                        }
+                        Some(SchedulerMessage::PutWritten { provider, path, node, ttl_secs }) => {
+                            apply_put_written(&mut lifecycle, &provider, path.as_deref(), &node, ttl_secs, Instant::now());
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::FsEvent { .. }) => {
@@ -1215,6 +1243,10 @@ impl Scheduler {
                     let actions = lifecycle.tick(Instant::now());
 
                     for key in &actions.polls_due {
+                        if key.source == crate::cache::PUT_SOURCE {
+                            // A put's poll is its expiry clock; nothing to run.
+                            continue;
+                        }
                         self.execute_source(&key.provider, &key.source, key.path.as_deref());
                     }
 
@@ -1228,7 +1260,7 @@ impl Scheduler {
                         // Evict only this source's contribution; the entry is removed
                         // only when its last source evicts (canon: lifecycle is keyed
                         // per (provider, path, source)).
-                        self.cache.remove_source(&key.provider, key.path.as_deref(), &key.source);
+                        evict(&self.cache, key);
                     }
 
                     for (key, new_state) in &actions.transitions {
@@ -1325,6 +1357,49 @@ async fn register_path_watch(
     }
 }
 
+/// Apply a `PutWritten`: drop every `put` lifecycle key at or below `node`,
+/// then, when the put has a ttl, make the address a lifecycle entry: poll
+/// `ttl x 1`, decay depth 1. Valid for the ttl, readable but stale for one
+/// decay step, then evicted.
+fn apply_put_written(
+    lifecycle: &mut LifecycleRegistry,
+    provider: &str,
+    path: Option<&str>,
+    node: &str,
+    ttl_secs: Option<u64>,
+    now: Instant,
+) {
+    lifecycle.remove_put_keys(provider, path, node);
+    let Some(ttl_secs) = ttl_secs else {
+        return;
+    };
+    let key = lifecycle::Key {
+        provider: provider.to_string(),
+        path: path.map(str::to_string),
+        source: crate::cache::PUT_SOURCE.to_string(),
+        node: node.to_string(),
+    };
+    let cfg = SourceLifecycleConfig::from_strategy(
+        &InvalidationStrategy::Poll {
+            interval_secs: ttl_secs,
+            count: 1,
+        },
+        false,
+        1,
+    );
+    lifecycle.on_demand(key, cfg, now);
+}
+
+/// Evict one lifecycle key: a put address takes its own subtree with it, a
+/// Source takes its whole contribution.
+fn evict(cache: &Cache, key: &lifecycle::Key) {
+    if key.source == crate::cache::PUT_SOURCE {
+        cache.remove_put(&key.provider, key.path.as_deref(), &key.node);
+    } else {
+        cache.remove_source(&key.provider, key.path.as_deref(), &key.source);
+    }
+}
+
 /// Resolve affected lifecycle keys from a set of changed paths using watch_paths + patterns.
 fn resolve_keys_from_paths(
     changed_paths: &[PathBuf],
@@ -1360,7 +1435,11 @@ fn drop_watches_for_key(
     let mut paths_to_unwatch = Vec::new();
     for (watch_path, subscriptions) in watch_paths.iter_mut() {
         subscriptions.retain(|sub| {
-            !(sub.provider == key.provider && sub.path == key.path && sub.source == key.source)
+            // A Subscription belongs to a Source, whose key has no node.
+            !(sub.provider == key.provider
+                && sub.path == key.path
+                && sub.source == key.source
+                && key.node.is_empty())
         });
         if subscriptions.is_empty() {
             paths_to_unwatch.push(watch_path.clone());
@@ -1377,6 +1456,87 @@ fn drop_watches_for_key(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    fn put_key(path: Option<&str>, node: &str) -> lifecycle::Key {
+        lifecycle::Key {
+            provider: "build".into(),
+            path: path.map(str::to_string),
+            source: crate::cache::PUT_SOURCE.into(),
+            node: node.into(),
+        }
+    }
+
+    fn put_keys(lifecycle: &LifecycleRegistry) -> Vec<String> {
+        let mut keys: Vec<String> = lifecycle.iter().map(|(k, _)| k.node.clone()).collect();
+        keys.sort();
+        keys
+    }
+
+    /// Each put address is its own entry: valid for the ttl, stale for one
+    /// decay step (twice the ttl), then evicted. Nothing but a put renews it.
+    #[test]
+    fn a_put_entry_is_not_renewed_by_reads() {
+        let mut lifecycle = LifecycleRegistry::new();
+        let t0 = Instant::now();
+        apply_put_written(&mut lifecycle, "build", None, "status", Some(10), t0);
+
+        // No read path touches a put key: the only API that renews an entry is
+        // `on_demand`, and `apply_put_written` is its only put caller. The
+        // ttl runs out regardless of what else happens.
+        let actions = lifecycle.tick(t0 + Duration::from_secs(11));
+        assert_eq!(
+            actions.transitions.len(),
+            1,
+            "Active -> Decay(1) after the ttl"
+        );
+        assert!(actions.evictions.is_empty());
+        let actions = lifecycle.tick(t0 + Duration::from_secs(10 + 20 + 1));
+        assert_eq!(actions.evictions, vec![put_key(None, "status")]);
+
+        // The next put starts it over.
+        apply_put_written(&mut lifecycle, "build", None, "status", Some(10), t0);
+        assert_eq!(put_keys(&lifecycle), vec!["status"]);
+    }
+
+    #[test]
+    fn a_put_replaces_the_lifecycle_at_and_below_its_node_only() {
+        let mut lifecycle = LifecycleRegistry::new();
+        let t0 = Instant::now();
+        for node in ["a", "a.b", "ab", "c"] {
+            apply_put_written(&mut lifecycle, "build", None, node, Some(10), t0);
+        }
+        apply_put_written(&mut lifecycle, "build", Some("/p"), "a", Some(10), t0);
+
+        // A put with no ttl at `a` drops `a` and `a.b`, not `ab`, `c` or the
+        // same node at another path.
+        apply_put_written(&mut lifecycle, "build", None, "a", None, t0);
+        assert_eq!(put_keys(&lifecycle), vec!["a", "ab", "c"]);
+        assert!(lifecycle.iter().any(|(k, _)| k.path.is_some()));
+
+        // The root address covers every node at that (provider, path).
+        apply_put_written(&mut lifecycle, "build", None, "", None, t0);
+        assert_eq!(put_keys(&lifecycle), vec!["a"]);
+    }
+
+    #[test]
+    fn evicting_a_put_key_removes_only_that_address() {
+        use crate::cache::PUT_SOURCE;
+        use crate::provider::Value;
+        let cache = Cache::new();
+        let write = |node: &str, v: i64| {
+            cache
+                .write_static("build", None, PUT_SOURCE, node, Value::Int(v), Some(10))
+                .unwrap();
+        };
+        write("status", 1);
+        write("eta", 2);
+
+        evict(&cache, &put_key(None, "status"));
+
+        let rows = cache.list_rows();
+        let fields: Vec<&str> = rows.iter().map(|r| r.field.as_str()).collect();
+        assert_eq!(fields, vec!["eta"]);
+    }
 
     /// Pinning test for the watch-registration dedup fix: when multiple
     /// Sources subscribe to the same path (e.g. git's `refs` and `status`

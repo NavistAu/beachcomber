@@ -254,3 +254,27 @@ fn comb_put_json_null_removes() {
         .assert()
         .failure();
 }
+
+#[test]
+fn comb_put_json_null_with_ttl_exits_2() {
+    use crate::common::daemon::TestDaemon;
+    let d = TestDaemon::spawn();
+    let cwd = std::path::Path::new("/");
+    d.comb(cwd).args(["put", "ns.a", "1"]).assert().success();
+    for args in [
+        ["put", "ns.a", "null", "--ttl", "30s"].as_slice(),
+        ["put", "ns.a", "--null", "--ttl", "30s"].as_slice(),
+    ] {
+        d.comb(cwd)
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains(
+                "a ttl on an absent value has no meaning",
+            ));
+    }
+    d.comb(cwd)
+        .args(["get", "-f", "json", "ns.a"])
+        .assert()
+        .success();
+}

@@ -294,6 +294,16 @@ fn dotted_key(value: &Value) -> Option<&str> {
     None
 }
 
+/// Whether the put address `addr` is `node` or lies below it (`""` is the
+/// namespace root, which every address is at or below).
+pub(crate) fn is_at_or_below(addr: &str, node: &str) -> bool {
+    node.is_empty()
+        || addr == node
+        || addr
+            .strip_prefix(node)
+            .is_some_and(|rest| rest.starts_with('.'))
+}
+
 /// Drop the subtree at `node` (`""` for everything) from the `put` map,
 /// pruning it if it empties, unless it is `keep` — the label a write is about
 /// to land in. Every put address at or below `node` goes with it, and so does
@@ -314,10 +324,7 @@ fn drop_put_subtree(entry: &mut CacheEntry, node: &str, keep: Option<&str>) -> b
         }
         !src.fields.is_empty() || keep == Some(name.as_str())
     });
-    let below = format!("{node}.");
-    entry
-        .puts
-        .retain(|addr, _| !(node.is_empty() || addr == node || addr.starts_with(&below)));
+    entry.puts.retain(|addr, _| !is_at_or_below(addr, node));
     let held = entry.sources.get(PUT_SOURCE).map(|src| &src.fields);
     entry.puts.retain(|addr, _| {
         held.is_some_and(|fields| {

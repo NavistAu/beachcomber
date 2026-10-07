@@ -226,3 +226,26 @@ async fn put_addresses_keep_their_own_age() {
     assert_eq!(read.records["a"].age_ms(), 5000);
     assert_eq!(read.records["b"].age_ms(), 0);
 }
+
+/// A put with a ttl is stale once it is older than the ttl, and not before.
+#[tokio::test(start_paused = true)]
+async fn a_put_ttl_record_is_stale_past_its_ttl() {
+    use crate::cache::PUT_SOURCE;
+    let cache = Cache::new();
+    let registry = crate::provider::registry::ProviderRegistry::new();
+    cache
+        .write_static("ns", None, PUT_SOURCE, "a", Value::Int(1), Some(30))
+        .unwrap();
+    let stale = || {
+        cache
+            .read_merged("ns", None, None, &registry, crate::cache::Layers::All)
+            .unwrap()
+            .records["a"]
+            .is_stale()
+    };
+
+    tokio::time::advance(std::time::Duration::from_secs(30)).await;
+    assert!(!stale(), "valid through the ttl itself");
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    assert!(stale(), "stale once past the ttl");
+}

@@ -1231,10 +1231,33 @@ async fn handle_request(
             // request carrying no path at all, is the global entry.
             let effective_path: Option<String> = crate::query::normalise_path(path.as_deref());
 
+            // A ttl is the put's lifecycle: valid for N, stale for one decay
+            // step, then gone. It needs a value to expire.
+            if ttl.is_some() && data.is_null() {
+                return Response::error("a ttl on an absent value has no meaning");
+            }
+            let ttl_secs = match ttl.as_deref() {
+                None => None,
+                Some(t) => match crate::scheduler::parse_duration_secs_pub(t) {
+                    None => return Response::error(format!("invalid ttl: {t}")),
+                    Some(0) => return Response::error("ttl must be at least 1s"),
+                    Some(n) => Some(n),
+                },
+            };
+            let put_written = || crate::scheduler::SchedulerMessage::PutWritten {
+                provider: namespace.to_string(),
+                path: effective_path.clone(),
+                node: node.to_string(),
+                ttl_secs,
+            };
+
             // `data: null` means "clear the addressed node" — the row goes, the
             // registry entry stays.
             if data.is_null() {
                 cache.remove_put(namespace, effective_path.as_deref(), node);
+                if let Some(sched) = scheduler {
+                    sched.send(put_written()).await;
+                }
                 return Response {
                     ok: true,
                     data: None,
@@ -1267,19 +1290,18 @@ async fn handle_request(
                 _ => crate::provider::Value::from_json(data).expect("null data handled above"),
             };
 
-            let interval_secs = ttl
-                .as_deref()
-                .and_then(crate::scheduler::parse_duration_secs_pub);
-
             if let Err(e) = cache.write_static(
                 namespace,
                 effective_path.as_deref(),
                 crate::cache::PUT_SOURCE,
                 node,
                 value,
-                interval_secs,
+                ttl_secs,
             ) {
                 return Response::error(e.to_string());
+            }
+            if let Some(sched) = scheduler {
+                sched.send(put_written()).await;
             }
 
             // A namespace no provider declares becomes a static one; a provider
@@ -1313,19 +1335,34 @@ async fn handle_request(
                 // `Cache::list_rows` already marked static rows (source ==
                 // PUT_SOURCE or "config:*") with RowKind::Static; only rows
                 // backed by a real Source need a lifecycle/transient lookup.
+                // A put row is looked up too: with a ttl its address is a
+                // lifecycle entry, and without one it stays static.
+                let is_put = row.source == crate::cache::PUT_SOURCE;
                 let is_static = row.kind == Some(RowKind::Static);
 
-                if !is_static {
+                if !is_static || is_put {
                     // Look up the lifecycle snapshot for THIS row's owning source
                     // so glyphs and TTL columns reflect the source's strategy
                     // (refs vs diff vs status all differ within a single provider).
+                    // A put row's key is its address: the row's field, or the
+                    // root address when the field is a root put's top-level key.
                     let key = crate::scheduler::lifecycle::Key {
                         provider: row.provider.clone(),
                         path: row.path.clone(),
                         source: row.source.clone(),
-                        node: String::new(),
+                        node: if is_put {
+                            row.field.clone()
+                        } else {
+                            String::new()
+                        },
                     };
-                    let matching_snap = lifecycle.get(&key);
+                    let matching_snap = lifecycle.get(&key).or_else(|| {
+                        let root = crate::scheduler::lifecycle::Key {
+                            node: String::new(),
+                            ..key.clone()
+                        };
+                        if is_put { lifecycle.get(&root) } else { None }
+                    });
 
                     if let Some(snap) = matching_snap {
                         row.kind = Some(RowKind::Lifecycle {
@@ -1342,7 +1379,7 @@ async fn handle_request(
                             row.next_poll_in_secs = snap.next_poll_in_secs;
                         }
                         row.fsevents_reinstate = Some(snap.fsevents_reinstate);
-                    } else {
+                    } else if !is_put {
                         row.kind = Some(RowKind::Transient);
                     }
 
