@@ -740,6 +740,30 @@ async fn a_put_under_a_sentinel_source_layers_over_it() {
     handle.abort();
 }
 
+/// A key no Source lists in advance still finds the sentinel Source one node
+/// up, so a cold `get` runs it (`mise.node`, PR #11's `public_ip.body`).
+#[tokio::test]
+async fn a_cold_get_of_a_field_a_sentinel_source_never_declared_runs_it() {
+    let mut registry = ProviderRegistry::new();
+    registry.register(Box::new(SentinelProvider)).unwrap();
+    let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    let node = data_of(
+        send_recv(
+            &mut s,
+            &serde_json::json!({"op":"get","key":"toolset.node"}),
+        )
+        .await,
+        "cold get toolset.node",
+    );
+    assert_eq!(node, serde_json::json!("22.0.0"));
+
+    handle.abort();
+}
+
 /// A put of an object at a provider's root states the whole namespace at that
 /// directory: the Source's unlisted fields are hidden, not removed.
 ///

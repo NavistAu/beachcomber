@@ -368,14 +368,15 @@ impl QueryPlan {
             _ if layers == crate::cache::Layers::Put => SourceDemand::Sources(Vec::new()),
             KeyParse::Provider(_) => SourceDemand::All,
             KeyParse::Field(p, f) => {
-                // A field's demand is its owning Source only (canon §150/§268).
-                // The owning source is matched on the top-level field name (nested
-                // sub-paths like "project.rust" are owned by whoever owns "project").
-                let head = f.split('.').next().unwrap_or(f);
-                match registry.source_for_field(p, head) {
-                    Some(src) => SourceDemand::Sources(vec![src.to_string()]),
-                    None => SourceDemand::Sources(Vec::new()),
-                }
+                // A field's demand is the Source of its nearest ancestor node,
+                // else the provider's sentinel Sources, else nothing.
+                SourceDemand::Sources(
+                    registry
+                        .sources_for_key(p, f)
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
+                )
             }
         };
 
@@ -488,6 +489,38 @@ mod tests {
         let plan = QueryPlan::build("git.refs.branch", None, &reg);
         match plan.demand {
             SourceDemand::Sources(v) => assert!(v.is_empty(), "git.refs.branch addresses no field"),
+            other => panic!("expected Sources([]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_a_nested_key_demands_its_nearest_ancestors_source() {
+        let reg = ProviderRegistry::with_defaults();
+        let plan = QueryPlan::build("git.branch.x", None, &reg);
+        match plan.demand {
+            SourceDemand::Sources(v) => assert_eq!(v, vec!["head".to_string()]),
+            other => panic!("expected Sources([head]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_an_undeclared_field_under_sentinel_sources_demands_them_all() {
+        let reg = ProviderRegistry::with_defaults();
+        let plan = QueryPlan::build("mise.node", None, &reg);
+        match plan.demand {
+            SourceDemand::Sources(v) => {
+                assert_eq!(v, vec!["global".to_string(), "project".to_string()])
+            }
+            other => panic!("expected Sources([global, project]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_an_undeclared_field_without_a_sentinel_demands_nothing() {
+        let reg = ProviderRegistry::with_defaults();
+        let plan = QueryPlan::build("hostname.nonesuch", None, &reg);
+        match plan.demand {
+            SourceDemand::Sources(v) => assert!(v.is_empty(), "no sentinel, nothing declared"),
             other => panic!("expected Sources([]), got {other:?}"),
         }
     }

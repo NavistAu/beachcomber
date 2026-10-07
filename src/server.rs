@@ -347,8 +347,7 @@ async fn handle_watch(
     match &plan.target {
         _ if layered => {}
         crate::query::KeyParse::Field(provider, field) => {
-            let head = field.split('.').next().unwrap_or(field.as_str());
-            if let Some(source_name) = registry.source_for_field(provider, head) {
+            for source_name in registry.sources_for_key(provider, field) {
                 maybe_read_always(
                     registry,
                     cache,

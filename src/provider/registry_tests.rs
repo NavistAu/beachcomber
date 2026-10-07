@@ -89,12 +89,12 @@ fn registry_is_registered_reports_provider_names() {
 }
 
 #[test]
-fn registry_source_for_field() {
+fn registry_sources_for_key() {
     let registry = ProviderRegistry::with_defaults();
     // hostname.host source declares the "name" field
     assert_eq!(
-        registry.source_for_field("hostname", "name"),
-        Some("host"),
+        registry.sources_for_key("hostname", "name"),
+        vec!["host"],
         "field 'name' on hostname should belong to source 'host'"
     );
 }

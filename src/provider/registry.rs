@@ -9,8 +9,12 @@ pub struct ProviderRegistry {
     sources: HashMap<(String, String), Arc<dyn Source>>,
     /// Provider metadata snapshot, indexed by provider name.
     providers: HashMap<String, ProviderMetadata>,
-    /// (provider_name, field_name) → source_name. Built once at registration.
+    /// (provider_name, declared dotted field) → source_name, sentinels excluded.
+    /// Built once at registration.
     field_to_source: HashMap<(String, String), String>,
+    /// provider_name → Sources declaring a sentinel field (`<tool>`), in
+    /// declaration order. They answer for the provider node.
+    sentinel_sources: HashMap<String, Vec<String>>,
     /// Static namespace names registered via `comb put`. Orthogonal to the source model.
     static_names: DashMap<String, ()>,
 }
@@ -27,11 +31,12 @@ impl ProviderRegistry {
             sources: HashMap::new(),
             providers: HashMap::new(),
             field_to_source: HashMap::new(),
+            sentinel_sources: HashMap::new(),
             static_names: DashMap::new(),
         }
     }
 
-    /// Register a provider. Validates metadata, builds the field→source reverse map,
+    /// Register a provider. Validates metadata, builds the field→source and sentinel maps,
     /// and inserts all sources. Returns `Err` if the provider name is already registered,
     /// metadata is invalid, or sources() doesn't match metadata.
     pub fn register(&mut self, provider: Box<dyn Provider>) -> Result<(), String> {
@@ -60,11 +65,18 @@ impl ProviderRegistry {
                 ));
             }
         }
-        // Populate field_to_source map.
+        // Populate the declared-field map and the sentinel list.
         for sm in &meta.sources {
             for f in &sm.fields {
-                self.field_to_source
-                    .insert((meta.name.clone(), f.name.clone()), sm.name.clone());
+                if f.name.starts_with('<') {
+                    let list = self.sentinel_sources.entry(meta.name.clone()).or_default();
+                    if !list.contains(&sm.name) {
+                        list.push(sm.name.clone());
+                    }
+                } else {
+                    self.field_to_source
+                        .insert((meta.name.clone(), f.name.clone()), sm.name.clone());
+                }
             }
         }
         // Insert sources.
@@ -90,11 +102,29 @@ impl ProviderRegistry {
             .cloned()
     }
 
-    /// Given a field name on a provider, return the name of the source that owns it.
-    pub fn source_for_field(&self, provider: &str, field: &str) -> Option<&str> {
-        self.field_to_source
-            .get(&(provider.to_string(), field.to_string()))
-            .map(|s| s.as_str())
+    /// The Sources that answer `field` (dotted, below the provider): the Source
+    /// declared at the nearest ancestor node of the key — `field` itself, then
+    /// each shorter dotted prefix (`foo.bar.baz` tries `foo.bar.baz`, `foo.bar`,
+    /// `foo`) — else every Source that declares a sentinel field (they answer for
+    /// the provider node), in declaration order, else none.
+    pub fn sources_for_key(&self, provider: &str, field: &str) -> Vec<&str> {
+        let mut node = field;
+        loop {
+            if let Some(src) = self
+                .field_to_source
+                .get(&(provider.to_string(), node.to_string()))
+            {
+                return vec![src.as_str()];
+            }
+            match node.rfind('.') {
+                Some(i) => node = &node[..i],
+                None => break,
+            }
+        }
+        self.sentinel_sources
+            .get(provider)
+            .map(|v| v.iter().map(String::as_str).collect())
+            .unwrap_or_default()
     }
 
     /// Return the slice of SourceMetadata for all sources declared by a provider.
@@ -430,17 +460,70 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_builds_field_to_source_map() {
+    fn registry_of(name: &str, sources: Vec<SourceMetadata>) -> ProviderRegistry {
         let mut reg = ProviderRegistry::new();
-        let p = FakeProvider {
-            name: "git".into(),
-            sources: vec![ms("refs", vec!["branch"]), ms("diff", vec!["lines_added"])],
-        };
-        reg.register(Box::new(p)).unwrap();
-        assert_eq!(reg.source_for_field("git", "branch"), Some("refs"));
-        assert_eq!(reg.source_for_field("git", "lines_added"), Some("diff"));
-        assert_eq!(reg.source_for_field("git", "nonexistent"), None);
+        reg.register(Box::new(FakeProvider {
+            name: name.into(),
+            sources,
+        }))
+        .unwrap();
+        reg
+    }
+
+    #[test]
+    fn the_nearest_declared_ancestor_node_answers() {
+        let reg = registry_of(
+            "p",
+            vec![ms("deep", vec!["foo.bar"]), ms("top", vec!["foo"])],
+        );
+        assert_eq!(reg.sources_for_key("p", "foo.bar.baz"), vec!["deep"]);
+        assert_eq!(reg.sources_for_key("p", "foo.bar"), vec!["deep"]);
+        assert_eq!(reg.sources_for_key("p", "foo.qux"), vec!["top"]);
+        assert_eq!(reg.sources_for_key("p", "foo"), vec!["top"]);
+    }
+
+    #[test]
+    fn a_leaf_below_a_declared_field_finds_its_source() {
+        let reg = registry_of(
+            "git",
+            vec![ms("refs", vec!["branch"]), ms("diff", vec!["lines_added"])],
+        );
+        assert_eq!(reg.sources_for_key("git", "branch"), vec!["refs"]);
+        assert_eq!(reg.sources_for_key("git", "branch.x"), vec!["refs"]);
+        assert_eq!(reg.sources_for_key("git", "lines_added"), vec!["diff"]);
+    }
+
+    #[test]
+    fn sentinel_sources_answer_for_the_provider_node() {
+        let reg = registry_of(
+            "mise",
+            vec![ms("global", vec!["<tool>"]), ms("project", vec!["<tool>"])],
+        );
+        assert_eq!(
+            reg.sources_for_key("mise", "node"),
+            vec!["global", "project"]
+        );
+        assert_eq!(
+            reg.sources_for_key("mise", "node.version"),
+            vec!["global", "project"]
+        );
+    }
+
+    #[test]
+    fn a_declared_ancestor_beats_the_sentinels() {
+        let reg = registry_of(
+            "p",
+            vec![ms("named", vec!["a"]), ms("rest", vec!["<field>"])],
+        );
+        assert_eq!(reg.sources_for_key("p", "a.b"), vec!["named"]);
+        assert_eq!(reg.sources_for_key("p", "other"), vec!["rest"]);
+    }
+
+    #[test]
+    fn an_undeclared_key_without_a_sentinel_finds_nothing() {
+        let reg = registry_of("git", vec![ms("refs", vec!["branch"])]);
+        assert!(reg.sources_for_key("git", "nonexistent").is_empty());
+        assert!(reg.sources_for_key("nope", "branch").is_empty());
     }
 
     #[test]
