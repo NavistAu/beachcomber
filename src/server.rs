@@ -1117,6 +1117,11 @@ async fn handle_request(
             if let Err(msg) = crate::query::parse_facet(provider_name) {
                 return Response::error(msg);
             }
+            if plan.layers != crate::cache::Layers::All {
+                return Response::error(format!(
+                    "cannot refresh {key}: a layer facet is read-only"
+                ));
+            }
 
             // The same set `get` warms, re-executed instead of read. A key that
             // names none — a static namespace, a facet, an unknown name, or a
@@ -1193,8 +1198,13 @@ async fn handle_request(
             let (namespace, node) = protocol::split_key(key);
             let node = node.unwrap_or("");
 
-            if namespace.ends_with(":put") || namespace.ends_with(":source") {
-                return Response::error("p:put and p:source are read-only; write p.<node>");
+            if let Some(base) = namespace
+                .strip_suffix(":put")
+                .or_else(|| namespace.strip_suffix(":source"))
+            {
+                return Response::error(format!(
+                    "{base}:put and {base}:source are read-only; write {base}.<node>"
+                ));
             }
 
             // Facet syntax is checked on the namespace segment — `put` has no

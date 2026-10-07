@@ -506,5 +506,93 @@ async fn a_put_to_the_put_or_source_facet_is_refused() {
         );
     }
 
+    // The message names the real base namespace, not a hard-coded one.
+    let r = send_recv(
+        &mut stream,
+        r#"{"op":"put","key":"git:put.branch","data":1}"#,
+    )
+    .await;
+    assert_eq!(
+        r.error.as_deref(),
+        Some("git:put and git:source are read-only; write git.<node>")
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_refresh_of_a_layer_facet_names_the_key_as_given() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    for key in ["p:put", "p:source", "git:put.branch", "git:source.branch"] {
+        let r = send_recv(
+            &mut stream,
+            &serde_json::json!({"op":"refresh","key":key}).to_string(),
+        )
+        .await;
+        assert!(!r.ok, "refresh {key} must be refused");
+        assert_eq!(
+            r.error.as_deref(),
+            Some(format!("cannot refresh {key}: a layer facet is read-only").as_str()),
+        );
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_metadata_suffix_after_a_layer_facet_is_the_same_error_for_both() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    for (key, bad) in [("p:put:age", "p:put"), ("p:source:age", "p:source")] {
+        let r = send_recv(
+            &mut stream,
+            &serde_json::json!({"op":"get","key":key}).to_string(),
+        )
+        .await;
+        assert!(!r.ok, "get {key} must be refused: {r:?}");
+        assert_eq!(r.error, Some(format!("invalid facet key: {bad}")));
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_cold_watch_on_the_put_facet_warms_nothing() {
+    if !has_git() {
+        return;
+    }
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache.clone(), registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let repo = GitRepoFixture::new();
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    stream
+        .write_all(
+            format!(
+                "{}\n",
+                serde_json::json!({"op":"watch","key":"git:put.branch","path":repo.path_str()})
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(&mut stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+    let first: Response = serde_json::from_str(line.trim()).unwrap();
+    assert!(first.ok, "{:?}", first.error);
+    assert!(first.data.is_none(), "nothing in the put layer: {first:?}");
+    assert!(
+        cache.list_rows().iter().all(|r| r.provider != "git"),
+        "no Source ran for the watch"
+    );
+
     handle.abort();
 }

@@ -34,7 +34,8 @@ pub fn split_metadata_suffix(key: &str) -> (&str, Option<&str>) {
 /// malformed one — more than one colon, an empty base or facet, invalid
 /// characters, or a facet name that collides with a metadata suffix (those
 /// five names are unreachable as facets; a suffix strip always claims them
-/// first).
+/// first) or is `put`, the layer facet: a `:put` that survives to here was
+/// followed by a metadata suffix, and `:source` fails the same way.
 pub fn parse_facet(provider: &str) -> Result<Option<&str>, String> {
     if !provider.contains(':') {
         return Ok(None);
@@ -45,7 +46,8 @@ pub fn parse_facet(provider: &str) -> Result<Option<&str>, String> {
         && facet
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        && !KNOWN_METADATA_SUFFIXES.contains(&facet);
+        && !KNOWN_METADATA_SUFFIXES.contains(&facet)
+        && facet != "put";
     if valid {
         Ok(Some(facet))
     } else {
