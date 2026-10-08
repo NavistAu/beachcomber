@@ -1,6 +1,6 @@
 //! Source-aware request planning: turns a raw request key plus an optional path
 //! hint into a resolved `QueryPlan` (provider, effective path, parsed target,
-//! metadata suffix, and the set of Sources the query demands).
+//! and the set of Sources the query demands).
 //!
 //! This is the single place that understands key syntax. `Get` and `Watch` both
 //! build a `QueryPlan` here so they share identical resolution semantics.
@@ -10,21 +10,18 @@ use crate::provider::registry::ProviderRegistry;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The set of metadata suffix names the server recognises. Keep this in sync
-/// with the `match meta` post-processing arms in `server::handle_request`.
-pub const KNOWN_METADATA_SUFFIXES: &[&str] = &["age", "stale", "fresh", "source"];
-
-/// Parse a metadata suffix from a key. "git.branch:fresh" → ("git.branch", Some("fresh")).
-/// Only suffixes listed in KNOWN_METADATA_SUFFIXES are stripped; anything else passes
-/// through as part of the key. Metadata suffix splitting must run BEFORE key parsing
-/// so the field/suffix disambiguation is correct.
-pub fn split_metadata_suffix(key: &str) -> (&str, Option<&str>) {
-    if let Some((base, meta)) = key.rsplit_once(':')
-        && KNOWN_METADATA_SUFFIXES.contains(&meta)
+/// Check the colons of a request key. One colon form exists: `p:facet`, with
+/// the colon in the first segment, before any dot. A colon after the first dot
+/// makes the key invalid; a malformed facet in the first segment is
+/// [`parse_facet`]'s error. Every op that takes a key calls this first.
+pub fn validate_key(key: &str) -> Result<(), String> {
+    if key
+        .split_once('.')
+        .is_some_and(|(_, rest)| rest.contains(':'))
     {
-        return (base, Some(meta));
+        return Err(format!("invalid key: {key}"));
     }
-    (key, None)
+    Ok(())
 }
 
 /// Parse the facet syntax of a provider segment. A provider name containing a
@@ -32,10 +29,8 @@ pub fn split_metadata_suffix(key: &str) -> (&str, Option<&str>) {
 /// "Facet"). Returns `Ok(None)` for a plain provider name (no colon),
 /// `Ok(Some(facet))` for a syntactically valid facet key, or `Err` for a
 /// malformed one — more than one colon, an empty base or facet, invalid
-/// characters, or a facet name that collides with a metadata suffix (those
-/// four names are unreachable as facets; a suffix strip always claims them
-/// first) or is `put`, the layer facet: a `:put` that survives to here was
-/// followed by a metadata suffix, and `:source` fails the same way.
+/// characters, or a facet name that is `put` or `source`, the layer facets a
+/// request key splits off before this check and a config table cannot be.
 pub fn parse_facet(provider: &str) -> Result<Option<&str>, String> {
     if !provider.contains(':') {
         return Ok(None);
@@ -46,8 +41,7 @@ pub fn parse_facet(provider: &str) -> Result<Option<&str>, String> {
         && facet
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        && !KNOWN_METADATA_SUFFIXES.contains(&facet)
-        && facet != "put";
+        && !matches!(facet, "put" | "source");
     if valid {
         Ok(Some(facet))
     } else {
@@ -323,7 +317,6 @@ pub struct QueryPlan {
     /// [`requested_path`]: QueryPlan::requested_path
     pub effective_path: Option<String>,
     pub target: KeyParse,
-    pub meta: Option<String>,
     pub demand: SourceDemand,
     /// Which layers the read sees: `p:put` and `p:source` name one, anything
     /// else sees them all. `p:cache` reads them all to report on them.
@@ -332,8 +325,7 @@ pub struct QueryPlan {
 
 /// Split a `:put`, `:source` or `:cache` layer facet off the provider segment
 /// of a key: `git:source.branch` is `("git.branch", Source)`. Any other key is
-/// returned unchanged with every layer. The segment is judged before a metadata suffix
-/// is, so a bare `p:source` is the facet, never `p` with the `:source` suffix.
+/// returned unchanged with every layer.
 pub fn split_layer_facet(key: &str) -> (std::borrow::Cow<'_, str>, crate::cache::Layers) {
     use crate::cache::Layers;
     let (segment, rest) = match key.find('.') {
@@ -355,14 +347,18 @@ pub fn split_layer_facet(key: &str) -> (std::borrow::Cow<'_, str>, crate::cache:
 }
 
 impl QueryPlan {
-    /// Resolve a raw request key + optional path hint into a plan.
-    /// `raw_key` may carry a metadata suffix (e.g. `git.branch:fresh`).
-    pub fn build(raw_key: &str, path_hint: Option<&str>, registry: &ProviderRegistry) -> QueryPlan {
-        let (raw_key, layers) = split_layer_facet(raw_key);
-        let (stripped_key, meta) = split_metadata_suffix(&raw_key);
+    /// Resolve a raw request key + optional path hint into a plan, or refuse
+    /// a key whose colons are invalid ([`validate_key`]).
+    pub fn build(
+        raw_key: &str,
+        path_hint: Option<&str>,
+        registry: &ProviderRegistry,
+    ) -> Result<QueryPlan, String> {
+        validate_key(raw_key)?;
+        let (key, layers) = split_layer_facet(raw_key);
         let requested_path = normalise_path(path_hint);
-        let effective_path = resolve_path(stripped_key, requested_path.as_deref(), registry);
-        let target = parse_key(stripped_key);
+        let effective_path = resolve_path(&key, requested_path.as_deref(), registry);
+        let target = parse_key(&key);
 
         let provider = match &target {
             KeyParse::Provider(p) => p.clone(),
@@ -393,15 +389,14 @@ impl QueryPlan {
             }
         };
 
-        QueryPlan {
+        Ok(QueryPlan {
             provider,
             requested_path,
             effective_path,
             target,
-            meta: meta.map(|s| s.to_string()),
             demand,
             layers,
-        }
+        })
     }
 }
 
@@ -449,25 +444,29 @@ mod tests {
     }
 
     #[test]
-    fn split_metadata_suffix_strips_known() {
-        assert_eq!(
-            split_metadata_suffix("git.branch:fresh"),
-            ("git.branch", Some("fresh"))
-        );
+    fn validate_key_allows_one_colon_in_the_first_segment() {
+        for key in [
+            "git",
+            "git.branch",
+            "git:cache.branch",
+            "p:template",
+            "a.b.c",
+        ] {
+            assert_eq!(validate_key(key), Ok(()), "{key}");
+        }
     }
 
     #[test]
-    fn split_metadata_suffix_passes_through_unknown() {
-        assert_eq!(
-            split_metadata_suffix("git.branch:bogus"),
-            ("git.branch:bogus", None)
-        );
+    fn validate_key_refuses_a_colon_after_the_first_segment() {
+        for key in ["git.branch:age", "git:cache.x:stale", "a.b:c"] {
+            assert_eq!(validate_key(key), Err(format!("invalid key: {key}")));
+        }
     }
 
     #[test]
     fn build_provider_demands_all() {
         let reg = ProviderRegistry::with_defaults();
-        let plan = QueryPlan::build("git", None, &reg);
+        let plan = QueryPlan::build("git", None, &reg).unwrap();
         assert!(matches!(plan.demand, SourceDemand::All));
         assert_eq!(plan.provider, "git");
     }
@@ -476,7 +475,7 @@ mod tests {
     fn build_field_demands_only_owning_source() {
         let reg = ProviderRegistry::with_defaults();
         // branch is owned by the head source (split from refs).
-        let plan = QueryPlan::build("git.branch", None, &reg);
+        let plan = QueryPlan::build("git.branch", None, &reg).unwrap();
         match plan.demand {
             SourceDemand::Sources(v) => assert_eq!(v, vec!["head".to_string()]),
             other => panic!("expected Sources([head]), got {other:?}"),
@@ -488,7 +487,7 @@ mod tests {
         let reg = ProviderRegistry::with_defaults();
         // "refs" is a source name, not a field: git.refs parses as Field, and
         // no field owns it, so it demands nothing (same as any unknown field).
-        let plan = QueryPlan::build("git.refs", None, &reg);
+        let plan = QueryPlan::build("git.refs", None, &reg).unwrap();
         assert!(matches!(plan.target, KeyParse::Field(_, ref f) if f == "refs"));
         match plan.demand {
             SourceDemand::Sources(v) => assert!(v.is_empty(), "git.refs is not a field"),
@@ -499,7 +498,7 @@ mod tests {
     #[test]
     fn build_source_name_prefixed_field_demands_nothing() {
         let reg = ProviderRegistry::with_defaults();
-        let plan = QueryPlan::build("git.refs.branch", None, &reg);
+        let plan = QueryPlan::build("git.refs.branch", None, &reg).unwrap();
         match plan.demand {
             SourceDemand::Sources(v) => assert!(v.is_empty(), "git.refs.branch addresses no field"),
             other => panic!("expected Sources([]), got {other:?}"),
@@ -509,7 +508,7 @@ mod tests {
     #[test]
     fn build_a_nested_key_demands_its_nearest_ancestors_source() {
         let reg = ProviderRegistry::with_defaults();
-        let plan = QueryPlan::build("git.branch.x", None, &reg);
+        let plan = QueryPlan::build("git.branch.x", None, &reg).unwrap();
         match plan.demand {
             SourceDemand::Sources(v) => assert_eq!(v, vec!["head".to_string()]),
             other => panic!("expected Sources([head]), got {other:?}"),
@@ -519,7 +518,7 @@ mod tests {
     #[test]
     fn build_an_undeclared_field_under_sentinel_sources_demands_them_all() {
         let reg = ProviderRegistry::with_defaults();
-        let plan = QueryPlan::build("mise.node", None, &reg);
+        let plan = QueryPlan::build("mise.node", None, &reg).unwrap();
         match plan.demand {
             SourceDemand::Sources(v) => {
                 assert_eq!(v, vec!["global".to_string(), "project".to_string()])
@@ -531,7 +530,7 @@ mod tests {
     #[test]
     fn build_an_undeclared_field_without_a_sentinel_demands_nothing() {
         let reg = ProviderRegistry::with_defaults();
-        let plan = QueryPlan::build("hostname.nonesuch", None, &reg);
+        let plan = QueryPlan::build("hostname.nonesuch", None, &reg).unwrap();
         match plan.demand {
             SourceDemand::Sources(v) => assert!(v.is_empty(), "no sentinel, nothing declared"),
             other => panic!("expected Sources([]), got {other:?}"),
@@ -541,7 +540,7 @@ mod tests {
     #[test]
     fn build_unknown_field_demands_nothing() {
         let reg = ProviderRegistry::with_defaults();
-        let plan = QueryPlan::build("git.totally_bogus_field", None, &reg);
+        let plan = QueryPlan::build("git.totally_bogus_field", None, &reg).unwrap();
         match plan.demand {
             SourceDemand::Sources(v) => assert!(v.is_empty(), "unknown field warms nothing"),
             other => panic!("expected Sources([]), got {other:?}"),
@@ -580,24 +579,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_facet_rejects_known_metadata_suffix_names() {
-        for suffix in KNOWN_METADATA_SUFFIXES {
-            assert!(
-                parse_facet(&format!("a:{suffix}")).is_err(),
-                "facet named after metadata suffix '{suffix}' must be rejected"
-            );
+    fn parse_facet_rejects_the_layer_facet_names() {
+        for facet in ["put", "source"] {
+            assert!(parse_facet(&format!("a:{facet}")).is_err(), "{facet}");
         }
     }
 
     #[test]
-    fn build_strips_metadata_suffix() {
+    fn build_refuses_a_colon_outside_the_provider_segment() {
         let reg = ProviderRegistry::with_defaults();
-        let plan = QueryPlan::build("git.branch:fresh", None, &reg);
-        assert_eq!(plan.meta.as_deref(), Some("fresh"));
-        match plan.demand {
-            SourceDemand::Sources(v) => assert_eq!(v, vec!["head".to_string()]),
-            other => panic!("expected Sources([head]), got {other:?}"),
-        }
+        let err = QueryPlan::build("git.branch:fresh", None, &reg).unwrap_err();
+        assert_eq!(err, "invalid key: git.branch:fresh");
     }
 }
 

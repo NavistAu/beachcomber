@@ -18,7 +18,7 @@ const BC_GET_WAIT = 0x2;
 // The subprocess tier asks `comb get -f json <key> <p>:cache.<rest>`
 // for the value and its `:cache` answer (age, staleness) in one spawn, so its answer is
 // the resolver's — the directory chain, `$HOME` as the global entry,
-// metadata suffixes, `--force`/`--wait`, the daemon's refusals — and a
+// `--force`/`--wait`, the daemon's refusals — and a
 // template-backed key renders. These drive the transport directly and
 // unwrap its envelope exactly as `Client.get` does.
 describe('subprocess transport get against a real daemon', { skip }, () => {
@@ -180,11 +180,12 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     assert.equal(r.stale, false);
   });
 
-  it('a :age suffix is the age, a number', async () => {
-    const r = await get('sp.n:age', '/tmp');
-    assert.equal(r.isHit, true);
-    assert.equal(typeof r.data, 'number');
-    assert.equal(lastArgv(), 'get -f json sp.n:age --path /tmp');
+  it("a colon outside the provider segment is not a facet: it is asked with its :cache slot and refused as an invalid key", async () => {
+    await assert.rejects(
+      () => get('sp.n:age', '/tmp'),
+      (err: unknown) => err instanceof ServerError && err.serverMessage === 'invalid key: sp.n:age',
+    );
+    assert.equal(lastArgv(), 'get -f json sp.n:age sp:cache.n:age --path /tmp');
   });
 
   it('wait reaches the wire as --wait, in one comb get with the :cache slot', async () => {

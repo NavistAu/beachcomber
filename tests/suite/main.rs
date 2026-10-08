@@ -43,7 +43,6 @@ mod integration_scheduler;
 mod json_value_conversion;
 mod key_addressing;
 mod kill_introspect_pid;
-mod metadata_suffixes;
 mod no_sleep_in_tests;
 mod path_chain;
 mod provider_conformance;

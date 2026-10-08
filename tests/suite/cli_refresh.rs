@@ -31,11 +31,12 @@ fn get_json(d: &TestDaemon, cwd: &Path, key: &str) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
-/// The `:age` of a key, in ms. Reading an age never re-executes a Source.
+/// The `age_ms` of a key's `:cache` leaf, in ms. Reading an age never re-executes a Source.
 fn age(d: &TestDaemon, cwd: &Path, key: &str) -> u64 {
-    get_json(d, cwd, &format!("{key}:age"))
+    let cache_key = key.replacen('.', ":cache.", 1);
+    get_json(d, cwd, &cache_key)["age_ms"]
         .as_u64()
-        .unwrap_or_else(|| panic!("{key}:age should be a number"))
+        .unwrap_or_else(|| panic!("{cache_key} should carry an age_ms"))
 }
 
 #[test]
@@ -126,7 +127,7 @@ fn refresh_of_a_field_re_executes_its_owning_source_alone() {
         .success();
 
     let diff_before = poll_until(
-        "git.lines_added:age",
+        "git:cache.lines_added age_ms",
         "at least 50ms",
         Duration::from_secs(5),
         Duration::from_millis(5),
@@ -143,7 +144,7 @@ fn refresh_of_a_field_re_executes_its_owning_source_alone() {
         .stderr(predicates::str::is_empty());
 
     let diff_after = poll_until(
-        "git.lines_added:age after refresh git.lines_added",
+        "git:cache.lines_added age_ms after refresh git.lines_added",
         "back below its pre-refresh age",
         Duration::from_secs(5),
         Duration::from_millis(5),
@@ -152,12 +153,12 @@ fn refresh_of_a_field_re_executes_its_owning_source_alone() {
     );
     let lineage_after = age(&d, cwd, "git.branch_default");
     eprintln!(
-        "git.lines_added:age {diff_before} -> {diff_after}; git.branch_default:age {lineage_before} -> {lineage_after}"
+        "git.lines_added age {diff_before} -> {diff_after}; git.branch_default age {lineage_before} -> {lineage_after}"
     );
     assert!(
         lineage_after >= lineage_before,
         "refresh git.lines_added demands `diff` alone: `lineage` must not have run \
-         (branch_default:age {lineage_before} -> {lineage_after})"
+         (branch_default age {lineage_before} -> {lineage_after})"
     );
 }
 

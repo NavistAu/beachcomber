@@ -199,10 +199,6 @@ pub fn eval(
     Resolver::new(inputs, fetch).render(src, "<eval>")
 }
 
-/// The metadata suffixes, whose answers are about a node rather than of it:
-/// opaque, and never rendered.
-const METADATA_SUFFIXES: [&str; 5] = [":age", ":stale", ":fresh", ":cache", ":source"];
-
 /// One resolution: its inputs, its transport, its fetch memo and its
 /// evaluation stack.
 ///
@@ -234,12 +230,6 @@ impl<'a> Resolver<'a> {
 
     /// Resolve one address to the value a surface prints.
     fn resolve(&mut self, key: &str) -> Result<Option<JsonValue>, ResolveError> {
-        // A metadata suffix asks about a node, not for it. Whatever comes
-        // back is the answer — a template-shaped string stored as a source
-        // label is a label, not a template.
-        if METADATA_SUFFIXES.iter().any(|s| key.ends_with(s)) {
-            return Ok(self.fetch(key)?.and_then(|g| g.data));
-        }
         // Canon invariant 6: `env.*` is the caller's shell, never the
         // daemon's, and a miss yields `""` — never an error, never a miss.
         if key == "env" {

@@ -249,83 +249,42 @@ async fn refresh_on_a_facet_key_is_an_error() {
     handle.abort();
 }
 
+// One colon form: a colon is valid once, inside the first segment (`p:facet`).
+// Any other colon makes the key invalid, in every op that takes a key.
+
 #[tokio::test]
-async fn refresh_metadata_suffix_wins_over_facet_parsing() {
+async fn a_colon_outside_the_provider_segment_is_an_invalid_key() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
 
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let resp = send_recv(&mut stream, r#"{"op":"refresh","key":"hostname:age"}"#).await;
-    assert!(
-        resp.ok,
-        "hostname:age must be read as provider 'hostname' + suffix ':age', not a facet error: {:?}",
-        resp.error
-    );
-
-    // `ok` alone would also be true of a refresh that did nothing. The suffix
-    // was stripped and `hostname` refreshed only if its source actually ran, so
-    // the cache — untouched until now — must hold its records.
-    let resp = send_recv(&mut stream, r#"{"op":"status"}"#).await;
-    let rows = resp.data.expect("status returns rows");
-    assert!(
-        rows.as_array()
-            .expect("status returns an array")
-            .iter()
-            .any(|row| row["provider"] == "hostname"),
-        "the refresh must have re-executed hostname's source, got {rows}"
-    );
-
-    handle.abort();
-}
-
-// (f): the five metadata-suffix names are unreachable as facets — a suffix
-// strip always claims them first, so `hostname:age` is provider `hostname`
-// plus `:age`, never a facet-syntax error. If suffix stripping did not run
-// before the facet check, `parse_facet` would reject `age` as a facet name.
-
-#[tokio::test]
-async fn get_metadata_suffix_wins_over_facet_parsing() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let resp = send_recv(&mut stream, r#"{"op":"get","key":"hostname:age"}"#).await;
-    assert!(
-        resp.ok,
-        "hostname:age must be read as provider 'hostname' + suffix ':age', not a facet error: {:?}",
-        resp.error
-    );
-    // A miss is `ok` too, and answers `:age` with `null`. An age in
-    // milliseconds is what says the suffix was read against a real namespace.
-    assert!(
-        resp.data.as_ref().is_some_and(|d| d.is_number()),
-        "an age in milliseconds, got {:?}",
-        resp.data
-    );
-
-    handle.abort();
-}
-
-// (g): `put` has no metadata-suffix handling, so `a:age` is always parsed as
-// a facet candidate there — and rejected, since `age` is a metadata suffix name.
-
-#[tokio::test]
-async fn put_to_metadata_suffix_name_is_invalid_facet() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let resp = send_recv(&mut stream, r#"{"op":"put","key":"a:age","data":{"x":1}}"#).await;
-    assert!(!resp.ok, "put to a:age should be rejected");
-    assert_eq!(
-        resp.error.as_deref(),
-        Some("invalid facet key: a:age"),
-        "got: {:?}",
-        resp.error
-    );
+    for key in [
+        "git.branch:age",
+        "hostname.name:source",
+        "scanline.widgets.foo:fresh",
+        "p:cache.x:stale",
+    ] {
+        let want = Some(format!("invalid key: {key}"));
+        for op in ["get", "refresh", "watch"] {
+            // A watch ends its connection, so each op gets its own.
+            let mut stream = UnixStream::connect(&sock).await.unwrap();
+            let r = send_recv(
+                &mut stream,
+                &serde_json::json!({"op": op, "key": key}).to_string(),
+            )
+            .await;
+            assert!(!r.ok, "{op} {key} must be refused: {r:?}");
+            assert_eq!(r.error, want, "{op} {key}");
+        }
+        let mut stream = UnixStream::connect(&sock).await.unwrap();
+        let r = send_recv(
+            &mut stream,
+            &serde_json::json!({"op": "put", "key": key, "data": {"x": 1}}).to_string(),
+        )
+        .await;
+        assert!(!r.ok, "put {key} must be refused: {r:?}");
+        assert_eq!(r.error, want, "put {key}");
+    }
 
     handle.abort();
 }
@@ -544,20 +503,20 @@ async fn a_refresh_of_a_layer_facet_names_the_key_as_given() {
 }
 
 #[tokio::test]
-async fn a_metadata_suffix_after_a_layer_facet_is_the_same_error_for_both() {
+async fn a_second_colon_after_a_layer_facet_is_an_invalid_facet_key() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
-    for (key, bad) in [("p:put:age", "p:put"), ("p:source:age", "p:source")] {
+    for key in ["p:put:age", "p:source:age"] {
         let r = send_recv(
             &mut stream,
             &serde_json::json!({"op":"get","key":key}).to_string(),
         )
         .await;
         assert!(!r.ok, "get {key} must be refused: {r:?}");
-        assert_eq!(r.error, Some(format!("invalid facet key: {bad}")));
+        assert_eq!(r.error, Some(format!("invalid facet key: {key}")));
     }
 
     handle.abort();

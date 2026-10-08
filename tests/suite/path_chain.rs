@@ -874,9 +874,9 @@ async fn a_static_record_below_the_provider_entry_is_read_from_the_requested_pat
     );
     assert_eq!(
         data(
-            send_recv(&mut s, get_at("r.note:source", &sub)).await,
+            send_recv(&mut s, get_at("r:cache.note", &sub)).await,
             "provenance"
-        ),
+        )["source"],
         serde_json::json!("put"),
         "it is a static record, written by `put`"
     );

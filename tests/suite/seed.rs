@@ -210,19 +210,6 @@ async fn every_record_carries_the_label_of_the_file_that_set_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn source_on_a_seeded_record_names_the_file_that_set_it() {
-    let e = Env::new(MAIN_TEMPLATE, &[("10-mine.toml", DROP_IN_TEMPLATE)]);
-    let _h = e.serve().await;
-    let mut s = e.connect().await;
-
-    assert_eq!(
-        data(&mut s, "python:template.version:source").await,
-        json!(e.label("conf.d/10-mine.toml")),
-        "`:source` names the record's writer, which for a seeded leaf is its file"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_facet_read_returns_every_seeded_leaf() {
     let e = Env::new(MAIN_TEMPLATE, &[("10-mine.toml", DROP_IN_TEMPLATE)]);
     let _h = e.serve().await;
@@ -339,8 +326,8 @@ async fn a_leaf_named_path_in_a_facet_table_is_data() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reserved_facet_name_stops_the_daemon_starting() {
-    let e = Env::new("[providers.\"x:age\"]\nn = \"1\"\n", &[]);
-    refuses_to_start(&e, "[providers.\"x:age\"]: invalid facet key: x:age").await;
+    let e = Env::new("[providers.\"x:put\"]\nn = \"1\"\n", &[]);
+    refuses_to_start(&e, "[providers.\"x:put\"]: invalid facet key: x:put").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

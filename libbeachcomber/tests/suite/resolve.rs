@@ -441,29 +441,22 @@ fn the_bare_env_namespace_is_a_miss_with_no_fetch() {
     assert!(f.log.is_empty());
 }
 
-// ── 5. Metadata suffixes pass through ─────────────────────────────────────────
+// ── 5. A cache facet ref is not rendered ──────────────────────────────────────
 
 #[test]
-fn a_metadata_suffix_is_fetched_whole_and_never_rendered() {
+fn a_cache_facet_ref_is_not_rendered() {
     let env = spec_env();
     let mut f = spec_fetch();
-    // The suffixed key is its own daemon key, and its answer is opaque: even
-    // were it template-shaped text, it is returned as data.
-    f.seed("git.branch:age", Some(CWD), data(json!(812))).seed(
-        "git.branch:source",
-        Some(CWD),
-        data(json!("{{ head }}")),
-    );
+    // A facet key carries no template half, so its answer is opaque by
+    // construction: even were a field of it template-shaped text, it is data.
+    let leaf = json!({"age_ms": 812, "stale": false, "source": "{{ head }}"});
+    f.seed("git:cache.branch", Some(CWD), data(leaf.clone()));
 
     assert_eq!(
-        resolve("git.branch:age", &inputs(&env), &mut f),
-        Ok(Some(json!(812)))
+        resolve("git:cache.branch", &inputs(&env), &mut f),
+        Ok(Some(leaf))
     );
-    assert_eq!(f.keys(), vec!["git.branch:age"]);
-    assert_eq!(
-        resolve("git.branch:source", &inputs(&env), &mut f),
-        Ok(Some(json!("{{ head }}")))
-    );
+    assert_eq!(f.keys(), vec!["git:cache.branch"]);
 }
 
 // ── 6. Slots and flags reach the fetch ────────────────────────────────────────

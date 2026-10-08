@@ -678,7 +678,7 @@ async fn a_namespace_with_neither_data_nor_templates_is_a_miss() {
 // ── (e) freshness through the socket ────────────────────────────────────────
 
 /// A template-only response has no data, so it reports no freshness either —
-/// and `:age` on it is `null`, not a fabricated zero.
+/// and its `:cache` leaf is the template answer, not a fabricated age.
 #[tokio::test]
 async fn a_template_only_response_carries_no_freshness() {
     let (_tmp, sock, cache, registry, watchers) = setup();
@@ -693,22 +693,23 @@ async fn a_template_only_response_carries_no_freshness() {
         "a response with no data carries neither age_ms nor stale: {resp}"
     );
 
-    // A metadata suffix asks one question about the data half, and is answered
-    // with that alone — never a template.
-    let age = get(&mut s, "scanline.widgets.foo:age").await;
-    assert_eq!(age["data"], serde_json::Value::Null, "got {age}");
-    assert!(
-        age.get("template").is_none(),
-        "a metadata-suffix response carries no template half: {age}"
+    // The cache facet reports on what is cached and never carries a template.
+    let facet = get(&mut s, "scanline:cache.widgets.foo").await;
+    assert_eq!(
+        facet["data"],
+        serde_json::json!({"age_ms": 0, "stale": false, "source": "template"}),
+        "got {facet}"
     );
-    let stale = get(&mut s, "scanline.widgets.foo:stale").await;
-    assert_eq!(stale["data"], serde_json::Value::Null, "got {stale}");
+    assert!(
+        facet.get("template").is_none(),
+        "a :cache response carries no template half: {facet}"
+    );
 
     handle.abort();
 }
 
 #[tokio::test]
-async fn age_of_a_warm_field_is_a_number() {
+async fn the_cache_age_of_a_warm_field_is_a_number() {
     if !has_git() {
         return;
     }
@@ -718,14 +719,22 @@ async fn age_of_a_warm_field_is_a_number() {
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
+    // `:cache` warms nothing: the field is read first.
+    let warm = send_raw(
+        &mut s,
+        &serde_json::json!({"op":"get","key":"git.branch","path": repo.path_str()}),
+    )
+    .await;
+    assert_eq!(warm["data"], "main", "{warm}");
+
     let resp = send_raw(
         &mut s,
-        &serde_json::json!({"op":"get","key":"git.branch:age","path": repo.path_str()}),
+        &serde_json::json!({"op":"get","key":"git:cache.branch","path": repo.path_str()}),
     )
     .await;
     assert!(
-        resp["data"].is_number(),
-        "a warm field's :age is a number: {resp}"
+        resp["data"]["age_ms"].is_number(),
+        "a warm field's age_ms is a number: {resp}"
     );
 
     handle.abort();

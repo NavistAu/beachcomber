@@ -353,25 +353,15 @@ async fn the_daemon_seeds_defaults_beneath_config_and_conf_d() {
     ready.await.expect("daemon ready");
     let mut s = tokio::net::UnixStream::connect(&sock).await.unwrap();
 
-    let label = |rel: &str| json!(format!("config:{}", cfg_dir.join(rel).display()));
     assert_eq!(
         data(&mut s, "python:template.venv_name").await,
         json!(shipped_leaf("python.toml", "venv_name")),
         "a leaf only the defaults set is the shipped template"
     );
     assert_eq!(
-        data(&mut s, "python:template.venv_name:source").await,
-        label("defaults/python.toml"),
-        "labelled with the defaults file that set it"
-    );
-    assert_eq!(
         data(&mut s, "python:template.version").await,
         json!("{{ env.MY_PY }}"),
         "a conf.d drop-in overrides a default"
-    );
-    assert_eq!(
-        data(&mut s, "python:template.version:source").await,
-        label("conf.d/10-mine.toml"),
     );
     assert_eq!(
         data(&mut s, "kubecontext:template.context").await,

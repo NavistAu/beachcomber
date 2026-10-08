@@ -265,11 +265,16 @@ async fn handle_watch(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) {
     let requested = path.as_deref().or(context_path.as_deref());
-    let plan = crate::query::QueryPlan::build(&key, requested, registry);
+    let plan = match crate::query::QueryPlan::build(&key, requested, registry) {
+        Ok(plan) => plan,
+        Err(msg) => {
+            let _ = write_watch_line(writer, &Response::error(msg)).await;
+            return;
+        }
+    };
     let provider_name = plan.provider.clone();
 
-    // Facet syntax is checked on the provider segment, after the metadata-suffix
-    // stripping QueryPlan::build already did (mirrors the Get path).
+    // Facet syntax is checked on the provider segment (mirrors the Get path).
     if let Err(msg) = crate::query::parse_facet(&provider_name) {
         let _ = write_watch_line(writer, &Response::error(msg)).await;
         return;
@@ -675,24 +680,17 @@ struct TemplateHalf {
     template: Option<serde_json::Value>,
     /// The part of the address the walk could not consume.
     rest: Option<String>,
-    /// The label of the record the walk landed on — what `:source` reports
-    /// when this half answered alone.
-    source: Option<Arc<str>>,
 }
 
 /// The template half of a `get` (spec §3.4): the node at `rest` in the merged
 /// tree of `provider:template` at the same address, the part of `rest` the walk
-/// could not consume, and the label of the record the walk landed on.
+/// could not consume.
 ///
 /// A group (object) or a value expression (string) at the address is the
 /// template. A string reached with segments still to go is the template too,
 /// and the remainder comes back as `rest` for the client to apply to whatever
 /// the expression renders. Anything else — a miss, or a non-string scalar in
 /// the way — attaches nothing.
-///
-/// [`TemplateHalf::source`] is the provenance of the *record* at the address,
-/// so a group assembled from several records has none — there is no single
-/// writer to name.
 fn template_half(
     cache: &Cache,
     registry: &ProviderRegistry,
@@ -712,16 +710,11 @@ fn template_half(
     ) else {
         return TemplateHalf::default();
     };
-    let writer = |tail: &str| read.records.get(tail).map(|r| Arc::clone(&r.source));
 
     if rest.is_empty() {
-        // The whole facet tree is an object, and an object is never one
-        // record's tail — `merge_layer` keys every record by at least one
-        // segment — so `writer("")` is `None` by construction, not by accident.
         return TemplateHalf {
             template: serde_json::to_value(&read.fields).ok(),
             rest: None,
-            source: writer(""),
         };
     }
 
@@ -729,15 +722,11 @@ fn template_half(
     let Some(mut current) = read.fields.get(head) else {
         return TemplateHalf::default();
     };
-    let mut tail = head.to_string();
     while let Some(remainder) = left {
         let (segment, below) = split_head(remainder);
         match current {
             Value::Object(map) => match map.get(segment) {
-                Some(v) => {
-                    current = v;
-                    tail = format!("{tail}.{segment}");
-                }
+                Some(v) => current = v,
                 None => return TemplateHalf::default(),
             },
             // A value expression with the address unconsumed: the client
@@ -746,7 +735,6 @@ fn template_half(
                 return TemplateHalf {
                     template: serde_json::to_value(current).ok(),
                     rest: Some(remainder.to_string()),
-                    source: writer(&tail),
                 };
             }
             _ => return TemplateHalf::default(),
@@ -757,32 +745,8 @@ fn template_half(
         Value::Object(_) | Value::String(_) => TemplateHalf {
             template: serde_json::to_value(current).ok(),
             rest: None,
-            source: writer(&tail),
         },
         _ => TemplateHalf::default(),
-    }
-}
-
-/// The label `get <key>:source` reports: the writer of the record that answered.
-///
-/// A leaf's own record when the data half answered, the template record when
-/// the template half answered alone. An object — a whole namespace, or a group
-/// assembled from several records — resolves to `None`, because
-/// [`Cache::read_merged`] keys provenance by a record's own tail and an object
-/// node is not one: there is no single writer to name. A miss is `None` too.
-fn record_source(
-    merged: &Option<MergedRead>,
-    rest: &str,
-    cache_hit: bool,
-    template_source: Option<Arc<str>>,
-) -> Option<Arc<str>> {
-    if cache_hit {
-        merged
-            .as_ref()
-            .and_then(|m| m.records.get(rest))
-            .map(|r| Arc::clone(&r.source))
-    } else {
-        template_source
     }
 }
 
@@ -1046,31 +1010,26 @@ async fn handle_request(
             ..
         } => {
             // One source-aware plan drives the whole request: provider, resolved
-            // path, parsed target, metadata suffix, and the warming demand. Get
-            // and Watch both build this so they share identical key semantics.
+            // path, parsed target, and the warming demand. Get and Watch both
+            // build this so they share identical key semantics.
             let requested = path.as_deref().or(context_path.as_deref());
-            let plan = crate::query::QueryPlan::build(key, requested, registry);
+            let plan = match crate::query::QueryPlan::build(key, requested, registry) {
+                Ok(plan) => plan,
+                Err(msg) => return Response::error(msg),
+            };
             let provider_name = plan.provider.as_str();
 
-            // Facet syntax is checked on the provider segment produced by the
-            // plan — after metadata-suffix stripping, so e.g. `a:age` is read
-            // as provider `a` with the `:age` suffix, not as a facet.
+            // Facet syntax is checked on the provider segment produced by the plan.
             let facet = match crate::query::parse_facet(provider_name) {
                 Ok(facet) => facet,
                 Err(msg) => return Response::error(msg),
             };
 
             let effective_path = plan.effective_path.clone();
-            let meta = plan.meta.as_deref();
 
             // `p:cache` reports on what is cached: nothing is warmed, no demand
             // is signalled, and no template is attached.
             if plan.layers == crate::cache::Layers::Cache {
-                if let Some(suffix) = meta {
-                    return Response::error(format!(
-                        "a :cache key takes no metadata suffix: :{suffix}"
-                    ));
-                }
                 return cache_facet_response(
                     cache,
                     registry,
@@ -1187,62 +1146,16 @@ async fn handle_request(
             }
 
             // Both halves, assembled the one way `watch` assembles them.
-            let normal_response = resolve_halves(&merged, &plan.target, half.template, half.rest);
-            let cache_hit = normal_response.data.is_some();
-
-            match meta {
-                // Spec §3.4: a plain `get` carries both halves. A metadata
-                // suffix asks one question about the data half and is answered
-                // with that alone — never a template.
-                None => normal_response,
-                Some("age") => Response::ok(
-                    normal_response
-                        .age_ms
-                        .map(|n| {
-                            // age_ms is u128 but realistic daemon ages fit in u64 (~585M years).
-                            serde_json::Value::Number(serde_json::Number::from(n as u64))
-                        })
-                        .unwrap_or(serde_json::Value::Null),
-                    0,
-                    false,
-                ),
-                Some("stale") => Response::ok(
-                    normal_response
-                        .stale
-                        .map(serde_json::Value::Bool)
-                        .unwrap_or(serde_json::Value::Null),
-                    0,
-                    false,
-                ),
-                Some("fresh") => Response::ok(
-                    normal_response
-                        .stale
-                        .map(|s| serde_json::Value::Bool(!s))
-                        .unwrap_or(serde_json::Value::Null),
-                    0,
-                    false,
-                ),
-                // The writer of the record that answered: a leaf's own record,
-                // or the template record when the template half answered alone.
-                // An object is several records and names none of them, and a
-                // miss has none to name — both are `null`, as `:age` is.
-                Some("source") => Response::ok(
-                    record_source(&merged, plan.target.rest(), cache_hit, half.source)
-                        .map_or(serde_json::Value::Null, |s| {
-                            serde_json::Value::String(s.to_string())
-                        }),
-                    0,
-                    false,
-                ),
-                Some(other) => Response::error(format!("unknown metadata suffix: :{other}")),
-            }
+            resolve_halves(&merged, &plan.target, half.template, half.rest)
         }
         Request::Refresh { key, path } => {
-            // The same plan every other op builds, so the metadata suffix is
-            // stripped and the path resolved exactly as for a `get`:
-            // `refresh hostname:age` is `refresh hostname`.
+            // The same plan every other op builds, so the key is checked and
+            // the path resolved exactly as for a `get`.
             let requested = path.as_deref().or(context_path.as_deref());
-            let plan = crate::query::QueryPlan::build(key, requested, registry);
+            let plan = match crate::query::QueryPlan::build(key, requested, registry) {
+                Ok(plan) => plan,
+                Err(msg) => return Response::error(msg),
+            };
             let provider_name = plan.provider.as_str();
             if let Err(msg) = crate::query::parse_facet(provider_name) {
                 return Response::error(msg);
@@ -1324,6 +1237,9 @@ async fn handle_request(
             ttl,
             path,
         } => {
+            if let Err(msg) = crate::query::validate_key(key) {
+                return Response::error(msg);
+            }
             // A put key addresses a node: `namespace` or `namespace.node…`.
             let (namespace, node) = protocol::split_key(key);
             let node = node.unwrap_or("");
@@ -1337,10 +1253,7 @@ async fn handle_request(
                 ));
             }
 
-            // Facet syntax is checked on the namespace segment — `put` has no
-            // metadata-suffix handling, so e.g. `a:age` is always a facet
-            // candidate here (and rejected, since `age` is a metadata suffix
-            // name).
+            // Facet syntax is checked on the namespace segment.
             if let Err(msg) = crate::query::parse_facet(namespace) {
                 return Response::error(msg);
             }

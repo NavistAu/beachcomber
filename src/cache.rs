@@ -177,7 +177,7 @@ impl CacheSourceEntry {
 pub struct RecordFreshness {
     /// The record's one writer: a Source of the namespace's provider (`head`,
     /// `refs`, …), or a static label (`put`, `config:<file>`). This is what
-    /// `get <key>:source` reports. Shared rather than owned: one source map
+    /// the `source` of `get <p>:cache.<key>`. Shared rather than owned: one source map
     /// contributes many records and they all name it, so the label is
     /// allocated once per map and refcounted per record.
     pub source: Arc<str>,

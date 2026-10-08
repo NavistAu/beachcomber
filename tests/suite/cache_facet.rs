@@ -289,6 +289,32 @@ async fn a_decay_prototype_put_is_accepted_and_reported() {
 }
 
 #[tokio::test]
+async fn the_cache_facet_names_the_source_behind_a_warm_provider_field() {
+    let (_tmp, mut s, _cache, handle, _sock) = serve().await;
+    assert!(get(&mut s, "hostname.name", None).await.ok);
+
+    let leaf = get(&mut s, "hostname:cache.name", None).await.data.unwrap();
+    assert_eq!(leaf["source"], json!("source(host)"), "{leaf}");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn the_cache_age_of_a_record_grows_with_the_clock() {
+    let (_tmp, mut s, _cache, handle, _sock) = serve().await;
+    assert!(get(&mut s, "hostname.name", None).await.ok);
+
+    // The cache stamps entries with `tokio::time::Instant`, so advancing the
+    // paused clock ages the entry by exactly 5ms; the offset survives `resume`.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_millis(5)).await;
+    tokio::time::resume();
+
+    let leaf = get(&mut s, "hostname:cache.name", None).await.data.unwrap();
+    assert!(leaf["age_ms"].as_u64().unwrap() > 0, "{leaf}");
+    handle.abort();
+}
+
+#[tokio::test]
 async fn a_decay_prototype_put_at_a_directory_applies_from_there_down() {
     if !has_git() {
         return;

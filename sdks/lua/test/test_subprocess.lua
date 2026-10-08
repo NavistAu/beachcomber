@@ -4,7 +4,7 @@
 --- The backend asks `comb get -f json <key> <p>:cache.<rest>` for the
 --- value and its `:cache` answer (age, staleness) in one spawn (its header comment), so
 --- its answer is the resolver's: the directory chain, `$HOME` as the global
---- entry, metadata suffixes, `--force`/`--wait`, the daemon's refusals — and
+--- entry, `--force`/`--wait`, the daemon's refusals — and
 --- a template-backed key renders. `refresh` is one `comb refresh <key>`,
 --- and its refusal is the daemon's line. Runs under PUC Lua and LuaJIT
 --- alike: the backend is plain Lua over `io.popen`. Needs a comb binary
@@ -81,7 +81,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "no path reads the global entry",
     "an ancestor's put is read from a child path (the directory chain)",
     "a path equal to the daemon's $HOME is the global entry",
-    "a :age suffix is the age, a number",
+    "a colon outside the provider segment is an invalid key, asked with its :cache slot",
     "wait reaches the wire as --wait, in one comb get with the :cache slot",
     "--force on a static namespace is the daemon's refusal",
     "a template that does not compile is the resolver's error, not a null hit",
@@ -219,9 +219,10 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
   test(names[11], function()
     local r, err = c:get("sp.n:age", "/tmp")
-    assert_nil(err)
-    assert_true(r:is_hit())
-    assert_eq(type(r.data), "number")
+    assert_nil(r)
+    assert_eq(err.kind, "server_error")
+    assert_eq(err.message, "invalid key: sp.n:age")
+    assert_eq(last_argv(guard), "get -f json sp.n:age sp:cache.n:age --path /tmp")
   end)
 
   test(names[12], function()

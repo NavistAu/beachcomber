@@ -138,12 +138,13 @@ function pathArgs(path_: string | undefined): string[] {
 
 /**
  * The `:cache` key that answers for `key`'s freshness: `git.branch` →
- * `git:cache.branch`, `git` → `git:cache`. A key with a facet (a `:`) has no
- * such companion and is asked alone.
+ * `git:cache.branch`, `git` → `git:cache`. A facet key (a `:` in the provider
+ * segment) has no such companion and is asked alone; a `:` anywhere else is
+ * not a facet, and the daemon refuses it as an invalid key.
  */
 function cacheKeyOf(key: string): string | undefined {
-  if (key.includes(':')) return undefined;
   const dot = key.indexOf('.');
+  if ((dot < 0 ? key : key.slice(0, dot)).includes(':')) return undefined;
   return dot < 0 ? `${key}:cache` : `${key.slice(0, dot)}:cache${key.slice(dot)}`;
 }
 

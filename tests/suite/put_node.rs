@@ -585,22 +585,25 @@ async fn put_adds_a_static_record_to_a_provider_namespace() {
     let source_of_note = data_of(
         send_recv(
             &mut s,
-            &serde_json::json!({"op":"get","key":"git.note:source","path":p}),
+            &serde_json::json!({"op":"get","key":"git:cache.note","path":p}),
         )
         .await,
-        "get git.note:source",
+        "get git:cache.note",
     );
-    assert_eq!(source_of_note, serde_json::json!("put"));
+    assert_eq!(source_of_note["source"], serde_json::json!("put"));
 
     let source_of_branch = data_of(
         send_recv(
             &mut s,
-            &serde_json::json!({"op":"get","key":"git.branch:source","path":p}),
+            &serde_json::json!({"op":"get","key":"git:cache.branch","path":p}),
         )
         .await,
-        "get git.branch:source",
+        "get git:cache.branch",
     );
-    assert_eq!(source_of_branch, serde_json::json!("head"));
+    assert_eq!(
+        source_of_branch["source"],
+        serde_json::json!("source(head)")
+    );
 
     handle.abort();
 }

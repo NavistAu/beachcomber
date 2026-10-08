@@ -1311,10 +1311,10 @@ fn facet_key_with_two_colons_is_an_error() {
 }
 
 #[test]
-fn facet_named_after_a_metadata_suffix_is_an_error() {
-    let (_, errors) = facet_validation("[providers.\"x:age\"]\nn = \"1\"\n");
+fn facet_named_after_a_layer_is_an_error() {
+    let (_, errors) = facet_validation("[providers.\"x:put\"]\nn = \"1\"\n");
     assert!(
-        errors.iter().any(|e| e.contains("x:age")),
+        errors.iter().any(|e| e.contains("x:put")),
         "expected an error naming the reserved facet name, got {errors:?}"
     );
 }

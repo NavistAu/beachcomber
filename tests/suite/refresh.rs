@@ -6,7 +6,7 @@
 //! run. That is what lets those cases advance the clock by a known amount and
 //! assert exact ages. The scheduler-backed case at the bottom cannot: it runs
 //! the refresh in the background on a multi-threaded runtime, so it lets the
-//! records age in real time and waits for `git.commit:age` to fall back below
+//! records age in real time and waits for the age of `git.commit` to fall back below
 //! what it was.
 //!
 //! `git` is the fixture because it is the one built-in with several Sources
@@ -69,21 +69,22 @@ async fn warm(stream: &mut UnixStream, key: &str, path: &str) -> serde_json::Val
         .unwrap_or_else(|| panic!("get {key} should hit at {path}"))
 }
 
-/// The `:age` of a key, in ms. Reading an age never re-executes the Sources
+/// The `age_ms` of a key's `:cache` leaf (`git.commit` -> `git:cache.commit`), in ms. Reading an age never re-executes the Sources
 /// under test — neither `refs` nor `diff` is `read_always`.
 async fn age(stream: &mut UnixStream, key: &str, path: &str) -> u64 {
-    let resp = send_recv(stream, &get(&format!("{key}:age"), path)).await;
-    assert!(resp.ok, "get {key}:age: {:?}", resp.error);
+    let cache_key = key.replacen('.', ":cache.", 1);
+    let resp = send_recv(stream, &get(&cache_key, path)).await;
+    assert!(resp.ok, "get {cache_key}: {:?}", resp.error);
     resp.data
         .as_ref()
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or_else(|| panic!("{key}:age should be a number, got {:?}", resp.data))
+        .and_then(|d| d["age_ms"].as_u64())
+        .unwrap_or_else(|| panic!("{cache_key} should carry an age_ms, got {:?}", resp.data))
 }
 
 /// Age every record in the cache by 10 s. The cache stamps records with
 /// `tokio::time::Instant`, so the offset survives `resume`. The margin is
 /// what the "re-executed" assertions below lean on: a re-executed record's
-/// age is the real time between its write and the next `:age` read, and
+/// age is the real time between its write and the next `:cache` read, and
 /// under a loaded suite that gap can pass 100 ms. Ten seconds is below every
 /// git source's poll interval, so nothing turns stale.
 async fn advance_10s() {
@@ -264,7 +265,7 @@ async fn a_scheduler_backed_refresh_runs_the_demanded_source_alone() {
     warm(&mut s, "git.commit", path).await;
 
     let refs_before = poll_until_async(
-        "git.commit:age",
+        "git:cache.commit age_ms",
         "at least 50ms",
         Duration::from_secs(5),
         Duration::from_millis(5),
@@ -278,7 +279,7 @@ async fn a_scheduler_backed_refresh_runs_the_demanded_source_alone() {
     assert!(resp.ok, "refresh git.commit: {:?}", resp.error);
 
     poll_until_async(
-        "git.commit:age after refresh git.commit",
+        "git:cache.commit age_ms after refresh git.commit",
         "back below its pre-refresh age",
         Duration::from_secs(5),
         Duration::from_millis(5),

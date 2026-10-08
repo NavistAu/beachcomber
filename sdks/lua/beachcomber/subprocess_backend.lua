@@ -37,7 +37,7 @@
 -- as the largest age and any stale) — the resolver's own answer, with
 -- everything the daemon does for a `get`: the directory chain up to `$HOME`,
 -- `$HOME` itself as the global entry, `--force`/`--wait` and the daemon's
--- refusals. A key carrying a facet (a `:`) is asked for alone and answers
+-- refusals. A facet key (a `:` in the provider segment) is asked for alone and answers
 -- with age 0 and not stale.
 --
 -- The one divergence from the ffi tier: `comb get` *resolves*, so a
@@ -148,11 +148,12 @@ local function status_rows(comb_bin)
 end
 
 --- The `:cache` key that answers for `key`'s freshness: `git.branch` ->
--- `git:cache.branch`, `git` -> `git:cache`. A key with a facet (a `:`) has no
--- such companion and is asked alone (nil).
+-- `git:cache.branch`, `git` -> `git:cache`. A facet key (a `:` in the provider
+-- segment) has no such companion and is asked alone (nil); a `:` anywhere
+-- else is not a facet, and the daemon refuses it as an invalid key.
 local function cache_key_of(key)
-  if key:find(":", 1, true) then return nil end
   local p, rest = key:match("^([^.]*)(.*)$")
+  if p:find(":", 1, true) then return nil end
   return p .. ":cache" .. rest
 end
 
@@ -257,7 +258,7 @@ function Backend:get(key, path, flags)
     -- Only the `:cache` slot missed: `key` itself rendered.
   end
 
-  if value == json.NULL then value = nil end -- a null the daemon answers a suffix with, as the ffi backend collapses it
+  if value == json.NULL then value = nil end -- a null the daemon answers a facet miss with, as the ffi backend collapses it
   if meta then
     return { ok = true, data = value, age_ms = 0, stale = false }
   end

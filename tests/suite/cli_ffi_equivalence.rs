@@ -5,7 +5,7 @@
 //! that keeps them there. One daemon, one cwd, one environment, and a fixed
 //! key list covering every row of the resolver's table — plain fields,
 //! templated leaves and groups, a string template walked into by key and by
-//! index, misses, `env.*`, a metadata suffix, and the four error shapes. Each
+//! index, misses, `env.*`, a cache facet, and the four error shapes. Each
 //! key is classified on both surfaces as a hit (with its value), a miss, or an
 //! error, and the classes and values must agree. Every disagreement is
 //! collected and reported at once, so one run shows the whole picture.
@@ -80,8 +80,8 @@ const KEYS: &[(&str, Expect, bool)] = &[
     ("git.lines_added", Expect::Hit(Some("0")), true),
     ("env.SCANLINE_FOO", Expect::Hit(Some(r#""hi""#)), false),
     ("env.NOPE", Expect::Hit(Some(r#""""#)), false),
-    // Compared as a class only: both must be numbers, the numbers differ.
-    ("git.branch:age", Expect::Hit(None), true),
+    // Compared as a class only: both are a hit, the ages differ.
+    ("git:cache.branch", Expect::Hit(None), true),
     ("a:b:c.x", Expect::Error, false),
     ("nope.x", Expect::Miss, false),
     ("err.a", Expect::Error, false),
@@ -337,9 +337,9 @@ fn comb_get_json_and_bc_resolve_answer_identically() {
 
         match (&cli, &ffi) {
             (Class::Hit(c), Class::Hit(f)) => {
-                if key.ends_with(":age") {
-                    if !(c.is_number() && f.is_number()) {
-                        report.push(format!("{key}: both must be numbers; cli={c} ffi={f}"));
+                if key.contains(":cache") {
+                    if !(c["age_ms"].is_number() && f["age_ms"].is_number()) {
+                        report.push(format!("{key}: both must carry an age_ms; cli={c} ffi={f}"));
                     }
                 } else if c != f {
                     report.push(format!(
