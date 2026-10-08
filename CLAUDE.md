@@ -120,6 +120,21 @@ See `docs/provider-development.md`. Short version:
 
 See `docs/releasing.md` for the full release checklist. Short version: on `develop`, run `cargo xtask set-version X.Y.Z` (bumps all 14 version touchpoints) and update CHANGELOG; open a `develop` → `main` PR (the release gate) and wait for CI green; merge it. **Merging is the release** — `release.yml` triggers on push to `main`, tags `vX.Y.Z` on the merge commit, and builds + publishes to all registries (incl. Homebrew). No manual tagging.
 
+## Core rules: apply them, don't ask
+
+comb is one tree with a few rules that answer most design questions. When a question is answered by these, apply them
+and say which rule you applied; ask the owner only when none of them decides it.
+
+- **One tree, read at any depth.** `comb get git` returns that whole part of the tree; so does `comb get git:cache`.
+  Every facet (`:template`, `:memo`, `:put`, `:source`, `:cache`) has the provider's shape.
+- **More specific wins.** The nearer directory beats the farther one; globals (`~`) are stopgap defaults, never
+  overrides. A Source's own setting beats its prototype's (`_`).
+- **Cascade and merge upward.** Values merge per leaf up the directory chain to `~`; a missing value falls back to the
+  more general one.
+- **A read of a missing value runs whatever provides it** (the cold-miss path). Nothing pre-computes for its own sake.
+- **`null` means absent**, never `""`.
+- **One way to do each thing** (below).
+
 ## One way to do each thing
 
 Pre-1.0. The codebase does what the current design says, directly, and nothing else. When an approach changes, the old one is deleted in the same change — code, tests and docs. No legacy branches, deprecation warnings, compatibility parameters or fallbacks to an older path. Real cruft this rule exists to stop:
