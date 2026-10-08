@@ -1419,23 +1419,30 @@ impl Cache {
         }
     }
 
-    /// How many decay steps a Source of `provider` takes before eviction:
-    /// `<provider>:cache._.decay` at the global entry, else `*:cache._.decay`,
-    /// else [`DEFAULT_DECAY`](crate::scheduler::lifecycle::DEFAULT_DECAY).
-    pub fn resolve_decay(&self, provider: &str) -> u8 {
-        [cache_facet_of(provider), "*:cache".to_string()]
+    /// How many decay steps a Source of `provider` at `path` takes before
+    /// eviction: the `_.decay` prototype, found like any value — up the
+    /// directory chain from `path`, nearest wins, and at one directory
+    /// `<provider>:cache` beats `*:cache` — else
+    /// [`DEFAULT_DECAY`](crate::scheduler::lifecycle::DEFAULT_DECAY).
+    pub fn resolve_decay(&self, provider: &str, path: Option<&str>) -> u8 {
+        let namespaces = [cache_facet_of(provider), "*:cache".to_string()];
+        crate::query::path_chain(path)
             .iter()
-            .find_map(|namespace| {
-                let entry = self.entries.get(&make_cache_key(namespace, None))?;
-                let mut out = MergedRead {
-                    fields: HashMap::new(),
-                    records: HashMap::new(),
-                };
-                Self::merge_static_records(&entry, None, &mut out);
-                match crate::provider::lookup_path(&out.fields, "_.decay")? {
-                    Value::Int(n) if *n >= 1 => Some(u8::try_from(*n).unwrap_or(u8::MAX)),
-                    _ => None,
-                }
+            .find_map(|layer| {
+                namespaces.iter().find_map(|namespace| {
+                    let entry = self
+                        .entries
+                        .get(&make_cache_key(namespace, layer.as_deref()))?;
+                    let mut out = MergedRead {
+                        fields: HashMap::new(),
+                        records: HashMap::new(),
+                    };
+                    Self::merge_static_records(&entry, None, &mut out);
+                    match crate::provider::lookup_path(&out.fields, "_.decay")? {
+                        Value::Int(n) if *n >= 1 => Some(u8::try_from(*n).unwrap_or(u8::MAX)),
+                        _ => None,
+                    }
+                })
             })
             .unwrap_or(crate::scheduler::lifecycle::DEFAULT_DECAY)
     }
@@ -2454,7 +2461,7 @@ mod tests {
             Schedule::poll(5, 1),
         );
         cache.remove_source("p", None, "s");
-        assert_eq!(cache.resolve_decay("p"), 2);
+        assert_eq!(cache.resolve_decay("p", None), 2);
     }
 
     #[test]
@@ -2579,7 +2586,7 @@ mod tests {
                 .stored_keys("build", None, PUT_SOURCE, "status")
                 .is_none()
         );
-        assert_eq!(cache.resolve_decay("build"), 2, "the prototype stays");
+        assert_eq!(cache.resolve_decay("build", None), 2, "the prototype stays");
 
         // Expiry and a re-put without a ttl take them too.
         cache
@@ -2600,7 +2607,7 @@ mod tests {
     fn resolve_decay_prefers_the_provider_prototype() {
         let cache = Cache::new();
         assert_eq!(
-            cache.resolve_decay("git"),
+            cache.resolve_decay("git", None),
             crate::scheduler::lifecycle::DEFAULT_DECAY
         );
         cache
@@ -2613,7 +2620,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(cache.resolve_decay("git"), 6, "the star prototype");
+        assert_eq!(cache.resolve_decay("git", None), 6, "the star prototype");
         cache
             .write_static(
                 "git:cache",
@@ -2624,7 +2631,33 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(cache.resolve_decay("git"), 2, "the provider's own");
-        assert_eq!(cache.resolve_decay("mise"), 6);
+        assert_eq!(cache.resolve_decay("git", None), 2, "the provider's own");
+        assert_eq!(cache.resolve_decay("mise", None), 6);
+    }
+
+    #[test]
+    fn resolve_decay_follows_the_directory_chain_nearest_first() {
+        let cache = Cache::new();
+        let put = |ns: &str, at: Option<&str>, n: i64| {
+            cache
+                .write_static(ns, at, PUT_SOURCE, "_.decay", Value::Int(n), None)
+                .unwrap();
+        };
+        put("*:cache", None, 3);
+        put("git:cache", Some("/w/proj"), 6);
+        assert_eq!(cache.resolve_decay("git", Some("/w/proj")), 6);
+        assert_eq!(cache.resolve_decay("git", Some("/w/proj/sub")), 6);
+        assert_eq!(cache.resolve_decay("git", Some("/w/other")), 3);
+        assert_eq!(cache.resolve_decay("git", None), 3);
+        assert_eq!(cache.resolve_decay("mise", Some("/w/proj/sub")), 3);
+
+        put("*:cache", Some("/w/proj/sub"), 5);
+        assert_eq!(
+            cache.resolve_decay("git", Some("/w/proj/sub/x")),
+            5,
+            "a nearer star beats a farther provider prototype"
+        );
+        put("git:cache", Some("/w/proj/sub"), 2);
+        assert_eq!(cache.resolve_decay("git", Some("/w/proj/sub")), 2);
     }
 }

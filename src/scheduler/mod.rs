@@ -896,7 +896,7 @@ impl Scheduler {
                                     source: sm.name.clone(),
                                     node: String::new(),
                                 };
-                                let cfg = source_lifecycle_config(&self.cache, &provider, sm);
+                                let cfg = source_lifecycle_config(&self.cache, &provider, effective_key_path.as_deref(), sm);
                                 let outcome = lifecycle.on_demand(key.clone(), cfg, now);
 
                                 match outcome.watch_registration {
@@ -1207,7 +1207,7 @@ impl Scheduler {
                                     source: sm.name.clone(),
                                     node: String::new(),
                                 };
-                                let cfg = source_lifecycle_config(&self.cache, &provider, sm);
+                                let cfg = source_lifecycle_config(&self.cache, &provider, effective_key_path.as_deref(), sm);
                                 let outcome = lifecycle.on_demand(key.clone(), cfg, now);
 
                                 // No filesystem watching in this path.
@@ -1379,16 +1379,18 @@ fn apply_put_written(
 }
 
 /// The lifecycle a Source of `provider` runs under: its own strategy, with the
-/// decay depth its provider's `_` prototype gives (`Cache::resolve_decay`).
+/// decay depth its provider's `_` prototype gives at `path`
+/// (`Cache::resolve_decay`).
 fn source_lifecycle_config(
     cache: &Cache,
     provider: &str,
+    path: Option<&str>,
     sm: &crate::provider::SourceMetadata,
 ) -> SourceLifecycleConfig {
     SourceLifecycleConfig::from_strategy(
         &sm.invalidation,
         sm.fsevents_reinstate,
-        cache.resolve_decay(provider),
+        cache.resolve_decay(provider, path),
     )
 }
 
@@ -1480,7 +1482,7 @@ mod tests {
         let sm = registry.provider_sources("git").unwrap()[0].clone();
         let cache = Cache::new();
         assert_eq!(
-            source_lifecycle_config(&cache, "git", &sm).decay,
+            source_lifecycle_config(&cache, "git", None, &sm).decay,
             lifecycle::DEFAULT_DECAY
         );
         cache
@@ -1493,11 +1495,29 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(source_lifecycle_config(&cache, "git", &sm).decay, 2);
+        assert_eq!(source_lifecycle_config(&cache, "git", None, &sm).decay, 2);
         assert_eq!(
-            source_lifecycle_config(&cache, "mise", &sm).decay,
+            source_lifecycle_config(&cache, "mise", None, &sm).decay,
             lifecycle::DEFAULT_DECAY,
             "another provider's prototype does not apply"
+        );
+        cache
+            .write_static(
+                "git:cache",
+                Some("/w/proj"),
+                crate::cache::PUT_SOURCE,
+                "_.decay",
+                crate::provider::Value::Int(6),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            source_lifecycle_config(&cache, "git", Some("/w/proj/sub"), &sm).decay,
+            6
+        );
+        assert_eq!(
+            source_lifecycle_config(&cache, "git", Some("/w/other"), &sm).decay,
+            2
         );
     }
 

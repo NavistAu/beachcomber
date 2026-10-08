@@ -893,7 +893,7 @@ fn cache_facet_response(
     if rest == "_" || rest.starts_with("_.") {
         let prototypes = cache.read_merged(
             &format!("{provider}:cache"),
-            None,
+            requested,
             None,
             registry,
             Layers::All,
@@ -937,7 +937,12 @@ fn cache_facet_response(
         }
         // A Source's field without a decay of its own takes the prototype's.
         if !crate::cache::is_static_label(label) && !answer.contains_key("decay") {
-            answer.insert("decay".into(), cache.resolve_decay(provider).into());
+            answer.insert(
+                "decay".into(),
+                cache
+                    .resolve_decay(provider, record.entry.as_deref())
+                    .into(),
+            );
         }
         Some(answer.into())
     };
@@ -1372,12 +1377,7 @@ async fn handle_request(
 
             // Resolve optional path — canonicalize if provided. `$HOME`, like a
             // request carrying no path at all, is the global entry.
-            // A decay prototype is read at the global entry, so it is written there.
-            let effective_path: Option<String> = if is_cache_facet {
-                None
-            } else {
-                crate::query::normalise_path(path.as_deref())
-            };
+            let effective_path: Option<String> = crate::query::normalise_path(path.as_deref());
 
             // A ttl is the put's lifecycle: valid for N, stale for one decay
             // step, then gone. It needs a value to expire.
