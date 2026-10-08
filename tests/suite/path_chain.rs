@@ -17,6 +17,7 @@
 use crate::common::daemon::isolate;
 use crate::common::git::{GitRepoFixture, has_git};
 use beachcomber::cache::Cache;
+use beachcomber::cache::Schedule;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
@@ -429,8 +430,13 @@ fn get_waited(key: &str, path: Option<&str>) -> serde_json::Value {
 async fn a_cold_source_runs_even_when_its_sibling_is_warm() {
     let f = Fixture::start(counting_registry());
     let project = f.path("ws/project");
-    f.cache
-        .put_source("c", None, "glob", fields(vec![("gv", Value::Int(0))]), None);
+    f.cache.put_source(
+        "c",
+        None,
+        "glob",
+        fields(vec![("gv", Value::Int(0))]),
+        Schedule::default(),
+    );
 
     let mut s = f.connect().await;
     let whole = data(send_recv(&mut s, get_at("c", &project)).await, "cold path");
@@ -640,7 +646,7 @@ async fn a_provider_record_is_read_at_its_sources_scope() {
             ("v", Value::String("global-v".into())),
             ("gv", Value::String("G".into())),
         ]),
-        None,
+        Schedule::default(),
     );
     f.cache.put_source(
         "p",
@@ -650,7 +656,7 @@ async fn a_provider_record_is_read_at_its_sources_scope() {
             ("v", Value::String("project-v".into())),
             ("pv", Value::String("P".into())),
         ]),
-        None,
+        Schedule::default(),
     );
 
     let mut s = f.connect().await;
@@ -687,21 +693,21 @@ async fn the_global_source_wins_at_the_global_entry() {
         None,
         "proj",
         fields(vec![("v", Value::String("path-scoped-at-home".into()))]),
-        None,
+        Schedule::default(),
     );
     f.cache.put_source(
         "p",
         None,
         "glob",
         fields(vec![("v", Value::String("global-v".into()))]),
-        None,
+        Schedule::default(),
     );
     f.cache.put_source(
         "p",
         Some(&project),
         "proj",
         fields(vec![("v", Value::String("project-v".into()))]),
-        None,
+        Schedule::default(),
     );
 
     let mut s = f.connect().await;
@@ -738,7 +744,7 @@ async fn a_static_record_merges_into_a_provider_produced_object() {
             "tools",
             Value::Object(fields(vec![("y", Value::Int(2))])),
         )]),
-        None,
+        Schedule::default(),
     );
 
     let mut s = f.connect().await;

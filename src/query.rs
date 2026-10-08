@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 /// The set of metadata suffix names the server recognises. Keep this in sync
 /// with the `match meta` post-processing arms in `server::handle_request`.
-pub const KNOWN_METADATA_SUFFIXES: &[&str] = &["age", "stale", "fresh", "cache", "source"];
+pub const KNOWN_METADATA_SUFFIXES: &[&str] = &["age", "stale", "fresh", "source"];
 
 /// Parse a metadata suffix from a key. "git.branch:fresh" → ("git.branch", Some("fresh")).
 /// Only suffixes listed in KNOWN_METADATA_SUFFIXES are stripped; anything else passes
@@ -33,7 +33,7 @@ pub fn split_metadata_suffix(key: &str) -> (&str, Option<&str>) {
 /// `Ok(Some(facet))` for a syntactically valid facet key, or `Err` for a
 /// malformed one — more than one colon, an empty base or facet, invalid
 /// characters, or a facet name that collides with a metadata suffix (those
-/// five names are unreachable as facets; a suffix strip always claims them
+/// four names are unreachable as facets; a suffix strip always claims them
 /// first) or is `put`, the layer facet: a `:put` that survives to here was
 /// followed by a metadata suffix, and `:source` fails the same way.
 pub fn parse_facet(provider: &str) -> Result<Option<&str>, String> {
@@ -326,13 +326,13 @@ pub struct QueryPlan {
     pub meta: Option<String>,
     pub demand: SourceDemand,
     /// Which layers the read sees: `p:put` and `p:source` name one, anything
-    /// else sees them all.
+    /// else sees them all. `p:cache` reads them all to report on them.
     pub layers: crate::cache::Layers,
 }
 
-/// Split a `:put` or `:source` layer facet off the provider segment of a key:
-/// `git:source.branch` is `("git.branch", Source)`. Any other key is returned
-/// unchanged with every layer. The segment is judged before a metadata suffix
+/// Split a `:put`, `:source` or `:cache` layer facet off the provider segment
+/// of a key: `git:source.branch` is `("git.branch", Source)`. Any other key is
+/// returned unchanged with every layer. The segment is judged before a metadata suffix
 /// is, so a bare `p:source` is the facet, never `p` with the `:source` suffix.
 pub fn split_layer_facet(key: &str) -> (std::borrow::Cow<'_, str>, crate::cache::Layers) {
     use crate::cache::Layers;
@@ -340,7 +340,11 @@ pub fn split_layer_facet(key: &str) -> (std::borrow::Cow<'_, str>, crate::cache:
         Some(i) => key.split_at(i),
         None => (key, ""),
     };
-    for (suffix, layers) in [(":put", Layers::Put), (":source", Layers::Source)] {
+    for (suffix, layers) in [
+        (":put", Layers::Put),
+        (":source", Layers::Source),
+        (":cache", Layers::Cache),
+    ] {
         if let Some(base) = segment.strip_suffix(suffix)
             && !base.is_empty()
         {
@@ -366,8 +370,15 @@ impl QueryPlan {
         };
 
         let demand = match &target {
-            // The put layer is what `put` wrote: no Source has anything to warm.
-            _ if layers == crate::cache::Layers::Put => SourceDemand::Sources(Vec::new()),
+            // The put layer is what `put` wrote, and `:cache` reports on what is
+            // cached: no Source has anything to warm.
+            _ if matches!(
+                layers,
+                crate::cache::Layers::Put | crate::cache::Layers::Cache
+            ) =>
+            {
+                SourceDemand::Sources(Vec::new())
+            }
             KeyParse::Provider(_) => SourceDemand::All,
             KeyParse::Field(p, f) => {
                 // A field's demand is the Source of its nearest ancestor node,

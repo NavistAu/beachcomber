@@ -1,4 +1,5 @@
 use beachcomber::cache::Cache;
+use beachcomber::cache::Schedule;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
@@ -159,14 +160,26 @@ async fn context_sets_default_path_for_scoped_providers() {
         "active_path".to_string(),
         Value::String("/project/a".to_string()),
     );
-    cache.put_source("pathprov", Some("/project/a"), "main", fields_a, Some(60));
+    cache.put_source(
+        "pathprov",
+        Some("/project/a"),
+        "main",
+        fields_a,
+        Schedule::poll(60, 1),
+    );
 
     let mut fields_b = HashMap::new();
     fields_b.insert(
         "active_path".to_string(),
         Value::String("/project/b".to_string()),
     );
-    cache.put_source("pathprov", Some("/project/b"), "main", fields_b, Some(60));
+    cache.put_source(
+        "pathprov",
+        Some("/project/b"),
+        "main",
+        fields_b,
+        Schedule::poll(60, 1),
+    );
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -207,14 +220,26 @@ async fn explicit_path_overrides_context() {
         "active_path".to_string(),
         Value::String("/project/a".to_string()),
     );
-    cache.put_source("pathprov", Some("/project/a"), "main", fields_a, Some(60));
+    cache.put_source(
+        "pathprov",
+        Some("/project/a"),
+        "main",
+        fields_a,
+        Schedule::poll(60, 1),
+    );
 
     let mut fields_b = HashMap::new();
     fields_b.insert(
         "active_path".to_string(),
         Value::String("/project/b".to_string()),
     );
-    cache.put_source("pathprov", Some("/project/b"), "main", fields_b, Some(60));
+    cache.put_source(
+        "pathprov",
+        Some("/project/b"),
+        "main",
+        fields_b,
+        Schedule::poll(60, 1),
+    );
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -260,7 +285,7 @@ async fn global_provider_ignores_context() {
         "info".to_string(),
         Value::String("global-value".to_string()),
     );
-    cache.put_source("globalprov", None, "main", fields, None);
+    cache.put_source("globalprov", None, "main", fields, Schedule::default());
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -322,7 +347,7 @@ async fn path_scoped_provider_has_no_global_fallback() {
         "active_path".to_string(),
         Value::String("global-sentinel".to_string()),
     );
-    cache.put_source("pathprov", None, "main", fields, Some(60));
+    cache.put_source("pathprov", None, "main", fields, Schedule::poll(60, 1));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();

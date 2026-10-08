@@ -1,8 +1,8 @@
-use crate::cache::{Cache, MergedRead};
+use crate::cache::{Cache, Layers, MergedRead};
 use crate::config::Config;
 use crate::protocol::{self, IntrospectSubject, Request, Response};
+use crate::provider::SourceScope;
 use crate::provider::registry::ProviderRegistry;
-use crate::provider::{InvalidationStrategy, SourceScope};
 use crate::query::KeyParse;
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
@@ -497,11 +497,7 @@ async fn inline_execute_source(
         SourceScope::Global => None,
         SourceScope::PathScoped => path.map(|s| s.to_string()),
     };
-    let expected_interval_secs = match source.metadata().invalidation {
-        InvalidationStrategy::Poll { interval_secs, .. } => Some(interval_secs),
-        InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(interval_secs),
-        InvalidationStrategy::Watch { .. } => None,
-    };
+    let schedule = crate::cache::Schedule::from_strategy(&source.metadata().invalidation);
     let dir = crate::query::source_dir(scope, address.as_deref());
     let src_clone = std::sync::Arc::clone(&source);
     let result = match tokio::task::spawn_blocking(move || src_clone.execute(dir.as_deref())).await
@@ -517,7 +513,7 @@ async fn inline_execute_source(
         address.as_deref(),
         source_name,
         result.fields,
-        expected_interval_secs,
+        schedule,
     );
     true
 }
@@ -854,6 +850,9 @@ fn read_watch_value(
     provider_entry: Option<&str>,
     layers: crate::cache::Layers,
 ) -> Response {
+    if layers == crate::cache::Layers::Cache {
+        return cache_facet_response(cache, registry, target, requested, provider_entry);
+    }
     let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
     // A watch frame carries the same two halves a `get` does. A facet key is
     // already inside a facet and never gets one. Read first: the template
@@ -869,6 +868,145 @@ fn read_watch_value(
     };
     let merged = cache.read_merged(provider, requested, provider_entry, registry, layers);
     resolve_halves(&merged, target, half.template, half.rest)
+}
+
+/// The answer of `get p:cache.<path>`: the tree of what is known about the
+/// records a read of `p.<path>` resolves to, shaped like that read's value, with
+/// a leaf answer at each leaf. The address resolves exactly as the read does
+/// (same chain, nearest record), and nothing is warmed or run.
+///
+/// A leaf answers `age_ms`, `stale` and `source` (derived from the record that
+/// answered), plus the keys stored beside it (`poll`, `watch`, `decay`). A leaf a
+/// template answers is `{"age_ms": 0, "stale": false, "source": "template"}`:
+/// computed at the read, so it is zero seconds old. `p:cache._` is the prototype
+/// node, which is not part of the value: it reads back as written.
+fn cache_facet_response(
+    cache: &Cache,
+    registry: &ProviderRegistry,
+    target: &KeyParse,
+    requested: Option<&str>,
+    provider_entry: Option<&str>,
+) -> Response {
+    let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
+    let rest = target.rest();
+
+    if rest == "_" || rest.starts_with("_.") {
+        let prototypes = cache.read_merged(
+            &format!("{provider}:cache"),
+            None,
+            None,
+            registry,
+            Layers::All,
+        );
+        return match prototypes.and_then(|m| {
+            crate::provider::lookup_path(&m.fields, rest).and_then(|v| serde_json::to_value(v).ok())
+        }) {
+            Some(value) => Response::ok(value, 0, false),
+            None => Response::miss(),
+        };
+    }
+
+    let merged = cache.read_merged(provider, requested, provider_entry, registry, Layers::All);
+    let half = template_half(cache, registry, provider, rest, requested);
+    let value = merged.as_ref().and_then(|m| {
+        if rest.is_empty() {
+            Some(crate::provider::Value::Object(m.fields.clone()))
+        } else {
+            crate::provider::lookup_path(&m.fields, rest).cloned()
+        }
+    });
+    let leaf = |tail: &str| -> Option<serde_json::Value> {
+        let record = merged.as_ref()?.records.get(tail)?;
+        let mut answer = serde_json::Map::new();
+        answer.insert("age_ms".into(), (record.age_ms() as u64).into());
+        answer.insert("stale".into(), record.is_stale().into());
+        let label: &str = &record.source;
+        answer.insert(
+            "source".into(),
+            if crate::cache::is_static_label(label) {
+                label.into()
+            } else {
+                format!("source({label})").into()
+            },
+        );
+        let stored = cache.stored_keys(provider, record.entry.as_deref(), label, tail);
+        for (key, v) in stored.iter().flatten() {
+            if let Ok(v) = serde_json::to_value(v) {
+                answer.insert(key.clone(), v);
+            }
+        }
+        // A Source's field without a decay of its own takes the prototype's.
+        if !crate::cache::is_static_label(label) && !answer.contains_key("decay") {
+            answer.insert("decay".into(), cache.resolve_decay(provider).into());
+        }
+        Some(answer.into())
+    };
+
+    match cache_facet_node(rest, value.as_ref(), half.template.as_ref(), &leaf) {
+        Some(tree) => Response::ok(tree, 0, false),
+        None => Response::miss(),
+    }
+}
+
+/// The tree of leaf answers for the node at `tail`: the one place the answer
+/// for an object node lives. `value` is the data at the node, `template` the
+/// template tree at it; a template wins over data at the same leaf, as it does
+/// in a read. An object with no answer anywhere below it is no answer.
+fn cache_facet_node(
+    tail: &str,
+    value: Option<&crate::provider::Value>,
+    template: Option<&serde_json::Value>,
+    leaf: &dyn Fn(&str) -> Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    use crate::provider::Value;
+    let child = |key: &str| {
+        if tail.is_empty() {
+            key.to_string()
+        } else {
+            format!("{tail}.{key}")
+        }
+    };
+    match (value, template) {
+        (_, Some(serde_json::Value::Object(group))) => {
+            let data = match value {
+                Some(Value::Object(map)) => Some(map),
+                _ => None,
+            };
+            let mut keys: Vec<&String> = group
+                .keys()
+                .chain(data.into_iter().flat_map(|m| m.keys()))
+                .collect();
+            keys.sort();
+            keys.dedup();
+            let tree: serde_json::Map<String, serde_json::Value> = keys
+                .into_iter()
+                .filter_map(|k| {
+                    let answer = cache_facet_node(
+                        &child(k),
+                        data.and_then(|m| m.get(k)),
+                        group.get(k),
+                        leaf,
+                    )?;
+                    Some((k.clone(), answer))
+                })
+                .collect();
+            (!tree.is_empty()).then(|| tree.into())
+        }
+        (_, Some(_)) => Some(serde_json::json!({
+            "age_ms": 0, "stale": false, "source": "template"
+        })),
+        (Some(Value::Object(map)), None) if !map.is_empty() => {
+            let tree: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .filter_map(|(k, v)| {
+                    Some((k.clone(), cache_facet_node(&child(k), Some(v), None, leaf)?))
+                })
+                .collect();
+            (!tree.is_empty()).then(|| tree.into())
+        }
+        (Some(_), None) => leaf(tail),
+        (None, None) => None,
+    }
 }
 
 async fn write_watch_line(
@@ -919,6 +1057,23 @@ async fn handle_request(
 
             let effective_path = plan.effective_path.clone();
             let meta = plan.meta.as_deref();
+
+            // `p:cache` reports on what is cached: nothing is warmed, no demand
+            // is signalled, and no template is attached.
+            if plan.layers == crate::cache::Layers::Cache {
+                if let Some(suffix) = meta {
+                    return Response::error(format!(
+                        "a :cache key takes no metadata suffix: :{suffix}"
+                    ));
+                }
+                return cache_facet_response(
+                    cache,
+                    registry,
+                    &plan.target,
+                    plan.requested_path.as_deref(),
+                    effective_path.as_deref(),
+                );
+            }
 
             // The two halves are addressed from different places. `effective_path`
             // is where the *provider's* records live: `resolve_path` has already
@@ -1062,7 +1217,6 @@ async fn handle_request(
                     0,
                     false,
                 ),
-                Some("cache") => Response::ok(serde_json::Value::Bool(cache_hit), 0, false),
                 // The writer of the record that answered: a leaf's own record,
                 // or the template record when the template half answered alone.
                 // An object is several records and names none of them, and a
@@ -1186,6 +1340,24 @@ async fn handle_request(
                 return Response::error(msg);
             }
 
+            // The one `:cache` key a put may write is a decay prototype. The
+            // rest is derived at a read or stored by the daemon.
+            let is_cache_facet = namespace.ends_with(":cache");
+            if is_cache_facet {
+                let derived = ["age_ms", "stale", "source"]
+                    .iter()
+                    .any(|k| node.rsplit('.').next() == Some(k));
+                if derived {
+                    return Response::error(format!("{key} is derived and cannot be written"));
+                }
+                if node != "_.decay" {
+                    return Response::error(format!("{key} is written by the daemon"));
+                }
+                if !data.is_null() && data.as_u64().is_none_or(|n| n < 1) {
+                    return Response::error(format!("{key} must be a positive integer"));
+                }
+            }
+
             // A key arrives off the socket with no length bound of its own, and
             // every segment of the node is one step of a tree walk. Cap the
             // node at the depth JSON conversion is already capped at, so a
@@ -1200,7 +1372,12 @@ async fn handle_request(
 
             // Resolve optional path — canonicalize if provided. `$HOME`, like a
             // request carrying no path at all, is the global entry.
-            let effective_path: Option<String> = crate::query::normalise_path(path.as_deref());
+            // A decay prototype is read at the global entry, so it is written there.
+            let effective_path: Option<String> = if is_cache_facet {
+                None
+            } else {
+                crate::query::normalise_path(path.as_deref())
+            };
 
             // A ttl is the put's lifecycle: valid for N, stale for one decay
             // step, then gone. It needs a value to expire.
@@ -1957,7 +2134,13 @@ mod tests {
         let cache = Cache::new();
         let mut refs_fields = HashMap::new();
         refs_fields.insert("branch".to_string(), Value::String("main".to_string()));
-        cache.put_source("git", Some("/repo"), "refs", refs_fields, None);
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "refs",
+            refs_fields,
+            crate::cache::Schedule::default(),
+        );
 
         let registry = ProviderRegistry::with_defaults();
         let target = KeyParse::Field("git".to_string(), "branch".to_string());

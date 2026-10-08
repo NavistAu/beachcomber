@@ -963,7 +963,7 @@ async fn comb_check_config_renders_both_views_as_one_list() {
          \x20 [PASS] daemon   1 provider definitions loaded\n\
          \x20 [WARN] local    [providers.\"x:template\"] 'width' is integer, not a value \
          expression or a group; it is dropped from the seed.\n\
-         \x20 [WARN] local    defaults {}: 8 shipped file(s) missing or stale — the daemon \
+         \x20 [WARN] local    defaults {}: 9 shipped file(s) missing or stale — the daemon \
          writes them on its next start\n\
          \n\
          (2 warning(s))\n\

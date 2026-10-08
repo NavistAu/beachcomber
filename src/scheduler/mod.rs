@@ -592,11 +592,7 @@ impl Scheduler {
         let source_name_owned = source_name.to_string();
         let key_for_cleanup = key.clone();
 
-        let expected_interval_secs = match source.metadata().invalidation {
-            InvalidationStrategy::Poll { interval_secs, .. } => Some(interval_secs),
-            InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(interval_secs),
-            InvalidationStrategy::Watch { .. } => None,
-        };
+        let schedule = crate::cache::Schedule::from_strategy(&source.metadata().invalidation);
 
         let failure_threshold = self.config.resolve_failure_reattempts_for_source(
             provider_name,
@@ -655,7 +651,7 @@ impl Scheduler {
                             cache_path.as_deref(),
                             &source_name_owned,
                             source_result.fields,
-                            expected_interval_secs,
+                            schedule.clone(),
                         );
                         debug!(
                             "Executed source '{}.{}' path={:?}",
@@ -900,11 +896,7 @@ impl Scheduler {
                                     source: sm.name.clone(),
                                     node: String::new(),
                                 };
-                                let cfg = SourceLifecycleConfig::from_strategy(
-                                    &sm.invalidation,
-                                    sm.fsevents_reinstate,
-                                    lifecycle::DEFAULT_DECAY,
-                                );
+                                let cfg = source_lifecycle_config(&self.cache, &provider, sm);
                                 let outcome = lifecycle.on_demand(key.clone(), cfg, now);
 
                                 match outcome.watch_registration {
@@ -1215,11 +1207,7 @@ impl Scheduler {
                                     source: sm.name.clone(),
                                     node: String::new(),
                                 };
-                                let cfg = SourceLifecycleConfig::from_strategy(
-                                    &sm.invalidation,
-                                    sm.fsevents_reinstate,
-                                    lifecycle::DEFAULT_DECAY,
-                                );
+                                let cfg = source_lifecycle_config(&self.cache, &provider, sm);
                                 let outcome = lifecycle.on_demand(key.clone(), cfg, now);
 
                                 // No filesystem watching in this path.
@@ -1390,6 +1378,20 @@ fn apply_put_written(
     lifecycle.on_demand(key, cfg, now);
 }
 
+/// The lifecycle a Source of `provider` runs under: its own strategy, with the
+/// decay depth its provider's `_` prototype gives (`Cache::resolve_decay`).
+fn source_lifecycle_config(
+    cache: &Cache,
+    provider: &str,
+    sm: &crate::provider::SourceMetadata,
+) -> SourceLifecycleConfig {
+    SourceLifecycleConfig::from_strategy(
+        &sm.invalidation,
+        sm.fsevents_reinstate,
+        cache.resolve_decay(provider),
+    )
+}
+
 /// Evict one lifecycle key: a put address takes its own subtree with it, a
 /// Source takes its whole contribution.
 fn evict(cache: &Cache, key: &lifecycle::Key) {
@@ -1470,6 +1472,33 @@ mod tests {
         let mut keys: Vec<String> = lifecycle.iter().map(|(k, _)| k.node.clone()).collect();
         keys.sort();
         keys
+    }
+
+    #[test]
+    fn a_source_registers_with_its_providers_decay() {
+        let registry = ProviderRegistry::with_defaults();
+        let sm = registry.provider_sources("git").unwrap()[0].clone();
+        let cache = Cache::new();
+        assert_eq!(
+            source_lifecycle_config(&cache, "git", &sm).decay,
+            lifecycle::DEFAULT_DECAY
+        );
+        cache
+            .write_static(
+                "git:cache",
+                None,
+                crate::cache::PUT_SOURCE,
+                "_.decay",
+                crate::provider::Value::Int(2),
+                None,
+            )
+            .unwrap();
+        assert_eq!(source_lifecycle_config(&cache, "git", &sm).decay, 2);
+        assert_eq!(
+            source_lifecycle_config(&cache, "mise", &sm).decay,
+            lifecycle::DEFAULT_DECAY,
+            "another provider's prototype does not apply"
+        );
     }
 
     /// Each put address is its own entry: valid for the ttl, stale for one

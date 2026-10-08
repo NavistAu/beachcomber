@@ -1,5 +1,6 @@
 use crate::common::fetch::fetch;
 use beachcomber::cache::Cache;
+use beachcomber::cache::Schedule;
 use beachcomber::client::Client;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -23,12 +24,12 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
         Value::String("testhost.local".to_string()),
     );
     hostname.insert("short".to_string(), Value::String("testhost".to_string()));
-    cache.put_source("hostname", None, "host", hostname, Some(60));
+    cache.put_source("hostname", None, "host", hostname, Schedule::poll(60, 1));
 
     let mut user = HashMap::new();
     user.insert("name".to_string(), Value::String("testuser".to_string()));
     user.insert("uid".to_string(), Value::Int(501));
-    cache.put_source("user", None, "name", user, Some(60));
+    cache.put_source("user", None, "name", user, Schedule::poll(60, 1));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     server.spawn().unwrap();

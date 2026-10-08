@@ -181,30 +181,6 @@ async fn source_on_an_unknown_provider_is_the_plain_get_miss() {
     handle.abort();
 }
 
-// ── Test 3: :cache returns true after a warm get ─────────────────────────────
-
-#[tokio::test]
-async fn cache_returns_true_after_warm_get() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-
-    // Warm the cache with an initial get (sync-miss executes inline and stores).
-    let warm = send_one(&sock, r#"{"op":"get","key":"hostname"}"#).await;
-    assert!(warm.ok, "warm get should succeed");
-
-    // Now query :cache — should be true because the second get hits the warm cache.
-    let resp = send_one(&sock, r#"{"op":"get","key":"hostname:cache"}"#).await;
-    assert!(resp.ok, "cache suffix query should succeed");
-    assert_eq!(
-        resp.data.unwrap(),
-        serde_json::Value::Bool(true),
-        ":cache should be true after warming"
-    );
-
-    handle.abort();
-}
-
 // ── Test 4: :fresh is the inverse of :stale ──────────────────────────────────
 
 #[tokio::test]

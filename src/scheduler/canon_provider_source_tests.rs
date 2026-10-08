@@ -181,14 +181,14 @@ fn watch_source_refreshes_on_filesystem_event() {
         Some("/repo"),
         "refs",
         make_fields(&[("branch", "main"), ("commit", "abc")]),
-        None,
+        crate::cache::Schedule::default(),
     );
     cache.put_source(
         "git",
         Some("/repo"),
         "diff",
         make_fields(&[("lines_added", "5")]),
-        None,
+        crate::cache::Schedule::default(),
     );
 
     // Refresh refs only.
@@ -197,7 +197,7 @@ fn watch_source_refreshes_on_filesystem_event() {
         Some("/repo"),
         "refs",
         make_fields(&[("branch", "feat"), ("commit", "def")]),
-        None,
+        crate::cache::Schedule::default(),
     );
 
     // diff fields must be untouched.
@@ -353,7 +353,13 @@ fn source_level_failure_backoff_suppresses_refresh() {
 
     // Simulate: populate cache once (the "last good value").
     let cache = Cache::new();
-    cache.put_source("test", None, "main", make_fields(&[("status", "ok")]), None);
+    cache.put_source(
+        "test",
+        None,
+        "main",
+        make_fields(&[("status", "ok")]),
+        crate::cache::Schedule::default(),
+    );
 
     let (last_val, _) = cache
         .get_field("test", None, "status")
@@ -607,7 +613,7 @@ async fn field_freshness_reflects_owning_source_last_refresh() {
         Some("/repo"),
         "refs",
         make_fields(&[("branch", "main")]),
-        None,
+        crate::cache::Schedule::default(),
     );
 
     // Simulate passage of 10ms (small but measurable).
@@ -619,7 +625,7 @@ async fn field_freshness_reflects_owning_source_last_refresh() {
         Some("/repo"),
         "diff",
         make_fields(&[("lines_added", "3")]),
-        None,
+        crate::cache::Schedule::default(),
     );
 
     // Source B's age should be younger than source A's age.
@@ -714,7 +720,7 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
         None, // Global scope → the global entry (path=None)
         "global",
         make_fields(&[("rust", "1.80.0")]),
-        None,
+        crate::cache::Schedule::default(),
     );
 
     let (val, _) = cache
@@ -742,14 +748,14 @@ fn cross_source_field_write_isolation() {
         Some("/path"),
         "source_a",
         make_fields(&[("a1", "original_a1"), ("a2", "original_a2")]),
-        None,
+        crate::cache::Schedule::default(),
     );
     cache.put_source(
         "myprovider",
         Some("/path"),
         "source_b",
         make_fields(&[("b1", "original_b1")]),
-        None,
+        crate::cache::Schedule::default(),
     );
 
     // Source A refreshes with new values.
@@ -758,7 +764,7 @@ fn cross_source_field_write_isolation() {
         Some("/path"),
         "source_a",
         make_fields(&[("a1", "new_a1"), ("a2", "new_a2")]),
-        None,
+        crate::cache::Schedule::default(),
     );
 
     // a1 and a2 must reflect the new values.

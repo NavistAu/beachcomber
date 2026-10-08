@@ -16,6 +16,7 @@
 
 use crate::common::git::{GitRepoFixture, has_git};
 use beachcomber::cache::Cache;
+use beachcomber::cache::Schedule;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
@@ -800,7 +801,7 @@ async fn field_age_through_get_is_the_owning_sources_age() {
         None,
         "alpha",
         [("a".to_string(), Value::Int(1))].into_iter().collect(),
-        Some(600),
+        Schedule::poll(600, 1),
     );
     tokio::time::advance(Duration::from_millis(10)).await;
     cache.put_source(
@@ -808,7 +809,7 @@ async fn field_age_through_get_is_the_owning_sources_age() {
         None,
         "beta",
         [("b".to_string(), Value::Int(2))].into_iter().collect(),
-        Some(600),
+        Schedule::poll(600, 1),
     );
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);

@@ -1,3 +1,4 @@
+use beachcomber::cache::Schedule;
 use beachcomber::cache::{Cache, PUT_SOURCE};
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
@@ -34,7 +35,7 @@ async fn wait_fresh_entry_is_served_from_cache() {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("cached-host".to_string()));
     fields.insert("short".to_string(), Value::String("cached".to_string()));
-    cache.put_source("hostname", None, "host", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
 
     // Age the record by ten seconds on the mock clock — well inside its 60 s
     // interval, so it stays fresh, and far enough that the `age_ms` assertion
@@ -99,7 +100,7 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("stale-host".to_string()));
     fields.insert("short".to_string(), Value::String("stale".to_string()));
-    cache.put_source("hostname", None, "host", fields, Some(0));
+    cache.put_source("hostname", None, "host", fields, Schedule::poll(0, 1));
 
     // Advance mock clock by 2s so elapsed().as_secs() > 0 — avoids a real 1.1s wall wait.
     tokio::time::pause();
@@ -172,7 +173,7 @@ async fn wait_static_namespace_returns_cached_ignoring_stale() {
     let mut fields = HashMap::new();
     fields.insert("val".to_string(), Value::String("static-value".to_string()));
     // interval=0 will make it stale after 1 second.
-    cache.put_source("mystore", None, PUT_SOURCE, fields, Some(0));
+    cache.put_source("mystore", None, PUT_SOURCE, fields, Schedule::poll(0, 1));
 
     // Advance mock clock by 2s so elapsed().as_secs() > 0 — avoids a real 1.1s wall wait.
     tokio::time::pause();
@@ -229,7 +230,7 @@ async fn force_wins_over_wait() {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("seeded-host".to_string()));
     fields.insert("short".to_string(), Value::String("seeded".to_string()));
-    cache.put_source("hostname", None, "host", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = server.spawn().unwrap();

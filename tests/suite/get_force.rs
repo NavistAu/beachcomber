@@ -1,3 +1,4 @@
+use beachcomber::cache::Schedule;
 use beachcomber::cache::{Cache, PUT_SOURCE};
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
@@ -37,7 +38,7 @@ async fn get_force_evicts_and_re_executes() {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("stale-host".to_string()));
     fields.insert("short".to_string(), Value::String("stale".to_string()));
-    cache.put_source("hostname", None, "host", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
 
     // Confirm the cache has the stale entry.
     assert!(
@@ -97,7 +98,7 @@ async fn get_without_force_returns_cached_entry() {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("cached-host".to_string()));
     fields.insert("short".to_string(), Value::String("cached".to_string()));
-    cache.put_source("hostname", None, "host", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -132,11 +133,11 @@ fn cache_remove_targets_path_scope() {
 
     let mut a = HashMap::new();
     a.insert("branch".to_string(), Value::String("aaa".to_string()));
-    cache.put_source("git", Some("fake-path-a"), "refs", a, Some(60));
+    cache.put_source("git", Some("fake-path-a"), "refs", a, Schedule::poll(60, 1));
 
     let mut b = HashMap::new();
     b.insert("branch".to_string(), Value::String("bbb".to_string()));
-    cache.put_source("git", Some("fake-path-b"), "refs", b, Some(60));
+    cache.put_source("git", Some("fake-path-b"), "refs", b, Schedule::poll(60, 1));
 
     cache.remove("git", Some("fake-path-a"));
 
@@ -160,7 +161,7 @@ async fn force_on_static_namespace_returns_error() {
 
     let mut fields = HashMap::new();
     fields.insert("val".to_string(), Value::String("hello".to_string()));
-    cache.put_source("mystore", None, PUT_SOURCE, fields, None);
+    cache.put_source("mystore", None, PUT_SOURCE, fields, Schedule::default());
 
     let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
     let handle = server.spawn().unwrap();

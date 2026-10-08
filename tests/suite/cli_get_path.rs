@@ -1,3 +1,5 @@
+use crate::common::fetch::fetch;
+use beachcomber::cache::Cache;
 /// Integration tests for path context handling in `comb get`.
 ///
 /// These tests exercise the server-side path context (set via
@@ -8,8 +10,7 @@
 ///
 /// Unit tests for the disambiguation logic itself live in src/main.rs
 /// under `#[cfg(test)] mod path_disambiguation_tests`.
-use crate::common::fetch::fetch;
-use beachcomber::cache::Cache;
+use beachcomber::cache::Schedule;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
@@ -78,12 +79,12 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
     let mut git = HashMap::new();
     git.insert("branch".to_string(), Value::String("main".to_string()));
     git.insert("dirty".to_string(), Value::Bool(false));
-    cache.put_source("git", Some(&repo_path), "refs", git, Some(60));
+    cache.put_source("git", Some(&repo_path), "refs", git, Schedule::poll(60, 1));
 
     // Seed a hostname entry (global — no path).
     let mut hostname = HashMap::new();
     hostname.insert("name".to_string(), Value::String("myhost".to_string()));
-    cache.put_source("hostname", None, "host", hostname, Some(60));
+    cache.put_source("hostname", None, "host", hostname, Schedule::poll(60, 1));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     server.spawn().unwrap();

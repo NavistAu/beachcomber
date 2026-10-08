@@ -22,8 +22,97 @@ pub const CONFIG_SOURCE_PREFIX: &str = "config:";
 /// Whether a source name is a static label — one with no Source instance
 /// behind it (canon `provider_source.md` "Field"). `put` and `config:<file>`
 /// are the two; everything else names a Source the daemon refreshes.
-fn is_static_label(source_name: &str) -> bool {
+pub fn is_static_label(source_name: &str) -> bool {
     source_name == PUT_SOURCE || source_name.starts_with(CONFIG_SOURCE_PREFIX)
+}
+
+/// What a Source's records carry into the `<p>:cache` facet beside them: the
+/// schedule that keeps them fresh. Built from the Source's invalidation
+/// strategy, so a record and its schedule are written together and removed
+/// together.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Schedule {
+    /// `(interval_secs, count)` for a Source that polls.
+    pub poll: Option<(u64, u32)>,
+    /// The watch patterns, then the absolute paths, for a Source that watches.
+    pub watch: Vec<String>,
+}
+
+impl Schedule {
+    pub fn poll(interval_secs: u64, count: u32) -> Self {
+        Self {
+            poll: Some((interval_secs, count)),
+            watch: Vec::new(),
+        }
+    }
+
+    pub fn from_strategy(strategy: &crate::provider::InvalidationStrategy) -> Self {
+        use crate::provider::InvalidationStrategy::*;
+        match strategy {
+            Poll {
+                interval_secs,
+                count,
+            } => Self::poll(*interval_secs, *count),
+            Watch {
+                patterns,
+                abs_paths,
+            } => Self {
+                poll: None,
+                watch: patterns.iter().chain(abs_paths).cloned().collect(),
+            },
+            WatchAndPoll {
+                patterns,
+                abs_paths,
+                interval_secs,
+                count,
+            } => Self {
+                poll: Some((*interval_secs, *count)),
+                watch: patterns.iter().chain(abs_paths).cloned().collect(),
+            },
+        }
+    }
+
+    /// The stored `:cache` keys of one record: `poll` and `watch`.
+    fn stored_keys(&self) -> HashMap<String, Value> {
+        let mut keys = HashMap::new();
+        if let Some((interval_secs, count)) = self.poll {
+            keys.insert("poll".to_string(), poll_key(interval_secs, count));
+        }
+        if !self.watch.is_empty() {
+            // An array is an object keyed by decimal index (`Value::from_json`).
+            keys.insert(
+                "watch".to_string(),
+                Value::Object(
+                    self.watch
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| (i.to_string(), Value::String(p.clone())))
+                        .collect(),
+                ),
+            );
+        }
+        keys
+    }
+}
+
+fn poll_key(interval_secs: u64, count: u32) -> Value {
+    Value::Object(HashMap::from([
+        (
+            "interval".to_string(),
+            Value::String(format!("{interval_secs}s")),
+        ),
+        ("count".to_string(), Value::Int(i64::from(count))),
+    ]))
+}
+
+/// The namespace holding the `:cache` facet of `namespace`.
+fn cache_facet_of(namespace: &str) -> String {
+    format!("{namespace}:cache")
+}
+
+/// Whether `tail` is at or below the `_` prototype node of a `:cache` facet.
+fn is_prototype(tail: &str) -> bool {
+    tail == "_" || tail.starts_with("_.")
 }
 
 /// Why a static write was refused.
@@ -92,6 +181,9 @@ pub struct RecordFreshness {
     /// contributes many records and they all name it, so the label is
     /// allocated once per map and refcounted per record.
     pub source: Arc<str>,
+    /// The directory entry the record's map lives at (`None`: the global
+    /// entry) — where the `:cache` facet reads the keys stored beside it.
+    pub entry: Option<Arc<str>>,
     pub last_refreshed: Instant,
     pub expected_interval_secs: Option<u64>,
 }
@@ -110,12 +202,15 @@ impl RecordFreshness {
 }
 
 /// Which layers of a namespace a read sees. `Put` is what `put` and config
-/// seeds stored; `Source` is what the provider's Sources stored.
+/// seeds stored; `Source` is what the provider's Sources stored. `Cache` reads
+/// them all, to answer for them (`p:cache`): it never warms and never attaches
+/// a template.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layers {
     All,
     Put,
     Source,
+    Cache,
 }
 
 /// What a chain-resolved read of one namespace found: see [`Cache::read_merged`],
@@ -194,10 +289,16 @@ impl CacheEntry {
     /// The stamp governing the record at `tail`: the put address at or above
     /// it, nearest first.
     fn put_stamp_for(&self, tail: &str) -> Option<&PutStamp> {
+        self.puts.get(self.put_address_for(tail)?)
+    }
+
+    /// The put address governing the record at `tail`: at or above it, nearest
+    /// first.
+    fn put_address_for(&self, tail: &str) -> Option<&str> {
         let mut at = tail;
         loop {
-            if let Some(stamp) = self.puts.get(at) {
-                return Some(stamp);
+            if let Some((addr, _)) = self.puts.get_key_value(at) {
+                return Some(addr.as_str());
             }
             at = match at.rfind('.') {
                 Some(i) => &at[..i],
@@ -625,6 +726,7 @@ fn note_records(
 fn note_put_records(
     entry: &CacheEntry,
     label: &Arc<str>,
+    at: &Option<Arc<str>>,
     records: &mut HashMap<String, RecordFreshness>,
     tail: &str,
     value: &Value,
@@ -632,7 +734,7 @@ fn note_put_records(
     match value {
         Value::Object(map) if !map.is_empty() => {
             for (k, v) in map {
-                note_put_records(entry, label, records, &format!("{tail}.{k}"), v);
+                note_put_records(entry, label, at, records, &format!("{tail}.{k}"), v);
             }
         }
         _ => {
@@ -641,6 +743,7 @@ fn note_put_records(
                     tail.to_string(),
                     RecordFreshness {
                         source: label.clone(),
+                        entry: at.clone(),
                         last_refreshed: stamp.written,
                         expected_interval_secs: stamp.interval_secs,
                     },
@@ -681,20 +784,51 @@ impl Cache {
     /// Write a single source's result into the cache entry for (provider, path).
     /// Other sources at the same (provider, path) are not touched.
     /// Creates the entry if absent; updates only `source_name`'s record if present.
+    ///
+    /// The `schedule` is written into the `<provider>:cache` entry at the same
+    /// path, under the same label, one object per top-level field, before the
+    /// record itself: a reader that sees the record sees its schedule. One
+    /// notification, the record's.
     pub fn put_source(
         &self,
         provider: &str,
         path: Option<&str>,
         source_name: &str,
         fields: HashMap<String, Value>,
-        interval_secs: Option<u64>,
+        schedule: Schedule,
     ) {
-        let key = make_cache_key(provider, path);
-        let src = CacheSourceEntry {
-            fields,
-            last_refreshed: Instant::now(),
-            expected_interval_secs: interval_secs,
-        };
+        let now = Instant::now();
+        let stored = schedule.stored_keys();
+        if !stored.is_empty() {
+            let per_field = fields
+                .keys()
+                .map(|f| (f.clone(), Value::Object(stored.clone())))
+                .collect();
+            self.insert_source_map(
+                make_cache_key(&cache_facet_of(provider), path),
+                source_name,
+                CacheSourceEntry {
+                    fields: per_field,
+                    last_refreshed: now,
+                    expected_interval_secs: None,
+                },
+            );
+        }
+        self.insert_source_map(
+            make_cache_key(provider, path),
+            source_name,
+            CacheSourceEntry {
+                fields,
+                last_refreshed: now,
+                expected_interval_secs: schedule.poll.map(|(secs, _)| secs),
+            },
+        );
+        if let Some(ref watchers) = self.watchers {
+            watchers.notify(provider, path);
+        }
+    }
+
+    fn insert_source_map(&self, key: CacheKey, source_name: &str, src: CacheSourceEntry) {
         self.entries
             .entry(key)
             .and_modify(|ce| {
@@ -709,9 +843,6 @@ impl Cache {
                 puts: BTreeMap::new(),
                 created_at: Instant::now(),
             });
-        if let Some(ref watchers) = self.watchers {
-            watchers.notify(provider, path);
-        }
     }
 
     /// Write static data at `node`, the dotted tail below `namespace` (`""` for
@@ -742,6 +873,9 @@ impl Cache {
             return Err(PutError::DottedKey {
                 key: key.to_string(),
             });
+        }
+        if label == PUT_SOURCE && !namespace.contains(':') {
+            self.write_put_schedule(namespace, path, node, &value, interval_secs);
         }
         let mut leaves = Vec::new();
         walk_leaves(node, value, &mut leaves);
@@ -794,6 +928,70 @@ impl Cache {
         self.remove_put_with(namespace, path, node, drop_put_address)
     }
 
+    /// Write the schedule of a put into `<namespace>:cache` under the `put`
+    /// label, ahead of the put itself: a ttl'd put polls once, for its ttl, and
+    /// decays in one step. The put replaces whatever stood at `node` and below
+    /// it, so their schedules go first. A root put has no address of its own, so
+    /// each top-level key carries the schedule.
+    fn write_put_schedule(
+        &self,
+        namespace: &str,
+        path: Option<&str>,
+        node: &str,
+        value: &Value,
+        ttl_secs: Option<u64>,
+    ) {
+        self.drop_put_schedule(namespace, path, node, drop_put_subtree_all);
+        let Some(ttl_secs) = ttl_secs else {
+            return;
+        };
+        let addresses: Vec<String> = match (node, value) {
+            ("", Value::Object(top)) => top.keys().cloned().collect(),
+            _ => vec![node.to_string()],
+        };
+        let facet = cache_facet_of(namespace);
+        for address in addresses.into_iter().filter(|a| !is_prototype(a)) {
+            let stored = Value::Object(HashMap::from([
+                ("poll".to_string(), poll_key(ttl_secs, 1)),
+                ("decay".to_string(), Value::Int(1)),
+            ]));
+            self.write_static(&facet, path, PUT_SOURCE, &address, stored, None)
+                .expect("a stored schedule is a well-formed put");
+        }
+    }
+
+    /// Remove the stored schedule of the put at `node` from
+    /// `<namespace>:cache`, never the `_` prototypes beside it. The root has no
+    /// schedule of its own: it is every top-level key's.
+    fn drop_put_schedule(
+        &self,
+        namespace: &str,
+        path: Option<&str>,
+        node: &str,
+        drop: fn(&mut CacheEntry, &str) -> bool,
+    ) {
+        let key = make_cache_key(&cache_facet_of(namespace), path);
+        let dashmap::Entry::Occupied(mut occupied) = self.entries.entry(key) else {
+            return;
+        };
+        let entry = occupied.get_mut();
+        let addresses: Vec<String> = if node.is_empty() {
+            entry
+                .sources
+                .get(PUT_SOURCE)
+                .map(|src| src.fields.keys().cloned().collect())
+                .unwrap_or_default()
+        } else {
+            vec![node.to_string()]
+        };
+        for address in addresses.iter().filter(|a| !is_prototype(a)) {
+            drop(entry, address);
+        }
+        if occupied.get().sources.is_empty() {
+            occupied.remove();
+        }
+    }
+
     fn remove_put_with(
         &self,
         namespace: &str,
@@ -801,6 +999,9 @@ impl Cache {
         node: &str,
         drop: fn(&mut CacheEntry, &str) -> bool,
     ) -> bool {
+        if !namespace.contains(':') {
+            self.drop_put_schedule(namespace, path, node, drop);
+        }
         let key = make_cache_key(namespace, path);
 
         let mut removed = false;
@@ -923,9 +1124,11 @@ impl Cache {
     /// One layer at a time: [`Cache::read_merged`] walks the chain itself
     /// because a layer's static maps have to land between its neighbours'
     /// provider maps, not after all of them.
-    fn merge_static_records(entry: &CacheEntry, out: &mut MergedRead) -> bool {
-        let seeds = Self::merge_named(entry, out, |name| name.starts_with(CONFIG_SOURCE_PREFIX));
-        let puts = Self::merge_puts(entry, out);
+    fn merge_static_records(entry: &CacheEntry, at: Option<&str>, out: &mut MergedRead) -> bool {
+        let seeds = Self::merge_named(entry, at, out, |name| {
+            name.starts_with(CONFIG_SOURCE_PREFIX)
+        });
+        let puts = Self::merge_puts(entry, at, out);
         seeds | puts
     }
 
@@ -934,7 +1137,7 @@ impl Cache {
     /// put replaces the node it was written at instead of merging into it;
     /// then the map lands, each record carrying the freshness of the nearest
     /// stamp at or above it.
-    fn merge_puts(entry: &CacheEntry, out: &mut MergedRead) -> bool {
+    fn merge_puts(entry: &CacheEntry, at: Option<&str>, out: &mut MergedRead) -> bool {
         let Some(src) = entry.sources.get(PUT_SOURCE) else {
             return false;
         };
@@ -948,8 +1151,10 @@ impl Cache {
             }
         }
         let label: Arc<str> = Arc::from(PUT_SOURCE);
+        let at: Option<Arc<str>> = at.map(Arc::from);
         let fallback = RecordFreshness {
             source: label.clone(),
+            entry: at.clone(),
             last_refreshed: src.last_refreshed,
             expected_interval_secs: src.expected_interval_secs,
         };
@@ -961,7 +1166,7 @@ impl Cache {
             "",
         );
         for (k, v) in &src.fields {
-            note_put_records(entry, &label, &mut out.records, k, v);
+            note_put_records(entry, &label, &at, &mut out.records, k, v);
         }
         true
     }
@@ -975,13 +1180,14 @@ impl Cache {
     /// rather than being read at every scope and merged more than once.
     fn merge_provider_records(
         entry: &CacheEntry,
+        at: Option<&str>,
         namespace: &str,
         want: crate::provider::SourceScope,
         registry: &ProviderRegistry,
         out: &mut MergedRead,
     ) -> bool {
         let declared = registry.provider_sources(namespace);
-        Self::merge_named(entry, out, |name| {
+        Self::merge_named(entry, at, out, |name| {
             !is_static_label(name)
                 && declared
                     .is_some_and(|ss| ss.iter().any(|sm| sm.name == *name && sm.scope == want))
@@ -997,6 +1203,7 @@ impl Cache {
     /// would let a HashMap's order decide the value.
     fn merge_named(
         entry: &CacheEntry,
+        at: Option<&str>,
         out: &mut MergedRead,
         wanted: impl Fn(&String) -> bool,
     ) -> bool {
@@ -1007,6 +1214,7 @@ impl Cache {
             let src = &entry.sources[name];
             let fresh = RecordFreshness {
                 source: Arc::from(name.as_str()),
+                entry: at.map(Arc::from),
                 last_refreshed: src.last_refreshed,
                 expected_interval_secs: src.expected_interval_secs,
             };
@@ -1093,16 +1301,27 @@ impl Cache {
             if layers != Layers::Put {
                 if layer.as_deref() == provider_entry {
                     hit |= Self::merge_provider_records(
-                        &entry, namespace, PathScoped, registry, target,
+                        &entry,
+                        layer.as_deref(),
+                        namespace,
+                        PathScoped,
+                        registry,
+                        target,
                     );
                 }
                 if layer.is_none() {
-                    hit |=
-                        Self::merge_provider_records(&entry, namespace, Global, registry, target);
+                    hit |= Self::merge_provider_records(
+                        &entry,
+                        layer.as_deref(),
+                        namespace,
+                        Global,
+                        registry,
+                        target,
+                    );
                 }
             }
             if layers != Layers::Source {
-                hit |= Self::merge_static_records(&entry, target);
+                hit |= Self::merge_static_records(&entry, layer.as_deref(), target);
             }
             if hit && cuts {
                 merge_read(
@@ -1164,6 +1383,63 @@ impl Cache {
         self.entries.get(&key).map(|e| e.clone())
     }
 
+    /// The keys stored beside the record at `tail` of `provider`'s entry `at`,
+    /// written by `label`: `poll`, `watch` and `decay` as its writer stored
+    /// them. A Source stores them per top-level field; a put stores them at
+    /// its address, so a leaf takes those of the nearest put address at or
+    /// above it. `None` when the record has none.
+    pub fn stored_keys(
+        &self,
+        provider: &str,
+        at: Option<&str>,
+        label: &str,
+        tail: &str,
+    ) -> Option<HashMap<String, Value>> {
+        if label.starts_with(CONFIG_SOURCE_PREFIX) {
+            return None;
+        }
+        let head = tail.split('.').next().unwrap_or(tail);
+        let address = if label == PUT_SOURCE {
+            let entry = self.entries.get(&make_cache_key(provider, at))?;
+            let address = entry.put_address_for(tail)?.to_string();
+            if address.is_empty() {
+                head.to_string()
+            } else {
+                address
+            }
+        } else {
+            head.to_string()
+        };
+        let facet = self
+            .entries
+            .get(&make_cache_key(&cache_facet_of(provider), at))?;
+        match crate::provider::lookup_path(&facet.sources.get(label)?.fields, &address)? {
+            Value::Object(keys) => Some(keys.clone()),
+            _ => None,
+        }
+    }
+
+    /// How many decay steps a Source of `provider` takes before eviction:
+    /// `<provider>:cache._.decay` at the global entry, else `*:cache._.decay`,
+    /// else [`DEFAULT_DECAY`](crate::scheduler::lifecycle::DEFAULT_DECAY).
+    pub fn resolve_decay(&self, provider: &str) -> u8 {
+        [cache_facet_of(provider), "*:cache".to_string()]
+            .iter()
+            .find_map(|namespace| {
+                let entry = self.entries.get(&make_cache_key(namespace, None))?;
+                let mut out = MergedRead {
+                    fields: HashMap::new(),
+                    records: HashMap::new(),
+                };
+                Self::merge_static_records(&entry, None, &mut out);
+                match crate::provider::lookup_path(&out.fields, "_.decay")? {
+                    Value::Int(n) if *n >= 1 => Some(u8::try_from(*n).unwrap_or(u8::MAX)),
+                    _ => None,
+                }
+            })
+            .unwrap_or(crate::scheduler::lifecycle::DEFAULT_DECAY)
+    }
+
     /// Whether the entry at `(provider, path)` holds a map written by `source`.
     ///
     /// Coldness is per Source, not per provider: a sibling Source being warm
@@ -1205,6 +1481,16 @@ impl Cache {
     /// entry or the named source is absent — in which case no watcher
     /// notification is emitted (nothing changed).
     pub fn remove_source(&self, provider: &str, path: Option<&str>, source: &str) {
+        // Its stored `:cache` keys go with it; they describe nothing else.
+        if !is_static_label(source) {
+            let facet_key = make_cache_key(&cache_facet_of(provider), path);
+            if let Some(mut entry) = self.entries.get_mut(&facet_key) {
+                entry.sources.remove(source);
+            }
+            self.entries
+                .remove_if(&facet_key, |_, entry| entry.sources.is_empty());
+        }
+
         let key = make_cache_key(provider, path);
         // Drop the source under the shard lock, recording whether anything
         // actually changed. The `get_mut` guard must be released before the
@@ -1247,12 +1533,22 @@ impl Cache {
                 (key.clone(), None)
             };
             let ce = entry.value();
+            // A `:cache` entry holds, beside the `_` prototypes a user wrote,
+            // the keys the daemon stored for rows already listed under their
+            // own namespace: only the prototypes are rows of their own.
+            let is_cache_facet = provider.ends_with(":cache");
             for (source_name, src) in &ce.sources {
+                if is_cache_facet && !is_static_label(source_name) {
+                    continue;
+                }
                 // The `put` map has one row per address, aged by that
                 // address's own stamp. The root address lists its top-level
                 // keys, one row each, as every namespace's records are.
                 if source_name == PUT_SOURCE {
                     for (addr, stamp) in &ce.puts {
+                        if is_cache_facet && !is_prototype(addr) {
+                            continue;
+                        }
                         let rows: Vec<(String, &Value)> = if addr.is_empty() {
                             // A top-level key with an address of its own is
                             // that address's row, listed once.
@@ -1451,14 +1747,14 @@ mod tests {
             Some("/repo"),
             "base",
             make_fields(&[("branch", "main"), ("sha", "abc123")]),
-            None,
+            crate::cache::Schedule::default(),
         );
         cache.put_source(
             "git",
             Some("/repo"),
             "extras",
             make_fields(&[("dirty", "false")]),
-            None,
+            crate::cache::Schedule::default(),
         );
 
         // Overwrite only "base" with new data.
@@ -1467,7 +1763,7 @@ mod tests {
             Some("/repo"),
             "base",
             make_fields(&[("branch", "feat/x"), ("sha", "def456")]),
-            None,
+            crate::cache::Schedule::default(),
         );
 
         // "extras" source must be untouched.
@@ -1504,14 +1800,14 @@ mod tests {
             Some("/repo"),
             "refs",
             make_fields(&[("branch", "main")]),
-            None,
+            crate::cache::Schedule::default(),
         );
         cache.put_source(
             "git",
             Some("/repo"),
             "diff",
             make_fields(&[("dirty", "true")]),
-            None,
+            crate::cache::Schedule::default(),
         );
 
         cache.remove_source("git", Some("/repo"), "refs");
@@ -1539,7 +1835,7 @@ mod tests {
             Some("/repo"),
             "refs",
             make_fields(&[("branch", "main")]),
-            None,
+            crate::cache::Schedule::default(),
         );
 
         cache.remove_source("git", Some("/repo"), "refs");
@@ -1558,7 +1854,7 @@ mod tests {
             Some("/repo"),
             "refs",
             make_fields(&[("branch", "main")]),
-            None,
+            crate::cache::Schedule::default(),
         );
         cache.remove_source("git", Some("/repo"), "nope");
         assert!(
@@ -1577,14 +1873,14 @@ mod tests {
             Some("/repo"),
             "base",
             make_fields(&[("branch", "main")]),
-            None,
+            crate::cache::Schedule::default(),
         );
         cache.put_source(
             "git",
             Some("/repo"),
             "extras",
             make_fields(&[("dirty", "true")]),
-            None,
+            crate::cache::Schedule::default(),
         );
 
         // "branch" lives in "base" — get_field should find it.
@@ -1619,7 +1915,7 @@ mod tests {
             None,
             "config:x.toml",
             make_fields(&[("greeting", "hello")]),
-            None,
+            crate::cache::Schedule::default(),
         );
 
         let rows = cache.list_rows();
@@ -1646,7 +1942,7 @@ mod tests {
             None,
             "put",
             make_fields(&[("greeting", "hello")]),
-            None,
+            crate::cache::Schedule::default(),
         );
 
         let rows = cache.list_rows();
@@ -1670,7 +1966,7 @@ mod tests {
             Some("/repo"),
             "head",
             make_fields(&[("branch", "main")]),
-            None,
+            crate::cache::Schedule::default(),
         );
         cache
             .write_static(
@@ -1708,7 +2004,7 @@ mod tests {
             Some("/repo"),
             "head",
             make_fields(&[("branch", "main")]),
-            None,
+            crate::cache::Schedule::default(),
         );
         cache
             .write_static(
@@ -1725,7 +2021,7 @@ mod tests {
             Some("/repo"),
             "head",
             make_fields(&[("branch", "dev")]),
-            None,
+            crate::cache::Schedule::default(),
         );
 
         let read = cache
@@ -1757,7 +2053,7 @@ mod tests {
             Some("/repo"),
             "head",
             make_fields(&[("branch", "main")]),
-            None,
+            crate::cache::Schedule::default(),
         );
         cache
             .write_static(
@@ -1787,7 +2083,13 @@ mod tests {
         let mut fields = HashMap::new();
         crate::provider::insert_path(&mut fields, "tools.node", Value::Int(18));
         crate::provider::insert_path(&mut fields, "tools.go", Value::Int(1));
-        cache.put_source("git", Some("/repo"), "head", fields, None);
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "head",
+            fields,
+            crate::cache::Schedule::default(),
+        );
         cache
     }
 
@@ -1848,7 +2150,7 @@ mod tests {
             Some("/repo"),
             "refs",
             make_fields(&[("branch", "main")]),
-            None,
+            crate::cache::Schedule::default(),
         );
         put(&cache, "", tools(&[("note", Value::Int(2))]));
         let read = read_tools(&cache);
@@ -2054,5 +2356,275 @@ mod tests {
         crate::provider::insert_path(&mut expected, "tree.left", Value::Int(1));
         crate::provider::insert_path(&mut expected, "tree.right", Value::Int(2));
         assert_eq!(entry.flatten_fields(), expected);
+    }
+    fn stored(cache: &Cache, ns: &str, path: Option<&str>) -> Option<CacheEntry> {
+        cache.get_entry(&cache_facet_of(ns), path)
+    }
+
+    fn json(v: &Value) -> serde_json::Value {
+        serde_json::to_value(v).unwrap()
+    }
+
+    #[test]
+    fn put_source_writes_the_schedule_into_the_cache_facet() {
+        let cache = Cache::new();
+        let schedule =
+            Schedule::from_strategy(&crate::provider::InvalidationStrategy::WatchAndPoll {
+                patterns: vec![".git/index".into()],
+                abs_paths: vec!["/etc/x".into()],
+                interval_secs: 30,
+                count: 3,
+            });
+        cache.put_source(
+            "git",
+            Some("/repo"),
+            "status",
+            make_fields(&[("dirty", "false"), ("staged", "0")]),
+            schedule,
+        );
+
+        let facet =
+            stored(&cache, "git", Some("/repo")).expect("the facet entry is at the same path");
+        let map = &facet.sources["status"].fields;
+        assert_eq!(map.len(), 2, "one object per top-level field");
+        assert_eq!(
+            json(&map["dirty"]),
+            serde_json::json!({
+                "poll": {"interval": "30s", "count": 3},
+                "watch": {"0": ".git/index", "1": "/etc/x"},
+            })
+        );
+        assert!(stored(&cache, "git", None).is_none());
+        let stored_keys = cache
+            .stored_keys("git", Some("/repo"), "status", "dirty")
+            .unwrap();
+        assert!(stored_keys.contains_key("poll") && stored_keys.contains_key("watch"));
+    }
+
+    #[test]
+    fn a_source_without_a_schedule_stores_nothing() {
+        let cache = Cache::new();
+        cache.put_source(
+            "p",
+            None,
+            "s",
+            make_fields(&[("a", "1")]),
+            Schedule::default(),
+        );
+        assert!(stored(&cache, "p", None).is_none());
+    }
+
+    #[test]
+    fn remove_source_removes_the_stored_keys() {
+        let cache = Cache::new();
+        cache.put_source(
+            "p",
+            None,
+            "one",
+            make_fields(&[("a", "1")]),
+            Schedule::poll(5, 1),
+        );
+        cache.put_source(
+            "p",
+            None,
+            "two",
+            make_fields(&[("b", "2")]),
+            Schedule::poll(9, 1),
+        );
+        cache.remove_source("p", None, "one");
+
+        let facet = stored(&cache, "p", None).expect("the sibling's keys remain");
+        assert!(facet.sources.contains_key("two") && !facet.sources.contains_key("one"));
+        cache.remove_source("p", None, "two");
+        assert!(stored(&cache, "p", None).is_none(), "the empty entry goes");
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn removing_a_source_leaves_a_decay_prototype_alone() {
+        let cache = Cache::new();
+        cache
+            .write_static("p:cache", None, PUT_SOURCE, "_.decay", Value::Int(2), None)
+            .unwrap();
+        cache.put_source(
+            "p",
+            None,
+            "s",
+            make_fields(&[("a", "1")]),
+            Schedule::poll(5, 1),
+        );
+        cache.remove_source("p", None, "s");
+        assert_eq!(cache.resolve_decay("p"), 2);
+    }
+
+    #[test]
+    fn status_does_not_list_stored_keys() {
+        let cache = Cache::new();
+        cache.put_source(
+            "p",
+            None,
+            "s",
+            make_fields(&[("a", "1")]),
+            Schedule::poll(5, 1),
+        );
+        cache
+            .write_static("p", None, PUT_SOURCE, "x", Value::Int(1), Some(60))
+            .unwrap();
+        cache
+            .write_static("p:cache", None, PUT_SOURCE, "_.decay", Value::Int(2), None)
+            .unwrap();
+
+        let mut rows: Vec<(String, String, String)> = cache
+            .list_rows()
+            .into_iter()
+            .map(|r| (r.provider, r.source, r.field))
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![
+                ("p".to_string(), "put".to_string(), "x".to_string()),
+                ("p".to_string(), "s".to_string(), "a".to_string()),
+                (
+                    "p:cache".to_string(),
+                    "put".to_string(),
+                    "_.decay".to_string()
+                ),
+            ],
+            "the daemon's stored keys describe rows already listed; a prototype is a row of its own"
+        );
+    }
+
+    #[test]
+    fn a_ttl_put_writes_its_stored_keys() {
+        let cache = Cache::new();
+        cache
+            .write_static(
+                "build",
+                None,
+                PUT_SOURCE,
+                "status",
+                Value::String("ok".into()),
+                Some(300),
+            )
+            .unwrap();
+        let keys = cache
+            .stored_keys("build", None, PUT_SOURCE, "status")
+            .unwrap();
+        assert_eq!(
+            json(&Value::Object(keys)),
+            serde_json::json!({"poll": {"interval": "300s", "count": 1}, "decay": 1})
+        );
+
+        // A leaf below the address takes the address's keys.
+        let mut tree = HashMap::new();
+        tree.insert("c".to_string(), Value::String("1".into()));
+        cache
+            .write_static(
+                "build",
+                None,
+                PUT_SOURCE,
+                "info",
+                Value::Object(tree),
+                Some(60),
+            )
+            .unwrap();
+        assert!(
+            cache
+                .stored_keys("build", None, PUT_SOURCE, "info.c")
+                .is_some()
+        );
+        assert!(
+            cache
+                .stored_keys("build", None, PUT_SOURCE, "other")
+                .is_none()
+        );
+
+        // A root put stores its keys per top-level key.
+        let mut root = HashMap::new();
+        root.insert("k".to_string(), Value::String("v".into()));
+        cache
+            .write_static("root", None, PUT_SOURCE, "", Value::Object(root), Some(10))
+            .unwrap();
+        assert!(cache.stored_keys("root", None, PUT_SOURCE, "k").is_some());
+    }
+
+    #[test]
+    fn removing_a_put_removes_its_stored_keys() {
+        let cache = Cache::new();
+        cache
+            .write_static(
+                "build",
+                None,
+                PUT_SOURCE,
+                "status",
+                Value::String("ok".into()),
+                Some(300),
+            )
+            .unwrap();
+        cache
+            .write_static(
+                "build:cache",
+                None,
+                PUT_SOURCE,
+                "_.decay",
+                Value::Int(2),
+                None,
+            )
+            .unwrap();
+
+        cache.remove_put("build", None, "status");
+        assert!(
+            cache
+                .stored_keys("build", None, PUT_SOURCE, "status")
+                .is_none()
+        );
+        assert_eq!(cache.resolve_decay("build"), 2, "the prototype stays");
+
+        // Expiry and a re-put without a ttl take them too.
+        cache
+            .write_static("build", None, PUT_SOURCE, "a", Value::Int(1), Some(5))
+            .unwrap();
+        cache.evict_put("build", None, "a");
+        assert!(cache.stored_keys("build", None, PUT_SOURCE, "a").is_none());
+        cache
+            .write_static("build", None, PUT_SOURCE, "b", Value::Int(1), Some(5))
+            .unwrap();
+        cache
+            .write_static("build", None, PUT_SOURCE, "b", Value::Int(2), None)
+            .unwrap();
+        assert!(cache.stored_keys("build", None, PUT_SOURCE, "b").is_none());
+    }
+
+    #[test]
+    fn resolve_decay_prefers_the_provider_prototype() {
+        let cache = Cache::new();
+        assert_eq!(
+            cache.resolve_decay("git"),
+            crate::scheduler::lifecycle::DEFAULT_DECAY
+        );
+        cache
+            .write_static(
+                "*:cache",
+                None,
+                "config:00-comb.toml",
+                "_.decay",
+                Value::Int(6),
+                None,
+            )
+            .unwrap();
+        assert_eq!(cache.resolve_decay("git"), 6, "the star prototype");
+        cache
+            .write_static(
+                "git:cache",
+                None,
+                PUT_SOURCE,
+                "_.decay",
+                Value::Int(2),
+                None,
+            )
+            .unwrap();
+        assert_eq!(cache.resolve_decay("git"), 2, "the provider's own");
+        assert_eq!(cache.resolve_decay("mise"), 6);
     }
 }

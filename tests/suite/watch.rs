@@ -1,4 +1,5 @@
 use beachcomber::cache::Cache;
+use beachcomber::cache::Schedule;
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -38,7 +39,13 @@ fn git_fields(branch: &str, dirty: bool) -> HashMap<String, Value> {
 async fn watch_receives_initial_value() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
+    cache.put_source(
+        "git",
+        None,
+        "refs",
+        git_fields("main", false),
+        Schedule::poll(60, 1),
+    );
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -77,7 +84,13 @@ async fn watch_receives_initial_value() {
 async fn watch_receives_updates() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
+    cache.put_source(
+        "git",
+        None,
+        "refs",
+        git_fields("main", false),
+        Schedule::poll(60, 1),
+    );
     let cache_writer = cache.clone();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -110,7 +123,7 @@ async fn watch_receives_updates() {
         None,
         "refs",
         git_fields("feature/new-branch", false),
-        Some(60),
+        Schedule::poll(60, 1),
     );
 
     // Read the update
@@ -139,7 +152,13 @@ async fn watch_receives_updates() {
 async fn watch_filters_unchanged_field() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
+    cache.put_source(
+        "git",
+        None,
+        "refs",
+        git_fields("main", false),
+        Schedule::poll(60, 1),
+    );
     let cache_writer = cache.clone();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -167,7 +186,13 @@ async fn watch_filters_unchanged_field() {
     assert_eq!(response.data.unwrap(), serde_json::json!("main"));
 
     // Update cache — change only dirty, branch stays "main"
-    cache_writer.put_source("git", None, "refs", git_fields("main", true), Some(60));
+    cache_writer.put_source(
+        "git",
+        None,
+        "refs",
+        git_fields("main", true),
+        Schedule::poll(60, 1),
+    );
 
     // Should NOT receive any update — branch didn't change
     line.clear();
@@ -188,7 +213,13 @@ async fn watch_filters_unchanged_field() {
 async fn watch_provider_level_gets_all_changes() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
+    cache.put_source(
+        "git",
+        None,
+        "refs",
+        git_fields("main", false),
+        Schedule::poll(60, 1),
+    );
     let cache_writer = cache.clone();
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -220,7 +251,13 @@ async fn watch_provider_level_gets_all_changes() {
 
     // Update cache — change only dirty, branch stays "main"
     // Provider-level watch should still fire since the overall object changed
-    cache_writer.put_source("git", None, "refs", git_fields("main", true), Some(60));
+    cache_writer.put_source(
+        "git",
+        None,
+        "refs",
+        git_fields("main", true),
+        Schedule::poll(60, 1),
+    );
 
     // Should receive an update
     line.clear();
@@ -278,7 +315,13 @@ async fn watch_miss_then_update() {
     );
 
     // Now populate the cache
-    cache_writer.put_source("git", None, "refs", git_fields("main", false), Some(60));
+    cache_writer.put_source(
+        "git",
+        None,
+        "refs",
+        git_fields("main", false),
+        Schedule::poll(60, 1),
+    );
 
     // Should receive the populated value
     line.clear();
@@ -408,7 +451,13 @@ async fn a_watch_on_the_put_facet_wakes_on_a_data_write() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_counts_one_watch_once() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
+    cache.put_source(
+        "git",
+        None,
+        "refs",
+        git_fields("main", false),
+        Schedule::poll(60, 1),
+    );
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
 
@@ -477,7 +526,13 @@ async fn active_watchers(sock: &std::path::Path) -> u64 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn watch_ends_when_client_disconnects_without_a_write() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
+    cache.put_source(
+        "git",
+        None,
+        "refs",
+        git_fields("main", false),
+        Schedule::poll(60, 1),
+    );
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -529,7 +584,13 @@ async fn watch_ends_when_client_disconnects_without_a_write() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn watch_stays_open_while_client_is_connected() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    cache.put_source("git", None, "refs", git_fields("main", false), Some(60));
+    cache.put_source(
+        "git",
+        None,
+        "refs",
+        git_fields("main", false),
+        Schedule::poll(60, 1),
+    );
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();

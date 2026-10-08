@@ -54,7 +54,7 @@ fn an_absent_directory_gets_every_shipped_file() {
             written: shipped_names().iter().map(|s| s.to_string()).collect(),
             deleted: vec![],
             unmanaged: vec![],
-            files: 8,
+            files: 9,
         }
     );
     for (name, body) in SHIPPED {
@@ -121,7 +121,7 @@ fn a_current_file_is_left_alone_even_when_edited_below_the_marker() {
         edited,
         "bytes unchanged"
     );
-    assert_eq!(report.written.len(), 7, "the other seven are written");
+    assert_eq!(report.written.len(), 8, "the other eight are written");
 }
 
 #[test]
@@ -253,6 +253,10 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
         let providers = parsed["providers"].as_table().unwrap();
         assert_eq!(providers.len(), 1, "{name}: one facet table per file");
         for (namespace, table) in providers {
+            // The cache prototype is data, not a template; its own test below.
+            if namespace.ends_with(":cache") {
+                continue;
+            }
             assert_eq!(
                 namespace,
                 &format!("{}:template", name.trim_end_matches(".toml")),
@@ -275,6 +279,20 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
         }
     }
     assert_eq!(checked, 13, "every shipped template is covered");
+}
+
+#[test]
+fn the_shipped_cache_prototype_is_the_decay_default() {
+    let (_, body) = SHIPPED
+        .iter()
+        .find(|(name, _)| *name == "00-comb.toml")
+        .expect("00-comb.toml is shipped");
+    let parsed: toml::Value = toml::from_str(body).unwrap();
+    let decay = parsed["providers"]["*:cache"]["_"]["decay"].as_integer();
+    assert_eq!(
+        decay,
+        Some(i64::from(beachcomber::scheduler::lifecycle::DEFAULT_DECAY))
+    );
 }
 
 // ── the daemon seeds them as the lowest layer ────────────────────────────────
@@ -385,7 +403,7 @@ fn comb_check_config_reports_the_defaults_directory() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains(&format!(
-            "  [WARN] local    defaults {}: 8 shipped file(s) missing or stale — the daemon \
+            "  [WARN] local    defaults {}: 9 shipped file(s) missing or stale — the daemon \
              writes them on its next start\n",
             defaults.display()
         )),
@@ -429,7 +447,7 @@ fn comb_check_config_reports_the_defaults_directory() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains(&format!(
-            "  [PASS] local    defaults {} (8 files, comb {})\n",
+            "  [PASS] local    defaults {} (9 files, comb {})\n",
             defaults.display(),
             env!("BEACHCOMBER_VERSION")
         )),
@@ -438,7 +456,7 @@ fn comb_check_config_reports_the_defaults_directory() {
     assert_eq!(out.status.code(), Some(0), "stdout:\n{stdout}");
     assert_eq!(
         beachcomber::config::Config::conf_d_files(&defaults).len(),
-        8,
+        9,
         "the daemon wrote the shipped set"
     );
 }
@@ -524,7 +542,7 @@ fn comb_check_config_counts_the_files_comb_did_not_write() {
         "got:\n{stdout}"
     );
     assert!(
-        stdout.contains("(8 files, comb "),
+        stdout.contains("(9 files, comb "),
         "the shipped set is still complete and current, got:\n{stdout}"
     );
 }

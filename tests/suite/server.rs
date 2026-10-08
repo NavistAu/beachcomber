@@ -1,4 +1,5 @@
 use beachcomber::cache::Cache;
+use beachcomber::cache::Schedule;
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -47,7 +48,7 @@ async fn server_handles_get_global_provider() {
         Value::String("testhost.local".to_string()),
     );
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
-    cache.put_source("hostname", None, "host", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -82,7 +83,7 @@ async fn server_handles_get_single_field() {
         Value::String("testhost.local".to_string()),
     );
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
-    cache.put_source("hostname", None, "host", fields, Some(60));
+    cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -342,7 +343,13 @@ async fn nested_key_walks_into_object_field() {
     );
     let mut fields = HashMap::new();
     fields.insert("project".to_string(), Value::Object(tools_map));
-    cache.put_source("myproj", None, beachcomber::cache::PUT_SOURCE, fields, None);
+    cache.put_source(
+        "myproj",
+        None,
+        beachcomber::cache::PUT_SOURCE,
+        fields,
+        Schedule::default(),
+    );
     registry.register_static("myproj");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -377,7 +384,13 @@ async fn nested_key_missing_subkey_is_a_miss() {
     tools_map.insert("rust".to_string(), Value::String("1.94.0".to_string()));
     let mut fields = HashMap::new();
     fields.insert("project".to_string(), Value::Object(tools_map));
-    cache.put_source("myproj", None, beachcomber::cache::PUT_SOURCE, fields, None);
+    cache.put_source(
+        "myproj",
+        None,
+        beachcomber::cache::PUT_SOURCE,
+        fields,
+        Schedule::default(),
+    );
     registry.register_static("myproj");
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);

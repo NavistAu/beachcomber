@@ -1,0 +1,3 @@
+[providers."*:cache"]
+# Decay steps a Source takes before eviction, for every provider without a prototype of its own.
+_ = { decay = 4 }

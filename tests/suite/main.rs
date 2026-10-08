@@ -4,6 +4,7 @@ mod auto_shutdown;
 mod binary_self_watch;
 mod boundaries_http_real;
 mod boundaries_spawn;
+mod cache_facet;
 mod cache_lifecycle;
 mod check_subjects;
 mod cli_eval;
