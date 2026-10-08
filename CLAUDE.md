@@ -120,10 +120,11 @@ See `docs/provider-development.md`. Short version:
 
 See `docs/releasing.md` for the full release checklist. Short version: on `develop`, run `cargo xtask set-version X.Y.Z` (bumps all 14 version touchpoints) and update CHANGELOG; open a `develop` → `main` PR (the release gate) and wait for CI green; merge it. **Merging is the release** — `release.yml` triggers on push to `main`, tags `vX.Y.Z` on the merge commit, and builds + publishes to all registries (incl. Homebrew). No manual tagging.
 
-## Core rules: apply them, don't ask
+## How comb behaves
 
-comb is one tree with a few rules that answer most design questions. When a question is answered by these, apply them
-and say which rule you applied; ask the owner only when none of them decides it.
+A short description of comb's existing behaviour, so a question it already answers isn't brought to the owner as
+new. It is not a spec and binds nothing: if a case looks like it needs an exception, or two of these pull against
+each other, raise it.
 
 - **One tree, read at any depth.** `comb get git` returns that whole part of the tree; so does `comb get git:cache`.
   Every facet (`:template`, `:memo`, `:put`, `:source`, `:cache`) has the provider's shape.
