@@ -317,6 +317,21 @@ async fn data(stream: &mut tokio::net::UnixStream, key: &str) -> serde_json::Val
     resp.get("data").cloned().unwrap_or(serde_json::Value::Null)
 }
 
+/// The `source` label of one `comb status` row.
+async fn row_source(stream: &mut tokio::net::UnixStream, provider: &str, field: &str) -> String {
+    let resp = send_recv(stream, json!({"op": "status"})).await;
+    assert_eq!(resp["ok"], json!(true), "status: {resp}");
+    resp["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["provider"] == json!(provider) && r["field"] == json!(field))
+        .unwrap_or_else(|| panic!("no status row for {provider}.{field}"))["source"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
 fn shipped_leaf(name: &str, field: &str) -> String {
     let body = SHIPPED.iter().find(|(n, _)| *n == name).unwrap().1;
     let parsed: toml::Value = toml::from_str(body).unwrap();
@@ -362,6 +377,16 @@ async fn the_daemon_seeds_defaults_beneath_config_and_conf_d() {
         data(&mut s, "python:template.version").await,
         json!("{{ env.MY_PY }}"),
         "a conf.d drop-in overrides a default"
+    );
+    let venv_source = row_source(&mut s, "python:template", "venv_name").await;
+    assert!(
+        venv_source.starts_with("config:") && venv_source.ends_with("defaults/python.toml"),
+        "the shipped leaf is labelled with the defaults file, got {venv_source}"
+    );
+    let version_source = row_source(&mut s, "python:template", "version").await;
+    assert!(
+        version_source.starts_with("config:") && version_source.ends_with("conf.d/10-mine.toml"),
+        "the overriding leaf is labelled with the drop-in, got {version_source}"
     );
     assert_eq!(
         data(&mut s, "kubecontext:template.context").await,
