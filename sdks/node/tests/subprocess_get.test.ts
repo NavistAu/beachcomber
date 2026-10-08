@@ -15,8 +15,8 @@ const skip = !daemonAvailable();
 const BC_GET_FORCE = 0x1;
 const BC_GET_WAIT = 0x2;
 
-// The subprocess tier asks `comb get -f json <key> <key>:age <key>:stale`
-// for the value, its age and its staleness in one spawn, so its answer is
+// The subprocess tier asks `comb get -f json <key> <p>:cache.<rest>`
+// for the value and its `:cache` answer (age, staleness) in one spawn, so its answer is
 // the resolver's — the directory chain, `$HOME` as the global entry,
 // metadata suffixes, `--force`/`--wait`, the daemon's refusals — and a
 // template-backed key renders. These drive the transport directly and
@@ -159,6 +159,27 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     assert.equal(r.data, 1);
   });
 
+  it('a leaf asks for its :cache leaf in the same spawn and reports its freshness', async () => {
+    const r = await get('sp.n', '/tmp');
+    assert.equal(lastArgv(), 'get -f json sp.n sp:cache.n --path /tmp');
+    assert.equal(typeof r.ageMs, 'number');
+    assert.equal(r.stale, false);
+  });
+
+  it('a bare provider asks for its :cache node', async () => {
+    const r = await get('sp', '/tmp');
+    assert.equal(r.isHit, true);
+    assert.equal(lastArgv(), 'get -f json sp sp:cache --path /tmp');
+    assert.equal(typeof r.ageMs, 'number');
+  });
+
+  it('a facet key is asked alone and reports age 0, not stale', async () => {
+    const r = await get('sp:put.n', '/tmp');
+    assert.equal(lastArgv(), 'get -f json sp:put.n --path /tmp');
+    assert.equal(r.ageMs, 0);
+    assert.equal(r.stale, false);
+  });
+
   it('a :age suffix is the age, a number', async () => {
     const r = await get('sp.n:age', '/tmp');
     assert.equal(r.isHit, true);
@@ -166,10 +187,10 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     assert.equal(lastArgv(), 'get -f json sp.n:age --path /tmp');
   });
 
-  it('wait reaches the wire as --wait, in one comb get with the two companions', async () => {
+  it('wait reaches the wire as --wait, in one comb get with the :cache slot', async () => {
     const r = await get('sp.n', '/tmp', BC_GET_WAIT);
     assert.equal(r.isHit, true);
-    assert.equal(lastArgv(), 'get -f json sp.n sp.n:age sp.n:stale --path /tmp --wait');
+    assert.equal(lastArgv(), 'get -f json sp.n sp:cache.n --path /tmp --wait');
   });
 
   it("--force on a static namespace is the daemon's refusal", async () => {
@@ -177,7 +198,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
       () => get('sp.n', '/tmp', BC_GET_FORCE),
       (err: unknown) => err instanceof ServerError && err.serverMessage.startsWith('cannot --force static namespace'),
     );
-    assert.equal(lastArgv(), 'get -f json sp.n sp.n:age sp.n:stale --path /tmp --force');
+    assert.equal(lastArgv(), 'get -f json sp.n sp:cache.n --path /tmp --force');
   });
 
   it("a template that does not compile is the resolver's error, not a null hit", async () => {

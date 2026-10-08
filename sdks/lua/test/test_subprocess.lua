@@ -1,8 +1,8 @@
 --- Tests for beachcomber.subprocess_backend's `get` and `refresh` against a
 --- live daemon.
 ---
---- The backend asks `comb get -f json <key> <key>:age <key>:stale` for the
---- value, its age and its staleness in one spawn (its header comment), so
+--- The backend asks `comb get -f json <key> <p>:cache.<rest>` for the
+--- value and its `:cache` answer (age, staleness) in one spawn (its header comment), so
 --- its answer is the resolver's: the directory chain, `$HOME` as the global
 --- entry, metadata suffixes, `--force`/`--wait`, the daemon's refusals — and
 --- a template-backed key renders. `refresh` is one `comb refresh <key>`,
@@ -82,7 +82,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "an ancestor's put is read from a child path (the directory chain)",
     "a path equal to the daemon's $HOME is the global entry",
     "a :age suffix is the age, a number",
-    "wait reaches the wire as --wait, in one comb get with the two companions",
+    "wait reaches the wire as --wait, in one comb get with the :cache slot",
     "--force on a static namespace is the daemon's refusal",
     "a template that does not compile is the resolver's error, not a null hit",
     "a namespace read with one bad leaf is the resolver's error, not a null hit",
@@ -91,6 +91,9 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "a group whose leaf fails reports the leaf's line, not the companion misses",
     "refresh of a provider is ok, through comb refresh",
     "refresh of a static namespace is the daemon's refusal, in its words alone",
+    "a leaf asks for its :cache leaf in the same spawn and reports its freshness",
+    "a bare provider asks for its :cache node",
+    "a facet key is asked alone and reports age 0, not stale",
   }
   if not comb_bin then
     for _, name in ipairs(names) do skip(name, "no comb built") end
@@ -190,6 +193,30 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(r.data, 1)
   end)
 
+  test(names[21], function()
+    local r, err = c:get("sp.n", "/tmp")
+    assert_nil(err)
+    assert_eq(last_argv(guard), "get -f json sp.n sp:cache.n --path /tmp")
+    assert_eq(type(r.age_ms), "number")
+    assert_eq(r.stale, false)
+  end)
+
+  test(names[22], function()
+    local r, err = c:get("sp", "/tmp")
+    assert_nil(err)
+    assert_true(r:is_hit())
+    assert_eq(last_argv(guard), "get -f json sp sp:cache --path /tmp")
+    assert_eq(type(r.age_ms), "number")
+  end)
+
+  test(names[23], function()
+    local r, err = c:get("sp:put.n", "/tmp")
+    assert_nil(err)
+    assert_eq(last_argv(guard), "get -f json sp:put.n --path /tmp")
+    assert_eq(r.age_ms, 0)
+    assert_eq(r.stale, false)
+  end)
+
   test(names[11], function()
     local r, err = c:get("sp.n:age", "/tmp")
     assert_nil(err)
@@ -201,7 +228,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     local r, err = c:get_with_flags("sp.n", "/tmp", false, true)
     assert_nil(err)
     assert_true(r:is_hit())
-    assert_eq(last_argv(guard), "get -f json sp.n sp.n:age sp.n:stale --path /tmp --wait")
+    assert_eq(last_argv(guard), "get -f json sp.n sp:cache.n --path /tmp --wait")
   end)
 
   test(names[13], function()
@@ -209,7 +236,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_nil(r)
     assert_eq(err.kind, "server_error")
     assert_eq(err.message:sub(1, #"cannot --force static namespace"), "cannot --force static namespace", "the daemon's words alone")
-    assert_eq(last_argv(guard), "get -f json sp.n sp.n:age sp.n:stale --path /tmp --force")
+    assert_eq(last_argv(guard), "get -f json sp.n sp:cache.n --path /tmp --force")
   end)
 
   test(names[14], function()

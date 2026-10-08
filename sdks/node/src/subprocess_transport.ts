@@ -44,16 +44,16 @@
  * same code drives both subprocess tiers
  * (`sdks/lua/beachcomber/subprocess_backend.lua` is the Lua half).
  *
- * `get` is one spawn: `comb get -f json <key> <key>:age <key>:stale
- * [--path P | --global] [--force] [--wait]`. Multi-key `-f json` prints a
- * JSON array in key order, `null` in a missed key's slot, so the three
- * slots are the value, its age and its staleness — the resolver's own
- * answer, with everything the daemon does for a `get`: the directory chain
- * up to `$HOME`, `$HOME` itself as the global entry, metadata suffixes,
- * `--force`/`--wait` and the daemon's refusals. A key that already carries
- * a metadata suffix (`:age`, `:stale`, `:fresh`, `:cache`, `:source`) is
- * asked for alone and answers with age 0 and not stale, as the daemon
- * answers one over the wire. The same code drives both subprocess tiers
+ * `get` is one spawn: `comb get -f json <key> <p>:cache.<rest>
+ * [--path P | --global] [--force] [--wait]` (`<p>:cache` for a bare
+ * provider). Multi-key `-f json` prints a JSON array in key order, `null` in
+ * a missed key's slot, so the two slots are the value and its `:cache`
+ * answer (`age_ms`, `stale`; an object node is a tree of such leaves, read
+ * as the largest age and any stale) — the resolver's own answer, with
+ * everything the daemon does for a `get`: the directory chain up to `$HOME`,
+ * `$HOME` itself as the global entry, `--force`/`--wait` and the daemon's
+ * refusals. A key carrying a facet (a `:`) is asked for alone and answers
+ * with age 0 and not stale. The same code drives both subprocess tiers
  * (`sdks/lua/beachcomber/subprocess_backend.lua` is the Lua half).
  *
  * The one divergence from the FFI tier: `comb get` *resolves*, so a
@@ -65,7 +65,7 @@
  * has no effect on this tier; a caller that must not spawn processes from
  * a template, or that needs the raw template half, needs the FFI
  * transport. A rendered value has no cached freshness of its own (its
- * `:age`/`:stale` are misses), so it reports age 0 and not stale, as
+ * `:cache` slot is a miss), so it reports age 0 and not stale, as
  * libbeachcomber does for a hit whose freshness is absent.
  *
  * `comb get` and `comb put` both default an omitted `--path` to the CLI
@@ -136,27 +136,49 @@ function pathArgs(path_: string | undefined): string[] {
   return path_ === undefined ? ['--global'] : ['--path', path_];
 }
 
-const META_SUFFIXES = new Set(['age', 'stale', 'fresh', 'cache', 'source']);
+/**
+ * The `:cache` key that answers for `key`'s freshness: `git.branch` →
+ * `git:cache.branch`, `git` → `git:cache`. A key with a facet (a `:`) has no
+ * such companion and is asked alone.
+ */
+function cacheKeyOf(key: string): string | undefined {
+  if (key.includes(':')) return undefined;
+  const dot = key.indexOf('.');
+  return dot < 0 ? `${key}:cache` : `${key.slice(0, dot)}:cache${key.slice(dot)}`;
+}
 
-/** True when `key` ends in one of the daemon's metadata suffixes. */
-function hasMetaSuffix(key: string): boolean {
-  const m = /:([\w-]+)$/.exec(key);
-  return m !== null && META_SUFFIXES.has(m[1] as string);
+/**
+ * Age and staleness from a `:cache` node: a leaf answer is read as it is; an
+ * object node is a tree of them, so the largest `age_ms` and any `stale`
+ * across its leaves — what the response envelope reports. A miss is `0`/`false`.
+ */
+function freshness(node: unknown): { ageMs: number; stale: boolean } {
+  if (typeof node !== 'object' || node === null) return { ageMs: 0, stale: false };
+  const obj = node as Record<string, unknown>;
+  if (typeof obj['age_ms'] === 'number') return { ageMs: obj['age_ms'], stale: obj['stale'] === true };
+  let ageMs = 0;
+  let stale = false;
+  for (const child of Object.values(obj)) {
+    const f = freshness(child);
+    ageMs = Math.max(ageMs, f.ageMs);
+    stale = stale || f.stale;
+  }
+  return { ageMs, stale };
 }
 
 /**
  * The node at `key`, shaped as `bc_get`'s envelope
  * (`{"ok":true,"data":{"data":...,"age_ms":...,"stale":...}}`, the three
- * null on a miss), from one `comb get -f json` for the value, its age and
- * its staleness (the file header). Exit 0 is a hit. Exit 2 with the CLI's
+ * null on a miss), from one `comb get -f json` for the value and its `:cache`
+ * answer (the file header). Exit 0 is a hit. Exit 2 with the CLI's
  * miss line for `key` (`Error querying <key>: no data (cache miss)`) is a
  * miss; with another `Error querying <key>: ` line it is that refusal, in
  * the daemon's words. Exit 2 with a null value slot and no such line is the
  * resolver's own error — a template that does not compile, a cycle, a
  * failed `exec()` — which the CLI prints as `<key>: <msg>`; a rendered value
  * is never null (a missing ref renders `""`), so that slot is never a hit.
- * Exit 2 with the value slot filled is a rendered value whose `:age`/`:stale`
- * companions missed on their own — a hit with age 0.
+ * Exit 2 with the value slot filled is a rendered value whose `:cache` slot
+ * missed on its own — a hit with age 0.
  */
 function cliGet(
   handle: SubprocessClientHandle,
@@ -165,9 +187,10 @@ function cliGet(
   force: boolean,
   wait: boolean,
 ): Envelope {
-  const meta = hasMetaSuffix(key);
+  const cacheKey = cacheKeyOf(key);
+  const meta = cacheKey === undefined;
   const args = ['get', '-f', 'json', key];
-  if (!meta) args.push(`${key}:age`, `${key}:stale`);
+  if (cacheKey !== undefined) args.push(cacheKey);
   args.push(...pathArgs(path_));
   if (force) args.push('--force');
   if (wait) args.push('--wait');
@@ -179,8 +202,8 @@ function cliGet(
   if (code !== 0) {
     const lines = stderr.split('\n');
     // The CLI prints one `Error querying <k>: <msg>` line per key the daemon
-    // answered with an error; the `<key>:age` line starts `Error querying
-    // <key>:age: `, so the trailing `: ` keeps it from matching `<key>`.
+    // answered with an error; the `<cacheKey>` line starts `Error querying
+    // <cacheKey>: `, which never matches `<key>`'s prefix.
     const prefix = `Error querying ${key}: `;
     const own = lines.find((line) => line.startsWith(prefix))?.slice(prefix.length);
     if (own === 'no data (cache miss)') {
@@ -205,11 +228,11 @@ function cliGet(
       // The CLI failed before answering at all (no daemon, a bad argument).
       return envelopeFromFailure(stderr);
     }
-    // Only the `:age`/`:stale` companions missed: `key` itself rendered.
+    // Only the `:cache` slot missed: `key` itself rendered.
   }
   if (meta) return { ok: true, data: { data: value, age_ms: 0, stale: false } };
-  const [, ageMs, stale] = decoded as [unknown, number | null, boolean | null];
-  return { ok: true, data: { data: value, age_ms: ageMs ?? 0, stale: stale ?? false } };
+  const { ageMs, stale } = freshness((decoded as unknown[])[1]);
+  return { ok: true, data: { data: value, age_ms: ageMs, stale } };
 }
 
 function cliPut(

@@ -29,16 +29,16 @@
 -- daemon's refusal alone on stderr, so that line is the error message here
 -- — the same text a `server_error` envelope carries over the ffi tier.
 --
--- `get` is one spawn: `comb get -f json <key> <key>:age <key>:stale
--- [--path P | --global] [--force] [--wait]`. Multi-key `-f json` prints a
--- JSON array in key order, `null` in a missed key's slot, so the three
--- slots are the value, its age and its staleness — the resolver's own
--- answer, with everything the daemon does for a `get`: the directory chain
--- up to `$HOME`, `$HOME` itself as the global entry, metadata suffixes,
--- `--force`/`--wait` and the daemon's refusals. A key that already carries
--- a metadata suffix (`:age`, `:stale`, `:fresh`, `:cache`, `:source`) is
--- asked for alone and answers with age 0 and not stale, as the daemon
--- answers one over the wire.
+-- `get` is one spawn: `comb get -f json <key> <p>:cache.<rest>
+-- [--path P | --global] [--force] [--wait]` (`<p>:cache` for a bare
+-- provider). Multi-key `-f json` prints a JSON array in key order, `null` in
+-- a missed key's slot, so the two slots are the value and its `:cache`
+-- answer (`age_ms`, `stale`; an object node is a tree of such leaves, read
+-- as the largest age and any stale) — the resolver's own answer, with
+-- everything the daemon does for a `get`: the directory chain up to `$HOME`,
+-- `$HOME` itself as the global entry, `--force`/`--wait` and the daemon's
+-- refusals. A key carrying a facet (a `:`) is asked for alone and answers
+-- with age 0 and not stale.
 --
 -- The one divergence from the ffi tier: `comb get` *resolves*, so a
 -- template-backed key returns its **rendered** value here where `bc_get`
@@ -49,7 +49,7 @@
 -- has no effect on this tier; a caller that must not spawn processes from
 -- a template, or that needs the raw template half, needs the ffi
 -- transport. A rendered value has no cached freshness of its own (its
--- `:age`/`:stale` are misses), so it reports age 0 and not stale, as
+-- `:cache` slot is a miss), so it reports age 0 and not stale, as
 -- libbeachcomber does for a hit whose freshness is absent.
 
 local json = require("beachcomber.json")
@@ -111,8 +111,8 @@ end
 --
 -- `comb get` prints one `Error querying <k>: <msg>` line per key the daemon
 -- answered with an error, and `<k>: <msg>` for a key the resolver failed
--- on. The `<key>:age` line starts `Error querying <key>:age: `, so a
--- prefix ending in `: ` never matches a companion's line.
+-- on. The cache slot's line starts `Error querying <cache key>: `, so a
+-- prefix ending in `: ` never matches it.
 local function line_after(stderr, prefix)
   for line in stderr:gmatch("[^\n]+") do
     if line:sub(1, #prefix) == prefix then
@@ -147,12 +147,28 @@ local function status_rows(comb_bin)
   return rows
 end
 
-local META_SUFFIXES = { age = true, stale = true, fresh = true, cache = true, source = true }
+--- The `:cache` key that answers for `key`'s freshness: `git.branch` ->
+-- `git:cache.branch`, `git` -> `git:cache`. A key with a facet (a `:`) has no
+-- such companion and is asked alone (nil).
+local function cache_key_of(key)
+  if key:find(":", 1, true) then return nil end
+  local p, rest = key:match("^([^.]*)(.*)$")
+  return p .. ":cache" .. rest
+end
 
---- True when `key` ends in one of the daemon's metadata suffixes.
-local function has_meta_suffix(key)
-  local suffix = key:match(":([%w_-]+)$")
-  return suffix ~= nil and META_SUFFIXES[suffix] == true
+--- Age and staleness from a `:cache` node: a leaf answer is read as it is; an
+-- object node is a tree of them, so the largest `age_ms` and any `stale`
+-- across its leaves (what the response envelope reports). A miss is 0/false.
+local function freshness(node)
+  if type(node) ~= "table" then return 0, false end
+  if type(node.age_ms) == "number" then return node.age_ms, node.stale == true end
+  local age, stale = 0, false
+  for _, child in pairs(node) do
+    local a, s = freshness(child)
+    if a > age then age = a end
+    stale = stale or s
+  end
+  return age, stale
 end
 
 local M = {}
@@ -183,7 +199,7 @@ function Backend:name()
   return "subprocess"
 end
 
---- One `comb get -f json` for the value, its age and its staleness (the
+--- One `comb get -f json` for the value and its `:cache` answer (the
 -- header comment): exit 0 is a hit; exit 2 with the CLI's miss line for
 -- `key` (`Error querying <key>: no data (cache miss)`) is a miss; exit 2
 -- with another `Error querying <key>: ` line is that refusal, in the
@@ -192,14 +208,13 @@ end
 -- failed `exec()` — which the CLI prints as `<key>: <msg>`; a rendered
 -- value is never null (a missing ref renders `""`), so that slot is never
 -- a hit. Exit 2 with the value slot filled is a rendered value whose
--- `:age`/`:stale` companions missed on their own — a hit with age 0.
+-- `:cache` slot missed on its own — a hit with age 0.
 function Backend:get(key, path, flags)
   flags = flags or {}
-  local meta = has_meta_suffix(key)
+  local cache_key = cache_key_of(key)
+  local meta = cache_key == nil
   local cmd = self._comb .. " get -f json " .. shell_escape(key)
-  if not meta then
-    cmd = cmd .. " " .. shell_escape(key .. ":age") .. " " .. shell_escape(key .. ":stale")
-  end
+  if cache_key then cmd = cmd .. " " .. shell_escape(cache_key) end
   cmd = cmd .. path_arg(path)
   if flags.force then cmd = cmd .. " --force" end
   if flags.wait then cmd = cmd .. " --wait" end
@@ -220,8 +235,8 @@ function Backend:get(key, path, flags)
     if decoded == nil or value == json.NULL then
       -- The resolver failed on `key` (its `<key>: <msg>` line, or
       -- `<key>.<leaf>: <msg>` when a leaf of a group failed), or the CLI did
-      -- before answering at all (no daemon, a bad argument). Companion miss
-      -- lines (`Error querying <key>:age: …`) are not the message.
+      -- before answering at all (no daemon, a bad argument). The cache slot's miss
+      -- line (`Error querying <cache key>: …`) are not the message.
       local message
       for line in err:gmatch("[^\n]+") do
         if line:sub(1, #key + 2) == key .. ": " or line:sub(1, #key + 1) == key .. "." then
@@ -239,7 +254,7 @@ function Backend:get(key, path, flags)
       end
       return { ok = false, error = { kind = "server_error", message = message } }
     end
-    -- Only the `:age`/`:stale` companions missed: `key` itself rendered.
+    -- Only the `:cache` slot missed: `key` itself rendered.
   end
 
   if value == json.NULL then value = nil end -- a null the daemon answers a suffix with, as the ffi backend collapses it
@@ -249,9 +264,7 @@ function Backend:get(key, path, flags)
   if type(decoded) ~= "table" then
     return { ok = false, error = { kind = "parse_error", message = "malformed comb get output: " .. tostring(out) } }
   end
-  local age_ms, stale = decoded[2], decoded[3]
-  if age_ms == json.NULL or age_ms == nil then age_ms = 0 end
-  if stale == json.NULL or stale == nil then stale = false end
+  local age_ms, stale = freshness(decoded[2])
   return { ok = true, data = value, age_ms = age_ms, stale = stale }
 end
 
