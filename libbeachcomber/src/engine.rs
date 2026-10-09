@@ -2,13 +2,16 @@
 //!
 //! [`build_engine_env`] is the one builder: the shared filters, chainable
 //! undefined, and `exec` (a function and a filter) bound to the render's
-//! [`EngineCtx`]. The daemon extends the returned environment with its own
+//! [`EngineCtx`], plus the data functions a Source's lines are written in
+//! (`read`, `lup`, `dirname`, `pluck`, `fromini`, `merge`, `map` over
+//! objects). The daemon extends the returned environment with its own
 //! functions, so a Source's lines and a client template share one engine.
 
 use crate::filters::build_env;
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
-use minijinja::{Environment, Error, ErrorKind, UndefinedBehavior};
+use minijinja::{Environment, Error, ErrorKind, State, UndefinedBehavior};
 use std::collections::HashMap;
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -36,6 +39,7 @@ pub fn build_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
     let mut env = build_env();
     env.set_undefined_behavior(UndefinedBehavior::Chainable);
     let for_fn = ctx.clone();
+    let for_exec_filter = ctx.clone();
     env.add_function(
         "exec",
         move |args: Rest<MjValue>, kwargs: Kwargs| match args.as_slice() {
@@ -53,10 +57,300 @@ pub fn build_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
                     "exec(): a command from both the pipe and an argument",
                 ));
             }
-            exec(&ctx, &piped, kwargs)
+            exec(&for_exec_filter, &piped, kwargs)
         },
     );
+    let for_filter = ctx.clone();
+    env.add_filter("read", move |path: MjValue| read(&for_filter, &path));
+    env.add_function("lup", move |name: String, kwargs: Kwargs| {
+        lup(&ctx, &name, kwargs)
+    });
+    env.add_filter("dirname", dirname);
+    env.add_filter("pluck", pluck);
+    env.add_filter("fromini", fromini);
+    env.add_filter("merge", |first: MjValue, rest: Rest<MjValue>| {
+        merge_values(std::iter::once(first).chain(rest.iter().cloned()))
+    });
+    env.add_function("merge", |args: Rest<MjValue>| match args.as_slice() {
+        [list] if list.kind() == ValueKind::Seq => merge_values(list.try_iter()?),
+        _ => merge_values(args.iter().cloned()),
+    });
+    env.add_filter("map", map);
     env
+}
+
+fn none() -> MjValue {
+    MjValue::from(())
+}
+
+fn is_blank(v: &MjValue) -> bool {
+    v.is_undefined() || v.is_none()
+}
+
+/// `p | read`: the file's text. A relative `p` is against `ctx.cwd`, a
+/// leading `~` against `ctx.env["HOME"]`. A missing file is `none`.
+fn read(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
+    if is_blank(path) {
+        return Ok(none());
+    }
+    let Some(p) = path.as_str() else {
+        return Err(op_error("read(): the path must be a string"));
+    };
+    let full = resolve_path(ctx, p);
+    match std::fs::read_to_string(&full) {
+        Ok(text) => Ok(MjValue::from(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(none()),
+        Err(e) => Err(op_error(format!("read(): {}: {e}", full.display()))),
+    }
+}
+
+fn resolve_path(ctx: &EngineCtx, p: &str) -> PathBuf {
+    let expanded = match (p.strip_prefix('~'), ctx.env.get("HOME")) {
+        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
+            PathBuf::from(format!("{home}{rest}"))
+        }
+        _ => PathBuf::from(p),
+    };
+    match &ctx.cwd {
+        Some(cwd) => cwd.join(expanded),
+        None => expanded,
+    }
+}
+
+/// `lup(name, all=false, files=false, dirs=false, follow=true, git=false,
+/// root=false)`: liblup's walk from `ctx.cwd`. The nearest path called
+/// `name` at or above it, as an absolute string, or `none`; with `all`, a list
+/// of every one, nearest first. The walk stops at `ctx.env["HOME"]` when the
+/// directory is under it, else at `/`; `git` stops at the repository root
+/// (outside one, `none`) and `root` at `/`. `files`/`dirs` match only that
+/// kind; `follow=false` matches a symlink itself.
+fn lup(ctx: &EngineCtx, name: &str, kwargs: Kwargs) -> Result<MjValue, Error> {
+    let flag = |key: &str, default: bool| -> Result<bool, Error> {
+        kwargs
+            .get::<Option<bool>>(key)
+            .map(|v| v.unwrap_or(default))
+            .map_err(|_| op_error(format!("lup(): {key}= must be true or false")))
+    };
+    let all = flag("all", false)?;
+    let files = flag("files", false)?;
+    let dirs = flag("dirs", false)?;
+    let follow = flag("follow", true)?;
+    let git = flag("git", false)?;
+    let root = flag("root", false)?;
+    kwargs.assert_all_used()?;
+    if files && dirs {
+        return Err(op_error("lup(): files= and dirs= exclude each other"));
+    }
+    if git && root {
+        return Err(op_error("lup(): git= and root= exclude each other"));
+    }
+
+    let Some(cwd) = &ctx.cwd else {
+        return Ok(none());
+    };
+    // lup follows `..` on disk, so it starts from the physical directory.
+    let Ok(start) = cwd.canonicalize() else {
+        return Ok(none());
+    };
+    let mut query = liblup::Query::new(name.as_bytes());
+    query.all = all;
+    query.follow = follow;
+    query.kind_filter = match (files, dirs) {
+        (true, _) => Some(liblup::KindFilter::Files),
+        (_, true) => Some(liblup::KindFilter::Dirs),
+        _ => None,
+    };
+    let boundary = if git {
+        liblup::Boundary::Git
+    } else if root {
+        liblup::Boundary::Root
+    } else {
+        liblup::Boundary::Home(ctx.env.get("HOME").map(String::as_bytes))
+    };
+    let hits = match liblup::lookup(&query, start.as_os_str().as_bytes(), boundary) {
+        Ok(hits) => hits,
+        Err(liblup::LupError::NoMatch | liblup::LupError::NotInGitRepo) => return Ok(none()),
+        Err(liblup::LupError::UsageError(m)) => return Err(op_error(format!("lup(): {m}"))),
+        Err(liblup::LupError::Io(e)) => {
+            return Err(op_error(format!("lup(): {}: {e}", start.display())));
+        }
+    };
+    let mut paths = hits.into_iter().filter_map(|hit| match hit {
+        liblup::Hit::Path(p) => Some(MjValue::from(String::from_utf8_lossy(&p).into_owned())),
+        liblup::Hit::Contents(_) => None,
+    });
+    Ok(if all {
+        MjValue::from(paths.collect::<Vec<_>>())
+    } else {
+        paths.next().unwrap_or_else(none)
+    })
+}
+
+/// `p | dirname`: all but the last component; `none` stays `none`.
+fn dirname(path: MjValue) -> Result<MjValue, Error> {
+    if is_blank(&path) {
+        return Ok(none());
+    }
+    let Some(p) = path.as_str() else {
+        return Err(op_error("dirname(): the path must be a string"));
+    };
+    let trimmed = p.trim_end_matches('/');
+    let dir = match trimmed.rsplit_once('/') {
+        Some(("", _)) => "/",
+        Some((dir, _)) => dir,
+        None => "",
+    };
+    Ok(MjValue::from(dir))
+}
+
+enum Step {
+    Key(String),
+    Index(i64),
+}
+
+/// Parse a pluck path: names joined by `.`, `[n]` for a list index, `["k.y"]`
+/// for a key holding a dot.
+fn parse_path(path: &str) -> Result<Vec<Step>, Error> {
+    let bad = || op_error(format!("pluck(): malformed path '{path}'"));
+    let mut steps = Vec::new();
+    let mut rest = path;
+    let mut first = true;
+    while !rest.is_empty() {
+        if let Some(inner) = rest.strip_prefix('[') {
+            let (step, after) =
+                if let Some(q) = inner.chars().next().filter(|c| *c == '"' || *c == '\'') {
+                    let body = &inner[1..];
+                    let end = body.find(q).ok_or_else(bad)?;
+                    let after = body[end + 1..].strip_prefix(']').ok_or_else(bad)?;
+                    (Step::Key(body[..end].to_string()), after)
+                } else {
+                    let end = inner.find(']').ok_or_else(bad)?;
+                    let n = inner[..end].trim().parse::<i64>().map_err(|_| bad())?;
+                    (Step::Index(n), &inner[end + 1..])
+                };
+            steps.push(step);
+            rest = after;
+        } else {
+            if !first {
+                rest = rest.strip_prefix('.').ok_or_else(bad)?;
+            }
+            let end = rest.find(['.', '[']).unwrap_or(rest.len());
+            if end == 0 {
+                return Err(bad());
+            }
+            steps.push(Step::Key(rest[..end].to_string()));
+            rest = &rest[end..];
+        }
+        first = false;
+    }
+    Ok(steps)
+}
+
+/// `v | pluck(path)`: deep get, `none` on any miss.
+fn pluck(value: MjValue, path: String) -> Result<MjValue, Error> {
+    let mut cur = value;
+    for step in parse_path(&path)? {
+        cur = match (step, cur.kind()) {
+            (Step::Key(k), ValueKind::Map) => cur.get_attr(&k)?,
+            (Step::Index(n), ValueKind::Seq) => {
+                let len = cur.len().unwrap_or(0) as i64;
+                let i = if n < 0 { len + n } else { n };
+                if i < 0 || i >= len {
+                    return Ok(none());
+                }
+                cur.get_item_by_index(i as usize)?
+            }
+            _ => return Ok(none()),
+        };
+        if is_blank(&cur) {
+            return Ok(none());
+        }
+    }
+    Ok(cur)
+}
+
+/// `s | fromini`: section -> {key: string}. Keys before any section land
+/// under `""`.
+fn fromini(text: String) -> Result<MjValue, Error> {
+    let ini = ini::Ini::load_from_str(&text).map_err(|e| op_error(format!("fromini: {e}")))?;
+    let mut out = serde_json::Map::new();
+    for (section, props) in ini.iter() {
+        if section.is_none() && props.is_empty() {
+            continue;
+        }
+        let table = out
+            .entry(section.unwrap_or("").to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        for (k, v) in props.iter() {
+            table[k] = serde_json::Value::String(v.to_string());
+        }
+    }
+    Ok(MjValue::from_serialize(serde_json::Value::Object(out)))
+}
+
+/// Deep merge, later wins; a non-object replaces; a `null` leaf removes.
+fn merge_values(values: impl Iterator<Item = MjValue>) -> Result<MjValue, Error> {
+    let mut acc = serde_json::Value::Null;
+    for v in values {
+        let json = serde_json::to_value(&v).map_err(|e| op_error(format!("merge(): {e}")))?;
+        acc = merge_json(acc, json);
+    }
+    Ok(MjValue::from_serialize(acc))
+}
+
+fn merge_json(base: serde_json::Value, over: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value::Object;
+    match (base, over) {
+        (Object(mut a), Object(b)) => {
+            for (k, v) in b {
+                if v.is_null() {
+                    a.remove(&k);
+                } else {
+                    let merged = match a.remove(&k) {
+                        Some(old) => merge_json(old, v),
+                        None => strip_nulls(v),
+                    };
+                    a.insert(k, merged);
+                }
+            }
+            Object(a)
+        }
+        (_, over) => strip_nulls(over),
+    }
+}
+
+fn strip_nulls(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(m) => serde_json::Value::Object(
+            m.into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, strip_nulls(v)))
+                .collect(),
+        ),
+        v => v,
+    }
+}
+
+/// `map`, extended to objects: `obj | map('filter', args…)` applies the
+/// filter to each value and keeps the keys. Anything else is jinja's `map`.
+fn map(state: &State, value: MjValue, args: Rest<MjValue>) -> Result<MjValue, Error> {
+    if value.kind() != ValueKind::Map {
+        return minijinja::filters::map(state, value, args).map(MjValue::from);
+    }
+    let (pos, kwargs): (&[MjValue], Kwargs) = minijinja::value::from_args(&args)?;
+    let name = match pos.first().and_then(|a| a.as_str()) {
+        Some(name) if !kwargs.has("attribute") => name.to_string(),
+        _ => return Err(op_error("map over an object takes a filter name")),
+    };
+    kwargs.assert_all_used()?;
+    let mut out = Vec::new();
+    for key in value.try_iter()? {
+        let item = value.get_item(&key)?;
+        let mut call = vec![item];
+        call.extend(pos[1..].iter().cloned());
+        out.push((key, state.apply_filter(&name, &call)?));
+    }
+    Ok(MjValue::from_iter(out))
 }
 
 fn op_error(message: impl Into<std::borrow::Cow<'static, str>>) -> Error {
@@ -177,6 +471,17 @@ mod tests {
             .eval(MjValue::from_serialize(serde_json::json!({})))
             .map_err(|e| e.to_string())?;
         Ok(value.to_string())
+    }
+
+    /// The expression's value as compact JSON (keys sorted).
+    fn eval_json(expr: &str) -> String {
+        let env = build_engine_env(ctx_with(&[], None));
+        let value = env
+            .compile_expression(expr)
+            .unwrap()
+            .eval(MjValue::from_serialize(serde_json::json!({})))
+            .unwrap();
+        serde_json::to_string(&value).unwrap()
     }
 
     fn eval(expr: &str) -> Result<String, String> {
@@ -308,6 +613,269 @@ mod tests {
         assert!(
             err.contains("failed to spawn in /nonexistent-comb-cwd"),
             "unexpected error: {err}"
+        );
+    }
+
+    /// A tempdir tree `<root>/a/.git/HEAD` and `<root>/a/b/c`, with the ctx
+    /// rooted at `<root>/a/b/c` and `HOME` set to `<root>`.
+    fn repo() -> (tempfile::TempDir, std::path::PathBuf, Arc<EngineCtx>) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("a/.git")).unwrap();
+        std::fs::write(root.join("a/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        let cwd = root.join("a/b/c");
+        let ctx = ctx_with(&[("HOME", root.to_str().unwrap())], Some(&cwd));
+        (dir, root, ctx)
+    }
+
+    #[test]
+    fn read_relative_to_cwd() {
+        let (_d, root, ctx) = repo();
+        std::fs::write(root.join("a/b/c/note.txt"), "hello\n").unwrap();
+        assert_eq!(eval_in(ctx, "'note.txt' | read").unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn read_is_a_filter_only() {
+        let (_d, root, ctx) = repo();
+        std::fs::write(root.join("a/b/c/note.txt"), "hello\n").unwrap();
+        let err = eval_in(ctx, "read('note.txt')").unwrap_err();
+        assert!(err.contains("unknown function"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn read_tilde_uses_env_home() {
+        let (_d, root, ctx) = repo();
+        std::fs::write(root.join("home.txt"), "h").unwrap();
+        assert_eq!(eval_in(ctx, "'~/home.txt' | read").unwrap(), "h");
+    }
+
+    #[test]
+    fn read_missing_is_none() {
+        let (_d, _root, ctx) = repo();
+        assert_eq!(
+            eval_in(ctx.clone(), "('nope' | read) is none").unwrap(),
+            "true"
+        );
+        assert_eq!(
+            eval_in(ctx, "('nope' | read) or 'fallback'").unwrap(),
+            "fallback"
+        );
+    }
+
+    #[test]
+    fn read_non_utf8_is_an_error_naming_the_path() {
+        let (_d, root, ctx) = repo();
+        std::fs::write(root.join("a/b/c/bin"), [0xff, 0xfe]).unwrap();
+        let err = eval_in(ctx, "'bin' | read").unwrap_err();
+        assert!(err.contains("bin"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn read_other_io_error_is_an_error_naming_the_path() {
+        let (_d, _root, ctx) = repo();
+        let err = eval_in(ctx, "'.' | read").unwrap_err();
+        assert!(err.contains("read():") && err.contains('.'), "{err}");
+    }
+
+    #[test]
+    fn lup_finds_the_nearest_path_at_or_above_cwd() {
+        let (_d, root, ctx) = repo();
+        let want = root.join("a/.git");
+        assert_eq!(eval_in(ctx, "lup('.git')").unwrap(), want.to_str().unwrap());
+    }
+
+    #[test]
+    fn lup_miss_is_none() {
+        let (_d, _root, ctx) = repo();
+        assert_eq!(
+            eval_in(ctx, "lup('.nothing-here') is none").unwrap(),
+            "true"
+        );
+        assert_eq!(eval("lup('.git') is none").unwrap(), "true");
+    }
+
+    #[test]
+    fn lup_stops_at_home() {
+        let (_d, root, _ctx) = repo();
+        // HOME is <root>/a/b: the .git in <root>/a is above the boundary.
+        let cwd = root.join("a/b/c");
+        let home = root.join("a/b");
+        let ctx = ctx_with(&[("HOME", home.to_str().unwrap())], Some(&cwd));
+        assert_eq!(eval_in(ctx, "lup('.git') is none").unwrap(), "true");
+    }
+
+    #[test]
+    fn lup_all_lists_every_hit_nearest_first() {
+        let (_d, root, ctx) = repo();
+        std::fs::write(root.join("a/b/.env"), "").unwrap();
+        std::fs::write(root.join(".env"), "").unwrap();
+        let want = format!(
+            "[{:?}, {:?}]",
+            root.join("a/b/.env").to_str().unwrap(),
+            root.join(".env").to_str().unwrap()
+        );
+        assert_eq!(eval_in(ctx, "lup('.env', all=true)").unwrap(), want);
+    }
+
+    #[test]
+    fn lup_dirs_skips_a_nearer_file() {
+        let (_d, root, ctx) = repo();
+        std::fs::write(root.join("a/b/.git"), "gitdir: elsewhere\n").unwrap();
+        assert_eq!(
+            eval_in(ctx.clone(), "lup('.git')").unwrap(),
+            root.join("a/b/.git").to_str().unwrap()
+        );
+        assert_eq!(
+            eval_in(ctx, "lup('.git', dirs=true)").unwrap(),
+            root.join("a/.git").to_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn lup_git_stops_at_the_repository_root() {
+        let (_d, root, ctx) = repo();
+        std::fs::write(root.join(".env"), "").unwrap();
+        assert_eq!(
+            eval_in(ctx.clone(), "lup('.env')").unwrap(),
+            root.join(".env").to_str().unwrap()
+        );
+        assert_eq!(
+            eval_in(ctx, "lup('.env', git=true) is none").unwrap(),
+            "true"
+        );
+    }
+
+    #[test]
+    fn lup_git_outside_a_repository_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_with(&[], Some(dir.path()));
+        assert_eq!(
+            eval_in(ctx, "lup('.env', git=true) is none").unwrap(),
+            "true"
+        );
+    }
+
+    #[test]
+    fn lup_walks_from_the_physical_directory() {
+        let (_d, root, _ctx) = repo();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(root.join("a/b/c"), &link).unwrap();
+        let ctx = ctx_with(&[("HOME", root.to_str().unwrap())], Some(&link));
+        assert_eq!(
+            eval_in(ctx, "lup('.git')").unwrap(),
+            root.join("a/.git").to_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn lup_exclusive_options_are_errors() {
+        let (_d, _root, ctx) = repo();
+        let err = eval_in(ctx.clone(), "lup('.git', files=true, dirs=true)").unwrap_err();
+        assert!(err.contains("files= and dirs="), "unexpected error: {err}");
+        let err = eval_in(ctx.clone(), "lup('.git', git=true, root=true)").unwrap_err();
+        assert!(err.contains("git= and root="), "unexpected error: {err}");
+        let err = eval_in(ctx, "lup('.git', all='yes')").unwrap_err();
+        assert!(err.contains("all= must be"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn root_line_from_the_spec() {
+        let (_d, root, ctx) = repo();
+        assert_eq!(
+            eval_in(ctx, "lup('.git') | dirname").unwrap(),
+            root.join("a").to_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn head_line_from_the_spec() {
+        let (_d, _root, ctx) = repo();
+        assert_eq!(
+            eval_in(ctx, "lup('.git/HEAD') | read | trim").unwrap(),
+            "ref: refs/heads/main"
+        );
+    }
+
+    #[test]
+    fn dirname_forms() {
+        assert_eq!(eval("'/a/b/c.txt' | dirname").unwrap(), "/a/b");
+        assert_eq!(eval("'c.txt' | dirname").unwrap(), "");
+        assert_eq!(eval("'/c' | dirname").unwrap(), "/");
+        assert_eq!(eval("'/a/b/' | dirname").unwrap(), "/a");
+        assert_eq!(eval("(none | dirname) is none").unwrap(), "true");
+    }
+
+    #[test]
+    fn pluck_path_forms() {
+        let data = r#"'{"node":[{"version":"22.1.0"},{"version":"20.0.0"}],"k.y":7,"a":{"b":{"c":1}}}' | fromjson"#;
+        let p = |path: &str| eval(&format!("({data}) | pluck('{path}')")).unwrap();
+        assert_eq!(p("node[0].version"), "22.1.0");
+        assert_eq!(p("node[-1].version"), "20.0.0");
+        assert_eq!(p("a.b.c"), "1");
+        assert_eq!(p(r#"[\"k.y\"]"#), "7");
+        assert_eq!(p("a.missing.c"), "none");
+        assert_eq!(p("node[5]"), "none");
+        assert_eq!(p("a[0]"), "none");
+        assert_eq!(p("node.version"), "none");
+        let err = eval(&format!("({data}) | pluck('a[')")).unwrap_err();
+        assert!(err.contains("pluck()"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn map_over_an_object_keeps_keys() {
+        let mise = r#"'{"node":[{"version":"22.1.0"}]}' | fromjson"#;
+        assert_eq!(
+            eval_json(&format!("({mise}) | map('pluck', '[0].version')")),
+            r#"{"node":"22.1.0"}"#
+        );
+    }
+
+    #[test]
+    fn map_over_an_object_with_attribute_is_an_error() {
+        let err = eval(r#"('{"a":1}' | fromjson) | map(attribute='x')"#).unwrap_err();
+        assert!(
+            err.contains("map over an object takes a filter name"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn map_over_a_list_is_jinjas_map() {
+        assert_eq!(
+            eval("['a', 'b'] | map('upper') | join(',')").unwrap(),
+            "A,B"
+        );
+        assert_eq!(
+            eval(r#"[{"v":1},{"v":2}] | map(attribute='v') | join(',')"#).unwrap(),
+            "1,2"
+        );
+    }
+
+    #[test]
+    fn fromini_sections() {
+        let ini = "top=1\n[core]\nname = x\nflag=yes\n[profile dev]\nregion=eu\n";
+        let out = eval_json(&format!("'{}' | fromini", ini.replace('\n', "\\n")));
+        assert_eq!(
+            out,
+            r#"{"":{"top":"1"},"core":{"flag":"yes","name":"x"},"profile dev":{"region":"eu"}}"#
+        );
+        assert_eq!(eval_json("'[s]\\nk=v' | fromini"), r#"{"s":{"k":"v"}}"#);
+    }
+
+    #[test]
+    fn merge_later_wins_and_none_removes() {
+        let a = r#"{"x":{"p":1,"q":2},"y":1,"z":[1]}"#;
+        let b = r#"{"x":{"q":3,"r":4},"y":{"n":1},"z":[2]}"#;
+        let j = eval_json;
+        let want = r#"{"x":{"p":1,"q":3,"r":4},"y":{"n":1},"z":[2]}"#;
+        assert_eq!(j(&format!("({a}) | merge({b})")), want);
+        assert_eq!(j(&format!("merge({a}, {b})")), want);
+        assert_eq!(j(&format!("merge([{a}, {b}])")), want);
+        assert_eq!(
+            j(&format!("({a}) | merge({{'x': {{'p': none}}, 'y': none}})")),
+            r#"{"x":{"q":2},"z":[1]}"#
         );
     }
 

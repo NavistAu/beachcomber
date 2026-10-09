@@ -14,6 +14,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
 minijinja = { workspace = true }
+rust-ini = "0.21.3"
+liblup = "0.3"
 
 [dev-dependencies]
 beachcomber = { path = "..", features = ["test-helpers"] }
