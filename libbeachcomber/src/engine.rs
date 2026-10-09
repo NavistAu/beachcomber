@@ -97,11 +97,11 @@ fn exec(ctx: &EngineCtx, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, E
     let shell = kwargs.get::<Option<String>>("sh")?;
     kwargs.assert_all_used()?;
 
+    let mut label = None;
     let (program, args) = if let Some(script) = command.as_str() {
-        (
-            shell.unwrap_or_else(|| "sh".to_string()),
-            vec!["-c".to_string(), script.to_string()],
-        )
+        let shell = shell.unwrap_or_else(|| "sh".to_string());
+        label = Some(format!("{shell} -c '{script}'"));
+        (shell, vec!["-c".to_string(), script.to_string()])
     } else if command.kind() == ValueKind::Seq {
         if shell.is_some() {
             return Err(op_error("exec(): sh= applies to a string command only"));
@@ -122,6 +122,7 @@ fn exec(ctx: &EngineCtx, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, E
 
     let req = crate::exec::ExecRequest {
         cmd: &program,
+        label: label.as_deref(),
         args: &args,
         stdin: stdin.as_deref(),
         timeout_ms,
@@ -282,6 +283,32 @@ mod tests {
     fn exec_timeout_ms_conversion_error_names_the_kwarg() {
         let err = eval("exec('echo hi', timeout_ms='x')").unwrap_err();
         assert!(err.contains("timeout_ms"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn exec_string_failure_names_the_script() {
+        let err = eval("exec('kubectl-nope config current-context')").unwrap_err();
+        assert!(
+            err.contains("`sh -c 'kubectl-nope config current-context'`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn exec_list_failure_names_the_program() {
+        let err = eval("exec(['false'])").unwrap_err();
+        assert!(err.contains("`false`"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn exec_missing_cwd_says_the_directory_is_missing() {
+        let missing = std::path::Path::new("/nonexistent-comb-cwd");
+        let ctx = ctx_with(&[], Some(missing));
+        let err = eval_in(ctx, "exec('echo hi')").unwrap_err();
+        assert!(
+            err.contains("failed to spawn in /nonexistent-comb-cwd"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

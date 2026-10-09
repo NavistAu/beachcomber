@@ -205,6 +205,29 @@ fn a_leaf_that_fails_shows_its_error_text_as_the_value() {
 }
 
 #[test]
+fn a_string_form_leaf_that_fails_names_the_script() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    put(
+        &d,
+        &cwd,
+        &["boom:template.leaf", r#""{{ exec('exit 3') }}""#],
+    );
+
+    let rows = json_rows(&d, &cwd, &["--filter", "provider=boom"]);
+    let rendered: Vec<&serde_json::Value> =
+        rows.iter().filter(|r| r["source"] == "template").collect();
+    assert_eq!(rendered.len(), 1, "one rendered leaf: {rows:#?}");
+    let value = rendered[0]["value"]
+        .as_str()
+        .expect("error text is a string");
+    assert!(
+        value.contains("sh -c 'exit 3'") && value.contains("exit status"),
+        "the failure should name the script: {value:?}"
+    );
+}
+
+#[test]
 fn a_template_put_at_another_path_is_not_rendered_here() {
     let d = TestDaemon::spawn();
     let cwd = project(&d);

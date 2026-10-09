@@ -294,7 +294,7 @@ fn render_template_over_assembled_context() {
     assert!(!rendered.contains("none"), "got: {rendered}");
 
     // An unbound name is undefined, and chaining through it stays undefined —
-    // not a render error (see `build_expression_env`'s `Chainable`).
+    // not a render error (see `build_engine_env`'s `Chainable`).
     assert_eq!(
         render_template("[{{ nope.field }}]", &json!({})).unwrap(),
         "[]"
