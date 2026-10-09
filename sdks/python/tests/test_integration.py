@@ -170,14 +170,14 @@ def test_eval_raw_expression(client: Client) -> None:
 
 
 def test_exec_is_disabled_without_the_option(client: Client) -> None:
-    client.put("execwidget:template", {"out": "{{ exec('printf', 'x') }}"})
+    client.put("execwidget:template", {"out": "{{ exec(['printf', 'x']) }}"})
     with pytest.raises(ServerError) as excinfo:
         client.resolve("execwidget.out", cwd="/tmp")
     assert "exec() is disabled in this context" in excinfo.value.message
 
 
 def test_exec_runs_on_a_client_with_the_option(client: Client, daemon) -> None:
-    client.put("execwidget2:template", {"out": "{{ exec('printf', 'x') }}"})
+    client.put("execwidget2:template", {"out": "{{ exec(['printf', 'x']) }}"})
     exec_client = Client(socket_path=daemon.socket_path, timeout=5.0, exec=True)
     try:
         assert exec_client.resolve("execwidget2.out", cwd="/tmp").data == "x"

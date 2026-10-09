@@ -22,7 +22,7 @@ pub fn build_env<'a>() -> Environment<'a> {
 }
 
 /// `{{ text | fromjson }}` — parse `text` as JSON into a value the template
-/// can navigate: `(exec('tool', 'info', '-o', 'json') | fromjson).context`.
+/// can navigate: `(exec(['tool', 'info', '-o', 'json']) | fromjson).context`.
 ///
 /// Text that is not JSON is an `InvalidOperation` error carrying serde's
 /// message, so a tool that printed something else fails at the filter rather
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn fromjson_result_is_navigable_in_an_expression() {
         // The shipped `talos.toml` shape: parse a tool's JSON, then read one key.
-        let env = crate::virtual_fields::build_expression_env(false);
+        let env = crate::engine::build_engine_env(Default::default());
         let expr = env.compile_expression("(s | fromjson).context").unwrap();
         let out = expr
             .eval(minijinja::context! { s => r#"{"context": "mycluster", "roles": null}"# })

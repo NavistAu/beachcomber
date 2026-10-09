@@ -315,14 +315,15 @@ A template can call `exec()` to run a command and use its output as the field's 
 
 ```toml
 [providers."myapp:template"]
-deploy_tag = "{{ exec('git', 'describe', '--tags', '--always') }}"
+deploy_tag = "{{ exec('git describe --tags --always') }}"
 ```
 
 | | |
 |---|---|
-| Signature | `exec(cmd, arg1, arg2, ..., timeout_ms=10000, stdin=none)` |
-| Spawn | argv only — no shell. `cmd` and each positional become one argv entry; no interpolation, no `\|`/`&&`/redirection. |
-| Argument coercion | string → itself; bool → `"true"`/`"false"`; number → its canonical string form; `undefined`/`none`, a sequence, or a map → error (structured data goes through `stdin=` instead) |
+| Signature | `exec(cmd, timeout_ms=10000, stdin=none, sh='sh')`, or the filter `cmd \| exec()` |
+| Spawn | a **string** runs under `sh -c` (`sh=` names another shell); a **list** is argv, no shell — each element exactly one argument, `'$FOO'` stays literal. |
+| Environment | the child's environment is exactly the template's `env` map (`comb`'s environment for the CLI, `env_json` for an SDK), so `$FOO` and `env.FOO` agree; its working directory is the render's. |
+| List element coercion | string → itself; bool → `"true"`/`"false"`; number → its canonical string form; `undefined`/`none`, a sequence, or a map → error (structured data goes through `stdin=` instead) |
 | `timeout_ms` | keyword, default `10000` |
 | `stdin` | keyword, default none; must be a string — `\| tojson` first for structured data |
 | Output | stdout, lossy-UTF-8, at most one trailing newline stripped; capped at 1 MiB (an oversized stdout is a failure, not a truncation) |

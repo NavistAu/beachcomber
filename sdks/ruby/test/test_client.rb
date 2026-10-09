@@ -167,14 +167,14 @@ class TestClient < Minitest::Test
 
   def test_exec_is_disabled_by_default
     err = assert_raises(Beachcomber::ServerError) do
-      @client.eval_expression("{{ exec('printf', 'x') }}", cwd: '/tmp')
+      @client.eval_expression("{{ exec(['printf', 'x']) }}", cwd: '/tmp')
     end
     assert_includes err.message, 'exec() is disabled in this context'
   end
 
   def test_exec_option_reaches_the_library
     client = Beachcomber::Client.new(socket_path: @server.path, exec: true)
-    assert_equal 'x', client.eval_expression("{{ exec('printf', 'x') }}", cwd: '/tmp')
+    assert_equal 'x', client.eval_expression("{{ exec(['printf', 'x']) }}", cwd: '/tmp')
   end
 
   # --- protocol errors ---

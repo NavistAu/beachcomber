@@ -188,7 +188,7 @@ fn a_leaf_that_fails_shows_its_error_text_as_the_value() {
     put(
         &d,
         &cwd,
-        &["boom:template.leaf", r#""{{ exec('false') }}""#],
+        &["boom:template.leaf", r#""{{ exec(['false']) }}""#],
     );
 
     let rows = json_rows(&d, &cwd, &["--filter", "provider=boom"]);

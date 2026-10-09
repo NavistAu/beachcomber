@@ -19,7 +19,7 @@ describe('Client({ exec }) reaches the library (FFI transport, no daemon)', { sk
     const client = new Client(dead);
     try {
       await assert.rejects(
-        () => client.eval("{{ exec('printf', 'x') }}", { cwd: '/tmp' }),
+        () => client.eval("{{ exec(['printf', 'x']) }}", { cwd: '/tmp' }),
         (err: unknown) => {
           if (!(err instanceof ServerError)) return false;
           assert.match(err.message, /exec\(\) is disabled in this context/);
@@ -34,7 +34,7 @@ describe('Client({ exec }) reaches the library (FFI transport, no daemon)', { sk
   it('exec: true lets the template run it', async () => {
     const client = new Client({ ...dead, exec: true });
     try {
-      assert.equal(await client.eval("{{ exec('printf', 'x') }}", { cwd: '/tmp' }), 'x');
+      assert.equal(await client.eval("{{ exec(['printf', 'x']) }}", { cwd: '/tmp' }), 'x');
     } finally {
       client.close();
     }

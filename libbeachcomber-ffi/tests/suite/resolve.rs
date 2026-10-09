@@ -119,8 +119,8 @@ fn bc_resolve_renders_a_managed_default_template() {
     unsafe { bc_client_free(client) };
 }
 
-/// `kubecontext.context` is a managed-default template over `exec('kubectl',
-/// …)` (outcome 20). A client that did not opt into `exec` renders it as the
+/// `kubecontext.context` is a managed-default template over `exec('kubectl …')`
+/// (outcome 20). A client that did not opt into `exec` renders it as the
 /// disabled-exec failure — a `server_error`, the resolver's runtime fault —
 /// rather than spawning anything.
 #[test]

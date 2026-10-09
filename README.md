@@ -959,8 +959,8 @@ Not every `comb g` namespace is a daemon provider. The managed `defaults/` files
 | `terraform` | `defaults/terraform.toml` | `workspace` | `$TF_WORKSPACE`, falling back to the cached `comb.terraform.workspace` — a template at a cached field's path wins on read |
 | `conda` | `defaults/conda.toml` | `env` | `$CONDA_DEFAULT_ENV` |
 | `op` | `defaults/op.toml` | `signed_in` (bool) | whether `$OP_SERVICE_ACCOUNT_TOKEN` is set — never the token itself |
-| `kubecontext` | `defaults/kubecontext.toml` | `context`, `namespace` | `exec('kubectl', 'config', …)` |
-| `talos` | `defaults/talos.toml` | `context` | `exec('talosctl', 'config', 'info', …)` |
+| `kubecontext` | `defaults/kubecontext.toml` | `context`, `namespace` | `exec('kubectl config …')` |
+| `talos` | `defaults/talos.toml` | `context` | `exec(['talosctl', 'config', 'info', …])` |
 
 Only `python` and `terraform` have a daemon provider of the same name, so only there does `comb g <namespace>` return cached fields deep-merged with rendered ones. `aws` and `gcloud` are templates only: their data lives in the differently named `aws_profiles` and `gcloud_configs` namespaces, which the templates reach through `comb.*` refs, and `comb g aws` is just the rendered template tree. `conda`, `op`, `kubecontext` and `talos` are templates only too, over the environment or a command. `kubecontext` and `talos` call the tool the shell would run — `kubectl config current-context`, `talosctl config info` — so they honour the shell's own `$KUBECONFIG`/`$TALOSCONFIG`, and the field names are unchanged: `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `exec()` is enabled — `comb get`/`eval`, or an SDK client constructed with `exec` on; anywhere else the field is the error `exec() is disabled in this context`.
 

@@ -11,14 +11,14 @@
 use crate::common::daemon::TestDaemon;
 use std::path::Path;
 
-/// `comb eval '{{ exec("sh","-c","echo hi") }}'` runs the command and
+/// `comb eval '{{ exec("echo hi") }}'` runs the command and
 /// prints its output.
 #[test]
 fn eval_of_exec_call_prints_command_output() {
     let d = TestDaemon::spawn();
 
     d.comb(Path::new("/"))
-        .args(["eval", r#"{{ exec("sh", "-c", "echo hi") }}"#])
+        .args(["eval", r#"{{ exec("echo hi") }}"#])
         .assert()
         .success()
         .stdout(predicates::str::diff("hi"));
@@ -31,11 +31,7 @@ fn get_of_template_with_exec_prints_command_output() {
     let d = TestDaemon::spawn();
 
     d.comb(Path::new("/"))
-        .args([
-            "put",
-            "demo:template.shout",
-            r#""{{ exec('sh', '-c', 'echo ok') }}""#,
-        ])
+        .args(["put", "demo:template.shout", r#""{{ exec('echo ok') }}""#])
         .assert()
         .success();
 
@@ -102,4 +98,18 @@ fn get_of_exec_or_cache_cascade_spawns_command_exactly_once() {
         "exec()-backed template must spawn exactly once per `comb get`; \
          counter file contents: {logged:?}"
     );
+}
+
+/// A string command runs under `sh -c` with the CLI process's own
+/// environment: `$FOO` and `env.FOO` read the same value.
+#[test]
+fn comb_eval_exec_sees_the_cli_process_env() {
+    let d = TestDaemon::spawn();
+
+    d.comb(Path::new("/"))
+        .env("FOO", "x")
+        .args(["eval", r#"{{ exec('echo $FOO') ~ env.FOO }}"#])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("xx"));
 }

@@ -155,7 +155,7 @@ fn eval_exec_call_is_enabled_for_the_cli() {
     let d = TestDaemon::spawn();
 
     d.comb(Path::new("/"))
-        .args(["eval", r#"{{ exec("printf", "x") }}"#])
+        .args(["eval", r#"{{ exec(["printf", "x"]) }}"#])
         .assert()
         .success()
         .stdout(predicates::str::diff("x"));

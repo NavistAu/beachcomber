@@ -316,7 +316,7 @@ fn render_template_has_no_exec() {
     // The formatting surfaces' render registers `exec()` in its disabled
     // form, so a call fails at the call site with the on-topic message —
     // not minijinja's "unknown function", indistinguishable from a typo.
-    let err = render_template("{{ exec('printf', 'x') }}", &json!({})).unwrap_err();
+    let err = render_template("{{ exec(['printf', 'x']) }}", &json!({})).unwrap_err();
     assert!(err.starts_with("template render error:"), "got: {err}");
     assert!(
         err.contains("exec() is disabled in this context"),

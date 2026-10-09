@@ -13,7 +13,8 @@ use libbeachcomber::resolve::{
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
-const CWD: &str = "/Users/j/ws/foo";
+// A real directory: an `exec` child runs in the render's cwd.
+const CWD: &str = "/tmp";
 
 // ── A map-backed Fetch ────────────────────────────────────────────────────────
 
@@ -633,7 +634,7 @@ fn a_chain_of_distinct_keys_is_bounded_by_the_depth_limit() {
 
 // ── 9. exec() ─────────────────────────────────────────────────────────────────
 
-const EXEC_TMPL: &str = "{{ exec('printf', 'x') }}";
+const EXEC_TMPL: &str = "{{ exec(['printf', 'x']) }}";
 
 #[test]
 fn exec_runs_when_the_surface_allows_it() {
@@ -666,7 +667,7 @@ fn exec_runs_in_the_template_form_too_and_is_refused_the_same_way() {
     // surface's decision reaches a template exactly as it reaches a tag.
     let env = spec_env();
     let mut f = MapFetch::default();
-    let src = "prefix {{ exec('printf', 'x') }} suffix";
+    let src = "prefix {{ exec(['printf', 'x']) }} suffix";
     let mut i = inputs(&env);
     i.allow_exec = true;
     assert_eq!(eval(src, &i, &mut f).unwrap(), json!("prefix x suffix"));
@@ -687,10 +688,7 @@ fn a_failing_command_is_a_runtime_error_not_a_config_error() {
     let mut f = MapFetch::default();
     let mut i = inputs(&env);
     i.allow_exec = true;
-    for src in [
-        "{{ exec('sh', '-c', 'exit 3') }}",
-        "[{{ exec('sh', '-c', 'exit 3') }}]",
-    ] {
+    for src in ["{{ exec('exit 3') }}", "[{{ exec('exit 3') }}]"] {
         match eval(src, &i, &mut f).unwrap_err() {
             ResolveError::Runtime(m) => {
                 assert!(!m.contains("compile error"), "{src}: {m}");
@@ -743,7 +741,7 @@ fn an_exec_argument_may_be_a_ref_to_another_template() {
     f.seed(
         "chain.a",
         Some(CWD),
-        tmpl(json!("{{ exec('printf', chain.b) }}")),
+        tmpl(json!("{{ exec(['printf', chain.b]) }}")),
     )
     .seed("chain.b", Some(CWD), tmpl(json!("{{ 'bee' }}")));
     let mut i = inputs(&env);

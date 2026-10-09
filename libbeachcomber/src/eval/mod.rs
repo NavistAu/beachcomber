@@ -17,8 +17,10 @@ mod scan;
 
 pub use scan::{Tag, TagKind, scan_tags};
 
-use crate::virtual_fields::{Ref, build_expression_env, discover_expression_refs, refs_from_names};
+use crate::engine::{EngineCtx, build_engine_env};
+use crate::virtual_fields::{Ref, discover_expression_refs, refs_from_names};
 use minijinja::value::Value as MjValue;
+use std::sync::Arc;
 
 // ── Forms ─────────────────────────────────────────────────────────────────────
 
@@ -133,7 +135,7 @@ pub fn discover_refs(src: &str) -> Vec<Ref> {
             // choice. (This has nothing to do with `exec` showing up as an
             // "undeclared variable": minijinja's meta-analysis never
             // reports a call's callee name at all, registered or not.)
-            let env = build_expression_env(false);
+            let env = build_engine_env(Default::default());
             let Ok(template) = env.template_from_str(src) else {
                 return Vec::new();
             };
@@ -182,7 +184,7 @@ pub(crate) fn too_deep() -> String {
 /// matching how a missing `env.*` and [`crate::render::render_data`] already
 /// render nothing.
 pub fn render_template(src: &str, context: &serde_json::Value) -> Result<String, String> {
-    render_template_with(src, context, false).map_err(|e| e.to_string())
+    render_template_with(src, context, Default::default()).map_err(|e| e.to_string())
 }
 
 /// Why a template render failed, by phase: the source itself does not
@@ -208,9 +210,9 @@ impl std::fmt::Display for RenderError {
 pub(crate) fn render_template_with(
     src: &str,
     context: &serde_json::Value,
-    allow_exec: bool,
+    ctx: Arc<EngineCtx>,
 ) -> Result<String, RenderError> {
-    let mut env = build_expression_env(allow_exec);
+    let mut env = build_engine_env(ctx);
     env.set_formatter(|out, state, value| {
         if value.is_none() {
             Ok(())

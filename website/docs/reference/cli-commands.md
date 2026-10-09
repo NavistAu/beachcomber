@@ -368,14 +368,16 @@ them.
 A value expression evaluated by `comb e` can call `exec()` to run a command and use its output:
 
 ```sh
-comb e '{{ exec("git", "rev-parse", "--short", "HEAD") }}' .
+comb e '{{ exec("git rev-parse --short HEAD") }}' .
+comb e '{{ exec(["git", "rev-parse", "--short", "HEAD"]) }}' .
 ```
 
 | | |
 |---|---|
-| Signature | `exec(cmd, arg1, arg2, ..., timeout_ms=10000, stdin=none)` |
-| Spawn | argv only — `cmd` and each positional argument become one argv entry each. No shell: no interpolation, no globbing, no `\|`/`&&`/redirection. |
-| Argument coercion | string → itself; bool → `"true"`/`"false"` (not minijinja's `Display`, which prints `True`/`False`); number → its canonical string form; `undefined`/`none` → error (typically a missed daemon ref reaching `exec()` un-guarded); a sequence or map → error, pointing at `stdin=` instead |
+| Signature | `exec(cmd, timeout_ms=10000, stdin=none, sh='sh')`, or the filter `cmd \| exec()` (a command from both the pipe and an argument is an error) |
+| Spawn | a **string** runs under `sh -c` (`sh=` names another shell): the shell expands `$FOO`, globs and pipes, and quoting is yours. A **list** is argv, no shell: each element is exactly one argument and `'$FOO'` stays literal. |
+| Environment and directory | the child's environment is exactly the render's `env` map (this shell's environment for `comb`, `env_json` for an SDK) — `$FOO` and `env.FOO` read the same value — and its working directory is the render's. |
+| List element coercion | string → itself; bool → `"true"`/`"false"` (not minijinja's `Display`, which prints `True`/`False`); number → its canonical string form; `undefined`/`none` → error (typically a missed daemon ref reaching `exec()` un-guarded); a sequence or map → error, pointing at `stdin=` instead |
 | `timeout_ms` | keyword, default `10000`. A command still running at the deadline is killed (whole process group) and the call fails. |
 | `stdin` | keyword, default none. Must be a string — pass structured data through `\| tojson` first (e.g. `stdin=(some_map \| tojson)`). |
 | Output | stdout, lossy-UTF-8 decoded, with at most one trailing `\n` (and a preceding `\r`) stripped |

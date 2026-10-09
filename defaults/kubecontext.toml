@@ -1,5 +1,5 @@
 [providers."kubecontext:template"]
 # The kubectl context in effect, honouring the shell's own $KUBECONFIG.
-context = "{{ exec('kubectl', 'config', 'current-context') }}"
+context = "{{ exec('kubectl config current-context') }}"
 # The context's namespace; `default` when it sets none.
-namespace = "{{ exec('kubectl', 'config', 'view', '--minify', '-o', 'jsonpath={..namespace}') or 'default' }}"
+namespace = "{{ exec(['kubectl', 'config', 'view', '--minify', '-o', 'jsonpath={..namespace}']) or 'default' }}"

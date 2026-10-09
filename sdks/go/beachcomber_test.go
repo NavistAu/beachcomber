@@ -508,7 +508,7 @@ func TestWithExec_ReachesTheOptionsJSON(t *testing.T) {
 
 func TestClient_Resolve_ExecIsDisabledWithoutTheOption(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("execns:template", map[string]interface{}{"out": "{{ exec('printf', 'x') }}"}, "", ""); err != nil {
+	if err := c.Put("execns:template", map[string]interface{}{"out": "{{ exec(['printf', 'x']) }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	_, err := c.Resolve("execns.out", "/", nil)
@@ -524,7 +524,7 @@ func TestClient_Resolve_ExecIsDisabledWithoutTheOption(t *testing.T) {
 func TestClient_Resolve_ExecRunsWithTheOption(t *testing.T) {
 	sock := startDaemon(t)
 	c := beachcomber.NewClientWithPath(sock, beachcomber.WithExec(true))
-	if err := c.Put("execns2:template", map[string]interface{}{"out": "{{ exec('printf', 'x') }}"}, "", ""); err != nil {
+	if err := c.Put("execns2:template", map[string]interface{}{"out": "{{ exec(['printf', 'x']) }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	result, err := c.Resolve("execns2.out", "/", nil)

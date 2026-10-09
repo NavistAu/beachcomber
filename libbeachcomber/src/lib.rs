@@ -18,9 +18,10 @@
 //! }
 //! ```
 
+pub mod engine;
 pub mod eval;
 // `exec()` spawn engine, backing the `exec()` jinja function registered in
-// `virtual_fields::build_expression_env`.
+// `engine::build_engine_env`.
 mod exec;
 pub mod filters;
 pub mod render;

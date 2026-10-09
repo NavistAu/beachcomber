@@ -19,14 +19,16 @@
 //! See `docs/superpowers/specs/2026-09-05-one-tree-resolution-design.md` §4
 //! and canon `field_resolution.md`.
 
+use crate::engine::{EngineCtx, build_engine_env};
 use crate::eval::{
     MAX_VIRTUAL_DEPTH, RenderError, discover_refs, render_template_with, single_tag_expression,
     too_deep,
 };
-use crate::virtual_fields::{Ref, build_expression_env, mj_to_json};
+use crate::virtual_fields::{Ref, mj_to_json};
 use minijinja::value::Value as MjValue;
 use serde_json::{Map, Value as JsonValue};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// One node as the daemon returned it: the `get` response of design §3.4.
 ///
@@ -211,6 +213,9 @@ pub fn eval(
 /// the same key at two directories is two nodes.
 struct Resolver<'a> {
     inputs: &'a Inputs<'a>,
+    /// What every render of this resolution runs in: the caller's `env` and
+    /// directory, the only ones an `exec()` child sees.
+    engine: Arc<EngineCtx>,
     fetch: &'a mut dyn Fetch,
     memo: HashMap<(String, Option<String>), Result<Option<Got>, FetchError>>,
     order: Fetched,
@@ -221,6 +226,11 @@ impl<'a> Resolver<'a> {
     fn new(inputs: &'a Inputs<'a>, fetch: &'a mut dyn Fetch) -> Self {
         Self {
             inputs,
+            engine: Arc::new(EngineCtx {
+                env: inputs.env.clone(),
+                cwd: (!inputs.cwd.is_empty()).then(|| inputs.cwd.into()),
+                allow_exec: inputs.allow_exec,
+            }),
             fetch,
             memo: HashMap::new(),
             order: Vec::new(),
@@ -320,7 +330,7 @@ impl<'a> Resolver<'a> {
         // renders to a string.
         match single_tag_expression(src) {
             Some(expr) => {
-                let env = build_expression_env(self.inputs.allow_exec);
+                let env = build_engine_env(self.engine.clone());
                 let compiled = env.compile_expression(expr).map_err(|e| {
                     ResolveError::Config(format!("{key}: expression compile error: {e}"))
                 })?;
@@ -335,7 +345,7 @@ impl<'a> Resolver<'a> {
             }
             // A source that does not compile is someone's to go and fix; a
             // failure while rendering is the moment's.
-            None => render_template_with(src, &context, self.inputs.allow_exec)
+            None => render_template_with(src, &context, self.engine.clone())
                 .map(JsonValue::String)
                 .map_err(|e| {
                     let message = format!("{key}: {e}");

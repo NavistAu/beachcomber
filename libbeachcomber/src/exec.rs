@@ -1,5 +1,5 @@
 //! Spawn engine backing the `exec()` jinja function, registered in
-//! `virtual_fields::build_expression_env`.
+//! `engine::build_engine_env`.
 //!
 //! [`run`] spawns one argv command in its own process group, writes+closes
 //! stdin, and drains stdout/stderr concurrently — each on its own thread —
@@ -36,8 +36,10 @@
 //! / `"template render error: "` prefixes that wrap them on the eval path are
 //! added by the caller (`eval/mod.rs`), not here.
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -73,12 +75,16 @@ const STDERR_RETENTION_BYTES: usize = STDERR_ERROR_BYTES * 4;
 /// dead; this is a defensive ceiling, not an expected wait.
 const READER_JOIN_GRACE: Duration = Duration::from_millis(300);
 
-/// A single argv command to spawn and drain.
+/// A single argv command to spawn and drain. The child's environment is
+/// exactly `env` (nothing is inherited from this process) and its working
+/// directory is `cwd` when set.
 pub(crate) struct ExecRequest<'a> {
     pub cmd: &'a str,
     pub args: &'a [String],
     pub stdin: Option<&'a str>,
     pub timeout_ms: u64,
+    pub env: &'a HashMap<String, String>,
+    pub cwd: Option<&'a Path>,
 }
 
 /// How the deadline loop broke.
@@ -102,12 +108,19 @@ enum Outcome {
 /// stdout, or the spawn `io::Error`), and stderr truncated to
 /// [`STDERR_ERROR_BYTES`].
 pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
-    let mut child = Command::new(req.cmd)
+    let mut command = Command::new(req.cmd);
+    command
         .args(req.args)
+        .env_clear()
+        .envs(req.env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .process_group(0)
+        .process_group(0);
+    if let Some(cwd) = req.cwd {
+        command.current_dir(cwd);
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| format!("`{}`: failed to spawn: {e}", req.cmd))?;
 
@@ -358,6 +371,11 @@ fn truncate_lossy(bytes: &[u8], limit: usize) -> String {
 mod tests {
     use super::*;
 
+    /// The child gets only what it is handed, so tests hand it a PATH.
+    fn test_env() -> HashMap<String, String> {
+        HashMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())])
+    }
+
     #[test]
     fn echo_roundtrip_strips_trailing_newline() {
         let req = ExecRequest {
@@ -365,6 +383,8 @@ mod tests {
             args: &["hello".to_string()],
             stdin: None,
             timeout_ms: 1000,
+            env: &test_env(),
+            cwd: None,
         };
         assert_eq!(run(&req).expect("echo should succeed"), "hello");
     }
@@ -376,6 +396,8 @@ mod tests {
             args: &[],
             stdin: Some("round trip"),
             timeout_ms: 1000,
+            env: &test_env(),
+            cwd: None,
         };
         assert_eq!(run(&req).expect("cat should succeed"), "round trip");
     }
@@ -390,6 +412,8 @@ mod tests {
             args: &[],
             stdin: None,
             timeout_ms: 1000,
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let out = run(&req).expect("cat should exit as soon as stdin closes");
@@ -413,6 +437,8 @@ mod tests {
             args: &[],
             stdin: Some(&payload),
             timeout_ms: 3000,
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let out = run(&req).expect("cat should succeed");
@@ -436,6 +462,8 @@ mod tests {
             args: &["-c".to_string(), "sleep 3".to_string()],
             stdin: Some(&payload),
             timeout_ms: 200,
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let err = run(&req).unwrap_err();
@@ -459,6 +487,8 @@ mod tests {
             args: &["-c".to_string(), "sleep 3 & echo started".to_string()],
             stdin: None,
             timeout_ms: 200,
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let out = run(&req).expect("sh should succeed");
@@ -477,6 +507,8 @@ mod tests {
             args: &["-c".to_string(), "echo boom >&2; exit 3".to_string()],
             stdin: None,
             timeout_ms: 1000,
+            env: &test_env(),
+            cwd: None,
         };
         let err = run(&req).unwrap_err();
         assert!(err.contains("sh"), "should name the command: {err}");
@@ -494,6 +526,8 @@ mod tests {
             args: &[],
             stdin: None,
             timeout_ms: 1000,
+            env: &test_env(),
+            cwd: None,
         };
         let err = run(&req).unwrap_err();
         assert!(err.contains("definitely-not-a-real-command-xyz"), "{err}");
@@ -506,6 +540,8 @@ mod tests {
             args: &["-c".to_string(), "sleep 5".to_string()],
             stdin: None,
             timeout_ms: 100,
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let err = run(&req).unwrap_err();
@@ -528,6 +564,8 @@ mod tests {
             args: &["-c".to_string(), "head -c 2000000 /dev/zero".to_string()],
             stdin: None,
             timeout_ms: 5000,
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let err = run(&req).unwrap_err();
@@ -551,6 +589,8 @@ mod tests {
             args: &["-c".to_string(), "head -c 2000000 /dev/zero".to_string()],
             stdin: None,
             timeout_ms: 100,
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let err = run(&req).unwrap_err();
