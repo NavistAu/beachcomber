@@ -193,7 +193,7 @@ tokio::spawn(async move {
 
 **Step 9: Cache write**
 
-Back in the async context, on success: `cache.put_with_interval("git", Some("/home/user/myrepo"), result, poll_interval_secs)`. The DashMap insert is lock-free.
+Back in the async context, on success: `cache.put_source("git", Some("/home/user/myrepo"), source_name, fields, schedule)`. It replaces only that Source's record at the entry, leaving sibling Sources untouched, and writes the `Schedule` (poll interval, decay) into the `git:cache` entry beside it. The DashMap insert is lock-free.
 
 **Step 10: Rerun check**
 

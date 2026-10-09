@@ -554,7 +554,8 @@ fn apply_static_write(
         .or_insert_with(|| CacheSourceEntry {
             fields: HashMap::new(),
             last_refreshed: now,
-            expected_interval_secs: interval_secs,
+            // The `put` map's freshness is its address stamps' to own.
+            expected_interval_secs: (!is_put).then_some(interval_secs).flatten(),
         });
     if is_put {
         // A scalar standing on the way to `node` is about to become an object:
@@ -580,7 +581,7 @@ fn apply_static_write(
         crate::provider::insert_path(&mut src.fields, &tail, v);
     }
     src.last_refreshed = now;
-    if interval_secs.is_some() {
+    if !is_put && interval_secs.is_some() {
         src.expected_interval_secs = interval_secs;
     }
 }
@@ -1374,6 +1375,14 @@ impl Cache {
         let key = make_cache_key(provider, path);
         let entry = self.entries.get(&key)?;
         entry.sources.get(source_name).cloned()
+    }
+
+    /// Whether a put at `provider`'s entry `at` states the record at `tail`: a
+    /// put address at or above it hides whatever a Source holds there.
+    pub fn put_answers(&self, provider: &str, at: Option<&str>, tail: &str) -> bool {
+        self.entries
+            .get(&make_cache_key(provider, at))
+            .is_some_and(|e| e.put_address_for(tail).is_some())
     }
 
     /// Return a clone of the full `CacheEntry` for (provider, path), or `None`.
@@ -2662,5 +2671,28 @@ mod tests {
         );
         put("git:cache", Some("/w/proj/sub"), 2);
         assert_eq!(cache.resolve_decay("git", Some("/w/proj/sub")), 2);
+    }
+
+    /// A `--ttl` put's interval belongs to its own address stamp: a later
+    /// no-ttl put at another address does not inherit it, so the entry is not
+    /// counted stale on the first address's account.
+    #[tokio::test(start_paused = true)]
+    async fn a_ttl_put_does_not_make_the_put_map_expire() {
+        let cache = Cache::new();
+        cache
+            .write_static(
+                "git",
+                Some("/repo"),
+                PUT_SOURCE,
+                "a",
+                Value::Int(1),
+                Some(1),
+            )
+            .unwrap();
+        cache
+            .write_static("git", Some("/repo"), PUT_SOURCE, "b", Value::Int(2), None)
+            .unwrap();
+        tokio::time::advance(std::time::Duration::from_secs(5)).await;
+        assert!(cache.list_entries().iter().all(|e| !e.stale));
     }
 }

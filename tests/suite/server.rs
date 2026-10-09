@@ -416,3 +416,83 @@ async fn nested_key_missing_subkey_is_a_miss() {
 
     handle.abort();
 }
+
+/// Sends one `get` to the server and returns the response.
+async fn get_once(sock: &std::path::Path, key: &str) -> Response {
+    let mut stream = UnixStream::connect(sock).await.unwrap();
+    let request = format!(r#"{{"op": "get", "key": "{key}"}}"#);
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).await.unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+
+/// A read the put layer answers neither runs nor demands the Source it hides.
+#[tokio::test]
+async fn a_put_answered_get_runs_no_source_and_sends_no_demand() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    cache
+        .write_static(
+            "hostname",
+            None,
+            "put",
+            "name",
+            Value::String("x".to_string()),
+            None,
+        )
+        .unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let server = Server::new(
+        sock.clone(),
+        cache.clone(),
+        registry,
+        Some(beachcomber::scheduler::SchedulerHandle::new(tx)),
+        watchers,
+    );
+    let handle = server.spawn().unwrap();
+
+    let response = get_once(&sock, "hostname.name").await;
+    assert_eq!(response.data.unwrap(), "x");
+    assert!(cache.get_source("hostname", None, "host").is_none());
+    assert!(
+        rx.try_recv().is_err(),
+        "a put-answered read demands nothing"
+    );
+
+    handle.abort();
+}
+
+/// A sibling the put does not cover still reaches the Source layer.
+#[tokio::test]
+async fn a_get_of_a_field_the_put_does_not_cover_runs_and_demands_the_source() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    cache
+        .write_static(
+            "hostname",
+            None,
+            "put",
+            "name",
+            Value::String("x".to_string()),
+            None,
+        )
+        .unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let server = Server::new(
+        sock.clone(),
+        cache.clone(),
+        registry,
+        Some(beachcomber::scheduler::SchedulerHandle::new(tx)),
+        watchers,
+    );
+    let handle = server.spawn().unwrap();
+
+    let response = get_once(&sock, "hostname.short").await;
+    assert!(response.ok, "{:?}", response.error);
+    assert!(cache.get_source("hostname", None, "host").is_some());
+    assert!(rx.try_recv().is_ok(), "a Source-layer read demands");
+
+    handle.abort();
+}

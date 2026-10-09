@@ -1059,9 +1059,20 @@ async fn handle_request(
                 ));
             }
 
+            // A field the put layer states is answered there: the Source it
+            // hides is neither run nor kept alive by this read. A Source that
+            // is already scheduled keeps its schedule and decays as any
+            // unread key does.
+            let put_answered = !*force
+                && plan.layers != crate::cache::Layers::Source
+                && matches!(&plan.target, KeyParse::Field(_, field)
+                    if cache.put_answers(provider_name, effective_path.as_deref(), field));
+
             // Signal demand to scheduler — keeps only the queried Source(s) warm
             // (canon §150/§268: a field query demands only its owning Source).
-            if let Some(sched) = scheduler {
+            if let Some(sched) = scheduler
+                && !put_answered
+            {
                 sched
                     .send(SchedulerMessage::QueryActivity {
                         provider: provider_name.to_string(),
@@ -1116,8 +1127,10 @@ async fn handle_request(
                 (false, false) => Warm::Cold,
             };
             let mut ran = false;
-            for source_name in &demanded {
-                ran |= warm_source(registry, cache, provider_name, source_name, at, how).await;
+            if !put_answered {
+                for source_name in &demanded {
+                    ran |= warm_source(registry, cache, provider_name, source_name, at, how).await;
+                }
             }
             let mut merged = cache.read_merged(
                 provider_name,
