@@ -428,7 +428,7 @@ List all cache entries currently held by the daemon.
       "value": "main",
       "age_ms": 120,
       "stale": false,
-      "kind": {"kind": "lifecycle", "decay": 0, "watches_files": true}
+      "kind": {"kind": "lifecycle", "decay": 0, "depth": 4, "watches_files": true}
     },
     {
       "provider": "myapp",
@@ -450,7 +450,7 @@ List all cache entries currently held by the daemon.
 `source` is the row's record's source label — a Source of the provider
 (`head`, `refs`, …), or a static label (`put`, `config:<file>`). `kind` is
 present when the row's lifecycle discriminator is known: `{"kind":
-"lifecycle", "decay": N, "watches_files": bool}` for a lifecycle-tracked row,
+"lifecycle", "decay": N, "depth": D, "watches_files": bool}` for a lifecycle-tracked row,
 `{"kind": "once"}` / `{"kind": "static"}` / `{"kind": "transient"}`
 otherwise; omitted when unknown. A handful of further optional fields
 (`poll_interval_secs`, `poll_count`, `fsevents_reinstate`,

@@ -25,6 +25,7 @@ class CacheRow:
     poll_interval_secs: Optional[int] = None
     poll_count: Optional[int] = None
     fsevents_reinstate: Optional[bool] = None
+    polls_elapsed: Optional[int] = None
     failure: Optional[Dict[str, Any]] = None
     source: Optional[str] = None
 

@@ -8,7 +8,7 @@ export interface HelloInfo {
 }
 
 export type RowKind =
-  | { kind: 'lifecycle'; decay: number; watches_files: boolean }
+  | { kind: 'lifecycle'; decay: number; depth: number; watches_files: boolean }
   | { kind: 'once' }
   | { kind: 'static' }
   | { kind: 'transient' };

@@ -397,7 +397,7 @@ class TestOps < Minitest::Test
           value: 'main',
           age_ms: 100,
           stale: false,
-          kind: { kind: 'lifecycle', decay: 0, watches_files: true },
+          kind: { kind: 'lifecycle', decay: 0, depth: 4, watches_files: true },
           poll_interval_secs: 30,
           poll_count: 3,
           fsevents_reinstate: false,

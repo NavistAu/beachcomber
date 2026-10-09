@@ -51,7 +51,7 @@ type CacheRow struct {
 	Value             interface{}
 	AgeMs             uint64
 	Stale             bool
-	Kind              map[string]interface{} // e.g. {"kind":"lifecycle","decay":0,"watches_files":true}
+	Kind              map[string]interface{} // e.g. {"kind":"lifecycle","decay":0,"depth":4,"watches_files":true}
 	PollIntervalSecs  *uint64
 	PollCount         *uint32
 	FseventsReinstate *bool
