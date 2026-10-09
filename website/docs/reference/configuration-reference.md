@@ -56,10 +56,11 @@ provider_timeout_secs = 10
 # Default: "60s"
 poll_interval = "60s"
 
-# Keep-alive count in polls (K in the cache lifecycle model). An Active
+# Active-window length in polls (K in the cache lifecycle model). An Active
 # entry stays warm for K × poll_interval seconds after the last demand
-# signal, then enters the exponential decay ladder (Decay1..4, each step
-# doubling interval and duration) until eviction.
+# signal, then decays through its decay steps (4 by default, each step
+# doubling interval and duration; the depth is data, see `<p>:cache._.decay`)
+# until eviction.
 # Default: 12
 poll_live_count = 12
 
@@ -101,10 +102,9 @@ poll_live_count = 12
 # type              string    Strategy: "poll", "fsevent", "fsevent_poll"
 # scope             string    "path" or "global" (informational for built-ins)
 # poll_interval     duration  Poll interval (poll, fsevent_poll)
-# poll_count        integer   Keep-alive polls before decay (poll, fsevent_poll)
+# poll_count        integer   Polls in the Active window before decay (poll, fsevent_poll)
 # fsevent_patterns  [string]  Relative path components to watch (fsevent, fsevent_poll)
 # fsevent_abs_paths [string]  Absolute roots to watch (fsevent, fsevent_poll)
-# fsevent_lifespan  duration  Keep-alive duration before decay (fsevent, path-scoped)
 # fsevent_reinstates bool     Whether watches survive decay. Default true.
 # failback_count    integer   Consecutive failures before suppression
 # failback_interval duration  Suppression duration after failback_count hit
@@ -117,12 +117,11 @@ enabled = false
 # Override the git.diff source to poll more frequently
 [providers.git.diff]
 poll_interval = "15s"         # default: "30s"
-poll_count = 24               # keep-alive = 24 × 15s = 6 min
+poll_count = 24               # Active window = 24 × 15s = 6 min
 
-# Make git.refs reinstate faster from decay
+# Make git.refs reinstate from decay on a .git event
 [providers.git.refs]
 fsevent_reinstates = true     # .git fsevent during decay reinstates to Active
-fsevent_lifespan = "600s"     # stay warm for 10 min after last query
 
 # Slow down battery polling (less important on desktop)
 [providers.battery.state]
@@ -256,8 +255,8 @@ version = "{{ python.version }}"
 
 That is `python:template.venv_name` and `python:template.widgets.version`. A facet table holds data only, and four rules are enforced at daemon startup (and by `comb check config`):
 
-- The key must be valid facet syntax — exactly one colon, a facet name of letters, digits, `_` or `-`, and not one of the metadata suffix names (`age`, `stale`, `fresh`, `cache`, `source`). `[providers."a:b:c"]` and `[providers."x:age"]` are **errors**.
-- No settings keys. `enabled`, `backend`, `type`, `command`, `library_path` and `url` are **errors** at the top level of a facet table, and so is any per-source knob — `poll_interval`, `poll_count`, `poll_secs`, `fsevent_patterns`, `fsevent_abs_paths`, `fsevent_lifespan`, `fsevent_reinstates`, `failback_count`, `failback_interval`, and the legacy spellings `poll_interval_secs`, `poll_live_count`, `fsevents_reinstate`, `failure_reattempts` and `failure_backoff_interval`. They belong in `[providers.<name>]`.
+- The key must be valid facet syntax — exactly one colon, a facet name of letters, digits, `_` or `-`, and not `put` or `source`, which are the read-only layer facets. `[providers."a:b:c"]` and `[providers."x:put"]` are **errors**.
+- No settings keys. `enabled`, `backend`, `type`, `command`, `library_path` and `url` are **errors** at the top level of a facet table, and so is any per-source knob — `poll_interval`, `poll_count`, `poll_secs`, `fsevent_patterns`, `fsevent_abs_paths`, `fsevent_reinstates`, `failback_count`, `failback_interval`, and the legacy spellings `poll_interval_secs`, `poll_live_count`, `fsevents_reinstate`, `failure_reattempts` and `failure_backoff_interval`. They belong in `[providers.<name>]`.
 - Nesting is tables only, in **every** facet, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**.
 - Under `:template` a leaf that is neither a string nor a table is not a value expression: a **warning**, and the leaf is dropped from what gets loaded. Any other facet is plain data, so its leaves may be of any type.
 
@@ -395,7 +394,7 @@ Composition rules:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `poll_interval` | duration | `"60s"` | Base polling interval `P` used in Active state |
-| `poll_live_count` | int | `12` | Keep-alive count `K` in polls (see `docs/cache-lifecycle.md`) |
+| `poll_live_count` | int | `12` | Polls in the Active window, `K` (see `docs/cache-lifecycle.md`) |
 | `fsevents_reinstate` | bool or null | `null` (unset — per-source defaults apply) | Global override for fsevent-during-decay policy; unset means each source uses its own default |
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
 
@@ -427,11 +426,10 @@ Only `enabled` is valid directly under `[providers.<name>]` for built-in provide
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `poll_interval` | duration | inherited from `[lifecycle]` | Override base poll rate `P` |
-| `poll_count` | int | inherited from `[lifecycle]` | Override keep-alive count `K` |
+| `poll_count` | int | inherited from `[lifecycle]` | Override the Active-window poll count `K` |
 | `fsevent_reinstates` | bool | per-source default | Override fsevent-during-decay policy |
 | `fsevent_patterns` | array of strings | per-source default | Relative path components to watch |
 | `fsevent_abs_paths` | array of strings | per-source default | Absolute roots to watch |
-| `fsevent_lifespan` | duration | per-source default | Keep-alive duration before decay (path-scoped fsevent sources) |
 | `failback_count` | int | inherited from `[failback]` | Consecutive failures before suppression |
 | `failback_interval` | duration | inherited from `[failback]` | Suppression duration after failback_count hit |
 

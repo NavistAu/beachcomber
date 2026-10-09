@@ -180,7 +180,7 @@ module Beachcomber
     end
 
     # Writes a value into the daemon cache on this session's connection.
-    # +data = nil+ clears the entry.
+    # +data = nil+ removes the node.
     #
     # @param key [String]
     # @param data [Object, nil]
@@ -304,8 +304,7 @@ module Beachcomber
       parse_hello(Beachcomber::FFI.call!(:bc_hello, @handle))
     end
 
-    # Writes a value into the daemon cache. +data = nil+ clears the entry
-    # without dropping the registry entry.
+    # Writes a value into the daemon cache. +data = nil+ removes the node.
     #
     # @param key [String]
     # @param data [Object, nil]

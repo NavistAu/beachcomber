@@ -230,9 +230,9 @@ bc_session_close(s);
 
 Opens a watch on the *value* of a key — what `bc_resolve(key, cwd, env_json)`
 answers — and emits it again whenever it changes: the fan-in underneath
-subscribes to every key the resolution reads plus the provider's
-`<provider>:template`, so a template edited under the watch fires it exactly
-as a changed cache record does. An event carries no `age_ms`/`stale` — a
+subscribes to every key the resolution reads, and a write to a namespace or
+any of its facets wakes its watchers, so a template edited under the watch
+fires it exactly as a changed cache record does. An event carries no `age_ms`/`stale` — a
 value resolved from several cache records has no single age or staleness.
 
 Blocking poll with five machine-readable outcomes (see [The JSON

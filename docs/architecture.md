@@ -39,16 +39,16 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/daemon.rs` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel`; watchdog task monitors scheduler heartbeat |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
 | `src/scheduler/` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; owns all demand and watch state; heartbeat counter for watchdog liveness detection |
-| `src/scheduler/lifecycle.rs` | `LifecycleRegistry` — per-key cache lifecycle state machine: Active → Decay1 → Decay2 → Decay3 → Decay4 → Evicted. Exponential decay of poll interval and step duration each stage. See `docs/cache-lifecycle.md` for the full spec. |
+| `src/scheduler/lifecycle.rs` | `LifecycleRegistry` — per-key cache lifecycle state machine: Active → Decay (1 to `decay` steps, default 4; the depth is data in `<p>:cache`) → Evicted. Exponential decay of poll interval and step duration each stage. See `docs/cache-lifecycle.md` for the full spec. |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; per-source `SourceResult` sub-entries within each `CacheEntry` |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
 | `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`; `split_key()` — first-dot-only `provider.field` split. Key parsing into a `KeyParse` lives in `src/query.rs` (`parse_key`) |
-| `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` — a source name is never a key segment), `resolve_path`, `split_metadata_suffix`, and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
+| `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` — a source name is never a key segment), `resolve_path`, `validate_key` (one colon form, the facet), `split_layer_facet` (`:put` / `:source` / `:cache`), and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
 | `src/config.rs` | TOML config loading from XDG directories; `Config`, `DaemonConfig`, `LifecycleConfig`, `ScriptProviderConfig` |
-| `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `SourceScope`, `FieldSchema`, `InvalidationStrategy`, `KeepAlive`, `FailbackConfig`; `expand_abs_path()` helper |
-| `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; `field → source` reverse map (`HashMap<(provider, field), source_name>`); built-in registration; validation at registration |
+| `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `SourceScope`, `FieldSchema`, `InvalidationStrategy`, `FailbackConfig`; `expand_abs_path()` helper |
+| `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; `declared_sources` map (`HashMap<(provider, field), source_name>`) walked by `sources_for_key` (nearest declared ancestor of a key, then sentinel fields); built-in registration; validation at registration |
 | `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
-| `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, pure-watch global (`KeepAlive::Never`), `host` source |
+| `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, pure-watch global, `host` source |
 | `src/provider/git.rs` | `GitProvider`: five sources — `head` (fsevent, `.git`), `refs` (fsevent, `.git`), `diff` (poll, 30s), `lineage` (poll, 60s), `status` (fsevent_poll, `.git/index`) |
 | `src/provider/script.rs` | `ScriptProvider`: runs arbitrary shell commands; parses JSON or KV output; strategy built from config |
 | `src/provider/library.rs` | `LibraryProvider`: loads shared libraries (`.so`/`.dylib`) via `libloading`; C ABI contract with `bc_source_count/metadata/execute` symbols |
@@ -65,7 +65,7 @@ The Provider/Source/Field model has three layers:
 - **Source** — one invalidation strategy, one set of fields, one lifecycle entry. Key for lifecycle, watches, and failure backoff is `(provider, path, source)`. Examples: git's `head`, `refs`, `diff`, `lineage`, `status` sources.
 - **Field** — a typed value. Belongs to exactly one Source within a Provider.
 
-The registry builds a `field → source` reverse map at registration so that a `get(provider.field)` query can be routed to the owning source without scanning.
+The registry maps a key to its Source by walking the key: the Source of the nearest ancestor node that declares one wins, so `mise.node.version` finds the Source that declares `node`, and a Source that cannot list its field names declares a sentinel (`<tool>`) that answers for the provider node itself.
 
 **Lifecycle keying** uses `(provider, path, source)` — each source instance has its own Active/Decay/Evicted state, independent of sibling sources at the same `(provider, path)`.
 
@@ -222,7 +222,7 @@ When a key loses demand it enters an exponential-backoff decay tracked by `Lifec
 ```mermaid
 stateDiagram-v2
     [*] --> Active : demand present
-    Active --> Decay1 : demand expires
+    Active --> Decay1 : demand expires  (default depth 4)
     Decay1 --> Decay2
     Decay2 --> Decay3
     Decay3 --> Decay4
@@ -233,7 +233,7 @@ stateDiagram-v2
     Decay4 --> Active : QueryActivity
 ```
 
-Each decay step doubles the poll interval and the step duration relative to the previous step. At `Evicted`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any decay stage, the key is reinstated to `Active` immediately. If `fsevents_reinstate` is true for the provider, a matching filesystem event also reinstates the key.
+Each decay step doubles the poll interval and the step duration relative to the previous step. The number of steps is the entry's `decay`, which is data (default 4; see `<p>:cache._.decay`), and the diagram shows the default. At `Evicted`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any decay stage, the key is reinstated to `Active` immediately. If `fsevents_reinstate` is true for the provider, a matching filesystem event also reinstates the key.
 
 See `docs/cache-lifecycle.md` for the canonical spec: state machine, sequence diagrams, BDD assertions, and config knobs (`poll_interval`, `poll_live_count`, `fsevents_reinstate`).
 
@@ -291,7 +291,7 @@ Naively, a burst of filesystem events (e.g., a `git commit` touching many `.git`
 
 **Two independent backoff mechanisms**
 
-Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Cache lifecycle decay (in `LifecycleRegistry`, Active → Decay1-4 → Evicted) handles resource cleanup when a key drops out of the demand window. They serve different purposes and are deliberately kept separate.
+Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Cache lifecycle decay (in `LifecycleRegistry`, Active → Decay → Evicted) handles resource cleanup when a key drops out of the demand window. They serve different purposes and are deliberately kept separate.
 
 **Watch connections are long-lived**
 
@@ -307,4 +307,4 @@ Watching `git.branch` only emits a line when the branch value itself changes, no
 
 **Static records via put**
 
-External processes can write arbitrary data into the cache via the `put` protocol op. A namespace no code or config registers is entirely static — a `CacheEntry` holding only `put`/`config:<file>` records, with no associated `Arc<dyn Provider>` — and such records are never polled or evicted by the scheduler. There is no ownership: a `put` can write into any namespace and over any record, and every supplier keeps a layer of its own in the same cache entry. A read stacks them at each directory (source, then `config:` seeds, then `put`); removing a put shows the layer below at once.
+External processes can write arbitrary data into the cache via the `put` protocol op. A namespace no code or config registers is entirely static — a `CacheEntry` holding only `put`/`config:<file>` records, with no associated `Arc<dyn Provider>` — and such records are never polled. A `put --ttl` is the exception: it is a lifecycle entry of its own, one per put address, valid for the ttl, stale for one decay step, then evicted. There is no ownership: a `put` can write into any namespace and over any record, and every supplier keeps a layer of its own in the same cache entry. A read stacks them at each directory (source, then `config:` seeds, then `put`, with a template above all of them); a `put` replaces the node it addresses, and removing it (`put <node> null`) shows the layer below at once.

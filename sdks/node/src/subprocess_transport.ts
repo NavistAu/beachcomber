@@ -64,9 +64,9 @@
  * reports. The CLI renders with `exec()` on, so the client's `exec` option
  * has no effect on this tier; a caller that must not spawn processes from
  * a template, or that needs the raw template half, needs the FFI
- * transport. A rendered value has no cached freshness of its own (its
- * `:cache` slot is a miss), so it reports age 0 and not stale, as
- * libbeachcomber does for a hit whose freshness is absent.
+ * transport. A rendered value has no cached freshness of its own: its
+ * `:cache` slot is a leaf with age 0 and `source` `template`, so it reports
+ * age 0 and not stale.
  *
  * `comb get` and `comb put` both default an omitted `--path` to the CLI
  * process's own working directory, while an absent `path` here means the

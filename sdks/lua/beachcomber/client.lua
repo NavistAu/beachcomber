@@ -180,7 +180,7 @@ end
 
 --- Store data into the cache as static data.
 -- @param key  string   Provider key
--- @param data any       Value to store
+-- @param data any       Value to store; nil removes the node
 -- @param ttl  string?  Optional TTL (e.g. "30s")
 -- @param path string?  Optional working-directory path
 -- @return true, or false, Error

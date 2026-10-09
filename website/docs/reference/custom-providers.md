@@ -281,7 +281,7 @@ HTTP providers share the same lifecycle as script providers:
 - **`failback_count`** (default `3`) — the number of consecutive failures before the provider enters exponential backoff (up to 60s). Applies to any non-2xx response, connection error, or timeout.
 - **`failback_interval`** (default `"1s"`) — the wait between retry attempts before backoff kicks in.
 
-All three can be overridden per-source under `[providers.<name>.<source>]`. A transient 5xx or network error will not remove the last cached value — consumers will see `stale: true` on the wire (`comb g <key>:stale` from the CLI) once the value is past its expected refresh time.
+All three can be overridden per-source under `[providers.<name>.<source>]`. A transient 5xx or network error will not remove the last cached value — consumers will see `stale: true` on the wire (`comb g.j <provider>:cache.<field>` from the CLI) once the value is past its expected refresh time.
 
 ## Shared Library Providers
 

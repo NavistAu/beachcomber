@@ -48,9 +48,9 @@
 -- reports. The CLI renders with `exec()` on, so the client's `exec` option
 -- has no effect on this tier; a caller that must not spawn processes from
 -- a template, or that needs the raw template half, needs the ffi
--- transport. A rendered value has no cached freshness of its own (its
--- `:cache` slot is a miss), so it reports age 0 and not stale, as
--- libbeachcomber does for a hit whose freshness is absent.
+-- transport. A rendered value has no cached freshness of its own: its
+-- `:cache` slot is a leaf with age 0 and `source` `template`, so it reports
+-- age 0 and not stale.
 
 local json = require("beachcomber.json")
 local discovery = require("beachcomber.discovery")
@@ -237,7 +237,7 @@ function Backend:get(key, path, flags)
       -- The resolver failed on `key` (its `<key>: <msg>` line, or
       -- `<key>.<leaf>: <msg>` when a leaf of a group failed), or the CLI did
       -- before answering at all (no daemon, a bad argument). The cache slot's miss
-      -- line (`Error querying <cache key>: …`) are not the message.
+      -- line (`Error querying <cache key>: …`) is not the message.
       local message
       for line in err:gmatch("[^\n]+") do
         if line:sub(1, #key + 2) == key .. ": " or line:sub(1, #key + 1) == key .. "." then

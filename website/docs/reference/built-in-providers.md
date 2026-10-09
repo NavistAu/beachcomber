@@ -37,7 +37,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `uptime` | `time` | poll 60s | global | `seconds`, `days`, `hours`, `minutes` |
 | `user` | `name` | fsevent (pure-watch global) | global | `name`, `uid` |
 
-**Pure-watch global** sources execute once on first demand and re-execute only when a registered filesystem path changes. They never decay.
+**Pure-watch global** sources execute once on first demand and re-execute only when a registered filesystem path changes. They have no poll, so they decay by the default poll lifespan (60 s × 12 after the last read) and run again on the next read.
 
 **fsevent_poll** sources watch files for quick invalidation and also poll on a timer as a backstop.
 
@@ -63,7 +63,7 @@ Each provider declares one or more **sources** — independent units of executio
 **Example output:**
 
 ```json
-// comb g.j battery       (-f json prints the bare value; ask for age with battery:age)
+// comb g.j battery       (-f json prints the bare value; ask for age with battery:cache.percent)
 { "percent": 78, "charging": false, "time_remaining_secs": 7200, "status": "discharging" }
 
 // comb g.j network

@@ -211,9 +211,9 @@ and watch — all with exact envelope fidelity.
 
 **Subprocess (`comb` CLI fallback)** covers `get`, `put`,
 `refresh`, `status`, and session context. `get` is one `comb get
--f json <key> <key>:age <key>:stale`, so its answer is the resolver's — the
-directory chain up to `$HOME`, `$HOME` as the global entry, metadata
-suffixes, `force`/`wait`, the daemon's refusals — with one divergence:
+-f json <key> <p>:cache.<rest>`, so its answer is the resolver's — the
+directory chain up to `$HOME`, `$HOME` as the global entry, the `:cache`
+facet's `age_ms` and `stale`, `force`/`wait`, the daemon's refusals — with one divergence:
 `comb get` *resolves*, so a template-backed key returns its **rendered**
 value where the FFI tier returns the raw template half. A result from
 this tier never carries `template` or `rest`; a template-only node is a

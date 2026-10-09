@@ -78,7 +78,7 @@ detached=false
 dirty=true
 …
 
-$ comb g.j git .                 # .j = JSON: the bare value, no envelope (age is git.branch:age)
+$ comb g.j git .                 # .j = JSON: the bare value, no envelope (age is in git:cache.branch)
 {
   "ahead": 0,
   "behind": 0,
@@ -281,7 +281,7 @@ Query a value. Returns cached data immediately. On a cold cache (first query for
 # Format suffixes on the command control output format
 comb g git.branch .            # text: raw value → main (default)
 comb g.s git .                  # shell: key=value lines, every value quoted → branch='main'\ndirty='false'\n...
-comb g.j git .                   # json: the bare value, nested (metadata is by :age, :stale)
+comb g.j git .                   # json: the bare value, nested (metadata is in the :cache facet)
 comb g.c git .                   # csv: comma-separated values
 comb g.C git .                   # CSV: with header row
 comb g.t git .                   # tsv: tab-separated values
@@ -312,9 +312,8 @@ comb g python:template.version # the raw template text, unrendered
 # The global entry ($HOME) alone, ignoring the current directory
 comb g --global myapp.status
 
-# Field metadata — append :age, :stale, or :source to any key
-comb g git.branch:age          # cache age in milliseconds
-comb g git.branch:stale        # whether value is past refresh time
+# Field metadata — the :cache facet mirrors the tree
+comb g.j git:cache.branch .    # → {"age_ms": 1240, "stale": false, "source": "source(head)", ...}
 ```
 
 **Exit codes:**
@@ -324,7 +323,7 @@ comb g git.branch:stale        # whether value is past refresh time
 
 ### `comb s` (status)
 
-Show all warm cache entries as a table — one row per provider field, with SOURCE naming what produced each value: a Source of the provider, `put`, `config:<file>`, or `template`. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, keep-alive count, and whether filesystem events will reinstate the entry (`◉`).
+Show all warm cache entries as a table — one row per provider field, with SOURCE naming what produced each value: a Source of the provider, `put`, `config:<file>`, or `template`. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether filesystem events will reinstate the entry (`◉`).
 
 `watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time. Each refresh re-renders the caller's template leaves, `exec()` included, so a tight interval multiplies whatever the templates spawn.
 
@@ -378,10 +377,10 @@ Write static data at any node of the tree. The key is `namespace` or `namespace.
 ```sh
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
 comb p myapp.deploy.count 3                                # any node, any JSON below the root
-comb p myapp '{"status":"healthy"}' --ttl 30s             # with TTL
+comb p myapp '{"status":"healthy"}' --ttl 30s             # valid 30s, stale for one decay step, then gone
 comb p myapp '{"status":"building"}' --path ~/project     # a directory instead of the cwd
 comb p myapp '{"status":"ok"}' --global                    # the global entry ($HOME)
-comb p myapp null                                          # remove the entry
+comb p myapp null                                          # remove the node (null means absent)
 comb p myapp:template.greeting '"hello {{ env.USER }}"'    # a template — comb g myapp.greeting renders it
 ```
 
@@ -396,7 +395,9 @@ comb g myapp.status        # → healthy
 comb g myapp                 # → full JSON
 ```
 
-A put replaces the node at that directory, hiding Source and seed values — `comb p git '{"note":1}'` makes `comb g git` answer just `note` there, until the put is removed.
+A put sits above the Source in the layer order, so it hides Source and seed values at that directory — `comb p git '{"note":1}'` makes `comb g git` answer just `note` there, until the put is removed. The Source keeps refreshing its own layer beneath it (`comb g git:source`).
+
+`--ttl` (at least `1s`, not with `null`) makes the put a lifecycle entry of its own. Each put address has its own lifecycle, so `comb p --ttl 300 build.status passing` and `comb p --ttl 60 build.eta 4m` expire independently, and a re-put without `--ttl` drops the expiry.
 
 ### `comb r` (refresh) `<key> [path] [--path <path>] [--global]`
 
@@ -408,11 +409,11 @@ comb r git.commit .         # the one Source owning `commit` — `diff` is left 
 comb r hostname --global    # at the global entry ($HOME)
 ```
 
-Prints nothing on success; exits 2 with `nothing to refresh: <key> has no sources` for a key with no Source behind it (a `put`-created namespace, a facet key, an unknown name, an unowned field). `comb g --force` is the read-and-refresh form — the same Sources, then the value; `comb r` is the re-execution alone.
+Prints nothing on success; exits 2 with `nothing to refresh: <key> has no sources` for a key with no Source behind it (a `put`-created namespace, an unknown name, an unowned field). `comb g --force` is the read-and-refresh form — the same Sources, then the value; `comb r` is the re-execution alone.
 
 ### `comb w` (watch) `<key> [path] [--path <path>] [--global] [-f format]`
 
-Stream a key's *resolved* value — the value `comb get` would print — printing a new line each time it changes. A change is detected by re-resolving the key over every reference the resolution reads plus the provider's template, so an edited template fires the watch just as a changed cache record does.
+Stream a key's *resolved* value — the value `comb get` would print — printing a new line each time it changes. A change is detected by re-resolving the key over every reference the resolution reads; a write to a namespace or any of its facets wakes its watchers, so an edited template fires the watch just as a changed cache record does.
 
 ```sh
 comb w git.branch --path ~/project        # stream plain text values (default)
@@ -491,7 +492,7 @@ The `get` and `watch` commands support a shorthand suffix on the subcommand itse
 |---|---|---|
 | _(none)_ | `get -f text` | Raw value — the default |
 | `g.p` | `get -f text` | Raw value, explicit |
-| `g.j` | `get -f json` | The bare value as JSON, nested at any depth (no envelope — metadata is by `:age`, `:stale`) |
+| `g.j` | `get -f json` | The bare value as JSON, nested at any depth (no envelope — metadata is in the `:cache` facet) |
 | `g.s` | `get -f sh` | `key=value` lines (shell-parseable) |
 | `g.c` | `get -f csv` | Comma-separated values |
 | `g.C` | `get -f CSV` | CSV with header row |
@@ -510,25 +511,35 @@ The suffix is appended to the command (`g`, `w`) with a dot separator.
 
 ---
 
-## Field Metadata Access
+## Layers and Field Metadata
 
-Append a colon suffix to any key to retrieve metadata about the cached value rather than the value itself:
+A field's value is the first layer that has it, in this order: the effective **template** (rendered in your shell), then **`put`** (what `comb put` and the `config:` seeds stored), then the **Source** (what the provider computed). Nothing merges implicitly: a layer's value replaces the one below it at its node, and `null` means absent, never `""`. Removing a layer shows the one below at once. Each layer is a facet of the provider with the provider's own shape, readable at any depth:
 
-| Suffix | Type | Description |
-|---|---|---|
-| `:age` | int | Milliseconds since the value was last computed |
-| `:stale` | bool | Whether the value is past its expected refresh time |
-| `:fresh` | bool | Inverse of `:stale` — true when the value is within its refresh window |
-| `:cache` | bool | Whether the value was served from cache (`true`) or freshly computed (`false`) |
-| `:source` | string | The record's source label — a Source of the provider (`head`, `refs`, …) or a static label (`put`, `config:<file>`). `null` for an object (a whole namespace, or a group of several records) and for a miss |
+| Key | Reads |
+|---|---|
+| `git.branch` | the first layer that has it |
+| `git:template.branch` | the template text, unrendered |
+| `git:put.branch` | what `put` and `config:` seeds stored (read-only) |
+| `git:source.branch` | what the Source computed, even where a `put` hides it (read-only) |
+| `git:cache.branch` | the daemon's metadata about `git.branch` |
+
+`git:cache` mirrors `git`: a leaf answers with an object, a whole node answers with the tree of its leaves' answers.
+
+| `:cache` key | Meaning |
+|---|---|
+| `age_ms` | Milliseconds since the value was last computed (0 for a rendered template) |
+| `stale` | Whether the value is past its expected refresh time |
+| `source` | What answered: `put`, `template`, `config:<file>`, or `source(<name>)`, e.g. `source(head)` |
+| `poll`, `watch`, `decay` | The lifecycle the entry registered with: poll `{interval, count}`, watched paths, decay steps before eviction |
 
 ```sh
-comb g git.branch:age .       # → 1240 (ms since last computed)
-comb g battery.percent:stale  # → false
-comb g git.branch:fresh .     # → true
-comb g git.branch:cache .     # → true
-comb g git.branch:source .    # → head
+comb g.j git:cache.branch .   # → {"age_ms": 1240, "stale": false, "source": "source(head)", ...}
+comb g.j git:source .         # the Source's whole answer, ignoring any put over it
 ```
+
+`age_ms`, `stale` and `source` are derived at the read and cannot be written. The one `:cache` key you can put is a decay prototype: `comb put '*:cache._.decay' 3` sets the decay depth (default 4) for every provider, `comb put 'git:cache._.decay' 6` for one, and `--path` scopes either to a directory and below.
+
+A colon is allowed only in the provider segment (`git:cache.branch`); `git.branch:age` is an `invalid key` error.
 
 ---
 
@@ -590,7 +601,7 @@ provider_timeout_secs = 10
 # Default: "60s"
 poll_interval = "60s"
 
-# Global default poll keep-alive count.
+# Global default polls in the Active window.
 # Default: 12
 poll_live_count = 12
 
@@ -622,7 +633,7 @@ enabled = false
 # Override polling interval for battery (source name: "level")
 [providers.battery.level]
 poll_interval = "60s"   # default: 30s
-poll_count = 10         # keep-alive poll count; default: 12
+poll_count = 10         # polls in the Active window (10 × the interval); default: 12
 
 # Add a safety-net poll to git's refs source (filesystem-triggered by default)
 [providers.git.refs]
@@ -725,7 +736,7 @@ poll = "86400s"
 |---|---|---|---|
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down; `null` keeps daemon resident |
 | `poll_interval` | duration | `"60s"` | Global default poll interval (overridden by per-source blocks) |
-| `poll_live_count` | int | `12` | Global default poll keep-alive count |
+| `poll_live_count` | int | `12` | Global default polls in the Active window |
 | `fsevents_reinstate` | bool or null | `null` (unset) | Global override for fsevents_reinstate; unset means each source uses its declared default |
 
 **`[failback]` section:**
@@ -750,10 +761,9 @@ Only `enabled` is valid at the provider level. All source-level knobs go in `[pr
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `poll_interval` | duration | source-specific | Poll interval for this source |
-| `poll_count` | int | `12` | Keep-alive poll count — how many polls before demand must be re-signalled |
+| `poll_count` | int | `12` | Polls in the Active window — how many polls before demand must be re-signalled |
 | `fsevent_patterns` | array of strings | source-specific | Relative path patterns to watch |
 | `fsevent_abs_paths` | array of strings | source-specific | Absolute paths to watch |
-| `fsevent_lifespan` | duration | source-specific | How long filesystem watches stay registered |
 | `fsevent_reinstates` | bool | source-specific | Whether watches survive decay back to active |
 | `failback_count` | int | `3` | Consecutive failures before suppression |
 | `failback_interval` | duration | `"1s"` | Initial suppression duration |
@@ -818,7 +828,7 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 **Example output:**
 
 ```json
-// comb g.j battery      (-f json prints the bare value; ask for age with battery:age)
+// comb g.j battery      (-f json prints the bare value; ask for age with battery:cache.percent)
 {
   "percent": 78,
   "charging": false,
@@ -1886,9 +1896,9 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
 
-**`refresh`:** Re-execute Sources out-of-band; does not return the new value. The key selects which Sources run, exactly as it selects which a `get` warms: `refresh git` re-executes every Source of `git`, `refresh git.branch` only the Source that owns `branch`. Each runs at the cache entry its own scope keys — the global entry for a `Global` Source whatever path the request carried, the addressed path for a `PathScoped` one — so `path` is optional and is only consulted by the path-scoped ones. A metadata suffix is stripped first: `refresh hostname:age` is `refresh hostname`. A key that names no Source has nothing to re-execute and is an error — a static namespace, a facet key, an unknown name, or a field no Source owns: `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`. Reading configuration afresh is not a refresh; the config watcher does that.
+**`refresh`:** Re-execute Sources out-of-band; does not return the new value. The key selects which Sources run, exactly as it selects which a `get` warms: `refresh git` re-executes every Source of `git`, `refresh git.branch` only the Source that owns `branch`. Each runs at the cache entry its own scope keys — the global entry for a `Global` Source whatever path the request carried, the addressed path for a `PathScoped` one — so `path` is optional and is only consulted by the path-scoped ones. A key that names no Source has nothing to re-execute and is an error — a static namespace, an unknown name, or a field no Source owns (a layer facet or `:cache` key is `cannot refresh <key>: a layer facet is read-only`): `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`. Reading configuration afresh is not a refresh; the config watcher does that.
 
-**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write replaces whatever a put left at that node; `"data": null` removes it. A put replaces the node at that directory, hiding Source and seed values; removing it shows them again. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success.
+**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write replaces whatever a put left at that node; `"data": null` removes it. A put replaces the node at that directory, hiding Source and seed values; removing it shows them again. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`, at least `1s`) makes the put its own lifecycle entry: valid for that long, stale for one decay step, then evicted. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success.
 
 ```json
 {"op":"put","key":"myapp","data":{"status":"healthy"}}

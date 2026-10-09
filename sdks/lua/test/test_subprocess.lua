@@ -172,6 +172,8 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(r.data, 2)
     assert_nil(r.template)
     assert_nil(r.rest)
+    assert_eq(r.age_ms, 0)
+    assert_eq(r.stale, false)
   end)
 
   test(names[8], function()

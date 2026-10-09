@@ -43,9 +43,10 @@ over `subprocess`; get/put/refresh/status/context all work over
 either transport. `refresh` over `subprocess` is one `comb refresh <key>`,
 the daemon's op itself, and its refusal (`nothing to refresh: <key> has no
 sources`) is the error message. `get` over `subprocess` is one `comb get -f
-json <key> <key>:age <key>:stale`, so its answer is the resolver's — the
+json <key> <p>:cache.<rest>`, so its answer is the resolver's — the
 directory chain up to
-`$HOME`, `$HOME` as the global entry, metadata suffixes, force/wait, the
+`$HOME`, `$HOME` as the global entry, the `:cache` facet's `age_ms` and
+`stale`, force/wait, the
 daemon's refusals — with one divergence: `comb get` *resolves*, so a
 template-backed key returns its **rendered** value where the ffi tier
 returns the raw template half. The template half of a `get`

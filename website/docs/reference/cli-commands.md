@@ -67,7 +67,7 @@ comb g hostname.short            # → myhost
 
 # Query the entire provider (all fields from all sources) — alternate formats
 comb g git .                     # → key=value lines, one per leaf at any depth (text default)
-comb g.j git .                   # → the bare JSON object, nested (no envelope — metadata is by :age, :stale)
+comb g.j git .                   # → the bare JSON object, nested (no envelope — metadata is in the :cache facet)
 comb g.s git .                   # → the same lines as text, every value shell-quoted
 comb g.c git .                   # → comma-separated values
 comb g.C git .                   # → CSV with header row
@@ -101,23 +101,23 @@ comb g scanline:template.widgets.foo # → {{ env.SCANLINE_FOO }} (the raw templ
 # The global entry ($HOME) alone, ignoring the current directory
 comb g --global myapp.status
 
-# Field metadata — append a colon suffix to retrieve metadata instead of the value
-comb g git.branch:age            # → 1523 (age in ms)
-comb g git.branch:stale          # → false
-comb g git.branch:fresh          # → true (inverse of :stale)
-comb g git.branch:cache          # → true (served from cache vs freshly computed)
-comb g git.branch:source         # → head (the Source that wrote the record)
+# Field metadata — the :cache facet mirrors the tree
+comb g.j git:cache.branch .      # → {"age_ms": 1523, "stale": false, "source": "source(head)", ...}
+comb g.j git:source .            # → what the Source computed, even where a put hides it
 ```
 
-**Metadata suffixes:**
+**Layers and the `:cache` facet.** A field's value is the first layer that has it: the effective template (rendered here), then `put` (what `comb p` and the `config:` seeds stored), then the Source. Nothing merges implicitly, `null` means absent, and each layer is readable on its own at any depth: `provider:template`, `provider:put` and `provider:source` (the last two are read-only), and `provider:cache`, the daemon's metadata about the same tree.
 
-| Suffix | Type | Description |
+| `:cache` key | Type | Description |
 |--------|------|-------------|
-| `:age` | int | Milliseconds since the value was last computed |
-| `:stale` | bool | Whether the value is past its expected refresh time |
-| `:fresh` | bool | Inverse of `:stale` — true when the value is within its refresh window |
-| `:cache` | bool | Whether the value was served from cache (`true`) or freshly computed (`false`) |
-| `:source` | string | The record's writer: a Source of the provider (`head`, `refs`, …) or a static label (`put`, `config:<file>`). `null` for an object — a whole namespace, or a group of several records — and for a miss |
+| `age_ms` | int | Milliseconds since the value was last computed (0 for a rendered template) |
+| `stale` | bool | Whether the value is past its expected refresh time |
+| `source` | string | What answered: `put`, `template`, `config:<file>`, or `source(<name>)` such as `source(head)` |
+| `poll` | object | `{interval, count}` — present for polled Sources and `--ttl` puts |
+| `watch` | object | Watched paths, keyed by index — present for watching Sources |
+| `decay` | int | Decay steps before eviction (default 4) |
+
+A colon is allowed only in the provider segment; `git.branch:age` is an `invalid key` error.
 
 **Exit codes:**
 - `0` — success; also a miss under `text`/`sh`, which print nothing (e.g. `git` queried outside a git repository)
@@ -126,7 +126,7 @@ comb g git.branch:source         # → head (the Source that wrote the record)
 
 ## `comb s` (status)
 
-Show all warm cache entries as a table — one row per provider field. SOURCE names what produced each row's value, and the `TTL` column encodes each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, keep-alive count, and whether filesystem events will reinstate the entry to Active (`◉`).
+Show all warm cache entries as a table — one row per provider field. SOURCE names what produced each row's value, and the `TTL` column encodes each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether filesystem events will reinstate the entry to Active (`◉`).
 
 For a live view, ask for colour explicitly — under `watch` and `viddy` stdout is a pipe, so `--color=auto` (the default) resolves to no colour:
 
@@ -210,10 +210,10 @@ agent     session  put     {"ctx_pct":42,"name":"claude"}  -     0s      -  ---
 | Lead | Lifecycle | Meaning |
 |------|-----------|---------|
 | `★`  | Active    | alive, polling at base rate |
-| `3`  | Decay1    | 3 decay steps before eviction |
-| `2`  | Decay2    | 2 remaining |
-| `1`  | Decay3    | 1 remaining |
-| `0`  | Decay4    | 0 remaining — next tick evicts |
+| `3`  | Decay 1   | 3 decay steps before eviction (at the default depth of 4) |
+| `2`  | Decay 2   | 2 remaining |
+| `1`  | Decay 3   | 1 remaining |
+| `0`  | Decay 4   | 0 remaining — next tick evicts |
 | `---` | Once / Static / Template | no lifecycle (hostname, put entries, a rendered template row) |
 
 A `◉` trailing indicator means `fsevents_reinstate=true` — a filesystem event will reinstate the entry to Active even during decay. A `⚠` lead replaces `★` when the provider is in failure-suppress (row renders red).
@@ -230,7 +230,7 @@ Write static data into the cache. External processes use this to expose state to
 # Put application status into cache — scoped to the current directory
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
 
-# Put with TTL — consumers see staleness if writer stops updating
+# Put with TTL — valid 30s, stale for one decay step, then removed; the next put renews it
 comb p myapp '{"status":"healthy"}' --ttl 30s
 
 # Put with path scope
@@ -239,16 +239,20 @@ comb p myapp '{"status":"building"}' --path /home/user/project
 # Put once for every directory
 comb p myapp '{"status":"healthy"}' --global
 
-# Remove a previously written entry
+# Remove the node (null means absent; there is no other spelling of removal)
 comb p myapp null
 
 # Write a template — the next `comb g myapp.greeting` renders it
 comb p myapp:template.greeting '"hello {{ env.USER }}"'
 ```
 
-**Replace:** a write replaces whatever a put left at the node, so `comb p myapp '{"version":"1.2.4"}'` states all of `myapp` and a `status` written earlier is gone, while `comb p myapp.version '"1.2.4"'` replaces only that node. A `put` never removes a record a provider's Source produces: it layers over it and hides it until the put is removed. `comb p myapp null` removes the node and writes nothing in its place.
+**Replace:** a write replaces whatever a put left at the node, so `comb p myapp '{"version":"1.2.4"}'` states all of `myapp` and a `status` written earlier is gone, while `comb p myapp.version '"1.2.4"'` replaces only that node. A `put` never removes a record a provider's Source produces: it sits above it in the layer order and hides it until the put is removed (`comb g provider:source` still shows the Source's answer). `comb p myapp null` removes the node and writes nothing in its place.
 
-`data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root any JSON is legal, so `comb p myapp.deploy.count 3` and `comb p myapp.status '"healthy"'` are both fine. `data` is required: `comb p myapp` is a usage error, and removal is the JSON value `null`.
+`data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root any JSON is legal, so `comb p myapp.deploy.count 3` and `comb p myapp.status '"healthy"'` are both fine. `data` is required: `comb p myapp` is a usage error, and removal is the JSON value `null`. A nested `null` inside `data` is an absent leaf, not `""`. Arrays are stored and returned as objects keyed by index.
+
+**TTL:** `--ttl` (at least `1s`; not with `null`) makes the put a lifecycle entry of its own, one per put address: `comb p --ttl 300 build.status passing` and `comb p --ttl 60 build.eta 4m` expire independently, and a re-put without `--ttl` drops the expiry. `comb g build:cache.status` shows its `poll` and `decay`.
+
+**Decay depth:** the one `:cache` key a put may write is a decay prototype — `comb p '*:cache._.decay' 3` for every provider, `comb p 'git:cache._.decay' 6` for one, `--path` to scope either to a directory and below. The nearest prototype wins.
 
 **Path:** `put` defaults to the current working directory, exactly as `get` does, so a plain `comb p` followed by a plain `comb g` in the same directory round-trips. `--global` writes `$HOME`, the entry every directory's chain ends at, which is how you publish one value for the whole machine; it cannot be combined with `--path`.
 
@@ -277,7 +281,7 @@ Read back with standard `comb g`:
 comb g myapp.status        # healthy
 ```
 
-Ownership is per record, not per namespace: storing to a field name a Source already produces is rejected (`cannot write <namespace>.<field>: owned by source <source>`), but a static record can sit beside that Source's own records in the same namespace.
+There is no ownership: storing to a field name a Source already produces is allowed. The put is a layer of its own above the Source's, and removing it shows the Source's value again at once.
 
 **Exit codes:** `0` on success, `2` on error.
 
@@ -294,7 +298,7 @@ comb r hostname --global    # at the global entry ($HOME)
 
 The path defaults to the current working directory, as `get` and `put` do, and a relative path is the caller's. `--global` cannot be combined with a path.
 
-A key with no Source behind it — a `put`-created namespace, a facet key (`p:template`), an unknown name, a field no Source owns — has nothing to re-execute, and saying so would claim work that never happened: it is an error, `nothing to refresh: <key> has no sources`. Reading configuration afresh is not a refresh; the config watcher does that.
+A key with no Source behind it — a `put`-created namespace, an unknown name, a field no Source owns — has nothing to re-execute, and saying so would claim work that never happened: it is an error, `nothing to refresh: <key> has no sources`. Reading configuration afresh is not a refresh; the config watcher does that.
 
 `refresh` prints nothing on success. It is the re-execution alone: `comb g --force` selects the same Sources but then *reads*, returning the value — the read-and-refresh form. Use `refresh` to warm or invalidate a key on a trigger (a git hook, a deploy step) and `get --force` when you also want the answer now.
 
@@ -302,7 +306,7 @@ A key with no Source behind it — a `put`-created namespace, a facet key (`p:te
 
 ## `comb w` (watch) `<key> [path] [--path <path>] [--global] [-f format]`
 
-Stream a key's *resolved* value — the value `comb get` would print — printing a new frame each time that value changes. `comb watch` is a client of `libbeachcomber::watch`, the same fan-in behind every SDK's `watch`: it re-resolves the key over every reference the resolution reads, plus the provider's `<p>:template`, so a template edited under the watch fires it just as a changed cache record does. Only an actual change in the resolved value emits a frame — a re-resolution that comes out the same value is not one.
+Stream a key's *resolved* value — the value `comb get` would print — printing a new frame each time that value changes. `comb watch` is a client of `libbeachcomber::watch`, the same fan-in behind every SDK's `watch`: it re-resolves the key over every reference the resolution reads. A write to a namespace or to any of its facets wakes that namespace's watchers, so a template edited under the watch fires it just as a changed cache record does. A watch may name any address, including one nothing answers yet (an unknown provider is a miss, as for `get`). Only an actual change in the resolved value emits a frame — a re-resolution that comes out the same value is not one.
 
 ```sh
 comb w git.branch --path /home/user/project   # one line per resolved change

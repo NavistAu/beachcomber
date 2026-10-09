@@ -139,6 +139,8 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     assert.equal(r.data, 2);
     assert.equal(r.template, undefined);
     assert.equal(r.rest, undefined);
+    assert.equal(r.ageMs, 0);
+    assert.equal(r.stale, false);
   });
 
   it('no path reads the global entry', async () => {

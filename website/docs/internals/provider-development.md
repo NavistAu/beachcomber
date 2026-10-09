@@ -54,7 +54,6 @@ pub struct SourceMetadata {
     pub fields: Vec<FieldSchema>,
     pub scope: SourceScope,          // Global or PathScoped
     pub invalidation: InvalidationStrategy,
-    pub keep_alive: KeepAlive,
     pub failback: FailbackConfig,
     pub fsevents_reinstate: bool,    // default true for Watch / WatchAndPoll
 }
@@ -78,15 +77,6 @@ There is no `global: bool` field on `ProviderMetadata`. Scope is a per-Source pr
 
 `FieldSchema { name, field_type }` — scope is a Source-level property, not per-field.
 
-### KeepAlive
-
-```rust
-pub enum KeepAlive {
-    Polls(u32),       // Valid for Poll and WatchAndPoll. Entry stays Active for K polls.
-    Duration(u64),    // Valid for Watch + PathScoped. Entry stays Active for K_secs.
-    Never,            // Valid for Watch + Global. Entry never decays.
-}
-```
 
 ### expand_abs_path()
 
@@ -140,10 +130,10 @@ Use this decision table:
 | File changes only | path or global | `fsevent` |
 | Timer only | path or global | `poll` |
 | File changes + safety timer | path or global | `fsevent_poll` |
-| Truly static (hostname, uname, user) | global | `fsevent` + `KeepAlive::Never` (pure-watch global — no decay) |
-| Global config file watch (mise.global, mise config dir) | global | `fsevent` + `abs_paths` + `KeepAlive::Never` |
+| Truly static (hostname, uname, user) | global | `fsevent` (pure-watch global) |
+| Global config file watch (mise.global, mise config dir) | global | `fsevent` + `abs_paths` |
 
-**Pure-watch global** sources use `Watch` strategy with `KeepAlive::Never` — no decay timer, no polling. They execute once on first demand and only re-execute when an fs event fires on their registered `abs_paths`. Suitable for values that can only change when a specific file is written: hostname (requires reboot), username (requires reboot), uname (requires reboot), mise global config.
+**Pure-watch global** sources use the `Watch` strategy: no poll of their own. They execute once on first demand and only re-execute when an fs event fires on their registered `abs_paths`. Like every Source they decay once nothing reads them — a watch-only Source's Active window is the default poll lifespan, 60 s × 12 (12 minutes after its last read), after which its watches are dropped — and the next read runs them again. Suitable for values that can only change when a specific file is written: hostname (requires reboot), username (requires reboot), uname (requires reboot), mise global config.
 
 ### 2.2 Create the file
 
@@ -151,7 +141,7 @@ Create `src/provider/dockercontext.rs`:
 
 ```rust
 use crate::provider::{
-    expand_abs_path, FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, KeepAlive,
+    expand_abs_path, FailbackConfig, FieldSchema, FieldType, InvalidationStrategy,
     Provider, ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope,
 };
 use std::path::PathBuf;
@@ -177,7 +167,6 @@ fn config_meta() -> SourceMetadata {
                     .unwrap_or_default(),
             ],
         },
-        keep_alive: KeepAlive::Never,
         failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
         fsevents_reinstate: true,
     }
@@ -302,7 +291,6 @@ mod tests {
         assert!(src.fields.iter().any(|f| f.name == "name"));
         assert!(src.fields.iter().any(|f| f.name == "endpoint"));
         assert_eq!(src.scope, SourceScope::Global);
-        assert!(matches!(src.keep_alive, KeepAlive::Never));
     }
 
     #[test]
@@ -351,13 +339,13 @@ cargo nextest run -p beachcomber -E 'test(provider::dockercontext)'
 
 ```rust
 pub enum InvalidationStrategy {
-    Poll { interval_secs: u64 },
+    Poll { interval_secs: u64, count: u32 },
     Watch { patterns: Vec<String>, abs_paths: Vec<String> },
-    WatchAndPoll { patterns: Vec<String>, abs_paths: Vec<String>, interval_secs: u64 },
+    WatchAndPoll { patterns: Vec<String>, abs_paths: Vec<String>, interval_secs: u64, count: u32 },
 }
 ```
 
-There is no `Once` variant. Values that were previously declared `Once` (hostname, user, uname) are now pure-watch globals: `Watch { patterns: [], abs_paths: [...] }` with `KeepAlive::Never`.
+There is no `Once` variant. Values that were previously declared `Once` (hostname, user, uname) are now pure-watch globals: `Watch { patterns: [], abs_paths: [...] }`; they decay like any other Source.
 
 Strategy chooser:
 
@@ -366,14 +354,14 @@ Strategy chooser:
 | Timer only, no watchable file | `Poll` |
 | Filesystem events only, no poll needed | `Watch` |
 | Filesystem events + safety backstop timer | `WatchAndPoll` |
-| Truly static value (hostname, uname, user) | `Watch` (empty patterns + abs_paths, `KeepAlive::Never`) |
-| Global config dir watch | `Watch` (abs_paths only, `KeepAlive::Never`) |
+| Truly static value (hostname, uname, user) | `Watch` (empty patterns + abs_paths) |
+| Global config dir watch | `Watch` (abs_paths only) |
 
-**`Poll { interval_secs }`** — re-execute on a timer. Use when there is no file to watch that reliably reflects state changes.
+**`Poll { interval_secs, count }`** — re-execute on a timer; the entry stays Active for `count` polls (`interval_secs × count`) after its last read. Use when there is no file to watch that reliably reflects state changes.
 
 ```rust
 // battery level: no file to watch reliably, poll every 30s
-invalidation: InvalidationStrategy::Poll { interval_secs: 30 },
+invalidation: InvalidationStrategy::Poll { interval_secs: 30, count: 4 },
 ```
 
 **`Watch { patterns, abs_paths }`** — re-execute when filesystem paths change. `patterns` are relative path components matched within the source's scope path (path-scoped sources only). `abs_paths` are absolute roots watched directly (typically used by global sources or for cross-repo config files). Use `expand_abs_path()` to expand `~`, `$HOME`, and XDG vars at metadata construction time.
@@ -397,7 +385,7 @@ invalidation: InvalidationStrategy::Watch {
 
 There is no automatic poll fallback for `Watch` sources. If filesystem watching registration fails at runtime, the scheduler logs a warning and the source serves its last cached value. If a fallback backstop is needed, use `WatchAndPoll` instead.
 
-**`WatchAndPoll { patterns, abs_paths, interval_secs }`** — watch files AND poll on a timer. Use when file watching catches most changes quickly but some changes don't touch a watchable file (e.g., network-propagated git changes via `git fetch`).
+**`WatchAndPoll { patterns, abs_paths, interval_secs, count }`** — watch files AND poll on a timer. Use when file watching catches most changes quickly but some changes don't touch a watchable file (e.g., network-propagated git changes via `git fetch`).
 
 ```rust
 // git.status: watch .git/index for staging changes, poll every 60s for remote drift
@@ -405,6 +393,7 @@ invalidation: InvalidationStrategy::WatchAndPoll {
     patterns: vec![".git/index".to_string()],
     abs_paths: vec![],
     interval_secs: 60,
+    count: 12,
 },
 ```
 
@@ -419,10 +408,9 @@ By default, providers inherit global lifecycle settings. Per-source overrides li
 | TOML key | Type | Description |
 |---|---|---|
 | `poll_interval` | duration string | Base poll rate for this source while Active. |
-| `poll_count` | u32 | Number of Active polls that count as "alive" before decay begins. |
+| `poll_count` | u32 | Polls in the Active window: it lasts `poll_interval × poll_count`, and decay begins when it ends with no read. |
 | `fsevent_patterns` | array of strings | Relative patterns to watch within scope path. |
 | `fsevent_abs_paths` | array of strings | Absolute paths to watch. |
-| `fsevent_lifespan` | duration string | Keep-alive duration for Watch sources. |
 | `fsevent_reinstates` | bool | Whether watches survive decay and reinstate to Active on fs events. |
 
 Example:
@@ -437,6 +425,8 @@ poll_count = 4
 ```
 
 The full decay model — state machine, step durations, reinstatement rules — is specified in `docs/cache-lifecycle.md`.
+
+**Decay depth is data.** After the Active window an entry steps through its `decay` steps (4 unless told otherwise; step n lasts `lifespan × 2^n`) and is then evicted. A depth is put like any value: `comb put '<provider>:cache._.decay' 6` for one provider, `comb put '*:cache._.decay' 3` for every provider, with `--path` to scope it to a directory and below; the nearest prototype wins, and a lifecycle fixes its depth when it registers. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` an entry registered with. There is no per-source keep-alive duration: `fsevent_lifespan` was removed, and a watch-only Source's Active window is the default poll lifespan (60 s × 12).
 
 ---
 
@@ -477,7 +467,7 @@ If a file read is truly not feasible, cap the provider at one process spawn. The
 
 **Rule 3: Providers that poll frequently must be fast.**
 
-A provider polling every 5 seconds and taking 50ms per execution consumes 1% of a blocking thread slot continuously. Use `Poll { interval_secs }` values that match the provider's actual cost:
+A provider polling every 5 seconds and taking 50ms per execution consumes 1% of a blocking thread slot continuously. Use `Poll { interval_secs, count }` values that match the provider's actual cost:
 - Sub-microsecond providers: can poll every 5-10s safely
 - Millisecond providers: 30s minimum
 - Slow providers (>10ms): 60s minimum or use `Watch` instead
@@ -495,7 +485,7 @@ See `docs/performance.md` for the full performance profile, benchmark commands, 
 **Basic structure**
 
 Every provider file should have a `#[cfg(test)]` module. At minimum, test:
-1. `metadata()` returns valid, expected values — check `sources.len()`, source names, field names, scope, `keep_alive` variant
+1. `metadata()` returns valid, expected values — check `sources.len()`, source names, field names, scope, invalidation variant
 2. `source.execute()` returns empty `SourceResult` when the required tool/file is absent
 3. `source.execute()` returns the expected fields when given a valid fixture
 
@@ -625,10 +615,10 @@ This creates a `ScriptProvider` instance (see `src/provider/script.rs`) that:
 3. Returns the parsed fields as a `SourceResult`
 
 The `invalidation` config maps directly to `InvalidationStrategy`:
-- `poll` only -> `Poll { interval_secs }`
+- `poll` only -> `Poll { interval_secs, count }`
 - `watch` only -> `Watch { patterns, abs_paths: [] }`
-- Both -> `WatchAndPoll { patterns, abs_paths: [], interval_secs }`
-- Neither -> `Poll { interval_secs: 30 }` (default)
+- Both -> `WatchAndPoll { patterns, abs_paths: [], interval_secs, count }`
+- Neither -> `Poll { interval_secs: 30, count: 2 }` (default)
 
 Set `scope = "path"` to make the provider path-scoped (the script will be run with its working directory set to the queried path):
 

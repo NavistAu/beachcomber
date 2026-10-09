@@ -60,7 +60,7 @@ Each source declares one of three strategies:
 
 `fsevent_patterns` — relative path components matched within the source's scope path (path-scoped sources). `fsevent_abs_paths` — absolute filesystem roots watched directly; used by global sources and for cross-directory config files. Use `expand_abs_path()` when building metadata in Rust to expand `~`, `$HOME`, and XDG vars.
 
-**Pure-watch global sources** are a special case of `Watch` with `scope = "global"` and no decay (`KeepAlive::Never`). These execute once on first demand and re-execute only when an fs event fires on their `fsevent_abs_paths`. Used for values that can only change when a specific config file is written: hostname, username, OS name, mise global config.
+**Pure-watch global sources** are a special case of `Watch` with `scope = "global"` and no poll of their own. These execute once on first demand and re-execute only when an fs event fires on their `fsevent_abs_paths`; like every source they decay once nothing reads them (a watch-only source's Active window is the default 60 s × 12). Used for values that can only change when a specific config file is written: hostname, username, OS name, mise global config.
 
 ## Scope
 

@@ -46,9 +46,9 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
   });
 
   it('put(key, null) removes the node', async () => {
-    await client.put('itest_putnull', { x: 1 }, { path: '/tmp' });
-    await client.put('itest_putnull', null, { path: '/tmp' });
-    const result = await client.get('itest_putnull.x', '/tmp');
+    await client.put('itest_putremove', { x: 1 }, { path: '/tmp' });
+    await client.put('itest_putremove', null, { path: '/tmp' });
+    const result = await client.get('itest_putremove.x', '/tmp');
     assert.equal(result.isMiss, true);
   });
 

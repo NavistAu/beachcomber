@@ -170,8 +170,12 @@ cache entry it lives in:
   and is stale if any one of them is;
 - a static record (source `put` or `config:<file>`) reports the time since it
   was written, and is stale only if its `put` carried a `ttl`;
-- a response with no `data` carries **neither** field. `:age` and `:stale` on
-  such a response return `null`.
+- a rendered template value is a lookup, not a stored record: it reports age 0
+  and not stale;
+- a response with no `data` carries **neither** field.
+
+The same two numbers, and the record's source and lifecycle, are readable as
+data through the `:cache` facet (see "Keys").
 
 #### Template half
 
@@ -207,44 +211,78 @@ Walking the key through that tree:
   expression is not one.
 
 A `get` on a facet key (`<provider>:<facet>…`) is already inside a facet and
-never carries a template half; it reads the facet's own records as `data`. Nor
-does a `get` carrying a metadata suffix (`:age`, `:stale`, `:fresh`, `:cache`) —
-each asks one question about the data half and is answered with that alone.
+never carries a template half; it reads the facet's own records as `data`.
 
 ```json
 {"ok": true, "template": "{{ {'cpu': 40, 'mem': 12} }}", "rest": "cpu"}
 ```
 
 `Watch` frames carry the same two halves, so a streamed value renders exactly as
-a fetched one. A watch subscribes both chains — the namespace's and its
-`template` facet's — and a frame is emitted whenever **either** half changes, so
-editing a template alone delivers a frame with no new `data`.
+a fetched one. A write to a namespace or to any of its facets notifies the
+namespace's watchers, so editing a template alone delivers a frame with no new
+`data`.
 
 #### Keys
 
 Keys are `<provider>`, `<provider>.<field>`, or a facet address —
-`<provider>:<facet>` or `<provider>:<facet>.<field>` — where a facet is a
-namespace holding data about a provider (e.g. `git:template`), addressed and
-read exactly like any other name once the colon syntax is admitted (one
-colon, facet name matching `[A-Za-z0-9_-]+`; anything else is `invalid facet
-key: <key>`). Any key may also carry a metadata suffix, the raw key's last
-`:name` segment, stripped before the rest is parsed as a provider/field/facet
-address — so `git.branch:source` is field `git.branch` plus the `:source`
-suffix, and `p:template:age` is facet `p:template` plus the `:age` suffix. A
-suffix strip always wins over facet parsing: the five suffix names below are
-not valid facet names, so `key:age` is provider `key` plus the `:age`
-suffix, never a facet `key:age`.
+`<provider>:<facet>` or `<provider>:<facet>.<field>`. A key has one colon form:
+the facet, with its colon in the first segment, before any dot. A facet name
+matches `[A-Za-z0-9_-]+`; a second colon in the first segment is `invalid facet
+key: <key>`, and a colon after the first dot (`git.branch:age`) is `invalid
+key: <key>`. There are no metadata suffixes.
 
-- `:age` — returns `age_ms` as the `data` value.
-- `:stale` — returns `stale` as the `data` value.
-- `:fresh` — returns `!stale` as the `data` value.
-- `:cache` — returns `true` if the value was served from cache (no re-exec).
-- `:source` — returns the **source label of the record that answered the key**:
-  a Source of the namespace's provider (`head`, `refs`, …), or a static label
-  (`put`, `config:<file>`). A leaf reports its own record's label; a
-  template-only hit reports the template record's; an object — a whole
-  namespace, or a group assembled from several records — has no single writer
-  and returns `null`, as does a miss.
+Every facet has the provider's shape: `get git` returns that part of the tree,
+and so does `get git:cache`. An unknown provider is a miss, and so is a facet
+nothing has written.
+
+A field's value is the first layer that has it, in this order: the effective
+template (rendered by the client), then `put`, then the Source. Each layer is
+readable on its own:
+
+- `<p>:template` — the templates (data the client renders; the daemon never
+  evaluates one).
+- `<p>:put` — what `put` and `config:<file>` seeds stored.
+- `<p>:source` — what the provider's Sources produced. A `put` does not hide
+  it here.
+- `<p>:cache` — the daemon's metadata about `<p>`, below.
+
+`<p>:put` and `<p>:source` are read-only: a `put` to either is `<p>:put and
+<p>:source are read-only; write <p>.<node>`, and they never warm a Source or
+start a lifecycle. `null` means absent, never `""`: a Source or put that has no
+value for a field has no node for it.
+
+##### The `:cache` facet
+
+`<p>:cache.<field>` holds the daemon's metadata about `<p>.<field>` at the same
+path and for the same record that a read of `<p>.<field>` resolves to, so a value
+cannot be reported with another record's metadata. It mirrors `<p>.<path>` for
+any node: a leaf answers with an object, and an object node answers with the
+tree of its leaves' answers.
+
+```json
+{"age_ms": 1200, "stale": false, "source": "source(head)",
+ "watch": {"0": ".git"}, "decay": 4}
+```
+
+- `age_ms`, `stale`, `source` are derived at the read. `source` is `put`,
+  `template`, `config:<file>`, or `source(<name>)` for a Source. A value served
+  by a template has these three only (`age_ms` 0, `stale` false, `source`
+  `template`). A miss is a miss.
+- `poll` (`{interval, count}`), `watch` and `decay` are stored: written when a
+  Source registers or a `put` carries a `ttl`, and read back here. `watch` is an
+  index-keyed object, since arrays are returned as objects keyed by index.
+- `decay` is the number of decay steps before eviction. It is data: a Source
+  takes the nearest `_` prototype, looking at each directory from the requested
+  one up to `$HOME` for `<p>:cache._.decay` and then `*:cache._.decay` (every
+  provider), and 4 when there is none. A `put` with a `ttl` stores 1. A
+  prototype is put like any value (`put git:cache._.decay 6`, `put
+  '*:cache._.decay' 3`, with `--path` for a directory) and read back with `get
+  git:cache._.decay`; a lifecycle fixes its depth when it registers.
+- The only `:cache` key a `put` may write is `_.decay`, a positive integer. A
+  derived key is `{key} is derived and cannot be written`; any other key is
+  `{key} is written by the daemon`.
+- A `:cache` key cannot be refreshed, and a watch on it wakes on a data write to
+  its namespace.
 
 ### `Refresh`
 
@@ -260,14 +298,14 @@ The key selects which Sources run, exactly as it selects which a `get` warms:
 Source that owns `branch`. Each runs at the cache entry its own scope keys — the
 global entry for a `Global` Source whatever path the request carried, the
 addressed path for a `PathScoped` one — so `path` is optional and is only
-consulted by the path-scoped ones. A metadata suffix is stripped first, as for a
-`get`: `refresh hostname:age` is `refresh hostname`. Invalid facet syntax on
-the key is the same error `get`/`put`/`watch` give: `{"ok": false, "error":
-"invalid facet key: <key>"}`.
+consulted by the path-scoped ones. Invalid facet syntax on the key is the same
+error `get`/`put`/`watch` give: `{"ok": false, "error": "invalid facet key:
+<key>"}`.
 
 A key that names no Source has nothing to re-execute and is an **error**: a
-static namespace (one created by `put` or a config seed), a facet key, an
-unknown name, or a field no Source owns. Reading configuration afresh is not a
+static namespace (one created by `put` or a config seed), an unknown name, or a
+field no Source owns. A layer facet or `:cache` key is `cannot refresh <key>: a
+layer facet is read-only`. Reading configuration afresh is not a
 refresh — the config watcher does that.
 
 **Response:**
@@ -303,12 +341,22 @@ Store static data at any node of the tree. `key` is `namespace` or
 `namespace.node…` — the same dotted address `get` takes, and `namespace` may
 itself be a facet address (`<provider>:<facet>`; invalid facet syntax is
 `invalid facet key: <key>`, the same check `get`/`refresh`/`watch` apply).
-The write replaces whatever a put left at the addressed node; `data: null`
-removes it.
+`data` is required. A put **replaces** the node it addresses: nothing merges
+implicitly, so `put my '{"b":2}'` states all of `my` at that directory, and
+`put my.b 2` replaces only `my.b`. `null` means absent: `data: null` removes the
+node, and a `null` inside `data` is an absent leaf, never `""`. Arrays are
+stored and returned as objects keyed by index.
 
-A put replaces the node at that directory, hiding Source and seed values.
-The Source keeps refreshing its own layer beneath it, and removing the put
-shows that layer at once.
+A put sits above the Source in the layer order, so it hides Source and seed
+values at its node. The Source keeps refreshing its own layer beneath it, and
+removing the put shows that layer at once.
+
+`ttl` (`"30s"`, `"5m"`, at least 1s) makes the put a lifecycle entry of its own:
+it is valid for the ttl, readable but `stale` for one decay step, then evicted.
+Each put address (key and directory) has its own lifecycle, so `put --ttl 300
+build.status passing` and `put --ttl 60 build.eta 4m` expire independently, and
+a re-put without a `ttl` drops the expiry. `status` shows such a row as any
+lifecycle entry, source `put`; `<p>:cache.<node>` reports its `poll` and `decay`.
 
 An object key in `data` may not contain a `.`: it would name one record and
 address another. The node part of `key` is capped at ten segments.
@@ -350,6 +398,10 @@ invalid, `invalid request: missing field `data``.)
 
 **Error cases:**
 - Invalid facet syntax on the namespace segment: `{"ok": false, "error": "invalid facet key: <key>"}`
+- A colon after the first dot: `{"ok": false, "error": "invalid key: <key>"}`
+- A write to a layer facet: `<p>:put and <p>:source are read-only; write <p>.<node>`
+- A write to `<p>:cache` other than `_.decay`, or a `_.decay` that is not a positive integer: see "The `:cache` facet"
+- A `ttl` of `0s`: `ttl must be at least 1s`; an unparsable one: `invalid ttl: <ttl>`; a `ttl` with `data: null`: `a ttl on an absent value has no meaning`
 - Non-object `data` at a namespace root: `{"ok": false, "error": "put data at the root must be an object"}`
 - An object key containing a `.`: `{"ok": false, "error": "put data keys may not contain '.': <key>"}`
 - More than ten node segments in `key`: `{"ok": false, "error": "put key is nested too deeply (limit 10 segments)"}`
@@ -415,7 +467,10 @@ migrated.
 
 Subscribe to changes on a single key. The connection switches to streaming
 mode; the daemon will emit a new response line whenever the key's value
-changes, and continue until the client disconnects.
+changes, and continue until the client disconnects. A watch may address any
+key, including one nothing answers yet (an unknown provider, a node not yet
+written): the first frame is then a miss, and a later write wakes it. A watch on
+a layer facet or `:cache` key warms no Source.
 
 **Request:**
 ```json
@@ -432,9 +487,10 @@ response per subsequent change. The initial event and every later one are
 the same chain-resolved read `Get` returns — **both halves**, `data` and
 `template` — and the watch fires on a change to **any entry on either
 chain**: a `put` at an ancestor, or at the global entry, reaches a watch
-opened at a project path, and so does a write to the key's `template` facet.
-A frame is emitted whenever either half changes, so a template edited on its
-own delivers a frame carrying the new `template` and no new `data`. The
+opened at a project path. Any write to a namespace or one of its facets
+(`p:template`, `p:put`, `p:cache`) wakes the namespace's watchers, so a template
+edited on its own delivers a frame carrying the new `template` and no new
+`data`. The
 daemon drops the subscription as soon as the client closes the connection,
 not on the next write to the watched key. The connection is single-purpose:
 after the watch request the client must not write again, and any further
@@ -442,8 +498,8 @@ bytes from it — a pipelined line, a stray newline — end the watch just as a
 close does.
 
 This op is unchanged by, and knows nothing about, *resolved* watching — a
-value re-resolved over every key its resolution reads plus the provider's
-`<p>:template`, emitted only when that value actually changes. That layering
+value re-resolved over every key its resolution reads, emitted only when that
+value actually changes. That layering
 is client-side: `libbeachcomber::watch` (`ResolvedWatch`) opens several `Watch`
 subscriptions like the one above and re-resolves on their frames, and `comb
 watch`, `bc_watch_open` and every SDK's `watch` are clients of it. The wire op
@@ -487,8 +543,8 @@ Subjects: `daemon`, `providers`, `config`, `cache`, `lifecycle`, `watches`,
 
 `active_watchers` counts open `Watch` connections, not distinct watched keys
 or clients: a resolved `comb watch` opens one `Watch` subscription per
-dependency its key's resolution reads, plus one on the provider's
-`<p>:template` facet, so a single client typically reads as 2 or more.
+dependency its key's resolution reads, so a single client can read as more
+than 1.
 
 Other subjects return different shapes; see `src/server.rs` for the current
 authoritative shape of each subject. Per-subject typed documentation is
@@ -559,13 +615,14 @@ The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs
 - **Record** — one stored value at (key, path), with exactly one source: a
   provider's Source (`head`, `refs`, …), `put`, or `config:<file>`.
 - **Static record** — a record whose source is `put` or `config:<file>`; no
-  Source produces it, so it is never polled or evicted, and resolves up the
-  directory chain to `$HOME` (see "Path resolution" under `Get`).
+  Source produces it, so it is never polled, and it is evicted only when its
+  `put` carried a `ttl`. It resolves up the directory chain to `$HOME` (see "Path resolution" under `Get`).
 - **Static namespace** — a namespace no provider or config registers; every
   record in it is static.
 - **Facet** — `provider:facet`, a namespace holding data about a provider
-  (e.g. `git:template`); always static. `template` is the facet a `Get`
-  resolves for its template half.
+  (e.g. `git:template`), addressed like any namespace. `template` is the facet a
+  `Get` resolves for its template half; `put` and `source` are the read-only
+  layer facets; `cache` is the daemon's metadata (see "The `:cache` facet").
 - **Cache row** — one line of `Status` output: `{provider, path, source,
   field, value, age_ms, stale, kind}`.
 - **Invalidation strategy** — how a Source decides when to re-execute

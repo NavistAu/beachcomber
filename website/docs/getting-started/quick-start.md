@@ -46,7 +46,7 @@ When you need a different output format, append a suffix:
 | Suffix | Format |
 |--------|--------|
 | _(none)_ | plain text (default) |
-| `.j` | JSON — the bare value, nested at any depth (metadata is by `:age`/`:stale`) |
+| `.j` | JSON — the bare value, nested at any depth (metadata is in the `:cache` facet) |
 | `.s` | shell `key='value'` lines — quoted, safe to `eval` |
 | `.c` / `.C` | CSV (optionally with header) |
 | `.t` / `.T` | TSV (optionally with header) |

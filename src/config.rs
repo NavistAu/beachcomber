@@ -275,7 +275,7 @@ pub struct LifecycleConfig {
     /// Global default poll interval. Used when no per-source override is set.
     #[serde(default = "default_poll_interval")]
     pub poll_interval: String,
-    /// Global default poll keep-alive count.
+    /// Global default polls in the Active window.
     #[serde(default = "default_poll_live_count")]
     pub poll_live_count: u32,
     /// Global default for `fsevents_reinstate`. `None` means "unset" —
@@ -1018,12 +1018,12 @@ impl Config {
         parse_duration(&self.lifecycle.poll_interval).unwrap_or(Duration::from_secs(60))
     }
 
-    /// Resolve poll keep-alive count for a (provider, source) pair.
+    /// Resolve the polls in the Active window for a (provider, source) pair.
     pub fn resolve_poll_live_count(&self, provider_name: &str) -> u32 {
         self.resolve_poll_live_count_for_source(provider_name, None, None)
     }
 
-    /// Resolve poll keep-alive count for a (provider, source) pair with optional source override.
+    /// Resolve the polls in the Active window for a (provider, source) pair with optional source override.
     pub fn resolve_poll_live_count_for_source(
         &self,
         provider_name: &str,

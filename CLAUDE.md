@@ -67,7 +67,7 @@ This is a small daemon+CLI project. Verification and formatting should take a fe
 
 Async tokio daemon listening on a Unix socket. One task per connection.
 
-- `src/scheduler/` — core loop: poll timers, filesystem watching (notify), demand tracking, cache lifecycle (Active / Decay1-4 / Evicted), provider execution. See `src/scheduler/lifecycle.rs` for the state machine.
+- `src/scheduler/` — core loop: poll timers, filesystem watching (notify), demand tracking, cache lifecycle (Active / Decay (depth is data, default 4) / Evicted), provider execution. See `src/scheduler/lifecycle.rs` for the state machine.
 - `src/server.rs` — socket accept loop, spawns connection tasks
 - `src/cache.rs` — DashMap with null-byte-separated keys (`"provider\0path"`)
 - `src/protocol.rs` — NDJSON wire format, `Request`/`Response` types
@@ -85,11 +85,11 @@ Demand-driven warming: only actively-queried keys are polled at the provider's b
 
 NDJSON over Unix socket. Requests use `{"op":"..."}` tag dispatch. Operations: `get`, `refresh`, `put`, `watch`, `context`, `status`.
 
-Key format: `provider.field` (e.g., `git.branch`). `split_key()` splits on first `.`.
+Key format: `provider.field` (e.g., `git.branch`). `split_key()` splits on first `.`. A colon is allowed only in the provider segment (`git:cache.branch`); there are no metadata suffixes. Facets: `:template`, `:put`, `:source` (the last two read-only) and `:cache` (the daemon's metadata for the same tree, including the stored `poll`/`watch`/`decay`; the only writable `:cache` key is a `_.decay` prototype). An unknown provider is a miss, and a watch may address any key.
 
 Responses: `{"ok":true,"data":...,"age_ms":...,"stale":...}` — fields omitted when null.
 
-A namespace `put` created is **static** — stored data with no `execute()` behind it. There is no ownership: every supplier writes a layer of its own and a read stacks them at each directory (source, then `config:` seeds, then `put`), so a `put` over a Source's field wins there and removing it shows the layer below at once.
+A namespace `put` created is **static** — stored data with no `execute()` behind it. There is no ownership: every supplier writes a layer of its own and a read stacks them at each directory (source, then `config:` seeds, then `put`), so a `put` over a Source's field wins there and removing it shows the layer below at once. A `put` replaces the node it addresses (nothing merges implicitly), `put <key> null` removes it, `null` inside data is absent, and `--ttl` makes each put address its own lifecycle (`poll(N, 1)`, decay 1).
 
 `path` is the directory a request addresses; omitting it (or naming `$HOME`) addresses the **global entry**. A read merges static records up the directory chain to `$HOME`, nearest winning, while a provider's own records stay at their Source's declared scope. See `docs/canon/field_resolution.md` §"Path resolution".
 
