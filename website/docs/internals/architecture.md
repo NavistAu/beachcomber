@@ -45,7 +45,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/singleton/` | Singleton enforcement: pid-file flock, build-identity supersession, serving probe, binary self-watch (fs-event + mtime poll), orphan reaping |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
 | `src/scheduler/mod.rs` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; dispatches lifecycle events into `LifecycleRegistry` and applies `TickActions`; heartbeat counter for watchdog liveness detection |
-| `src/scheduler/lifecycle.rs` | `LifecycleRegistry` state machine: Active → Decay (default 4 steps, depth is data) → Evicted. Per-entry poll and decay timers. Canonical behaviour in `docs/cache-lifecycle.md` |
+| `src/scheduler/lifecycle.rs` | `LifecycleRegistry` state machine: Active → Decay (default 4 steps, depth is data) → Evicted. Per-entry poll and decay timers. See §5. |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; generation counter |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
 | `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`; `split_key()` — first-dot-only `provider.field` split. Key parsing into a `KeyParse` lives in `src/query.rs` (`parse_key`) |
@@ -228,8 +228,6 @@ Each decay step doubles the poll interval and the step duration relative to the 
 
 There are no `Grace`, `BackoffState`, `SlowPoll`, or `Frozen` states. The only states are Active, Decay (1 to `decay`), and Evicted.
 
-See `docs/cache-lifecycle.md` for the canonical spec: state machine, sequence diagrams, BDD assertions, and config knobs (`poll_interval`, `poll_live_count`, `fsevents_reinstate`).
-
 **Idle shutdown**
 
 When `cache.is_empty()` and `demand.is_empty()` both hold true and no activity has been seen for `lifecycle.idle_shutdown_secs`, the daemon exits.
@@ -284,7 +282,7 @@ Naively, a burst of filesystem events (e.g., a `git commit` touching many `.git`
 
 **Two independent backoff mechanisms**
 
-Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Cache-entry lifecycle (in `LifecycleRegistry`, Active → Decay → Evicted) handles resource cleanup when a key drops out of the demand window — see `docs/cache-lifecycle.md`. They serve different purposes and are deliberately kept separate.
+Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Cache-entry lifecycle (in `LifecycleRegistry`, Active → Decay → Evicted) handles resource cleanup when a key drops out of the demand window — see §5. They serve different purposes and are deliberately kept separate.
 
 **Watch connections are long-lived**
 

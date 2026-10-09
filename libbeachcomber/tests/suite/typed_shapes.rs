@@ -199,7 +199,7 @@ fn status_row_exposes_lifecycle_fields() {
         "value": "main",
         "age_ms": 100u64,
         "stale": false,
-        "kind": {"kind": "lifecycle", "decay": 0, "watches_files": true},
+        "kind": {"kind": "lifecycle", "decay": 0, "depth": 4, "watches_files": true},
         "poll_interval_secs": 5u64,
         "poll_count": 3u32,
         "fsevents_reinstate": false,
@@ -212,6 +212,7 @@ fn status_row_exposes_lifecycle_fields() {
         RowKind::Lifecycle {
             decay,
             watches_files,
+            ..
         } => {
             assert_eq!(decay, 0);
             assert!(watches_files);

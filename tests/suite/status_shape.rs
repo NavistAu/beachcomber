@@ -308,16 +308,18 @@ fn cache_row_kind_serde_round_trip() {
         (
             RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: true,
             },
-            json!({"kind": "lifecycle", "decay": 0, "watches_files": true}),
+            json!({"kind": "lifecycle", "decay": 0, "depth": 4, "watches_files": true}),
         ),
         (
             RowKind::Lifecycle {
                 decay: 4,
+                depth: 4,
                 watches_files: false,
             },
-            json!({"kind": "lifecycle", "decay": 4, "watches_files": false}),
+            json!({"kind": "lifecycle", "decay": 4, "depth": 4, "watches_files": false}),
         ),
         (RowKind::Once, json!({"kind": "once"})),
         (RowKind::Static, json!({"kind": "static"})),
@@ -929,6 +931,7 @@ fn cache_row_new_fields_serde_round_trip() {
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
+            depth: 4,
             watches_files: true,
         }),
         poll_interval_secs: Some(60),
@@ -1098,6 +1101,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
         RowKind::Lifecycle {
             decay,
             watches_files,
+            ..
         } => {
             assert_eq!(*decay, 0, "freshly queried row should be Active (decay=0)");
             assert!(
@@ -1181,6 +1185,7 @@ async fn status_response_once_row_has_kind_once() {
         RowKind::Lifecycle {
             decay,
             watches_files,
+            ..
         } => {
             assert_eq!(*decay, 0, "freshly queried row should be Active (decay=0)");
             // Watch strategy with empty patterns — watches_files may be true or false;
@@ -1284,6 +1289,7 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
+            depth: 4,
             watches_files: true,
         }),
         poll_interval_secs: Some(60),
@@ -1318,6 +1324,7 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
+            depth: 4,
             watches_files: true,
         }),
         poll_interval_secs: Some(60),
@@ -1440,6 +1447,7 @@ fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay,
+            depth: 4,
             watches_files: false,
         }),
         poll_interval_secs: Some(60),
@@ -1565,6 +1573,7 @@ fn human_renders_p_zero_k_zero_without_panic() {
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
+            depth: 4,
             watches_files: false,
         }),
         poll_interval_secs: Some(0),
@@ -1604,6 +1613,7 @@ fn failure_state_renders_warn_and_red_row() {
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 1,
+            depth: 4,
             watches_files: false,
         }),
         poll_interval_secs: Some(60),
@@ -1646,6 +1656,7 @@ fn render_preset_ascii_flag_swaps_glyphs() {
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
+            depth: 4,
             watches_files: true,
         }),
         poll_interval_secs: Some(60),
@@ -1706,6 +1717,7 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
+            depth: 4,
             watches_files: true,
         }),
         poll_interval_secs: Some(60),
@@ -1902,6 +1914,7 @@ fn wide_value_row() -> CacheRow {
         stale: false,
         kind: Some(beachcomber::cache::RowKind::Lifecycle {
             decay: 0,
+            depth: 4,
             watches_files: true,
         }),
         poll_interval_secs: Some(60),

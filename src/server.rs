@@ -1429,6 +1429,7 @@ async fn handle_request(
                     if let Some(snap) = matching_snap {
                         row.kind = Some(RowKind::Lifecycle {
                             decay: snap.decay,
+                            depth: snap.depth,
                             watches_files: snap.watches_files,
                         });
                         // Only expose poll-related metadata when this source has

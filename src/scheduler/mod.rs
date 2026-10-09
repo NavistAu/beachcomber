@@ -82,6 +82,8 @@ pub enum SchedulerMessage {
 pub struct LifecycleSnapshot {
     /// 0 = Active, 1–4 = Decay step.
     pub decay: u8,
+    /// The entry's decay depth: steps from Active to eviction.
+    pub depth: u8,
     /// Effective poll interval in seconds (may be doubled during decay). 0 for pure Watch.
     pub poll_interval_secs: u64,
     /// The `count` of `poll(interval, count)`: polls in the Active window.
@@ -290,6 +292,7 @@ fn snapshot_entry(
 
     LifecycleSnapshot {
         decay,
+        depth: entry.config.decay,
         poll_interval_secs,
         poll_count,
         polls_elapsed,

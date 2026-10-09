@@ -32,7 +32,7 @@ Encodes four per-entry lifecycle facts in one fixed-width column:
 
 - current lifecycle position (Active or which Decay step)
 - current poll interval `P` (scales with decay: `P × 2^step`)
-- poll count (`poll_count`, `K`) (provider-wide, constant across all steps — see `docs/cache-lifecycle.md`)
+- poll count (`poll_count`, `K`) (provider-wide, constant across all steps — see `docs/architecture.md` §5)
 - whether fs-event reinstatement is armed (`fsevents_reinstate` provider flag)
 
 ### Format
@@ -182,4 +182,4 @@ The provider-source model (Phases 1-5) added per-source lifecycle keying. Each `
 
 - Verbatim directive (2026-04-23T05:03:47Z, session `cef25c94`): "we should output a Col (or cols if required) in status cli command that gives `[Decay Level 0-4]/[K]/[P]/[indicator if we are watching fsevents / do they reinit]`. decay level 0 is alive. we might need to revisit age/stale to make it clearer whats going on there. ie a col thats AGE with a prefix of F/S and coloured green/orange. all these values kind of interact so its going to take some thought on how to represent them."
 - Follow-ups (2026-04-23/24) refined: pack into one `TTL` column; drop F/S prefix on AGE (color-only); countdown numbering; `★` active symbol; `◉` reinstate indicator; fixed-width P/K padding; watch-friendly defaults.
-- Related spec: `docs/cache-lifecycle.md` (authoritative for the state machine — the TTL column is its visual dual).
+- Related: `docs/architecture.md` §5 (describes for the state machine — the TTL column is its visual dual).

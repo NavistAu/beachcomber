@@ -1701,7 +1701,10 @@ pub struct CacheRow {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RowKind {
     Lifecycle {
+        /// 0 = Active, 1..=`depth` = Decay step.
         decay: u8,
+        /// The entry's own decay depth: steps from Active to eviction.
+        depth: u8,
         watches_files: bool,
     },
     Once,

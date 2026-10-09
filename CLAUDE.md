@@ -79,7 +79,7 @@ Async tokio daemon listening on a Unix socket. One task per connection.
 
 Providers are synchronous — the scheduler runs them via `tokio::task::spawn_blocking`.
 
-Demand-driven warming: only actively-queried keys are polled at the provider's base rate. Idle keys enter an exponential-backoff decay (see `docs/cache-lifecycle.md`) and are eventually evicted.
+Demand-driven warming: only actively-queried keys are polled at the provider's base rate. Idle keys enter an exponential-backoff decay (see `docs/architecture.md` §5) and are eventually evicted.
 
 ## Protocol
 

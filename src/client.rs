@@ -81,9 +81,11 @@ fn row_kind_from_lib(k: libbeachcomber::RowKind) -> crate::cache::RowKind {
     match k {
         libbeachcomber::RowKind::Lifecycle {
             decay,
+            depth,
             watches_files,
         } => crate::cache::RowKind::Lifecycle {
             decay,
+            depth,
             watches_files,
         },
         libbeachcomber::RowKind::Once => crate::cache::RowKind::Once,

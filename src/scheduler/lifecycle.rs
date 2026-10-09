@@ -1,6 +1,6 @@
 //! Cache entry lifecycle state machine.
 //!
-//! Executable form of the behaviour defined in `docs/cache-lifecycle.md`.
+//! Executable form of the behaviour described in `docs/architecture.md` §5.
 //! State transitions: Cold → Active → Decay(1..=depth) → Evicted (depth defaults to 4). Per-entry state
 //! held in `LifecycleEntry`; scheduler dispatches on demand/fsevent/tick
 //! via `LifecycleRegistry`.

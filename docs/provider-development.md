@@ -621,7 +621,7 @@ poll_live_count = 4
 fsevents_reinstate = true
 ```
 
-The full decay model — state machine, step durations, reinstatement rules — is specified in `docs/cache-lifecycle.md`.
+The full decay model — state machine, step durations, reinstatement rules — is described in `docs/architecture.md` §5.
 
 **Decay depth is data.** After the Active window an entry steps through its `decay` steps (4 unless told otherwise; step n lasts `lifespan × 2^n`) and is then evicted. A depth is put like any value: `comb put '<provider>:cache._.decay' 6` for one provider, `comb put '*:cache._.decay' 3` for every provider, with `--path` to scope it to a directory and below; the nearest prototype wins, and a lifecycle fixes its depth when it registers. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` an entry registered with. There is no per-source keep-alive duration: `fsevent_lifespan` was removed, and a watch-only Source's Active window is the default poll lifespan (60 s × 12).
 

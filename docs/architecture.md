@@ -39,7 +39,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/daemon.rs` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel`; watchdog task monitors scheduler heartbeat |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
 | `src/scheduler/` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; owns all demand and watch state; heartbeat counter for watchdog liveness detection |
-| `src/scheduler/lifecycle.rs` | `LifecycleRegistry` — per-key cache lifecycle state machine: Active → Decay (1 to `decay` steps, default 4; the depth is data in `<p>:cache`) → Evicted. Exponential decay of poll interval and step duration each stage. See `docs/cache-lifecycle.md` for the full spec. |
+| `src/scheduler/lifecycle.rs` | `LifecycleRegistry` — per-key cache lifecycle state machine: Active → Decay (1 to `decay` steps, default 4; the depth is data in `<p>:cache`) → Evicted. Exponential decay of poll interval and step duration each stage. See §5. |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; per-source `SourceResult` sub-entries within each `CacheEntry` |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
 | `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`; `split_key()` — first-dot-only `provider.field` split. Key parsing into a `KeyParse` lives in `src/query.rs` (`parse_key`) |
@@ -234,8 +234,6 @@ stateDiagram-v2
 ```
 
 Each decay step doubles the poll interval and the step duration relative to the previous step. The number of steps is the entry's `decay`, which is data (default 4; see `<p>:cache._.decay`), and the diagram shows the default. At `Evicted`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any decay stage, the key is reinstated to `Active` immediately. If `fsevents_reinstate` is true for the provider, a matching filesystem event also reinstates the key.
-
-See `docs/cache-lifecycle.md` for the canonical spec: state machine, sequence diagrams, BDD assertions, and config knobs (`poll_interval`, `poll_live_count`, `fsevents_reinstate`).
 
 **Idle shutdown**
 

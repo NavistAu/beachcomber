@@ -52,7 +52,7 @@ provider_timeout_secs = 10
 [lifecycle]
 
 # Base polling interval used while an entry is in Active state (P in the
-# cache lifecycle model). See docs/cache-lifecycle.md.
+# cache lifecycle model). See docs/architecture.md §5.
 # Default: "60s"
 poll_interval = "60s"
 
@@ -394,7 +394,7 @@ Composition rules:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `poll_interval` | duration | `"60s"` | Base polling interval `P` used in Active state |
-| `poll_live_count` | int | `12` | Polls in the Active window, `K` (see `docs/cache-lifecycle.md`) |
+| `poll_live_count` | int | `12` | Polls in the Active window, `K` (see `docs/architecture.md` §5) |
 | `fsevents_reinstate` | bool or null | `null` (unset — per-source defaults apply) | Global override for fsevent-during-decay policy; unset means each source uses its own default |
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
 

@@ -204,6 +204,7 @@ pub fn format_ttl_cell(
         },
         Some(RowKind::Lifecycle {
             decay,
+            depth,
             watches_files,
         }) => {
             // Indicator keyed on fs-watching capability first; reinstate-armed is
@@ -223,12 +224,15 @@ pub fn format_ttl_cell(
                 };
             }
 
-            let (lead, color) = match decay {
-                0 => (star.to_string(), ansi::Color::BrightGreen),
-                1 => ("3".into(), ansi::Color::Dim),
-                2 => ("2".into(), ansi::Color::Yellow),
-                3 => ("1".into(), ansi::Color::BrightYellow),
-                _ => ("0".into(), ansi::Color::Red),
+            // The digit counts decay steps left before eviction, from the
+            // entry's own depth (`put --ttl` entries have depth 1).
+            let left = depth.saturating_sub(*decay);
+            let (lead, color) = match (decay, left) {
+                (0, _) => (star.to_string(), ansi::Color::BrightGreen),
+                (_, 0) => ("0".into(), ansi::Color::Red),
+                (_, 1) => ("1".into(), ansi::Color::BrightYellow),
+                (_, 2) => ("2".into(), ansi::Color::Yellow),
+                (_, n) => (n.to_string(), ansi::Color::Dim),
             };
 
             // `{P}s×{KK} (total)` only renders for sources with a poll path
@@ -1827,10 +1831,10 @@ pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, S
         "value" => rows.sort_by_key(|r| r.value.to_string()),
         "age" => rows.sort_by_key(|r| r.age_ms),
         "stale" => rows.sort_by_key(|r| r.stale),
-        // Most-decayed first: Lifecycle{4} < Lifecycle{3} < ... < Lifecycle{0},
+        // Closest to eviction first (fewest steps left), Active last,
         // then Once, Static, Template, Transient, None.
         "lifecycle" => rows.sort_by_key(|r| match &r.kind {
-            Some(RowKind::Lifecycle { decay, .. }) => (0u8, 4u8 - *decay),
+            Some(RowKind::Lifecycle { decay, depth, .. }) => (0u8, depth.saturating_sub(*decay)),
             Some(RowKind::Once) => (1, 0),
             Some(RowKind::Static) => (2, 0),
             Some(RowKind::Template) => (3, 0),
@@ -2109,6 +2113,7 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
@@ -2128,6 +2133,7 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 4,
+                depth: 4,
                 watches_files: false,
             }),
             Some(480),
@@ -2142,10 +2148,41 @@ mod ttl_cell_tests {
     }
 
     #[test]
+    fn lead_digit_counts_steps_to_eviction_from_the_entrys_own_depth() {
+        // A `put --ttl` entry has depth 1: Active is 1 step from eviction,
+        // Decay1 is 0 (the next tick evicts).
+        let cell = |decay, depth| {
+            format_ttl_cell(
+                Some(&RowKind::Lifecycle {
+                    decay,
+                    depth,
+                    watches_files: false,
+                }),
+                Some(60),
+                Some(1),
+                Some(false),
+                None,
+                false,
+                &W6,
+            )
+        };
+        let c = cell(1, 1);
+        assert!(c.text.starts_with("0 "), "{}", c.text);
+        assert!(matches!(c.color, Some(ansi::Color::Red)));
+        // Depth 4 is unchanged: Decay1 reads 3.
+        let c = cell(1, 4);
+        assert!(c.text.starts_with("3 "), "{}", c.text);
+        assert!(matches!(c.color, Some(ansi::Color::Dim)));
+        // A deeper entry keeps counting.
+        assert!(cell(1, 6).text.starts_with("5 "));
+    }
+
+    #[test]
     fn ascii_fallback() {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
@@ -2164,6 +2201,7 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: false,
             }),
             Some(60),
@@ -2182,6 +2220,7 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
@@ -2203,6 +2242,7 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
@@ -2267,6 +2307,7 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 1,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
@@ -2289,6 +2330,7 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 1,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
@@ -2308,6 +2350,7 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: false,
             }),
             Some(9_999_999),
@@ -2326,6 +2369,7 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: false,
             }),
             Some(0),
@@ -2346,6 +2390,7 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: true,
             }),
             Some(1),
@@ -2369,6 +2414,7 @@ mod ttl_cell_tests {
             stale: false,
             kind: Some(RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: false,
             }),
             poll_interval_secs: Some(poll),
@@ -2421,6 +2467,7 @@ mod poll_cell_tests {
             format_poll_cell(
                 Some(&RowKind::Lifecycle {
                     decay: 0,
+                    depth: 4,
                     watches_files: true,
                 }),
                 Some(37),
@@ -2438,6 +2485,7 @@ mod poll_cell_tests {
             format_poll_cell(
                 Some(&RowKind::Lifecycle {
                     decay: 0,
+                    depth: 4,
                     watches_files: true,
                 }),
                 None,
@@ -2477,6 +2525,7 @@ mod poll_cell_tests {
             format_poll_cell(
                 Some(&RowKind::Lifecycle {
                     decay: 1,
+                    depth: 4,
                     watches_files: true,
                 }),
                 Some(45),
@@ -2498,6 +2547,7 @@ mod poll_cell_tests {
             format_poll_cell(
                 Some(&RowKind::Lifecycle {
                     decay: 1,
+                    depth: 4,
                     watches_files: false,
                 }),
                 Some(999),
@@ -2514,6 +2564,7 @@ mod poll_cell_tests {
             format_poll_cell(
                 Some(&RowKind::Lifecycle {
                     decay: 0,
+                    depth: 4,
                     watches_files: false,
                 }),
                 Some(9_999_999),

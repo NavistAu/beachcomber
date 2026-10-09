@@ -303,7 +303,11 @@ fn probe_version_skew(stream: &mut UnixStream) -> Result<Option<VersionSkew>, Co
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RowKind {
-    Lifecycle { decay: u8, watches_files: bool },
+    Lifecycle {
+        decay: u8,
+        depth: u8,
+        watches_files: bool,
+    },
     Once,
     Static,
     Transient,
