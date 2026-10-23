@@ -256,9 +256,18 @@ async fn a_decay_prototype_put_is_accepted_and_reported() {
     let repo = GitRepoFixture::new();
     let p = repo.path_str();
 
-    for bad in [json!(0), json!(-1), json!("many"), json!({"a": 1})] {
+    for bad in [
+        json!(0),
+        json!(-1),
+        json!(17),
+        json!("many"),
+        json!({"a": 1}),
+    ] {
         let r = put(&mut s, "git:cache._.decay", bad, None, None).await;
-        assert!(!r.ok, "a non-positive-integer decay is refused");
+        assert!(
+            !r.ok,
+            "a decay that is not an integer from 1 to 16 is refused"
+        );
     }
 
     assert!(

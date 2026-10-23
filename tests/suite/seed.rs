@@ -163,19 +163,19 @@ async fn row_from(
 // ── (a) one label per file ───────────────────────────────────────────────────
 
 const MAIN_TEMPLATE: &str = r#"
-[providers."python:template"]
-venv_name = "{{ python.venv }}"
-shared = "from-main"
+[client.providers.python]
+template.venv_name = "{{ python.venv }}"
+template.shared = "from-main"
 "#;
 
 const DROP_IN_TEMPLATE: &str = r#"
-[providers."python:template"]
-version = "{{ python.version }}"
-shared = "from-drop-in"
+[client.providers.python]
+template.version = "{{ python.version }}"
+template.shared = "from-drop-in"
 "#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_record_carries_the_label_of_the_file_that_set_it() {
+async fn client_templates_seed_the_template_facet_with_their_file_label() {
     let e = Env::new(MAIN_TEMPLATE, &[("10-mine.toml", DROP_IN_TEMPLATE)]);
     let _h = e.serve().await;
     let mut s = e.connect().await;
@@ -210,7 +210,7 @@ async fn every_record_carries_the_label_of_the_file_that_set_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_facet_read_returns_every_seeded_leaf() {
+async fn a_later_file_replaces_one_template_leaf_and_keeps_the_rest() {
     let e = Env::new(MAIN_TEMPLATE, &[("10-mine.toml", DROP_IN_TEMPLATE)]);
     let _h = e.serve().await;
     let mut s = e.connect().await;
@@ -226,18 +226,18 @@ async fn a_facet_read_returns_every_seeded_leaf() {
     );
 }
 
-// ── (b) a namespace with no provider still answers with its template ─────────
+// ── (b) a client-only provider answers with its template ──────────────────────
 
 const SCANLINE: &str = r#"
-[providers."scanline:template"]
-version = "{{ v }}"
+[client.providers.scanline]
+template.version = "{{ v }}"
 
-[providers."scanline:template".widgets]
+[client.providers.scanline.template.widgets]
 foo = "{{ bar }}"
 "#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_seeded_template_answers_a_get_on_a_namespace_with_no_provider() {
+async fn a_seeded_template_answers_a_get_on_a_client_only_provider() {
     let e = Env::new("", &[("10-scanline.toml", SCANLINE)]);
     let _h = e.serve().await;
     let mut s = e.connect().await;
@@ -266,20 +266,25 @@ async fn a_seeded_template_answers_a_get_on_a_namespace_with_no_provider() {
 /// `comb check config` prints.
 fn startup_errors() -> Vec<String> {
     let registry = ProviderRegistry::with_defaults();
-    Config::load()
+    let config = Config::load();
+    let mut errors = config
         .validate_providers(
             &registry.provider_names(),
             &registry.source_names_by_provider(),
         )
-        .1
+        .1;
+    errors.extend(config.validate_seeded());
+    errors
 }
 
 /// Assert the message, then assert the wiring: the message is what an operator
-/// reads, and `ready` erroring is the only proof the daemon acts on it.
-async fn refuses_to_start(e: &Env, expected: &str) {
+/// reads, and `ready` erroring is the only proof the daemon acts on it. A rule
+/// is checked per file, so the message is prefixed with the label of the file
+/// (`rel`, relative to the config directory) that broke it.
+async fn refuses_to_start(e: &Env, rel: &str, expected: &str) {
     assert_eq!(
         startup_errors(),
-        vec![expected.to_string()],
+        vec![format!("{}: {expected}", e.label(rel))],
         "validation must produce exactly this error"
     );
     let (_h, ready) = e.start();
@@ -291,32 +296,36 @@ async fn refuses_to_start(e: &Env, expected: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dotted_key_stops_the_daemon_starting() {
-    let e = Env::new("[providers.\"x:template\"]\n\"a.b\" = \"{{ y }}\"\n", &[]);
+    let e = Env::new(
+        "[client.providers.x]\ntemplate.\"a.b\" = \"{{ y }}\"\n",
+        &[],
+    );
     refuses_to_start(
         &e,
-        "[providers.\"x:template\"] key 'a.b' contains a '.': a facet table nests with tables, \
+        "config.toml",
+        "[client.providers.x] template key 'a.b' contains a '.': a template nests with tables, \
          and a dotted key names one record while addressing another.",
     )
     .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_settings_key_in_a_facet_table_stops_the_daemon_starting() {
-    let e = Env::new("[providers.\"x:template\"]\nenabled = false\n", &[]);
+async fn an_unknown_key_in_a_client_provider_stops_the_daemon_starting() {
+    let e = Env::new("[client.providers.x]\nenabled = false\n", &[]);
     refuses_to_start(
         &e,
-        "[providers.\"x:template\"] is a facet table and holds data only, but 'enabled' is a \
-         settings key. It belongs in [providers.x].",
+        "config.toml",
+        "unknown key 'enabled' in [client.providers.x]",
     )
     .await;
 }
 
 /// `path` is not a provider setting any more (the path-expression setting is
-/// gone), so a facet may hold a leaf by that name: the table validates clean
+/// gone), so a template may hold a leaf by that name: the table validates clean
 /// and the leaf is seeded like any other.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_leaf_named_path_in_a_facet_table_is_data() {
-    let e = Env::new("[providers.\"git:template\"]\npath = \"x\"\n", &[]);
+async fn a_leaf_named_path_in_a_template_is_data() {
+    let e = Env::new("[client.providers.git]\ntemplate.path = \"x\"\n", &[]);
     assert_eq!(startup_errors(), Vec::<String>::new());
     let _h = e.serve().await;
     let mut s = e.connect().await;
@@ -324,51 +333,365 @@ async fn a_leaf_named_path_in_a_facet_table_is_data() {
     assert_eq!(data(&mut s, "git:template.path").await, json!("x"));
 }
 
+/// `Config::load` falls back to the default configuration when the composed
+/// file does not deserialize, so a table of the wrong type must be an error
+/// the validation reports rather than a silently emptied config.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_reserved_facet_name_stops_the_daemon_starting() {
-    let e = Env::new("[providers.\"x:put\"]\nn = \"1\"\n", &[]);
-    refuses_to_start(&e, "[providers.\"x:put\"]: invalid facet key: x:put").await;
+async fn a_providers_key_that_is_not_a_table_stops_the_daemon_starting() {
+    let e = Env::new("[client]\nproviders = 3\n", &[]);
+    refuses_to_start(&e, "config.toml", "[client.providers] must be a table").await;
+    let e = Env::new("[daemon]\nproviders = 3\n", &[]);
+    refuses_to_start(&e, "config.toml", "[daemon.providers] must be a table").await;
+}
+
+/// The colon-table forms are removed, not deprecated: each is an unknown table
+/// that says where its contents went.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_old_facet_table_is_a_config_error() {
+    for name in ["x:template", "*:cache"] {
+        let e = Env::new(&format!("[providers.\"{name}\"]\nn = \"1\"\n"), &[]);
+        refuses_to_start(
+            &e,
+            "config.toml",
+            &format!(
+                "unknown table [providers.\"{name}\"]: templates live in [client.providers.<p>] \
+                 template.<leaf>, decay in [daemon.providers.<p>.cache._]"
+            ),
+        )
+        .await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_malformed_facet_key_stops_the_daemon_starting() {
-    let e = Env::new("[providers.\"a:b:c\"]\nn = \"1\"\n", &[]);
-    refuses_to_start(&e, "[providers.\"a:b:c\"]: invalid facet key: a:b:c").await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_non_string_leaf_is_dropped_from_the_seed() {
+async fn a_non_string_leaf_stops_the_daemon_starting() {
     let e = Env::new(
-        "[providers.\"x:template\"]\nwidth = 12\nname = \"{{ n }}\"\n",
+        "[client.providers.x]\ntemplate.width = 12\ntemplate.name = \"{{ n }}\"\n",
+        &[],
+    );
+    refuses_to_start(
+        &e,
+        "config.toml",
+        "[client.providers.x] template 'width' is integer, not a value expression or a group.",
+    )
+    .await;
+}
+
+/// A rule is checked in the file that holds the key, because seeding is per
+/// file: a leaf that is an integer in `config.toml` is refused there even
+/// though a drop-in's string would win the merge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bad_leaf_is_refused_in_its_own_file_not_in_the_merge() {
+    let e = Env::new(
+        "[client.providers.zz]\ntemplate.width = 12\n",
+        &[(
+            "10-fix.toml",
+            "[client.providers.zz]\ntemplate.width = \"{{ 1 }}\"\n",
+        )],
+    );
+    refuses_to_start(
+        &e,
+        "config.toml",
+        "[client.providers.zz] template 'width' is integer, not a value expression or a group.",
+    )
+    .await;
+}
+
+/// `Config::load` falls back to the default configuration when the composed
+/// file does not deserialize; `client` must not be able to reach that, nor let
+/// the seeding write what was never checked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_that_is_not_a_table_stops_the_daemon_starting() {
+    let e = Env::new(
+        "client = \"oops\"\n\n[daemon.providers.git.cache._]\ndecay = 0\n",
+        &[],
+    );
+    assert_eq!(
+        startup_errors(),
+        vec![
+            format!("{}: [client] must be a table", e.label("config.toml")),
+            format!(
+                "{}: git:cache._.decay must be an integer from 1 to 16 (got 0)",
+                e.label("config.toml")
+            ),
+        ]
+    );
+    let (_h, ready) = e.start();
+    assert!(ready.await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn names_that_spell_a_prototype_or_nothing_are_not_provider_names() {
+    for (root, name, msg) in [
+        (
+            "client",
+            "*",
+            "invalid provider name '*' in [client.providers]: '*' is not a provider name",
+        ),
+        (
+            "daemon",
+            "*",
+            "invalid provider name '*' in [daemon.providers]: '*' is not a provider name; \
+             '_' names every provider",
+        ),
+        ("client", "", "empty provider name in [client.providers]"),
+        ("daemon", "", "empty provider name in [daemon.providers]"),
+    ] {
+        let e = Env::new(&format!("[{root}.providers.\"{name}\"]\n"), &[]);
+        refuses_to_start(&e, "config.toml", msg).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_template_leaf_name_stops_the_daemon_starting() {
+    let e = Env::new("[client.providers.x]\ntemplate.\"\" = \"e\"\n", &[]);
+    refuses_to_start(
+        &e,
+        "config.toml",
+        "[client.providers.x] template has an empty key",
+    )
+    .await;
+}
+
+/// Decay is capped at 16, a conservative bound: 2^16 times the base lifespan is
+/// already far beyond any useful decay, and 32 would overflow the shift.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decay_above_sixteen_is_refused_in_config_and_by_put() {
+    let e = Env::new("[daemon.providers.git.cache._]\ndecay = 17\n", &[]);
+    refuses_to_start(
+        &e,
+        "config.toml",
+        "git:cache._.decay must be an integer from 1 to 16 (got 17)",
+    )
+    .await;
+
+    let e = Env::new("", &[]);
+    let _h = e.serve().await;
+    let mut s = e.connect().await;
+    for (bad, shown) in [
+        (json!(17), "17"),
+        (json!(0), "0"),
+        (json!("many"), "\"many\""),
+    ] {
+        let resp = send_recv(
+            &mut s,
+            json!({"op": "put", "key": "git:cache._.decay", "data": bad}),
+        )
+        .await;
+        assert_eq!(resp["ok"], json!(false), "{resp}");
+        assert_eq!(
+            resp["error"],
+            json!(format!(
+                "git:cache._.decay must be an integer from 1 to 16 (got {shown})"
+            ))
+        );
+    }
+    let resp = send_recv(
+        &mut s,
+        json!({"op": "put", "key": "git:cache._.decay", "data": 16}),
+    )
+    .await;
+    assert_eq!(resp["ok"], json!(true), "16 is the cap and allowed: {resp}");
+}
+
+/// A built-in the config disables is not a provider the client-only rule can
+/// bring back with zero Sources.
+#[test]
+fn a_disabled_builtin_named_by_a_template_is_not_registered() {
+    let config: Config = toml::from_str(
+        "[providers.python]\nenabled = false\n\n[client.providers.python]\ntemplate.v = \"x\"\n",
+    )
+    .unwrap();
+    let registry = ProviderRegistry::with_config(&config);
+    assert!(!registry.is_registered("python"));
+}
+
+// ── a client-only provider is a provider ───────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_only_provider_is_a_provider() {
+    let e = Env::new(
+        "[client.providers.aws]\ntemplate.profile = \"{{ env.P }}\"\n",
         &[],
     );
     let _h = e.serve().await;
     let mut s = e.connect().await;
 
+    let resp = send_recv(&mut s, json!({"op": "introspect", "subject": "providers"})).await;
+    assert_eq!(resp["ok"], json!(true), "introspect providers: {resp}");
+    let aws = resp["data"]["providers"]
+        .as_array()
+        .expect("providers array")
+        .iter()
+        .find(|p| p["name"] == json!("aws"))
+        .unwrap_or_else(|| panic!("aws is not listed: {resp}"));
+    assert_eq!(aws["sources"], json!([]), "a provider with zero Sources");
+    assert_eq!(aws["source"], json!("static"), "and no code behind it");
     assert_eq!(
-        data(&mut s, "x:template").await,
-        json!({"name": "{{ n }}"}),
-        "a leaf that is not a value expression is warned about and dropped"
+        template(&mut s, "aws.profile").await,
+        json!("{{ env.P }}"),
+        "and its template is served"
     );
+}
+
+#[test]
+fn the_abstract_provider_is_never_registered() {
+    let mut config: Config = toml::from_str(
+        "[daemon.providers._.cache._]\ndecay = 4\n\n[client.providers.aws]\ntemplate.p = \"x\"\n",
+    )
+    .unwrap();
+    config.config_path = None;
+    let registry = ProviderRegistry::with_config(&config);
+    assert!(registry.is_registered("aws"), "named in [client.providers]");
+    assert!(
+        !registry.is_registered("_"),
+        "`_` is a prototype, not a provider"
+    );
+}
+
+// ── the decay prototype is data seeded under `*:cache`  ─────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_decay_prototype_seeds_star_cache() {
+    let e = Env::new("", &[]);
+    beachcomber::daemon::defaults::write_managed_defaults(&e.cfg_dir.join("defaults"), "9.9.9")
+        .unwrap();
+    let _h = e.serve().await;
+    let mut s = e.connect().await;
+
+    assert_eq!(data(&mut s, "*:cache._.decay").await, json!(4));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_provider_decay_table_seeds_its_own_cache_facet() {
+    let e = Env::new("[daemon.providers.git.cache._]\ndecay = 2\n", &[]);
+    let _h = e.serve().await;
+    let mut s = e.connect().await;
+    assert_eq!(data(&mut s, "git:cache._.decay").await, json!(2));
+
+    // And the lookup the scheduler makes finds it.
+    let cache = Cache::new();
+    let registry = ProviderRegistry::with_defaults();
+    let main = e.cfg_dir.join("config.toml");
+    beachcomber::daemon::seed::seed_facets(
+        &cache,
+        &registry,
+        &Config::layers(None, Some(&main), &e.cfg_dir.join("conf.d")),
+    );
+    assert_eq!(cache.resolve_decay("git", None), 2);
+    assert_eq!(
+        cache.resolve_decay("hostname", None),
+        beachcomber::scheduler::lifecycle::DEFAULT_DECAY,
+        "a provider with no table of its own takes the default"
+    );
+}
+
+/// A `put` of the decay prototype shadows the seed, and removing the put shows
+/// the seed again, as for every other seeded record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_put_decay_shadows_the_seeded_decay_and_removing_it_restores_the_seed() {
+    let e = Env::new("[daemon.providers.git.cache._]\ndecay = 2\n", &[]);
+    let _h = e.serve().await;
+    let mut s = e.connect().await;
+    assert_eq!(data(&mut s, "git:cache._.decay").await, json!(2));
+
+    let resp = send_recv(
+        &mut s,
+        json!({"op": "put", "key": "git:cache._.decay", "data": 5}),
+    )
+    .await;
+    assert_eq!(resp["ok"], json!(true), "put: {resp}");
+    assert_eq!(data(&mut s, "git:cache._.decay").await, json!(5));
+
+    let resp = send_recv(
+        &mut s,
+        json!({"op": "put", "key": "git:cache._.decay", "data": null}),
+    )
+    .await;
+    assert_eq!(resp["ok"], json!(true), "remove: {resp}");
+    assert_eq!(
+        data(&mut s, "git:cache._.decay").await,
+        json!(2),
+        "the seed shows again"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decay_table_removed_on_reload_drops_the_seed() {
+    let e = Env::new(
+        "",
+        &[
+            (
+                "10-mine.toml",
+                "[daemon.providers.git.cache._]\ndecay = 2\n",
+            ),
+            (
+                "20-other.toml",
+                "[daemon.providers.other.cache._]\ndecay = 3\n",
+            ),
+        ],
+    );
+    let _h = e.serve().await;
+    let mut s = e.connect().await;
+    assert_eq!(data(&mut s, "git:cache._.decay").await, json!(2));
+
+    rewrite(&e.drop_in("10-mine.toml"), "");
+    crate::common::poll::poll_until_async(
+        "git:cache._.decay",
+        "a miss, once the table is gone from the file",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        async || data(&mut s, "git:cache._.decay").await,
+        |v| v.is_null(),
+    )
+    .await;
+    assert_eq!(data(&mut s, "other:cache._.decay").await, json!(3));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decay_edit_re_seeds_in_place() {
+    let e = Env::new(
+        "",
+        &[(
+            "10-mine.toml",
+            "[daemon.providers.git.cache._]\ndecay = 2\n",
+        )],
+    );
+    let _h = e.serve().await;
+    let mut s = e.connect().await;
+    assert_eq!(data(&mut s, "git:cache._.decay").await, json!(2));
+
+    rewrite(
+        &e.drop_in("10-mine.toml"),
+        "[daemon.providers.git.cache._]\ndecay = 3\n",
+    );
+    crate::common::poll::poll_until_async(
+        "git:cache._.decay",
+        "the edited decay",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        async || data(&mut s, "git:cache._.decay").await,
+        |v| *v == json!(3),
+    )
+    .await;
 }
 
 // ── (d) live re-seed ─────────────────────────────────────────────────────────
 
 const RESEED_V1: &str = r#"
-[providers."scanline:template"]
-version = "v1"
-title = "t1"
+[client.providers.scanline]
+template.version = "v1"
+template.title = "t1"
 "#;
 
 const RESEED_V2: &str = r#"
-[providers."scanline:template"]
-version = "v1"
-title = "t2"
+[client.providers.scanline]
+template.version = "v1"
+template.title = "t2"
 "#;
 
 const RESEED_V3: &str = r#"
-[providers."scanline:template"]
-title = "t2"
+[client.providers.scanline]
+template.title = "t2"
 "#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -461,15 +784,15 @@ async fn a_watch_wakes_on_a_config_edit() {
     assert_eq!(frame["template"], json!("t2"));
 }
 
-/// A settings key in a facet table, plus an edit that would otherwise apply.
-/// The settings key is an error the cache could not catch on its own — nothing
-/// about `enabled = false` is unwritable — so only the validation pass in front
-/// of the re-seed stops the `title` edit beside it from landing.
+/// An unknown key beside the template, plus an edit that would otherwise
+/// apply. The unknown key is an error the cache could not catch on its own —
+/// nothing about `enabled = false` is unwritable — so only the validation pass
+/// in front of the re-seed stops the `title` edit beside it from landing.
 const RESEED_INVALID: &str = r#"
-[providers."scanline:template"]
-version = "v1"
-title = "t2"
+[client.providers.scanline]
 enabled = false
+template.version = "v1"
+template.title = "t2"
 "#;
 
 /// The re-seed's reaction to an invalid edit is that *nothing happens*, and a
@@ -556,8 +879,8 @@ async fn a_namespace_removed_from_config_disappears() {
         "",
         &[(
             "10-mine.toml",
-            "[providers.\"scanline:template\"]\nversion = \"v1\"\n\n\
-             [providers.\"other:template\"]\nkeeper = \"k1\"\n",
+            "[client.providers.scanline]\ntemplate.version = \"v1\"\n\n\
+             [client.providers.other]\ntemplate.keeper = \"k1\"\n",
         )],
     );
     let _h = e.serve().await;
@@ -566,7 +889,7 @@ async fn a_namespace_removed_from_config_disappears() {
 
     rewrite(
         &e.drop_in("10-mine.toml"),
-        "[providers.\"other:template\"]\nkeeper = \"k2\"\n",
+        "[client.providers.other]\ntemplate.keeper = \"k2\"\n",
     );
     crate::common::poll::poll_until_async(
         "other:template.keeper",
@@ -892,7 +1215,7 @@ fn comb_check_config_reports_a_facet_error() {
     std::fs::create_dir_all(&cfg_dir).unwrap();
     std::fs::write(
         cfg_dir.join("config.toml"),
-        "[providers.\"x:template\"]\n\"a.b\" = \"{{ y }}\"\n",
+        "[client.providers.x]\ntemplate.\"a.b\" = \"{{ y }}\"\n",
     )
     .unwrap();
 
@@ -918,11 +1241,10 @@ fn comb_check_config_reports_a_facet_error() {
 /// reading of the file — as one verdict list under one count.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn comb_check_config_renders_both_views_as_one_list() {
-    // `width = 12` is a warning, not an error: the daemon starts, and the
-    // client has things to say that the daemon does not — the warning, and
-    // that an in-process daemon wrote no managed defaults (only `comb daemon`
-    // does).
-    let e = Env::new("[providers.\"x:template\"]\nwidth = 12\n", &[]);
+    // A valid file: the daemon starts, and the client has something to say
+    // that the daemon does not — that an in-process daemon wrote no managed
+    // defaults (only `comb daemon` does).
+    let e = Env::new("[client.providers.x]\ntemplate.a = \"{{ y }}\"\n", &[]);
     let _h = e.serve().await;
 
     let out = tokio::task::spawn_blocking({
@@ -945,15 +1267,14 @@ async fn comb_check_config_renders_both_views_as_one_list() {
     let expected = format!(
         "Config\n\
          \x20 [PASS] daemon   path {}\n\
-         \x20 [PASS] daemon   parsed ok — 1 provider definitions\n\
+         \x20 [PASS] daemon   parsed ok — 0 provider definitions\n\
          \x20 [PASS] daemon   config parsed\n\
-         \x20 [PASS] daemon   1 provider definitions loaded\n\
-         \x20 [WARN] local    [providers.\"x:template\"] 'width' is integer, not a value \
-         expression or a group; it is dropped from the seed.\n\
+         \x20 [PASS] daemon   0 provider definitions loaded\n\
+         \x20 [PASS] local    config file valid\n\
          \x20 [WARN] local    defaults {}: 9 shipped file(s) missing or stale — the daemon \
          writes them on its next start\n\
          \n\
-         (2 warning(s))\n\
+         (1 warning(s))\n\
          \n",
         e.cfg_dir.join("config.toml").display(),
         e.cfg_dir.join("defaults").display(),

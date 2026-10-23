@@ -243,38 +243,40 @@ JSON metadata:
 
 ### Template facets
 
-A **facet** is a namespace holding data *about* a provider, written `provider:facet`. The `template` facet holds the value expressions a `comb get` on that provider returns alongside the data. Declare one as a quoted provider key — the table maps 1:1 onto the tree, nested tables are groups, and string leaves are the expressions:
+A **facet** is a namespace holding data *about* a provider, written `provider:facet`. The `template` facet holds the value expressions a `comb get` on that provider returns alongside the data. Declare one under `[client.providers.<p>]` as `template` — the table maps 1:1 onto the tree, nested tables are groups, and string leaves are the expressions:
 
 ```toml
-[providers."python:template"]
-venv_name = "{{ python.venv }}"
+[client.providers.python]
+template.venv_name = "{{ python.venv }}"
 
-[providers."python:template".widgets]
+[client.providers.python.template.widgets]
 version = "{{ python.version }}"
 ```
 
-That is `python:template.venv_name` and `python:template.widgets.version`. A facet table holds data only, and four rules are enforced at daemon startup (and by `comb check config`):
+That is `python:template.venv_name` and `python:template.widgets.version`. A provider exists if either root names it: one named only under `[client.providers]` or `[daemon.providers]` is a provider with no Sources (unless `[providers.<p>] enabled = false` disables it). The rules are checked file by file, because seeding is, and enforced at daemon startup, on reload and by `comb check config`; each error names its file:
 
-- The key must be valid facet syntax — exactly one colon, a facet name of letters, digits, `_` or `-`, and not `put` or `source`, which are the read-only layer facets. `[providers."a:b:c"]` and `[providers."x:put"]` are **errors**.
-- No settings keys. `enabled`, `backend`, `type`, `command`, `library_path` and `url` are **errors** at the top level of a facet table, and so is any per-source knob — `poll_interval`, `poll_count`, `poll_secs`, `fsevent_patterns`, `fsevent_abs_paths`, `fsevent_reinstates`, `failback_count`, `failback_interval`, and the legacy spellings `poll_interval_secs`, `poll_live_count`, `fsevents_reinstate`, `failure_reattempts` and `failure_backoff_interval`. They belong in `[providers.<name>]`.
-- Nesting is tables only, in **every** facet, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**.
-- Under `:template` a leaf that is neither a string nor a table is not a value expression: a **warning**, and the leaf is dropped from what gets loaded. Any other facet is plain data, so its leaves may be of any type.
+- `[client]` holds only `providers`, and `[client.providers.<p>]` holds only `template`; any other key is `unknown key '<k>' in [client]` (or `[client.providers.<p>]`).
+- Nesting is tables only, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**, and so is an empty key. A provider name holds no `:` or `.` and is not `*`.
+- A template leaf that is neither a string nor a table is not a value expression: an **error**.
+- The colon-table form `[providers."<p>:template"]` is gone: it is `unknown table [providers."<p>:template"]: templates live in [client.providers.<p>] template.<leaf>, decay in [daemon.providers.<p>.cache._]`.
+
+The decay depth is seeded the same way, from the daemon root: `[daemon.providers.git.cache._]` with `decay = 2` seeds `git:cache._.decay`, and `[daemon.providers._.cache._]` seeds `*:cache._.decay` for every provider (the shipped `defaults/00-comb.toml` sets 4). `cache` holds only `_`, `_` holds only `decay`, and `decay` is an integer from 1 to 16 (`comb put <p>:cache._.decay` takes the same range).
 
 Every leaf is loaded into the cache at daemon start, labelled with the file it came from — `comb status` shows its source as `config:~/.config/beachcomber/conf.d/10-mine.toml`. Layers are loaded in composition order, so a leaf two files set carries the later file's label and value, while a leaf only the earlier file set keeps its own.
 
-**Facet tables reload without a restart.** A configuration change that touches only facet tables is applied in place: every `config:`-labelled record is dropped and all layers are loaded again, so an edited leaf takes effect on the next read, a leaf deleted from its file disappears, and a `watch` on the affected key wakes. Records written by `comb put` are untouched. A change that touches anything else still restarts the daemon.
+**Seeded tables reload without a restart.** A configuration change that touches only `[client.providers]` or `[daemon.providers.<p>.cache]` tables is applied in place: every `config:`-labelled record is dropped and all layers are loaded again, so an edited leaf takes effect on the next read, a leaf deleted from its file disappears, and a `watch` on the affected key wakes. Records written by `comb put` are untouched. A change that touches anything else still restarts the daemon.
 
-The reload is all or nothing, twice over. The edited files are checked against the four rules above before anything is touched, so an edit that breaks one of them changes nothing at all — the previous values keep being served and the error is logged (and shown by `comb check config`) until the file is fixed. And each namespace's old and new records are swapped together, so a `comb get` running concurrently with the reload never sees a value momentarily missing.
+The reload is all or nothing, twice over. The edited files are checked against the rules above before anything is touched, so an edit that breaks one of them changes nothing at all — the previous values keep being served and the error is logged (and shown by `comb check config`) until the file is fixed. And each namespace's old and new records are swapped together, so a `comb get` running concurrently with the reload never sees a value momentarily missing.
 
 ### Templates and value expressions
 
-A **template** is a string leaf of a `:template` facet: a value expression over `env.*`, `comb.*` and other fields' resolved values. The daemon stores it and serves it; the client — `comb get`, `comb eval`, and every SDK's `resolve`/`eval`, all through `libbeachcomber::resolve` — renders it with the caller's environment and directory. A field need not have a cached value to carry a template:
+A **template** is a string leaf of a `template` table: a value expression over `env.*`, `comb.*` and other fields' resolved values. The daemon stores it and serves it; the client — `comb get`, `comb eval`, and every SDK's `resolve`/`eval`, all through `libbeachcomber::resolve` — renders it with the caller's environment and directory. A field need not have a cached value to carry a template:
 
 ```toml
-[providers."scanline:template"]
-theme = "{{ env.SCANLINE_THEME or 'dark' }}"
+[client.providers.scanline]
+template.theme = "{{ env.SCANLINE_THEME or 'dark' }}"
 
-[providers."scanline:template".widgets]
+[client.providers.scanline.template.widgets]
 foo = "{{ env.SCANLINE_FOO }}"
 bar = "{{ comb.git.branch | truncate(12) }}"
 ```
@@ -299,13 +301,13 @@ Inside an expression, `comb.<provider>.<field>` is the raw cached value; `<provi
 
 ```toml
 # ~/.config/beachcomber/conf.d/10-mine.toml
-[providers."python:template"]
-version = "{{ env.MY_PY or comb.python.venv_version }}"   # venv_name still comes from defaults/python.toml
+[client.providers.python]
+template.version = "{{ env.MY_PY or comb.python.venv_version }}"   # venv_name still comes from defaults/python.toml
 ```
 
 `comb check config` reports the directory, its file count and version, and warns about files in it that `comb` did not write. A directory the daemon cannot write is a refusal to start.
 
-**The 0.9 form is an error.** `[providers.<name>.virtual]` — the 0.9 home of a provider's templates, as a table or as dotted keys under `[providers.<name>]` — is reported by daemon start and `comb check config` as `unrecognised block [providers.<name>.virtual]: templates live in [providers."<name>:template"]`.
+**The 0.9 form is an error.** `[providers.<name>.virtual]` — the 0.9 home of a provider's templates, as a table or as dotted keys under `[providers.<name>]` — is reported by daemon start and `comb check config` as `unrecognised block [providers.<name>.virtual]: templates live in [client.providers.<name>] template.<leaf>`.
 
 **A `path` key directly under `[providers.<name>]` is also an error.** Path expressions are gone; a query addresses the caller's directory, `--path`, or `--global`. Daemon start and `comb check config` report it as `[providers.<name>]: path is not a provider setting: a query addresses the caller's directory, --path, or --global`.
 
@@ -314,8 +316,8 @@ version = "{{ env.MY_PY or comb.python.venv_version }}"   # venv_name still come
 A template can call `exec()` to run a command and use its output as the field's value — `defaults/kubecontext.toml` renders `kubecontext.context` this way:
 
 ```toml
-[providers."myapp:template"]
-deploy_tag = "{{ exec('git describe --tags --always') }}"
+[client.providers.myapp]
+template.deploy_tag = "{{ exec('git describe --tags --always') }}"
 ```
 
 | | |
@@ -374,7 +376,7 @@ Composition rules:
   daemon's config self-watch, which acts
   only once the *whole* composed set parses cleanly; an edit that doesn't parse
   is ignored with a logged warning. The one change that does **not** restart is
-  an edit confined to the [facet tables](#template-facets) themselves, which is
+  an edit confined to the [seeded tables](#template-facets) themselves (`[client.providers]` and `[daemon.providers.<p>.cache]`), which is
   applied in place.
 
 ## Config field summary
@@ -389,6 +391,13 @@ Composition rules:
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
 | `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
 | `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
+| `providers.<p>.cache._.decay` | int, 1 to 16 | (4 from `defaults/00-comb.toml`) | Decay steps before eviction, seeded as `<p>:cache._.decay`; `<p> = _` is every provider ([Template facets](#template-facets)) |
+
+**`[client]` section:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `providers.<p>.template.<leaf>` | string, or a table of them | none | A template (value expression), seeded as `<p>:template.<leaf>`; nest with tables ([Template facets](#template-facets)) |
 
 **`[lifecycle]` section:**
 

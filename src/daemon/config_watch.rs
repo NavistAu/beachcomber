@@ -7,11 +7,16 @@
 //! configuration reference.
 //!
 //! Not every change is a restart. A change that touches only
-//! `[providers."<p>:<facet>"]` tables is reported as [`ChangeKind::FacetsOnly`]
-//! and the daemon re-seeds them in place; anything else is
-//! [`ChangeKind::Settings`] and the daemon restarts, because settings are read
-//! once at startup. The classifier is the composed TOML with the facet tables
-//! removed (`Config::settings_only`), compared before and after. Because the
+//! `[client.providers]` or a `[daemon.providers.<p>.cache]` table is reported
+//! as [`ChangeKind::FacetsOnly`] and the daemon re-seeds them in place;
+//! anything else is [`ChangeKind::Settings`] and the daemon restarts, because
+//! settings are read once at startup. The classifier is the composed TOML with
+//! those tables removed (`Config::settings_only`), compared before and after.
+//! (Reload does not track provider registration, in either direction: a
+//! provider newly named only in `[client.providers]` or `[daemon.providers]`
+//! is seeded at once but is not registered, and so not listed, until the next
+//! restart; one whose last mention is removed stays registered and listed until
+//! then.) Because the
 //! facet case leaves the process running, the watch re-arms after every call
 //! rather than firing once and exiting.
 //!
@@ -70,14 +75,14 @@ use tokio_util::sync::CancellationToken;
 pub const CONFIG_WATCH_POLL_INTERVAL: Duration = crate::singleton::SELF_WATCH_POLL_INTERVAL;
 
 /// What a configuration change turned out to be, decided by comparing the
-/// composed *settings* — the deep-merged TOML with every facet table removed
-/// (`Config::settings_only`) — before and after.
+/// composed *settings* — the deep-merged TOML with the config-seeded tables
+/// removed (`Config::settings_only`) — before and after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
-    /// Only `[providers."<p>:<facet>"]` tables differ. The daemon re-seeds them
-    /// in place and keeps serving.
+    /// Only `[client.providers]` or a `[daemon.providers.<p>.cache]` table
+    /// differs. The daemon re-seeds them in place and keeps serving.
     FacetsOnly,
-    /// Something outside the facet tables differs. The daemon restarts, because
+    /// Something outside the seeded tables differs. The daemon restarts, because
     /// settings are read once at startup.
     Settings,
 }
@@ -407,7 +412,7 @@ fn try_fire<F: FnMut(ChangeKind)>(
     on_change(kind);
 }
 
-/// The composed configuration with every facet table removed — the half a
+/// The composed configuration with the seeded tables removed — the half a
 /// change has to touch for a restart to be warranted.
 fn settings_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path) -> toml::Value {
     let mut composed = toml::Value::Table(Default::default());

@@ -172,10 +172,11 @@ pub fn run_check_subjects(
 /// process for a read-only check.
 fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
     let registry = crate::provider::registry::ProviderRegistry::with_defaults();
-    let (warnings, errors) = config.validate_providers(
+    let (warnings, mut errors) = config.validate_providers(
         &registry.provider_names(),
         &registry.source_names_by_provider(),
     );
+    errors.extend(config.validate_seeded());
 
     let mut out: Vec<serde_json::Value> = warnings
         .into_iter()

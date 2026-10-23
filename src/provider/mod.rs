@@ -551,7 +551,9 @@ pub struct ProviderMetadata {
 }
 
 impl ProviderMetadata {
-    /// Validates provider metadata at registration time.
+    /// Validates provider metadata at registration time. A provider declares
+    /// at least one Source; a provider named only in configuration has none
+    /// and is registered through `ProviderRegistry::register_config_named`.
     pub fn validate(&self) -> Result<(), String> {
         if self.sources.is_empty() {
             return Err(format!("provider '{}' declares no sources", self.name));

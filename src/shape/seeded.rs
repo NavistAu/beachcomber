@@ -1,0 +1,261 @@
+//! What one configuration file says in the two roots the daemon seeds from.
+//!
+//! Seeding is per file, so the rules are checked per file too: [`read`] is the
+//! one typed parse of a single layer, and returns both the errors in it and
+//! the writes it makes. Startup, `comb check config`, reload and the seeding
+//! itself all go through it, so a file is accepted exactly when what it seeds
+//! was checked, and nothing is written that did not validate.
+//!
+//! - `[client.providers.<p>] template` seeds namespace `<p>:template`: a tree
+//!   of tables whose string leaves are value expressions.
+//! - `[daemon.providers.<p>.cache._] decay` seeds `<p>:cache`, an integer from
+//!   1 to [`MAX_DECAY`]; the abstract provider `_` seeds `*:cache`, the
+//!   prototype every provider without its own falls back to.
+//!
+//! Every error is prefixed with the file's `config:<path>` label.
+
+use crate::config::Config;
+use crate::scheduler::lifecycle::{MAX_DECAY, decay_error};
+use std::path::Path;
+
+/// Where a removed colon-named table's contents went.
+const FACET_TABLE_MOVED: &str = "templates live in [client.providers.<p>] template.<leaf>, \
+                                 decay in [daemon.providers.<p>.cache._]";
+
+/// What one layer seeds, and what is wrong with it.
+#[derive(Debug, Default)]
+pub struct Seeded {
+    /// Each prefixed with the file's `config:<path>` label.
+    pub errors: Vec<String>,
+    /// `(namespace, tree)`: only trees that validated.
+    pub writes: Vec<(String, serde_json::Value)>,
+}
+
+/// A provider name as a config key, or the reason it is not one. `client`
+/// says which root: `_`, the prototype's name, is a provider only in the
+/// daemon root's `cache` prototype and never in the client's.
+pub fn provider_name_error(root: &str, name: &str, client: bool) -> Option<String> {
+    if name.is_empty() {
+        return Some(format!("empty provider name in [{root}]"));
+    }
+    if name == "*" {
+        let hint = if client {
+            ""
+        } else {
+            "; '_' names every provider"
+        };
+        return Some(format!(
+            "invalid provider name '*' in [{root}]: '*' is not a provider name{hint}"
+        ));
+    }
+    if name.contains(':') || name.contains('.') {
+        return Some(format!(
+            "invalid provider name '{name}' in [{root}]: a name holds no ':' or '.'"
+        ));
+    }
+    if name == "_" && client {
+        return Some(format!(
+            "invalid provider name '_' in [{root}]: '_' is the prototype name, not a provider"
+        ));
+    }
+    None
+}
+
+struct Reader {
+    label: String,
+    out: Seeded,
+}
+
+impl Reader {
+    fn err(&mut self, message: String) {
+        self.out.errors.push(format!("{}: {message}", self.label));
+    }
+
+    fn client(&mut self, client: &toml::Value) {
+        let Some(table) = client.as_table() else {
+            return self.err("[client] must be a table".into());
+        };
+        for (key, value) in table {
+            if key != "providers" {
+                self.err(format!("unknown key '{key}' in [client]"));
+                continue;
+            }
+            let Some(providers) = value.as_table() else {
+                self.err("[client.providers] must be a table".into());
+                continue;
+            };
+            for (name, provider) in providers {
+                match provider_name_error("client.providers", name, true) {
+                    Some(e) => self.err(e),
+                    None => self.client_provider(name, provider),
+                }
+            }
+        }
+    }
+
+    fn client_provider(&mut self, name: &str, value: &toml::Value) {
+        let Some(table) = value.as_table() else {
+            return self.err(format!("[client.providers.{name}] must be a table"));
+        };
+        for (key, sub) in table {
+            if key != "template" {
+                self.err(format!("unknown key '{key}' in [client.providers.{name}]"));
+                continue;
+            }
+            let Some(tree) = sub.as_table() else {
+                self.err(format!(
+                    "[client.providers.{name}] template must be a table of value expressions"
+                ));
+                continue;
+            };
+            let before = self.out.errors.len();
+            let json = self.template_tree(name, "", tree);
+            if self.out.errors.len() == before {
+                self.out.writes.push((format!("{name}:template"), json));
+            }
+        }
+    }
+
+    /// Walk a template's tree. A dotted key is an error: nesting is tables, so
+    /// `"a.b"` names one record while addressing another, and the cache
+    /// refuses the write anyway. So is an empty key, and a leaf that is
+    /// neither a string nor a table (not a value expression).
+    fn template_tree(
+        &mut self,
+        provider: &str,
+        prefix: &str,
+        table: &toml::Table,
+    ) -> serde_json::Value {
+        let mut out = serde_json::Map::new();
+        for (key, value) in table {
+            let addressed = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            if key.is_empty() {
+                let at = if prefix.is_empty() {
+                    "template".to_string()
+                } else {
+                    format!("template.{prefix}")
+                };
+                self.err(format!(
+                    "[client.providers.{provider}] {at} has an empty key"
+                ));
+                continue;
+            }
+            if key.contains('.') {
+                self.err(format!(
+                    "[client.providers.{provider}] template key '{addressed}' contains a '.': a \
+                     template nests with tables, and a dotted key names one record while \
+                     addressing another."
+                ));
+                continue;
+            }
+            match value {
+                toml::Value::Table(sub) => {
+                    out.insert(key.clone(), self.template_tree(provider, &addressed, sub));
+                }
+                toml::Value::String(s) => {
+                    out.insert(key.clone(), serde_json::Value::String(s.clone()));
+                }
+                other => self.err(format!(
+                    "[client.providers.{provider}] template '{addressed}' is {}, not a value \
+                     expression or a group.",
+                    other.type_str()
+                )),
+            }
+        }
+        serde_json::Value::Object(out)
+    }
+
+    fn daemon_providers(&mut self, providers: &toml::Value) {
+        let Some(providers) = providers.as_table() else {
+            return self.err("[daemon.providers] must be a table".into());
+        };
+        for (name, provider) in providers {
+            match provider_name_error("daemon.providers", name, false) {
+                Some(e) => self.err(e),
+                None => self.daemon_provider(name, provider),
+            }
+        }
+    }
+
+    /// `[daemon.providers.<p>]` holds only `cache`, which holds only `_`,
+    /// which holds only `decay`.
+    fn daemon_provider(&mut self, name: &str, value: &toml::Value) {
+        let Some(table) = value.as_table() else {
+            return self.err(format!("[daemon.providers.{name}] must be a table"));
+        };
+        let namespace = if name == "_" {
+            "*:cache".to_string()
+        } else {
+            format!("{name}:cache")
+        };
+        for (key, sub) in table {
+            if key != "cache" {
+                self.err(format!("unknown key '{key}' in [daemon.providers.{name}]"));
+                continue;
+            }
+            let Some(cache) = sub.as_table() else {
+                self.err(format!("[daemon.providers.{name}.cache] must be a table"));
+                continue;
+            };
+            for (key, sub) in cache {
+                if key != "_" {
+                    self.err(format!(
+                        "unknown key '{key}' in [daemon.providers.{name}.cache]"
+                    ));
+                    continue;
+                }
+                let Some(proto) = sub.as_table() else {
+                    self.err(format!("[daemon.providers.{name}.cache._] must be a table"));
+                    continue;
+                };
+                for (key, sub) in proto {
+                    if key != "decay" {
+                        self.err(format!(
+                            "unknown key '{key}' in [daemon.providers.{name}.cache._]"
+                        ));
+                    } else if let toml::Value::Integer(n) = sub
+                        && (1..=MAX_DECAY).contains(n)
+                    {
+                        self.out
+                            .writes
+                            .push((namespace.clone(), serde_json::json!({"_": {"decay": n}})));
+                    } else {
+                        self.err(decay_error(
+                            &format!("{namespace}._.decay"),
+                            &sub.to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Read one layer: the file it came from (for the label) and its parsed TOML.
+pub fn read(file: &Path, layer: &toml::Value) -> Seeded {
+    let mut r = Reader {
+        label: Config::config_label(file),
+        out: Seeded::default(),
+    };
+    if let Some(client) = layer.get("client") {
+        r.client(client);
+    }
+    // A `[daemon]` that is not a table is the load fallback's to notice, and
+    // every key of it other than `providers` is not this module's.
+    if let Some(providers) = layer.get("daemon").and_then(|d| d.get("providers")) {
+        r.daemon_providers(providers);
+    }
+    // The removed facet-table form: where its contents went.
+    if let Some(old) = layer.get("providers").and_then(|p| p.as_table()) {
+        for name in old.keys().filter(|n| n.contains(':')) {
+            r.err(format!(
+                "unknown table [providers.\"{name}\"]: {FACET_TABLE_MOVED}"
+            ));
+        }
+    }
+    r.out
+}

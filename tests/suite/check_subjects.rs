@@ -934,7 +934,7 @@ fn check_config_fails_a_virtual_subtable_naming_the_template_facet() {
     assert!(
         stdout.contains(
             "[FAIL] local    unrecognised block [providers.conda.virtual]: \
-             templates live in [providers.\"conda:template\"]"
+             templates live in [client.providers.conda] template.<leaf>"
         ),
         "expected a local FAIL line naming the template facet, got:\n{stdout}"
     );

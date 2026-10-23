@@ -1,3 +1,3 @@
-[providers."terraform:template"]
+[client.providers.terraform]
 # The workspace in effect: the shell's override, else the one selected on disk.
-workspace = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}"
+template.workspace = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}"

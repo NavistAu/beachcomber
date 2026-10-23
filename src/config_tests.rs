@@ -1015,7 +1015,7 @@ type = "poll"
 #[test]
 fn validate_providers_rejects_a_virtual_subtable_naming_the_template_facet() {
     // `[providers.<p>.virtual]` was where 0.9 kept a provider's templates.
-    // They are `[providers."<p>:template"]` data now (design §3.9, outcome
+    // They are `[client.providers.<p>] template` data now (design §3.9, outcome
     // 15), so the old block is unrecognised — and its error says where the
     // templates went, rather than the generic per-source "unknown key"
     // any other stray sub-table gets. `virtual.env = …` is the dotted-key
@@ -1070,7 +1070,7 @@ virtual.label = "{{ chronoclaude.value }}"
         .iter()
         .map(|p| {
             format!(
-                "unrecognised block [providers.{p}.virtual]: templates live in [providers.\"{p}:template\"]"
+                "unrecognised block [providers.{p}.virtual]: templates live in [client.providers.{p}] template.<leaf>"
             )
         })
         .collect();
@@ -1208,70 +1208,44 @@ fn layers_tolerate_a_missing_main_config_file() {
 }
 
 #[test]
-fn facet_tables_extracts_only_valid_facet_namespaces() {
-    let layer: toml::Value = toml::from_str(
-        r#"
-[daemon]
-log_level = "debug"
-
-[providers.git]
-enabled = true
-
-[providers."python:template"]
-venv_name = "{{ python.venv }}"
-
-[providers."python:notes"]
-why = "here"
-
-[providers."a:b:c"]
-nope = "malformed, left to validation"
-"#,
-    )
-    .unwrap();
-
-    let mut found: Vec<&str> = Config::facet_tables(&layer)
-        .into_iter()
-        .map(|(ns, _)| ns)
-        .collect();
-    found.sort();
-    assert_eq!(
-        found,
-        vec!["python:notes".to_string(), "python:template".to_string()],
-        "plain providers and malformed facet keys are not facet tables"
-    );
-
-    let table = Config::facet_tables(&layer)
-        .into_iter()
-        .find(|(ns, _)| *ns == "python:template")
-        .map(|(_, t)| t)
-        .unwrap();
-    assert_eq!(table["venv_name"].as_str(), Some("{{ python.venv }}"));
-}
-
-#[test]
-fn settings_only_strips_exactly_the_facet_tables() {
+fn settings_only_strips_exactly_the_seeded_tables() {
     let composed: toml::Value = toml::from_str(
         r#"
 [daemon]
 log_level = "debug"
 
+[daemon.providers.git.cache._]
+decay = 2
+
 [providers.git]
 enabled = true
 
-[providers."git:template"]
-branch = "{{ git.branch }}"
+[client]
+bogus = 1
+
+[client.providers.git]
+template.branch = "{{ git.branch }}"
 "#,
     )
     .unwrap();
 
     let settings = Config::settings_only(composed);
     assert!(
+        settings["client"].get("providers").is_none(),
+        "[client.providers] is not a setting"
+    );
+    assert_eq!(
+        settings["client"]["bogus"].as_integer(),
+        Some(1),
+        "any other [client] key is, so a change to it restarts"
+    );
+    assert!(
         settings["providers"].get("git").is_some(),
         "a plain provider block is a setting and survives"
     );
     assert!(
-        settings["providers"].get("git:template").is_none(),
-        "a facet table is not a setting and is stripped"
+        settings["daemon"].get("providers").is_none(),
+        "a decay table is not a setting, and leaves no empty shell behind"
     );
     assert_eq!(settings["daemon"]["log_level"].as_str(), Some("debug"));
 }
@@ -1294,57 +1268,39 @@ fn config_label_writes_home_as_tilde() {
     );
 }
 
-// ── Facet-table validation ───────────────────────────────────────────────────
+// ── Seeded-table validation (one file at a time) ──────────────────────────────────────────────────
 
-fn facet_validation(toml_str: &str) -> (Vec<String>, Vec<String>) {
-    let config: Config = toml::from_str(toml_str).expect("valid toml");
-    config.validate_providers(&["git".to_string()], &std::collections::HashMap::new())
+fn seeded_errors(toml_str: &str) -> Vec<String> {
+    let layer: toml::Value = toml::from_str(toml_str).expect("valid toml");
+    crate::shape::seeded::read(std::path::Path::new("/f.toml"), &layer)
+        .errors
+        .into_iter()
+        .map(|e| {
+            e.strip_prefix("config:/f.toml: ")
+                .unwrap_or_else(|| panic!("an error carries its file's label: {e}"))
+                .to_string()
+        })
+        .collect()
 }
 
 #[test]
-fn facet_key_with_two_colons_is_an_error() {
-    let (_, errors) = facet_validation("[providers.\"a:b:c\"]\nx = \"y\"\n");
-    assert!(
-        errors.iter().any(|e| e.contains("a:b:c")),
-        "expected an error naming the malformed key, got {errors:?}"
+fn unknown_key_under_client_is_an_error() {
+    assert_eq!(
+        seeded_errors("[client]\nbogus = 1\n"),
+        vec!["unknown key 'bogus' in [client]".to_string()]
     );
-}
-
-#[test]
-fn facet_named_after_a_layer_is_an_error() {
-    let (_, errors) = facet_validation("[providers.\"x:put\"]\nn = \"1\"\n");
-    assert!(
-        errors.iter().any(|e| e.contains("x:put")),
-        "expected an error naming the reserved facet name, got {errors:?}"
-    );
-}
-
-#[test]
-fn a_settings_key_in_a_facet_table_is_an_error() {
-    let (_, errors) = facet_validation("[providers.\"x:template\"]\nenabled = false\n");
-    assert!(
-        errors.iter().any(|e| e.contains("enabled")),
-        "expected an error naming 'enabled', got {errors:?}"
-    );
-
-    let (_, errors) = facet_validation("[providers.\"x:template\"]\npoll_interval = \"30s\"\n");
-    assert!(
-        errors.iter().any(|e| e.contains("poll_interval")),
-        "a source knob is a settings key too, got {errors:?}"
+    assert_eq!(
+        seeded_errors("[client.providers.x]\nenabled = false\n"),
+        vec!["unknown key 'enabled' in [client.providers.x]".to_string()]
     );
 }
 
 #[test]
-fn a_dotted_key_under_a_template_facet_is_an_error() {
-    let (_, errors) = facet_validation("[providers.\"x:template\"]\n\"a.b\" = \"{{ y }}\"\n");
-    assert!(
-        errors.iter().any(|e| e.contains("a.b")),
-        "expected an error naming the dotted key, got {errors:?}"
-    );
+fn a_dotted_key_under_a_template_is_an_error() {
+    let errors = seeded_errors("[client.providers.x]\ntemplate.\"a.b\" = \"{{ y }}\"\n");
+    assert!(errors.iter().any(|e| e.contains("'a.b'")), "{errors:?}");
 
-    let (_, errors) = facet_validation(
-        "[providers.\"x:template\"]\n[providers.\"x:template\".group]\n\"c.d\" = \"{{ y }}\"\n",
-    );
+    let errors = seeded_errors("[client.providers.x.template.group]\n\"c.d\" = \"{{ y }}\"\n");
     assert!(
         errors.iter().any(|e| e.contains("group.c.d")),
         "the check reaches nested tables, got {errors:?}"
@@ -1352,65 +1308,186 @@ fn a_dotted_key_under_a_template_facet_is_an_error() {
 }
 
 #[test]
-fn a_non_string_leaf_under_a_template_facet_is_a_warning() {
-    let (warnings, errors) = facet_validation("[providers.\"x:template\"]\nwidth = 12\n");
-    assert!(
-        errors.is_empty(),
-        "a bad leaf does not stop the daemon: {errors:?}"
-    );
-    assert!(
-        warnings.iter().any(|w| w.contains("width")),
-        "expected a warning naming the leaf, got {warnings:?}"
+fn a_non_string_template_leaf_is_an_error() {
+    assert_eq!(
+        seeded_errors("[client.providers.x]\ntemplate.width = 12\n"),
+        vec![
+            "[client.providers.x] template 'width' is integer, not a value expression or a group."
+                .to_string()
+        ]
     );
 }
 
 #[test]
-fn a_non_string_leaf_under_a_non_template_facet_is_data() {
-    let (warnings, errors) = facet_validation("[providers.\"x:notes\"]\nwidth = 12\n");
-    assert!(errors.is_empty(), "{errors:?}");
-    assert!(
-        warnings.is_empty(),
-        "only a template's leaves must be value expressions: {warnings:?}"
+fn a_non_integer_decay_is_an_error() {
+    for (bad, shown) in [
+        ("\"4\"", "\"4\""),
+        ("0", "0"),
+        ("-1", "-1"),
+        ("17", "17"),
+        ("1.5", "1.5"),
+        ("true", "true"),
+    ] {
+        assert_eq!(
+            seeded_errors(&format!("[daemon.providers.git.cache._]\ndecay = {bad}\n")),
+            vec![format!(
+                "git:cache._.decay must be an integer from 1 to 16 (got {shown})"
+            )],
+            "decay = {bad}"
+        );
+    }
+    assert_eq!(
+        seeded_errors("[daemon.providers._.cache._]\ndecay = 0\n"),
+        vec!["*:cache._.decay must be an integer from 1 to 16 (got 0)".to_string()],
+        "the abstract provider is named *"
+    );
+    for ok in [1, 4, 16] {
+        assert!(
+            seeded_errors(&format!("[daemon.providers.git.cache._]\ndecay = {ok}\n")).is_empty()
+        );
+    }
+}
+
+#[test]
+fn only_decay_is_accepted_under_a_cache_prototype() {
+    assert_eq!(
+        seeded_errors("[daemon.providers.git]\nenabled = true\n"),
+        vec!["unknown key 'enabled' in [daemon.providers.git]".to_string()]
+    );
+    assert_eq!(
+        seeded_errors("[daemon.providers.git.cache]\npoll = 5\n"),
+        vec!["unknown key 'poll' in [daemon.providers.git.cache]".to_string()]
+    );
+    assert_eq!(
+        seeded_errors("[daemon.providers.git.cache._]\npoll = 5\n"),
+        vec!["unknown key 'poll' in [daemon.providers.git.cache._]".to_string()]
     );
 }
 
 #[test]
-fn a_facet_table_is_not_read_as_a_source_block() {
-    // `[providers."git:template"]` must not be validated as `[providers.git.<source>]`
-    // — the facet check runs first and skips the per-source loop entirely.
-    let (warnings, errors) = facet_validation(
-        "[providers.\"git:template\"]\n[providers.\"git:template\".diff]\nsummary = \"{{ git.diff }}\"\n",
-    );
+fn an_old_colon_table_is_an_unknown_table() {
+    for name in ["x:template", "*:cache", "a:b:c", "x:put"] {
+        assert_eq!(
+            seeded_errors(&format!("[providers.\"{name}\"]\nn = \"1\"\n")),
+            vec![format!(
+                "unknown table [providers.\"{name}\"]: templates live in [client.providers.<p>] \
+                 template.<leaf>, decay in [daemon.providers.<p>.cache._]"
+            )]
+        );
+    }
+}
+
+#[test]
+fn provider_names_hold_no_colon_star_or_nothing_and_the_prototype_is_not_a_client_provider() {
+    let errors = seeded_errors("[client.providers.\"a:b\"]\ntemplate.x = \"1\"\n");
+    assert!(errors.iter().any(|e| e.contains("'a:b'")), "{errors:?}");
+    let errors = seeded_errors("[client.providers._]\ntemplate.x = \"1\"\n");
+    assert!(errors.iter().any(|e| e.contains("'_'")), "{errors:?}");
+    let errors = seeded_errors("[daemon.providers.\"*\"]\n");
+    assert!(errors.iter().any(|e| e.contains("'*'")), "{errors:?}");
+    assert!(seeded_errors("[daemon.providers._.cache._]\ndecay = 4\n").is_empty());
+}
+
+#[test]
+fn an_old_colon_table_is_not_also_read_as_a_source_block() {
+    // Through the real parse: `[providers."git:template"]` with a sub-table
+    // would be `git`'s source block if the colon name were not skipped, and
+    // `git` is a known provider with no `diff` source declared here. The
+    // unknown-table error is the layer's; the composed validation adds none.
+    let text = "[providers.\"git:template\"]\n[providers.\"git:template\".diff]\nsummary = \"{{ git.diff }}\"\n";
+    let config = Config::parse_str(text).unwrap();
+    let (warnings, errors) =
+        config.validate_providers(&["git".to_string()], &std::collections::HashMap::new());
     assert!(errors.is_empty(), "{errors:?}");
     assert!(warnings.is_empty(), "{warnings:?}");
-}
-
-#[test]
-fn a_dotted_key_is_an_error_in_every_facet_not_only_template() {
-    // The cache refuses a dotted key whatever the facet, so without this check
-    // a non-template facet would silently lose its whole layer.
-    let (_, errors) = facet_validation("[providers.\"x:notes\"]\n\"a.b\" = 1\n");
-    assert!(
-        errors.iter().any(|e| e.contains("a.b")),
-        "expected an error naming the dotted key, got {errors:?}"
-    );
-}
-
-#[test]
-fn a_settings_key_is_reported_once_not_twice() {
-    // `enabled = false` under `:template` is a settings key (an error) and a
-    // boolean leaf (a warning). Reporting both makes the same mistake look like
-    // two, and the second one is not actionable.
-    let (warnings, errors) = facet_validation("[providers.\"x:template\"]\nenabled = false\n");
     assert_eq!(
-        errors.len(),
-        1,
-        "expected exactly one error, got {errors:?}"
+        seeded_errors(text),
+        vec![
+            "unknown table [providers.\"git:template\"]: templates live in [client.providers.<p>] \
+             template.<leaf>, decay in [daemon.providers.<p>.cache._]"
+                .to_string()
+        ]
     );
-    assert!(errors[0].contains("enabled"), "{errors:?}");
+}
+
+#[test]
+fn an_error_names_its_file_and_each_file_is_checked_on_its_own() {
+    // The merge of these two is valid (the later string wins the leaf), but
+    // seeding is per file, so the first file's integer is an error.
+    let bad: toml::Value = toml::from_str("[client.providers.zz]\ntemplate.width = 12\n").unwrap();
+    let good: toml::Value =
+        toml::from_str("[client.providers.zz]\ntemplate.width = \"{{ 1 }}\"\n").unwrap();
+    let errors = Config::validate_layers(&[
+        (std::path::PathBuf::from("/a.toml"), bad.clone()),
+        (std::path::PathBuf::from("/b.toml"), good),
+        (std::path::PathBuf::from("/c.toml"), bad),
+    ]);
+    assert_eq!(
+        errors,
+        vec![
+            "config:/a.toml: [client.providers.zz] template 'width' is integer, not a value \
+             expression or a group."
+                .to_string(),
+            "config:/c.toml: [client.providers.zz] template 'width' is integer, not a value \
+             expression or a group."
+                .to_string(),
+        ]
+    );
+}
+
+#[test]
+fn an_empty_key_in_a_template_group_names_the_group() {
+    assert_eq!(
+        seeded_errors("[client.providers.x.template.g]\n\"\" = \"e\"\n"),
+        vec!["[client.providers.x] template.g has an empty key".to_string()]
+    );
+}
+
+#[test]
+fn an_empty_template_key_is_an_error() {
+    assert_eq!(
+        seeded_errors("[client.providers.x]\ntemplate.\"\" = \"e\"\n"),
+        vec!["[client.providers.x] template has an empty key".to_string()]
+    );
+}
+
+#[test]
+fn a_file_seeds_only_what_validated() {
+    let layer: toml::Value = toml::from_str(
+        "[client.providers.bad]\ntemplate.n = 1\n\n[client.providers.ok]\ntemplate.n = \"{{ 1 }}\"\n\n\
+         [daemon.providers.git.cache._]\ndecay = 0\n\n[daemon.providers._.cache._]\ndecay = 3\n",
+    )
+    .unwrap();
+    let read = crate::shape::seeded::read(std::path::Path::new("/f.toml"), &layer);
+    let mut namespaces: Vec<&str> = read.writes.iter().map(|(n, _)| n.as_str()).collect();
+    namespaces.sort();
+    assert_eq!(namespaces, ["*:cache", "ok:template"]);
+    assert_eq!(read.errors.len(), 2);
+}
+
+#[test]
+fn a_client_that_is_not_a_table_is_an_error() {
+    assert_eq!(
+        seeded_errors("client = \"oops\"\n"),
+        vec!["[client] must be a table".to_string()]
+    );
+}
+
+#[test]
+fn settings_only_keeps_a_non_cache_sibling_as_a_setting() {
+    let composed: toml::Value = toml::from_str(
+        "[daemon.providers.git]\nenabled = false\n\n[daemon.providers.git.cache._]\ndecay = 2\n",
+    )
+    .unwrap();
+    let settings = Config::settings_only(composed);
+    assert_eq!(
+        settings["daemon"]["providers"]["git"]["enabled"].as_bool(),
+        Some(false)
+    );
     assert!(
-        warnings.is_empty(),
-        "a key already reported as a settings key must not also warn: {warnings:?}"
+        settings["daemon"]["providers"]["git"]
+            .get("cache")
+            .is_none()
     );
 }
 

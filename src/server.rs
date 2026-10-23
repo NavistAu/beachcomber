@@ -1284,8 +1284,15 @@ async fn handle_request(
                 if node != "_.decay" {
                     return Response::error(format!("{key} is written by the daemon"));
                 }
-                if !data.is_null() && data.as_u64().is_none_or(|n| n < 1) {
-                    return Response::error(format!("{key} must be a positive integer"));
+                if !data.is_null()
+                    && !data
+                        .as_i64()
+                        .is_some_and(|n| (1..=crate::scheduler::lifecycle::MAX_DECAY).contains(&n))
+                {
+                    return Response::error(crate::scheduler::lifecycle::decay_error(
+                        key,
+                        &data.to_string(),
+                    ));
                 }
             }
 
@@ -1685,7 +1692,10 @@ async fn handle_introspect_providers(
             registry.provider_metadata(name).is_some(),
         );
 
-        let source_type = if is_static {
+        let sourceless = registry
+            .provider_metadata(name)
+            .is_some_and(|m| m.sources.is_empty());
+        let source_type = if is_static || sourceless {
             "static"
         } else if is_real {
             "builtin"

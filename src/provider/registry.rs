@@ -88,6 +88,24 @@ impl ProviderRegistry {
         Ok(())
     }
 
+    /// Register a provider only configuration names: it has zero
+    /// Sources, its templates and cache settings being data. This is the one
+    /// way to a provider with none; `register` refuses a provider that
+    /// declares no Sources. Returns false if the name is already registered.
+    pub fn register_config_named(&mut self, name: &str) -> bool {
+        if self.providers.contains_key(name) {
+            return false;
+        }
+        self.providers.insert(
+            name.to_string(),
+            ProviderMetadata {
+                name: name.to_string(),
+                sources: Vec::new(),
+            },
+        );
+        true
+    }
+
     // ── Lookup methods ───────────────────────────────────────────────────────
 
     /// Return the provider metadata for a given provider name.
@@ -398,6 +416,20 @@ impl ProviderRegistry {
             Err(e) => tracing::warn!("Error reading multi-source HTTP providers: {}", e),
         }
 
+        // ── Providers only the config names ───────────────────────────────────
+        // A provider exists if either root names it. One named only in
+        // `[client.providers]` or `[daemon.providers]` has no Source behind
+        // it: it is registered with zero. `_`, the prototype's name, is never
+        // one (`Config::named_providers`). A provider the config disables is
+        // not brought back by a template naming it: until a provider's
+        // settings and its Sources are one table, registering it with zero
+        // Sources would leave `[providers.<p>.<source>]` matching nothing.
+        for name in config.named_providers() {
+            if !config.is_provider_disabled(&name) {
+                registry.register_config_named(&name);
+            }
+        }
+
         registry
     }
 }
@@ -527,6 +559,36 @@ mod tests {
         let reg = registry_of("git", vec![ms("refs", vec!["branch"])]);
         assert!(reg.sources_for_key("git", "nonexistent").is_empty());
         assert!(reg.sources_for_key("nope", "branch").is_empty());
+    }
+
+    /// Only a provider the config names is a provider with zero Sources; one
+    /// that declares Sources and has none is refused, whatever its kind.
+    #[test]
+    fn a_provider_that_declares_no_sources_is_still_rejected() {
+        let mut reg = ProviderRegistry::new();
+        let err = reg
+            .register(Box::new(FakeProvider {
+                name: "x".into(),
+                sources: vec![],
+            }))
+            .unwrap_err();
+        assert!(err.contains("declares no sources"), "{err}");
+
+        let err = reg
+            .register(Box::new(
+                crate::provider::script::ScriptProvider::with_sources("s", vec![]),
+            ))
+            .unwrap_err();
+        assert!(err.contains("declares no sources"), "{err}");
+    }
+
+    #[test]
+    fn a_config_named_provider_has_zero_sources() {
+        let mut reg = ProviderRegistry::new();
+        assert!(reg.register_config_named("aws"));
+        assert!(reg.is_registered("aws"));
+        assert!(reg.provider_sources("aws").unwrap().is_empty());
+        assert!(!reg.register_config_named("aws"), "once");
     }
 
     #[test]

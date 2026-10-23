@@ -13,6 +13,17 @@ use crate::provider::InvalidationStrategy;
 /// Decay steps before eviction unless a lifecycle says otherwise.
 pub const DEFAULT_DECAY: u8 = 4;
 
+/// The most decay steps a prototype may name. A conservative bound: step `n`
+/// waits `2^n` times the base lifespan, so 2^16 is already far beyond any useful
+/// decay, and 32 would overflow the `1u32 << step` shift.
+pub const MAX_DECAY: i64 = 16;
+
+/// The message for a decay that is not an integer from 1 to [`MAX_DECAY`]:
+/// `key` is what the user addressed and `got` what they wrote there.
+pub fn decay_error(key: &str, got: &str) -> String {
+    format!("{key} must be an integer from 1 to {MAX_DECAY} (got {got})")
+}
+
 /// Poll interval a watch-only Source's Active window is measured in.
 pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 60;
 

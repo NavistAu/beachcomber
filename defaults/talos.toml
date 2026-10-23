@@ -1,3 +1,3 @@
-[providers."talos:template"]
+[client.providers.talos]
 # The talosctl context in effect, honouring the shell's own $TALOSCONFIG.
-context = "{{ (exec(['talosctl', 'config', 'info', '-o', 'json']) | fromjson).context }}"
+template.context = "{{ (exec(['talosctl', 'config', 'info', '-o', 'json']) | fromjson).context }}"

@@ -89,102 +89,6 @@ const SOURCE_KNOB_KEYS: &[&str] = &[
     "poll_secs",
 ];
 
-/// Keys that configure a provider rather than carry data about one. A facet
-/// table holds data only, so any of these appearing in one is a config error —
-/// `[providers."git:template"] enabled = false` looks like it disables `git`
-/// and does nothing at all.
-const FACET_SETTINGS_KEYS: &[&str] = &[
-    "enabled",
-    "backend",
-    "type",
-    "command",
-    "library_path",
-    "url",
-];
-
-/// Drop repeats, keeping the first of each. Two layers holding the same facet
-/// leaf produce the same message twice; the operator needs it once.
-fn dedup_preserving_order(messages: &mut Vec<String>) {
-    let mut seen = std::collections::HashSet::new();
-    messages.retain(|m| seen.insert(m.clone()));
-}
-
-/// Whether a key configures a provider rather than carrying data about one.
-fn is_facet_settings_key(key: &str) -> bool {
-    FACET_SETTINGS_KEYS.contains(&key) || SOURCE_KNOB_KEYS.contains(&key)
-}
-
-/// Validate one `[providers."<p>:<facet>"]` table: data only, nested with
-/// tables, and under `template` a tree whose leaves are value expressions.
-fn validate_facet_table(
-    namespace: &str,
-    facet: &str,
-    table: &toml::Table,
-    warnings: &mut Vec<String>,
-    errors: &mut Vec<String>,
-) {
-    let provider = namespace.split(':').next().unwrap_or(namespace);
-    for key in table.keys() {
-        if is_facet_settings_key(key) {
-            errors.push(format!(
-                "[providers.\"{namespace}\"] is a facet table and holds data only, \
-                 but '{key}' is a settings key. It belongs in [providers.{provider}]."
-            ));
-        }
-    }
-    validate_facet_tree(namespace, "", table, facet == "template", warnings, errors);
-}
-
-/// Walk a facet's tree.
-///
-/// A dotted key is an error in **every** facet, not only `template`: nesting is
-/// tables, so `"a.b"` names one record while addressing another, and the cache
-/// refuses the write anyway — without the check the whole namespace would
-/// silently lose that layer.
-///
-/// The non-string-leaf warning is `template`-only, because only a template's
-/// leaves have to be value expressions; any other facet is plain data.
-fn validate_facet_tree(
-    namespace: &str,
-    prefix: &str,
-    table: &toml::Table,
-    is_template: bool,
-    warnings: &mut Vec<String>,
-    errors: &mut Vec<String>,
-) {
-    for (key, value) in table {
-        // A settings key at the facet's root is already reported as an error;
-        // saying it is also not a value expression only adds noise.
-        if prefix.is_empty() && is_facet_settings_key(key) {
-            continue;
-        }
-        let addressed = if prefix.is_empty() {
-            key.clone()
-        } else {
-            format!("{prefix}.{key}")
-        };
-        if key.contains('.') {
-            errors.push(format!(
-                "[providers.\"{namespace}\"] key '{addressed}' contains a '.': a facet table \
-                 nests with tables, and a dotted key names one record while addressing another."
-            ));
-            continue;
-        }
-        match value {
-            toml::Value::Table(sub) => {
-                validate_facet_tree(namespace, &addressed, sub, is_template, warnings, errors)
-            }
-            toml::Value::String(_) => {}
-            other if is_template => warnings.push(format!(
-                "[providers.\"{namespace}\"] '{addressed}' is {}, not a value expression or a \
-                 group; it is dropped from the seed.",
-                other.type_str()
-            )),
-            _ => {}
-        }
-    }
-}
-
 /// Which resolution step supplied a socket path
 /// (canon singleton.md §"Canonical socket path resolution").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,10 +98,18 @@ pub enum SocketPathSource {
     Default,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub daemon: DaemonConfig,
+    /// `[client]`: what a client reads from the daemon's configuration; today
+    /// only `providers` (`[client.providers.<p>] template.<leaf> = "…"`, seeded
+    /// as `<p>:template.<leaf>`). A `toml::Value`, so that a `[client]` of the
+    /// wrong type still deserializes and the per-file check
+    /// (`Config::validate_seeded`) can report it, rather than `Config::load`
+    /// falling back to the default configuration.
+    #[serde(default = "empty_table")]
+    pub client: toml::Value,
     pub lifecycle: LifecycleConfig,
     pub failback: FailbackGlobalConfig,
     /// Raw TOML value for providers. Use accessor methods to get typed views.
@@ -211,7 +123,7 @@ pub struct Config {
     /// `Config::load()`; `None` for one built in memory or parsed from a
     /// string, which corresponds to no file at all.
     ///
-    /// The daemon seeds facet tables and watches for changes only when this is
+    /// The daemon seeds the config-seeded facets and watches for changes only when this is
     /// `Some`, so an embedded or test daemon handed a hand-built `Config` reads
     /// nothing from the ambient `~/.config/beachcomber`.
     #[serde(skip)]
@@ -237,6 +149,30 @@ pub struct DaemonConfig {
     /// Default: 3x watchdog_interval.
     /// Example: "90s", "3m".
     pub watchdog_threshold: Option<String>,
+    /// `[daemon.providers.<p>]`: what the daemon holds about a provider; so
+    /// far only `cache` (`[daemon.providers.<p>.cache._] decay = N`, seeded as
+    /// `<p>:cache._.decay`, and `*:cache` for `<p> = _`). A `toml::Value` for
+    /// the reason `Config::client` is one; the per-file check is
+    /// `Config::validate_seeded`.
+    #[serde(default = "empty_table")]
+    pub providers: toml::Value,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            daemon: DaemonConfig::default(),
+            client: empty_table(),
+            lifecycle: LifecycleConfig::default(),
+            failback: FailbackGlobalConfig::default(),
+            providers: HashMap::new(),
+            config_path: None,
+        }
+    }
+}
+
+fn empty_table() -> toml::Value {
+    toml::Value::Table(toml::Table::new())
 }
 
 impl Default for DaemonConfig {
@@ -248,6 +184,7 @@ impl Default for DaemonConfig {
             env_file: None,
             watchdog_interval: None,
             watchdog_threshold: None,
+            providers: empty_table(),
         }
     }
 }
@@ -1316,21 +1253,11 @@ impl Config {
                 None => continue,
             };
 
-            // A provider key with a colon in it is a facet namespace: a data
-            // table, never a settings block and never a source-block parent.
-            // The check runs first and takes the whole block with it, so
-            // `[providers."git:template"]` is never read as a source block for
-            // `git`.
-            match crate::query::parse_facet(prov_name) {
-                Err(msg) => {
-                    errors.push(format!("[providers.\"{prov_name}\"]: {msg}"));
-                    continue;
-                }
-                Ok(Some(facet)) => {
-                    validate_facet_table(prov_name, facet, table, &mut warnings, &mut errors);
-                    continue;
-                }
-                Ok(None) => {}
+            // A colon-named table is the removed facet-table form;
+            // `validate_seeded_tables` reports it and takes the whole table
+            // with it, so it is never read as a source block for its provider.
+            if prov_name.contains(':') {
+                continue;
             }
 
             // `path` was the path-expression setting: a client-side expression
@@ -1390,15 +1317,14 @@ impl Config {
                 }
 
                 // The 0.9 home of a provider's templates. Templates are data
-                // the daemon seeds from the `:template` facet table now
-                // (design §3.9, outcome 15), so this block is unrecognised —
-                // and the one unrecognised block whose error says where its
-                // contents went, because a config written against 0.9 will
-                // carry it.
+                // the daemon seeds from `[client.providers.<p>] template`
+                // now, so this block is unrecognised — and the one
+                // unrecognised block whose error says where its contents
+                // went, because a config written against 0.9 will carry it.
                 if sub_key == "virtual" {
                     errors.push(format!(
                         "unrecognised block [providers.{prov_name}.virtual]: \
-                         templates live in [providers.\"{prov_name}:template\"]"
+                         templates live in [client.providers.{prov_name}] template.<leaf>"
                     ));
                     continue;
                 }
@@ -1593,56 +1519,88 @@ impl Config {
         }
     }
 
-    /// The facet tables of one layer: every `[providers."<p>:<facet>"]` block,
-    /// as (namespace, table). A key whose facet syntax is malformed is left out
-    /// — `validate_providers` reports it as an error and the daemon does not
-    /// start.
-    pub fn facet_tables(layer: &toml::Value) -> Vec<(&str, &toml::Table)> {
-        let Some(providers) = layer.get("providers").and_then(|v| v.as_table()) else {
+    /// The errors in the files this configuration composes from, in the two
+    /// roots the daemon seeds from (`crate::shape::seeded::read`): checked per
+    /// file because seeding is per file, so a rule broken in one file is not
+    /// hidden by another file's value winning the merge. Empty for a `Config`
+    /// built in memory, which corresponds to no file and seeds nothing.
+    pub fn validate_seeded(&self) -> Vec<String> {
+        let Some(config_path) = &self.config_path else {
             return Vec::new();
         };
-        providers
+        let layers = Self::layers(
+            Some(&Self::defaults_dir_for(config_path)),
+            Some(config_path),
+            &Self::conf_d_dir_for(config_path),
+        );
+        Self::validate_layers(&layers)
+    }
+
+    /// `validate_seeded` over layers already read (a reload's).
+    pub fn validate_layers(layers: &[(PathBuf, toml::Value)]) -> Vec<String> {
+        layers
             .iter()
-            .filter(|(name, _)| matches!(crate::query::parse_facet(name), Ok(Some(_))))
-            .filter_map(|(name, val)| Some((name.as_str(), val.as_table()?)))
+            .flat_map(|(file, layer)| crate::shape::seeded::read(file, layer).errors)
             .collect()
     }
 
-    /// Run the facet rules over a set of layers rather than over a composed
-    /// `Config` — the same checks `validate_providers` applies at startup,
-    /// against the files a re-seed is about to write. Returns (warnings,
-    /// errors); an identical message from two layers is reported once.
-    pub fn validate_facet_layers(layers: &[(PathBuf, toml::Value)]) -> (Vec<String>, Vec<String>) {
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        for (_, layer) in layers {
-            let Some(providers) = layer.get("providers").and_then(|v| v.as_table()) else {
-                continue;
+    /// The names the two roots give providers, `_` excluded: a provider exists
+    /// if either root names it. The registry registers those no code or source
+    /// block already stands behind, with zero Sources.
+    pub fn named_providers(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for (root, client) in [(&self.client, true), (&self.daemon.providers, false)] {
+            // `[client]` nests the table under `providers`; `[daemon.providers]` is it.
+            let table = if client {
+                root.get("providers")
+            } else {
+                Some(root)
             };
-            for (name, value) in providers {
-                match crate::query::parse_facet(name) {
-                    Err(msg) => errors.push(format!("[providers.\"{name}\"]: {msg}")),
-                    Ok(Some(facet)) => {
-                        if let Some(table) = value.as_table() {
-                            validate_facet_table(name, facet, table, &mut warnings, &mut errors);
-                        }
-                    }
-                    Ok(None) => {}
+            for name in table
+                .and_then(|t| t.as_table())
+                .into_iter()
+                .flat_map(|t| t.keys())
+            {
+                if name != "_"
+                    && crate::shape::seeded::provider_name_error("", name, client).is_none()
+                {
+                    names.push(name.clone());
                 }
             }
         }
-        dedup_preserving_order(&mut warnings);
-        dedup_preserving_order(&mut errors);
-        (warnings, errors)
+        names.sort();
+        names.dedup();
+        names
     }
 
-    /// The composed value with every facet table removed: the half of
-    /// configuration a change has to touch for a restart to be warranted. The
+    /// The composed value with the config-seeded tables removed: the half of
+    /// configuration a change has to touch for a restart to be warranted. That
+    /// is `[client.providers]` and every `[daemon.providers.<p>.cache]` table. The
     /// config self-watch compares this before and after
     /// (`crate::daemon::config_watch::ChangeKind`).
     pub fn settings_only(mut composed: toml::Value) -> toml::Value {
-        if let Some(providers) = composed.get_mut("providers").and_then(|v| v.as_table_mut()) {
-            providers.retain(|name, _| !name.contains(':'));
+        if let Some(client) = composed.get_mut("client").and_then(|v| v.as_table_mut()) {
+            client.remove("providers");
+            if client.is_empty() {
+                composed.as_table_mut().map(|t| t.remove("client"));
+            }
+        }
+        if let Some(daemon) = composed.get_mut("daemon").and_then(|v| v.as_table_mut()) {
+            if let Some(providers) = daemon.get_mut("providers").and_then(|v| v.as_table_mut()) {
+                for (_, provider) in providers.iter_mut() {
+                    if let Some(table) = provider.as_table_mut() {
+                        table.remove("cache");
+                    }
+                }
+                providers.retain(|_, v| !v.as_table().is_some_and(|t| t.is_empty()));
+            }
+            if daemon
+                .get("providers")
+                .and_then(|v| v.as_table())
+                .is_some_and(|t| t.is_empty())
+            {
+                daemon.remove("providers");
+            }
         }
         composed
     }

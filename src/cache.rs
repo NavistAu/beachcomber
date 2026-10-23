@@ -1465,7 +1465,11 @@ impl Cache {
                     };
                     Self::merge_static_records(&entry, None, &mut out);
                     match crate::provider::lookup_path(&out.fields, "_.decay")? {
-                        Value::Int(n) if *n >= 1 => Some(u8::try_from(*n).unwrap_or(u8::MAX)),
+                        Value::Int(n)
+                            if (1..=crate::scheduler::lifecycle::MAX_DECAY).contains(n) =>
+                        {
+                            u8::try_from(*n).ok()
+                        }
                         _ => None,
                     }
                 })
@@ -2511,6 +2515,17 @@ mod tests {
         );
         cache.remove_source("p", None, "s");
         assert_eq!(cache.resolve_decay("p", None), 2);
+    }
+
+    #[test]
+    fn a_stored_decay_outside_the_range_is_not_a_prototype() {
+        let cache = Cache::new();
+        for (n, expected) in [(16, 16), (17, 4), (0, 4)] {
+            cache
+                .write_static("p:cache", None, PUT_SOURCE, "_.decay", Value::Int(n), None)
+                .unwrap();
+            assert_eq!(cache.resolve_decay("p", None), expected, "decay {n}");
+        }
     }
 
     #[test]

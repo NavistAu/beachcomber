@@ -479,7 +479,7 @@ cargo test -p beachcomber provider::dockercontext
 Some providers serve raw data sets that clients consume through templates. The pattern separates two concerns:
 
 - **Data provider** — a daemon provider that caches all variants of an env-selected source. Its name is descriptive of the data it holds (e.g. `aws_profiles`, `gcloud_configs`). Each field is a variant keyed by name, each value an object of per-variant fields. The daemon caches the whole set regardless of any shell selector.
-- **Consumer namespace** — a `[providers."<ns>:template"]` table, shipped as a managed `defaults/<ns>.toml` file, whose templates present the user-facing surface (e.g. `aws`, `gcloud`). These reference `comb.<data_provider>[<selector>].<field>` to index the data provider by the active selector; the daemon serves the templates as data and the client renders them with the caller's environment.
+- **Consumer namespace** — a `[client.providers.<ns>] template.*` table, shipped as a managed `defaults/<ns>.toml` file, whose templates present the user-facing surface (e.g. `aws`, `gcloud`). These reference `comb.<data_provider>[<selector>].<field>` to index the data provider by the active selector; the daemon serves the templates as data and the client renders them with the caller's environment.
 
 ```
 # data provider: daemon-side, env-blind
@@ -487,9 +487,9 @@ aws_profiles.default  → Object{ region: "us-east-1" }
 aws_profiles.staging  → Object{ region: "us-west-2" }
 
 # consumer namespace: templates in defaults/aws.toml, rendered by the client
-[providers."aws:template"]
-profile = "{{ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or 'default' }}"
-region  = "{{ env.AWS_REGION or env.AWS_DEFAULT_REGION
+[client.providers.aws]
+template.profile = "{{ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or 'default' }}"
+template.region = "{{ env.AWS_REGION or env.AWS_DEFAULT_REGION
               or comb.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT
                                      or env.AWS_DEFAULT_PROFILE or 'default' ].region }}"
 ```
@@ -506,8 +506,8 @@ This matters when a template needs to override a same-named cached value — a t
 
 ```
 # defaults/terraform.toml: the template at terraform.workspace overrides the cached workspace without a cycle
-[providers."terraform:template"]
-workspace = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}"
+[client.providers.terraform]
+template.workspace = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}"
 ```
 
 `comb.terraform.workspace` is the stored value; `terraform.workspace` is the resolved field. No self-reference, no rename needed.

@@ -137,10 +137,11 @@ async fn run_daemon_with_cancel(
     // Validate provider config blocks against registered sources.
     // Errors → refuse to start. Warnings → log and continue.
     {
-        let (warnings, errors) = config.validate_providers(
+        let (warnings, mut errors) = config.validate_providers(
             &registry.provider_names(),
             &registry.source_names_by_provider(),
         );
+        errors.extend(config.validate_seeded());
         for w in &warnings {
             tracing::warn!("{}", w);
         }

@@ -108,7 +108,7 @@ fn a_shipped_name_without_a_marker_is_rewritten() {
 fn a_current_file_is_left_alone_even_when_edited_below_the_marker() {
     let tmp = TempDir::new().unwrap();
     let edited = format!(
-        "{}\n[providers.\"python:template\"]\nversion = \"mine\"\n",
+        "{}\n[client.providers.python]\ntemplate.version = \"mine\"\n",
         marker(V)
     );
     std::fs::write(tmp.path().join("python.toml"), &edited).unwrap();
@@ -250,19 +250,33 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
     let mut checked = 0;
     for (name, body) in SHIPPED {
         let parsed: toml::Value = toml::from_str(body).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let providers = parsed["providers"].as_table().unwrap();
-        assert_eq!(providers.len(), 1, "{name}: one facet table per file");
-        for (namespace, table) in providers {
-            // The cache prototype is data, not a template; its own test below.
-            if namespace.ends_with(":cache") {
-                continue;
-            }
+        // `00-comb.toml` holds the decay prototype, which is data, not a
+        // template; its own tests are below.
+        let Some(providers) = parsed
+            .get("client")
+            .and_then(|c| c.get("providers"))
+            .and_then(|p| p.as_table())
+        else {
             assert_eq!(
-                namespace,
-                &format!("{}:template", name.trim_end_matches(".toml")),
-                "{name}: the table is the namespace's template facet"
+                *name, "00-comb.toml",
+                "{name}: templates live in [client.providers]"
             );
-            for (field, leaf) in table.as_table().unwrap() {
+            continue;
+        };
+        assert_eq!(providers.len(), 1, "{name}: one provider per file");
+        for (provider, table) in providers {
+            assert_eq!(
+                provider,
+                name.trim_end_matches(".toml"),
+                "{name}: the table names the file's provider"
+            );
+            let table = table.as_table().unwrap();
+            assert_eq!(
+                table.keys().collect::<Vec<_>>(),
+                ["template"],
+                "{name}: a client provider holds only its template"
+            );
+            for (field, leaf) in table["template"].as_table().unwrap() {
                 let src = leaf
                     .as_str()
                     .unwrap_or_else(|| panic!("{name}: {field} is not a string"));
@@ -281,18 +295,71 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
     assert_eq!(checked, 13, "every shipped template is covered");
 }
 
+/// The file-versus-constant pin: the decay the shipped prototype writes is the
+/// one `lifecycle::DEFAULT_DECAY` is, so a daemon with managed defaults and an
+/// in-process one with none agree.
 #[test]
-fn the_shipped_cache_prototype_is_the_decay_default() {
+fn the_shipped_default_matches_default_decay() {
     let (_, body) = SHIPPED
         .iter()
         .find(|(name, _)| *name == "00-comb.toml")
         .expect("00-comb.toml is shipped");
     let parsed: toml::Value = toml::from_str(body).unwrap();
-    let decay = parsed["providers"]["*:cache"]["_"]["decay"].as_integer();
+    let decay = parsed["daemon"]["providers"]["_"]["cache"]["_"]["decay"].as_integer();
     assert_eq!(
         decay,
         Some(i64::from(beachcomber::scheduler::lifecycle::DEFAULT_DECAY))
     );
+}
+
+/// Seeding the managed defaults stores the shipped `*:cache` prototype, labelled
+/// with the file it came from, and a provider with none of its own resolves
+/// decay 4 through it.
+#[test]
+fn the_shipped_cache_prototype_is_the_decay_default() {
+    let home = TempDir::new().unwrap();
+    let cfg = TempDir::new().unwrap();
+    // SAFETY: nextest gives every test its own process, so no other thread is
+    // reading the environment concurrently.
+    unsafe { std::env::set_var("HOME", home.path().canonicalize().unwrap()) };
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", cfg.path()) };
+    let cfg_dir = cfg.path().join("beachcomber");
+    write_managed_defaults(&cfg_dir.join("defaults"), V).unwrap();
+    std::fs::write(cfg_dir.join("config.toml"), "").unwrap();
+
+    let cache = beachcomber::cache::Cache::new();
+    let registry = beachcomber::provider::registry::ProviderRegistry::with_defaults();
+    let config = beachcomber::config::Config::load();
+    beachcomber::daemon::seed::seed_facets(
+        &cache,
+        &registry,
+        &beachcomber::config::Config::layers(
+            Some(&beachcomber::config::Config::defaults_dir_for(
+                config.config_path.as_deref().unwrap(),
+            )),
+            config.config_path.as_deref(),
+            &beachcomber::config::Config::conf_d_dir_for(config.config_path.as_deref().unwrap()),
+        ),
+    );
+    // `resolve_decay` alone would pass with nothing seeded (it falls back to
+    // `DEFAULT_DECAY`), so assert the record itself and its file label.
+    let rows: Vec<_> = cache
+        .list_rows()
+        .into_iter()
+        .filter(|r| r.provider == "*:cache" && r.field == "_")
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "00-comb.toml seeds the *:cache `_` prototype: {rows:?}"
+    );
+    assert!(
+        rows[0].source.starts_with("config:") && rows[0].source.ends_with("defaults/00-comb.toml"),
+        "labelled with the defaults file, got {}",
+        rows[0].source
+    );
+    assert_eq!(rows[0].value, json!({"decay": 4}));
+    assert_eq!(cache.resolve_decay("hostname", None), 4);
 }
 
 // ── the daemon seeds them as the lowest layer ────────────────────────────────
@@ -335,7 +402,7 @@ async fn row_source(stream: &mut tokio::net::UnixStream, provider: &str, field: 
 fn shipped_leaf(name: &str, field: &str) -> String {
     let body = SHIPPED.iter().find(|(n, _)| *n == name).unwrap().1;
     let parsed: toml::Value = toml::from_str(body).unwrap();
-    parsed["providers"][format!("{}:template", name.trim_end_matches(".toml"))][field]
+    parsed["client"]["providers"][name.trim_end_matches(".toml")]["template"][field]
         .as_str()
         .unwrap()
         .to_string()
@@ -354,7 +421,7 @@ async fn the_daemon_seeds_defaults_beneath_config_and_conf_d() {
     std::fs::write(cfg_dir.join("config.toml"), "").unwrap();
     std::fs::write(
         cfg_dir.join("conf.d").join("10-mine.toml"),
-        "[providers.\"python:template\"]\nversion = \"{{ env.MY_PY }}\"\n",
+        "[client.providers.python]\ntemplate.version = \"{{ env.MY_PY }}\"\n",
     )
     .unwrap();
     write_managed_defaults(&cfg_dir.join("defaults"), V).unwrap();

@@ -1,16 +1,24 @@
-//! Seeding facet namespaces from configuration (spec §3.1, §3.2, §3.9).
+//! Seeding the config-seeded facets (spec §3.1, §3.2, §3.9).
 //!
-//! Every `[providers."<p>:<facet>"]` table in configuration is written into the
-//! cache at namespace `<p>:<facet>` and the global path, each record labelled
-//! `config:<file>` with the file that set it. Layers are written in composition
-//! order — `defaults/*.toml` lexically, then the main config file, then
+//! Two tables in configuration are data the daemon writes into the cache, and
+//! nothing else is seeded from config:
+//!
+//! - `[client.providers.<p>] template` → namespace `<p>:template`, whose string
+//!   leaves are value expressions the client renders;
+//! - `[daemon.providers.<p>.cache]` → namespace `<p>:cache` (`*:cache` for the
+//!   abstract provider `<p> = _`), whose only key is the `_.decay` prototype.
+//!
+//! What each file seeds, and what is wrong with it, comes from one per-file
+//! parse (`crate::shape::seeded::read`). Each is written at the global path, every record labelled `config:<file>`
+//! with the file that set it. Layers are written in composition order —
+//! `defaults/*.toml` lexically, then the main config file, then
 //! `conf.d/*.toml` lexically — with the deep-merge semantics
 //! `Cache::write_static` gives a `put`. A record two files
 //! set ends up labelled by the later one (a `config:` write moves a record out of
 //! whichever earlier `config:` map held it), and a record only the earlier file set keeps
 //! its own label.
 //!
-//! Settings still compose by deep merge. Facet tables deliberately do not: the
+//! Settings still compose by deep merge. These tables deliberately do not: the
 //! merge would collapse the layers into one value and the file a record came
 //! from — the thing `comb status` shows as its source — would be gone before it
 //! reached the cache.
@@ -29,7 +37,7 @@ use tokio_util::sync::CancellationToken;
 /// order.
 type Writes = Vec<(String, Value)>;
 
-/// Seed the facet tables of `config`'s files and watch them for changes.
+/// Seed the config-seeded tables of `config`'s files and watch them for changes.
 ///
 /// Both halves are gated on `Config::config_path`, which only a
 /// `Config::load()` sets: a daemon handed a `Config` built in memory (an
@@ -92,11 +100,16 @@ pub fn spawn_config_seeding(
     );
 }
 
-/// Write every facet table of every layer into the cache, one `write_static`
-/// per (layer, namespace). Used at daemon start, where `validate_providers` has
-/// already passed over the composed configuration. Refusals are logged.
+/// Write every seeded table of every layer into the cache, one `write_static`
+/// per (layer, namespace). Used at daemon start, where startup validation has
+/// already refused any file with an error; what a file with an error would have
+/// seeded is not written, only what validated. Refusals are logged.
 pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, layers: &[(PathBuf, toml::Value)]) {
-    for (namespace, writes) in plan(layers) {
+    let (planned, errors) = plan(layers);
+    for e in &errors {
+        tracing::error!("{e}");
+    }
+    for (namespace, writes) in planned {
         registry.register_static(&namespace);
         for (label, value) in writes {
             if let Err(e) = cache.write_static(&namespace, None, &label, "", value, None) {
@@ -125,23 +138,19 @@ pub fn reseed_facets(
     registry: &ProviderRegistry,
     layers: &[(PathBuf, toml::Value)],
 ) {
-    let (warnings, errors) = Config::validate_facet_layers(layers);
-    for w in &warnings {
-        tracing::warn!("{}", w);
-    }
+    let (mut planned, errors) = plan(layers);
     if !errors.is_empty() {
         for e in &errors {
             tracing::error!("{}", e);
         }
         tracing::error!(
-            "configuration facet tables changed but are not valid ({} error(s)); \
+            "configuration seeded tables changed but are not valid ({} error(s)); \
              keeping the current seed",
             errors.len()
         );
         return;
     }
 
-    let mut planned = plan(layers);
     // A namespace the layers no longer mention still holds the records the last
     // seed left there: visit it with an empty write list so the drop happens.
     for namespace in cache.global_namespaces_with_label_prefix(CONFIG_SOURCE_PREFIX) {
@@ -156,44 +165,22 @@ pub fn reseed_facets(
     }
 }
 
-/// The write list per facet namespace, in composition order. Pure: registering
-/// the namespaces is the caller's, so the plan can be built and inspected
-/// without touching the registry.
-fn plan(layers: &[(PathBuf, toml::Value)]) -> HashMap<String, Writes> {
+/// The write list per facet namespace, in composition order, and every file's
+/// errors. Pure: registering the namespaces is the caller's, so the plan can be
+/// built and inspected without touching the registry.
+fn plan(layers: &[(PathBuf, toml::Value)]) -> (HashMap<String, Writes>, Vec<String>) {
     let mut out: HashMap<String, Writes> = HashMap::new();
+    let mut errors = Vec::new();
     for (file, layer) in layers {
         let label = Config::config_label(file);
-        for (namespace, table) in Config::facet_tables(layer) {
-            let is_template =
-                crate::query::parse_facet(namespace).ok().flatten() == Some("template");
-            let value =
-                Value::from_json(&facet_json(table, is_template)).expect("TOML has no null");
-            out.entry(namespace.to_string())
+        let read = crate::shape::seeded::read(file, layer);
+        errors.extend(read.errors);
+        for (namespace, tree) in read.writes {
+            let value = Value::from_json(&tree).expect("TOML has no null");
+            out.entry(namespace)
                 .or_default()
                 .push((label.clone(), value));
         }
     }
-    out
-}
-
-/// One facet table as the JSON tree the cache stores: the TOML maps 1:1, with
-/// nested tables becoming objects and a datetime as the text it was written as
-/// (serde would render it as a private tagged object nobody can address).
-///
-/// Under `template` a leaf that is neither a string nor a table is not a value
-/// expression, so it is dropped — validation has already warned about it by
-/// name.
-fn facet_json(table: &toml::Table, is_template: bool) -> serde_json::Value {
-    let mut out = serde_json::Map::new();
-    for (key, value) in table {
-        let converted = match value {
-            toml::Value::Table(sub) => facet_json(sub, is_template),
-            toml::Value::String(s) => serde_json::Value::String(s.clone()),
-            _ if is_template => continue,
-            toml::Value::Datetime(d) => serde_json::Value::String(d.to_string()),
-            other => serde_json::to_value(other).unwrap_or(serde_json::Value::Null),
-        };
-        out.insert(key.clone(), converted);
-    }
-    serde_json::Value::Object(out)
+    (out, errors)
 }

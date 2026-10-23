@@ -187,7 +187,7 @@ eu-west-1
 
 ## Template-backed namespaces
 
-Not every `comb g` namespace is a daemon provider. The managed `defaults/` files the daemon writes to `~/.config/beachcomber/defaults/` declare templates under `[providers."<namespace>:template"]`; the daemon serves them as data and the client renders them with the caller's environment (see [Configuration Reference — Templates](/docs/reference/configuration-reference#templates-and-value-expressions)). Override one field by setting the same key in `config.toml` or `conf.d/`.
+A `comb g` namespace need not have a Source behind it: a provider named only in `[client.providers]` has templates and no Sources. The managed `defaults/` files the daemon writes to `~/.config/beachcomber/defaults/` declare templates under `[client.providers.<namespace>] template.*`; the daemon serves them as data and the client renders them with the caller's environment (see [Configuration Reference — Templates](/docs/reference/configuration-reference#templates-and-value-expressions)). Override one field by setting the same key in `config.toml` or `conf.d/`.
 
 | Namespace | Default file | Fields | Renders from |
 |---|---|---|---|

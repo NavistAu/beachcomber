@@ -232,7 +232,7 @@ fn a_facet_only_edit_classifies_as_facets_only() {
     let cfg = tmp.path().join("config.toml");
     std::fs::write(
         &cfg,
-        "[daemon]\nlog_level = \"debug\"\n\n[providers.\"x:template\"]\na = \"1\"\n",
+        "[daemon]\nlog_level = \"debug\"\n\n[client.providers.x]\ntemplate.a = \"1\"\n",
     )
     .unwrap();
 
@@ -240,7 +240,7 @@ fn a_facet_only_edit_classifies_as_facets_only() {
 
     std::fs::write(
         &cfg,
-        "[daemon]\nlog_level = \"debug\"\n\n[providers.\"x:template\"]\na = \"2\"\n",
+        "[daemon]\nlog_level = \"debug\"\n\n[client.providers.x]\ntemplate.a = \"2\"\n",
     )
     .unwrap();
     touch_future(&cfg);
@@ -248,7 +248,36 @@ fn a_facet_only_edit_classifies_as_facets_only() {
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(3)),
         Ok(ChangeKind::FacetsOnly),
-        "only a facet table changed — the daemon re-seeds instead of restarting"
+        "only a client template changed — the daemon re-seeds instead of restarting"
+    );
+}
+
+#[test]
+fn a_decay_table_edit_classifies_as_facets_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    std::fs::write(
+        &cfg,
+        "[daemon]\nlog_level = \"debug\"\n\n[daemon.providers.git.cache._]\ndecay = 2\n",
+    )
+    .unwrap();
+
+    let (_watch, rx) = watch(cfg.clone(), 50);
+
+    // The edit changes a decay and adds a provider whose only table is its
+    // cache: neither is a setting the daemon reads once at startup.
+    std::fs::write(
+        &cfg,
+        "[daemon]\nlog_level = \"debug\"\n\n[daemon.providers.git.cache._]\ndecay = 3\n\n\
+         [daemon.providers.other.cache._]\ndecay = 1\n",
+    )
+    .unwrap();
+    touch_future(&cfg);
+
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)),
+        Ok(ChangeKind::FacetsOnly),
+        "only daemon.providers.<p>.cache tables changed — re-seed, not restart"
     );
 }
 
