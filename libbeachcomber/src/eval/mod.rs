@@ -19,6 +19,7 @@ pub use scan::{Tag, TagKind, scan_tags};
 
 use crate::engine::{EngineCtx, build_engine_env};
 use crate::virtual_fields::{Ref, discover_expression_refs, refs_from_names};
+use minijinja::Environment;
 use minijinja::value::Value as MjValue;
 use std::sync::Arc;
 
@@ -213,6 +214,16 @@ pub(crate) fn render_template_with(
     ctx: Arc<EngineCtx>,
 ) -> Result<String, RenderError> {
     let mut env = build_engine_env(ctx);
+    render_none_as_empty(&mut env);
+    let template = env.template_from_str(src).map_err(RenderError::Compile)?;
+    template
+        .render(MjValue::from_serialize(context))
+        .map_err(RenderError::Render)
+}
+
+/// Make a `none` printed inside text render as nothing instead of the word
+/// `none`. The one place that rule is installed.
+pub fn render_none_as_empty(env: &mut Environment<'_>) {
     env.set_formatter(|out, state, value| {
         if value.is_none() {
             Ok(())
@@ -220,10 +231,68 @@ pub(crate) fn render_template_with(
             minijinja::escape_formatter(out, state, value)
         }
     });
-    let template = env.template_from_str(src).map_err(RenderError::Compile)?;
-    template
-        .render(MjValue::from_serialize(context))
-        .map_err(RenderError::Render)
+}
+
+/// Evaluate one line against `context` (a JSON object of the line's
+/// top-level names) in `env`: exactly one `{{ }}` keeps its expression's type,
+/// converted the way the client converts it; any other mix is a string with
+/// `none` printed as nothing; text with no tags is literal. A `none` or
+/// undefined result is `Ok(None)`: absent. The caller installs
+/// [`render_none_as_empty`] when it builds `env`. Errors are messages; they
+/// never include the context.
+pub fn eval_line(
+    env: &Environment<'_>,
+    src: &str,
+    context: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, String> {
+    let context = MjValue::from_serialize(context);
+    match single_tag_expression(src) {
+        Some(expr) => {
+            let value = env
+                .compile_expression(expr)
+                .and_then(|compiled| compiled.eval(context))
+                .map_err(|e| e.to_string())?;
+            if value.is_undefined() || value.is_none() {
+                return Ok(None);
+            }
+            Ok(Some(crate::virtual_fields::mj_to_json(value)))
+        }
+        None => env
+            .render_str(src, context)
+            .map(|s| Some(serde_json::Value::String(s)))
+            .map_err(|e| e.to_string()),
+    }
+}
+
+/// The variables `src` reads that nothing in it declares: the names a context
+/// must supply. Functions and filters are not variables. A source that does
+/// not compile is an `Err`.
+///
+/// Not `nested`, each is a top-level name (`comb`). `nested`, each is the
+/// path read (`comb.aws.region`), and a bare name means the variable is used
+/// other than by attribute (`comb['aws']`, `comb | length`).
+pub fn undeclared_names(
+    env: &Environment<'_>,
+    src: &str,
+    nested: bool,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let names = match single_tag_expression(src) {
+        Some(expr) => env
+            .compile_expression(expr)
+            .map_err(|e| e.to_string())?
+            .undeclared_variables(nested),
+        None => env
+            .template_from_str(src)
+            .map_err(|e| e.to_string())?
+            .undeclared_variables(nested),
+    };
+    // A registered function called in a template (`exec(...)`) is reported
+    // too: it is not a name the context supplies.
+    let globals: std::collections::HashSet<&str> = env.globals().map(|(name, _)| name).collect();
+    Ok(names
+        .into_iter()
+        .filter(|name| !globals.contains(name.as_str()))
+        .collect())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -357,5 +426,83 @@ mod tests {
         let ctx = serde_json::json!({"git": {"branch": "main"}});
         let out = render_template("{{ git.branch | fg('#00ff00') }}", &ctx).unwrap();
         assert_eq!(out, "\x1b[38;2;0;255;0mmain\x1b[0m");
+    }
+}
+
+#[cfg(test)]
+mod line_tests {
+    use super::{eval_line, render_none_as_empty, undeclared_names};
+    use crate::engine::build_engine_env;
+    use serde_json::json;
+
+    fn run(src: &str, context: serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+        {
+            let mut env = build_engine_env(Default::default());
+            render_none_as_empty(&mut env);
+            eval_line(&env, src, &context)
+        }
+    }
+
+    #[test]
+    fn one_tag_keeps_the_clients_type() {
+        assert_eq!(run("{{ 1 }}", json!({})).unwrap(), Some(json!(1)));
+        assert_eq!(run("{{ true }}", json!({})).unwrap(), Some(json!(true)));
+        assert_eq!(
+            run("{{ 4 / 2 }}", json!({})).unwrap(),
+            Some(json!(2)),
+            "the number type the client's mj_to_json produces"
+        );
+        assert_eq!(
+            run("{{ d }}", json!({"d": {"a": [1, "x"]}})).unwrap(),
+            Some(json!({"a": [1, "x"]}))
+        );
+    }
+
+    #[test]
+    fn a_mix_is_a_string_and_no_tags_is_literal() {
+        assert_eq!(run("x{{ 1 }}", json!({})).unwrap(), Some(json!("x1")));
+        assert_eq!(run("{{ 1 }}{{ 2 }}", json!({})).unwrap(), Some(json!("12")));
+        assert_eq!(run("lit", json!({})).unwrap(), Some(json!("lit")));
+    }
+
+    #[test]
+    fn none_and_undefined_are_absent_and_none_in_text_is_nothing() {
+        assert_eq!(run("{{ none }}", json!({})).unwrap(), None);
+        assert_eq!(run("{{ nope.x }}", json!({})).unwrap(), None);
+        assert_eq!(run("a{{ none }}b", json!({})).unwrap(), Some(json!("ab")));
+    }
+
+    #[test]
+    fn errors_are_strings() {
+        assert!(run("{{ 'a' + 1 }}", json!({})).is_err());
+        assert!(run("{{ ", json!({})).is_err());
+    }
+
+    #[test]
+    fn undeclared_names_are_the_top_level_variables() {
+        let env = build_engine_env(Default::default());
+        let names = |src: &str| undeclared_names(&env, src, false).unwrap();
+        assert_eq!(
+            names("{{ comb.a.b ~ env.X }}")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["comb", "env"]
+        );
+        assert_eq!(
+            names("a {{ data | trim }} {{ exec('x') }}")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["data"]
+        );
+        assert!(undeclared_names(&env, "{{ ", false).is_err());
+        let nested = |src: &str| undeclared_names(&env, src, true).unwrap();
+        assert!(
+            nested("{{ comb.a.b }}")
+                .iter()
+                .all(|n| n.starts_with("comb."))
+        );
+        assert!(nested("{{ comb['a'].b }}").contains("comb"));
+        assert!(nested("{{ comb | length }}").contains("comb"));
+        assert!(!nested("{{ comb.a['b'] }}").contains("comb"));
     }
 }

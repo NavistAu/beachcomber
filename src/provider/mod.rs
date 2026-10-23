@@ -1,6 +1,7 @@
 pub mod asdf;
 pub mod aws;
 pub mod battery;
+pub mod config_source;
 pub mod direnv;
 pub mod gcloud;
 pub mod git;
