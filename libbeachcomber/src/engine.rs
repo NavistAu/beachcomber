@@ -104,13 +104,19 @@ fn read(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
     }
 }
 
-fn resolve_path(ctx: &EngineCtx, p: &str) -> PathBuf {
-    let expanded = match (p.strip_prefix('~'), ctx.env.get("HOME")) {
+/// `p` with a leading `~` replaced by `ctx.env["HOME"]` (when set); any other
+/// `p` is returned as is.
+pub fn expand_home(ctx: &EngineCtx, p: &str) -> PathBuf {
+    match (p.strip_prefix('~'), ctx.env.get("HOME")) {
         (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
             PathBuf::from(format!("{home}{rest}"))
         }
         _ => PathBuf::from(p),
-    };
+    }
+}
+
+fn resolve_path(ctx: &EngineCtx, p: &str) -> PathBuf {
+    let expanded = expand_home(ctx, p);
     match &ctx.cwd {
         Some(cwd) => cwd.join(expanded),
         None => expanded,
@@ -353,7 +359,8 @@ fn map(state: &State, value: MjValue, args: Rest<MjValue>) -> Result<MjValue, Er
     Ok(MjValue::from_iter(out))
 }
 
-fn op_error(message: impl Into<std::borrow::Cow<'static, str>>) -> Error {
+/// An `InvalidOperation` error, the one every engine function fails with.
+pub fn op_error(message: impl Into<std::borrow::Cow<'static, str>>) -> Error {
     Error::new(ErrorKind::InvalidOperation, message)
 }
 

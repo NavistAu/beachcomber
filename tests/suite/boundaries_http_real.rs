@@ -6,7 +6,7 @@
 //!
 //! Coverage paths exercised:
 //!   - GET request happy path (200)
-//!   - GET request with 404 (ureq 3 treats 4xx as Err by default)
+//!   - GET request with 404 (returned as a response; the caller judges the status)
 //!   - POST with request body
 //!   - PUT with request body
 //!   - PATCH with request body
@@ -44,12 +44,12 @@ fn get_200_returns_ok_with_body() {
     assert_eq!(resp.body, b"hello world");
 }
 
-// ── GET 404 returns Err (ureq 3 behaviour) ───────────────────────────────────
+// ── Non-2xx statuses are responses, not errors ───────────────────────────────
 
-/// ureq 3 treats 4xx responses as errors by default.
-/// Verify that `UreqHttpFetcher::fetch` returns `Err` for a 404 response.
+/// The fetcher reports 4xx and 5xx as ordinary responses; each caller judges
+/// the status.
 #[test]
-fn get_404_returns_err() {
+fn get_404_returns_the_response() {
     let mut server = Server::new();
     let _mock = server
         .mock("GET", "/missing")
@@ -58,20 +58,16 @@ fn get_404_returns_err() {
         .create();
 
     let url = format!("{}/missing", server.url());
-    let result = fetcher().fetch("GET".to_string(), url, vec![], None, Duration::from_secs(5));
+    let resp = fetcher()
+        .fetch("GET".to_string(), url, vec![], None, Duration::from_secs(5))
+        .expect("a 404 is a response");
 
-    assert!(
-        result.is_err(),
-        "ureq 3 should treat 404 as Err, got: {:?}",
-        result
-    );
+    assert_eq!(resp.status, 404);
+    assert_eq!(resp.body, b"not found");
 }
 
-// ── GET 500 returns Err (ureq 3 behaviour) ───────────────────────────────────
-
-/// ureq 3 treats 5xx responses as errors by default.
 #[test]
-fn get_500_returns_err() {
+fn get_500_returns_the_response() {
     let mut server = Server::new();
     let _mock = server
         .mock("GET", "/boom")
@@ -80,13 +76,11 @@ fn get_500_returns_err() {
         .create();
 
     let url = format!("{}/boom", server.url());
-    let result = fetcher().fetch("GET".to_string(), url, vec![], None, Duration::from_secs(5));
+    let resp = fetcher()
+        .fetch("GET".to_string(), url, vec![], None, Duration::from_secs(5))
+        .expect("a 500 is a response");
 
-    assert!(
-        result.is_err(),
-        "ureq 3 should treat 500 as Err, got: {:?}",
-        result
-    );
+    assert_eq!(resp.status, 500);
 }
 
 // ── POST with JSON body ───────────────────────────────────────────────────────

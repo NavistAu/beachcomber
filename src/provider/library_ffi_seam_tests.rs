@@ -46,6 +46,9 @@ impl LoadedLibrary for StubLoadedLibrary {
     fn source_count(&self) -> usize {
         self.source_count
     }
+    fn call_json(&self, _symbol: String, _input: String) -> Result<String, String> {
+        Err("call_json is not stubbed".to_string())
+    }
 }
 
 /// A `LibraryLoader` that always returns the same `Arc<dyn LoadedLibrary>` via a
@@ -71,6 +74,9 @@ impl LoadedLibrary for LibProxy {
     }
     fn source_count(&self) -> usize {
         self.0.source_count()
+    }
+    fn call_json(&self, s: String, i: String) -> Result<String, String> {
+        self.0.call_json(s, i)
     }
 }
 

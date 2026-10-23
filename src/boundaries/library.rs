@@ -31,6 +31,11 @@ pub trait LoadedLibrary: Send + Sync {
     fn call_execute(&self, symbol: String, path: Option<String>) -> Option<String>;
     /// Call `bc_source_execute(idx, path)`.
     fn call_source_execute(&self, idx: usize, path: Option<String>) -> Option<String>;
+    /// Call a plugin symbol `fn(*const c_char) -> *const c_char`: `input` is a
+    /// NUL-terminated JSON array, the result a JSON value owned by the library.
+    /// Each failure (symbol not found, input holding a NUL byte, NULL return,
+    /// non-UTF-8 output) is its own `Err` message.
+    fn call_json(&self, symbol: String, input: String) -> Result<String, String>;
     /// Return the value of `bc_source_count()`, or 0 if the symbol is absent
     /// (indicating legacy single-source ABI).
     fn source_count(&self) -> usize;
@@ -203,6 +208,36 @@ impl LoadedLibrary for LibloadingLoadedLibrary {
 
     fn call_source_execute(&self, idx: usize, path: Option<String>) -> Option<String> {
         self.call_bc_source_execute_inner(idx, path)
+    }
+
+    fn call_json(&self, symbol: String, input: String) -> Result<String, String> {
+        type JsonFn =
+            unsafe extern "C" fn(*const std::os::raw::c_char) -> *const std::os::raw::c_char;
+        let c_input = std::ffi::CString::new(input)
+            .map_err(|_| "the input contains a NUL byte".to_string())?;
+        let c_symbol = std::ffi::CString::new(symbol.as_str())
+            .map_err(|_| "the symbol name contains a NUL byte".to_string())?;
+        let lib = self
+            .lib
+            .lock()
+            .map_err(|_| "the library lock is poisoned".to_string())?;
+        // The lock is held across the call and the copy out of the returned
+        // string: that is what keeps "valid until the next call into the same
+        // library" true, since no other call can start before we have copied.
+        // A panic cannot unwind out of the `extern "C"` function (it aborts the
+        // process), so there is nothing to catch.
+        // SAFETY: symbol lookup is unsafe; we trust the plugin contract.
+        let f: libloading::Symbol<JsonFn> = unsafe { lib.get(c_symbol.to_bytes_with_nul()) }
+            .map_err(|_| "symbol not found".to_string())?;
+        let ptr = unsafe { f(c_input.as_ptr()) };
+        if ptr.is_null() {
+            return Err("returned NULL".to_string());
+        }
+        // Strict UTF-8, as everywhere in this boundary.
+        unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_str()
+            .map(str::to_string)
+            .map_err(|_| "returned output that is not UTF-8".to_string())
     }
 
     fn source_count(&self) -> usize {

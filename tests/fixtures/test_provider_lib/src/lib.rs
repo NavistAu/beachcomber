@@ -15,6 +15,12 @@
 /// - `beachcomber_provider_metadata()       -> *const c_char`  — valid JSON
 /// - `beachcomber_provider_execute(path)    -> *const c_char`  — valid JSON
 ///
+/// ## Plugin ABI (`plugin(name, symbol, args...)`)
+/// - `bc_echo_args(json)  -> *const c_char`  — returns its input array unchanged
+/// - `bc_sum(json)        -> *const c_char`  — returns the sum of a numeric array as JSON
+/// - `bc_plugin_returns_null(json)      -> *const c_char`  — always NULL
+/// - `bc_plugin_returns_malformed(json) -> *const c_char`  — invalid JSON
+///
 /// ## Error-injection helpers
 /// - `bc_metadata_returns_null()  -> *const c_char`  — always returns null
 /// - `bc_execute_returns_null(p)  -> *const c_char`  — always returns null
@@ -145,4 +151,59 @@ pub extern "C" fn bc_metadata_invalid_utf8() -> *const c_char {
     // index 2 so CStr::from_ptr will read exactly these two bytes then stop.
     static BYTES: [u8; 3] = [0xc3, 0x28, 0x00];
     BYTES.as_ptr() as *const c_char
+}
+
+// ── Plugin ABI ────────────────────────────────────────────────────────────────
+
+/// Hand a `String` to the caller as a leaked NUL-terminated C string.
+fn leak_cstr(s: String) -> *const c_char {
+    let c = CString::new(s).unwrap();
+    let ptr = c.as_ptr();
+    std::mem::forget(c);
+    ptr
+}
+
+/// Returns its input (a JSON array) unchanged.
+///
+/// # Safety
+///
+/// `input` must point to a valid NUL-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bc_echo_args(input: *const c_char) -> *const c_char {
+    // SAFETY: caller guarantees a valid null-terminated C string.
+    let text = unsafe { CStr::from_ptr(input) }
+        .to_string_lossy()
+        .into_owned();
+    leak_cstr(text)
+}
+
+/// Returns the sum of the numeric JSON array in `input` as a JSON number.
+///
+/// # Safety
+///
+/// `input` must point to a valid NUL-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bc_sum(input: *const c_char) -> *const c_char {
+    // SAFETY: caller guarantees a valid null-terminated C string.
+    let text = unsafe { CStr::from_ptr(input) }.to_string_lossy();
+    let sum: f64 = text
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .filter_map(|n| n.trim().parse::<f64>().ok())
+        .sum();
+    leak_cstr(format!("{sum}"))
+}
+
+/// Plugin failure: always returns null.
+#[unsafe(no_mangle)]
+pub extern "C" fn bc_plugin_returns_null(_input: *const c_char) -> *const c_char {
+    std::ptr::null()
+}
+
+/// Plugin failure: returns text that is not JSON.
+#[unsafe(no_mangle)]
+pub extern "C" fn bc_plugin_returns_malformed(_input: *const c_char) -> *const c_char {
+    static_cstr!("{bad json}")
 }

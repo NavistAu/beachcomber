@@ -23,6 +23,8 @@
 /// 15. `call_execute_malformed_json`      — returns invalid JSON string (not None)
 /// 16. `load_nonexistent_path`            — LibloadingLoader::load fails gracefully
 /// 17. `call_metadata_invalid_utf8_returns_none` — strict UTF-8 boundary: invalid bytes → None
+/// 18. `plugin_calls_a_real_cdylib`           — `plugin()` through a real dlopen: `bc_sum`, `bc_echo_args`
+/// 19. `plugin_failures_are_distinct_through_a_real_cdylib` — missing symbol, NULL return, invalid JSON
 use beachcomber::boundaries::library::{LibloadingLoader, LibraryLoader};
 
 // ── dylib path helpers ────────────────────────────────────────────────────────
@@ -293,4 +295,66 @@ fn call_metadata_invalid_utf8_returns_none() {
         result.is_none(),
         "call_metadata for a symbol returning invalid UTF-8 bytes must return None, got: {result:?}"
     );
+}
+
+// ── plugin() through a real dlopen ────────────────────────────────────────────
+
+#[test]
+fn plugin_calls_a_real_cdylib() {
+    use beachcomber::engine::{PluginSet, daemon_engine_env};
+    use libbeachcomber::engine::EngineCtx;
+    use std::sync::Arc;
+
+    // plugin() requires an absolute library path.
+    let path = ensure_fixture_built().canonicalize().unwrap();
+    let plugins = Arc::new(PluginSet::new(vec![], Arc::new(LibloadingLoader)));
+    let env = daemon_engine_env(Arc::new(EngineCtx::default()), plugins);
+    let p = path.to_string_lossy();
+    let sum = env
+        .render_str(&format!("{{{{ plugin('{p}', 'bc_sum', 1, 2, 3.5) }}}}"), ())
+        .expect("plugin bc_sum");
+    assert_eq!(sum, "6.5");
+    let echoed = env
+        .render_str(
+            &format!(
+                "{{% set r = plugin('{p}', 'bc_echo_args', 1, 'a') %}}{{{{ r | length }}}}:{{{{ r[0] }}}}:{{{{ r[1] }}}}"
+            ),
+            (),
+        )
+        .expect("plugin bc_echo_args");
+    assert_eq!(echoed, "2:1:a");
+}
+
+#[test]
+fn plugin_failures_are_distinct_through_a_real_cdylib() {
+    use beachcomber::engine::{PluginSet, daemon_engine_env};
+    use libbeachcomber::engine::EngineCtx;
+    use std::sync::Arc;
+
+    // plugin() requires an absolute library path.
+    let path = ensure_fixture_built().canonicalize().unwrap();
+    let plugins = Arc::new(PluginSet::new(vec![], Arc::new(LibloadingLoader)));
+    let env = daemon_engine_env(Arc::new(EngineCtx::default()), plugins);
+    let p = path.to_string_lossy();
+    let missing = env
+        .render_str(&format!("{{{{ plugin('{p}', 'bc_no_such_symbol') }}}}"), ())
+        .unwrap_err()
+        .to_string();
+    assert!(missing.contains("symbol not found"), "{missing}");
+    let null = env
+        .render_str(
+            &format!("{{{{ plugin('{p}', 'bc_plugin_returns_null') }}}}"),
+            (),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(null.contains("returned NULL"), "{null}");
+    let bad = env
+        .render_str(
+            &format!("{{{{ plugin('{p}', 'bc_plugin_returns_malformed') }}}}"),
+            (),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(bad.contains("returned invalid JSON"), "{bad}");
 }

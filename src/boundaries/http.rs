@@ -34,6 +34,7 @@ impl HttpFetcher for UreqHttpFetcher {
     ) -> Result<HttpResponse, String> {
         let config = ureq::config::Config::builder()
             .timeout_global(Some(timeout))
+            .http_status_as_error(false)
             .build();
         let agent: ureq::Agent = config.into();
 
