@@ -5,7 +5,7 @@ members = [".", "libbeachcomber", "libbeachcomber-ffi", "tests/fixtures/test_pro
 version = "0.9.1"
 
 [workspace.dependencies]
-minijinja = { version = "2", default-features = false, features = ["builtins", "serde"] }
+minijinja = { version = "2", default-features = false, features = ["builtins", "json", "serde"] }
 
 [package]
 name = "beachcomber"

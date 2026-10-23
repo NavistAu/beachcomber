@@ -580,6 +580,14 @@ mod tests {
     }
 
     #[test]
+    fn exec_stdin_takes_structured_data_through_tojson() {
+        assert_eq!(
+            eval(r#"exec('cat', stdin=({"a": [1, "x"]} | tojson))"#).unwrap(),
+            r#"{"a":[1,"x"]}"#
+        );
+    }
+
+    #[test]
     fn exec_unknown_kwarg_errors() {
         let err = eval("exec('echo hi', bogus=1)").unwrap_err();
         assert!(err.contains("bogus"), "unexpected error: {err}");
