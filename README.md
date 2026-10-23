@@ -598,18 +598,6 @@ provider_timeout_secs = 10
 # Default: null (disabled — daemon stays resident)
 # idle_shutdown_secs = 300
 
-# Global default poll interval. Per-source [providers.<name>.<source>] blocks override this.
-# Default: "60s"
-poll_interval = "60s"
-
-# Global default polls in the Active window.
-# Default: 12
-poll_live_count = 12
-
-# Global default for fsevents_reinstate. Overrides per-source defaults when set.
-# Default: unset (each source uses its own declared default)
-# fsevents_reinstate = true
-
 
 # ─── Failback (global retry defaults) ──────────────────────────────────────────
 
@@ -623,26 +611,18 @@ poll_live_count = 12
 
 
 # ─── Built-in Provider Overrides ───────────────────────────────────────────────
-# Use [providers.<name>] to set provider-level knobs (only `enabled` is valid here).
-# Source-level knobs (poll_interval, poll_count, fsevent_*, failback_*) go in
-# [providers.<name>.<source>] sub-tables.
+# Use [providers.<name>] to switch a provider off (only `enabled` is valid here).
+# A built-in Source's failback is tuned in [providers.<name>.<source>]; no other
+# key is valid there.
 
 # Disable a provider entirely (it will never execute or appear in results)
 [providers.sudo]
 enabled = false
 
-# Override polling interval for battery (source name: "level")
-[providers.battery.level]
-poll_interval = "60s"   # default: 30s
-poll_count = 10         # polls in the Active window (10 × the interval); default: 12
-
-# Add a safety-net poll to git's refs source (filesystem-triggered by default)
+# Back git's refs source off sooner after failures
 [providers.git.refs]
-poll_interval = "30s"   # default: no poll (filesystem-triggered only)
-
-# Override network polling interval
-[providers.network.state]
-poll_interval = "30s"   # default: 10s
+failback_count = 5
+failback_interval = "2s"
 
 
 # ─── Config Sources ────────────────────────────────────────────────────────────
@@ -715,9 +695,8 @@ return = "{{ result | poll('86400s') }}"
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down; `null` keeps daemon resident |
-| `poll_interval` | duration | `"60s"` | Global default poll interval (overridden by per-source blocks) |
-| `poll_live_count` | int | `12` | Global default polls in the Active window |
-| `fsevents_reinstate` | bool or null | `null` (unset) | Global override for fsevents_reinstate; unset means each source uses its declared default |
+
+> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`); `[lifecycle] poll_interval`, `poll_live_count` and `fsevents_reinstate` are config errors.
 
 **`[failback]` section:**
 
@@ -730,7 +709,7 @@ return = "{{ result | poll('86400s') }}"
 
 **`[providers.<name>]` section (built-in overrides):**
 
-Only `enabled` is valid at the provider level. All source-level knobs go in `[providers.<name>.<source>]` sub-tables.
+Only `enabled` (a boolean) is valid at the provider level. A built-in Source's failback goes in a `[providers.<name>.<source>]` sub-table.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -738,13 +717,10 @@ Only `enabled` is valid at the provider level. All source-level knobs go in `[pr
 
 **`[providers.<name>.<source>]` section (per-source overrides for built-ins):**
 
+Only the failback settings apply to a built-in Source; any other key is an error. Schedules (`poll`, `watch`) belong to config Sources' `return` line.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `poll_interval` | duration | source-specific | Poll interval for this source |
-| `poll_count` | int | `12` | Polls in the Active window — how many polls before demand must be re-signalled |
-| `fsevent_patterns` | array of strings | source-specific | Relative path patterns to watch |
-| `fsevent_abs_paths` | array of strings | source-specific | Absolute paths to watch |
-| `fsevent_reinstates` | bool | source-specific | Whether watches survive decay back to active |
 | `failback_count` | int | `3` | Consecutive failures before suppression |
 | `failback_interval` | duration | `"1s"` | Initial suppression duration |
 
@@ -759,17 +735,11 @@ Only `enabled` is valid at the provider level. All source-level knobs go in `[pr
 
 A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources only: the Rust Sources of built-in providers keep their own schedules until they ship as config.
 
-**`[providers.<name>]` section (shared library providers):**
+**`[daemon.plugin]` section:**
 
-| Field | Type | Required | Description |
+| Field | Type | Default | Description |
 |---|---|---|---|
-| `type` | string | yes | Must be `"library"` |
-| `library_path` | string | yes | Path to `.so`/`.dylib` file. Supports `~/` expansion. |
-| `scope` | string | no | `"global"` (default) or `"path"` — overrides library metadata |
-| `fields` | table | no | Field name to type mapping — overrides library metadata |
-| `enabled` | bool | no | `false` to disable |
-| `invalidation.poll` | string | no | Poll interval — overrides library metadata |
-| `invalidation.watch` | array of strings | no | Watch patterns — overrides library metadata |
+| `path` | array of strings | `["<config dir>/plugins"]` | Directories `plugin(name, symbol, args...)` searches, in order, for `lib<name>.dylib` (macOS) or `lib<name>.so` (Linux). Each is absolute or starts `~/`. A later file's list replaces an earlier one's. |
 
 ---
 

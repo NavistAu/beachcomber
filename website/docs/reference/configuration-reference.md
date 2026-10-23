@@ -52,26 +52,6 @@ provider_timeout_secs = 10
 
 [lifecycle]
 
-# Base polling interval used while an entry is in Active state (P in the
-# cache lifecycle model). See docs/architecture.md §5.
-# Default: "60s"
-poll_interval = "60s"
-
-# Active-window length in polls (K in the cache lifecycle model). An Active
-# entry stays warm for K × poll_interval seconds after the last demand
-# signal, then decays through its decay steps (4 by default, each step
-# doubling interval and duration; the depth is data, see `<p>:cache._.decay`)
-# until eviction.
-# Default: 12
-poll_live_count = 12
-
-# Whether an fsevent during decay reinstates the entry to Active.
-# When set, overrides all per-source defaults. When unset (default),
-# each source uses its own declared default (true for Watch/WatchAndPoll
-# sources that benefit from it, false for Poll-only sources).
-# Default: unset (each source uses its own default)
-# fsevents_reinstate = true
-
 # How long (in seconds) the daemon waits with no active connections before
 # shutting itself down. The next client connection will socket-activate a
 # fresh instance.
@@ -94,44 +74,19 @@ poll_live_count = 12
 
 
 # ─── Built-in Provider Overrides ───────────────────────────────────────────────
-# Provider config uses per-source nesting: [providers.<name>.<source>]
-# The source name matches the source field carried per row in `comb status`'s
-# wire response. Use [providers.<name>] only for whole-provider switches (e.g. enabled).
-
-# Key reference for per-source blocks:
-#
-# type              string    Strategy: "poll", "fsevent", "fsevent_poll"
-# scope             string    "path" or "global" (informational for built-ins)
-# poll_interval     duration  Poll interval (poll, fsevent_poll)
-# poll_count        integer   Polls in the Active window before decay (poll, fsevent_poll)
-# fsevent_patterns  [string]  Relative path components to watch (fsevent, fsevent_poll)
-# fsevent_abs_paths [string]  Absolute roots to watch (fsevent, fsevent_poll)
-# fsevent_reinstates bool     Whether watches survive decay. Default true.
-# failback_count    integer   Consecutive failures before suppression
-# failback_interval duration  Suppression duration after failback_count hit
-# enabled           bool      When false, source never executes. Default true.
+# [providers.<name>] switches a whole provider off (`enabled`, a boolean). A
+# built-in Source's failback is tuned in [providers.<name>.<source>]; the
+# source name matches the source field carried per row in `comb status`'s wire
+# response. No other key is valid in either place.
 
 # Disable a provider entirely (it will never execute or appear in results)
 [providers.sudo]
 enabled = false
 
-# Override the git.diff source to poll more frequently
-[providers.git.diff]
-poll_interval = "15s"         # default: "30s"
-poll_count = 24               # Active window = 24 × 15s = 6 min
-
-# Make git.refs reinstate from decay on a .git event
+# Back git's refs source off sooner after failures
 [providers.git.refs]
-fsevent_reinstates = true     # .git fsevent during decay reinstates to Active
-
-# Slow down battery polling (less important on desktop)
-[providers.battery.state]
-poll_interval = "60s"         # default: "30s"
-poll_count = 4
-
-# Override network polling interval
-[providers.network.interfaces]
-poll_interval = "30s"         # default: "10s"
+failback_count = 5            # consecutive failures before suppression
+failback_interval = "2s"      # suppression duration after failback_count hit
 
 
 # ─── Config Sources ────────────────────────────────────────────────────────────
@@ -348,12 +303,9 @@ Composition rules:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `poll_interval` | duration | `"60s"` | Base polling interval `P` used in Active state |
-| `poll_live_count` | int | `12` | Polls in the Active window, `K` (see `docs/architecture.md` §5) |
-| `fsevents_reinstate` | bool or null | `null` (unset — per-source defaults apply) | Global override for fsevent-during-decay policy; unset means each source uses its own default |
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
 
-> `cache_lifespan`, `poll_idle_interval`, and `poll_live_interval` have been removed. Cache warmth is now `poll_interval × poll_live_count`; the decay ladder plus `fsevents_reinstate` replaces the single idle rate. Legacy configs parse cleanly — the daemon emits a `WARN` log at startup for each deprecated key.
+> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`); `[lifecycle] poll_interval`, `poll_live_count` and `fsevents_reinstate` are config errors.
 
 > Duration strings use whole-second values: `"30s"` (seconds), `"2m"` (minutes), `"1h"` (hours), `"2h30m"` (compound). Sub-second values (e.g. `"500ms"`) are not accepted.
 
@@ -370,7 +322,7 @@ Global failure-suppression defaults. These apply to all providers and sources un
 
 **`[providers.<name>]` section (built-in overrides):**
 
-Only `enabled` is valid directly under `[providers.<name>]` for built-in providers. Source knobs belong in a per-source sub-table: `[providers.<name>.<source>]`.
+Only `enabled` (a boolean) is valid directly under `[providers.<name>]` for built-in providers. A built-in Source's failback goes in a per-source sub-table: `[providers.<name>.<source>]`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -378,15 +330,12 @@ Only `enabled` is valid directly under `[providers.<name>]` for built-in provide
 
 **`[providers.<name>.<source>]` section (built-in source overrides):**
 
+Only the failback settings apply to a built-in Source; any other key is an error.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `poll_interval` | duration | inherited from `[lifecycle]` | Override base poll rate `P` |
-| `poll_count` | int | inherited from `[lifecycle]` | Override the Active-window poll count `K` |
-| `fsevent_reinstates` | bool | per-source default | Override fsevent-during-decay policy |
-| `fsevent_patterns` | array of strings | per-source default | Relative path components to watch |
-| `fsevent_abs_paths` | array of strings | per-source default | Absolute roots to watch |
-| `failback_count` | int | inherited from `[failback]` | Consecutive failures before suppression |
-| `failback_interval` | duration | inherited from `[failback]` | Suppression duration after failback_count hit |
+| `failback_count` | int | the Source's own | Consecutive failures before suppression |
+| `failback_interval` | duration | the Source's own | Suppression duration after failback_count hit |
 
 **`[daemon.providers.<name>.sources.<source>]` section (config Sources):**
 
@@ -399,14 +348,8 @@ Only `enabled` is valid directly under `[providers.<name>]` for built-in provide
 
 A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources only: the Rust Sources of built-in providers keep their own schedules until they ship as config.
 
-**`[providers.<name>]` section (shared library providers):**
+**`[daemon.plugin]` section:**
 
-| Field | Type | Required | Description |
+| Field | Type | Default | Description |
 |---|---|---|---|
-| `type` | string | yes | Must be `"library"` |
-| `library_path` | string | yes | Path to `.so`/`.dylib` file. Supports `~/` expansion. |
-| `scope` | string | no | `"global"` (default) or `"path"` — overrides library metadata |
-| `fields` | table | no | Field name to type mapping — overrides library metadata |
-| `enabled` | bool | no | `false` to disable |
-| `invalidation.poll` | string | no | Poll interval — overrides library metadata |
-| `invalidation.watch` | array of strings | no | Watch patterns — overrides library metadata |
+| `path` | array of strings | `["<config dir>/plugins"]` | Directories `plugin(name, symbol, args...)` searches, in order, for `lib<name>.dylib` (macOS) or `lib<name>.so` (Linux). Each is absolute or starts `~/`. A later file's list replaces an earlier one's. |

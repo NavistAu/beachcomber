@@ -67,4 +67,4 @@ Some of the most useful keys are not daemon providers but **templates**: value e
 - **global** — one value for the whole machine. No path argument.
 - **path** — the answer depends on which directory you're asking about. Pass `.` (current directory) or an absolute path as the second argument.
 
-Not enough? You can add your own provider — a shell script, a REST endpoint, or a shared library. See [Custom Providers](../reference/custom-providers.md).
+Not enough? You can add your own provider — a shell script, a REST endpoint, or a shared library plugin. See [Custom Providers](../reference/custom-providers.md).

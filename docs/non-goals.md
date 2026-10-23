@@ -6,9 +6,9 @@ Decisions about what beachcomber deliberately does not pursue, and why. These ar
 
 ## Embedded Lua Provider Backend
 
-An embedded Lua interpreter (via `mlua`) was considered as a middle ground between config Sources that call `exec()` (easy but fork+exec per run) and shared library providers (fast but require a C toolchain).
+An embedded Lua interpreter (via `mlua`) was considered as a middle ground between config Sources that call `exec()` (easy but fork+exec per run) and `plugin()` calls into shared libraries (fast but require a C toolchain).
 
-**Decision:** The shared library backend already covers the "fast without forking" case, and Sources that call `exec()` are sufficient for most custom use cases — a few milliseconds on a 30-second poll interval is negligible. Adding an embedded interpreter would meaningfully expand the dependency tree and binary attack surface for a daemon that listens on a socket, without a compelling gap to fill.
+**Decision:** `plugin()` already covers the "fast without forking" case, and Sources that call `exec()` are sufficient for most custom use cases — a few milliseconds on a 30-second poll interval is negligible. Adding an embedded interpreter would meaningfully expand the dependency tree and binary attack surface for a daemon that listens on a socket, without a compelling gap to fill.
 
 ## Windows Support / Scoop Package
 

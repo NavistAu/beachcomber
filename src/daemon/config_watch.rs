@@ -429,8 +429,7 @@ fn try_fire<F: FnMut(ChangeKind)>(
 }
 
 /// What startup would refuse the composed configuration for: the one loader's
-/// errors (`ProviderRegistry::load`), without its libraries, which the watch
-/// must not `dlopen` a second time.
+/// errors (`ProviderRegistry::load`).
 fn composed_errors(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path) -> Vec<String> {
     let layers = Config::layers(Some(defaults_dir), Some(config_path), conf_d_dir);
     let mut composed = toml::Value::Table(Default::default());
@@ -447,7 +446,7 @@ fn composed_errors(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path) -
     };
     config.config_path = Some(config_path.to_path_buf());
     let vars = std::env::vars().collect();
-    crate::provider::registry::ProviderRegistry::load(&config, &vars, false).errors
+    crate::provider::registry::ProviderRegistry::load(&config, &vars).errors
 }
 
 /// The composed configuration with the seeded tables removed — the half a
@@ -583,6 +582,16 @@ mod tests {
             "conf.d/10-mine.toml",
             "[providers.git]\nenabled = false\n\
              [daemon.providers.git.sources.refs]\ndata = \"{{ 1 }}\"\nresult.branch = \"{{ data }}\"\n",
+        );
+        assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
+    }
+
+    #[test]
+    fn a_plugin_path_edit_is_a_settings_change() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write(
+            "conf.d/10-plugins.toml",
+            "[daemon.plugin]\npath = [\"/opt/plugins\"]\n",
         );
         assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
     }

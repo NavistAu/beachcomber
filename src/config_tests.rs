@@ -42,14 +42,9 @@ socket_path = "/tmp/test.sock"
         },
         ConfigParseCase {
             name: "parse_lifecycle_section",
-            input: r#"
-[lifecycle]
-poll_interval = "30s"
-poll_live_count = 5
-"#,
+            input: "[lifecycle]\nidle_shutdown_secs = 30\n",
             check: |c| {
-                assert_eq!(c.lifecycle.poll_interval, "30s");
-                assert_eq!(c.lifecycle.poll_live_count, 5);
+                assert_eq!(c.lifecycle.idle_shutdown_secs, Some(30));
             },
         },
         ConfigParseCase {
@@ -65,88 +60,11 @@ interval = "2s"
             },
         },
         ConfigParseCase {
-            name: "parse_lifecycle_legacy_keys_ignored",
-            // failure_reattempts and failure_backoff_interval have moved to [failback].
-            // The old [lifecycle] keys are silently ignored by serde; defaults still apply.
-            input: r#"
-[lifecycle]
-cache_lifespan = "1m"
-grace_period_secs = 60
-failure_reattempts = 3
-failure_backoff_interval = "1s"
-"#,
-            check: |c| {
-                assert_eq!(c.lifecycle.poll_interval, "60s");
-            },
-        },
-        ConfigParseCase {
-            name: "lifecycle_config_accepts_new_fields",
-            input: r#"
-[lifecycle]
-poll_interval = "60s"
-poll_live_count = 12
-fsevents_reinstate = false
-"#,
-            check: |c| {
-                assert_eq!(c.lifecycle.poll_interval, "60s");
-                assert_eq!(c.lifecycle.poll_live_count, 12);
-                assert_eq!(c.lifecycle.fsevents_reinstate, Some(false));
-            },
-        },
-        ConfigParseCase {
             name: "failback_defaults_apply_without_config",
             input: "",
             check: |c| {
                 assert_eq!(c.failback.count, 3);
                 assert_eq!(c.failback.interval_duration(), Duration::from_secs(1));
-            },
-        },
-        ConfigParseCase {
-            name: "legacy_cache_lifespan_parses_without_error",
-            // Legacy configs with cache_lifespan should parse cleanly; key is ignored.
-            input: r#"
-[lifecycle]
-cache_lifespan = "30s"
-poll_interval = "60s"
-poll_live_count = 12
-"#,
-            check: |c| {
-                assert_eq!(c.lifecycle.poll_interval, "60s");
-            },
-        },
-        ConfigParseCase {
-            name: "legacy_poll_idle_interval_parses_without_error",
-            input: r#"
-[lifecycle]
-poll_interval = "60s"
-poll_live_count = 12
-
-[providers.git]
-poll_idle_interval = "5m"
-"#,
-            check: |c| {
-                assert_eq!(
-                    c.resolve_poll_interval("git"),
-                    std::time::Duration::from_secs(60)
-                );
-            },
-        },
-        ConfigParseCase {
-            name: "legacy_poll_live_interval_parses_without_error",
-            // poll_live_interval is ignored; falls back to global lifecycle interval.
-            input: r#"
-[lifecycle]
-poll_interval = "60s"
-poll_live_count = 12
-
-[providers.git]
-poll_live_interval = "10s"
-"#,
-            check: |c| {
-                assert_eq!(
-                    c.resolve_poll_interval("git"),
-                    std::time::Duration::from_secs(60)
-                );
             },
         },
     ];
@@ -192,63 +110,13 @@ enabled = false
 fn parse_per_source_block() {
     let toml_str = r#"
 [providers.git.refs]
-type = "fsevent"
-scope = "path"
-fsevent_patterns = [".git"]
 failback_count = 3
 failback_interval = "60s"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     let ov = config.source_override("git", "refs").unwrap().unwrap();
-    assert_eq!(ov.strategy_type.as_deref(), Some("fsevent"));
-    assert_eq!(ov.scope.as_deref(), Some("path"));
-    assert_eq!(
-        ov.fsevent_patterns.as_deref(),
-        Some(&[".git".to_string()][..])
-    );
     assert_eq!(ov.failback_count, Some(3));
     assert_eq!(ov.failback_interval.as_deref(), Some("60s"));
-}
-
-#[test]
-fn parse_poll_source_block() {
-    let toml_str = r#"
-[providers.git.diff]
-type = "poll"
-scope = "path"
-poll_interval = "30s"
-poll_count = 12
-failback_count = 3
-failback_interval = "60s"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let ov = config.source_override("git", "diff").unwrap().unwrap();
-    assert_eq!(ov.strategy_type.as_deref(), Some("poll"));
-    assert_eq!(ov.poll_interval.as_deref(), Some("30s"));
-    assert_eq!(ov.poll_count, Some(12));
-}
-
-#[test]
-fn parse_fsevent_poll_source_block() {
-    let toml_str = r#"
-[providers.git.status]
-type = "fsevent_poll"
-scope = "path"
-poll_interval = "60s"
-poll_count = 2
-fsevent_patterns = [".git/index"]
-fsevent_reinstates = true
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let ov = config.source_override("git", "status").unwrap().unwrap();
-    assert_eq!(ov.strategy_type.as_deref(), Some("fsevent_poll"));
-    assert_eq!(ov.poll_interval.as_deref(), Some("60s"));
-    assert_eq!(ov.poll_count, Some(2));
-    assert_eq!(
-        ov.fsevent_patterns.as_deref(),
-        Some(&[".git/index".to_string()][..])
-    );
-    assert_eq!(ov.fsevent_reinstates, Some(true));
 }
 
 #[test]
@@ -343,89 +211,6 @@ failback_interval = "2s"
 }
 
 #[test]
-fn per_source_poll_interval_overrides() {
-    let toml_str = r#"
-[lifecycle]
-poll_interval = "60s"
-poll_live_count = 12
-
-[providers.git.diff]
-type = "poll"
-poll_interval = "10s"
-poll_count = 6
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-
-    // Per-source override
-    assert_eq!(
-        config.resolve_poll_interval_for_source("git", Some("diff"), None),
-        Duration::from_secs(10)
-    );
-    assert_eq!(
-        config.resolve_poll_live_count_for_source("git", Some("diff"), None),
-        6
-    );
-
-    // Different source falls back to global lifecycle
-    assert_eq!(
-        config.resolve_poll_interval_for_source("git", Some("refs"), None),
-        Duration::from_secs(60)
-    );
-    assert_eq!(
-        config.resolve_poll_live_count_for_source("git", Some("refs"), None),
-        12
-    );
-    // No source specified
-    assert_eq!(
-        config.resolve_poll_interval("unknown"),
-        Duration::from_secs(60)
-    );
-    assert_eq!(config.resolve_poll_live_count("unknown"), 12);
-}
-
-#[test]
-fn per_source_fsevents_reinstates_overrides() {
-    let toml_str = r#"
-[lifecycle]
-fsevents_reinstate = false
-
-[providers.mise.project]
-type = "fsevent"
-fsevent_reinstates = true
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-
-    // Per-source override wins over global lifecycle setting.
-    assert!(config.resolve_fsevents_reinstate_for_source("mise", Some("project"), false));
-    // No per-source override; global lifecycle (false) beats the source default (true).
-    assert!(!config.resolve_fsevents_reinstate_for_source("mise", Some("global"), true));
-}
-
-#[test]
-fn fsevents_reinstate_falls_through_to_source_default() {
-    // Neither per-source nor global is set → source-declared default wins.
-    let toml_str = r#"
-[lifecycle]
-poll_interval = "60s"
-poll_live_count = 12
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    assert!(config.resolve_fsevents_reinstate_for_source("mise", Some("project"), true));
-    assert!(!config.resolve_fsevents_reinstate_for_source("git", Some("refs"), false));
-}
-
-#[test]
-fn fsevents_reinstate_global_override_beats_source_default() {
-    // Explicit global false overrides a source default of true.
-    let toml_str = r#"
-[lifecycle]
-fsevents_reinstate = false
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    assert!(!config.resolve_fsevents_reinstate_for_source("mise", Some("project"), true));
-}
-
-#[test]
 fn old_flat_source_knob_on_builtin_detected_by_validate() {
     // Old flat source-knob keys on a non-external-backend provider block
     // are caught by validate_providers(), not by the TOML parser.
@@ -476,8 +261,7 @@ fn unknown_source_on_known_provider_warns_not_errors() {
     // Known provider, unknown source name → warn (cross-platform support).
     let toml_str = r#"
 [providers.battery.upower]
-type = "poll"
-poll_interval = "60s"
+failback_count = 2
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     let known_providers = vec!["battery".to_string()];
@@ -543,19 +327,10 @@ fn assert_unknown_key(err: &str) {
 
 #[test]
 fn fsevent_lifespan_is_an_unknown_key_in_a_built_in_source_block() {
-    let config: Config = toml::from_str(
-        "[providers.git.refs]\ntype = \"fsevent\"\nscope = \"path\"\nfsevent_lifespan = \"300s\"\n",
-    )
-    .unwrap();
+    let config: Config =
+        toml::from_str("[providers.git.refs]\ntype = \"fsevent\"\nfsevent_lifespan = \"300s\"\n")
+            .unwrap();
     assert_unknown_key(&config.source_override("git", "refs").unwrap_err());
-}
-
-#[test]
-fn fsevent_lifespan_is_an_unknown_key_in_an_external_source_block_parser() {
-    let table: toml::Table = toml::from_str("fsevent_lifespan = \"300s\"\n").unwrap();
-    assert_unknown_key(
-        &crate::config::ExternalSourceConfig::from_toml_table("p.main", &table).unwrap_err(),
-    );
 }
 
 #[test]
@@ -616,69 +391,26 @@ poll_live_interval = "10s"
 
 #[test]
 fn resolution_order_per_source_beats_source_default_beats_global() {
-    // per-source block > source declared default > [lifecycle]/[failback] global
+    // per-source block > source declared default > [failback] global
     let toml_str = r#"
-[lifecycle]
-poll_interval = "120s"
-poll_live_count = 20
-
 [failback]
 count = 10
 interval = "10s"
 
 [providers.git.diff]
-poll_interval = "5s"
-poll_count = 3
 failback_count = 1
-failback_interval = "500ms"
 "#;
-    // Note: "500ms" parses as 0 (sub-second), so fallback to source_default or global.
     let config: Config = toml::from_str(toml_str).unwrap();
 
-    // 1. Per-source block wins
-    assert_eq!(
-        config.resolve_poll_interval_for_source("git", Some("diff"), Some(Duration::from_secs(99))),
-        Duration::from_secs(5),
-        "per-source poll_interval beats source default"
-    );
-    assert_eq!(
-        config.resolve_poll_live_count_for_source("git", Some("diff"), Some(99)),
-        3,
-        "per-source poll_count beats source default"
-    );
     assert_eq!(
         config.resolve_failure_reattempts_for_source("git", Some("diff"), Some(99)),
         1,
         "per-source failback_count beats source default"
     );
-
-    // 2. Source declared default beats global when no per-source block
-    assert_eq!(
-        config.resolve_poll_interval_for_source("git", Some("refs"), Some(Duration::from_secs(45))),
-        Duration::from_secs(45),
-        "source default beats global when no per-source override"
-    );
-    assert_eq!(
-        config.resolve_poll_live_count_for_source("git", Some("refs"), Some(7)),
-        7,
-        "source default beats global poll_live_count"
-    );
     assert_eq!(
         config.resolve_failure_reattempts_for_source("git", Some("refs"), Some(4)),
         4,
         "source default beats global failback count"
-    );
-
-    // 3. Global fallback when no per-source or source default
-    assert_eq!(
-        config.resolve_poll_interval_for_source("git", Some("refs"), None),
-        Duration::from_secs(120),
-        "global lifecycle poll_interval applies without source default"
-    );
-    assert_eq!(
-        config.resolve_poll_live_count_for_source("git", Some("refs"), None),
-        20,
-        "global lifecycle poll_live_count applies without source default"
     );
     assert_eq!(
         config.resolve_failure_reattempts_for_source("git", Some("refs"), None),
@@ -692,7 +424,6 @@ fn unknown_key_in_source_block_produces_error() {
     // [providers.git.refs] with an unknown key must error.
     let toml_str = r#"
 [providers.git.refs]
-type = "fsevent"
 not_a_valid_key = "oops"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
@@ -707,16 +438,11 @@ not_a_valid_key = "oops"
 fn validate_providers_no_errors_for_valid_per_source_config() {
     let toml_str = r#"
 [providers.git.diff]
-type = "poll"
-poll_interval = "30s"
-poll_count = 12
 failback_count = 3
 failback_interval = "60s"
 
 [providers.git.refs]
-type = "fsevent"
-scope = "path"
-fsevent_patterns = [".git"]
+failback_count = 1
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     let known_providers = vec!["git".to_string()];
@@ -730,83 +456,6 @@ fsevent_patterns = [".git"]
     assert!(errors.is_empty(), "no errors expected: {:?}", errors);
 }
 
-// ── Phase 4 external backend TOML validation tests ──────────────────────────
-
-#[test]
-fn backend_library_source_override_blocks_accepted_in_validate() {
-    let toml_str = r#"
-[providers.mygpu]
-backend = "library"
-library_path = "/usr/local/lib/libgpu.dylib"
-
-[providers.mygpu.usage]
-poll_interval = "5s"
-poll_count = 6
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers: Vec<String> = vec![];
-    let known_sources = std::collections::HashMap::new();
-    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        errors.is_empty(),
-        "backend = library provider must not produce validation errors: {:?}",
-        errors
-    );
-}
-
-// ── Flat external backend TOML validation tests ──────────────────────
-
-#[test]
-fn flat_library_provider_fields_and_invalidation_accepted_in_validate() {
-    // Flat shape: `type = "library"`, no `backend` key. `fields`
-    // and `invalidation` are provider-level sub-tables in this shape (see
-    // FlatProviderConfig::{fields, invalidation}), not per-source blocks —
-    // validate_providers must not flag them as unrecognized source blocks.
-    let toml_str = r#"
-[providers.chronoclaude]
-type = "library"
-library_path = "/x/libstatusline.dylib"
-fields = { value = "string" }
-
-[providers.chronoclaude.invalidation]
-poll = "1s"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers: Vec<String> = vec![];
-    let known_sources = std::collections::HashMap::new();
-    let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        errors.is_empty(),
-        "legacy flat provider's fields/invalidation sub-tables must not \
-         produce validation errors: {:?}",
-        errors
-    );
-    assert!(warnings.is_empty(), "no warnings expected: {:?}", warnings);
-}
-
-#[test]
-fn flat_provider_unknown_subtable_still_errors() {
-    // A genuinely unrecognized sub-table on a flat provider must still
-    // be rejected — the fields/invalidation carve-out must not swallow
-    // everything.
-    let toml_str = r#"
-[providers.chronoclaude]
-type = "library"
-library_path = "/x/libstatusline.dylib"
-
-[providers.chronoclaude.bogus]
-not_a_real_key = "junk"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers: Vec<String> = vec![];
-    let known_sources = std::collections::HashMap::new();
-    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        !errors.is_empty(),
-        "unknown sub-table on a flat provider must still produce an error"
-    );
-}
-
 #[test]
 fn validate_providers_rejects_a_virtual_subtable_naming_the_template_facet() {
     // `[providers.<p>.virtual]` was where 0.9 kept a provider's templates.
@@ -817,8 +466,9 @@ fn validate_providers_rejects_a_virtual_subtable_naming_the_template_facet() {
     // spelling of the same table. The check runs before the provider's kind
     // is consulted, so every kind gets the same error: a namespace no
     // provider stands behind (`conda`), a builtin with a real source block
-    // beside it (`git`), and a `backend = "library"`. Nothing else in the file
-    // is wrong, so these three are the whole verdict.
+    // beside it (`git`), and a name the registry does not know with a block
+    // of knobs (`mygpu`). Nothing else in the file is wrong, so these three
+    // are the whole verdict.
     let toml_str = r#"
 [providers.conda]
 virtual.env = "{{ env.CONDA_DEFAULT_ENV }}"
@@ -827,17 +477,13 @@ virtual.env = "{{ env.CONDA_DEFAULT_ENV }}"
 virtual.branch_display = "{{ env.GIT_BRANCH or git.branch }}"
 
 [providers.git.diff]
-type = "poll"
-poll_interval = "30s"
-poll_count = 12
+failback_count = 3
 
 [providers.mygpu]
-backend = "library"
-library_path = "/usr/local/lib/libgpu.dylib"
 virtual.label = "{{ mygpu.usage }}"
 
 [providers.mygpu.usage]
-poll_interval = "5s"
+failback_count = 2
 "#;
     let config: Config = toml::from_str(toml_str).expect("valid toml");
     let known_providers = vec!["git".to_string()];
@@ -1062,6 +708,89 @@ fn seeded_errors(toml_str: &str) -> Vec<String> {
                 .to_string()
         })
         .collect()
+}
+
+#[test]
+fn plugin_path_is_a_list_of_directories() {
+    use std::path::PathBuf;
+    let dirs = |c: &Config, home: Option<&str>| c.plugin_path(home).unwrap();
+    let mut config: Config = toml::from_str("").unwrap();
+
+    // No config file, nothing named: nothing is searched.
+    assert_eq!(dirs(&config, Some("/h")), Vec::<PathBuf>::new());
+
+    // The default is the `plugins` directory beside the config file.
+    config.config_path = Some(PathBuf::from("/c/beachcomber/config.toml"));
+    assert_eq!(
+        dirs(&config, Some("/h")),
+        vec![PathBuf::from("/c/beachcomber/plugins")]
+    );
+
+    // A list replaces the default, keeps its order, and expands `~`.
+    let config: Config =
+        toml::from_str("[daemon.plugin]\npath = [\"~/plugins\", \"/opt/p\", \"~\"]\n").unwrap();
+    assert_eq!(
+        dirs(&config, Some("/h")),
+        vec![
+            PathBuf::from("/h/plugins"),
+            PathBuf::from("/opt/p"),
+            PathBuf::from("/h")
+        ]
+    );
+
+    // An empty list searches nothing.
+    let mut config: Config = toml::from_str("[daemon.plugin]\npath = []\n").unwrap();
+    config.config_path = Some(PathBuf::from("/c/beachcomber/config.toml"));
+    assert_eq!(dirs(&config, Some("/h")), Vec::<PathBuf>::new());
+
+    // `~` with no HOME to expand it from is an error, not a relative path.
+    let config: Config = toml::from_str("[daemon.plugin]\npath = [\"~/plugins\"]\n").unwrap();
+    let err = config.plugin_path(None).unwrap_err();
+    assert!(
+        err.contains("~/plugins") && err.contains("HOME") && err.contains("[daemon.plugin] path"),
+        "{err}"
+    );
+
+    // The list is checked per file: well-formed ones are accepted...
+    assert_eq!(
+        seeded_errors("[daemon.plugin]\npath = [\"~/plugins\", \"/opt/p\"]\n"),
+        Vec::<String>::new()
+    );
+    // ...and an entry that is neither absolute nor under `~`, or is empty, is
+    // an error.
+    assert_eq!(
+        seeded_errors("[daemon.plugin]\npath = [\"plugins\", \"\"]\n"),
+        vec![
+            "[daemon.plugin] path entry 'plugins' must be an absolute directory or start with ~/"
+                .to_string(),
+            "[daemon.plugin] path has an empty entry".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn an_unknown_key_under_plugin_is_an_error() {
+    assert_eq!(
+        seeded_errors("[daemon.plugin]\ndirs = [\"/x\"]\n"),
+        vec!["unknown key 'dirs' in [daemon.plugin]".to_string()]
+    );
+    // The wrong type, at each level.
+    assert_eq!(
+        seeded_errors("[daemon]\nplugin = 3\n"),
+        vec!["[daemon] plugin must be a table".to_string()]
+    );
+    assert_eq!(
+        seeded_errors("[daemon.plugin]\npath = \"x\"\n"),
+        vec!["[daemon.plugin] path must be a list of directory strings".to_string()]
+    );
+    assert_eq!(
+        seeded_errors("[daemon.plugin]\npath = [\"/x\", 3]\n"),
+        vec!["[daemon.plugin] path must be a list of directory strings".to_string()]
+    );
+    // A wrong type still loads (the file check reports it, not a silent
+    // fall back to the default configuration): the rest of the file holds.
+    let config: Config = toml::from_str("[daemon]\nlog_level = \"debug\"\nplugin = 3\n").unwrap();
+    assert_eq!(config.daemon.log_level, "debug");
 }
 
 #[test]
@@ -1315,11 +1044,6 @@ fn a_script_provider_is_an_error() {
             &["unknown key 'command'"],
         ),
         (
-            "a provider-level output on a library provider",
-            "[providers.st]\ntype = \"library\"\nlibrary_path = \"/x\"\noutput = \"kv\"\n",
-            &["unknown key 'output'"],
-        ),
-        (
             "a provider-level output on a built-in",
             "[providers.git]\noutput = \"json\"\n",
             &["unknown key 'output'"],
@@ -1405,30 +1129,183 @@ fn provider_errors(toml_str: &str) -> Vec<String> {
 }
 
 #[test]
-fn a_library_fields_table_may_name_a_field_after_a_removed_key() {
-    for toml_str in [
-        "[providers.weather]\ntype = \"library\"\nlibrary_path = \"/x\"\n\
-         [providers.weather.fields]\nurl = \"string\"\nbody = \"string\"\n",
-        "[providers.weather]\ntype = \"library\"\nlibrary_path = \"/x\"\n\
-         fields = { url = \"string\", body = \"string\" }\n",
-        "[providers.weather]\nbackend = \"library\"\nlibrary_path = \"/x\"\n\
-         [providers.weather.now]\nfields = [{ name = \"url\", type = \"string\" }]\n",
-    ] {
-        assert_eq!(
-            provider_errors(toml_str),
-            Vec::<String>::new(),
-            "{toml_str}"
+fn a_library_provider_is_an_error() {
+    // (case, config, errors that must each be present)
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "flat type",
+            "[providers.p]\ntype = \"library\"\nlibrary_path = \"/x/libp.dylib\"\n",
+            &[
+                "type = \"library\"",
+                "[providers.p]: unknown key 'library_path'",
+            ],
+        ),
+        (
+            "multi-source backend",
+            "[providers.p]\nbackend = \"library\"\nlibrary_path = \"/x\"\n\
+             [providers.p.s]\npoll_interval = \"5s\"\n\
+             fields = [{ name = \"a\", type = \"string\" }]\n",
+            &[
+                "backend = \"library\"",
+                "[providers.p]: unknown key 'library_path'",
+                "[providers.p.s]: unknown key 'fields'",
+            ],
+        ),
+        (
+            "a bare library_path",
+            "[providers.p]\nlibrary_path = \"/x\"\n",
+            &["unknown key 'library_path'"],
+        ),
+        (
+            "an inline fields table",
+            "[providers.p]\nfields = { x = \"string\" }\n",
+            &["unknown key 'fields'"],
+        ),
+        (
+            "a fields sub-table naming fields after removed keys",
+            "[providers.p.fields]\nurl = \"string\"\nbody = \"string\"\n",
+            &["unknown key 'fields'"],
+        ),
+        (
+            "an invalidation table",
+            "[providers.p.invalidation]\npoll = \"1s\"\n",
+            &["unknown key 'invalidation'"],
+        ),
+    ];
+    for (name, toml_str, wants) in cases {
+        let errors = provider_errors(toml_str);
+        for want in *wants {
+            assert!(
+                errors.iter().any(|e| e.contains(want)),
+                "{name}: expected an error naming {want:?}, got {errors:?}"
+            );
+        }
+        assert!(
+            errors.iter().all(|e| e.contains("plugin(")
+                && e.contains("[daemon.plugin] path")
+                && e.contains("[daemon.providers.<p>.sources.<s>]")),
+            "{name}: each error says where library providers went: {errors:?}"
         );
     }
 }
 
 #[test]
-fn a_library_source_may_be_named_headers() {
-    let errors = provider_errors(
-        "[providers.p]\nbackend = \"library\"\nlibrary_path = \"/x\"\n\
-         [providers.p.headers]\npoll_interval = \"5s\"\n",
-    );
+fn a_source_override_block_may_be_named_headers() {
+    let errors = provider_errors("[providers.p.headers]\nfailback_count = 2\n");
     assert_eq!(errors, Vec::<String>::new());
+}
+
+#[test]
+fn a_scope_key_in_a_source_override_block_is_an_error() {
+    let config: Config =
+        toml::from_str("[providers.git.refs]\ntype = \"fsevent\"\nscope = \"path\"\n").unwrap();
+    let err = config.source_override("git", "refs").unwrap_err();
+    assert!(err.contains("unknown key 'scope'"), "{err}");
+    assert!(
+        !err.contains("scope,"),
+        "the valid-keys list no longer names scope: {err}"
+    );
+    let errors = provider_errors("[providers.git.refs]\nscope = \"path\"\n");
+    assert!(
+        errors.iter().any(|e| e.contains("unknown key 'scope'")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_provider_level_scalar_other_than_enabled_is_an_error() {
+    let errors =
+        provider_errors("[providers.p]\nenabled = false\nscope = \"x\"\nfoo = 1\nlist = [1]\n");
+    let mut want = vec![
+        "unknown key 'foo' in [providers.p]".to_string(),
+        "unknown key 'list' in [providers.p]".to_string(),
+        "unknown key 'scope' in [providers.p]".to_string(),
+    ];
+    let mut got = errors.clone();
+    got.sort();
+    want.sort();
+    assert_eq!(got, want);
+    // `enabled` alone is the one provider-level setting.
+    assert_eq!(
+        provider_errors("[providers.git]\nenabled = false\n"),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn removed_lifecycle_keys_are_errors() {
+    let want = |k: &str| {
+        format!(
+            "unknown key '{k}' in [lifecycle]: removed, nothing reads it; a Source sets its \
+             schedule on its return line"
+        )
+    };
+    assert_eq!(
+        seeded_errors(
+            "[lifecycle]\npoll_interval = \"5s\"\npoll_live_count = 3\nfsevents_reinstate = true\n\
+             idle_shutdown_secs = 5\n"
+        ),
+        vec![
+            want("fsevents_reinstate"),
+            want("poll_interval"),
+            want("poll_live_count")
+        ]
+    );
+    // Each is caught per file, so a conf.d drop-in cannot hide behind another
+    // file's value winning the merge.
+    assert_eq!(
+        seeded_errors("[lifecycle]\npoll_interval = \"5s\"\n"),
+        vec![want("poll_interval")]
+    );
+}
+
+#[test]
+fn an_unread_key_in_a_source_override_block_is_an_error() {
+    for (key, value) in [
+        ("poll_interval", "\"5s\""),
+        ("poll_count", "3"),
+        ("fsevent_reinstates", "true"),
+        ("fsevent_patterns", "[\".git\"]"),
+        ("fsevent_abs_paths", "[\"/x\"]"),
+        ("type", "\"poll\""),
+        ("enabled", "false"),
+        ("scope", "\"path\""),
+    ] {
+        assert_eq!(
+            provider_errors(&format!("[providers.git.status]\n{key} = {value}\n")),
+            vec![format!(
+                "unknown key '{key}' in [providers.git.status]: only failback_count and \
+                 failback_interval apply to a built-in Source"
+            )]
+        );
+    }
+    assert_eq!(
+        provider_errors("[providers.git.status]\nfailback_count = 2\nfailback_interval = \"5s\"\n"),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_bad_plugin_path_does_not_hide_the_sources_errors() {
+    let config: Config = toml::from_str(
+        "[daemon.plugin]\npath = [\"~/p\"]\n\
+         [daemon.providers.demo.sources.s]\ndata = \"{{ nope_name }}\"\nresult = \"{{ data }}\"\n",
+    )
+    .unwrap();
+    let errors = ProviderRegistry::load(&config, &Default::default()).errors;
+    assert!(
+        errors.iter().any(|e| e.contains("[daemon.plugin] path")),
+        "{errors:?}"
+    );
+    assert!(errors.iter().any(|e| e.contains("nope_name")), "{errors:?}");
+}
+
+#[test]
+fn a_provider_enabled_must_be_a_bool() {
+    assert_eq!(
+        provider_errors("[providers.git]\nenabled = \"no\"\n"),
+        vec!["[providers.git]: enabled must be a boolean".to_string()]
+    );
 }
 
 #[test]
@@ -1463,10 +1340,10 @@ fn every_removed_spelling_a_block_carries_is_reported() {
 }
 
 #[test]
-fn a_script_only_key_in_a_library_source_block_is_an_unknown_key() {
+fn a_script_only_key_in_a_source_override_block_is_an_unknown_key() {
     for key in ["command", "output"] {
         let table: toml::Table = toml::from_str(&format!("{key} = \"y\"\n")).unwrap();
-        let err = crate::config::ExternalSourceConfig::from_toml_table("p.s", &table).unwrap_err();
+        let err = crate::config::SourceOverrideConfig::from_toml_table("p.s", &table).unwrap_err();
         assert!(err.contains(&format!("unknown key '{key}'")), "{err}");
     }
 }
@@ -1614,32 +1491,6 @@ fn a_source_with_no_return_anywhere_is_watch_only_with_the_engine_defaults() {
 }
 
 #[test]
-fn a_per_field_scope_in_a_flat_library_fields_table_is_an_error() {
-    let config: Config = toml::from_str(
-        r#"
-[providers.mylib]
-type = "library"
-library_path = "/x/libx.dylib"
-fields = { x = { type = "string", scope = "path" } }
-"#,
-    )
-    .unwrap();
-    let (_, errors) = config.validate_providers(&[], &Default::default());
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(
-        errors[0].contains("scope") && errors[0].contains("fields.x"),
-        "{errors:?}"
-    );
-    // The provider-level scope stays valid, and so does a type-only table.
-    let ok: Config = toml::from_str(
-        "[providers.mylib]\ntype = \"library\"\nlibrary_path = \"/x\"\nscope = \"path\"\nfields = { x = { type = \"string\" }, y = \"int\" }\n",
-    )
-    .unwrap();
-    let (_, errors) = ok.validate_providers(&[], &Default::default());
-    assert!(errors.is_empty(), "{errors:?}");
-}
-
-#[test]
 fn a_wrong_type_in_a_prototype_is_the_file_checks_alone() {
     let user = "[daemon.providers.demo.sources._]\ndata = 5\n\
                 [daemon.providers.demo.sources.s]\nresult = \"{{ data }}\"\n";
@@ -1670,7 +1521,7 @@ fn a_prototypes_lines_are_checked_at_load() {
 fn knobs_on_a_config_source_are_an_error() {
     let errors = source_errors(
         "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ data }}\"\n\
-         [providers.demo.s]\npoll_interval = \"5s\"\nfailback_count = 2\n",
+         [providers.demo.s]\nfailback_count = 2\n",
     );
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
@@ -1681,20 +1532,15 @@ fn knobs_on_a_config_source_are_an_error() {
     );
 }
 
-/// Startup, the config watch's gate and `comb check config` load through one
-/// function; the library switch is the only difference.
+/// A disabled built-in is not a provider, so a config Source may take its name.
 #[test]
-fn every_loader_builds_the_same_provider_set() {
-    let vars = Default::default();
-    for libraries in [true, false] {
-        // A disabled built-in is not a provider, so its name is free.
-        let config = with_shipped_defaults(
-            "[providers.git]\nenabled = false\n\
-             [daemon.providers.git.sources.refs]\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
-        );
-        let load = ProviderRegistry::load(&config, &vars, libraries);
-        assert!(load.errors.is_empty(), "{libraries}: {:?}", load.errors);
-    }
+fn a_disabled_builtin_frees_its_name_for_a_config_source() {
+    let config = with_shipped_defaults(
+        "[providers.git]\nenabled = false\n\
+         [daemon.providers.git.sources.refs]\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
+    );
+    let load = ProviderRegistry::load(&config, &Default::default());
+    assert!(load.errors.is_empty(), "{:?}", load.errors);
 }
 
 // ── from tests/suite/config_overrides.rs ──────────
@@ -1723,24 +1569,6 @@ fn all_providers_registered_by_default() {
     assert!(registry.provider_sources("user").is_some());
     assert!(registry.provider_sources("git").is_some());
     assert!(registry.provider_sources("battery").is_some());
-}
-
-#[test]
-fn per_source_poll_interval_override_parsed() {
-    // Verifies the new per-source schema is parsed correctly.
-    let toml_str = r#"
-[providers.battery.state]
-type = "poll"
-poll_interval = "10s"
-poll_count = 6
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let ov = config
-        .source_override("battery", "state")
-        .expect("no error")
-        .expect("block present");
-    assert_eq!(ov.poll_interval.as_deref(), Some("10s"));
-    assert_eq!(ov.poll_count, Some(6));
 }
 
 // ── from tests/suite/config_parse_duration.rs ──────────

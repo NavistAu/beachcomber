@@ -7,7 +7,7 @@
 
 use crate::boundaries::http;
 use crate::boundaries::library::{LibraryLoader, LoadedLibrary};
-use libbeachcomber::engine::{EngineCtx, build_engine_env, expand_home, op_error};
+use libbeachcomber::engine::{EngineCtx, build_engine_env, expand_tilde, op_error};
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error};
 use std::collections::HashMap;
@@ -28,15 +28,27 @@ use std::time::Duration;
 /// daemon.
 pub struct PluginSet {
     search: Vec<PathBuf>,
-    loaded: Mutex<HashMap<PathBuf, Arc<dyn LoadedLibrary>>>,
+    state: Mutex<PluginState>,
     loader: Arc<dyn LibraryLoader>,
+}
+
+#[derive(Default)]
+struct PluginState {
+    /// Each name or library path that has loaded, to its library, for the
+    /// daemon's life: it is never looked up on disk again, so a plugin rebuilt
+    /// while the daemon runs is picked up at its next start.
+    by_name: HashMap<String, Arc<dyn LoadedLibrary>>,
+    /// The loaded images, by the loader's identity for them: `dlopen` hands
+    /// back one image for a file it already holds, so every name that reaches
+    /// it shares one library and the one lock that serialises calls into it.
+    by_image: HashMap<usize, Arc<dyn LoadedLibrary>>,
 }
 
 impl PluginSet {
     pub fn new(search: Vec<PathBuf>, loader: Arc<dyn LibraryLoader>) -> Self {
         Self {
             search,
-            loaded: Mutex::new(HashMap::new()),
+            state: Mutex::new(PluginState::default()),
             loader,
         }
     }
@@ -61,6 +73,10 @@ impl PluginSet {
     }
 
     fn library(&self, name: &str) -> Result<Arc<dyn LoadedLibrary>, String> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(lib) = state.by_name.get(name) {
+            return Ok(lib.clone());
+        }
         let path = if name.contains('/') {
             let path = PathBuf::from(name);
             if !path.is_absolute() {
@@ -80,21 +96,27 @@ impl PluginSet {
                         .map(|d| d.display().to_string())
                         .collect();
                     format!(
-                        "plugin(): {file} not found on plugin.path ({})",
+                        "plugin(): {file} not found on [daemon.plugin] path ({})",
                         dirs.join(", ")
                     )
                 })?
         };
-        let mut loaded = self.loaded.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(lib) = loaded.get(&path) {
-            return Ok(lib.clone());
-        }
-        let lib: Arc<dyn LoadedLibrary> = Arc::from(
-            self.loader
-                .load(path.to_string_lossy().into_owned())
-                .map_err(|e| format!("plugin(): {e}"))?,
-        );
-        loaded.insert(path, lib.clone());
+        let loaded = self
+            .loader
+            .load(path.to_string_lossy().into_owned())
+            .map_err(|e| format!("plugin(): {e}"))?;
+        let image = loaded.identity();
+        let lib = match state.by_image.get(&image) {
+            // Another name already holds this image; the handle just taken is
+            // a second reference to it, released here.
+            Some(lib) => lib.clone(),
+            None => {
+                let lib: Arc<dyn LoadedLibrary> = Arc::from(loaded);
+                state.by_image.insert(image, lib.clone());
+                lib
+            }
+        };
+        state.by_name.insert(name.to_string(), lib.clone());
         Ok(lib)
     }
 }
@@ -125,7 +147,10 @@ pub fn daemon_engine_env<'a>(ctx: Arc<EngineCtx>, plugins: Arc<PluginSet>) -> En
             let (Some(name), Some(symbol)) = (name.as_str(), symbol.as_str()) else {
                 return Err(op_error("plugin(): the name and symbol must be strings"));
             };
-            let name = expand_home(&ctx, name).to_string_lossy().into_owned();
+            let name = expand_tilde(name, ctx.env.get("HOME").map(String::as_str))
+                .map_err(|e| op_error(format!("plugin(): {e}")))?
+                .to_string_lossy()
+                .into_owned();
             let json_args = serde_json::to_value(rest)
                 .map_err(|e| op_error(format!("plugin(): arguments are not JSON: {e}")))?;
             let result = plugins.call(&name, symbol, &json_args).map_err(op_error)?;
@@ -284,6 +309,7 @@ mod tests {
             .times(1)
             .returning(move |_| {
                 let mut lib = MockLoadedLibrary::new();
+                lib.expect_identity().return_const(1usize);
                 lib.expect_call_json()
                     .withf(move |s, _| s == symbol)
                     .returning(move |_, input| reply(&input));
@@ -455,6 +481,141 @@ mod tests {
         assert_eq!(render(plugins, "{{ plugin('foo', 'bc_x') }}").unwrap(), "7");
     }
 
+    /// A loader that yields libraries whose `bc_x` answers `1`, each reporting
+    /// `image` as its identity, and counts its loads.
+    fn counting_loader(
+        image: usize,
+        loads: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> MockLibraryLoader {
+        let mut loader = MockLibraryLoader::new();
+        loader.expect_load().returning(move |_| {
+            loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut lib = MockLoadedLibrary::new();
+            lib.expect_identity().return_const(image);
+            lib.expect_call_json().returning(|_, _| Ok("1".into()));
+            Ok(Box::new(lib))
+        });
+        loader
+    }
+
+    fn loads_of(loads: &Arc<std::sync::atomic::AtomicUsize>) -> usize {
+        loads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn every_name_for_one_image_is_one_library() {
+        // dlopen returns the one image for a file it holds, so the loader's
+        // handle is the identity, and the lock that serialises calls into the
+        // image is shared by every name that reaches it.
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a", "b"] {
+            std::fs::write(dir.path().join(format!("lib{name}.{EXT}")), b"").unwrap();
+        }
+        let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let plugins = Arc::new(PluginSet::new(
+            vec![dir.path().to_path_buf()],
+            Arc::new(counting_loader(7, loads.clone())),
+        ));
+        // Both names yield one image: the second library is dropped for the
+        // first's Arc.
+        let a = plugins.library("a").unwrap();
+        let b = plugins.library("b").unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        assert_eq!(
+            loads_of(&loads),
+            2,
+            "each name loads once, to learn the image"
+        );
+    }
+
+    #[test]
+    fn distinct_images_stay_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut loader = MockLibraryLoader::new();
+        let mut image = 0usize;
+        loader.expect_load().returning(move |_| {
+            image += 1;
+            let mut lib = MockLoadedLibrary::new();
+            lib.expect_identity().return_const(image);
+            Ok(Box::new(lib))
+        });
+        for name in ["a", "b"] {
+            std::fs::write(dir.path().join(format!("lib{name}.{EXT}")), b"").unwrap();
+        }
+        let plugins = PluginSet::new(vec![dir.path().to_path_buf()], Arc::new(loader));
+        let a = plugins.library("a").unwrap();
+        let b = plugins.library("b").unwrap();
+        assert!(!Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn a_loaded_name_is_never_looked_up_again() {
+        // A rebuilt plugin is a new file: the name stays on the library it
+        // loaded, and the new one is picked up at the daemon's next start.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(format!("libx.{EXT}"));
+        std::fs::write(&file, b"old").unwrap();
+        let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let plugins = PluginSet::new(
+            vec![dir.path().to_path_buf()],
+            Arc::new(counting_loader(1, loads.clone())),
+        );
+        let path = file.to_string_lossy().into_owned();
+        let t = format!("{{{{ plugin('x', 'bc_x') }}}}{{{{ plugin('{path}', 'bc_x') }}}}");
+        assert_eq!(
+            render_with(EngineCtx::default(), plugins, &t).unwrap(),
+            "11"
+        );
+        assert_eq!(loads_of(&loads), 2, "the name and the path load once each");
+    }
+
+    #[test]
+    fn a_replaced_file_loads_nothing_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(format!("libx.{EXT}"));
+        std::fs::write(&file, b"old").unwrap();
+        let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let plugins = PluginSet::new(
+            vec![dir.path().to_path_buf()],
+            Arc::new(counting_loader(1, loads.clone())),
+        );
+        let path = file.to_string_lossy().into_owned();
+        plugins.call("x", "bc_x", &serde_json::json!([])).unwrap();
+        plugins.call(&path, "bc_x", &serde_json::json!([])).unwrap();
+        assert_eq!(loads_of(&loads), 2);
+        // A new inode under the same name.
+        std::fs::remove_file(&file).unwrap();
+        std::fs::write(&file, b"new").unwrap();
+        plugins.call("x", "bc_x", &serde_json::json!([])).unwrap();
+        plugins.call(&path, "bc_x", &serde_json::json!([])).unwrap();
+        assert_eq!(
+            loads_of(&loads),
+            2,
+            "neither the name nor the path loads again"
+        );
+    }
+
+    #[test]
+    fn a_name_keeps_the_file_it_first_resolved_to() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        std::fs::write(second.path().join(format!("libmoved.{EXT}")), b"2").unwrap();
+        let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let plugins = PluginSet::new(
+            vec![first.path().to_path_buf(), second.path().to_path_buf()],
+            Arc::new(counting_loader(1, loads.clone())),
+        );
+        plugins
+            .call("moved", "bc_x", &serde_json::json!([]))
+            .unwrap();
+        // A copy appears earlier on the path mid-run: the name does not move.
+        std::fs::write(first.path().join(format!("libmoved.{EXT}")), b"1").unwrap();
+        plugins
+            .call("moved", "bc_x", &serde_json::json!([]))
+            .unwrap();
+        assert_eq!(loads_of(&loads), 1);
+    }
+
     #[test]
     fn plugin_first_search_directory_wins() {
         let first = tempfile::tempdir().unwrap();
@@ -523,7 +684,7 @@ mod tests {
         );
         let err = render(plugins, "{{ plugin('nope', 'bc_x') }}").unwrap_err();
         let want = format!(
-            "plugin(): libnope.{EXT} not found on plugin.path ({})",
+            "plugin(): libnope.{EXT} not found on [daemon.plugin] path ({})",
             dir.path().display()
         );
         assert!(err.to_string().contains(&want), "{err}");

@@ -93,7 +93,9 @@ const SOURCE_KNOB_KEYS: &[&str] = &[
 struct RemovedBackend {
     /// The `type` / `backend` value that named it.
     value: &'static str,
-    /// The keys only it read; a table of this name is a source block, not the key.
+    /// The keys only it read. A table of this name is the key too, unless
+    /// `Config::is_source_block` says it is a Source block: only `headers`
+    /// can be either.
     keys: &'static [&'static str],
     /// Whether the keys are looked for in each source block too.
     in_source_blocks: bool,
@@ -123,14 +125,22 @@ const REMOVED_BACKENDS: &[RemovedBackend] = &[
         pointer: "HTTP providers are removed: write a Source whose data calls \
                   url(...) | fromjson, in [daemon.providers.<p>.sources.<s>]",
     },
+    RemovedBackend {
+        value: "library",
+        keys: &["library_path", "fields", "invalidation"],
+        in_source_blocks: true,
+        pointer: "Library providers are removed: write a Source whose data calls \
+                  plugin(name, symbol, args...), found on [daemon.plugin] path, \
+                  in [daemon.providers.<p>.sources.<s>]",
+    },
 ];
 
-/// The keys a library source block (or a built-in's) may carry.
+/// The keys a per-source override block has carried, including those now
+/// rejected: what tells a `headers` source block from the removed http key of
+/// that name.
 const SOURCE_BLOCK_KEYS: &[&str] = &[
     "type",
-    "scope",
     "enabled",
-    "fields",
     "poll_interval",
     "poll_count",
     "fsevent_patterns",
@@ -209,6 +219,11 @@ pub struct DaemonConfig {
     /// `Config::validate_seeded`.
     #[serde(default = "empty_table")]
     pub providers: toml::Value,
+    /// `[daemon.plugin]`: where `plugin(name, ...)` finds libraries, `path`
+    /// only (`Config::plugin_path`). A `toml::Value` for the reason
+    /// `Config::client` is one.
+    #[serde(default = "empty_table")]
+    pub plugin: toml::Value,
 }
 
 impl Default for Config {
@@ -238,6 +253,7 @@ impl Default for DaemonConfig {
             watchdog_interval: None,
             watchdog_threshold: None,
             providers: empty_table(),
+            plugin: empty_table(),
         }
     }
 }
@@ -259,40 +275,10 @@ impl DaemonConfig {
     }
 }
 
-fn default_poll_interval() -> String {
-    "60s".to_string()
-}
-
-fn default_poll_live_count() -> u32 {
-    12
-}
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct LifecycleConfig {
     pub idle_shutdown_secs: Option<u64>,
-    /// Global default poll interval. Used when no per-source override is set.
-    #[serde(default = "default_poll_interval")]
-    pub poll_interval: String,
-    /// Global default polls in the Active window.
-    #[serde(default = "default_poll_live_count")]
-    pub poll_live_count: u32,
-    /// Global default for `fsevents_reinstate`. `None` means "unset" —
-    /// sources fall through to the per-source default declared in `SourceMetadata`.
-    /// `Some(v)` is an explicit user override that beats any source default.
-    #[serde(default)]
-    pub fsevents_reinstate: Option<bool>,
-}
-
-impl Default for LifecycleConfig {
-    fn default() -> Self {
-        Self {
-            idle_shutdown_secs: None,
-            poll_interval: default_poll_interval(),
-            poll_live_count: default_poll_live_count(),
-            fsevents_reinstate: None,
-        }
-    }
 }
 
 /// Global failback defaults. Replaces the old `[lifecycle] failure_*` keys.
@@ -323,48 +309,14 @@ impl FailbackGlobalConfig {
     }
 }
 
-/// Per-source override block: `[providers.<name>.<source>]`.
-/// All keys are optional; missing keys fall through to source defaults,
-/// then to [lifecycle]/[failback] globals, then to compile-time defaults.
+/// Per-source override block of a built-in provider:
+/// `[providers.<name>.<source>]`. The scheduler reads only the failback
+/// settings from it; every other key is an error. Missing keys fall through to
+/// the Source's default, then to `[failback]`.
 #[derive(Debug, Clone, Default)]
 pub struct SourceOverrideConfig {
-    /// Strategy type: "poll", "fsevent", or "fsevent_poll".
-    /// For built-ins, must match the Rust declaration if set.
-    pub strategy_type: Option<String>,
-    /// Scope: "path" or "global". For built-ins, must match Rust declaration if set.
-    pub scope: Option<String>,
-    /// Whether source is enabled. Default true.
-    pub enabled: Option<bool>,
-    // poll_* keys
-    pub poll_interval: Option<String>,
-    pub poll_count: Option<u32>,
-    // fsevent_* keys
-    pub fsevent_patterns: Option<Vec<String>>,
-    pub fsevent_abs_paths: Option<Vec<String>>,
-    pub fsevent_reinstates: Option<bool>,
-    // failback_* keys
     pub failback_count: Option<u32>,
     pub failback_interval: Option<String>,
-}
-
-/// Valid strategy types per-source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StrategyKind {
-    Poll,
-    Fsevent,
-    FseventPoll,
-}
-
-impl std::str::FromStr for StrategyKind {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "poll" => Ok(Self::Poll),
-            "fsevent" => Ok(Self::Fsevent),
-            "fsevent_poll" => Ok(Self::FseventPoll),
-            _ => Err(()),
-        }
-    }
 }
 
 impl SourceOverrideConfig {
@@ -375,70 +327,6 @@ impl SourceOverrideConfig {
 
         for (key, val) in table {
             match key.as_str() {
-                "type" => {
-                    let s = val
-                        .as_str()
-                        .ok_or_else(|| format!("{block_name}: key 'type' must be a string"))?;
-                    out.strategy_type = Some(s.to_string());
-                }
-                "scope" => {
-                    let s = val
-                        .as_str()
-                        .ok_or_else(|| format!("{block_name}: key 'scope' must be a string"))?;
-                    out.scope = Some(s.to_string());
-                }
-                "enabled" => {
-                    let b = val
-                        .as_bool()
-                        .ok_or_else(|| format!("{block_name}: key 'enabled' must be a boolean"))?;
-                    out.enabled = Some(b);
-                }
-                "poll_interval" => {
-                    let s = val.as_str().ok_or_else(|| {
-                        format!("{block_name}: key 'poll_interval' must be a duration string")
-                    })?;
-                    out.poll_interval = Some(s.to_string());
-                }
-                "poll_count" => {
-                    let n = val.as_integer().ok_or_else(|| {
-                        format!("{block_name}: key 'poll_count' must be an integer")
-                    })?;
-                    out.poll_count = Some(n as u32);
-                }
-                "fsevent_patterns" => {
-                    let arr = val.as_array().ok_or_else(|| {
-                        format!("{block_name}: key 'fsevent_patterns' must be an array")
-                    })?;
-                    let patterns: Result<Vec<String>, _> = arr
-                        .iter()
-                        .map(|v| {
-                            v.as_str().map(|s| s.to_string()).ok_or_else(|| {
-                                format!("{block_name}: fsevent_patterns elements must be strings")
-                            })
-                        })
-                        .collect();
-                    out.fsevent_patterns = Some(patterns?);
-                }
-                "fsevent_abs_paths" => {
-                    let arr = val.as_array().ok_or_else(|| {
-                        format!("{block_name}: key 'fsevent_abs_paths' must be an array")
-                    })?;
-                    let paths: Result<Vec<String>, _> = arr
-                        .iter()
-                        .map(|v| {
-                            v.as_str().map(|s| s.to_string()).ok_or_else(|| {
-                                format!("{block_name}: fsevent_abs_paths elements must be strings")
-                            })
-                        })
-                        .collect();
-                    out.fsevent_abs_paths = Some(paths?);
-                }
-                "fsevent_reinstates" => {
-                    let b = val.as_bool().ok_or_else(|| {
-                        format!("{block_name}: key 'fsevent_reinstates' must be a boolean")
-                    })?;
-                    out.fsevent_reinstates = Some(b);
-                }
                 "failback_count" => {
                     let n = val.as_integer().ok_or_else(|| {
                         format!("{block_name}: key 'failback_count' must be an integer")
@@ -453,10 +341,8 @@ impl SourceOverrideConfig {
                 }
                 other => {
                     return Err(format!(
-                        "{block_name}: unknown key '{other}'. Valid per-source keys are: \
-                         type, scope, enabled, poll_interval, poll_count, fsevent_patterns, \
-                         fsevent_abs_paths, fsevent_reinstates, \
-                         failback_count, failback_interval"
+                        "unknown key '{other}' in {block_name}: only failback_count and \
+                         failback_interval apply to a built-in Source"
                     ));
                 }
             }
@@ -464,282 +350,40 @@ impl SourceOverrideConfig {
 
         Ok(out)
     }
-
-    /// Validate that the declared keys are consistent with the given strategy type.
-    /// Called only when `type` is set and parseable.
-    pub fn validate_strategy_keys(&self, block_name: &str) -> Result<(), String> {
-        let kind = match self.strategy_type.as_deref() {
-            Some(t) => match t.parse::<StrategyKind>() {
-                Ok(k) => k,
-                Err(()) => {
-                    return Err(format!(
-                        "{block_name}: unknown strategy type '{}'. \
-                         Valid values: \"poll\", \"fsevent\", \"fsevent_poll\"",
-                        t
-                    ));
-                }
-            },
-            None => return Ok(()), // No type declared; skip strategy validation.
-        };
-
-        // poll_* keys only valid for poll and fsevent_poll
-        if (self.poll_interval.is_some() || self.poll_count.is_some())
-            && kind == StrategyKind::Fsevent
-        {
-            return Err(format!(
-                "{block_name}: keys poll_interval/poll_count are not valid for \
-                     type = \"fsevent\". Use type = \"poll\" or \"fsevent_poll\"."
-            ));
-        }
-
-        // fsevent_* keys only valid for fsevent and fsevent_poll
-        if (self.fsevent_patterns.is_some()
-            || self.fsevent_abs_paths.is_some()
-            || self.fsevent_reinstates.is_some())
-            && kind == StrategyKind::Poll
-        {
-            return Err(format!(
-                "{block_name}: keys fsevent_patterns/fsevent_abs_paths/\
-                     fsevent_reinstates are not valid for type = \"poll\". \
-                     Use type = \"fsevent\" or \"fsevent_poll\"."
-            ));
-        }
-
-        Ok(())
-    }
-}
-
-/// Per-source config for the library backend.
-///
-/// Used when a provider is declared with `backend = "library"` and each
-/// source lives in its own `[providers.<name>.<source>]` sub-table.
-///
-/// Accepts the declaration key (`fields`) and all knob keys
-/// (`poll_interval`, `fsevent_patterns`, `failback_count`, …).
-#[derive(Debug, Clone, Default)]
-pub struct ExternalSourceConfig {
-    /// Source name (filled by the caller, not parsed from the table itself).
-    pub name: String,
-    /// Strategy type: "poll", "fsevent", or "fsevent_poll".
-    pub strategy_type: Option<String>,
-    /// Scope: "global" or "path".
-    pub scope: Option<String>,
-    /// Whether the source is enabled. Default true.
-    pub enabled: Option<bool>,
-
-    // ── Field declarations ────────────────────────────────────────────────────
-    pub fields: Option<Vec<ExternalFieldDecl>>,
-
-    // ── Knob overrides (same vocabulary as SourceOverrideConfig) ─────────────
-    pub poll_interval: Option<String>,
-    pub poll_count: Option<u32>,
-    pub fsevent_patterns: Option<Vec<String>>,
-    pub fsevent_abs_paths: Option<Vec<String>>,
-    pub fsevent_reinstates: Option<bool>,
-    pub failback_count: Option<u32>,
-    pub failback_interval: Option<String>,
-}
-
-/// A field declaration inside an external source config block.
-///
-/// ```toml
-/// fields = [{ name = "temp", type = "float" }]
-/// ```
-#[derive(Debug, Clone, Default)]
-pub struct ExternalFieldDecl {
-    pub name: String,
-    pub field_type: String,
-}
-
-/// One `[providers.<name>]` block with `backend = "library"`, paired with `library_path`
-/// and any per-source override tables.
-pub type LibraryProviderBlocks = Vec<(String, String, Vec<ExternalSourceConfig>)>;
-
-impl ExternalSourceConfig {
-    /// Parse from a TOML table. `block_name` is used in error messages.
-    pub fn from_toml_table(block_name: &str, table: &toml::value::Table) -> Result<Self, String> {
-        let mut out = ExternalSourceConfig::default();
-
-        for (key, val) in table {
-            match key.as_str() {
-                "type" => {
-                    out.strategy_type = Some(
-                        val.as_str()
-                            .ok_or_else(|| format!("{block_name}: 'type' must be a string"))?
-                            .to_string(),
-                    );
-                }
-                "scope" => {
-                    out.scope = Some(
-                        val.as_str()
-                            .ok_or_else(|| format!("{block_name}: 'scope' must be a string"))?
-                            .to_string(),
-                    );
-                }
-                "enabled" => {
-                    out.enabled = Some(
-                        val.as_bool()
-                            .ok_or_else(|| format!("{block_name}: 'enabled' must be a boolean"))?,
-                    );
-                }
-                // Fields array
-                "fields" => {
-                    let arr = val
-                        .as_array()
-                        .ok_or_else(|| format!("{block_name}: 'fields' must be an array"))?;
-                    let mut field_decls = Vec::new();
-                    for (i, item) in arr.iter().enumerate() {
-                        let tbl = item
-                            .as_table()
-                            .ok_or_else(|| format!("{block_name}: fields[{i}] must be a table"))?;
-                        let name = tbl
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .ok_or_else(|| {
-                                format!("{block_name}: fields[{i}].name is required and must be a string")
-                            })?
-                            .to_string();
-                        let field_type = tbl
-                            .get("type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("string")
-                            .to_string();
-                        field_decls.push(ExternalFieldDecl { name, field_type });
-                    }
-                    out.fields = Some(field_decls);
-                }
-                // Knob keys
-                "poll_interval" => {
-                    out.poll_interval = Some(
-                        val.as_str()
-                            .ok_or_else(|| {
-                                format!("{block_name}: 'poll_interval' must be a duration string")
-                            })?
-                            .to_string(),
-                    );
-                }
-                "poll_count" => {
-                    out.poll_count =
-                        Some(val.as_integer().ok_or_else(|| {
-                            format!("{block_name}: 'poll_count' must be an integer")
-                        })? as u32);
-                }
-                "fsevent_patterns" => {
-                    let arr = val.as_array().ok_or_else(|| {
-                        format!("{block_name}: 'fsevent_patterns' must be an array")
-                    })?;
-                    let v: Result<Vec<String>, _> = arr
-                        .iter()
-                        .map(|v| {
-                            v.as_str().map(|s| s.to_string()).ok_or_else(|| {
-                                format!("{block_name}: fsevent_patterns elements must be strings")
-                            })
-                        })
-                        .collect();
-                    out.fsevent_patterns = Some(v?);
-                }
-                "fsevent_abs_paths" => {
-                    let arr = val.as_array().ok_or_else(|| {
-                        format!("{block_name}: 'fsevent_abs_paths' must be an array")
-                    })?;
-                    let v: Result<Vec<String>, _> = arr
-                        .iter()
-                        .map(|v| {
-                            v.as_str().map(|s| s.to_string()).ok_or_else(|| {
-                                format!("{block_name}: fsevent_abs_paths elements must be strings")
-                            })
-                        })
-                        .collect();
-                    out.fsevent_abs_paths = Some(v?);
-                }
-                "fsevent_reinstates" => {
-                    out.fsevent_reinstates = Some(val.as_bool().ok_or_else(|| {
-                        format!("{block_name}: 'fsevent_reinstates' must be a boolean")
-                    })?);
-                }
-                "failback_count" => {
-                    out.failback_count = Some(val.as_integer().ok_or_else(|| {
-                        format!("{block_name}: 'failback_count' must be an integer")
-                    })? as u32);
-                }
-                "failback_interval" => {
-                    out.failback_interval = Some(
-                        val.as_str()
-                            .ok_or_else(|| {
-                                format!(
-                                    "{block_name}: 'failback_interval' must be a duration string"
-                                )
-                            })?
-                            .to_string(),
-                    );
-                }
-                other => {
-                    return Err(format!(
-                        "{block_name}: unknown key '{other}'. \
-                         Valid external-source keys are: type, scope, enabled, fields, \
-                         poll_interval, poll_count, fsevent_patterns, fsevent_abs_paths, \
-                         fsevent_reinstates, failback_count, failback_interval"
-                    ));
-                }
-            }
-        }
-
-        Ok(out)
-    }
-}
-
-/// A library field declaration: either a bare type string or a table with
-/// the type.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged, deny_unknown_fields)]
-pub enum FieldSpec {
-    Simple(String),
-    Detailed {
-        #[serde(rename = "type")]
-        field_type: String,
-    },
-}
-
-impl FieldSpec {
-    pub fn field_type(&self) -> &str {
-        match self {
-            FieldSpec::Simple(t) => t,
-            FieldSpec::Detailed { field_type } => field_type,
-        }
-    }
-}
-
-/// Configuration for a library provider extracted from the raw providers map.
-/// This preserves backward compatibility for Phase 4 which will restructure external backends.
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct FlatProviderConfig {
-    #[serde(rename = "type")]
-    pub provider_type: Option<String>,
-    pub invalidation: Option<FlatInvalidation>,
-    pub fields: Option<HashMap<String, FieldSpec>>,
-    pub scope: Option<String>,
-    pub enabled: Option<bool>,
-    pub poll_secs: Option<u64>,
-    // Library provider fields (used when type = "library")
-    pub library_path: Option<String>,
-    // New configurable backoff fields (override lifecycle defaults)
-    pub failure_reattempts: Option<u32>,
-    pub failure_backoff_interval: Option<String>,
-    // New lifecycle config fields (Task 8)
-    pub poll_interval: Option<String>,
-    pub poll_live_count: Option<u32>,
-    pub fsevents_reinstate: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct FlatInvalidation {
-    pub poll: Option<String>,
-    pub watch: Option<Vec<String>>,
 }
 
 impl Config {
+    /// The directories `plugin(name, ...)` searches for `lib<name>.<ext>`, in
+    /// order: `[daemon.plugin] path` with a leading `~` written as `home`, or,
+    /// when the list is not given, the `plugins` directory beside the config
+    /// file (none for a `Config` built in memory, which reads nothing ambient).
+    /// A list is replaced whole by a later layer, as any array is. A value of
+    /// the wrong shape is `Config::validate_seeded`'s to report; it reads as
+    /// absent here.
+    pub fn plugin_path(&self, home: Option<&str>) -> Result<Vec<PathBuf>, String> {
+        let listed: Option<Vec<&str>> = self
+            .daemon
+            .plugin
+            .get("path")
+            .and_then(toml::Value::as_array)
+            .and_then(|list| list.iter().map(toml::Value::as_str).collect());
+        match listed {
+            Some(dirs) => dirs
+                .into_iter()
+                .map(|dir| {
+                    libbeachcomber::engine::expand_tilde(dir, home)
+                        .map_err(|e| format!("[daemon.plugin] path entry {e}"))
+                })
+                .collect(),
+            None => Ok(self
+                .config_path
+                .as_deref()
+                .and_then(Path::parent)
+                .map(|dir| vec![dir.join("plugins")])
+                .unwrap_or_default()),
+        }
+    }
+
     /// Returns true if a provider is explicitly disabled in config.
     pub fn is_provider_disabled(&self, name: &str) -> bool {
         self.providers
@@ -776,16 +420,15 @@ impl Config {
         };
         let block_name = format!("[providers.{provider_name}.{source_name}]");
         let cfg = SourceOverrideConfig::from_toml_table(&block_name, table)?;
-        cfg.validate_strategy_keys(&block_name)?;
         Ok(Some(cfg))
     }
 
     // ── Resolution methods ────────────────────────────────────────────────────
     //
-    // Resolution order per spec §"Resolution order":
+    // Resolution order:
     //   1. [providers.<provider>.<source>] block (user override)
     //   2. Source's declared default in SourceMetadata (passed as `source_default`)
-    //   3. [lifecycle] / [failback] global blocks
+    //   3. [failback] global block
     //   4. Compile-time defaults
 
     /// Resolve failure reattempts for a (provider, source) pair.
@@ -844,142 +487,11 @@ impl Config {
         self.failback.interval_duration()
     }
 
-    /// Resolve poll interval for a (provider, source) pair.
-    pub fn resolve_poll_interval(&self, provider_name: &str) -> Duration {
-        self.resolve_poll_interval_for_source(provider_name, None, None)
-    }
-
-    /// Resolve poll interval for a (provider, source) pair with optional source override.
-    pub fn resolve_poll_interval_for_source(
-        &self,
-        provider_name: &str,
-        source_name: Option<&str>,
-        source_default: Option<Duration>,
-    ) -> Duration {
-        // 1. Per-source override
-        if let Some(src) = source_name
-            && let Ok(Some(cfg)) = self.source_override(provider_name, src)
-            && let Some(ref s) = cfg.poll_interval
-            && let Some(d) = parse_whole_seconds(s)
-        {
-            return d;
-        }
-        // 2. Source-declared default
-        if let Some(d) = source_default {
-            return d;
-        }
-        // 3. [lifecycle] global then compile-time default
-        parse_whole_seconds(&self.lifecycle.poll_interval).unwrap_or(Duration::from_secs(60))
-    }
-
-    /// Resolve the polls in the Active window for a (provider, source) pair.
-    pub fn resolve_poll_live_count(&self, provider_name: &str) -> u32 {
-        self.resolve_poll_live_count_for_source(provider_name, None, None)
-    }
-
-    /// Resolve the polls in the Active window for a (provider, source) pair with optional source override.
-    pub fn resolve_poll_live_count_for_source(
-        &self,
-        provider_name: &str,
-        source_name: Option<&str>,
-        source_default: Option<u32>,
-    ) -> u32 {
-        // 1. Per-source override
-        if let Some(src) = source_name
-            && let Ok(Some(cfg)) = self.source_override(provider_name, src)
-            && let Some(v) = cfg.poll_count
-        {
-            return v;
-        }
-        // 2. Source-declared default
-        if let Some(d) = source_default {
-            return d;
-        }
-        // 3. [lifecycle] global then compile-time default
-        self.lifecycle.poll_live_count
-    }
-
-    /// Resolve the effective `fsevents_reinstate` flag for a (provider, source) pair.
-    ///
-    /// Priority (first match wins):
-    /// 1. Per-source config: `[providers.<name>.<source>] fsevent_reinstates = <bool>`.
-    /// 2. Global lifecycle override: `[lifecycle] fsevents_reinstate = <bool>`.
-    /// 3. Source-declared default via `SourceMetadata::fsevents_reinstate`.
-    pub fn resolve_fsevents_reinstate(&self, provider_name: &str, provider_default: bool) -> bool {
-        self.resolve_fsevents_reinstate_for_source(provider_name, None, provider_default)
-    }
-
-    /// Resolve `fsevents_reinstate` for a specific (provider, source) pair.
-    pub fn resolve_fsevents_reinstate_for_source(
-        &self,
-        provider_name: &str,
-        source_name: Option<&str>,
-        source_default: bool,
-    ) -> bool {
-        // 1. Per-source override
-        if let Some(src) = source_name
-            && let Ok(Some(cfg)) = self.source_override(provider_name, src)
-            && let Some(v) = cfg.fsevent_reinstates
-        {
-            return v;
-        }
-        // 2. Global lifecycle override
-        if let Some(v) = self.lifecycle.fsevents_reinstate {
-            return v;
-        }
-        // 3. Source-declared default
-        source_default
-    }
-
-    // ── External backend provider extraction ─────────────────────────────────
-    //
-    // Two families of extraction:
-    //
-    // 1. Single-source: provider-level block carries all config. Used when
-    //    there is NO `backend` key. `library_providers()`.
-    //
-    // 2. Multi-source: provider-level block has `backend = "..."` key; each
-    //    source lives in a per-source sub-table. The provider-level block may
-    //    also carry `library_path`. `multi_library_providers()`.
-
-    fn as_external_provider_config(val: &toml::Value) -> Option<FlatProviderConfig> {
-        // For the library backend, deserialize the full provider-level
-        // table as FlatProviderConfig. Sub-table entries like `fields` and `invalidation`
-        // are part of the external backend config shape (Phase 4 will restructure these).
-        let table = val.as_table()?.clone();
-        table.try_into().ok()
-    }
-
-    /// Return the `backend` value for a provider's top-level block, if present.
-    fn backend_for(val: &toml::Value) -> Option<&str> {
-        val.get("backend").and_then(|v| v.as_str())
-    }
-
-    pub fn library_providers(&self) -> Vec<(String, FlatProviderConfig)> {
-        self.providers
-            .iter()
-            .filter_map(|(name, val)| {
-                // Skip Phase 4 multi-source style (has `backend` key).
-                if Self::backend_for(val).is_some() {
-                    return None;
-                }
-                let cfg = Self::as_external_provider_config(val)?;
-                if cfg.provider_type.as_deref() == Some("library") {
-                    Some((name.clone(), cfg))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    // ── Phase 4 multi-source external backend extraction ─────────────────────
-
     /// Whether `[providers.<p>.<sub_key>]` is a source block. The others are
-    /// settings of the provider: `fields` and `invalidation` (the flat shape),
-    /// the removed `virtual` block, and a `headers` table of plain strings (the
-    /// removed http key), which a source block of that name is told from by
-    /// being empty or carrying a source key.
+    /// not: `fields` and `invalidation` (the removed library keys), the removed
+    /// `virtual` block, and a `headers` table of plain strings (the removed
+    /// http key), which a source block of that name is told from by being
+    /// empty or carrying a source key.
     fn is_source_block(sub_key: &str, table: &toml::value::Table) -> bool {
         match sub_key {
             "fields" | "invalidation" | "virtual" => false,
@@ -1037,60 +549,6 @@ impl Config {
         errors
     }
 
-    /// Parse the per-source sub-tables for a provider declared with `backend = "..."`.
-    /// Returns `Err` if any sub-table is malformed, `Ok(vec)` otherwise (may be empty).
-    fn parse_external_sources(
-        prov_name: &str,
-        prov_val: &toml::Value,
-    ) -> Result<Vec<ExternalSourceConfig>, String> {
-        let table = match prov_val.as_table() {
-            Some(t) => t,
-            None => return Ok(vec![]),
-        };
-        let mut sources = Vec::new();
-        for (sub_key, sub_val) in table {
-            // Skip scalar provider-level keys; only process sub-tables.
-            let sub_table = match sub_val.as_table() {
-                Some(t) => t,
-                None => continue,
-            };
-            // Not a source: `validate_providers` owns the error for it, if any.
-            if !Self::is_source_block(sub_key, sub_table) {
-                continue;
-            }
-            let block_name = format!("[providers.{prov_name}.{sub_key}]");
-            let mut src = ExternalSourceConfig::from_toml_table(&block_name, sub_table)?;
-            src.name = sub_key.clone();
-            sources.push(src);
-        }
-        Ok(sources)
-    }
-
-    /// Multi-source library providers: `backend = "library"` + `library_path`.
-    /// Source list comes from the library's C ABI; user TOML sub-tables only
-    /// override knobs, not declare sources. Returns `(name, library_path, source_overrides)`.
-    pub fn multi_library_providers(&self) -> Result<LibraryProviderBlocks, String> {
-        let mut result = Vec::new();
-        for (name, val) in &self.providers {
-            if Self::backend_for(val) != Some("library") {
-                continue;
-            }
-            let library_path = val
-                .get("library_path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    format!(
-                        "provider '{}' (backend = library): missing required key 'library_path'",
-                        name
-                    )
-                })?
-                .to_string();
-            let sources = Self::parse_external_sources(name, val)?;
-            result.push((name.clone(), library_path, sources));
-        }
-        Ok(result)
-    }
-
     // ── Startup validation ────────────────────────────────────────────────────
 
     /// Validate provider config blocks. Returns (warnings, errors).
@@ -1098,7 +556,7 @@ impl Config {
     /// - Known provider, unknown source name → warn (cross-platform-config support).
     /// - Old flat source-knob keys at provider level → error.
     /// - Invalid strategy keys for declared type → error.
-    /// - A removed backend (`REMOVED_BACKENDS`: script, http) → an error for
+    /// - A removed backend (`REMOVED_BACKENDS`: script, http, library) → an error for
     ///   every spelling the provider carries, saying where it went.
     ///
     /// `known_providers` is the list of registered provider names.
@@ -1146,59 +604,36 @@ impl Config {
                 continue;
             }
 
-            // A flat provider's `fields` table maps a name to a type, bare or
-            // as `{ type = … }`; a per-field `scope` is not a key.
-            if let Some(fields) = table.get("fields").and_then(|f| f.as_table()) {
-                for (field, spec) in fields {
-                    if let Some(spec) = spec.as_table() {
-                        for key in spec.keys().filter(|k| *k != "type") {
-                            errors.push(format!(
-                                "[providers.{prov_name}] fields.{field}: unknown key '{key}' \
-                                 (a field holds only its type)"
-                            ));
-                        }
-                    }
-                }
-            }
-
-            // Check for old flat source-knob keys at the provider level.
-            // These are rejected for ALL providers (built-in and external).
-            // Exception: library providers still use some of these
-            // keys (failure_reattempts, failure_backoff_interval, poll_interval,
-            // poll_live_count, fsevents_reinstate, poll_secs) at provider level
-            // until Phase 4. We detect if this looks like an external backend.
-            let is_external_backend = table
-                .get("type")
-                .and_then(|v| v.as_str())
-                .map(|t| t == "library")
-                .unwrap_or(false)
-                || table
-                    .get("backend")
-                    .and_then(|v| v.as_str())
-                    .map(|b| b == "library")
-                    .unwrap_or(false)
-                || table.get("library_path").is_some();
-
-            if !is_external_backend {
-                // For non-external (built-in or declared) providers, reject old flat
-                // source-knob keys. These indicate the old schema.
-                for key in SOURCE_KNOB_KEYS {
-                    if table.contains_key(*key) {
-                        errors.push(format!(
-                            "[providers.{prov_name}] contains source-knob key '{key}'. \
-                             In the new schema, source-knob keys belong in a per-source block: \
-                             [providers.{prov_name}.<source_name>]. \
-                             See the configuration reference for the new per-source schema with \
-                             poll_*, fsevent_*, and failback_* prefixes."
-                        ));
-                    }
+            // Old flat source-knob keys at the provider level belong in a
+            // per-source block.
+            for key in SOURCE_KNOB_KEYS {
+                if table.contains_key(*key) {
+                    errors.push(format!(
+                        "[providers.{prov_name}] contains source-knob key '{key}'. \
+                         In the new schema, source-knob keys belong in a per-source block: \
+                         [providers.{prov_name}.<source_name>]. \
+                         See the configuration reference for the new per-source schema with \
+                         poll_*, fsevent_*, and failback_* prefixes."
+                    ));
                 }
             }
 
             // Validate per-source sub-table blocks.
             for (sub_key, sub_val) in table {
                 if !sub_val.is_table() {
-                    // Scalar key; already handled above or is a provider-level key.
+                    // `enabled` is the one provider-level setting. `path` and
+                    // the source-knob keys have their own errors above.
+                    if sub_key == "enabled" {
+                        if !sub_val.is_bool() {
+                            errors.push(format!(
+                                "[providers.{prov_name}]: enabled must be a boolean"
+                            ));
+                        }
+                    } else if sub_key != "path" && !SOURCE_KNOB_KEYS.contains(&sub_key.as_str()) {
+                        errors.push(format!(
+                            "unknown key '{sub_key}' in [providers.{prov_name}]"
+                        ));
+                    }
                     continue;
                 }
 
@@ -1215,44 +650,15 @@ impl Config {
                     continue;
                 }
 
-                // Not a source block: the flat shape's `fields` and
-                // `invalidation`, or a `headers` table of plain strings (the
-                // removed http key, reported above). Scoped to external
-                // backends without a `backend` key, as the flat shape is.
                 let sub_table = sub_val.as_table().unwrap();
-                if is_external_backend
-                    && table.get("backend").is_none()
-                    && !Self::is_source_block(sub_key, sub_table)
-                {
-                    continue;
-                }
 
                 // sub_key is a potential source name.
                 let block_name = format!("[providers.{prov_name}.{sub_key}]");
 
-                if is_external_backend {
-                    // Phase 4 multi-source: validate using ExternalSourceConfig parser
-                    // (which accepts the library declaration key, `fields`).
-                    if let Err(e) = ExternalSourceConfig::from_toml_table(&block_name, sub_table) {
-                        errors.push(e);
-                    }
-                    // External backend sources are declared in TOML, not in built-ins;
-                    // no warn-and-skip for unknown sources needed.
+                // Parse and validate the source override block.
+                if let Err(e) = SourceOverrideConfig::from_toml_table(&block_name, sub_table) {
+                    errors.push(e);
                     continue;
-                }
-
-                // Parse and validate the source override block (built-in provider path).
-                match SourceOverrideConfig::from_toml_table(&block_name, sub_table) {
-                    Err(e) => {
-                        errors.push(e);
-                        continue;
-                    }
-                    Ok(cfg) => {
-                        if let Err(e) = cfg.validate_strategy_keys(&block_name) {
-                            errors.push(e);
-                            continue;
-                        }
-                    }
                 }
 
                 // Check if the provider is a known (built-in) provider.

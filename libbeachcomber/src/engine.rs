@@ -104,15 +104,23 @@ fn read(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
     }
 }
 
+/// `p` with a leading `~` (alone, or before a `/`) written as `home`. Any
+/// other `p` is returned as is; a `~` with no `home` is an error, not a
+/// relative path that happens to start with a tilde.
+pub fn expand_tilde(p: &str, home: Option<&str>) -> Result<PathBuf, String> {
+    match p.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => match home {
+            Some(home) => Ok(PathBuf::from(format!("{home}{rest}"))),
+            None => Err(format!("{p}: HOME is not set")),
+        },
+        _ => Ok(PathBuf::from(p)),
+    }
+}
+
 /// `p` with a leading `~` replaced by `ctx.env["HOME"]` (when set); any other
 /// `p` is returned as is.
 pub fn expand_home(ctx: &EngineCtx, p: &str) -> PathBuf {
-    match (p.strip_prefix('~'), ctx.env.get("HOME")) {
-        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
-            PathBuf::from(format!("{home}{rest}"))
-        }
-        _ => PathBuf::from(p),
-    }
+    expand_tilde(p, ctx.env.get("HOME").map(String::as_str)).unwrap_or_else(|_| PathBuf::from(p))
 }
 
 fn resolve_path(ctx: &EngineCtx, p: &str) -> PathBuf {

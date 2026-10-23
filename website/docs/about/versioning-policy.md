@@ -60,16 +60,14 @@ Each SDK follows its own language ecosystem versioning. SDK versions are indepen
 
 Standard Rust API compatibility rules apply. Public API changes follow [the Cargo SemVer reference](https://doc.rust-lang.org/cargo/reference/semver.html).
 
-### Shared Library Provider C ABI
+### Plugin C ABI
 
-The C ABI documented in [Provider Development §8](/docs/internals/provider-development#8-shared-library-providers) is a public binary interface. Both the multi-source symbols (`bc_source_count`, `bc_source_metadata`, `bc_source_execute`) and the legacy single-source symbols (`beachcomber_provider_metadata`, `beachcomber_provider_execute`, `beachcomber_provider_free`) — and their signatures — are covered by the same stability guarantees as the wire protocol.
+The C ABI documented in [Provider Development §8](/docs/internals/provider-development#8-plugins) is a public binary interface: a plugin symbol is `const char* symbol(const char* input)`, taking the arguments of `plugin(name, symbol, args...)` as a NUL-terminated JSON array and returning a NUL-terminated JSON value owned by the library. The signature, the ownership contract and the way the daemon finds libraries (`[daemon.plugin] path`) are covered by the same stability guarantees as the wire protocol.
 
 | Change | Version bump |
 |---|---|
-| Add a new optional exported symbol | Minor |
-| Extend the metadata JSON schema with new optional fields | Minor |
-| Change the signature of an exported symbol | **Major** |
-| Change the ownership/free contract | **Major** |
+| Change the signature of a plugin symbol | **Major** |
+| Change the ownership contract of the returned string | **Major** |
 | Change how the daemon locates and loads libraries | **Major** |
 
 Libraries built against version _X.Y_ of the ABI are expected to keep loading on any _X.Z_ daemon without recompilation.

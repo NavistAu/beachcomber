@@ -238,23 +238,20 @@ A Source that calls `url()` has the same lifecycle as any config Source:
 
 A transient 5xx or network error will not remove the last cached value — consumers will see `stale: true` on the wire (`comb g.j <provider>:cache.<field>` from the CLI) once the value is past its expected refresh time.
 
-## Shared Library Providers
+## Plugins: shared libraries
 
-For maximum performance, you can write providers as shared libraries (`.so` on Linux, `.dylib` on macOS). The daemon loads the library once at startup and calls into it directly — no process spawning, no shell overhead.
+For work where a process spawn is too expensive, a Source's `data` line can call a function in a shared library (`.so` on Linux, `.dylib` on macOS) with `plugin(name, symbol, args...)`. The library is found on `[daemon.plugin] path` (default `~/.config/beachcomber/plugins`), loaded on first call, and its JSON result comes back parsed.
 
 ```toml
-[providers.my_native]
-type = "library"
-library_path = "/usr/local/lib/beachcomber/libmy_provider.so"
+[daemon.providers.my_native.sources.main]
+data = "{{ plugin('my_native', 'read_state', 'fast') }}"
+result.value = "{{ data.value }}"
+return = "{{ result | poll('10s') }}"
 ```
 
-The library must export three C-compatible functions:
+This calls `read_state` in `libmy_native.so` (or `.dylib`). A symbol is `const char* symbol(const char* input)`: it receives the arguments as a JSON array and returns a JSON value, or `NULL` on failure.
 
-- `beachcomber_provider_metadata()` — returns JSON describing fields, invalidation strategy, and scope
-- `beachcomber_provider_execute(path)` — returns JSON field values (or NULL on failure)
-- `beachcomber_provider_free(ptr)` — frees strings returned by the above
-
-See the [Provider Development Guide](/docs/internals/provider-development#8-shared-library-providers) for the full C ABI contract and example code.
+See the [Provider Development Guide](/docs/internals/provider-development#8-plugins) for the full C ABI contract and example code.
 
 ## Secrets and Environment Variables
 

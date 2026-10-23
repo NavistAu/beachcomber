@@ -389,3 +389,44 @@ return = "{{{{ result | poll('60s') }}}}"
     let d = setup.daemon();
     assert_eq!(get(&d, "claude.indicator"), Some(json!("minor")));
 }
+
+/// `<dir>/lib<name>.<ext>`: the fixture cdylib, linked under the name
+/// `plugin('<name>', ...)` searches for.
+fn link_plugin(dir: &Path, name: &str) {
+    use crate::common::fixture::{LIB_EXT, ensure_fixture_built};
+    std::fs::create_dir_all(dir).unwrap();
+    std::os::unix::fs::symlink(
+        ensure_fixture_built(),
+        dir.join(format!("lib{name}.{LIB_EXT}")),
+    )
+    .unwrap();
+}
+
+const PLUGIN_SOURCE: &str = r#"
+[daemon.providers.lib.sources.s]
+data = "{{ plugin('demo', 'bc_echo_args', 'x', 2) }}"
+result.first = "{{ data[0] }}"
+result.second = "{{ data[1] }}"
+result.sum = "{{ plugin('demo', 'bc_sum', 1, 2) }}"
+"#;
+
+#[test]
+fn a_plugin_source_serves_the_library_result() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        &format!("[daemon.plugin]\npath = [\"~/libs\"]\n{PLUGIN_SOURCE}"),
+    )]);
+    link_plugin(&setup.home.join("libs"), "demo");
+    let d = setup.daemon();
+    assert_eq!(get(&d, "lib.first"), Some(json!("x")));
+    assert_eq!(get(&d, "lib.second"), Some(json!(2)));
+    assert_eq!(get(&d, "lib.sum"), Some(json!(3)));
+}
+
+#[test]
+fn plugin_looks_in_the_config_directorys_plugins_by_default() {
+    let setup = Setup::new(&[("config.toml", PLUGIN_SOURCE)]);
+    link_plugin(&setup.xdg.join("beachcomber").join("plugins"), "demo");
+    let d = setup.daemon();
+    assert_eq!(get(&d, "lib.first"), Some(json!("x")));
+}

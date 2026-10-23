@@ -16,6 +16,9 @@
 //! `result`, `return`, each a jinja line); what a Source means is
 //! [`crate::shape::build`]'s, from the composed tree.
 //!
+//! `[daemon.plugin] path` is checked here too, though nothing is seeded from it:
+//! a list of directory strings, each absolute or under `~`.
+//!
 //! Every error is prefixed with the file's `config:<path>` label.
 
 use crate::config::Config;
@@ -173,6 +176,56 @@ impl Reader {
         serde_json::Value::Object(out)
     }
 
+    /// `[daemon] plugin`: a table holding only `path`, a list of non-empty
+    /// directory strings, each absolute or beginning `~/`.
+    fn daemon_plugin(&mut self, plugin: &toml::Value) {
+        let Some(table) = plugin.as_table() else {
+            return self.err("[daemon] plugin must be a table".into());
+        };
+        for (key, value) in table {
+            if key != "path" {
+                self.err(format!("unknown key '{key}' in [daemon.plugin]"));
+                continue;
+            }
+            let dirs: Option<Vec<&str>> = value
+                .as_array()
+                .and_then(|list| list.iter().map(toml::Value::as_str).collect());
+            let Some(dirs) = dirs else {
+                self.err("[daemon.plugin] path must be a list of directory strings".into());
+                continue;
+            };
+            for dir in dirs {
+                if dir.is_empty() {
+                    self.err("[daemon.plugin] path has an empty entry".into());
+                } else if !(dir.starts_with('/') || dir == "~" || dir.starts_with("~/")) {
+                    self.err(format!(
+                        "[daemon.plugin] path entry '{dir}' must be an absolute directory or \
+                         start with ~/"
+                    ));
+                }
+            }
+        }
+    }
+
+    /// `[lifecycle]` keys that were removed: nothing reads them. (The table's
+    /// other keys are not this module's.)
+    fn lifecycle(&mut self, lifecycle: &toml::Value) {
+        let Some(table) = lifecycle.as_table() else {
+            return;
+        };
+        for key in table.keys() {
+            if matches!(
+                key.as_str(),
+                "poll_interval" | "poll_live_count" | "fsevents_reinstate"
+            ) {
+                self.err(format!(
+                    "unknown key '{key}' in [lifecycle]: removed, nothing reads it; a Source \
+                     sets its schedule on its return line"
+                ));
+            }
+        }
+    }
+
     fn daemon_providers(&mut self, providers: &toml::Value) {
         let Some(providers) = providers.as_table() else {
             return self.err("[daemon.providers] must be a table".into());
@@ -315,9 +368,16 @@ pub fn read(file: &Path, layer: &toml::Value) -> Seeded {
         r.client(client);
     }
     // A `[daemon]` that is not a table is the load fallback's to notice, and
-    // every key of it other than `providers` is not this module's.
+    // every key of it other than `providers` and `plugin` is not this
+    // module's.
     if let Some(providers) = layer.get("daemon").and_then(|d| d.get("providers")) {
         r.daemon_providers(providers);
+    }
+    if let Some(plugin) = layer.get("daemon").and_then(|d| d.get("plugin")) {
+        r.daemon_plugin(plugin);
+    }
+    if let Some(lifecycle) = layer.get("lifecycle") {
+        r.lifecycle(lifecycle);
     }
     // The removed facet-table form: where its contents went.
     if let Some(old) = layer.get("providers").and_then(|p| p.as_table()) {

@@ -221,16 +221,18 @@ impl ProviderRegistry {
         let Some(providers) = config.daemon.providers.as_table() else {
             return Ok(Vec::new());
         };
+        let mut errors = Vec::new();
+        // A bad `[daemon.plugin] path` is one error among the config's: the
+        // Sources are still checked, with nothing on the search path.
         let search = config
-            .config_path
-            .as_deref()
-            .and_then(std::path::Path::parent)
-            .map(|dir| vec![dir.join("plugins")])
-            .unwrap_or_default();
+            .plugin_path(env.get("HOME").map(String::as_str))
+            .unwrap_or_else(|e| {
+                errors.push(e);
+                Vec::new()
+            });
         let plugins = Arc::new(PluginSet::new(search, Arc::new(LibloadingLoader)));
         let env = Arc::new(env.clone());
 
-        let mut errors = Vec::new();
         // A `_` table's lines apply to Sources below it; they are compiled
         // here as a Source's own are, so a broken prototype does not load.
         for proto in crate::shape::prototype_lines(providers) {
@@ -453,12 +455,12 @@ impl ProviderRegistry {
         registry
     }
 
-    /// [`Self::load`] with libraries: the registry, or every error the config has.
+    /// [`Self::load`]: the registry, or every error the config has.
     pub fn with_config(
         config: &Config,
         vars: &HashMap<String, String>,
     ) -> Result<Self, Vec<String>> {
-        let load = Self::load(config, vars, true);
+        let load = Self::load(config, vars);
         if load.errors.is_empty() {
             Ok(load.registry)
         } else {
@@ -468,21 +470,15 @@ impl ProviderRegistry {
 
     /// The one loader: startup, the config watch's gate and `comb check
     /// config` all build the provider set here, so they agree on what loads.
-    /// Built-ins (minus the disabled), the library providers, the config
-    /// Sources (`[daemon.providers.<p>.sources.<s>]`, whose lines see `vars`,
-    /// the daemon's own variables), and the providers only
-    /// the config names; then every check a config has: the per-file ones, the
-    /// old-form provider blocks, and the Sources against the set built.
-    ///
-    /// `libraries` loads library providers, which `dlopen` their file: the
-    /// daemon does, a check or the watch must not. Their fields are therefore
-    /// unknown to a check, and a config Source colliding with one is found at
-    /// startup only. (The gap closes when the flat library form goes.)
+    /// Built-ins (minus the disabled), the config Sources
+    /// (`[daemon.providers.<p>.sources.<s>]`, whose lines see `vars`, the
+    /// daemon's own variables, and call `plugin()` on `[daemon.plugin] path`),
+    /// and the providers only the config names; then every check a config has:
+    /// the per-file ones, the old-form provider blocks, and the Sources against
+    /// the set built.
     ///
     /// Panics on built-in registration failure (programmer error).
-    pub fn load(config: &Config, vars: &HashMap<String, String>, libraries: bool) -> ConfigLoad {
-        use crate::provider::library::LibraryProvider;
-
+    pub fn load(config: &Config, vars: &HashMap<String, String>) -> ConfigLoad {
         // Start from the full built-in set, then layer on config-defined providers.
         // Built-ins that are explicitly disabled in config are not added.
         let mut registry = Self::new();
@@ -513,41 +509,6 @@ impl ProviderRegistry {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         add_builtin!("uptime", crate::provider::uptime::UptimeProvider);
         add_builtin!("user", crate::provider::user::UserProvider);
-
-        // Registration failures are the user's to see: `comb check config` shows them.
-        let mut warnings: Vec<String> = Vec::new();
-        // ── Single-source external backends (`type = "library"`) ──
-        for (name, lib_config) in config.library_providers() {
-            if libraries
-                && !config.is_provider_disabled(&name)
-                && let Some(provider) = LibraryProvider::new(&name, lib_config)
-                && let Err(e) = registry.register(Box::new(provider))
-            {
-                warnings.push(format!("Failed to register library provider '{name}': {e}"));
-            }
-        }
-
-        // ── Phase 4 multi-source external backends ────────────────────────────
-        // `backend = "library"` TOML shape.
-
-        // Library
-        match config.multi_library_providers() {
-            Ok(providers) => {
-                for (name, lib_path, source_overrides) in providers {
-                    if libraries
-                        && !config.is_provider_disabled(&name)
-                        && let Some(provider) =
-                            LibraryProvider::with_sources(&name, &lib_path, source_overrides)
-                        && let Err(e) = registry.register(Box::new(provider))
-                    {
-                        warnings.push(format!(
-                            "Failed to register multi-source library provider '{name}': {e}"
-                        ));
-                    }
-                }
-            }
-            Err(e) => warnings.push(format!("Error reading multi-source library providers: {e}")),
-        }
 
         // ── Config Sources ────────────────────────────────────────────────────
         let mut errors = Vec::new();
@@ -596,12 +557,11 @@ impl ProviderRegistry {
             &registry.provider_names(),
             &registry.source_names_by_provider(),
         );
-        warnings.extend(provider_warnings);
         errors.extend(provider_errors);
         errors.extend(config.validate_seeded());
         ConfigLoad {
             registry,
-            warnings,
+            warnings: provider_warnings,
             errors,
         }
     }

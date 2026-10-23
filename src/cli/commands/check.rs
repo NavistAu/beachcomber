@@ -165,15 +165,13 @@ pub fn run_check_subjects(
 /// `run_daemon_with_cancel` does at startup. Returns the verdict lines and the
 /// worst exit code they imply.
 ///
-/// The provider set is `ProviderRegistry::load`'s, without its libraries:
-/// loading them would `dlopen` every library provider in the client process for
-/// a read-only check.
+/// The provider set is `ProviderRegistry::load`'s. A Source's `plugin()` calls
+/// are linted, not run, so nothing is `dlopen`ed in the checking process.
 fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
-    // The loader the daemon and the config watch use, without the libraries a
-    // check must not `dlopen`; the checking process's own variables stand in
-    // for the daemon's.
+    // The loader the daemon and the config watch use; the checking process's
+    // own variables stand in for the daemon's.
     let vars = std::env::vars().collect();
-    let load = crate::provider::registry::ProviderRegistry::load(config, &vars, false);
+    let load = crate::provider::registry::ProviderRegistry::load(config, &vars);
     let (warnings, errors) = (load.warnings, load.errors);
 
     let mut out: Vec<serde_json::Value> = warnings

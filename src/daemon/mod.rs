@@ -135,7 +135,7 @@ async fn run_daemon_with_cancel(
     // The daemon's own environment, after the env file: what every config
     // Source's lines see as `env`, and what its commands inherit.
     let vars: std::collections::HashMap<String, String> = std::env::vars().collect();
-    let load = ProviderRegistry::load(&config, &vars, true);
+    let load = ProviderRegistry::load(&config, &vars);
     // Every error the configuration has, at once. Warnings are logged and
     // loading continues.
     for w in &load.warnings {

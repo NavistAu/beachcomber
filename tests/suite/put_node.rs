@@ -46,7 +46,7 @@ fn setup_with_registry(registry: ProviderRegistry) -> Fixture {
 
 /// A Source whose field names are only known once it runs, so it declares a
 /// sentinel (`<tool>`) instead — exactly the shape mise, asdf, aws, gcloud and
-/// every config Source and library provider have.
+/// every config Source has.
 struct SentinelSource;
 
 impl Source for SentinelSource {

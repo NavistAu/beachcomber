@@ -604,22 +604,22 @@ For path-scoped sources, `patterns` like `".git"` are relative to the queried pa
 
 ## 3b. Cache Lifecycle Tuning
 
-By default, providers inherit global lifecycle settings. Per-provider overrides live in `[providers.<name>]`:
+A built-in Source's failback is its own, set in code. The only per-source override of a built-in Source is its failback, in `[providers.<name>.<source>]`; any other key there, and any key but `enabled` directly under `[providers.<name>]`, is a config error.
 
 | Key | Type | Description |
 |---|---|---|
-| `poll_interval` | duration | Base poll rate for this provider while Active. Replaces `poll_live_interval`. |
-| `poll_live_count` | u32 | Polls in the Active window: it lasts `poll_interval × poll_live_count`, and decay begins when it ends with no read. |
-| `fsevents_reinstate` | bool | If true, a filesystem event on a watched path reinstates a decaying entry back to Active. |
+| `failback_count` | u32 | Consecutive failures before suppression. |
+| `failback_interval` | duration | Initial suppression duration. |
 
 Example:
 
 ```toml
-[providers.git]
-poll_interval = "30s"
-poll_live_count = 4
-fsevents_reinstate = true
+[providers.git.status]
+failback_count = 5
+failback_interval = "2s"
 ```
+
+A config Source sets its own schedule on its `return` line (`poll`, `watch`, `ttl`, `failback`, `budget`).
 
 The full decay model — state machine, step durations, reinstatement rules — is described in `docs/architecture.md` §5.
 
@@ -858,81 +858,62 @@ For testing, gate platform-specific tests with `#[cfg(target_os = "...")]`. Make
 
 ---
 
-## 8. Shared Library Providers
+## 8. Plugins
 
-Shared library providers load a `.so` (Linux) or `.dylib` (macOS) at daemon startup and call into it via a C ABI. This avoids the per-execution process spawn cost of a Source that calls `exec()` while allowing provider logic to be written in any language that can produce a shared library with C-compatible exports.
+A plugin is a shared library (`.so` on Linux, `.dylib` on macOS). A Source's `data` line can call into one with the daemon's `plugin(name, symbol, args...)` function. This avoids the per-run process spawn of `exec()` while letting the logic be written in any language that can export C symbols. A plugin is a function, not a provider: the Source around it declares the fields, the schedule and the root, as for any other Source.
 
-### C ABI Contract
-
-Libraries must export three symbols:
-
-```c
-// Return JSON metadata: {"fields":{"name":{"type":"string","scope":"global"},...}, "invalidation":{"poll":"30s"}}
-// Caller frees the returned pointer via beachcomber_provider_free().
-const char* beachcomber_provider_metadata(void);
-
-// Execute the provider. path is NULL for global providers.
-// Return a JSON object of field values, or NULL on failure.
-// Caller frees the returned pointer via beachcomber_provider_free().
-const char* beachcomber_provider_execute(const char* path);
-
-// Free a string previously returned by metadata or execute.
-void beachcomber_provider_free(char* ptr);
-```
-
-### Configuration
+### Calling a plugin
 
 ```toml
-[providers.my_native_provider]
-type = "library"
-library_path = "/usr/local/lib/beachcomber/libmy_provider.so"
-
-# Optional: override metadata from config instead of the library
-# scope = "path"
-# fields = { "field1" = "string", "field2" = "int" }
-# invalidation = { poll = "30s" }
+[daemon.providers.hello.sources.main]
+data = "{{ plugin('hello', 'greet', 'world') }}"
+result.greeting = "{{ data }}"
 ```
 
-If the library's `beachcomber_provider_metadata()` returns valid JSON, that metadata is used. Otherwise, metadata falls back to the TOML config fields (the same keys the flat library form takes).
+`plugin(name, symbol, args...)` calls `symbol` in the library `name` with `args` and returns the library's JSON result, parsed (a map, list, string, number, bool or null). The call blocks the Source's run for as long as the library takes.
 
-### When to Use
+- A `name` without a `/` is looked up as `lib<name>.dylib` (macOS) or `lib<name>.so` (Linux) in each directory of `[daemon.plugin] path`, in order; the first directory holding the file wins. `plugin('hello', ...)` loads `libhello.so` or `libhello.dylib`. Not found, it is an error naming the file and the directories searched: `plugin(): libhello.so not found on [daemon.plugin] path (/home/me/.config/beachcomber/plugins)`.
+- A `name` containing a `/` is the library path as given: absolute, or `~/...` (expanded from the daemon's `HOME`). A relative path is an error.
+- A library is loaded on the first call that names it and stays loaded for the daemon's life. The daemon does not look at the file again: a name keeps the library it first loaded, even if another appears earlier on `path`; a name first used after a rebuild loads the rebuilt file; restart the daemon to move every name. Names that reach the same file (a symlink, a hard link) share one loaded library.
 
-- **Performance-critical providers** where even a 2-6ms process spawn is too expensive
-- **Complex logic** that benefits from compiled code but doesn't belong in the daemon binary
-- **Third-party plugins** distributed as shared libraries
-- **Language flexibility** — write providers in C, C++, Rust, Go (with cgo), Zig, or any language that can export C symbols
+```toml
+[daemon.plugin]
+path = ["~/.local/lib/beachcomber", "/opt/beachcomber/plugins"]
+```
 
-### Example: Minimal C Provider
+`path` is a list of directories (absolute, or starting `~/`), default `["<config dir>/plugins"]` (`~/.config/beachcomber/plugins`). A list in a later file replaces the earlier one whole. A key other than `path`, or a `path` that is not a list of directory strings, is a config error. Changing `[daemon.plugin]` restarts the daemon.
+
+### The C ABI
+
+Every symbol is the same function type:
 
 ```c
-#include <stdlib.h>
-#include <string.h>
+const char* symbol(const char* input);
+```
+
+- `input` is the call's arguments as a NUL-terminated JSON array: `plugin('hello', 'greet', 'world', 3)` passes `["world",3]`.
+- The return value is a NUL-terminated JSON value (UTF-8) **owned by the library**, valid until the next call into the same library. The daemon copies it before it makes another call, and serialises calls into one library, so a static or thread-local buffer is enough; there is no free function.
+- `NULL` means failure. The Source's run fails with `plugin(): <symbol> in <name>: returned NULL`; a symbol that is missing, output that is not UTF-8 and output that is not JSON each have their own message.
+- The function **must not unwind.** A panic or C++ exception escaping an `extern "C"` function aborts the daemon. In Rust, catch panics inside the function (`std::panic::catch_unwind`) and return `NULL`.
+- The function may be called from any of the daemon's blocking threads (one at a time per library); do not rely on thread-local state surviving between calls.
+
+### Example: a minimal C plugin
+
+```c
 #include <stdio.h>
 
-const char* beachcomber_provider_metadata(void) {
-    const char* json = "{\"fields\":{\"value\":{\"type\":\"string\",\"scope\":\"global\"}},\"invalidation\":{\"poll\":\"10s\"}}";
-    char* result = strdup(json);
-    return result;
-}
+// plugin('hello', 'greet', 'world')  ->  "hello, world"
+static char out[256];
 
-const char* beachcomber_provider_execute(const char* path) {
-    (void)path;
-    char* result = strdup("{\"value\":\"hello from C\"}");
-    return result;
-}
-
-void beachcomber_provider_free(char* ptr) {
-    free(ptr);
+const char* greet(const char* input) {
+    char name[128];
+    // input is ["world"]; a real plugin parses it with a JSON library
+    if (sscanf(input, "[\"%127[^\"]\"]", name) != 1) return NULL;
+    snprintf(out, sizeof out, "\"hello, %s\"", name);
+    return out;
 }
 ```
 
-Build: `cc -shared -o libhello.so hello_provider.c` (Linux) or `cc -shared -o libhello.dylib hello_provider.c` (macOS).
+Build: `cc -shared -fPIC -o libhello.so hello.c` (Linux) or `cc -shared -o libhello.dylib hello.c` (macOS), and put the file in `~/.config/beachcomber/plugins/`. With the Source above, `comb get hello.greeting` prints `hello, world`.
 
-Configure:
-```toml
-[providers.hello]
-type = "library"
-library_path = "/path/to/libhello.so"
-```
-
-Test: `comb get hello.value` → `hello from C`
+Plugins are for work where an `exec()` spawn is too expensive or the logic does not belong in the daemon binary: compiled parsing, a vendor SDK, a local socket protocol. A plugin runs inside the daemon with its permissions; only put libraries you trust on `[daemon.plugin] path`.
