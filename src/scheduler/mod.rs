@@ -582,7 +582,7 @@ impl Scheduler {
         }
 
         let cache = Arc::clone(&self.cache);
-        let timeout_secs = self.config.daemon.provider_timeout_secs.unwrap_or(10);
+        let timeout_secs = self.config.daemon().provider_timeout_secs;
         let in_flight = Arc::clone(&self.in_flight);
         let pending_rerun = Arc::clone(&self.pending_rerun);
         let failure_counts = Arc::clone(&self.failure_counts);
@@ -598,18 +598,9 @@ impl Scheduler {
 
         let schedule = crate::cache::Schedule::of(source.metadata());
 
-        let failure_threshold = self.config.resolve_failure_reattempts_for_source(
-            provider_name,
-            Some(source_name),
-            Some(source.metadata().failback.reattempts),
-        );
-        let failure_backoff = self.config.resolve_failure_backoff_for_source(
-            provider_name,
-            Some(source_name),
-            Some(std::time::Duration::from_secs(
-                source.metadata().failback.interval_secs,
-            )),
-        );
+        let failure_threshold = source.metadata().failback.reattempts;
+        let failure_backoff =
+            std::time::Duration::from_secs(source.metadata().failback.interval_secs);
 
         tokio::spawn(async move {
             // One iteration per execution. A refresh that arrives while an
@@ -794,7 +785,7 @@ impl Scheduler {
 
         // Idle shutdown tracking.
         let mut last_activity = Instant::now();
-        let idle_shutdown_secs = self.config.lifecycle.idle_shutdown_secs;
+        let idle_shutdown_secs = self.config.daemon().idle_shutdown_secs;
 
         // Tick every second to check poll timers.
         let mut tick = interval(Duration::from_secs(1));
@@ -1130,7 +1121,7 @@ impl Scheduler {
 
         // Idle shutdown tracking.
         let mut last_activity = Instant::now();
-        let idle_shutdown_secs = self.config.lifecycle.idle_shutdown_secs;
+        let idle_shutdown_secs = self.config.daemon().idle_shutdown_secs;
 
         loop {
             tokio::select! {

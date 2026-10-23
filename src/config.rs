@@ -1,8 +1,6 @@
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tracing::warn;
 
 /// Deep-merge `overlay` onto `base`: matching table keys recurse; everything
 /// else (scalars, arrays, and table/non-table type mismatches) is last-wins
@@ -10,7 +8,7 @@ use tracing::warn;
 ///
 /// This is the composition primitive behind conf.d drop-ins (canon
 /// `docs/roadmap.md` conf.d convention): a drop-in overriding one key of
-/// `[providers.x]` must not clobber the rest of that block, which is exactly
+/// `[daemon.providers.x]` must not clobber the rest of that block, which is exactly
 /// what table recursion gives us — only overlapping keys are touched.
 pub fn deep_merge_toml(base: &mut toml::Value, overlay: toml::Value) {
     match (base, overlay) {
@@ -69,86 +67,38 @@ pub fn parse_whole_seconds(s: &str) -> Option<Duration> {
     parse_duration(s).filter(|d| d.subsec_nanos() == 0)
 }
 
-// ── Source-knob keys that are ONLY valid inside [providers.<name>.<source>] blocks,
-// not at the top-level [providers.<name>] block.
-const SOURCE_KNOB_KEYS: &[&str] = &[
-    "poll_interval",
-    "poll_count",
-    "fsevent_patterns",
-    "fsevent_abs_paths",
-    "fsevent_reinstates",
-    "failback_count",
-    "failback_interval",
-    // Legacy flat keys that have moved to per-source blocks
-    "poll_interval_secs",
-    "poll_live_count",
-    "fsevents_reinstate",
-    "failure_reattempts",
-    "failure_backoff_interval",
-    "poll_secs",
-];
+/// The `[daemon] log_level` names, lowercase; the check accepts them in any
+/// case.
+pub const LOG_LEVELS: [&str; 6] = ["off", "error", "warn", "info", "debug", "trace"];
 
-/// A provider backend that was removed in favour of a Source: how its config
-/// is recognised, and where it went.
-struct RemovedBackend {
-    /// The `type` / `backend` value that named it.
-    value: &'static str,
-    /// The keys only it read. A table of this name is the key too, unless
-    /// `Config::is_source_block` says it is a Source block: only `headers`
-    /// can be either.
-    keys: &'static [&'static str],
-    /// Whether the keys are looked for in each source block too.
-    in_source_blocks: bool,
-    /// Where it went.
-    pointer: &'static str,
+/// The filter a `log_level` names, or `None` if it is not one of
+/// [`LOG_LEVELS`] (case aside).
+pub fn log_level_filter(name: &str) -> Option<tracing_subscriber::filter::LevelFilter> {
+    use tracing_subscriber::filter::LevelFilter;
+    let level = name.to_ascii_lowercase();
+    LOG_LEVELS.iter().position(|l| *l == level).map(|i| {
+        [
+            LevelFilter::OFF,
+            LevelFilter::ERROR,
+            LevelFilter::WARN,
+            LevelFilter::INFO,
+            LevelFilter::DEBUG,
+            LevelFilter::TRACE,
+        ][i]
+    })
 }
 
-const REMOVED_BACKENDS: &[RemovedBackend] = &[
-    RemovedBackend {
-        value: "script",
-        keys: &["command", "output"],
-        in_source_blocks: false,
-        pointer: "Script providers are removed: write a Source whose data calls exec(), \
-                  in [daemon.providers.<p>.sources.<s>]",
-    },
-    RemovedBackend {
-        value: "http",
-        keys: &[
-            "url",
-            "method",
-            "headers",
-            "body",
-            "extract",
-            "default_timeout",
-        ],
-        in_source_blocks: true,
-        pointer: "HTTP providers are removed: write a Source whose data calls \
-                  url(...) | fromjson, in [daemon.providers.<p>.sources.<s>]",
-    },
-    RemovedBackend {
-        value: "library",
-        keys: &["library_path", "fields", "invalidation"],
-        in_source_blocks: true,
-        pointer: "Library providers are removed: write a Source whose data calls \
-                  plugin(name, symbol, args...), found on [daemon.plugin] path, \
-                  in [daemon.providers.<p>.sources.<s>]",
-    },
-];
-
-/// The keys a per-source override block has carried, including those now
-/// rejected: what tells a `headers` source block from the removed http key of
-/// that name.
-const SOURCE_BLOCK_KEYS: &[&str] = &[
-    "type",
-    "enabled",
-    "poll_interval",
-    "poll_count",
-    "fsevent_patterns",
-    "fsevent_abs_paths",
-    "fsevent_reinstates",
-    "failback_count",
-    "failback_interval",
-];
+fn deserialize_log_level<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<tracing_subscriber::filter::LevelFilter, D::Error> {
+    let name = String::deserialize(d)?;
+    log_level_filter(&name).ok_or_else(|| {
+        serde::de::Error::custom(format!(
+            "log_level must be one of {}",
+            LOG_LEVELS.join(", ")
+        ))
+    })
+}
 
 /// Which resolution step supplied a socket path
 /// (canon singleton.md §"Canonical socket path resolution").
@@ -159,64 +109,109 @@ pub enum SocketPathSource {
     Default,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+/// The configuration: settings composed from layers, and everything wrong
+/// with them. Built only by [`Config::load_from`], [`Config::from_layers`] and
+/// [`Config::from_toml`] (or `Default`, which is valid by construction), so
+/// every `Config` there is has had the same checks run on it; its settings are
+/// read through [`Config::daemon`] and [`Config::client`].
+#[derive(Debug, Clone)]
 pub struct Config {
-    pub daemon: DaemonConfig,
+    daemon: DaemonConfig,
     /// `[client]`: what a client reads from the daemon's configuration; today
     /// only `providers` (`[client.providers.<p>] template.<leaf> = "…"`, seeded
     /// as `<p>:template.<leaf>`). A `toml::Value`, so that a `[client]` of the
-    /// wrong type still deserializes and the per-file check
-    /// (`Config::validate_seeded`) can report it, rather than `Config::load`
-    /// falling back to the default configuration.
-    #[serde(default = "empty_table")]
-    pub client: toml::Value,
-    pub lifecycle: LifecycleConfig,
-    pub failback: FailbackGlobalConfig,
-    /// Raw TOML value for providers. Use accessor methods to get typed views.
-    /// Stored as raw toml::Value so we can distinguish scalar provider-level keys
-    /// from nested per-source sub-tables.
-    #[serde(default)]
-    pub providers: HashMap<String, toml::Value>,
+    /// wrong type still composes and the per-file check can report it.
+    client: toml::Value,
     /// The `config.toml` this config was loaded from, whether or not the file
     /// exists — `Config::conf_d_dir_for` gives the other half of the composed
     /// set, so the filename is spelled in one place. `Some` only for a
-    /// `Config::load()`; `None` for one built in memory or parsed from a
-    /// string, which corresponds to no file at all.
+    /// `Config::load_from` (and so `Config::load`); `None` for one built from
+    /// layers or in memory, which corresponds to no file at all.
     ///
     /// The daemon seeds the config-seeded facets and watches for changes only when this is
     /// `Some`, so an embedded or test daemon handed a hand-built `Config` reads
     /// nothing from the ambient `~/.config/beachcomber`.
-    #[serde(skip)]
-    pub config_path: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+    /// The layers this configuration was composed from, in composition order:
+    /// the one source of truth. `errors()` were found in them and the daemon
+    /// seeds its facets from them, so an edit after the load cannot slip past
+    /// the check or be seeded unchecked. Empty for the default.
+    layers: Vec<(PathBuf, toml::Value)>,
+    /// Everything wrong with `layers`, found once when they were composed: a
+    /// file that could not be read or parsed, a rule a file breaks, a value
+    /// the composition cannot hold.
+    errors: Vec<String>,
+}
+
+/// What the composed layers deserialize to: the two roots. Private, so the
+/// only way to a `Config` is through `compose`.
+#[derive(Deserialize)]
+#[serde(default)]
+struct Composed {
+    daemon: DaemonConfig,
+    #[serde(default = "empty_table")]
+    client: toml::Value,
+}
+
+impl Default for Composed {
+    fn default() -> Self {
+        Self {
+            daemon: DaemonConfig::default(),
+            client: empty_table(),
+        }
+    }
+}
+
+/// The configuration files that compose, each parsed on its own, and the
+/// errors of those that could not be: [`Config::read_layers`]'s one answer.
+#[derive(Debug, Default)]
+pub struct ReadLayers {
+    /// In composition order, labelled by the file each came from.
+    pub layers: Vec<(PathBuf, toml::Value)>,
+    /// One per file that exists but could not be read or parsed, each prefixed
+    /// with the file's `config:<path>` label.
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct DaemonConfig {
     pub socket_path: Option<String>,
-    pub log_level: String,
-    pub provider_timeout_secs: Option<u64>,
+    /// One of [`LOG_LEVELS`], any case; the configuration check refuses
+    /// anything else, so a `Config` that loaded holds a valid level.
+    #[serde(deserialize_with = "deserialize_log_level")]
+    pub log_level: tracing_subscriber::filter::LevelFilter,
+    /// Seconds a Source may run before it is cancelled; at least 1.
+    pub provider_timeout_secs: u64,
     /// Path to an env file loaded at daemon startup.
     /// Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
     /// These vars are injected into the daemon's environment before any providers execute,
     /// making them reach a Source's lines as `env.VAR` (an unset one renders empty)
     /// and the commands its `exec()` runs.
-    /// Default: ~/.config/beachcomber/env
+    /// Default: `env` beside the config file.
     pub env_file: Option<String>,
     /// How often the watchdog checks the scheduler heartbeat. Default: disabled (None).
-    /// Example: "30s", "1m".
+    /// Whole seconds, at least 1s. Example: "30s", "1m".
     pub watchdog_interval: Option<String>,
     /// How long the heartbeat can be stale before the watchdog restarts the scheduler.
-    /// Default: 3x watchdog_interval.
+    /// Default: 3x watchdog_interval; never below the interval, and not set
+    /// without one.
     /// Example: "90s", "3m".
     pub watchdog_threshold: Option<String>,
+    /// Seconds with no client before the daemon shuts down. Default: never.
+    pub idle_shutdown_secs: Option<u64>,
+    /// `[daemon.budget]`: `execute`, the execute budget recorded for every
+    /// Source whose own `return` does not name `budget(...)`
+    /// (`DaemonConfig::budget_execute`); nothing enforces it yet. A
+    /// `toml::Value` for the reason `Config::client` is one.
+    #[serde(default = "empty_table")]
+    pub budget: toml::Value,
     /// `[daemon.providers.<p>]`: what the daemon holds about a provider:
     /// `cache` (`[daemon.providers.<p>.cache._] decay = N`, seeded as
     /// `<p>:cache._.decay`, and `*:cache` for `<p> = _`) and `sources`
     /// (`[daemon.providers.<p>.sources.<s>]`, built by `crate::shape::build`). A `toml::Value` for
     /// the reason `Config::client` is one; the per-file check is
-    /// `Config::validate_seeded`.
+    /// `Config::errors`.
     #[serde(default = "empty_table")]
     pub providers: toml::Value,
     /// `[daemon.plugin]`: where `plugin(name, ...)` finds libraries, `path`
@@ -231,10 +226,9 @@ impl Default for Config {
         Self {
             daemon: DaemonConfig::default(),
             client: empty_table(),
-            lifecycle: LifecycleConfig::default(),
-            failback: FailbackGlobalConfig::default(),
-            providers: HashMap::new(),
             config_path: None,
+            layers: Vec::new(),
+            errors: Vec::new(),
         }
     }
 }
@@ -247,11 +241,13 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             socket_path: None,
-            log_level: "info".to_string(),
-            provider_timeout_secs: Some(10),
+            log_level: tracing_subscriber::filter::LevelFilter::INFO,
+            provider_timeout_secs: 10,
             env_file: None,
             watchdog_interval: None,
             watchdog_threshold: None,
+            idle_shutdown_secs: None,
+            budget: empty_table(),
             providers: empty_table(),
             plugin: empty_table(),
         }
@@ -259,96 +255,34 @@ impl Default for DaemonConfig {
 }
 
 impl DaemonConfig {
+    /// Whole seconds, at least 1: a zero interval would panic the timer, so
+    /// the accessor refuses it as well as the configuration check.
     pub fn watchdog_interval_duration(&self) -> Option<Duration> {
         self.watchdog_interval
             .as_ref()
             .and_then(|s| parse_whole_seconds(s))
+            .filter(|d| !d.is_zero())
     }
 
     pub fn watchdog_threshold_duration(&self) -> Option<Duration> {
         if let Some(ref s) = self.watchdog_threshold {
-            parse_whole_seconds(s)
+            parse_whole_seconds(s).filter(|d| !d.is_zero())
         } else {
             // Default: 3x the watchdog interval
             self.watchdog_interval_duration().map(|d| d * 3)
         }
     }
-}
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct LifecycleConfig {
-    pub idle_shutdown_secs: Option<u64>,
-}
-
-/// Global failback defaults. Replaces the old `[lifecycle] failure_*` keys.
-/// `[lifecycle] failure_reattempts` and `[lifecycle] failure_backoff_interval`
-/// are still accepted in `LifecycleConfig` for backward compatibility (they map to
-/// `FailbackGlobalConfig` via `Config::failback()`).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct FailbackGlobalConfig {
-    /// Consecutive failures before suppression. Default 3.
-    pub count: u32,
-    /// Suppression duration string. Default "1s".
-    pub interval: String,
-}
-
-impl Default for FailbackGlobalConfig {
-    fn default() -> Self {
-        Self {
-            count: 3,
-            interval: "1s".to_string(),
-        }
-    }
-}
-
-impl FailbackGlobalConfig {
-    pub fn interval_duration(&self) -> Duration {
-        parse_whole_seconds(&self.interval).unwrap_or(Duration::from_secs(1))
-    }
-}
-
-/// Per-source override block of a built-in provider:
-/// `[providers.<name>.<source>]`. The scheduler reads only the failback
-/// settings from it; every other key is an error. Missing keys fall through to
-/// the Source's default, then to `[failback]`.
-#[derive(Debug, Clone, Default)]
-pub struct SourceOverrideConfig {
-    pub failback_count: Option<u32>,
-    pub failback_interval: Option<String>,
-}
-
-impl SourceOverrideConfig {
-    /// Parse from a `toml::Value::Table`. Returns error if keys are invalid.
-    /// `block_name` is used in error messages (e.g. "[providers.git.refs]").
-    pub fn from_toml_table(block_name: &str, table: &toml::value::Table) -> Result<Self, String> {
-        let mut out = SourceOverrideConfig::default();
-
-        for (key, val) in table {
-            match key.as_str() {
-                "failback_count" => {
-                    let n = val.as_integer().ok_or_else(|| {
-                        format!("{block_name}: key 'failback_count' must be an integer")
-                    })?;
-                    out.failback_count = Some(n as u32);
-                }
-                "failback_interval" => {
-                    let s = val.as_str().ok_or_else(|| {
-                        format!("{block_name}: key 'failback_interval' must be a duration string")
-                    })?;
-                    out.failback_interval = Some(s.to_string());
-                }
-                other => {
-                    return Err(format!(
-                        "unknown key '{other}' in {block_name}: only failback_count and \
-                         failback_interval apply to a built-in Source"
-                    ));
-                }
-            }
-        }
-
-        Ok(out)
+    /// `[daemon] budget.execute`: how long a Source may execute before it is
+    /// over budget, for every Source whose `return` does not say. A value of
+    /// the wrong shape is `Config::errors`'s to report; it reads as
+    /// absent here.
+    pub fn budget_execute(&self) -> Duration {
+        self.budget
+            .get("execute")
+            .and_then(toml::Value::as_str)
+            .and_then(parse_duration)
+            .unwrap_or(crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE)
     }
 }
 
@@ -358,7 +292,7 @@ impl Config {
     /// when the list is not given, the `plugins` directory beside the config
     /// file (none for a `Config` built in memory, which reads nothing ambient).
     /// A list is replaced whole by a later layer, as any array is. A value of
-    /// the wrong shape is `Config::validate_seeded`'s to report; it reads as
+    /// the wrong shape is `Config::errors`'s to report; it reads as
     /// absent here.
     pub fn plugin_path(&self, home: Option<&str>) -> Result<Vec<PathBuf>, String> {
         let listed: Option<Vec<&str>> = self
@@ -384,388 +318,148 @@ impl Config {
         }
     }
 
-    /// Returns true if a provider is explicitly disabled in config.
-    pub fn is_provider_disabled(&self, name: &str) -> bool {
-        self.providers
-            .get(name)
-            .and_then(|v| v.get("enabled"))
-            .and_then(|v| v.as_bool())
-            .map(|e| !e)
-            .unwrap_or(false)
-    }
-
-    /// Parse the per-source override config for (provider, source).
-    /// Returns None if no block exists.
-    /// Returns Err if the block exists but is malformed.
-    pub fn source_override(
-        &self,
-        provider_name: &str,
-        source_name: &str,
-    ) -> Result<Option<SourceOverrideConfig>, String> {
-        let provider_val = match self.providers.get(provider_name) {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-        let source_val = match provider_val.get(source_name) {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-        let table = match source_val.as_table() {
-            Some(t) => t,
-            None => {
-                return Err(format!(
-                    "[providers.{provider_name}.{source_name}] must be a table"
-                ));
-            }
-        };
-        let block_name = format!("[providers.{provider_name}.{source_name}]");
-        let cfg = SourceOverrideConfig::from_toml_table(&block_name, table)?;
-        Ok(Some(cfg))
-    }
-
-    // ── Resolution methods ────────────────────────────────────────────────────
-    //
-    // Resolution order:
-    //   1. [providers.<provider>.<source>] block (user override)
-    //   2. Source's declared default in SourceMetadata (passed as `source_default`)
-    //   3. [failback] global block
-    //   4. Compile-time defaults
-
-    /// Resolve failure reattempts for a (provider, source) pair.
-    pub fn resolve_failure_reattempts(&self, provider_name: &str) -> u32 {
-        self.resolve_failure_reattempts_for_source(provider_name, None, None)
-    }
-
-    /// Resolve failure reattempts for a (provider, source) pair with optional source override.
-    pub fn resolve_failure_reattempts_for_source(
-        &self,
-        provider_name: &str,
-        source_name: Option<&str>,
-        source_default: Option<u32>,
-    ) -> u32 {
-        // 1. Per-source override
-        if let Some(src) = source_name
-            && let Ok(Some(cfg)) = self.source_override(provider_name, src)
-            && let Some(v) = cfg.failback_count
-        {
-            return v;
-        }
-        // 2. Source-declared default
-        if let Some(d) = source_default {
-            return d;
-        }
-        // 3. [failback] global
-        // 4. Compile-time default
-        self.failback.count
-    }
-
-    /// Resolve failure backoff interval for a (provider, source) pair.
-    pub fn resolve_failure_backoff_interval(&self, provider_name: &str) -> Duration {
-        self.resolve_failure_backoff_for_source(provider_name, None, None)
-    }
-
-    /// Resolve failure backoff interval for a (provider, source) pair with optional source override.
-    pub fn resolve_failure_backoff_for_source(
-        &self,
-        provider_name: &str,
-        source_name: Option<&str>,
-        source_default: Option<Duration>,
-    ) -> Duration {
-        // 1. Per-source override
-        if let Some(src) = source_name
-            && let Ok(Some(cfg)) = self.source_override(provider_name, src)
-            && let Some(ref s) = cfg.failback_interval
-            && let Some(d) = parse_whole_seconds(s)
-        {
-            return d;
-        }
-        // 2. Source-declared default
-        if let Some(d) = source_default {
-            return d;
-        }
-        // 3. [failback] global then compile-time default
-        self.failback.interval_duration()
-    }
-
-    /// Whether `[providers.<p>.<sub_key>]` is a source block. The others are
-    /// not: `fields` and `invalidation` (the removed library keys), the removed
-    /// `virtual` block, and a `headers` table of plain strings (the removed
-    /// http key), which a source block of that name is told from by being
-    /// empty or carrying a source key.
-    fn is_source_block(sub_key: &str, table: &toml::value::Table) -> bool {
-        match sub_key {
-            "fields" | "invalidation" | "virtual" => false,
-            "headers" => {
-                table.is_empty()
-                    || table
-                        .keys()
-                        .any(|k| SOURCE_BLOCK_KEYS.contains(&k.as_str()))
-            }
-            _ => true,
-        }
-    }
-
-    /// The errors a provider table carries for the backends that were removed.
-    fn removed_backend_errors(prov_name: &str, table: &toml::value::Table) -> Vec<String> {
-        let mut errors = Vec::new();
-        for backend in REMOVED_BACKENDS {
-            let mut found = Vec::new();
-            for key in ["type", "backend"] {
-                if table.get(key).and_then(|v| v.as_str()) == Some(backend.value) {
-                    found.push(format!(
-                        "[providers.{prov_name}] {key} = \"{}\": unknown value for '{key}'",
-                        backend.value
-                    ));
-                }
-            }
-            let is_key = |sub_key: &str, value: &toml::Value| match value.as_table() {
-                None => true,
-                Some(t) => !Self::is_source_block(sub_key, t),
-            };
-            for key in backend.keys {
-                if table.get(*key).is_some_and(|v| is_key(key, v)) {
-                    found.push(format!("[providers.{prov_name}]: unknown key '{key}'"));
-                }
-            }
-            if backend.in_source_blocks {
-                for (sub_key, sub) in table {
-                    let Some(sub) = sub.as_table() else { continue };
-                    if !Self::is_source_block(sub_key, sub) {
-                        continue;
-                    }
-                    for key in backend.keys.iter().filter(|k| sub.contains_key(**k)) {
-                        found.push(format!(
-                            "[providers.{prov_name}.{sub_key}]: unknown key '{key}'"
-                        ));
-                    }
-                }
-            }
-            errors.extend(
-                found
-                    .into_iter()
-                    .map(|e| format!("{e}. {}", backend.pointer)),
-            );
-        }
-        errors
-    }
-
-    // ── Startup validation ────────────────────────────────────────────────────
-
-    /// Validate provider config blocks. Returns (warnings, errors).
-    /// - Unknown provider names on built-in providers → error.
-    /// - Known provider, unknown source name → warn (cross-platform-config support).
-    /// - Old flat source-knob keys at provider level → error.
-    /// - Invalid strategy keys for declared type → error.
-    /// - A removed backend (`REMOVED_BACKENDS`: script, http, library) → an error for
-    ///   every spelling the provider carries, saying where it went.
-    ///
-    /// `known_providers` is the list of registered provider names.
-    /// `known_sources` maps provider_name → list of source names.
-    pub fn validate_providers(
-        &self,
-        known_providers: &[String],
-        known_sources: &HashMap<String, Vec<String>>,
-    ) -> (Vec<String>, Vec<String>) {
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-
-        for (prov_name, prov_val) in &self.providers {
-            let table = match prov_val.as_table() {
-                Some(t) => t,
-                None => continue,
-            };
-
-            // A colon-named table is the removed facet-table form;
-            // `validate_seeded_tables` reports it and takes the whole table
-            // with it, so it is never read as a source block for its provider.
-            if prov_name.contains(':') {
-                continue;
-            }
-
-            // `path` was the path-expression setting: a client-side expression
-            // that computed the entry a query read. A query addresses the
-            // caller's directory, `--path`, or `--global` now, so a config
-            // still carrying the key is told where the address went. A table
-            // under this name is a source block and falls through to the
-            // per-source loop below.
-            if table.get("path").is_some_and(|v| !v.is_table()) {
-                errors.push(format!(
-                    "[providers.{prov_name}]: path is not a provider setting: \
-                     a query addresses the caller's directory, --path, or --global"
-                ));
-            }
-
-            // A removed backend is a Source now: its discriminators and the
-            // keys only it read are errors, at the level they appear. Every
-            // spelling a block carries is reported.
-            let removed = Self::removed_backend_errors(prov_name, table);
-            if !removed.is_empty() {
-                errors.extend(removed);
-                continue;
-            }
-
-            // Old flat source-knob keys at the provider level belong in a
-            // per-source block.
-            for key in SOURCE_KNOB_KEYS {
-                if table.contains_key(*key) {
-                    errors.push(format!(
-                        "[providers.{prov_name}] contains source-knob key '{key}'. \
-                         In the new schema, source-knob keys belong in a per-source block: \
-                         [providers.{prov_name}.<source_name>]. \
-                         See the configuration reference for the new per-source schema with \
-                         poll_*, fsevent_*, and failback_* prefixes."
-                    ));
-                }
-            }
-
-            // Validate per-source sub-table blocks.
-            for (sub_key, sub_val) in table {
-                if !sub_val.is_table() {
-                    // `enabled` is the one provider-level setting. `path` and
-                    // the source-knob keys have their own errors above.
-                    if sub_key == "enabled" {
-                        if !sub_val.is_bool() {
-                            errors.push(format!(
-                                "[providers.{prov_name}]: enabled must be a boolean"
-                            ));
-                        }
-                    } else if sub_key != "path" && !SOURCE_KNOB_KEYS.contains(&sub_key.as_str()) {
-                        errors.push(format!(
-                            "unknown key '{sub_key}' in [providers.{prov_name}]"
-                        ));
-                    }
-                    continue;
-                }
-
-                // The 0.9 home of a provider's templates. Templates are data
-                // the daemon seeds from `[client.providers.<p>] template`
-                // now, so this block is unrecognised — and the one
-                // unrecognised block whose error says where its contents
-                // went, because a config written against 0.9 will carry it.
-                if sub_key == "virtual" {
-                    errors.push(format!(
-                        "unrecognised block [providers.{prov_name}.virtual]: \
-                         templates live in [client.providers.{prov_name}] template.<leaf>"
-                    ));
-                    continue;
-                }
-
-                let sub_table = sub_val.as_table().unwrap();
-
-                // sub_key is a potential source name.
-                let block_name = format!("[providers.{prov_name}.{sub_key}]");
-
-                // Parse and validate the source override block.
-                if let Err(e) = SourceOverrideConfig::from_toml_table(&block_name, sub_table) {
-                    errors.push(e);
-                    continue;
-                }
-
-                // Check if the provider is a known (built-in) provider.
-                let is_known_builtin = known_providers.contains(prov_name);
-                if is_known_builtin
-                    && let Some(sources) = known_sources.get(prov_name)
-                    && !sources.contains(sub_key)
-                {
-                    warnings.push(format!(
-                        "config block {block_name} does not match any registered \
-                                 source for provider '{prov_name}' \
-                                 (registered: {}) — skipping. \
-                                 If this is a typo, fix it; if it's a platform-conditional \
-                                 source, this block is inert on this platform.",
-                        sources.join(", ")
-                    ));
-                }
-            }
-        }
-
-        (warnings, errors)
-    }
-
+    /// The configuration at the default location: [`Self::load_from`] the
+    /// config home's `config.toml`.
     pub fn load() -> Self {
-        let main_content = Self::config_path_if_exists()
-            .and_then(|p| std::fs::read_to_string(&p).ok())
-            .unwrap_or_default();
-        for warning in detect_deprecated_keys(&main_content) {
-            warn!("{}", warning);
-        }
-        let config_path = Self::config_path();
-        let mut config = Self::load_composed(
-            &main_content,
-            &Self::defaults_dir_for(&config_path),
-            &Self::conf_d_dir_for(&config_path),
+        Self::load_from(&Self::config_path())
+    }
+
+    /// Compose every `defaults/*.toml` beside `config_path`, then the file
+    /// itself, then every `conf.d/*.toml`, each directory in lexical filename
+    /// order, each layer deep-merged onto the accumulated value. `config_path`
+    /// is recorded even when no file exists there: it is where this config
+    /// resolved to, and a conf.d-only installation is legitimate.
+    ///
+    /// Always returns a `Config`, and every problem with the files (one that
+    /// cannot be read or parsed, a rule it breaks, a value the composition
+    /// cannot hold) is in [`Self::errors`]: the daemon refuses to
+    /// start on it, `comb check config` fails and the config self-watch does
+    /// not restart into it. The settings of a composition that does not load
+    /// are the defaults.
+    pub fn load_from(config_path: &Path) -> Self {
+        let read = Self::read_layers(
+            Some(&Self::defaults_dir_for(config_path)),
+            Some(config_path),
+            &Self::conf_d_dir_for(config_path),
         );
-        // Recorded even when no file exists there: it is where this config
-        // resolved to, and a conf.d-only installation is legitimate.
-        config.config_path = Some(config_path);
+        Self::compose(read, Some(config_path.to_path_buf()))
+    }
+
+    /// The configuration `layers` compose to, in order, with no file behind
+    /// it: what an embedder or a test builds. The one constructor besides
+    /// [`Self::load_from`], so the same checks run on every `Config`.
+    pub fn from_layers(layers: Vec<(PathBuf, toml::Value)>) -> Self {
+        Self::compose(
+            ReadLayers {
+                layers,
+                errors: Vec::new(),
+            },
+            None,
+        )
+    }
+
+    fn compose(read: ReadLayers, config_path: Option<PathBuf>) -> Self {
+        let ReadLayers { layers, mut errors } = read;
+        errors.extend(Self::validate_layers(&layers));
+        let composed = match Composed::deserialize(Self::merged(&layers)) {
+            Ok(composed) => composed,
+            Err(e) => {
+                if errors.is_empty() {
+                    errors.push(format!(
+                        "config: the composed configuration does not load: {e}"
+                    ));
+                }
+                Composed::default()
+            }
+        };
+        let mut config = Config {
+            daemon: composed.daemon,
+            client: composed.client,
+            config_path,
+            layers,
+            errors: Vec::new(),
+        };
+        if errors.is_empty() {
+            errors.extend(config.watchdog_errors());
+        }
+        config.errors = errors;
         config
     }
 
-    /// Parse TOML config text into a `Config`, surfacing the parse error
-    /// instead of silently falling back to defaults like `load()` does. Used
-    /// by the daemon's config self-watch (`src/daemon/config_watch.rs`) to
-    /// validate a changed config file before restarting into it.
-    pub fn parse_str(content: &str) -> Result<Self, String> {
-        toml::from_str(content).map_err(|e| e.to_string())
+    fn merged(layers: &[(PathBuf, toml::Value)]) -> toml::Value {
+        let mut composed = toml::Value::Table(Default::default());
+        for (_, layer) in layers {
+            deep_merge_toml(&mut composed, layer.clone());
+        }
+        composed
     }
 
-    /// Compose every `defaults/*.toml` in `defaults_dir`, then `main_content`,
-    /// then every `conf.d/*.toml` drop-in found in `conf_d_dir`, each directory
-    /// in lexical filename order, each layer deep-merged onto the accumulated
-    /// value — then deserialize the result. Mirrors `load()`'s lenient startup
-    /// posture: an unparseable file is skipped with a `tracing::warn!` naming
-    /// the file and error, the rest still compose. A missing/unparseable
-    /// `main_content` composes as an empty table, same as `load()` does for an
-    /// absent main config file.
-    ///
-    /// Kept separate from `load()` so tests can exercise composition against
-    /// an explicit temp directory without mutating XDG env vars.
-    fn load_composed(main_content: &str, defaults_dir: &Path, conf_d_dir: &Path) -> Self {
-        let composed = Self::compose_value(main_content, defaults_dir, conf_d_dir);
-        Config::deserialize(composed).unwrap_or_default()
+    /// A configuration from the text of one layer that has no file, labelled
+    /// `config:<in memory>`: what an embedder or a test builds. Text that is
+    /// not TOML is an error in [`Self::errors`], as a file's would be.
+    pub fn from_toml(text: &str) -> Self {
+        let path = PathBuf::from("<in memory>");
+        match toml::from_str::<toml::Value>(text) {
+            Ok(layer) => Self::from_layers(vec![(path, layer)]),
+            Err(e) => Self::compose(
+                ReadLayers {
+                    layers: Vec::new(),
+                    errors: vec![Self::parse_error(&path, &e)],
+                },
+                None,
+            ),
+        }
     }
 
-    /// Value-level composition shared by `load_composed` and `parse_composed`.
-    /// Skips unparseable files with a warning (the lenient half of the two
-    /// postures — `parse_composed` is the strict half). The main file's content
-    /// arrives as text rather than a path, so the defaults layer is merged
-    /// first, then the main content, then conf.d — the order `layers` lists.
-    fn compose_value(main_content: &str, defaults_dir: &Path, conf_d_dir: &Path) -> toml::Value {
-        let mut main: toml::Value =
-            toml::from_str(main_content).unwrap_or_else(|_| toml::Value::Table(Default::default()));
-        if main.as_table().is_none() {
-            main = toml::Value::Table(Default::default());
-        }
-        let mut base = toml::Value::Table(Default::default());
-        for file in Self::conf_d_files(defaults_dir) {
-            if let Some(overlay) = Self::read_layer(&file) {
-                deep_merge_toml(&mut base, overlay);
-            }
-        }
-        deep_merge_toml(&mut base, main);
-        for file in Self::conf_d_files(conf_d_dir) {
-            if let Some(overlay) = Self::read_layer(&file) {
-                deep_merge_toml(&mut base, overlay);
-            }
-        }
-        base
+    /// The `[daemon]` settings.
+    pub fn daemon(&self) -> &DaemonConfig {
+        &self.daemon
+    }
+
+    /// `[client]`, as the value it composed to.
+    pub fn client(&self) -> &toml::Value {
+        &self.client
+    }
+
+    /// The `config.toml` path this configuration was loaded from (the file
+    /// may not exist; see [`Self::loaded_path`]).
+    pub fn config_file(&self) -> Option<&Path> {
+        self.config_path.as_deref()
+    }
+
+    /// One line for a TOML parse error: the file's label and the error's own
+    /// first line, which carries the line and column. Verdict lists show one
+    /// error per line.
+    fn parse_error(file: &Path, e: &toml::de::Error) -> String {
+        let text = e.to_string();
+        format!(
+            "{}: {}",
+            Self::config_label(file),
+            text.lines().next().unwrap_or_default().trim_end()
+        )
+    }
+
+    /// The layers this configuration was composed from, for seeding.
+    pub fn composed_layers(&self) -> &[(PathBuf, toml::Value)] {
+        &self.layers
     }
 
     /// The configuration files that compose, in composition order — every
     /// `defaults/*.toml` (when `defaults` is given), then the main config file
-    /// (when `config_path` is given and readable), then every `conf.d/*.toml`,
-    /// each directory in lexical filename order — each parsed on its own. A
-    /// file that cannot be read or does not parse as a table is skipped with a
-    /// warning, the lenient posture `compose_value` folds over.
+    /// (when `config_path` is given), then every `conf.d/*.toml`, each
+    /// directory in lexical filename order — each parsed on its own. A file
+    /// that does not exist is nothing (a conf.d-only installation is
+    /// legitimate); one that cannot be read or does not parse is an error
+    /// beside the layers that did.
     ///
     /// Settings compose by deep merge, but facet tables are seeded per layer so
     /// each record keeps the label of the file that set it — which is only
     /// possible while the layers are still separable.
-    pub fn layers(
+    pub fn read_layers(
         defaults: Option<&Path>,
         config_path: Option<&Path>,
         conf_d: &Path,
-    ) -> Vec<(PathBuf, toml::Value)> {
+    ) -> ReadLayers {
         let mut files: Vec<PathBuf> = Vec::new();
         if let Some(d) = defaults {
             files.extend(Self::conf_d_files(d));
@@ -774,63 +468,85 @@ impl Config {
             files.push(p.to_path_buf());
         }
         files.extend(Self::conf_d_files(conf_d));
-        files
-            .into_iter()
-            .filter_map(|file| Self::read_layer(&file).map(|v| (file, v)))
-            .collect()
-    }
-
-    /// One layer of `layers`: the file parsed as a TOML table, or `None` —
-    /// silently for a file that does not exist, with a warning for one that
-    /// cannot be read, does not parse, or is not a table.
-    fn read_layer(file: &Path) -> Option<toml::Value> {
-        let content = match std::fs::read_to_string(file) {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(e) => {
-                warn!("config: could not read {}: {e}; skipping", file.display());
-                return None;
-            }
-        };
-        match toml::from_str::<toml::Value>(&content) {
-            Ok(v) if v.is_table() => Some(v),
-            Ok(_) => {
-                warn!(
-                    "config: {} top-level value is not a table; skipping",
-                    file.display()
-                );
-                None
-            }
-            Err(e) => {
-                warn!("config: {} failed to parse ({e}); skipping", file.display());
-                None
+        let mut out = ReadLayers::default();
+        for file in files {
+            let content = match std::fs::read_to_string(&file) {
+                Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    out.errors.push(format!(
+                        "{}: could not read: {e}",
+                        Self::config_label(&file)
+                    ));
+                    continue;
+                }
+            };
+            match toml::from_str::<toml::Value>(&content) {
+                Ok(layer) => out.layers.push((file, layer)),
+                Err(e) => out.errors.push(Self::parse_error(&file, &e)),
             }
         }
+        out
     }
 
-    /// The errors in the files this configuration composes from, in the two
-    /// roots the daemon seeds from (`crate::shape::seeded::read`): checked per
-    /// file because seeding is per file, so a rule broken in one file is not
-    /// hidden by another file's value winning the merge. Empty for a `Config`
-    /// built in memory, which corresponds to no file and seeds nothing.
-    pub fn validate_seeded(&self) -> Vec<String> {
-        let Some(config_path) = &self.config_path else {
-            return Vec::new();
-        };
-        let layers = Self::layers(
-            Some(&Self::defaults_dir_for(config_path)),
-            Some(config_path),
-            &Self::conf_d_dir_for(config_path),
-        );
-        Self::validate_layers(&layers)
+    /// Everything wrong with the layers this configuration was composed from:
+    /// a file that could not be read or parsed, then, in the two roots the
+    /// daemon seeds from and the bare `[daemon]` keys
+    /// (`crate::shape::seeded::read`), the rules each file breaks — checked
+    /// per file because seeding is per file, so a rule broken in one file is
+    /// not hidden by another file's value winning the merge — then what only
+    /// the composition shows (the watchdog's two values against each other).
+    pub fn errors(&self) -> Vec<String> {
+        self.errors.clone()
     }
 
-    /// `validate_seeded` over layers already read (a reload's).
+    /// The per-file rules over `layers`.
     pub fn validate_layers(layers: &[(PathBuf, toml::Value)]) -> Vec<String> {
         layers
             .iter()
             .flat_map(|(file, layer)| crate::shape::seeded::read(file, layer).errors)
             .collect()
+    }
+
+    /// What the composed watchdog values say together, naming the file that
+    /// set each: a threshold without an interval has nothing to check against,
+    /// and one below the interval would restart a healthy scheduler.
+    fn watchdog_errors(&self) -> Vec<String> {
+        let set_by = |key: &str| {
+            self.layers
+                .iter()
+                .rev()
+                .find(|(_, layer)| layer.get("daemon").and_then(|d| d.get(key)).is_some())
+                .map(|(file, _)| Self::config_label(file))
+                .unwrap_or_default()
+        };
+        let (interval, threshold) = (
+            self.daemon.watchdog_interval_duration(),
+            self.daemon.watchdog_threshold.as_deref(),
+        );
+        match (interval, threshold) {
+            (None, Some(t)) => vec![format!(
+                "{}: [daemon] watchdog_threshold ({t}) is set without watchdog_interval: the \
+                 watchdog is off",
+                set_by("watchdog_threshold")
+            )],
+            (Some(i), Some(_))
+                if self
+                    .daemon
+                    .watchdog_threshold_duration()
+                    .is_some_and(|t| t < i) =>
+            {
+                vec![format!(
+                    "[daemon] watchdog_threshold ({}, set in {}) is below watchdog_interval \
+                     ({}, set in {}): the watchdog would restart a healthy scheduler",
+                    threshold.unwrap_or_default(),
+                    set_by("watchdog_threshold"),
+                    self.daemon.watchdog_interval.as_deref().unwrap_or_default(),
+                    set_by("watchdog_interval"),
+                )]
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// The names the two roots give providers, `_` excluded: a provider exists
@@ -864,10 +580,14 @@ impl Config {
 
     /// The composed value with the config-seeded tables removed: the half of
     /// configuration a change has to touch for a restart to be warranted. That
-    /// is `[client.providers]` and every `[daemon.providers.<p>.cache]` table. The
-    /// config self-watch compares this before and after
-    /// (`crate::daemon::config_watch::ChangeKind`).
+    /// is `[client.providers]` and every `[daemon.providers.<p>.cache]` table.
+    /// The config self-watch compares this before and after
+    /// (`crate::daemon::config_watch::ChangeKind`). Only the two roots exist
+    /// (`crate::shape::seeded::read` refuses any other), so nothing else is kept.
     pub fn settings_only(mut composed: toml::Value) -> toml::Value {
+        if let Some(table) = composed.as_table_mut() {
+            table.retain(|root, _| root == "client" || root == "daemon");
+        }
         if let Some(client) = composed.get_mut("client").and_then(|v| v.as_table_mut()) {
             client.remove("providers");
             if client.is_empty() {
@@ -903,39 +623,6 @@ impl Config {
             .map(|rest| format!("~/{}", rest.display()))
             .unwrap_or_else(|| path.display().to_string());
         format!("{}{shown}", crate::cache::CONFIG_SOURCE_PREFIX)
-    }
-
-    /// Strict composed parse: every `defaults/*.toml` in `defaults_dir`,
-    /// `main_content`, and every `conf.d/*.toml` in `conf_d_dir` must ALL
-    /// parse, or the whole call fails. Used by the config self-watch's
-    /// restart-gate (`src/daemon/config_watch.rs`), which must never restart
-    /// into a composed config where any file is broken — unlike
-    /// `load_composed`'s skip-and-continue.
-    pub fn parse_composed(
-        main_content: &str,
-        defaults_dir: &Path,
-        conf_d_dir: &Path,
-    ) -> Result<Self, String> {
-        let main: toml::Value =
-            toml::from_str(main_content).map_err(|e| format!("config.toml: {e}"))?;
-        if main.as_table().is_none() {
-            return Err("config.toml: top-level value must be a table".to_string());
-        }
-        let mut base = toml::Value::Table(Default::default());
-        let merge_dir = |dir: &Path, base: &mut toml::Value| -> Result<(), String> {
-            for file in Self::conf_d_files(dir) {
-                let content = std::fs::read_to_string(&file)
-                    .map_err(|e| format!("{}: {e}", file.display()))?;
-                let overlay: toml::Value =
-                    toml::from_str(&content).map_err(|e| format!("{}: {e}", file.display()))?;
-                deep_merge_toml(base, overlay);
-            }
-            Ok(())
-        };
-        merge_dir(defaults_dir, &mut base)?;
-        deep_merge_toml(&mut base, main);
-        merge_dir(conf_d_dir, &mut base)?;
-        Config::deserialize(base).map_err(|e| e.to_string())
     }
 
     /// The conf.d directory for a given main config file path:
@@ -989,10 +676,10 @@ impl Config {
             .join("config.toml")
     }
 
-    /// Return the config file path if it exists.
-    pub fn config_path_if_exists() -> Option<std::path::PathBuf> {
-        let xdg = xdg::BaseDirectories::with_prefix("beachcomber");
-        xdg.find_config_file("config.toml")
+    /// The `config.toml` this configuration was loaded from, if the file
+    /// exists: the path status and `introspect` report. Never a file elsewhere.
+    pub fn loaded_path(&self) -> Option<&Path> {
+        self.config_path.as_deref().filter(|p| p.is_file())
     }
 
     /// Load environment variables from the configured env file (or default path).
@@ -1003,10 +690,10 @@ impl Config {
         let path = match &self.daemon.env_file {
             Some(p) => PathBuf::from(shellexpand(p)),
             None => {
-                // Default: ~/.config/beachcomber/env
-                let xdg = xdg::BaseDirectories::with_prefix("beachcomber");
-                match xdg.find_config_file("env") {
-                    Some(p) => p,
+                // Default: the variables file beside the config file; a
+                // `Config` with no file behind it reads nothing ambient.
+                match self.config_path.as_deref() {
+                    Some(path) => path.with_file_name("env"),
                     None => return 0,
                 }
             }
@@ -1112,78 +799,6 @@ impl Config {
     }
 }
 
-/// Returns a list of warning messages for deprecated config keys present
-/// in the raw TOML. Does not mutate anything — just a pre-parse pass for
-/// startup logging.
-pub fn detect_deprecated_keys(toml_text: &str) -> Vec<String> {
-    let mut warnings = Vec::new();
-
-    let parsed: toml::Value = match toml::from_str(toml_text) {
-        Ok(v) => v,
-        Err(_) => return warnings,
-    };
-
-    // [lifecycle].{cache_lifespan, grace_period_secs, failure_reattempts, failure_backoff_interval}
-    if let Some(lifecycle) = parsed.get("lifecycle").and_then(|v| v.as_table()) {
-        if lifecycle.contains_key("cache_lifespan") {
-            warnings.push(
-                "[lifecycle] cache_lifespan is deprecated and ignored; \
-                 cache lifetime is now poll_interval × poll_live_count"
-                    .to_string(),
-            );
-        }
-        if lifecycle.contains_key("grace_period_secs") {
-            warnings.push(
-                "[lifecycle] grace_period_secs is deprecated and ignored; \
-                 use poll_interval and poll_live_count instead"
-                    .to_string(),
-            );
-        }
-        if lifecycle.contains_key("failure_reattempts") {
-            warnings.push(
-                "[lifecycle] failure_reattempts is deprecated; \
-                 move failback_* keys to the [failback] block"
-                    .to_string(),
-            );
-        }
-        if lifecycle.contains_key("failure_backoff_interval") {
-            warnings.push(
-                "[lifecycle] failure_backoff_interval is deprecated; \
-                 move failback_* keys to the [failback] block"
-                    .to_string(),
-            );
-        }
-    }
-
-    // [providers.*].{poll_idle_interval, poll_live_interval, cache_lifespan}
-    if let Some(providers) = parsed.get("providers").and_then(|v| v.as_table()) {
-        for (name, provider) in providers {
-            if let Some(table) = provider.as_table() {
-                if table.contains_key("poll_idle_interval") {
-                    warnings.push(format!(
-                        "[providers.{name}] poll_idle_interval is deprecated and \
-                         ignored; use fsevents_reinstate and the decay ladder"
-                    ));
-                }
-                if table.contains_key("poll_live_interval") {
-                    warnings.push(format!(
-                        "[providers.{name}] poll_live_interval is deprecated; \
-                         renamed to poll_interval"
-                    ));
-                }
-                if table.contains_key("cache_lifespan") {
-                    warnings.push(format!(
-                        "[providers.{name}] cache_lifespan is deprecated and \
-                         ignored; use poll_interval × poll_live_count"
-                    ));
-                }
-            }
-        }
-    }
-
-    warnings
-}
-
 /// Expand ~ to $HOME in a path string.
 fn shellexpand(path: &str) -> String {
     if path.starts_with("~/")
@@ -1215,8 +830,7 @@ mod tests {
 
     #[test]
     fn config_file_socket_path_takes_precedence_over_env() {
-        let mut cfg = Config::default();
-        cfg.daemon.socket_path = Some("/from/config/file.sock".into());
+        let cfg = Config::from_toml("[daemon]\nsocket_path = \"/from/config/file.sock\"\n");
         temp_env::with_var("BEACHCOMBER_SOCKET", Some("/from/env.sock"), || {
             let path = cfg.resolve_socket_path();
             assert_eq!(path, std::path::PathBuf::from("/from/config/file.sock"));
@@ -1231,14 +845,13 @@ mod tests {
 
     #[test]
     fn deep_merge_recurses_into_matching_tables() {
-        let mut base = toml_val("[providers.git]\nenabled = true\npoll_interval = \"30s\"\n");
-        let overlay = toml_val("[providers.git]\npoll_interval = \"10s\"\n");
+        let mut base = toml_val("[daemon]\nlog_level = \"info\"\nsocket_path = \"/a\"\n");
+        let overlay = toml_val("[daemon]\nlog_level = \"debug\"\n");
         deep_merge_toml(&mut base, overlay);
-        let git = base.get("providers").unwrap().get("git").unwrap();
-        assert_eq!(git.get("enabled").unwrap().as_bool(), Some(true));
-        assert_eq!(git.get("poll_interval").unwrap().as_str(), Some("10s"));
+        let daemon = base.get("daemon").unwrap();
+        assert_eq!(daemon.get("socket_path").unwrap().as_str(), Some("/a"));
+        assert_eq!(daemon.get("log_level").unwrap().as_str(), Some("debug"));
     }
-
     #[test]
     fn deep_merge_scalar_is_last_wins() {
         let mut base = toml_val("x = 1\n");
@@ -1300,85 +913,114 @@ mod tests {
         assert!(files.is_empty());
     }
 
-    // ── load_composed / parse_composed ──────────────────────────────────
+    // ── load_from / read_layers ─────────────────────────────────────────
 
-    #[test]
-    fn load_composed_drop_in_overrides_one_key_rest_of_block_preserved() {
+    fn config_dir() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let conf_d = tmp.path().join("conf.d");
         std::fs::create_dir(&conf_d).unwrap();
-        std::fs::write(
-            conf_d.join("01-override.toml"),
-            "[providers.git]\npoll_interval = \"10s\"\n",
-        )
-        .unwrap();
-
-        let main =
-            "[providers.git]\nenabled = true\npoll_interval = \"30s\"\npoll_live_count = 5\n";
-        let cfg = Config::load_composed(main, &tmp.path().join("defaults"), &conf_d);
-
-        let git = cfg.providers.get("git").unwrap();
-        assert_eq!(git.get("enabled").unwrap().as_bool(), Some(true));
-        assert_eq!(git.get("poll_live_count").unwrap().as_integer(), Some(5));
-        assert_eq!(git.get("poll_interval").unwrap().as_str(), Some("10s"));
+        let main = tmp.path().join("config.toml");
+        (tmp, main, conf_d)
     }
 
     #[test]
-    fn load_composed_conf_d_with_no_main_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let conf_d = tmp.path().join("conf.d");
-        std::fs::create_dir(&conf_d).unwrap();
+    fn load_from_drop_in_overrides_one_key_rest_of_block_preserved() {
+        let (_tmp, main, conf_d) = config_dir();
+        std::fs::write(
+            conf_d.join("01-override.toml"),
+            "[daemon]\nlog_level = \"debug\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &main,
+            "[daemon]\nlog_level = \"warn\"\nsocket_path = \"/s\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(&main);
+        assert_eq!(
+            cfg.daemon().log_level,
+            tracing_subscriber::filter::LevelFilter::from_level(tracing::Level::DEBUG)
+        );
+        assert_eq!(cfg.daemon().socket_path.as_deref(), Some("/s"));
+        assert_eq!(cfg.config_file(), Some(main.as_path()));
+    }
+
+    #[test]
+    fn load_from_conf_d_with_no_main_file() {
+        let (_tmp, main, conf_d) = config_dir();
         std::fs::write(
             conf_d.join("01-daemon.toml"),
             "[daemon]\nlog_level = \"debug\"\n",
         )
         .unwrap();
-
-        // No main config content at all (absent file).
-        let cfg = Config::load_composed("", &tmp.path().join("defaults"), &conf_d);
-        assert_eq!(cfg.daemon.log_level, "debug");
+        assert_eq!(
+            Config::load_from(&main).daemon().log_level,
+            tracing_subscriber::filter::LevelFilter::DEBUG
+        );
     }
 
     #[test]
-    fn load_composed_invalid_drop_in_is_skipped_rest_still_composed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let conf_d = tmp.path().join("conf.d");
-        std::fs::create_dir(&conf_d).unwrap();
+    fn load_from_skips_an_invalid_drop_in_and_composes_the_rest() {
+        let (_tmp, main, conf_d) = config_dir();
         std::fs::write(conf_d.join("01-bad.toml"), "this is not [ valid toml").unwrap();
         std::fs::write(
             conf_d.join("02-good.toml"),
             "[daemon]\nlog_level = \"debug\"\n",
         )
         .unwrap();
-
-        let cfg = Config::load_composed("[daemon]\n", &tmp.path().join("defaults"), &conf_d);
-        assert_eq!(cfg.daemon.log_level, "debug");
+        assert_eq!(
+            Config::load_from(&main).daemon().log_level,
+            tracing_subscriber::filter::LevelFilter::DEBUG
+        );
     }
 
     #[test]
-    fn parse_composed_fails_when_any_conf_d_file_is_invalid() {
-        let tmp = tempfile::tempdir().unwrap();
-        let conf_d = tmp.path().join("conf.d");
-        std::fs::create_dir(&conf_d).unwrap();
-        std::fs::write(conf_d.join("01-bad.toml"), "this is not [ valid toml").unwrap();
+    fn a_toml_syntax_error_is_a_load_error_and_the_rest_still_composes() {
+        let (_tmp, main, conf_d) = config_dir();
+        std::fs::write(&main, "[daemon]\nlog_level = \"debug\"\n").unwrap();
+        std::fs::write(conf_d.join("01-bad.toml"), "[daemon]\nsocket_path = \n").unwrap();
+        let config = Config::load_from(&main);
+        assert_eq!(
+            config.daemon().log_level,
+            tracing_subscriber::filter::LevelFilter::from_level(tracing::Level::DEBUG)
+        );
+        let errors = config.errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].starts_with("config:") && errors[0].contains("01-bad.toml: "),
+            "{errors:?}"
+        );
+        assert!(!errors[0].contains('\n'), "one line per error: {errors:?}");
 
-        let result = Config::parse_composed("[daemon]\n", &tmp.path().join("defaults"), &conf_d);
-        assert!(result.is_err());
+        // The main file too: it is not skipped in silence.
+        std::fs::write(&main, "[daemon]\nsocket_path = \n").unwrap();
+        let errors = Config::load_from(&main).errors();
+        assert!(
+            errors.iter().any(|e| e.contains("config.toml: ")),
+            "{errors:?}"
+        );
     }
 
     #[test]
-    fn parse_composed_succeeds_when_composed_set_is_all_valid() {
-        let tmp = tempfile::tempdir().unwrap();
-        let conf_d = tmp.path().join("conf.d");
-        std::fs::create_dir(&conf_d).unwrap();
+    fn a_missing_main_file_is_not_an_error() {
+        let (_tmp, main, conf_d) = config_dir();
         std::fs::write(
             conf_d.join("01-daemon.toml"),
             "[daemon]\nlog_level = \"debug\"\n",
         )
         .unwrap();
+        let config = Config::load_from(&main);
+        assert_eq!(config.errors(), Vec::<String>::new());
+        assert_eq!(
+            config.daemon().log_level,
+            tracing_subscriber::filter::LevelFilter::from_level(tracing::Level::DEBUG)
+        );
+    }
 
-        let result = Config::parse_composed("[daemon]\n", &tmp.path().join("defaults"), &conf_d);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().daemon.log_level, "debug");
+    #[test]
+    fn a_composition_that_does_not_deserialize_is_an_error() {
+        let (_tmp, main, _conf_d) = config_dir();
+        std::fs::write(&main, "[daemon]\nprovider_timeout_secs = \"x\"\n").unwrap();
+        assert_eq!(Config::load_from(&main).errors().len(), 1);
     }
 }

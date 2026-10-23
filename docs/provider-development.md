@@ -391,15 +391,6 @@ use crate::provider::dockercontext::DockerContextProvider;
 ("dockercontext", Box::new(DockerContextProvider)),
 ```
 
-### 2.3 Config (optional, for disabling)
-
-No config entry is required. Users can disable it via `~/.config/beachcomber/config.toml`:
-
-```toml
-[providers.dockercontext]
-enabled = false
-```
-
 ### 2.4 Use it
 
 ```bash
@@ -604,22 +595,16 @@ For path-scoped sources, `patterns` like `".git"` are relative to the queried pa
 
 ## 3b. Cache Lifecycle Tuning
 
-A built-in Source's failback is its own, set in code. The only per-source override of a built-in Source is its failback, in `[providers.<name>.<source>]`; any other key there, and any key but `enabled` directly under `[providers.<name>]`, is a config error.
-
-| Key | Type | Description |
-|---|---|---|
-| `failback_count` | u32 | Consecutive failures before suppression. |
-| `failback_interval` | duration | Initial suppression duration. |
+A built-in Source's schedule is its own, set in code, until the files say otherwise. Its table in `[daemon.providers.<name>.sources.<source>]` takes `return` and nothing else (`root`, `data` and `result` are errors), and the line replaces the Source's invalidation, failback, decay and budget whole. A failback or budget it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget.execute`). A built-in with no `return` keeps everything it declares: the `_` Source lines apply to config Sources, and reach a built-in only through `| super`.
 
 Example:
 
 ```toml
-[providers.git.status]
-failback_count = 5
-failback_interval = "2s"
+[daemon.providers.git.sources.status]
+return = "{{ result | watch('.git/index') | poll('120s', 6) | failback(5, '2s') }}"
 ```
 
-A config Source sets its own schedule on its `return` line (`poll`, `watch`, `ttl`, `failback`, `budget`).
+A config Source sets its own schedule on the same line (`poll`, `watch`, `ttl`, `failback`, `budget`).
 
 The full decay model — state machine, step durations, reinstatement rules — is described in `docs/architecture.md` §5.
 

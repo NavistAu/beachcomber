@@ -44,7 +44,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
 | `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`; `split_key()` — first-dot-only `provider.field` split. Key parsing into a `KeyParse` lives in `src/query.rs` (`parse_key`) |
 | `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` — a source name is never a key segment), `resolve_path`, `validate_key` (one colon form, the facet), `split_layer_facet` (`:put` / `:source` / `:cache`), and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
-| `src/config.rs` | TOML config loading from XDG directories; `Config`, `DaemonConfig`, `LifecycleConfig`, `SourceOverrideConfig` |
+| `src/config.rs` | TOML config loading from XDG directories; `Config` (composed from its layers), `DaemonConfig` |
 | `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `SourceScope`, `FieldSchema`, `InvalidationStrategy`, `FailbackConfig`; `expand_abs_path()` helper |
 | `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; `declared_sources` map (`HashMap<(provider, field), source_name>`) walked by `sources_for_key` (nearest declared ancestor of a key, then sentinel fields); built-in registration; validation at registration |
 | `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
@@ -168,7 +168,7 @@ The scheduler checks `in_flight` (a `Mutex<HashSet>`). If an execution for `("gi
 
 **Step 6: Failure backoff check**
 
-Before launching, the scheduler checks `failure_counts`. If the Source has exceeded its failure threshold (default 3) and is within its exponential backoff window (starting at the failback interval, default `1s`, doubling for 4 levels), execution is skipped. A config Source sets both on its `return` line (`| failback(count, interval)`; the shipped abstract Source has `failback(3, '1s')`). A built-in Source has its own, which `[providers.<p>.<s>] failback_count` / `failback_interval` override until the `[providers]` table goes. The global `[failback]` table is parsed, but a Source always carries its own values, so scheduling does not consult it.
+Before launching, the scheduler checks `failure_counts`. If the Source has exceeded its failure threshold (default 3) and is within its exponential backoff window (starting at the failback interval, default `1s`, doubling for 4 levels), execution is skipped. A config Source sets both on its `return` line (`| failback(count, interval)`; the shipped abstract Source has `failback(3, '1s')`). A built-in Source has its own, until `[daemon.providers.<p>.sources.<s>] return` names them: a `return` on a built-in replaces its failback with the line's, or with the engine's `failback(3, '1s')` where the line is silent. The scheduler reads the Source's metadata only; no config table is consulted when scheduling.
 
 **Step 7: spawn_blocking**
 
@@ -235,7 +235,7 @@ Each decay step doubles the poll interval and the step duration relative to the 
 
 **Idle shutdown**
 
-When `cache.is_empty()` and `demand.is_empty()` both hold true and no activity has been seen for `lifecycle.idle_shutdown_secs`, the daemon exits.
+When `cache.is_empty()` and `demand.is_empty()` both hold true and no activity has been seen for `[daemon] idle_shutdown_secs`, the daemon exits.
 
 ---
 

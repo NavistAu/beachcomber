@@ -9,9 +9,6 @@
 
 use crate::provider::SourceMetadata;
 use crate::provider::config_source::{ConfigSourceSpec, ResultSpec};
-use crate::scheduler::lifecycle::{
-    DEFAULT_BUDGET_EXECUTE, DEFAULT_FAILBACK_COUNT, DEFAULT_FAILBACK_INTERVAL_SECS,
-};
 use crate::shape::decorators::{EngineDefaults, Recorded, record_return};
 use crate::shape::prototype::{Kind, Link, chain, effective, source_prototypes, super_chain};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -34,13 +31,23 @@ pub struct PrototypeLines {
     pub result: Option<ResultSpec>,
 }
 
-const ENGINE_DEFAULTS: EngineDefaults = EngineDefaults {
-    failback: crate::provider::FailbackConfig {
-        reattempts: DEFAULT_FAILBACK_COUNT,
-        interval_secs: DEFAULT_FAILBACK_INTERVAL_SECS,
-    },
-    budget_execute: DEFAULT_BUDGET_EXECUTE,
-};
+/// A built-in Rust Source whose `return` the files set: the schedule that
+/// replaces its own, whole.
+#[derive(Debug, Clone)]
+pub struct Retune {
+    pub provider: String,
+    pub source: String,
+    pub recorded: Recorded,
+}
+
+/// What a composed `[daemon.providers]` declares.
+#[derive(Debug, Clone, Default)]
+pub struct Built {
+    /// The config Sources, by provider.
+    pub decls: Vec<ProviderDecl>,
+    /// The built-in Sources a `return` retunes.
+    pub retunes: Vec<Retune>,
+}
 
 fn as_table(v: Option<&toml::Value>) -> Option<&toml::Table> {
     v.and_then(toml::Value::as_table)
@@ -77,7 +84,11 @@ fn result_spec(value: &toml::Value) -> Option<ResultSpec> {
 
 /// Render the `return` chain of `links` and name the table that failed.
 /// `Ok(None)` is a line that is not a string, for the file check to report.
-fn check_return(links: &[Link<'_>], name: &str) -> Result<Option<Recorded>, String> {
+fn check_return(
+    links: &[Link<'_>],
+    name: &str,
+    defaults: &EngineDefaults,
+) -> Result<Option<Recorded>, String> {
     let lines = super_chain(links, "return");
     let mut strs: Vec<&str> = Vec::new();
     for (_, value) in &lines {
@@ -91,12 +102,10 @@ fn check_return(links: &[Link<'_>], name: &str) -> Result<Option<Recorded>, Stri
     if strs.is_empty() {
         strs.push("{{ result }}");
     }
-    record_return(&strs, name, &ENGINE_DEFAULTS)
-        .map(Some)
-        .map_err(|e| {
-            let at = lines.get(e.level).map_or(0, |(at, _)| *at);
-            format!("{} return: {}", links[at].path, e.message)
-        })
+    record_return(&strs, name, defaults).map(Some).map_err(|e| {
+        let at = lines.get(e.level).map_or(0, |(at, _)| *at);
+        format!("{} return: {}", links[at].path, e.message)
+    })
 }
 
 /// The lines each `_` Source table holds, for the caller to compile.
@@ -117,14 +126,22 @@ pub fn prototype_lines(providers: &toml::Table) -> Vec<PrototypeLines> {
         .collect()
 }
 
-/// The config Sources `providers` (the composed `[daemon.providers]`) declare.
-/// `existing` is every Source already registered, by provider: the built-in
-/// Rust Sources, which a table cannot yet redefine, and whose fields a new
-/// Source may not declare again.
+/// The config Sources `providers` (the composed `[daemon.providers]`) declare,
+/// and the built-in Sources they retune. `existing` is every Source already
+/// registered, by provider: the built-in Rust Sources, whose table accepts
+/// `return` and nothing else until they are shipped as config, and whose
+/// fields a new Source may not declare again. `defaults` is what a Source gets
+/// for a decorator its `return` chain does not name.
+///
+/// A built-in's `return` is read as a config Source's is: its own line, and
+/// what its `| super` reaches in `<p>.sources._` and `_.sources._`. With no
+/// `return` of its own it is not touched: the `_` lines apply to config
+/// Sources only.
 pub fn build(
     providers: &toml::Table,
     existing: &HashMap<String, Vec<SourceMetadata>>,
-) -> Result<Vec<ProviderDecl>, Vec<String>> {
+    defaults: &EngineDefaults,
+) -> Result<Built, Vec<String>> {
     let mut errors: BTreeSet<String> = BTreeSet::new();
     let mut err = |e: String| {
         errors.insert(e);
@@ -134,13 +151,14 @@ pub fn build(
     for name in providers.keys() {
         let links = source_prototypes(providers, name);
         if !links.is_empty()
-            && let Err(e) = check_return(&links, "_")
+            && let Err(e) = check_return(&links, "_", defaults)
         {
             err(e);
         }
     }
 
     let mut decls = Vec::new();
+    let mut retunes = Vec::new();
     for (provider, ptable) in providers {
         if provider == "_" {
             continue;
@@ -167,16 +185,39 @@ pub fn build(
                     .any(|k| stable.contains_key(*k))
                 {
                     err(format!(
-                        "{provider}.{source} is a built-in Source: only return can be set until \
-                         it is shipped as config"
+                        "{provider}.{source} is a built-in Source: only return can be set"
                     ));
-                }
-                if stable.contains_key("return") {
-                    err(format!("unknown key 'return' in {at}"));
+                } else if stable.contains_key("return") {
+                    let links = chain(providers, Kind::Source, provider, source);
+                    // A line of the wrong type is the file check's error: skip.
+                    match check_return(&links, source, defaults) {
+                        Ok(Some(recorded)) => retunes.push(Retune {
+                            provider: provider.clone(),
+                            source: source.clone(),
+                            recorded,
+                        }),
+                        Ok(None) => {}
+                        Err(e) => err(e),
+                    }
                 }
                 continue;
             }
             let links = chain(providers, Kind::Source, provider, source);
+            // A new Source of a built-in provider is data and result, its own
+            // or a `_`'s; a table with neither anywhere is most likely a
+            // built-in's name misspelled.
+            if let Some(known) = existing.get(provider)
+                && effective(&links, "data").is_none()
+                && effective(&links, "result").is_none()
+            {
+                let names: Vec<&str> = known.iter().map(|m| m.name.as_str()).collect();
+                err(format!(
+                    "{at}: {provider} has no Source '{source}' (its Sources: {}); a new Source \
+                     needs data and result",
+                    names.join(", ")
+                ));
+                continue;
+            }
             // A line of the wrong type is the file check's error: skip.
             let root = line(&links, "root");
             let data = line(&links, "data");
@@ -189,7 +230,7 @@ pub fn build(
                     "{at} has no result (a line, or result.<field> lines)"
                 ));
             }
-            let recorded = match check_return(&links, source) {
+            let recorded = match check_return(&links, source, defaults) {
                 Ok(recorded) => recorded,
                 Err(e) => {
                     err(e);
@@ -246,7 +287,7 @@ pub fn build(
     }
 
     if errors.is_empty() {
-        Ok(decls)
+        Ok(Built { decls, retunes })
     } else {
         Err(errors.into_iter().collect())
     }

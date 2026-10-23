@@ -265,16 +265,8 @@ async fn a_seeded_template_answers_a_get_on_a_client_only_provider() {
 /// same list `run_daemon_with_cancel` refuses to start on, and the same list
 /// `comb check config` prints.
 fn startup_errors() -> Vec<String> {
-    let registry = ProviderRegistry::with_defaults();
     let config = Config::load();
-    let mut errors = config
-        .validate_providers(
-            &registry.provider_names(),
-            &registry.source_names_by_provider(),
-        )
-        .1;
-    errors.extend(config.validate_seeded());
-    errors
+    ProviderRegistry::load(&config, &Default::default()).errors
 }
 
 /// Assert the message, then assert the wiring: the message is what an operator
@@ -333,9 +325,8 @@ async fn a_leaf_named_path_in_a_template_is_data() {
     assert_eq!(data(&mut s, "git:template.path").await, json!("x"));
 }
 
-/// `Config::load` falls back to the default configuration when the composed
-/// file does not deserialize, so a table of the wrong type must be an error
-/// the validation reports rather than a silently emptied config.
+/// A table of the wrong type is an error the validation reports, not a
+/// silently emptied config.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_providers_key_that_is_not_a_table_stops_the_daemon_starting() {
     let e = Env::new("[client]\nproviders = 3\n", &[]);
@@ -344,8 +335,8 @@ async fn a_providers_key_that_is_not_a_table_stops_the_daemon_starting() {
     refuses_to_start(&e, "config.toml", "[daemon.providers] must be a table").await;
 }
 
-/// The colon-table forms are removed, not deprecated: each is an unknown table
-/// that says where its contents went.
+/// The `[providers]` root, colon-named facet tables included, is removed, not
+/// deprecated: it is an unknown table that says where its contents went.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_old_facet_table_is_a_config_error() {
     for name in ["x:template", "*:cache"] {
@@ -353,10 +344,10 @@ async fn an_old_facet_table_is_a_config_error() {
         refuses_to_start(
             &e,
             "config.toml",
-            &format!(
-                "unknown table [providers.\"{name}\"]: templates live in [client.providers.<p>] \
-                 template.<leaf>, decay in [daemon.providers.<p>.cache._]"
-            ),
+            "unknown table [providers]: a provider's settings are [daemon.providers.<p>] (the \
+             daemon's) and [client.providers.<p>] (the client's); a built-in Source is retuned \
+             by [daemon.providers.<p>.sources.<s>] return; templates live in \
+             [client.providers.<p>] template.<leaf>, decay in [daemon.providers.<p>.cache._]",
         )
         .await;
     }
@@ -493,18 +484,6 @@ async fn a_decay_above_sixteen_is_refused_in_config_and_by_put() {
     assert_eq!(resp["ok"], json!(true), "16 is the cap and allowed: {resp}");
 }
 
-/// A built-in the config disables is not a provider the client-only rule can
-/// bring back with zero Sources.
-#[test]
-fn a_disabled_builtin_named_by_a_template_is_not_registered() {
-    let config: Config = toml::from_str(
-        "[providers.python]\nenabled = false\n\n[client.providers.python]\ntemplate.v = \"x\"\n",
-    )
-    .unwrap();
-    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
-    assert!(!registry.is_registered("python"));
-}
-
 // ── a client-only provider is a provider ───────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -535,11 +514,9 @@ async fn a_client_only_provider_is_a_provider() {
 
 #[test]
 fn the_abstract_provider_is_never_registered() {
-    let mut config: Config = toml::from_str(
+    let config = Config::from_toml(
         "[daemon.providers._.cache._]\ndecay = 4\n\n[client.providers.aws]\ntemplate.p = \"x\"\n",
-    )
-    .unwrap();
-    config.config_path = None;
+    );
     let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
     assert!(registry.is_registered("aws"), "named in [client.providers]");
     assert!(
@@ -575,7 +552,7 @@ async fn a_provider_decay_table_seeds_its_own_cache_facet() {
     beachcomber::daemon::seed::seed_facets(
         &cache,
         &registry,
-        &Config::layers(None, Some(&main), &e.cfg_dir.join("conf.d")),
+        &Config::read_layers(None, Some(&main), &e.cfg_dir.join("conf.d")).layers,
     );
     assert_eq!(cache.resolve_decay("git", None), 2);
     assert_eq!(
@@ -810,7 +787,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
 
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
-    let layers = || Config::layers(None, Some(&cfg), &conf_d);
+    let layers = || Config::read_layers(None, Some(&cfg), &conf_d).layers;
     beachcomber::daemon::seed::seed_facets(&cache, &registry, &layers());
     let leaf = |name: &str| {
         cache
@@ -828,9 +805,9 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
         Duration::from_millis(20),
         false,
         stop.clone(),
-        move |kind| {
+        move |kind, _| {
             if kind == beachcomber::daemon::config_watch::ChangeKind::FacetsOnly {
-                let layers = Config::layers(None, Some(&watch_cfg), &watch_conf_d);
+                let layers = Config::read_layers(None, Some(&watch_cfg), &watch_conf_d).layers;
                 beachcomber::daemon::seed::reseed_facets(&watch_cache, &watch_registry, &layers);
             }
             let _ = tx.send(kind);
@@ -1259,9 +1236,9 @@ async fn comb_check_config_renders_both_views_as_one_list() {
     let expected = format!(
         "Config\n\
          \x20 [PASS] daemon   path {}\n\
-         \x20 [PASS] daemon   parsed ok — 0 provider definitions\n\
+         \x20 [PASS] daemon   parsed ok — 0 config Sources\n\
          \x20 [PASS] daemon   config parsed\n\
-         \x20 [PASS] daemon   0 provider definitions loaded\n\
+         \x20 [PASS] daemon   0 config Sources loaded\n\
          \x20 [PASS] local    config file valid\n\
          \x20 [WARN] local    defaults {}: 9 shipped file(s) missing or stale — the daemon \
          writes them on its next start\n\

@@ -6,8 +6,7 @@ use std::path::PathBuf;
 
 #[test]
 fn resolve_socket_path_prefers_explicit_override() {
-    let mut cfg = Config::default();
-    cfg.daemon.socket_path = Some("/custom/path".into());
+    let cfg = Config::from_toml("[daemon]\nsocket_path = \"/custom/path\"\n");
     assert_eq!(cfg.resolve_socket_path(), PathBuf::from("/custom/path"));
 }
 
@@ -838,8 +837,7 @@ fn reaper_resolution_ignores_beachcomber_socket_env() {
 
 #[test]
 fn reaper_resolution_honors_config_override() {
-    let mut cfg = Config::default();
-    cfg.daemon.socket_path = Some("/etc/comb/sock".into());
+    let cfg = Config::from_toml("[daemon]\nsocket_path = \"/etc/comb/sock\"\n");
     assert_eq!(
         cfg.resolve_reaper_socket_path(),
         PathBuf::from("/etc/comb/sock")
@@ -850,8 +848,7 @@ fn reaper_resolution_honors_config_override() {
 fn resolve_socket_path_reports_source() {
     use beachcomber::config::SocketPathSource;
 
-    let mut cfg = Config::default();
-    cfg.daemon.socket_path = Some("/etc/comb/sock".into());
+    let cfg = Config::from_toml("[daemon]\nsocket_path = \"/etc/comb/sock\"\n");
     assert_eq!(
         cfg.resolve_socket_path_with_source().1,
         SocketPathSource::ConfigOverride

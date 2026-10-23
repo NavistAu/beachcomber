@@ -1,16 +1,18 @@
 use crate::config::{Config, parse_duration};
 use crate::provider::registry::ProviderRegistry;
+use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
 
-// ── from tests/suite/config.rs ──────────
+// ── Parsing the settings ─────────────────────────────────────────────────────
 
-// ── Table-driven TOML-parse cases ────────────────────────────────────────────
-//
-// These cases all follow the same shape: parse TOML text → assert specific
-// Config struct fields. Each case is a (name, toml_input, check_fn) triple.
-// Cases that exercise env interaction, file I/O, method resolution, error
-// paths, or multi-step logic remain as individual #[test] items below.
+/// A `Config` composed from one layer that has no file, labelled
+/// `config:<in memory>`: what a test builds when it wants the checks to run.
+fn in_memory(text: &str) -> Config {
+    Config::from_toml(text)
+}
+
+use tracing_subscriber::filter::LevelFilter;
 
 struct ConfigParseCase {
     name: &'static str,
@@ -25,7 +27,8 @@ fn config_parse_cases() {
             name: "parse_minimal_toml",
             input: "",
             check: |c| {
-                assert_eq!(c.daemon.log_level, "info");
+                assert_eq!(c.daemon().log_level, LevelFilter::INFO);
+                assert_eq!(c.daemon().idle_shutdown_secs, None);
             },
         },
         ConfigParseCase {
@@ -34,95 +37,35 @@ fn config_parse_cases() {
 [daemon]
 log_level = "debug"
 socket_path = "/tmp/test.sock"
+idle_shutdown_secs = 30
 "#,
             check: |c| {
-                assert_eq!(c.daemon.log_level, "debug");
-                assert_eq!(c.daemon.socket_path.as_deref(), Some("/tmp/test.sock"));
-            },
-        },
-        ConfigParseCase {
-            name: "parse_lifecycle_section",
-            input: "[lifecycle]\nidle_shutdown_secs = 30\n",
-            check: |c| {
-                assert_eq!(c.lifecycle.idle_shutdown_secs, Some(30));
-            },
-        },
-        ConfigParseCase {
-            name: "parse_failback_section",
-            input: r#"
-[failback]
-count = 5
-interval = "2s"
-"#,
-            check: |c| {
-                assert_eq!(c.failback.count, 5);
-                assert_eq!(c.failback.interval, "2s");
-            },
-        },
-        ConfigParseCase {
-            name: "failback_defaults_apply_without_config",
-            input: "",
-            check: |c| {
-                assert_eq!(c.failback.count, 3);
-                assert_eq!(c.failback.interval_duration(), Duration::from_secs(1));
+                assert_eq!(c.daemon().log_level, LevelFilter::DEBUG);
+                assert_eq!(c.daemon().socket_path.as_deref(), Some("/tmp/test.sock"));
+                assert_eq!(c.daemon().idle_shutdown_secs, Some(30));
             },
         },
     ];
 
     for case in cases {
-        let config: Config = toml::from_str(case.input)
-            .unwrap_or_else(|e| panic!("case {}: parse failed: {}", case.name, e));
+        let config = in_memory(case.input);
         (case.check)(&config);
+        assert_eq!(config.errors(), Vec::<String>::new(), "case {}", case.name);
     }
 }
-
-// ── Standalone tests ──────────────────────────────────────────────────────────
-//
-// These tests exercise Config::default(), method resolution chains, error/Err
-// paths, validate_providers(), and other logic that doesn't fit a pure
-// "TOML text → check parsed fields" sweep.
 
 #[test]
 fn default_config() {
     let config = Config::default();
     assert_eq!(
-        config.daemon.log_level, "info",
+        config.daemon().log_level,
+        LevelFilter::INFO,
         "Default log level should be info"
     );
     assert!(
-        config.daemon.socket_path.is_none(),
+        config.daemon().socket_path.is_none(),
         "Default socket path should be None"
     );
-}
-
-#[test]
-fn parse_provider_enabled_flag() {
-    let toml_str = r#"
-[providers.battery]
-enabled = false
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    assert!(config.is_provider_disabled("battery"));
-    assert!(!config.is_provider_disabled("hostname"));
-}
-
-#[test]
-fn parse_per_source_block() {
-    let toml_str = r#"
-[providers.git.refs]
-failback_count = 3
-failback_interval = "60s"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let ov = config.source_override("git", "refs").unwrap().unwrap();
-    assert_eq!(ov.failback_count, Some(3));
-    assert_eq!(ov.failback_interval.as_deref(), Some("60s"));
-}
-
-#[test]
-fn source_override_absent_returns_none() {
-    let config: Config = toml::from_str("").unwrap();
-    assert!(config.source_override("git", "refs").unwrap().is_none());
 }
 
 #[test]
@@ -140,8 +83,7 @@ fn socket_path_resolves_xdg_default() {
 
 #[test]
 fn socket_path_override() {
-    let mut config = Config::default();
-    config.daemon.socket_path = Some("/tmp/custom.sock".to_string());
+    let config = Config::from_toml("[daemon]\nsocket_path = \"/tmp/custom.sock\"\n");
     let path = config.resolve_socket_path();
     assert_eq!(
         path.to_string_lossy(),
@@ -168,372 +110,6 @@ fn parse_duration_variants() {
     assert_eq!(parse_duration("1h"), Some(Duration::from_secs(3600)));
     assert_eq!(parse_duration("30"), Some(Duration::from_secs(30)));
     assert_eq!(parse_duration(""), None);
-}
-
-#[test]
-fn per_source_failback_overrides() {
-    let toml_str = r#"
-[failback]
-count = 3
-interval = "1s"
-
-[providers.my_api.main]
-failback_count = 5
-failback_interval = "2s"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-
-    // Per-source overrides
-    assert_eq!(
-        config.resolve_failure_reattempts_for_source("my_api", Some("main"), None),
-        5
-    );
-    assert_eq!(
-        config.resolve_failure_backoff_for_source("my_api", Some("main"), None),
-        Duration::from_secs(2)
-    );
-
-    // Unknown source falls back to [failback] global defaults
-    assert_eq!(
-        config.resolve_failure_reattempts_for_source("my_api", Some("other"), None),
-        3
-    );
-    assert_eq!(
-        config.resolve_failure_backoff_for_source("my_api", Some("other"), None),
-        Duration::from_secs(1)
-    );
-    // No source specified — uses failback global
-    assert_eq!(config.resolve_failure_reattempts("unknown"), 3);
-    assert_eq!(
-        config.resolve_failure_backoff_interval("unknown"),
-        Duration::from_secs(1)
-    );
-}
-
-#[test]
-fn old_flat_source_knob_on_builtin_detected_by_validate() {
-    // Old flat source-knob keys on a non-external-backend provider block
-    // are caught by validate_providers(), not by the TOML parser.
-    let toml_str = r#"
-[providers.git]
-poll_interval = "10s"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers = vec!["git".to_string()];
-    let known_sources: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        !errors.is_empty(),
-        "old flat source-knob key on built-in provider must produce a validation error"
-    );
-    assert!(
-        errors[0].contains("poll_interval"),
-        "error message should name the offending key: {:?}",
-        errors
-    );
-    assert!(
-        errors[0].contains("[providers.git.<source_name>]"),
-        "error message should name the new schema shape: {:?}",
-        errors
-    );
-}
-
-#[test]
-fn old_flat_failure_reattempts_on_builtin_detected_by_validate() {
-    let toml_str = r#"
-[providers.hostname]
-failure_reattempts = 5
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers = vec!["hostname".to_string()];
-    let known_sources = std::collections::HashMap::new();
-    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        !errors.is_empty(),
-        "failure_reattempts on builtin provider must error"
-    );
-    assert!(errors[0].contains("failure_reattempts"));
-}
-
-#[test]
-fn unknown_source_on_known_provider_warns_not_errors() {
-    // Known provider, unknown source name → warn (cross-platform support).
-    let toml_str = r#"
-[providers.battery.upower]
-failback_count = 2
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers = vec!["battery".to_string()];
-    let mut known_sources = std::collections::HashMap::new();
-    known_sources.insert("battery".to_string(), vec!["state".to_string()]);
-    let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        errors.is_empty(),
-        "unknown source on known provider must not error: {:?}",
-        errors
-    );
-    assert!(
-        !warnings.is_empty(),
-        "unknown source on known provider must produce a warning"
-    );
-    assert!(
-        warnings[0].contains("upower"),
-        "warning names the unknown source: {:?}",
-        warnings
-    );
-    assert!(
-        warnings[0].contains("state"),
-        "warning lists registered sources: {:?}",
-        warnings
-    );
-    assert!(
-        warnings[0].contains("platform-conditional"),
-        "warning mentions platform-conditional context: {:?}",
-        warnings
-    );
-}
-
-#[test]
-fn strategy_key_mismatch_detected_by_validate() {
-    // poll_interval on fsevent type → error.
-    let toml_str = r#"
-[providers.git.refs]
-type = "fsevent"
-fsevent_patterns = [".git"]
-poll_interval = "60s"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers: Vec<String> = vec![];
-    let known_sources = std::collections::HashMap::new();
-    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        !errors.is_empty(),
-        "poll_interval on fsevent type must produce an error"
-    );
-    assert!(
-        errors[0].contains("fsevent"),
-        "error mentions strategy: {:?}",
-        errors
-    );
-}
-
-fn assert_unknown_key(err: &str) {
-    assert!(
-        err.contains("unknown key 'fsevent_lifespan'"),
-        "error is the ordinary unknown-key error: {err:?}"
-    );
-}
-
-#[test]
-fn fsevent_lifespan_is_an_unknown_key_in_a_built_in_source_block() {
-    let config: Config =
-        toml::from_str("[providers.git.refs]\ntype = \"fsevent\"\nfsevent_lifespan = \"300s\"\n")
-            .unwrap();
-    assert_unknown_key(&config.source_override("git", "refs").unwrap_err());
-}
-
-#[test]
-fn fsevent_keys_on_poll_type_rejected() {
-    let toml_str = r#"
-[providers.aws.profile]
-type = "poll"
-fsevent_patterns = [".aws"]
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let result = config.source_override("aws", "profile");
-    assert!(result.is_err(), "fsevent_patterns on poll type must error");
-}
-
-#[test]
-fn deprecated_keys_detected_in_raw_toml() {
-    use crate::config::detect_deprecated_keys;
-
-    let toml = r#"
-[lifecycle]
-cache_lifespan = "30s"
-failure_reattempts = 3
-failure_backoff_interval = "1s"
-
-[providers.git]
-poll_idle_interval = "5m"
-poll_live_interval = "10s"
-"#;
-    let warnings = detect_deprecated_keys(toml);
-    // cache_lifespan, failure_reattempts, failure_backoff_interval, poll_idle_interval, poll_live_interval
-    assert!(warnings.len() >= 4);
-    assert!(
-        warnings
-            .iter()
-            .any(|w: &String| w.contains("cache_lifespan"))
-    );
-    assert!(
-        warnings
-            .iter()
-            .any(|w: &String| w.contains("failure_reattempts"))
-    );
-    assert!(
-        warnings
-            .iter()
-            .any(|w: &String| w.contains("failure_backoff_interval"))
-    );
-    assert!(
-        warnings
-            .iter()
-            .any(|w: &String| w.contains("poll_idle_interval"))
-    );
-    assert!(
-        warnings
-            .iter()
-            .any(|w: &String| w.contains("poll_live_interval"))
-    );
-}
-
-#[test]
-fn resolution_order_per_source_beats_source_default_beats_global() {
-    // per-source block > source declared default > [failback] global
-    let toml_str = r#"
-[failback]
-count = 10
-interval = "10s"
-
-[providers.git.diff]
-failback_count = 1
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-
-    assert_eq!(
-        config.resolve_failure_reattempts_for_source("git", Some("diff"), Some(99)),
-        1,
-        "per-source failback_count beats source default"
-    );
-    assert_eq!(
-        config.resolve_failure_reattempts_for_source("git", Some("refs"), Some(4)),
-        4,
-        "source default beats global failback count"
-    );
-    assert_eq!(
-        config.resolve_failure_reattempts_for_source("git", Some("refs"), None),
-        10,
-        "global failback count applies without source default"
-    );
-}
-
-#[test]
-fn unknown_key_in_source_block_produces_error() {
-    // [providers.git.refs] with an unknown key must error.
-    let toml_str = r#"
-[providers.git.refs]
-not_a_valid_key = "oops"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let result = config.source_override("git", "refs");
-    assert!(
-        result.is_err(),
-        "unknown key in source block must produce an error"
-    );
-}
-
-#[test]
-fn validate_providers_no_errors_for_valid_per_source_config() {
-    let toml_str = r#"
-[providers.git.diff]
-failback_count = 3
-failback_interval = "60s"
-
-[providers.git.refs]
-failback_count = 1
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers = vec!["git".to_string()];
-    let mut known_sources = std::collections::HashMap::new();
-    known_sources.insert(
-        "git".to_string(),
-        vec!["diff".to_string(), "refs".to_string(), "status".to_string()],
-    );
-    let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(warnings.is_empty(), "no warnings expected: {:?}", warnings);
-    assert!(errors.is_empty(), "no errors expected: {:?}", errors);
-}
-
-#[test]
-fn validate_providers_rejects_a_virtual_subtable_naming_the_template_facet() {
-    // `[providers.<p>.virtual]` was where 0.9 kept a provider's templates.
-    // They are `[client.providers.<p>] template` data now (design §3.9, outcome
-    // 15), so the old block is unrecognised — and its error says where the
-    // templates went, rather than the generic per-source "unknown key"
-    // any other stray sub-table gets. `virtual.env = …` is the dotted-key
-    // spelling of the same table. The check runs before the provider's kind
-    // is consulted, so every kind gets the same error: a namespace no
-    // provider stands behind (`conda`), a builtin with a real source block
-    // beside it (`git`), and a name the registry does not know with a block
-    // of knobs (`mygpu`). Nothing else in the file is wrong, so these three
-    // are the whole verdict.
-    let toml_str = r#"
-[providers.conda]
-virtual.env = "{{ env.CONDA_DEFAULT_ENV }}"
-
-[providers.git]
-virtual.branch_display = "{{ env.GIT_BRANCH or git.branch }}"
-
-[providers.git.diff]
-failback_count = 3
-
-[providers.mygpu]
-virtual.label = "{{ mygpu.usage }}"
-
-[providers.mygpu.usage]
-failback_count = 2
-"#;
-    let config: Config = toml::from_str(toml_str).expect("valid toml");
-    let known_providers = vec!["git".to_string()];
-    let mut known_sources = std::collections::HashMap::new();
-    known_sources.insert(
-        "git".to_string(),
-        vec!["diff".to_string(), "refs".to_string(), "status".to_string()],
-    );
-    let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
-    let expected: Vec<String> = ["conda", "git", "mygpu"]
-        .iter()
-        .map(|p| {
-            format!(
-                "unrecognised block [providers.{p}.virtual]: templates live in [client.providers.{p}] template.<leaf>"
-            )
-        })
-        .collect();
-    let mut sorted = errors.clone();
-    sorted.sort();
-    assert_eq!(sorted, expected, "errors: {errors:?}");
-    assert!(warnings.is_empty(), "no warnings expected: {warnings:?}");
-}
-
-/// `path` was the path-expression setting (design §3.8, outcome 19). Nothing
-/// computes an entry's path any more — a query addresses the caller's
-/// directory, `--path`, or `--global` — so the key is an error that says so,
-/// on a built-in and on a namespace the registry does not know alike.
-#[test]
-fn a_path_key_under_a_provider_is_a_validation_error() {
-    let toml_str = r#"
-[providers.foo]
-path = "{{ env.FOOCONFIG or '~/.foo/config' }}"
-
-[providers.git]
-path = "{{ cwd }}"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let (warnings, errors) =
-        config.validate_providers(&["git".to_string()], &std::collections::HashMap::new());
-    let mut sorted = errors.clone();
-    sorted.sort();
-    assert_eq!(
-        sorted,
-        ["foo", "git"].map(|p| format!(
-            "[providers.{p}]: path is not a provider setting: a query addresses the caller's \
-             directory, --path, or --global"
-        )),
-        "errors: {errors:?}"
-    );
-    assert!(warnings.is_empty(), "no warnings expected: {warnings:?}");
 }
 
 // ── Layers, facet tables, and the settings/facets split (Task 6) ─────────────
@@ -574,11 +150,13 @@ fn layers_are_defaults_then_the_main_file_then_conf_d_in_lexical_order() {
         "[daemon]\nlog_level = \"info\"\n",
     );
 
-    let layers = Config::layers(
+    let read = Config::read_layers(
         Some(&tmp.path().join("defaults")),
         Some(&main),
         &tmp.path().join("conf.d"),
     );
+    assert!(read.errors.is_empty(), "{:?}", read.errors);
+    let layers = read.layers;
     let paths: Vec<_> = layers.iter().map(|(p, _)| p.clone()).collect();
     assert_eq!(
         paths,
@@ -606,27 +184,35 @@ fn layers_skip_a_file_that_does_not_parse() {
         "conf.d/10-broken.toml",
         "this is not [ valid toml",
     );
-    let ok = write(tmp.path(), "conf.d/20-ok.toml", "[lifecycle]\n");
+    let ok = write(tmp.path(), "conf.d/20-ok.toml", "[daemon]\n");
 
-    let paths: Vec<_> = Config::layers(None, Some(&main), &tmp.path().join("conf.d"))
-        .into_iter()
-        .map(|(p, _)| p)
-        .collect();
-    assert_eq!(paths, vec![main, ok], "the broken drop-in is skipped");
+    let read = Config::read_layers(None, Some(&main), &tmp.path().join("conf.d"));
+    let paths: Vec<_> = read.layers.into_iter().map(|(p, _)| p).collect();
+    assert_eq!(paths, vec![main, ok], "the broken drop-in is not a layer");
+    assert_eq!(
+        read.errors.len(),
+        1,
+        "but it is an error: {:?}",
+        read.errors
+    );
+    assert!(
+        read.errors[0].starts_with("config:") && read.errors[0].contains("10-broken.toml: "),
+        "{:?}",
+        read.errors
+    );
 }
 
 #[test]
 fn layers_tolerate_a_missing_main_config_file() {
     let tmp = tempfile::tempdir().unwrap();
     let drop_in = write(tmp.path(), "conf.d/10-only.toml", "[daemon]\n");
-    let paths: Vec<_> = Config::layers(
+    let read = Config::read_layers(
         Some(&tmp.path().join("defaults")),
         Some(&tmp.path().join("config.toml")),
         &tmp.path().join("conf.d"),
-    )
-    .into_iter()
-    .map(|(p, _)| p)
-    .collect();
+    );
+    assert!(read.errors.is_empty(), "{:?}", read.errors);
+    let paths: Vec<_> = read.layers.into_iter().map(|(p, _)| p).collect();
     assert_eq!(
         paths,
         vec![drop_in],
@@ -643,9 +229,6 @@ log_level = "debug"
 
 [daemon.providers.git.cache._]
 decay = 2
-
-[providers.git]
-enabled = true
 
 [client]
 bogus = 1
@@ -667,8 +250,8 @@ template.branch = "{{ git.branch }}"
         "any other [client] key is, so a change to it restarts"
     );
     assert!(
-        settings["providers"].get("git").is_some(),
-        "a plain provider block is a setting and survives"
+        settings.get("providers").is_none(),
+        "only the two roots are kept"
     );
     assert!(
         settings["daemon"].get("providers").is_none(),
@@ -714,21 +297,20 @@ fn seeded_errors(toml_str: &str) -> Vec<String> {
 fn plugin_path_is_a_list_of_directories() {
     use std::path::PathBuf;
     let dirs = |c: &Config, home: Option<&str>| c.plugin_path(home).unwrap();
-    let mut config: Config = toml::from_str("").unwrap();
+    let config = Config::from_toml("");
 
     // No config file, nothing named: nothing is searched.
     assert_eq!(dirs(&config, Some("/h")), Vec::<PathBuf>::new());
 
     // The default is the `plugins` directory beside the config file.
-    config.config_path = Some(PathBuf::from("/c/beachcomber/config.toml"));
+    let config = Config::load_from(std::path::Path::new("/c/beachcomber/config.toml"));
     assert_eq!(
         dirs(&config, Some("/h")),
         vec![PathBuf::from("/c/beachcomber/plugins")]
     );
 
     // A list replaces the default, keeps its order, and expands `~`.
-    let config: Config =
-        toml::from_str("[daemon.plugin]\npath = [\"~/plugins\", \"/opt/p\", \"~\"]\n").unwrap();
+    let config = Config::from_toml("[daemon.plugin]\npath = [\"~/plugins\", \"/opt/p\", \"~\"]\n");
     assert_eq!(
         dirs(&config, Some("/h")),
         vec![
@@ -739,12 +321,11 @@ fn plugin_path_is_a_list_of_directories() {
     );
 
     // An empty list searches nothing.
-    let mut config: Config = toml::from_str("[daemon.plugin]\npath = []\n").unwrap();
-    config.config_path = Some(PathBuf::from("/c/beachcomber/config.toml"));
+    let config = Config::from_toml("[daemon.plugin]\npath = []\n");
     assert_eq!(dirs(&config, Some("/h")), Vec::<PathBuf>::new());
 
     // `~` with no HOME to expand it from is an error, not a relative path.
-    let config: Config = toml::from_str("[daemon.plugin]\npath = [\"~/plugins\"]\n").unwrap();
+    let config = Config::from_toml("[daemon.plugin]\npath = [\"~/plugins\"]\n");
     let err = config.plugin_path(None).unwrap_err();
     assert!(
         err.contains("~/plugins") && err.contains("HOME") && err.contains("[daemon.plugin] path"),
@@ -789,8 +370,12 @@ fn an_unknown_key_under_plugin_is_an_error() {
     );
     // A wrong type still loads (the file check reports it, not a silent
     // fall back to the default configuration): the rest of the file holds.
-    let config: Config = toml::from_str("[daemon]\nlog_level = \"debug\"\nplugin = 3\n").unwrap();
-    assert_eq!(config.daemon.log_level, "debug");
+    let config = in_memory("[daemon]\nlog_level = \"debug\"\nplugin = 3\n");
+    assert_eq!(config.daemon().log_level, LevelFilter::DEBUG);
+    assert_eq!(
+        config.errors(),
+        vec!["config:<in memory>: [daemon] plugin must be a table".to_string()]
+    );
 }
 
 #[test]
@@ -874,15 +459,17 @@ fn only_decay_is_accepted_under_a_cache_prototype() {
     );
 }
 
+const PROVIDERS_MOVED: &str = "unknown table [providers]: a provider's settings are \
+     [daemon.providers.<p>] (the daemon's) and [client.providers.<p>] (the client's); a \
+     built-in Source is retuned by [daemon.providers.<p>.sources.<s>] return; templates live \
+     in [client.providers.<p>] template.<leaf>, decay in [daemon.providers.<p>.cache._]";
+
 #[test]
 fn an_old_colon_table_is_an_unknown_table() {
     for name in ["x:template", "*:cache", "a:b:c", "x:put"] {
         assert_eq!(
             seeded_errors(&format!("[providers.\"{name}\"]\nn = \"1\"\n")),
-            vec![format!(
-                "unknown table [providers.\"{name}\"]: templates live in [client.providers.<p>] \
-                 template.<leaf>, decay in [daemon.providers.<p>.cache._]"
-            )]
+            vec![PROVIDERS_MOVED.to_string()]
         );
     }
 }
@@ -896,28 +483,6 @@ fn provider_names_hold_no_colon_star_or_nothing_and_the_prototype_is_not_a_clien
     let errors = seeded_errors("[daemon.providers.\"*\"]\n");
     assert!(errors.iter().any(|e| e.contains("'*'")), "{errors:?}");
     assert!(seeded_errors("[daemon.providers._.cache._]\ndecay = 4\n").is_empty());
-}
-
-#[test]
-fn an_old_colon_table_is_not_also_read_as_a_source_block() {
-    // Through the real parse: `[providers."git:template"]` with a sub-table
-    // would be `git`'s source block if the colon name were not skipped, and
-    // `git` is a known provider with no `diff` source declared here. The
-    // unknown-table error is the layer's; the composed validation adds none.
-    let text = "[providers.\"git:template\"]\n[providers.\"git:template\".diff]\nsummary = \"{{ git.diff }}\"\n";
-    let config = Config::parse_str(text).unwrap();
-    let (warnings, errors) =
-        config.validate_providers(&["git".to_string()], &std::collections::HashMap::new());
-    assert!(errors.is_empty(), "{errors:?}");
-    assert!(warnings.is_empty(), "{warnings:?}");
-    assert_eq!(
-        seeded_errors(text),
-        vec![
-            "unknown table [providers.\"git:template\"]: templates live in [client.providers.<p>] \
-             template.<leaf>, decay in [daemon.providers.<p>.cache._]"
-                .to_string()
-        ]
-    );
 }
 
 #[test]
@@ -986,13 +551,14 @@ fn a_client_that_is_not_a_table_is_an_error() {
 #[test]
 fn settings_only_keeps_a_non_cache_sibling_as_a_setting() {
     let composed: toml::Value = toml::from_str(
-        "[daemon.providers.git]\nenabled = false\n\n[daemon.providers.git.cache._]\ndecay = 2\n",
+        "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('5s') }}\"\n\n\
+         [daemon.providers.git.cache._]\ndecay = 2\n",
     )
     .unwrap();
     let settings = Config::settings_only(composed);
     assert_eq!(
-        settings["daemon"]["providers"]["git"]["enabled"].as_bool(),
-        Some(false)
+        settings["daemon"]["providers"]["git"]["sources"]["diff"]["return"].as_str(),
+        Some("{{ result | poll('5s') }}")
     );
     assert!(
         settings["daemon"]["providers"]["git"]
@@ -1001,19 +567,26 @@ fn settings_only_keeps_a_non_cache_sibling_as_a_setting() {
     );
 }
 
-// ── Script providers are gone; config Sources replace them ───────────────────
+// ── The roots, the bare [daemon] keys and what was removed ───────────────────
 
 /// A `Config` composed from the shipped `00-comb.toml` and then `user`, as the
-/// daemon composes defaults and `config.toml`.
+/// daemon composes defaults and `config.toml`: two layers, each with its own
+/// label, and no `config_path` (so nothing is read or seeded from disk).
 pub(crate) fn with_shipped_defaults(user: &str) -> Config {
     let (_, shipped) = crate::daemon::defaults::SHIPPED
         .iter()
         .find(|(name, _)| *name == "00-comb.toml")
         .expect("00-comb.toml is shipped");
-    let mut base: toml::Value = toml::from_str(shipped).unwrap();
-    crate::config::deep_merge_toml(&mut base, toml::from_str(user).expect("valid toml"));
-    use serde::Deserialize;
-    Config::deserialize(base).unwrap()
+    Config::from_layers(vec![
+        (
+            PathBuf::from("/shipped/00-comb.toml"),
+            toml::from_str(shipped).unwrap(),
+        ),
+        (
+            PathBuf::from("/user.toml"),
+            toml::from_str(user).expect("valid toml"),
+        ),
+    ])
 }
 
 /// The load errors of `user` composed over the shipped defaults, against the
@@ -1025,327 +598,351 @@ fn source_errors(user: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn shipped_registry(user: &str) -> ProviderRegistry {
+    let config = with_shipped_defaults(user);
+    ProviderRegistry::with_config(&config, &Default::default())
+        .unwrap_or_else(|e| panic!("loads: {e:?}"))
+}
+
 #[test]
-fn a_script_provider_is_an_error() {
-    let cases: &[(&str, &str, &[&str])] = &[
+fn fences_accept_a_user_name_in_every_fenced_position() {
+    // A provider named `poll`, a Source named `return`, a field named
+    // `sources`, a template leaf named `providers`: names are the user's.
+    let user = r#"
+[daemon.providers.poll.sources.return]
+data = "{{ 1 }}"
+result.sources = "{{ data }}"
+
+[client.providers.poll]
+template.providers = "{{ poll.sources }}"
+"#;
+    assert_eq!(seeded_errors(user), Vec::<String>::new());
+    let registry = shipped_registry(user);
+    let sources = registry.provider_sources("poll").expect("provider poll");
+    assert_eq!(sources[0].name, "return");
+    assert_eq!(sources[0].fields[0].name, "sources");
+}
+
+#[test]
+fn a_comb_key_added_later_cannot_collide() {
+    // `budget` is a bare [daemon] key; a provider of that name is
+    // [daemon.providers.budget], a different table.
+    let user = r#"
+[daemon]
+budget.execute = "20ms"
+
+[daemon.providers.budget.sources.s]
+data = "{{ 1 }}"
+result.x = "{{ data }}"
+"#;
+    assert_eq!(seeded_errors(user), Vec::<String>::new());
+    let config = with_shipped_defaults(user);
+    assert_eq!(config.daemon().budget_execute(), Duration::from_millis(20));
+    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
+    let source = &registry.provider_sources("budget").unwrap()[0];
+    assert_eq!(source.budget_execute, Duration::from_millis(20));
+}
+
+/// Every spelling the one-tree config removed, at every level it could appear.
+#[test]
+fn every_removed_form_is_an_error() {
+    // Whole tables and the old flat provider level.
+    let tables: &[(&str, &str, &str)] = &[
+        ("[providers.git]", "enabled = true", PROVIDERS_MOVED),
         (
-            "flat type",
-            "[providers.p]\ntype = \"script\"\ncommand = \"echo hi\"\n",
-            &["type = \"script\"", "unknown key 'command'"],
+            "[providers.git.diff]",
+            "failback_count = 3",
+            PROVIDERS_MOVED,
         ),
         (
-            "multi-source backend",
-            "[providers.p]\nbackend = \"script\"\n[providers.p.s]\ncommand = \"echo\"\n",
-            &["backend = \"script\""],
+            "[lifecycle]",
+            "idle_shutdown_secs = 5",
+            "unknown table [lifecycle]: idle_shutdown_secs is [daemon] idle_shutdown_secs",
         ),
         (
-            "a bare command",
-            "[providers.p]\ncommand = \"echo hi\"\noutput = \"text\"\n",
-            &["unknown key 'command'"],
+            "[failback]",
+            "count = 3",
+            "unknown table [failback]: a Source sets failback on its return line",
         ),
-        (
-            "a provider-level output on a built-in",
-            "[providers.git]\noutput = \"json\"\n",
-            &["unknown key 'output'"],
-        ),
+        ("[tree]", "x = 1", "unknown table [tree]"),
     ];
-    for (name, toml_str, wants) in cases {
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let (_, errors) = config.validate_providers(&[], &Default::default());
-        for want in *wants {
-            assert!(
-                errors.iter().any(|e| e.contains(want)),
-                "{name}: expected an error naming {want:?}, got {errors:?}"
+    for (header, body, want) in tables {
+        let errors = seeded_errors(&format!("{header}\n{body}\n"));
+        assert_eq!(errors.len(), 1, "{header}: {errors:?}");
+        assert!(errors[0].starts_with(want), "{header}: {errors:?}");
+    }
+
+    // Every removed key, wherever it is written.
+    let keys = [
+        "scope",
+        "marker",
+        "poll_interval",
+        "poll_count",
+        "fsevent_patterns",
+        "fsevent_abs_paths",
+        "budget_execute",
+        "budget_stat",
+        "failback_count",
+        "failback_interval",
+        "enabled",
+    ];
+    for key in keys {
+        for (header, label) in [
+            ("[daemon]", "[daemon]"),
+            ("[daemon.providers.git]", "[daemon.providers.git]"),
+            (
+                "[daemon.providers.git.sources.diff]",
+                "[daemon.providers.git.sources.diff]",
+            ),
+            (
+                "[daemon.providers.demo.sources.s]",
+                "[daemon.providers.demo.sources.s]",
+            ),
+            ("[client.providers.x]", "[client.providers.x]"),
+        ] {
+            assert_eq!(
+                seeded_errors(&format!("{header}\n{key} = 1\n")),
+                vec![format!("unknown key '{key}' in {label}")],
+                "{key} under {header}"
             );
         }
-        assert!(
-            errors
-                .iter()
-                .all(|e| e.contains("[daemon.providers.<p>.sources.<s>]")),
-            "{name}: each error says where script providers went: {errors:?}"
+        assert_eq!(
+            seeded_errors(&format!("{key} = 1\n")),
+            vec![format!("unknown key '{key}' at the top level")],
+            "{key} at the top level"
         );
+        let errors = seeded_errors(&format!("[providers.git]\n{key} = 1\n"));
+        assert_eq!(errors, vec![PROVIDERS_MOVED.to_string()], "{key}");
     }
 }
 
 #[test]
-fn an_http_provider_is_an_error() {
-    // (case, config, errors that must each be present)
-    let cases: &[(&str, &str, &[&str])] = &[
-        (
-            "flat type",
-            "[providers.p]\ntype = \"http\"\nurl = \"https://x\"\n",
-            &["type = \"http\"", "unknown key 'url'"],
-        ),
-        (
-            "a provider-level url",
-            "[providers.p]\nurl = \"https://x\"\n",
-            &["unknown key 'url'"],
-        ),
-        (
-            "multi-source backend",
-            "[providers.p]\nbackend = \"http\"\ndefault_timeout = \"5s\"\n\
-             [providers.p.s]\nurl = \"https://x\"\nextract = \"a.b\"\n",
-            &[
-                "backend = \"http\"",
-                "unknown key 'default_timeout'",
-                "[providers.p.s]: unknown key 'url'",
-                "[providers.p.s]: unknown key 'extract'",
-            ],
-        ),
-        (
-            "http-only keys at the provider level",
-            "[providers.p]\nextract = \"a\"\nmethod = \"POST\"\nbody = \"b\"\n\
-             [providers.p.headers]\nx = \"y\"\n",
-            &[
-                "unknown key 'extract'",
-                "unknown key 'method'",
-                "unknown key 'body'",
-                "unknown key 'headers'",
-            ],
-        ),
-    ];
-    for (name, toml_str, wants) in cases {
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let (_, errors) = config.validate_providers(&[], &Default::default());
-        for want in *wants {
-            assert!(
-                errors.iter().any(|e| e.contains(want)),
-                "{name}: expected an error naming {want:?}, got {errors:?}"
-            );
-        }
-        assert!(
-            errors
-                .iter()
-                .all(|e| e.contains("[daemon.providers.<p>.sources.<s>]") && e.contains("url(")),
-            "{name}: each error says where HTTP went: {errors:?}"
-        );
-    }
-}
-
-/// The errors `validate_providers` reports for `toml_str`, against no registered providers.
-fn provider_errors(toml_str: &str) -> Vec<String> {
-    let config: Config = toml::from_str(toml_str).unwrap();
-    config.validate_providers(&[], &Default::default()).1
-}
-
-#[test]
-fn a_library_provider_is_an_error() {
-    // (case, config, errors that must each be present)
-    let cases: &[(&str, &str, &[&str])] = &[
-        (
-            "flat type",
-            "[providers.p]\ntype = \"library\"\nlibrary_path = \"/x/libp.dylib\"\n",
-            &[
-                "type = \"library\"",
-                "[providers.p]: unknown key 'library_path'",
-            ],
-        ),
-        (
-            "multi-source backend",
-            "[providers.p]\nbackend = \"library\"\nlibrary_path = \"/x\"\n\
-             [providers.p.s]\npoll_interval = \"5s\"\n\
-             fields = [{ name = \"a\", type = \"string\" }]\n",
-            &[
-                "backend = \"library\"",
-                "[providers.p]: unknown key 'library_path'",
-                "[providers.p.s]: unknown key 'fields'",
-            ],
-        ),
-        (
-            "a bare library_path",
-            "[providers.p]\nlibrary_path = \"/x\"\n",
-            &["unknown key 'library_path'"],
-        ),
-        (
-            "an inline fields table",
-            "[providers.p]\nfields = { x = \"string\" }\n",
-            &["unknown key 'fields'"],
-        ),
-        (
-            "a fields sub-table naming fields after removed keys",
-            "[providers.p.fields]\nurl = \"string\"\nbody = \"string\"\n",
-            &["unknown key 'fields'"],
-        ),
-        (
-            "an invalidation table",
-            "[providers.p.invalidation]\npoll = \"1s\"\n",
-            &["unknown key 'invalidation'"],
-        ),
-    ];
-    for (name, toml_str, wants) in cases {
-        let errors = provider_errors(toml_str);
-        for want in *wants {
-            assert!(
-                errors.iter().any(|e| e.contains(want)),
-                "{name}: expected an error naming {want:?}, got {errors:?}"
-            );
-        }
-        assert!(
-            errors.iter().all(|e| e.contains("plugin(")
-                && e.contains("[daemon.plugin] path")
-                && e.contains("[daemon.providers.<p>.sources.<s>]")),
-            "{name}: each error says where library providers went: {errors:?}"
-        );
-    }
-}
-
-#[test]
-fn a_source_override_block_may_be_named_headers() {
-    let errors = provider_errors("[providers.p.headers]\nfailback_count = 2\n");
-    assert_eq!(errors, Vec::<String>::new());
-}
-
-#[test]
-fn a_scope_key_in_a_source_override_block_is_an_error() {
-    let config: Config =
-        toml::from_str("[providers.git.refs]\ntype = \"fsevent\"\nscope = \"path\"\n").unwrap();
-    let err = config.source_override("git", "refs").unwrap_err();
-    assert!(err.contains("unknown key 'scope'"), "{err}");
-    assert!(
-        !err.contains("scope,"),
-        "the valid-keys list no longer names scope: {err}"
+fn an_unknown_key_in_bare_daemon_is_an_error() {
+    assert_eq!(
+        seeded_errors("[daemon]\nbogus = 1\n"),
+        vec!["unknown key 'bogus' in [daemon]".to_string()]
     );
-    let errors = provider_errors("[providers.git.refs]\nscope = \"path\"\n");
+    // The list is closed and typed.
     assert!(
-        errors.iter().any(|e| e.contains("unknown key 'scope'")),
+        seeded_errors(
+            "[daemon]\nsocket_path = \"/s\"\nlog_level = \"info\"\nprovider_timeout_secs = 5\n\
+             env_file = \"/e\"\nwatchdog_interval = \"30s\"\nwatchdog_threshold = \"90s\"\n\
+             idle_shutdown_secs = 60\nplugin.path = [\"/p\"]\nbudget.execute = \"50ms\"\n\
+             providers._.cache._.decay = 4\n"
+        )
+        .is_empty()
+    );
+    for (bad, want) in [
+        (
+            "provider_timeout_secs = \"x\"",
+            "[daemon] provider_timeout_secs must be an integer of at least 1 (seconds), got \"x\"",
+        ),
+        (
+            "idle_shutdown_secs = -1",
+            "[daemon] idle_shutdown_secs must be an integer of at least 1 (seconds), got -1",
+        ),
+        (
+            "provider_timeout_secs = 0",
+            "[daemon] provider_timeout_secs must be an integer of at least 1 (seconds), got 0",
+        ),
+        (
+            "idle_shutdown_secs = 0",
+            "[daemon] idle_shutdown_secs must be an integer of at least 1 (seconds), got 0",
+        ),
+        (
+            "log_level = 3",
+            "[daemon] log_level must be one of off, error, warn, info, debug, trace, got 3",
+        ),
+        (
+            "log_level = \"loud\"",
+            "[daemon] log_level must be one of off, error, warn, info, debug, trace, got \"loud\"",
+        ),
+        ("env_file = \"\"", "[daemon] env_file must not be empty"),
+    ] {
+        assert_eq!(
+            seeded_errors(&format!("[daemon]\n{bad}\n")),
+            vec![want.to_string()]
+        );
+    }
+    assert_eq!(
+        seeded_errors("daemon = 3\n"),
+        vec!["[daemon] must be a table".to_string()]
+    );
+}
+
+/// A mistyped setting is an error the user sees, not a silent default: at
+/// load, through the layers the `Config` was composed from.
+#[test]
+fn a_type_error_is_a_load_error_not_the_default_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "config.toml",
+        "[daemon]\nprovider_timeout_secs = \"x\"\nlog_level = \"debug\"\n",
+    );
+    let config = Config::load_from(&main);
+    let errors = config.errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("config.toml: [daemon] provider_timeout_secs must be"),
+        "{errors:?}"
+    );
+    assert_eq!(
+        ProviderRegistry::load(&config, &Default::default()).errors,
+        errors,
+        "the loader every caller shares reports it"
+    );
+
+    // A [daemon] that is not a table cannot deserialize at all.
+    write(tmp.path(), "config.toml", "daemon = 3\n");
+    let errors = Config::load_from(&main).errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].ends_with("[daemon] must be a table"),
+        "{errors:?}"
+    );
+
+    // The check is of the files the Config was composed from: fixing the file
+    // after the load does not make the loaded Config valid.
+    write(
+        tmp.path(),
+        "config.toml",
+        "[daemon]\nprovider_timeout_secs = \"x\"\n",
+    );
+    let loaded = Config::load_from(&main);
+    write(tmp.path(), "config.toml", "[daemon]\n");
+    assert_eq!(loaded.errors().len(), 1);
+    assert_eq!(Config::load_from(&main).errors().len(), 0);
+}
+
+#[test]
+fn a_wrongly_typed_source_in_an_in_memory_config_is_an_error() {
+    let config =
+        in_memory("[daemon.providers.demo.sources.s]\ndata = 5\nresult = \"{{ data }}\"\n");
+    let errors = ProviderRegistry::load(&config, &Default::default()).errors;
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].starts_with("config:<in memory>: ")
+            && errors[0].contains("data must be a string"),
         "{errors:?}"
     );
 }
 
 #[test]
-fn a_provider_level_scalar_other_than_enabled_is_an_error() {
-    let errors =
-        provider_errors("[providers.p]\nenabled = false\nscope = \"x\"\nfoo = 1\nlist = [1]\n");
-    let mut want = vec![
-        "unknown key 'foo' in [providers.p]".to_string(),
-        "unknown key 'list' in [providers.p]".to_string(),
-        "unknown key 'scope' in [providers.p]".to_string(),
-    ];
-    let mut got = errors.clone();
-    got.sort();
-    want.sort();
-    assert_eq!(got, want);
-    // `enabled` alone is the one provider-level setting.
+fn budget_execute_defaults_to_50ms_and_takes_ms() {
     assert_eq!(
-        provider_errors("[providers.git]\nenabled = false\n"),
-        Vec::<String>::new()
+        Config::default().daemon().budget_execute(),
+        Duration::from_millis(50)
     );
-}
-
-#[test]
-fn removed_lifecycle_keys_are_errors() {
-    let want = |k: &str| {
-        format!(
-            "unknown key '{k}' in [lifecycle]: removed, nothing reads it; a Source sets its \
-             schedule on its return line"
-        )
-    };
-    assert_eq!(
-        seeded_errors(
-            "[lifecycle]\npoll_interval = \"5s\"\npoll_live_count = 3\nfsevents_reinstate = true\n\
-             idle_shutdown_secs = 5\n"
-        ),
-        vec![
-            want("fsevents_reinstate"),
-            want("poll_interval"),
-            want("poll_live_count")
-        ]
-    );
-    // Each is caught per file, so a conf.d drop-in cannot hide behind another
-    // file's value winning the merge.
-    assert_eq!(
-        seeded_errors("[lifecycle]\npoll_interval = \"5s\"\n"),
-        vec![want("poll_interval")]
-    );
-}
-
-#[test]
-fn an_unread_key_in_a_source_override_block_is_an_error() {
-    for (key, value) in [
-        ("poll_interval", "\"5s\""),
-        ("poll_count", "3"),
-        ("fsevent_reinstates", "true"),
-        ("fsevent_patterns", "[\".git\"]"),
-        ("fsevent_abs_paths", "[\"/x\"]"),
-        ("type", "\"poll\""),
-        ("enabled", "false"),
-        ("scope", "\"path\""),
+    for (text, want) in [
+        ("50ms", Duration::from_millis(50)),
+        ("250ms", Duration::from_millis(250)),
+        ("1ms", Duration::from_millis(1)),
+        ("2s", Duration::from_secs(2)),
     ] {
-        assert_eq!(
-            provider_errors(&format!("[providers.git.status]\n{key} = {value}\n")),
-            vec![format!(
-                "unknown key '{key}' in [providers.git.status]: only failback_count and \
-                 failback_interval apply to a built-in Source"
-            )]
+        let config = with_shipped_defaults(&format!("[daemon]\nbudget.execute = \"{text}\"\n"));
+        assert_eq!(config.errors(), Vec::<String>::new());
+        assert_eq!(config.daemon().budget_execute(), want, "{text}");
+    }
+    for bad in ["\"0ms\"", "\"soon\"", "5", "\"\""] {
+        let errors = seeded_errors(&format!("[daemon]\nbudget.execute = {bad}\n"));
+        assert_eq!(errors.len(), 1, "{bad}: {errors:?}");
+        assert!(
+            errors[0].starts_with("[daemon.budget] execute must be a duration of at least 1ms"),
+            "{bad}: {errors:?}"
         );
     }
     assert_eq!(
-        provider_errors("[providers.git.status]\nfailback_count = 2\nfailback_interval = \"5s\"\n"),
-        Vec::<String>::new()
+        seeded_errors("[daemon]\nbudget = 5\n"),
+        vec!["[daemon] budget must be a table".to_string()]
     );
+    assert_eq!(
+        seeded_errors("[daemon.budget]\nstat = \"5ms\"\n"),
+        vec!["unknown key 'stat' in [daemon.budget]".to_string()]
+    );
+}
+
+#[test]
+fn the_watchdog_keys_are_whole_seconds_of_at_least_one() {
+    for (key, bad) in [
+        ("watchdog_interval", "\"0s\""),
+        ("watchdog_interval", "\"500ms\""),
+        ("watchdog_interval", "\"soon\""),
+        ("watchdog_interval", "30"),
+        ("watchdog_threshold", "\"0s\""),
+        ("watchdog_threshold", "\"1500ms\""),
+    ] {
+        let errors = seeded_errors(&format!("[daemon]\n{key} = {bad}\n"));
+        assert_eq!(errors.len(), 1, "{key} = {bad}: {errors:?}");
+        assert!(
+            errors[0].starts_with(&format!(
+                "[daemon] {key} must be a duration of whole seconds, at least 1s"
+            )),
+            "{errors:?}"
+        );
+    }
+    for ok in ["\"1s\"", "\"2000ms\"", "\"2m\""] {
+        assert!(seeded_errors(&format!("[daemon]\nwatchdog_interval = {ok}\n")).is_empty());
+    }
+
+    // A threshold below the interval would restart a healthy scheduler.
+    let config = with_shipped_defaults(
+        "[daemon]\nwatchdog_interval = \"30s\"\nwatchdog_threshold = \"10s\"\n",
+    );
+    let errors = config.errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains(
+            "watchdog_threshold (10s, set in config:/user.toml) is below watchdog_interval \
+             (30s, set in config:/user.toml)"
+        ),
+        "{errors:?}"
+    );
+    // The two may come from different files, and the error says which.
+    let config = Config::from_layers(vec![
+        (
+            PathBuf::from("/a.toml"),
+            toml::from_str("[daemon]\nwatchdog_interval = \"30s\"\n").unwrap(),
+        ),
+        (
+            PathBuf::from("/b.toml"),
+            toml::from_str("[daemon]\nwatchdog_threshold = \"10s\"\n").unwrap(),
+        ),
+    ]);
+    let errors = config.errors();
+    assert!(
+        errors[0].contains("(10s, set in config:/b.toml)")
+            && errors[0].contains("(30s, set in config:/a.toml)"),
+        "{errors:?}"
+    );
+    // A threshold with no interval has nothing to check against.
+    let errors = in_memory("[daemon]\nwatchdog_threshold = \"90s\"\n").errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("watchdog_threshold (90s) is set without watchdog_interval"),
+        "{errors:?}"
+    );
+    // In memory the same checks run: a zero interval cannot reach the timer.
+    let errors = in_memory("[daemon]\nwatchdog_interval = \"0s\"\n").errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    let config = with_shipped_defaults(
+        "[daemon]\nwatchdog_interval = \"30s\"\nwatchdog_threshold = \"30s\"\n",
+    );
+    assert!(config.errors().is_empty());
 }
 
 #[test]
 fn a_bad_plugin_path_does_not_hide_the_sources_errors() {
-    let config: Config = toml::from_str(
+    let config = Config::from_toml(
         "[daemon.plugin]\npath = [\"~/p\"]\n\
          [daemon.providers.demo.sources.s]\ndata = \"{{ nope_name }}\"\nresult = \"{{ data }}\"\n",
-    )
-    .unwrap();
+    );
     let errors = ProviderRegistry::load(&config, &Default::default()).errors;
     assert!(
         errors.iter().any(|e| e.contains("[daemon.plugin] path")),
         "{errors:?}"
     );
     assert!(errors.iter().any(|e| e.contains("nope_name")), "{errors:?}");
-}
-
-#[test]
-fn a_provider_enabled_must_be_a_bool() {
-    assert_eq!(
-        provider_errors("[providers.git]\nenabled = \"no\"\n"),
-        vec!["[providers.git]: enabled must be a boolean".to_string()]
-    );
-}
-
-#[test]
-fn a_virtual_block_gets_only_the_virtual_error() {
-    let errors = provider_errors("[providers.links.virtual]\nurl = \"{{ env.U }}\"\n");
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(
-        errors[0].contains("[providers.links.virtual]"),
-        "{errors:?}"
-    );
-    assert!(!errors[0].contains("url("), "{errors:?}");
-}
-
-#[test]
-fn every_removed_spelling_a_block_carries_is_reported() {
-    let errors = provider_errors(
-        "[providers.p]\ncommand = \"echo\"\nurl = \"https://x\"\n\
-         [providers.p.s]\nextract = \"a\"\n",
-    );
-    for want in [
-        "[providers.p]: unknown key 'command'",
-        "[providers.p]: unknown key 'url'",
-        "[providers.p.s]: unknown key 'extract'",
-    ] {
-        assert!(
-            errors.iter().any(|e| e.contains(want)),
-            "{want}: {errors:?}"
-        );
-    }
-    assert!(errors.iter().any(|e| e.contains("exec()")), "{errors:?}");
-    assert!(errors.iter().any(|e| e.contains("url(")), "{errors:?}");
-}
-
-#[test]
-fn a_script_only_key_in_a_source_override_block_is_an_unknown_key() {
-    for key in ["command", "output"] {
-        let table: toml::Table = toml::from_str(&format!("{key} = \"y\"\n")).unwrap();
-        let err = crate::config::SourceOverrideConfig::from_toml_table("p.s", &table).unwrap_err();
-        assert!(err.contains(&format!("unknown key '{key}'")), "{err}");
-    }
 }
 
 #[test]
@@ -1360,7 +957,7 @@ fn an_unknown_key_in_a_source_table_is_an_error() {
             "unknown key 'poll' in [daemon.providers.demo.sources.s]".to_string(),
         ]
     );
-    // The provider table fences too: `template`, `result`, `return` arrive later.
+    // The provider table fences too.
     assert_eq!(
         seeded_errors("[daemon.providers.demo]\nreturn = \"x\"\n"),
         vec!["unknown key 'return' in [daemon.providers.demo]".to_string()]
@@ -1377,23 +974,38 @@ fn a_source_line_that_is_not_a_string_is_an_error() {
 }
 
 #[test]
-fn a_builtin_source_table_takes_no_keys_yet() {
+fn a_builtin_source_accepts_only_return() {
+    // root, data and result stay refused, with one error naming the Source.
     let errors = source_errors(
         "[daemon.providers.git.sources.diff]\ndata = \"{{ 1 }}\"\nresult.x = \"{{ 1 }}\"\n",
     );
     assert_eq!(
         errors,
+        vec!["git.diff is a built-in Source: only return can be set".to_string()]
+    );
+    // return alone loads.
+    assert_eq!(
+        source_errors(
+            "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('5s') }}\"\n"
+        ),
+        Vec::<String>::new()
+    );
+    // Anything else is the file check's unknown key.
+    assert_eq!(
+        source_errors("[daemon.providers.git.sources.diff]\nfoo = \"x\"\n"),
         vec![
-            "git.diff is a built-in Source: only return can be set until it is shipped as config"
+            "config:/user.toml: unknown key 'foo' in [daemon.providers.git.sources.diff]"
                 .to_string()
         ]
     );
+    // A return that does not load names its table.
     let errors = source_errors(
-        "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('5s') }}\"\n",
+        "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('banana') }}\"\n",
     );
-    assert_eq!(
-        errors,
-        vec!["unknown key 'return' in [daemon.providers.git.sources.diff]".to_string()]
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].starts_with("[daemon.providers.git.sources.diff] return: poll()"),
+        "{errors:?}"
     );
 }
 
@@ -1464,10 +1076,9 @@ return = "{{ result | super }}"
 fn a_source_with_no_return_anywhere_is_watch_only_with_the_engine_defaults() {
     // No shipped defaults here, so no `_` above the Source sets a return:
     // poll and watch are opt-in, failback and budget are always on.
-    let config: Config = toml::from_str(
+    let config = Config::from_toml(
         "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ data }}\"\n",
-    )
-    .unwrap();
+    );
     let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
     let meta = &registry.provider_sources("demo").unwrap()[0];
     assert_eq!(
@@ -1502,8 +1113,9 @@ fn a_wrong_type_in_a_prototype_is_the_file_checks_alone() {
     );
     assert_eq!(
         source_errors(user),
-        Vec::<String>::new(),
-        "the build does not report it a second time, naming the Source's table"
+        vec![format!("config:/user.toml: {}", file[0])],
+        "reported once, by the file check: the build does not report it a second time, \
+         naming the Source's table"
     );
 }
 
@@ -1517,49 +1129,7 @@ fn a_prototypes_lines_are_checked_at_load() {
     );
 }
 
-#[test]
-fn knobs_on_a_config_source_are_an_error() {
-    let errors = source_errors(
-        "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ data }}\"\n\
-         [providers.demo.s]\nfailback_count = 2\n",
-    );
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(
-        errors[0].contains("[providers.demo.s]")
-            && errors[0].contains("config Source")
-            && errors[0].contains("return"),
-        "{errors:?}"
-    );
-}
-
-/// A disabled built-in is not a provider, so a config Source may take its name.
-#[test]
-fn a_disabled_builtin_frees_its_name_for_a_config_source() {
-    let config = with_shipped_defaults(
-        "[providers.git]\nenabled = false\n\
-         [daemon.providers.git.sources.refs]\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
-    );
-    let load = ProviderRegistry::load(&config, &Default::default());
-    assert!(load.errors.is_empty(), "{:?}", load.errors);
-}
-
-// ── from tests/suite/config_overrides.rs ──────────
-
-#[test]
-fn disabled_provider_not_registered() {
-    let toml_str = r#"
-[providers.battery]
-enabled = false
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
-    assert!(
-        registry.provider_sources("battery").is_none(),
-        "Disabled provider should not be registered"
-    );
-    // Other providers should still exist
-    assert!(registry.provider_sources("hostname").is_some());
-}
+// ── Built-ins in the files ───────────────────────────────────────────────────
 
 #[test]
 fn all_providers_registered_by_default() {
@@ -1602,27 +1172,6 @@ fn parse_duration_overflow_is_none_not_a_panic() {
 }
 
 #[test]
-fn the_watchdog_keys_refuse_sub_second_values() {
-    let config: Config = toml::from_str(
-        "[daemon]\nwatchdog_interval = \"500ms\"\nwatchdog_threshold = \"1500ms\"\n",
-    )
-    .unwrap();
-    assert_eq!(config.daemon.watchdog_interval_duration(), None);
-    assert_eq!(config.daemon.watchdog_threshold_duration(), None);
-    let config: Config =
-        toml::from_str("[daemon]\nwatchdog_interval = \"2s\"\nwatchdog_threshold = \"2000ms\"\n")
-            .unwrap();
-    assert_eq!(
-        config.daemon.watchdog_interval_duration(),
-        Some(Duration::from_secs(2))
-    );
-    assert_eq!(
-        config.daemon.watchdog_threshold_duration(),
-        Some(Duration::from_secs(2))
-    );
-}
-
-#[test]
 fn whole_second_consumers_reject_sub_second_values() {
     use crate::scheduler::parse_duration_secs_pub as secs;
     assert_eq!(secs("500ms"), None);
@@ -1658,8 +1207,10 @@ BEACHCOMBER_TEST_NUM=42
     )
     .unwrap();
 
-    let mut config = Config::default();
-    config.daemon.env_file = Some(env_path.to_string_lossy().to_string());
+    let config = Config::from_toml(&format!(
+        "[daemon]\nenv_file = {}\n",
+        toml::Value::String(env_path.to_string_lossy().to_string())
+    ));
 
     // Scope the test so load_env_file's set_var calls are rolled back via Drop,
     // regardless of assertion panics. All four vars start and end as unset.
@@ -1692,8 +1243,7 @@ BEACHCOMBER_TEST_NUM=42
 
 #[test]
 fn missing_env_file_returns_zero() {
-    let mut config = Config::default();
-    config.daemon.env_file = Some("/nonexistent/path/to/env".to_string());
+    let config = Config::from_toml("[daemon]\nenv_file = \"/nonexistent/path/to/env\"\n");
 
     let count = config.load_env_file();
     assert_eq!(count, 0, "Missing file should return 0");
@@ -1704,13 +1254,196 @@ fn no_env_file_configured_returns_zero() {
     // Config with env_file pointing to a guaranteed-nonexistent path so we
     // never fall through to ~/.config/beachcomber/env on the developer's machine.
     let tmp = TempDir::new().unwrap();
-    let mut config = Config::default();
-    config.daemon.env_file = Some(
-        tmp.path()
-            .join("nonexistent_env_file")
-            .to_string_lossy()
-            .to_string(),
-    );
+    let missing = tmp.path().join("nonexistent_env_file");
+    let config = Config::from_toml(&format!(
+        "[daemon]\nenv_file = {}\n",
+        toml::Value::String(missing.to_string_lossy().to_string())
+    ));
     let count = config.load_env_file();
     assert_eq!(count, 0, "nonexistent env_file should return 0");
+}
+
+// ── Where the config is read from ────────────────────────────────────────────
+
+#[test]
+fn an_empty_socket_path_is_an_error() {
+    assert_eq!(
+        seeded_errors("[daemon]\nsocket_path = \"\"\n"),
+        vec!["[daemon] socket_path must not be empty".to_string()]
+    );
+    assert!(seeded_errors("[daemon]\nsocket_path = \"/s\"\n").is_empty());
+}
+
+/// The config is the config home's: a `config.toml` or a variables file under
+/// `$XDG_CONFIG_DIRS` is never read, as it was never watched or reloaded.
+#[test]
+fn xdg_config_dirs_is_not_searched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let sys = tmp.path().join("sys");
+    write(
+        &sys,
+        "beachcomber/config.toml",
+        "[daemon]\nlog_level = \"trace\"\n",
+    );
+    write(&sys, "beachcomber/env", "BEACHCOMBER_SYS_VAR=1\n");
+    temp_env::with_vars(
+        [
+            ("XDG_CONFIG_HOME", Some(home.as_os_str())),
+            ("XDG_CONFIG_DIRS", Some(sys.as_os_str())),
+            ("BEACHCOMBER_SYS_VAR", None),
+        ],
+        || {
+            let config = Config::load();
+            assert_eq!(config.daemon().log_level, LevelFilter::INFO);
+            assert_eq!(config.loaded_path(), None, "no file at the config home");
+            assert_eq!(config.load_env_file(), 0);
+            assert!(std::env::var("BEACHCOMBER_SYS_VAR").is_err());
+
+            let main = write(&home, "beachcomber/config.toml", "[daemon]\n");
+            let config = Config::load();
+            assert_eq!(config.loaded_path(), Some(main.as_path()));
+        },
+    );
+}
+
+/// The default variables file is `env` beside the config file the `Config`
+/// was loaded from; one with no file behind it reads nothing ambient.
+#[test]
+fn the_default_variables_file_is_beside_the_loaded_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "config.toml", "");
+    write(tmp.path(), "env", "BEACHCOMBER_BESIDE_VAR=1\n");
+    temp_env::with_vars([("BEACHCOMBER_BESIDE_VAR", None::<&str>)], || {
+        assert_eq!(Config::default().load_env_file(), 0);
+        assert_eq!(Config::load_from(&main).load_env_file(), 1);
+        assert_eq!(std::env::var("BEACHCOMBER_BESIDE_VAR").unwrap(), "1");
+    });
+}
+
+#[test]
+fn the_watchdog_accessors_read_whole_seconds_and_default_the_threshold() {
+    let c = in_memory("[daemon]\nwatchdog_interval = \"2s\"\nwatchdog_threshold = \"2000ms\"\n");
+    assert_eq!(
+        c.daemon().watchdog_interval_duration(),
+        Some(Duration::from_secs(2))
+    );
+    assert_eq!(
+        c.daemon().watchdog_threshold_duration(),
+        Some(Duration::from_secs(2))
+    );
+    let c = in_memory("[daemon]\nwatchdog_interval = \"10s\"\n");
+    assert_eq!(
+        c.daemon().watchdog_threshold_duration(),
+        Some(Duration::from_secs(30))
+    );
+    let c = in_memory("");
+    assert_eq!(c.daemon().watchdog_interval_duration(), None);
+    assert_eq!(c.daemon().watchdog_threshold_duration(), None);
+    // A sub-second value is not accepted, by the check or the accessor.
+    let c = in_memory("[daemon]\nwatchdog_interval = \"500ms\"\n");
+    assert_eq!(c.errors().len(), 1);
+    assert_eq!(c.daemon().watchdog_interval_duration(), None);
+}
+
+#[test]
+fn a_misspelled_builtin_source_says_what_the_provider_has() {
+    let errors = source_errors(
+        "[daemon.providers.git.sources.dif]\nreturn = \"{{ result | poll('5s') }}\"\n",
+    );
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].starts_with(
+            "[daemon.providers.git.sources.dif]: git has no Source 'dif' (its Sources: "
+        ) && errors[0].contains("diff")
+            && errors[0].ends_with("a new Source needs data and result"),
+        "{errors:?}"
+    );
+}
+
+/// A Source with one instance has no directory to resolve a relative watch
+/// path against, so a retune to one is a load error rather than a Source
+/// that quietly never refreshes.
+#[test]
+fn a_retune_that_watches_nothing_is_a_load_error() {
+    let errors = source_errors(
+        "[daemon.providers.hostname.sources.host]\nreturn = \"{{ result | watch('etc/hosts') }}\"\n",
+    );
+    assert_eq!(
+        errors,
+        vec![
+            "[daemon.providers.hostname.sources.host] return: watch('etc/hosts') is relative, \
+             but hostname.host has one instance; use an absolute path"
+                .to_string()
+        ]
+    );
+    // With a poll backstop too.
+    let errors = source_errors(
+        "[daemon.providers.hostname.sources.host]\n\
+         return = \"{{ result | watch('etc/hosts') | poll('60s') }}\"\n",
+    );
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    // An absolute path, or any path on a path-scoped Source, loads.
+    assert!(
+        source_errors(
+            "[daemon.providers.hostname.sources.host]\n\
+             return = \"{{ result | watch('/etc/hosts') | poll('60s') }}\"\n\
+             [daemon.providers.git.sources.diff]\n\
+             return = \"{{ result | watch('.git/index') }}\"\n"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_new_source_of_a_builtin_provider_may_take_its_lines_from_a_prototype() {
+    let reg = shipped_registry(
+        r#"
+[daemon.providers.git.sources._]
+data = "{{ 1 }}"
+result.extra = "{{ data }}"
+
+[daemon.providers.git.sources.extra]
+return = "{{ result | poll('5s', 2) }}"
+"#,
+    );
+    assert!(reg.source("git", "extra").is_some());
+    assert!(reg.source("git", "refs").is_some(), "the built-ins stay");
+}
+
+#[test]
+fn from_toml_reports_text_that_is_not_toml_as_an_error() {
+    let errors = Config::from_toml(
+        "[daemon
+log_level = ",
+    )
+    .errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].starts_with("config:<in memory>: "), "{errors:?}");
+    assert!(!errors[0].contains('\n'), "one line per error: {errors:?}");
+}
+
+#[test]
+fn log_level_takes_the_six_names_in_any_case_and_nothing_else() {
+    for (text, want) in [
+        ("info", LevelFilter::INFO),
+        ("DEBUG", LevelFilter::DEBUG),
+        ("Warn", LevelFilter::WARN),
+        ("off", LevelFilter::OFF),
+        ("trace", LevelFilter::TRACE),
+        ("error", LevelFilter::ERROR),
+    ] {
+        let config = Config::from_toml(&format!("[daemon]\nlog_level = \"{text}\"\n"));
+        assert_eq!(config.errors(), Vec::<String>::new(), "{text}");
+        assert_eq!(config.daemon().log_level, want, "{text}");
+    }
+    for bad in ["\"\"", "\"0\"", "\"5\"", "\"loud\"", "3"] {
+        assert_eq!(
+            Config::from_toml(&format!("[daemon]\nlog_level = {bad}\n"))
+                .errors()
+                .len(),
+            1,
+            "{bad}"
+        );
+    }
 }

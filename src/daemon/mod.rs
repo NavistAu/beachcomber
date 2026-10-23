@@ -136,11 +136,7 @@ async fn run_daemon_with_cancel(
     // Source's lines see as `env`, and what its commands inherit.
     let vars: std::collections::HashMap<String, String> = std::env::vars().collect();
     let load = ProviderRegistry::load(&config, &vars);
-    // Every error the configuration has, at once. Warnings are logged and
-    // loading continues.
-    for w in &load.warnings {
-        tracing::warn!("{}", w);
-    }
+    // Every error the configuration has, at once.
     if !load.errors.is_empty() {
         refuse_to_start(&load.errors);
         return;
@@ -235,11 +231,10 @@ fn spawn_watchdog(
     heartbeat: Arc<AtomicU64>,
     cancel: CancellationToken,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    let check_interval = config.daemon.watchdog_interval_duration()?;
-    let threshold = config
-        .daemon
-        .watchdog_threshold_duration()
-        .unwrap_or(check_interval * 3);
+    let check_interval = config.daemon().watchdog_interval_duration()?;
+    // An interval has a threshold (its own, or 3x); `Config` refuses a
+    // threshold without one.
+    let threshold = config.daemon().watchdog_threshold_duration()?;
 
     info!(
         "Watchdog enabled: checking every {:?}, threshold {:?}",

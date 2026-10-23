@@ -152,10 +152,10 @@ async fn introspect_config_reports_path_and_parse_status() {
     assert!(d.get("parsed").and_then(|v| v.as_bool()).is_some());
     assert!(d.get("errors").and_then(|v| v.as_array()).is_some());
     assert!(
-        d.get("provider_count_from_config")
+        d.get("config_source_count")
             .and_then(|v| v.as_u64())
             .is_some(),
-        "provider_count_from_config missing or not a number"
+        "config_source_count missing or not a number"
     );
     let verdicts = d.get("verdicts").and_then(|v| v.as_array()).unwrap();
     assert!(!verdicts.is_empty());
@@ -907,10 +907,10 @@ fn check_config_reports_its_own_local_verdict() {
     );
 }
 
-/// `comb check config` on a file still carrying a 0.9 `[providers.<p>.virtual]`
-/// table prints a local FAIL line that says where the templates went.
+/// `comb check config` on a file still carrying the removed `[providers]` root
+/// prints a local FAIL line that says where its contents went.
 #[test]
-fn check_config_fails_a_virtual_subtable_naming_the_template_facet() {
+fn check_config_fails_a_providers_root_naming_where_it_went() {
     let tmp = tempfile::TempDir::new().unwrap();
     let cfg_dir = tmp.path().join("beachcomber");
     std::fs::create_dir_all(&cfg_dir).unwrap();
@@ -932,11 +932,10 @@ fn check_config_fails_a_virtual_subtable_naming_the_template_facet() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(
-            "[FAIL] local    unrecognised block [providers.conda.virtual]: \
-             templates live in [client.providers.conda] template.<leaf>"
-        ),
-        "expected a local FAIL line naming the template facet, got:\n{stdout}"
+        stdout.contains("[FAIL] local    config:")
+            && stdout.contains("unknown table [providers]: a provider's settings are")
+            && stdout.contains("templates live in [client.providers.<p>] template.<leaf>"),
+        "expected a local FAIL line naming where [providers] went, got:\n{stdout}"
     );
 }
 

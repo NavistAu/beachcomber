@@ -11,8 +11,8 @@ async fn scheduler_shuts_down_when_idle() {
     // Empty registry — no Once providers to compute
     let registry = Arc::new(ProviderRegistry::new());
 
-    let mut config = Config::default();
-    config.lifecycle.idle_shutdown_secs = Some(1); // Shut down after 1s idle
+    // Shut down after 1s idle.
+    let config = Config::from_toml("[daemon]\nidle_shutdown_secs = 1\n");
 
     let (_handle, scheduler) =
         Scheduler::new(cache, registry, config, Arc::new(WatcherRegistry::new()));

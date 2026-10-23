@@ -48,28 +48,39 @@ A source name is metadata on the record — where it came from, how it's invalid
 
 The registry resolves which source owns each field, so `git.branch` demands only the `head` source's lifecycle, not the whole provider's. `git.refs` is not an address for the `refs` source — `refs` is a source name, not a field, so it misses like any other unknown field.
 
-## Invalidation strategies
+## When a source runs again
 
-Each source declares one of three strategies:
+A source's schedule is its `return` line, built from decorators on `result`:
 
-| Strategy | TOML `type` | Trigger | Watch config keys |
-|---|---|---|---|
-| `Poll` | `"poll"` | Re-executes on a fixed timer | — |
-| `Watch` | `"fsevent"` | Re-executes when watched paths change | `fsevent_patterns`, `fsevent_abs_paths` |
-| `WatchAndPoll` | `"fsevent_poll"` | Re-executes on watched path changes AND on a timer backstop | `fsevent_patterns`, `fsevent_abs_paths` |
+| Decorator | Effect |
+|---|---|
+| `poll(interval, count)` | Re-executes on a timer while the record is queried; `count` intervals before it starts to decay |
+| `watch(path, ...)` | Re-executes when a watched path changes. A relative path is matched within the directory the instance answers for; an absolute one (or `~/...`) is watched directly, for values that live in a config file elsewhere |
+| `ttl(interval)` | `poll(interval, 1)` with a decay depth of 1: valid for one interval, then gone |
+| `failback(count, interval)` | After `count` failures, suppress execution for `interval`, doubling per level. Always on: the engine's `failback(3, '1s')` applies where a line is silent |
+| `budget(duration)` | The execute budget recorded for the source; `[daemon] budget.execute` (default `50ms`) where a line is silent. Recorded, not yet enforced |
 
-`fsevent_patterns` — relative path components matched within the source's scope path (path-scoped sources). `fsevent_abs_paths` — absolute filesystem roots watched directly; used by global sources and for cross-directory config files. Use `expand_abs_path()` when building metadata in Rust to expand `~`, `$HOME`, and XDG vars.
+`poll` and `watch` together make a watch with a timer backstop. A source with neither is watch-only with nothing to watch: it executes on first demand and is served from the cache after that. Like every source it decays once nothing reads it (the default Active window is 60 s × 12).
 
-**Pure-watch global sources** are a special case of `Watch` with `scope = "global"` and no poll of their own. These execute once on first demand and re-execute only when an fs event fires on their `fsevent_abs_paths`; like every source they decay once nothing reads them (a watch-only source's Active window is the default 60 s × 12). Used for values that can only change when a specific config file is written: hostname, username, OS name, mise global config.
+```toml
+# A config Source: watched files with a poll fallback
+[daemon.providers.node_version.sources.main]
+data = "{{ exec('node --version') | trim }}"
+result.value = "{{ data }}"
+return = "{{ result | watch('.node-version', 'package.json') | poll('60s') }}"
 
-## Scope
+# A built-in Source retuned: git's diff polls every 15 seconds
+[daemon.providers.git.sources.diff]
+return = "{{ result | poll('15s', 8) }}"
+```
 
-Each source is either **global** or **path-scoped**:
+A built-in Source takes `return` and nothing else; the line replaces its schedule whole, and a built-in with no `return` keeps its own (the `_` Source lines reach it only through `| super`). See the [configuration reference](/docs/reference/configuration-reference).
 
-- **Global** (`scope = "global"`) — one lifecycle instance per daemon. The cache key is just the provider name. Examples: `battery`, `hostname`, `load`, `mise.global`.
-- **Path-scoped** (`scope = "path"`) — one lifecycle instance per project directory. The cache key is `provider\0path`. Examples: `git.refs`, `git.status`, `mise.project`.
+## Where an instance lives
 
-Path-scoped sources walk the directory tree to find a project root (e.g., git looks for `.git/`, mise for `mise.toml` or `.mise.toml`). All subdirectories of the same project share one cache entry.
+A config Source's `root` line says which directory an instance answers for: `root = "{{ lup('.git') | dirname }}"` gives one instance per project, shared by every subdirectory of it; no `root` is the single instance at `~`. Built-in sources do the same in Rust: git walks up to `.git/`, mise looks for `mise.toml` or `.mise.toml`, and `battery`, `hostname` and `load` are one instance for the daemon. The cache key of a path-scoped instance is `provider\0path`.
+
+The Rust-side metadata that describes a built-in (its invalidation strategy, `Global`/`PathScoped` scope, watch patterns) is internal to the daemon: it is what `return` replaces, not something a config file names. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` a record registered with.
 
 ## comb status — source on the wire
 

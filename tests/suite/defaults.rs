@@ -357,17 +357,7 @@ fn the_shipped_cache_prototype_is_the_decay_default() {
     let cache = beachcomber::cache::Cache::new();
     let registry = beachcomber::provider::registry::ProviderRegistry::with_defaults();
     let config = beachcomber::config::Config::load();
-    beachcomber::daemon::seed::seed_facets(
-        &cache,
-        &registry,
-        &beachcomber::config::Config::layers(
-            Some(&beachcomber::config::Config::defaults_dir_for(
-                config.config_path.as_deref().unwrap(),
-            )),
-            config.config_path.as_deref(),
-            &beachcomber::config::Config::conf_d_dir_for(config.config_path.as_deref().unwrap()),
-        ),
-    );
+    beachcomber::daemon::seed::seed_facets(&cache, &registry, config.composed_layers());
     // `resolve_decay` alone would pass with nothing seeded (it falls back to
     // `DEFAULT_DECAY`), so assert the record itself and its file label.
     let rows: Vec<_> = cache

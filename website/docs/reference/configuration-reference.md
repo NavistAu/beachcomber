@@ -47,46 +47,26 @@ provider_timeout_secs = 10
 # Default: 3x watchdog_interval
 # watchdog_threshold = "90s"
 
-
-# ─── Lifecycle ─────────────────────────────────────────────────────────────────
-
-[lifecycle]
-
 # How long (in seconds) the daemon waits with no active connections before
 # shutting itself down. The next client connection will socket-activate a
 # fresh instance.
-# Set to null to disable idle shutdown (daemon stays resident permanently).
-# Default: null (disabled — daemon stays resident)
+# Default: unset (daemon stays resident)
 # idle_shutdown_secs = 300
 
-
-# ─── Failback (failure suppression) ────────────────────────────────────────────
-
-[failback]
-
-# Consecutive failures before suppression (provider stops executing).
-# Default: 3
-# count = 3
-
-# Duration of suppression after count failures.
-# Default: "1s"
-# interval = "1s"
+# The execute budget recorded for every Source whose own `return` does not say
+# `budget(...)`. Any duration of at least 1ms. (Recorded, not yet enforced: a
+# later release reads it.)
+# Default: "50ms"
+# budget.execute = "50ms"
 
 
-# ─── Built-in Provider Overrides ───────────────────────────────────────────────
-# [providers.<name>] switches a whole provider off (`enabled`, a boolean). A
-# built-in Source's failback is tuned in [providers.<name>.<source>]; the
-# source name matches the source field carried per row in `comb status`'s wire
-# response. No other key is valid in either place.
+# ─── Retuning a built-in Source ────────────────────────────────────────────────
+# A built-in Source takes `return` and nothing else. The line replaces its
+# schedule whole: here git's diff polls every 15 seconds, eight times, then
+# decays. A built-in with no `return` here keeps its own schedule.
 
-# Disable a provider entirely (it will never execute or appear in results)
-[providers.sudo]
-enabled = false
-
-# Back git's refs source off sooner after failures
-[providers.git.refs]
-failback_count = 5            # consecutive failures before suppression
-failback_interval = "2s"      # suppression duration after failback_count hit
+[daemon.providers.git.sources.diff]
+return = "{{ result | poll('15s', 8) | failback(5, '2s') }}"
 
 
 # ─── Config Sources ────────────────────────────────────────────────────────────
@@ -112,10 +92,6 @@ root = "{{ lup('Cargo.toml') | dirname }}"
 data = "{{ exec('cargo metadata --format-version=1 --no-deps --quiet') | fromjson }}"
 result = "{{ data }}"
 return = "{{ result | watch('Cargo.toml', 'Cargo.lock') | poll('120s') }}"
-
-# Explicitly disable a custom provider without removing its config
-[providers.cargo_meta]
-enabled = false
 
 
 # ─── HTTP ─────────────────────────────────────────────────────────────────────
@@ -153,12 +129,12 @@ template.venv_name = "{{ python.venv }}"
 version = "{{ python.version }}"
 ```
 
-That is `python:template.venv_name` and `python:template.widgets.version`. A provider exists if either root names it: one named only under `[client.providers]` or `[daemon.providers]` is a provider with no Sources (unless `[providers.<p>] enabled = false` disables it). The rules are checked file by file, because seeding is, and enforced at daemon startup, on reload and by `comb check config`; each error names its file:
+That is `python:template.venv_name` and `python:template.widgets.version`. A provider exists if either root names it: one named only under `[client.providers]` or `[daemon.providers]` is a provider with no Sources. The rules are checked file by file, because seeding is, and enforced at daemon startup, on reload and by `comb check config`; each error names its file:
 
 - `[client]` holds only `providers`, and `[client.providers.<p>]` holds only `template`; any other key is `unknown key '<k>' in [client]` (or `[client.providers.<p>]`).
 - Nesting is tables only, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**, and so is an empty key. A provider name holds no `:` or `.` and is not `*`.
 - A template leaf that is neither a string nor a table is not a value expression: an **error**.
-- The colon-table form `[providers."<p>:template"]` is gone: it is `unknown table [providers."<p>:template"]: templates live in [client.providers.<p>] template.<leaf>, decay in [daemon.providers.<p>.cache._]`.
+- The colon-table form `[providers."<p>:template"]` is gone with the whole `[providers]` root: it is `unknown table [providers]`, which says templates live in `[client.providers.<p>] template.<leaf>` and decay in `[daemon.providers.<p>.cache._]`.
 
 The decay depth is seeded the same way, from the daemon root: `[daemon.providers.git.cache._]` with `decay = 2` seeds `git:cache._.decay`, and `[daemon.providers._.cache._]` seeds `*:cache._.decay` for every provider (the shipped `defaults/00-comb.toml` sets 4). `cache` holds only `_`, `_` holds only `decay`, and `decay` is an integer from 1 to 16 (`comb put <p>:cache._.decay` takes the same range).
 
@@ -207,9 +183,7 @@ template.version = "{{ env.MY_PY or comb.python.venv_version }}"   # venv_name s
 
 `comb check config` reports the directory, its file count and version, and warns about files in it that `comb` did not write. A directory the daemon cannot write is a refusal to start.
 
-**The 0.9 form is an error.** `[providers.<name>.virtual]` — the 0.9 home of a provider's templates, as a table or as dotted keys under `[providers.<name>]` — is reported by daemon start and `comb check config` as `unrecognised block [providers.<name>.virtual]: templates live in [client.providers.<name>] template.<leaf>`.
-
-**A `path` key directly under `[providers.<name>]` is also an error.** Path expressions are gone; a query addresses the caller's directory, `--path`, or `--global`. Daemon start and `comb check config` report it as `[providers.<name>]: path is not a provider setting: a query addresses the caller's directory, --path, or --global`.
+**The 0.9 form is an error.** The `[providers]` root — where 0.9 kept a provider's templates (`[providers.<name>.virtual]`, `[providers."<name>:template"]`) and its knobs — is reported by daemon start and `comb check config` as `unknown table [providers]`, naming the file and saying where its contents went: templates in `[client.providers.<name>] template.<leaf>`, a provider's other settings in `[daemon.providers.<name>]`. A `path` key was the path-expression setting; a query addresses the caller's directory, `--path`, or `--global`.
 
 ### `exec()` in templates
 
@@ -261,7 +235,7 @@ Composition rules:
 - Files in `conf.d/` are merged in **lexical filename order** (a numeric
   prefix like `10-`, `20-` is a common way to control that order).
 - Each file is **deep-merged** onto the accumulated config: tables merge key
-  by key (a drop-in overriding one key of `[providers.x]` doesn't clobber the
+  by key (a drop-in overriding one key of `[daemon.providers.x]` doesn't clobber the
   rest of that block), while scalars and arrays are **last-wins** (the last
   file to set a given key or array wins outright — arrays are replaced, not
   concatenated).
@@ -287,10 +261,12 @@ Composition rules:
 |---|---|---|---|
 | `socket_path` | string | (see resolution order) | Unix socket path. Resolution order: this key → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock` |
 | `log_level` | string | `"info"` | Tracing log level |
-| `provider_timeout_secs` | int | `10` | Max seconds for any provider to run |
+| `provider_timeout_secs` | int, at least 1 | `10` | Max seconds for any provider to run |
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
 | `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
 | `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
+| `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds with no client before the daemon shuts down; unset keeps it resident |
+| `budget.execute` | duration | `"50ms"` | The execute budget recorded for every Source whose `return` does not name `budget(...)`; at least `1ms`. Recorded, not yet enforced: a later release reads it. |
 | `providers.<p>.cache._.decay` | int, 1 to 16 | (4 from `defaults/00-comb.toml`) | Decay steps before eviction, seeded as `<p>:cache._.decay`; `<p> = _` is every provider ([Template facets](#template-facets)) |
 
 **`[client]` section:**
@@ -299,43 +275,13 @@ Composition rules:
 |---|---|---|---|
 | `providers.<p>.template.<leaf>` | string, or a table of them | none | A template (value expression), seeded as `<p>:template.<leaf>`; nest with tables ([Template facets](#template-facets)) |
 
-**`[lifecycle]` section:**
+> Values are checked when the configuration loads, and an error names the file: `log_level` is one of `off`, `error`, `warn`, `info`, `debug`, `trace`; `provider_timeout_secs` and `idle_shutdown_secs` are at least `1`; `socket_path` and `env_file` are not empty; `watchdog_interval` and `watchdog_threshold` are whole seconds of at least `1s` (`"30s"`, `"5m"`, `"1h"`), a threshold needs an interval, and a threshold below the interval is an error. `budget.execute` also takes milliseconds (`"250ms"`). `[daemon]` takes no other keys. A file that is not valid TOML is an error too: it is never skipped.
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
+> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`). The `[providers]` root, the `[lifecycle]` (`idle_shutdown_secs` moved to `[daemon]`), `[failback]` and `[tree]` tables, and the `scope`, `marker`, `poll_*`, `fsevent_*`, `failback_*`, `budget_*` and `enabled` keys are config errors, at whatever level they appear.
 
-> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`); `[lifecycle] poll_interval`, `poll_live_count` and `fsevents_reinstate` are config errors.
+**`[daemon.providers.<name>.sources.<source>]` section for a built-in Source:**
 
-> Duration strings use whole-second values: `"30s"` (seconds), `"2m"` (minutes), `"1h"` (hours), `"2h30m"` (compound). Sub-second values (e.g. `"500ms"`) are not accepted.
-
-**`[failback]` section:**
-
-Global failure-suppression defaults. These apply to all providers and sources unless overridden at the per-source level with `failback_count`/`failback_interval`.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `count` | int | `3` | Consecutive failures before suppression (provider stops executing until interval elapses) |
-| `interval` | duration | `"1s"` | Suppression duration after `count` failures |
-
-> `[lifecycle] failure_reattempts` and `[lifecycle] failure_backoff_interval` are deprecated aliases for `[failback] count` and `[failback] interval`. They still parse but emit a `WARN` log at startup.
-
-**`[providers.<name>]` section (built-in overrides):**
-
-Only `enabled` (a boolean) is valid directly under `[providers.<name>]` for built-in providers. A built-in Source's failback goes in a per-source sub-table: `[providers.<name>.<source>]`.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | bool | `true` | Set `false` to disable provider entirely |
-
-**`[providers.<name>.<source>]` section (built-in source overrides):**
-
-Only the failback settings apply to a built-in Source; any other key is an error.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `failback_count` | int | the Source's own | Consecutive failures before suppression |
-| `failback_interval` | duration | the Source's own | Suppression duration after failback_count hit |
+A table naming a built-in Rust Source takes `return` only; `root`, `data` and `result` are errors (`git.diff is a built-in Source: only return can be set`). The line replaces the Source's invalidation, failback, decay and budget whole; a failback or budget it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget.execute`). `| super` extends the nearest `_` Source's line, as for a config Source. A built-in with no `return` keeps its own schedule: the `_` lines do not reach it.
 
 **`[daemon.providers.<name>.sources.<source>]` section (config Sources):**
 
@@ -346,7 +292,7 @@ Only the failback settings apply to a built-in Source; any other key is an error
 | `root` | string | no | The directory an instance answers for, e.g. `{{ lup('.git') \| dirname }}`. Empty (the default) is the one instance at `~`. |
 | `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(count, interval)`, `budget(interval)`. Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback(3, '1s')`). `\| super` extends that line instead of replacing it. |
 
-A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources only: the Rust Sources of built-in providers keep their own schedules until they ship as config.
+A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources, and to a built-in Source's `return` only through `| super`: a built-in with no `return` of its own keeps its Rust schedule.
 
 **`[daemon.plugin]` section:**
 

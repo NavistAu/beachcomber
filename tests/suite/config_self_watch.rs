@@ -42,7 +42,7 @@ fn watch_until(
         Duration::from_millis(ms),
         false, // fs events off — the mtime poll is the mechanism under test
         stop,
-        move |kind| {
+        move |kind, _| {
             let _ = tx.send(kind);
         },
     );
@@ -293,7 +293,7 @@ fn an_edit_is_seen_behind_another_file_stamped_into_the_future() {
     std::fs::create_dir(&conf_d).unwrap();
 
     let ahead = conf_d.join("01-ahead.toml");
-    std::fs::write(&ahead, "[lifecycle]\n").unwrap();
+    std::fs::write(&ahead, "[daemon]\n").unwrap();
     std::fs::OpenOptions::new()
         .write(true)
         .open(&ahead)

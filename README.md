@@ -556,7 +556,7 @@ beachcomber runs with sensible defaults and requires no configuration. The optio
 
 # Override the Unix socket path.
 # Default: /tmp/beachcomber-<uid>/sock
-socket_path = ""
+# socket_path = "/path/to/socket.sock"
 
 # Log level for daemon output.
 # Options: "error", "warn", "info", "debug", "trace"
@@ -586,43 +586,26 @@ provider_timeout_secs = 10
 # Default: 3x watchdog_interval
 # watchdog_threshold = "90s"
 
-
-# ─── Lifecycle ─────────────────────────────────────────────────────────────────
-
-[lifecycle]
-
 # How long (in seconds) the daemon waits with no active connections before
 # shutting itself down. The next client connection will socket-activate a
 # fresh instance.
-# Set to null to disable idle shutdown (daemon stays resident permanently).
-# Default: null (disabled — daemon stays resident)
+# Default: unset (daemon stays resident)
 # idle_shutdown_secs = 300
 
-
-# ─── Failback (global retry defaults) ──────────────────────────────────────────
-
-[failback]
-
-# Consecutive failures before suppression. Default: 3
-# count = 3
-
-# Suppression duration (doubles each level). Default: "1s"
-# interval = "1s"
+# The execute budget recorded for every Source whose own `return` does not say
+# `budget(...)`. Any duration of at least 1ms. (Recorded, not yet enforced: a
+# later release reads it.)
+# Default: "50ms"
+# budget.execute = "50ms"
 
 
-# ─── Built-in Provider Overrides ───────────────────────────────────────────────
-# Use [providers.<name>] to switch a provider off (only `enabled` is valid here).
-# A built-in Source's failback is tuned in [providers.<name>.<source>]; no other
-# key is valid there.
+# ─── Retuning a built-in Source ────────────────────────────────────────────────
+# A built-in Source takes `return` and nothing else. The line replaces its
+# schedule whole: here git's diff polls every 15 seconds, eight times, then
+# decays. A built-in with no `return` here keeps its own schedule.
 
-# Disable a provider entirely (it will never execute or appear in results)
-[providers.sudo]
-enabled = false
-
-# Back git's refs source off sooner after failures
-[providers.git.refs]
-failback_count = 5
-failback_interval = "2s"
+[daemon.providers.git.sources.diff]
+return = "{{ result | poll('15s', 8) | failback(5, '2s') }}"
 
 
 # ─── Config Sources ────────────────────────────────────────────────────────────
@@ -648,10 +631,6 @@ root = "{{ lup('Cargo.toml') | dirname }}"
 data = "{{ exec('cargo metadata --format-version=1 --no-deps --quiet') | fromjson }}"
 result = "{{ data }}"
 return = "{{ result | watch('Cargo.toml', 'Cargo.lock') | poll('120s') }}"
-
-# Explicitly disable a custom provider without removing its config
-[providers.cargo_meta]
-enabled = false
 
 
 # ─── HTTP ─────────────────────────────────────────────────────────────────────
@@ -685,44 +664,20 @@ return = "{{ result | poll('86400s') }}"
 |---|---|---|---|
 | `socket_path` | string | `/tmp/beachcomber-<uid>/sock` | Unix socket path |
 | `log_level` | string | `"info"` | Tracing log level |
-| `provider_timeout_secs` | int | `10` | Max seconds for any provider to run |
+| `provider_timeout_secs` | int, at least 1 | `10` | Max seconds for any provider to run |
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
 | `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
 | `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
+| `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds with no client before the daemon shuts down; unset keeps it resident |
+| `budget.execute` | duration | `"50ms"` | The execute budget recorded for every Source whose `return` does not name `budget(...)`; at least `1ms`. Recorded, not yet enforced: a later release reads it. |
 
-**`[lifecycle]` section:**
+> Values are checked when the configuration loads, and an error names the file: `log_level` is one of `off`, `error`, `warn`, `info`, `debug`, `trace`; `provider_timeout_secs` and `idle_shutdown_secs` are at least `1`; `socket_path` and `env_file` are not empty; `watchdog_interval` and `watchdog_threshold` are whole seconds of at least `1s` (`"30s"`, `"5m"`, `"1h"`), a threshold needs an interval, and a threshold below the interval is an error. `budget.execute` also takes milliseconds (`"250ms"`). `[daemon]` takes no other keys. A file that is not valid TOML is an error too: it is never skipped.
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down; `null` keeps daemon resident |
+> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`). The `[providers]` root, `[lifecycle]`, `[failback]` and `[tree]` tables, and the `scope`, `marker`, `poll_*`, `fsevent_*`, `failback_*`, `budget_*` and `enabled` keys are config errors.
 
-> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`); `[lifecycle] poll_interval`, `poll_live_count` and `fsevents_reinstate` are config errors.
+**`[daemon.providers.<name>.sources.<source>]` section for a built-in Source:**
 
-**`[failback]` section:**
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `count` | int | `3` | Consecutive failures before suppression |
-| `interval` | duration | `"1s"` | Initial suppression duration (doubles each level) |
-
-> Duration fields accept whole-second strings: `"30s"`, `"5m"`, `"1h"`, `"2h30m"`. Sub-second values (e.g. `"500ms"`) are not accepted.
-
-**`[providers.<name>]` section (built-in overrides):**
-
-Only `enabled` (a boolean) is valid at the provider level. A built-in Source's failback goes in a `[providers.<name>.<source>]` sub-table.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | bool | `true` | Set `false` to disable provider entirely |
-
-**`[providers.<name>.<source>]` section (per-source overrides for built-ins):**
-
-Only the failback settings apply to a built-in Source; any other key is an error. Schedules (`poll`, `watch`) belong to config Sources' `return` line.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `failback_count` | int | `3` | Consecutive failures before suppression |
-| `failback_interval` | duration | `"1s"` | Initial suppression duration |
+A table naming a built-in Rust Source takes `return` only; `root`, `data` and `result` are errors. The line replaces the Source's invalidation, failback, decay and budget whole; a failback or budget it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget.execute`). `| super` extends the nearest `_` Source's line, as for a config Source. A built-in with no `return` keeps its own schedule: the `_` lines do not reach it.
 
 **`[daemon.providers.<name>.sources.<source>]` section (config Sources):**
 
@@ -733,7 +688,7 @@ Only the failback settings apply to a built-in Source; any other key is an error
 | `root` | string | no | The directory an instance answers for, e.g. `{{ lup('.git') \| dirname }}`. Empty (the default) is the one instance at `~`. |
 | `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(count, interval)`, `budget(interval)`. Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback(3, '1s')`). `\| super` extends that line instead of replacing it. |
 
-A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources only: the Rust Sources of built-in providers keep their own schedules until they ship as config.
+A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources, and to a built-in Source's `return` only through `| super`: a built-in with no `return` of its own keeps its Rust schedule.
 
 **`[daemon.plugin]` section:**
 

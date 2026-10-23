@@ -1532,10 +1532,11 @@ async fn handle_request(
                     cache_entries,
                     &watch_backend,
                     reaper,
+                    config.loaded_path(),
                 )
             }
             IntrospectSubject::Providers => handle_introspect_providers(registry, scheduler).await,
-            IntrospectSubject::Config => handle_introspect_config(config),
+            IntrospectSubject::Config => handle_introspect_config(config, registry),
             IntrospectSubject::Cache => handle_introspect_cache(cache),
             IntrospectSubject::Lifecycle => handle_introspect_lifecycle(scheduler).await,
             IntrospectSubject::Watches => handle_introspect_watches(scheduler).await,
@@ -1570,8 +1571,9 @@ fn handle_introspect_daemon(
     cache_entries: u64,
     watch_backend: &str,
     reaper: Option<&crate::singleton::ReaperHealth>,
+    loaded_config: Option<&std::path::Path>,
 ) -> Response {
-    let config_path = crate::config::Config::config_path_if_exists()
+    let config_path = loaded_config
         .map(|p| serde_json::Value::String(p.to_string_lossy().into_owned()))
         .unwrap_or(serde_json::Value::Null);
 
@@ -1831,23 +1833,22 @@ async fn handle_introspect_providers(
     )
 }
 
-fn handle_introspect_config(config: &Config) -> Response {
-    let path = Config::config_path_if_exists();
-    let path_json = match path {
-        Some(ref p) => serde_json::Value::String(p.display().to_string()),
+fn handle_introspect_config(config: &Config, registry: &ProviderRegistry) -> Response {
+    let path_json = match config.loaded_path() {
+        Some(p) => serde_json::Value::String(p.display().to_string()),
         None => serde_json::Value::Null,
     };
-    let provider_count = config.providers.len() as u64;
+    let source_count = registry.config_source_count() as u64;
     let verdicts = vec![
         serde_json::json!({"level": "PASS", "message": "config parsed"}),
-        serde_json::json!({"level": "PASS", "message": format!("{provider_count} provider definitions loaded")}),
+        serde_json::json!({"level": "PASS", "message": format!("{source_count} config Sources loaded")}),
     ];
     Response::ok(
         serde_json::json!({
             "path": path_json,
             "parsed": true,
             "errors": [],
-            "provider_count_from_config": provider_count,
+            "config_source_count": source_count,
             "verdicts": verdicts,
         }),
         0,

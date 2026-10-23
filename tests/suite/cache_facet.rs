@@ -69,6 +69,22 @@ async fn serve() -> (
     std::path::PathBuf,
 ) {
     let (tmp, sock, cache, registry, watchers) = setup();
+    serve_on(tmp, sock, cache, registry, watchers).await
+}
+
+async fn serve_on(
+    tmp: TempDir,
+    sock: std::path::PathBuf,
+    cache: Arc<Cache>,
+    registry: Arc<ProviderRegistry>,
+    watchers: Arc<WatcherRegistry>,
+) -> (
+    TempDir,
+    UnixStream,
+    Arc<Cache>,
+    tokio::task::JoinHandle<std::io::Result<()>>,
+    std::path::PathBuf,
+) {
     let handle = Server::new(sock.clone(), cache.clone(), registry, None, watchers)
         .spawn()
         .unwrap();
@@ -102,6 +118,44 @@ async fn the_cache_facet_of_a_source_leaf_names_the_source_and_its_schedule() {
     assert!(leaf.get("poll").is_none(), "head does not poll: {leaf}");
     // An in-process daemon loads no managed defaults: the lifecycle default.
     assert_eq!(leaf["decay"], json!(4));
+    handle.abort();
+}
+
+/// `[daemon.providers.git.sources.diff] return = …` retunes the built-in
+/// Source, and the `:cache` facet of its leaves shows the new `poll`.
+#[tokio::test]
+async fn a_retuned_builtin_shows_its_new_poll_in_the_cache_facet() {
+    if !has_git() {
+        return;
+    }
+    let (tmp, sock, cache, _stock, watchers) = setup();
+    let config = beachcomber::config::Config::from_layers(vec![(
+        std::path::PathBuf::from("/t.toml"),
+        toml::from_str(
+            "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('15s', 8) }}\"\n",
+        )
+        .unwrap(),
+    )]);
+    let registry = Arc::new(ProviderRegistry::with_config(&config, &Default::default()).unwrap());
+    let (_tmp, mut s, _cache, handle, _sock) = serve_on(tmp, sock, cache, registry, watchers).await;
+    let repo = GitRepoFixture::new();
+    let p = repo.path_str();
+
+    assert!(get(&mut s, "git.lines_added", Some(p)).await.ok);
+    let leaf = get(&mut s, "git:cache.lines_added", Some(p))
+        .await
+        .data
+        .unwrap();
+    assert_eq!(
+        leaf["poll"],
+        json!({"interval": "15s", "count": 8}),
+        "{leaf}"
+    );
+
+    // A sibling the line does not name keeps its own schedule.
+    assert!(get(&mut s, "git.branch", Some(p)).await.ok);
+    let branch = get(&mut s, "git:cache.branch", Some(p)).await.data.unwrap();
+    assert_eq!(branch["watch"], json!({"0": ".git"}), "{branch}");
     handle.abort();
 }
 

@@ -57,16 +57,15 @@ async fn e2e_config_source_from_config() {
 
     // An in-process daemon loads no managed defaults, so the Source says its
     // own schedule.
-    let mut config = Config::default();
-    config.daemon.providers = toml::from_str(
+    let config = Config::from_toml(
         r#"
-[test_echo.sources.main]
+[daemon.providers.test_echo.sources.main]
 data = "{{ exec(['echo', '{\"greeting\":\"hello\"}']) | fromjson }}"
 result = "{{ data }}"
 return = "{{ result | poll('60s') }}"
 "#,
-    )
-    .unwrap();
+    );
+    assert_eq!(config.errors(), Vec::<String>::new());
 
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");

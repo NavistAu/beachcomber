@@ -12,6 +12,20 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
     let parent_pid = unsafe { libc::getppid() };
     let log_path = config.resolve_log_path();
 
+    // A configuration with errors is refused before anything is set up: the
+    // log level it names is not trusted to build the logger.
+    let errors = config.errors();
+    if !errors.is_empty() {
+        for e in &errors {
+            eprintln!("error: {e}");
+        }
+        eprintln!(
+            "Config validation failed with {} error(s). Daemon refusing to start.",
+            errors.len()
+        );
+        return ExitCode::from(2);
+    }
+
     // Ensure log directory exists.
     if let Some(parent) = log_path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -23,11 +37,7 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
         .append(true)
         .open(&log_path);
 
-    let filter: tracing_subscriber::filter::LevelFilter = config
-        .daemon
-        .log_level
-        .parse()
-        .unwrap_or(tracing_subscriber::filter::LevelFilter::INFO);
+    let filter = config.daemon().log_level;
     let env_filter = EnvFilter::from_default_env().add_directive(filter.into());
 
     match log_file {

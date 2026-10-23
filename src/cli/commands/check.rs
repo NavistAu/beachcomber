@@ -172,16 +172,10 @@ fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
     // own variables stand in for the daemon's.
     let vars = std::env::vars().collect();
     let load = crate::provider::registry::ProviderRegistry::load(config, &vars);
-    let (warnings, errors) = (load.warnings, load.errors);
-
-    let mut out: Vec<serde_json::Value> = warnings
+    let mut out: Vec<serde_json::Value> = load
+        .errors
         .into_iter()
-        .map(|w| serde_json::json!({"level": "WARN", "message": w}))
-        .chain(
-            errors
-                .into_iter()
-                .map(|e| serde_json::json!({"level": "FAIL", "message": e})),
-        )
+        .map(|e| serde_json::json!({"level": "FAIL", "message": e}))
         .collect();
     // Silence would be ambiguous — a reader could not tell a clean config from
     // a check that never ran.
@@ -199,12 +193,7 @@ fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
 fn defaults_verdicts(config: &Config) -> Vec<serde_json::Value> {
     use crate::daemon::defaults::{SHIPPED, audit};
     let version = env!("BEACHCOMBER_VERSION");
-    let dir = Config::defaults_dir_for(
-        config
-            .config_path
-            .as_deref()
-            .unwrap_or(&Config::config_path()),
-    );
+    let dir = Config::defaults_dir_for(config.config_file().unwrap_or(&Config::config_path()));
     let shown = dir.display();
     let found = audit(&dir, version);
 
@@ -405,8 +394,8 @@ fn render_subject(
                 .and_then(|v| v.as_array())
                 .map(|arr| arr.iter().filter_map(|e| e.as_str()).collect())
                 .unwrap_or_default();
-            let provider_count = payload
-                .get("provider_count_from_config")
+            let source_count = payload
+                .get("config_source_count")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
@@ -432,7 +421,7 @@ fn render_subject(
                 lines.push_str(&verdict_line(
                     "PASS",
                     daemon,
-                    &format!("parsed ok — {provider_count} provider definitions"),
+                    &format!("parsed ok — {source_count} config Sources"),
                 ));
             } else {
                 lines.push_str(&verdict_line("FAIL", daemon, "parsed FAILED"));

@@ -44,10 +44,7 @@ impl DaemonGuard {
     /// kernel watch is registered on a directory the test deletes on exit.
     #[allow(dead_code)]
     pub fn spawn_with_config_dir(config_dir: &Path) -> Self {
-        let config = Config {
-            config_path: Some(config_dir.join("config.toml")),
-            ..Config::default()
-        };
+        let config = Config::load_from(&config_dir.join("config.toml"));
         Self::start(config, true)
     }
 

@@ -44,7 +44,7 @@
 //! every `conf.d/*.toml`. A change to any file in that set — the main file OR
 //! a drop-in in either directory modified, added, or removed — runs through
 //! the same debounce and parse-gate, validating the WHOLE composed set
-//! (`Config::parse_composed`) before restarting. Because the two directories
+//! (`Config::load_from`) before restarting. Because the two directories
 //! are subdirectories, not siblings of the config file, each needs its own
 //! fs-event registration (the parent-dir watch is `NonRecursive` and doesn't
 //! see inside them) — registered separately, best-effort, when the directory
@@ -68,7 +68,6 @@
 //! the config directory case above, just one level down.
 
 use crate::config::Config;
-use crate::daemon::lifecycle::should_restart_for_config_change;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
@@ -141,7 +140,7 @@ fn composed_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path)
 /// Cancelling `stop` ends the thread, at the latest one `poll_interval` later.
 /// Returns its `JoinHandle` so a caller that needs to know it has gone can wait
 /// for it; the daemon does not, because its own exit is what cancels the token.
-pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
+pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind, &Config) + Send + 'static>(
     config_path: PathBuf,
     poll_interval: Duration,
     fs_events: bool,
@@ -157,7 +156,7 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
     let defaults_dir = Config::defaults_dir_for(&config_path);
     let conf_d_dir = Config::conf_d_dir_for(&config_path);
     let mut snapshot = composed_snapshot(&config_path, &defaults_dir, &conf_d_dir);
-    let mut settings = settings_snapshot(&config_path, &defaults_dir, &conf_d_dir);
+    let mut settings = settings_of(&Config::load_from(&config_path));
 
     std::thread::spawn(move || {
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
@@ -287,13 +286,7 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
                     {
                         last_event = None;
                         snapshot = composed_snapshot(&config_path, &defaults_dir, &conf_d_dir);
-                        try_fire(
-                            &config_path,
-                            &defaults_dir,
-                            &conf_d_dir,
-                            &mut settings,
-                            &mut on_change,
-                        );
+                        try_fire(&config_path, &mut settings, &mut on_change);
                     }
                     if Instant::now() >= next_poll {
                         next_poll = Instant::now() + poll_interval;
@@ -331,7 +324,7 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind) + Send + 'static>(
 /// cleanly is reported and the watch re-arms; an invalid change is logged and
 /// polling continues. Ends when `stop` is cancelled.
 #[allow(clippy::too_many_arguments)]
-fn poll_loop<F: FnMut(ChangeKind)>(
+fn poll_loop<F: FnMut(ChangeKind, &Config)>(
     config_path: &Path,
     defaults_dir: &Path,
     conf_d_dir: &Path,
@@ -365,7 +358,7 @@ fn poll_loop<F: FnMut(ChangeKind)>(
 /// change that fails the parse gate must not be re-detected on every subsequent
 /// tick, and a further edit landing while the gate runs must still differ from
 /// the snapshot so it fires on the next one.
-fn check_snapshot<F: FnMut(ChangeKind)>(
+fn check_snapshot<F: FnMut(ChangeKind, &Config)>(
     config_path: &Path,
     defaults_dir: &Path,
     conf_d_dir: &Path,
@@ -378,34 +371,24 @@ fn check_snapshot<F: FnMut(ChangeKind)>(
         return;
     }
     *snapshot = observed;
-    try_fire(config_path, defaults_dir, conf_d_dir, settings, on_change);
+    try_fire(config_path, settings, on_change);
 }
 
-/// Validate the composed config at `config_path` (its defaults and conf.d
-/// dirs included) and, if it parses cleanly, classify the change against
-/// `settings` and fire `on_change`, leaving `settings` holding the new
-/// snapshot. A missing main config file parses as empty content (see
-/// `validate_config_file`), not a failure. If the composed set fails to parse
-/// (any composed file being invalid, or the main file unreadable for a reason
-/// other than not existing), logs a warning naming the error and fires nothing.
-fn try_fire<F: FnMut(ChangeKind)>(
+/// Load the composed config at `config_path` (its defaults and conf.d dirs
+/// included) through the one loader startup uses and, if it loads without an
+/// error, classify the change against `settings` and fire `on_change`,
+/// leaving `settings` holding the new snapshot. A missing main config file is
+/// nothing, not a failure. If any composed file cannot be read or parsed, or
+/// breaks a rule, logs the errors and fires nothing.
+fn try_fire<F: FnMut(ChangeKind, &Config)>(
     config_path: &Path,
-    defaults_dir: &Path,
-    conf_d_dir: &Path,
     settings: &mut toml::Value,
     on_change: &mut F,
 ) {
-    let result = validate_config_file(config_path);
-    if !should_restart_for_config_change(&result) {
-        let e = result.unwrap_err();
-        tracing::warn!(
-            "config file changed but is not valid ({e}); keeping current config, not restarting"
-        );
-        return;
-    }
     // The checks startup runs, so a config the daemon would refuse to start on
     // is never restarted into. The running daemon keeps its configuration.
-    let errors = composed_errors(config_path, defaults_dir, conf_d_dir);
+    let config = Config::load_from(config_path);
+    let errors = composed_errors(&config);
     if !errors.is_empty() {
         for e in &errors {
             tracing::error!("{e}");
@@ -417,7 +400,7 @@ fn try_fire<F: FnMut(ChangeKind)>(
         );
         return;
     }
-    let next = settings_snapshot(config_path, defaults_dir, conf_d_dir);
+    let next = settings_of(&config);
     let kind = if next == *settings {
         ChangeKind::FacetsOnly
     } else {
@@ -425,54 +408,25 @@ fn try_fire<F: FnMut(ChangeKind)>(
     };
     *settings = next;
     tracing::info!("config file changed and parses cleanly ({kind:?})");
-    on_change(kind);
+    on_change(kind, &config);
 }
 
 /// What startup would refuse the composed configuration for: the one loader's
 /// errors (`ProviderRegistry::load`).
-fn composed_errors(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path) -> Vec<String> {
-    let layers = Config::layers(Some(defaults_dir), Some(config_path), conf_d_dir);
-    let mut composed = toml::Value::Table(Default::default());
-    for (_, layer) in layers {
-        crate::config::deep_merge_toml(&mut composed, layer);
-    }
-    let mut config = match composed.try_into::<Config>() {
-        Ok(config) => config,
-        Err(e) => {
-            return vec![format!(
-                "config: the composed configuration does not load: {e}"
-            )];
-        }
-    };
-    config.config_path = Some(config_path.to_path_buf());
+fn composed_errors(config: &Config) -> Vec<String> {
     let vars = std::env::vars().collect();
-    crate::provider::registry::ProviderRegistry::load(&config, &vars).errors
+    crate::provider::registry::ProviderRegistry::load(config, &vars).errors
 }
 
 /// The composed configuration with the seeded tables removed — the half a
-/// change has to touch for a restart to be warranted.
-fn settings_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path) -> toml::Value {
+/// change has to touch for a restart to be warranted. Read from the layers the
+/// `Config` was composed from, so what is compared is what was validated.
+fn settings_of(config: &Config) -> toml::Value {
     let mut composed = toml::Value::Table(Default::default());
-    for (_, layer) in Config::layers(Some(defaults_dir), Some(config_path), conf_d_dir) {
-        crate::config::deep_merge_toml(&mut composed, layer);
+    for (_, layer) in config.composed_layers() {
+        crate::config::deep_merge_toml(&mut composed, layer.clone());
     }
     Config::settings_only(composed)
-}
-
-/// Validates the WHOLE composed set (every defaults/*.toml + main file + every
-/// conf.d/*.toml) — see `Config::parse_composed`. A missing main config file
-/// is treated as empty content, same tolerance `Config::load()` already gives
-/// daemon startup (a config that lives entirely in conf.d/ is legitimate); any
-/// other read error (e.g. permissions) still fails validation.
-fn validate_config_file(config_path: &Path) -> Result<(), String> {
-    let content = match std::fs::read_to_string(config_path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(format!("could not read config file: {e}")),
-    };
-    let defaults_dir = Config::defaults_dir_for(config_path);
-    let conf_d_dir = Config::conf_d_dir_for(config_path);
-    Config::parse_composed(&content, &defaults_dir, &conf_d_dir).map(|_| ())
 }
 
 fn mtime_to_unix_ms(mtime: SystemTime) -> u64 {
@@ -507,16 +461,8 @@ mod tests {
                 config,
                 settings: toml::Value::Table(Default::default()),
             };
-            dir.settings = settings_snapshot(&dir.config, &dir.defaults(), &dir.conf_d());
+            dir.settings = settings_of(&Config::load_from(&dir.config));
             dir
-        }
-
-        fn defaults(&self) -> PathBuf {
-            Config::defaults_dir_for(&self.config)
-        }
-
-        fn conf_d(&self) -> PathBuf {
-            Config::conf_d_dir_for(&self.config)
         }
 
         fn write(&self, rel: &str, body: &str) {
@@ -526,13 +472,9 @@ mod tests {
         /// What `try_fire` reports for the files as they are now.
         fn fire(&mut self) -> Vec<ChangeKind> {
             let mut got = Vec::new();
-            try_fire(
-                &self.config,
-                &self.defaults(),
-                &self.conf_d(),
-                &mut self.settings,
-                &mut |kind| got.push(kind),
-            );
+            try_fire(&self.config, &mut self.settings, &mut |kind, _| {
+                got.push(kind)
+            });
             got
         }
     }
@@ -558,6 +500,49 @@ mod tests {
     }
 
     #[test]
+    fn a_toml_syntax_error_reports_nothing_and_fixing_it_reports_a_restart() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write("conf.d/10-mine.toml", "[daemon]\nsocket_path = \n");
+        assert_eq!(
+            dir.fire(),
+            vec![],
+            "a file that does not parse is not a restart"
+        );
+        dir.write("conf.d/10-mine.toml", "[daemon]\nlog_level = \"debug\"\n");
+        assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
+    }
+
+    /// The `Config` handed to the callback is the one the gate validated, so
+    /// what is reseeded is what was checked.
+    #[test]
+    fn the_callback_gets_the_config_that_was_validated() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write(
+            "conf.d/10-t.toml",
+            "[client.providers.x]\ntemplate.a = \"1\"\n",
+        );
+        let mut seen = Vec::new();
+        try_fire(&dir.config, &mut dir.settings, &mut |kind, config| {
+            seen.push((kind, config.composed_layers().len()));
+        });
+        assert_eq!(
+            seen,
+            vec![(ChangeKind::FacetsOnly, 2)],
+            "config.toml and the drop-in"
+        );
+    }
+
+    #[test]
+    fn a_budget_edit_is_a_settings_change() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write(
+            "conf.d/10-budget.toml",
+            "[daemon]\nbudget.execute = \"20ms\"\n",
+        );
+        assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
+    }
+
+    #[test]
     fn a_per_file_error_in_a_source_table_reports_nothing() {
         let mut dir = Dir::new(SOURCE);
         dir.write("config.toml", &format!("{SOURCE}command = \"echo\"\n"));
@@ -573,17 +558,6 @@ mod tests {
              result.branch = \"{{ data }}\"\n",
         );
         assert_eq!(dir.fire(), vec![], "git declares `branch` already");
-    }
-
-    #[test]
-    fn a_source_on_a_disabled_builtin_is_not_a_collision() {
-        let mut dir = Dir::new(SOURCE);
-        dir.write(
-            "conf.d/10-mine.toml",
-            "[providers.git]\nenabled = false\n\
-             [daemon.providers.git.sources.refs]\ndata = \"{{ 1 }}\"\nresult.branch = \"{{ data }}\"\n",
-        );
-        assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
     }
 
     #[test]

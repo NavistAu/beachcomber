@@ -160,7 +160,7 @@ async fn a_non_2xx_url_fails_the_source_and_backs_off() {
         .expect(3)
         .create_async()
         .await;
-    let config: Config = toml::from_str(&format!(
+    let config = Config::from_toml(&format!(
         r#"
 [daemon.providers.claude.sources.summary]
 data = "{{{{ url('{}/summary.json') | fromjson }}}}"
@@ -168,8 +168,7 @@ result.indicator = "{{{{ data.status.indicator }}}}"
 return = "{{{{ result | poll('60s') | failback(3, '60s') }}}}"
 "#,
         server.url()
-    ))
-    .unwrap();
+    ));
 
     let cache = Arc::new(Cache::new());
     let registry =

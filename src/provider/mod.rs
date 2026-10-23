@@ -582,13 +582,16 @@ fn validate_source(provider: &str, s: &SourceMetadata) -> Result<(), String> {
             provider, s.name
         ));
     }
-    // Global Watch sources should use abs_paths only
-    if let (InvalidationStrategy::Watch { patterns, .. }, SourceScope::Global) =
-        (&s.invalidation, &s.scope)
+    // Global sources watch abs_paths only
+    if let (
+        InvalidationStrategy::Watch { patterns, .. }
+        | InvalidationStrategy::WatchAndPoll { patterns, .. },
+        SourceScope::Global,
+    ) = (&s.invalidation, &s.scope)
         && !patterns.is_empty()
     {
         return Err(format!(
-            "provider '{}' source '{}': Global Watch source declares patterns; use abs_paths instead",
+            "provider '{}' source '{}': Global watch source declares patterns; use abs_paths instead",
             provider, s.name
         ));
     }
@@ -610,6 +613,10 @@ pub trait Provider: Send + Sync {
 
 /// A Source is the unit of refresh. Owns its own invalidation, scope, fields,
 /// lifecycle, and failure backoff. Identified by (provider_name, source_name).
+///
+/// A new method with a default body must also be forwarded by
+/// `provider::registry::Retuned`, which wraps a built-in whose `return`
+/// retunes it.
 pub trait Source: Send + Sync {
     fn metadata(&self) -> &SourceMetadata;
     fn execute(&self, path: Option<&str>) -> SourceResult;

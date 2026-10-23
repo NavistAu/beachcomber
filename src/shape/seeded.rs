@@ -19,15 +19,16 @@
 //! `[daemon.plugin] path` is checked here too, though nothing is seeded from it:
 //! a list of directory strings, each absolute or under `~`.
 //!
+//! So is the rest of the file's shape: the closed list of bare `[daemon]` keys
+//! with their types (`budget.execute` among them), and the two roots themselves.
+//! A top-level table other than `client` and `daemon` is an error, naming where
+//! its contents went when it held something.
+//!
 //! Every error is prefixed with the file's `config:<path>` label.
 
-use crate::config::Config;
+use crate::config::{Config, LOG_LEVELS, log_level_filter, parse_duration, parse_whole_seconds};
 use crate::scheduler::lifecycle::{MAX_DECAY, decay_error};
 use std::path::Path;
-
-/// Where a removed colon-named table's contents went.
-const FACET_TABLE_MOVED: &str = "templates live in [client.providers.<p>] template.<leaf>, \
-                                 decay in [daemon.providers.<p>.cache._]";
 
 /// What one layer seeds, and what is wrong with it.
 #[derive(Debug, Default)]
@@ -207,22 +208,99 @@ impl Reader {
         }
     }
 
-    /// `[lifecycle]` keys that were removed: nothing reads them. (The table's
-    /// other keys are not this module's.)
-    fn lifecycle(&mut self, lifecycle: &toml::Value) {
-        let Some(table) = lifecycle.as_table() else {
-            return;
+    /// `[daemon]`'s bare keys: the list is closed, and each value has its type
+    /// and range checked here, so a mistyped one is an error in the file that
+    /// wrote it and never a silent fall back to the default configuration.
+    /// `providers` and `plugin` are read by their own checks.
+    fn daemon_bare(&mut self, daemon: &toml::Value) {
+        let Some(table) = daemon.as_table() else {
+            return self.err("[daemon] must be a table".into());
         };
-        for key in table.keys() {
-            if matches!(
-                key.as_str(),
-                "poll_interval" | "poll_live_count" | "fsevents_reinstate"
-            ) {
+        for (key, value) in table {
+            match key.as_str() {
+                "providers" | "plugin" => {}
+                "socket_path" | "env_file" => match value.as_str() {
+                    Some("") => self.err(format!("[daemon] {key} must not be empty")),
+                    Some(_) => {}
+                    None => self.err(format!(
+                        "[daemon] {key} must be a string, not {}",
+                        value.type_str()
+                    )),
+                },
+                "log_level" => {
+                    if value.as_str().and_then(log_level_filter).is_none() {
+                        self.err(format!(
+                            "[daemon] log_level must be one of {}, got {value}",
+                            LOG_LEVELS.join(", ")
+                        ));
+                    }
+                }
+                "provider_timeout_secs" | "idle_shutdown_secs" => {
+                    if value.as_integer().is_none_or(|n| n < 1) {
+                        self.err(format!(
+                            "[daemon] {key} must be an integer of at least 1 (seconds), got {value}"
+                        ));
+                    }
+                }
+                "watchdog_interval" | "watchdog_threshold" => {
+                    let whole = value
+                        .as_str()
+                        .and_then(parse_whole_seconds)
+                        .filter(|d| !d.is_zero());
+                    if whole.is_none() {
+                        self.err(format!(
+                            "[daemon] {key} must be a duration of whole seconds, at least 1s \
+                             (\"30s\", \"2m\"), got {value}"
+                        ));
+                    }
+                }
+                "budget" => self.daemon_budget(value),
+                _ => self.err(format!("unknown key '{key}' in [daemon]")),
+            }
+        }
+    }
+
+    /// `[daemon] budget`: a table holding only `execute`, a duration of at
+    /// least 1ms (`"50ms"`, `"2s"`).
+    fn daemon_budget(&mut self, budget: &toml::Value) {
+        let Some(table) = budget.as_table() else {
+            return self.err("[daemon] budget must be a table".into());
+        };
+        for (key, value) in table {
+            if key != "execute" {
+                self.err(format!("unknown key '{key}' in [daemon.budget]"));
+            } else if value.as_str().and_then(parse_duration).is_none() {
                 self.err(format!(
-                    "unknown key '{key}' in [lifecycle]: removed, nothing reads it; a Source \
-                     sets its schedule on its return line"
+                    "[daemon.budget] execute must be a duration of at least 1ms (\"50ms\", \
+                     \"2s\"), got {value}"
                 ));
             }
+        }
+    }
+
+    /// A top-level table other than `client` and `daemon`: removed or never
+    /// existed. The ones that held something say where it went.
+    fn top_level(&mut self, key: &str, value: &toml::Value) {
+        let moved = match key {
+            "providers" => {
+                ": a provider's settings are [daemon.providers.<p>] (the daemon's) and \
+                 [client.providers.<p>] (the client's); a built-in Source is retuned by \
+                 [daemon.providers.<p>.sources.<s>] return; templates live in \
+                 [client.providers.<p>] template.<leaf>, decay in \
+                 [daemon.providers.<p>.cache._]"
+            }
+            "lifecycle" => {
+                ": idle_shutdown_secs is [daemon] idle_shutdown_secs; a Source sets its \
+                 schedule on its return line"
+            }
+            "failback" => ": a Source sets failback on its return line",
+            "tree" => ": removed, nothing reads it",
+            _ => "",
+        };
+        if value.is_table() {
+            self.err(format!("unknown table [{key}]{moved}"));
+        } else {
+            self.err(format!("unknown key '{key}' at the top level{moved}"));
         }
     }
 
@@ -360,31 +438,33 @@ impl Reader {
 
 /// Read one layer: the file it came from (for the label) and its parsed TOML.
 pub fn read(file: &Path, layer: &toml::Value) -> Seeded {
+    read_labelled(Config::config_label(file), layer)
+}
+
+/// [`read`] for a layer with a label of its own: a configuration built in
+/// memory corresponds to no file.
+pub fn read_labelled(label: String, layer: &toml::Value) -> Seeded {
     let mut r = Reader {
-        label: Config::config_label(file),
+        label,
         out: Seeded::default(),
     };
-    if let Some(client) = layer.get("client") {
-        r.client(client);
-    }
-    // A `[daemon]` that is not a table is the load fallback's to notice, and
-    // every key of it other than `providers` and `plugin` is not this
-    // module's.
-    if let Some(providers) = layer.get("daemon").and_then(|d| d.get("providers")) {
-        r.daemon_providers(providers);
-    }
-    if let Some(plugin) = layer.get("daemon").and_then(|d| d.get("plugin")) {
-        r.daemon_plugin(plugin);
-    }
-    if let Some(lifecycle) = layer.get("lifecycle") {
-        r.lifecycle(lifecycle);
-    }
-    // The removed facet-table form: where its contents went.
-    if let Some(old) = layer.get("providers").and_then(|p| p.as_table()) {
-        for name in old.keys().filter(|n| n.contains(':')) {
-            r.err(format!(
-                "unknown table [providers.\"{name}\"]: {FACET_TABLE_MOVED}"
-            ));
+    let Some(top) = layer.as_table() else {
+        r.err("top-level value must be a table".into());
+        return r.out;
+    };
+    for (key, value) in top {
+        match key.as_str() {
+            "client" => r.client(value),
+            "daemon" => {
+                r.daemon_bare(value);
+                if let Some(providers) = value.get("providers") {
+                    r.daemon_providers(providers);
+                }
+                if let Some(plugin) = value.get("plugin") {
+                    r.daemon_plugin(plugin);
+                }
+            }
+            other => r.top_level(other, value),
         }
     }
     r.out

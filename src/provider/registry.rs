@@ -3,7 +3,13 @@ use crate::cache::{Cache, Layers};
 use crate::config::Config;
 use crate::engine::PluginSet;
 use crate::provider::config_source::{ConfigSource, DaemonRead, lint_lines};
-use crate::provider::{Provider, ProviderMetadata, Source, SourceMetadata, Value, is_sentinel};
+use crate::provider::{
+    FailbackConfig, InvalidationStrategy, Provider, ProviderMetadata, Source, SourceMetadata,
+    SourceResult, SourceScope, Value, is_sentinel,
+};
+use crate::scheduler::lifecycle::{DEFAULT_FAILBACK_COUNT, DEFAULT_FAILBACK_INTERVAL_SECS};
+use crate::shape::Retune;
+use crate::shape::decorators::EngineDefaults;
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, Weak};
@@ -12,8 +18,15 @@ use std::sync::{Arc, OnceLock, Weak};
 pub struct ConfigLoad {
     /// The providers that did load; trustworthy only when `errors` is empty.
     pub registry: ProviderRegistry,
-    pub warnings: Vec<String>,
     pub errors: Vec<String>,
+}
+
+/// What a configuration declares: the config Sources, by provider, and the
+/// built-in Sources a `return` retunes.
+#[derive(Default)]
+pub struct ConfigSources {
+    pub providers: Vec<(String, Vec<ConfigSource>)>,
+    pub retunes: Vec<Retune>,
 }
 
 /// The daemon's own read of a provider node, for a config Source's
@@ -47,6 +60,38 @@ impl DaemonRead for RegistryReader {
     }
 }
 
+/// A built-in Rust Source with other metadata: what its `return` line (or the
+/// daemon's budget) says in place of what it declares. Everything else is the
+/// Source's own: every method of the `Source` trait is forwarded, so a method
+/// added to the trait with a default body must be forwarded here too, or a
+/// retuned Source would quietly take the default.
+struct Retuned {
+    inner: Arc<dyn Source>,
+    meta: SourceMetadata,
+}
+
+impl Source for Retuned {
+    fn metadata(&self) -> &SourceMetadata {
+        &self.meta
+    }
+
+    fn execute(&self, path: Option<&str>) -> SourceResult {
+        self.inner.execute(path)
+    }
+
+    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
+        self.inner.canonical_path(path)
+    }
+
+    fn watched_files(&self, path: Option<&str>) -> Vec<std::path::PathBuf> {
+        self.inner.watched_files(path)
+    }
+
+    fn read_always(&self) -> bool {
+        self.inner.read_always()
+    }
+}
+
 pub struct ProviderRegistry {
     /// (provider_name, source_name) → Arc-wrapped Source trait object.
     sources: HashMap<(String, String), Arc<dyn Source>>,
@@ -65,6 +110,8 @@ pub struct ProviderRegistry {
     config_roots: HashSet<String>,
     /// What every config Source reads `comb.<p>` through.
     reader: Arc<RegistryReader>,
+    /// The config Sources registered, as (provider, source).
+    config_sources: HashSet<(String, String)>,
 }
 
 impl Default for ProviderRegistry {
@@ -83,6 +130,7 @@ impl ProviderRegistry {
             static_names: DashMap::new(),
             config_roots: HashSet::new(),
             reader: Arc::new(RegistryReader::default()),
+            config_sources: HashSet::new(),
         }
     }
 
@@ -193,13 +241,19 @@ impl ProviderRegistry {
             self.config_roots.insert(provider.to_string());
         }
         for source in sources {
-            self.sources.insert(
-                (provider.to_string(), source.metadata().name.clone()),
-                Arc::new(source),
-            );
+            let key = (provider.to_string(), source.metadata().name.clone());
+            self.config_sources.insert(key.clone());
+            self.sources.insert(key, Arc::new(source));
         }
         self.providers.insert(provider.to_string(), meta);
         Ok(())
+    }
+
+    /// How many config Sources are registered: the Sources the files declare,
+    /// counting those whose lines come from a `_` prototype, and not the
+    /// built-ins a `return` retunes.
+    pub fn config_source_count(&self) -> usize {
+        self.config_sources.len()
     }
 
     /// Every registered Source's metadata, by provider: what a config table
@@ -217,9 +271,9 @@ impl ProviderRegistry {
         &self,
         config: &Config,
         env: &HashMap<String, String>,
-    ) -> Result<Vec<(String, Vec<ConfigSource>)>, Vec<String>> {
-        let Some(providers) = config.daemon.providers.as_table() else {
-            return Ok(Vec::new());
+    ) -> Result<ConfigSources, Vec<String>> {
+        let Some(providers) = config.daemon().providers.as_table() else {
+            return Ok(ConfigSources::default());
         };
         let mut errors = Vec::new();
         // A bad `[daemon.plugin] path` is one error among the config's: the
@@ -247,8 +301,13 @@ impl ProviderRegistry {
                 errors.push(e);
             }
         }
-        let decls = match crate::shape::build(providers, &self.registered_sources()) {
-            Ok(decls) => decls,
+        let built = crate::shape::build(
+            providers,
+            &self.registered_sources(),
+            &engine_defaults(config),
+        );
+        let (decls, retunes) = match built {
+            Ok(built) => (built.decls, built.retunes),
             Err(e) => {
                 errors.extend(e);
                 return Err(errors);
@@ -256,9 +315,6 @@ impl ProviderRegistry {
         };
         let mut out = Vec::new();
         for decl in decls {
-            if config.is_provider_disabled(&decl.name) {
-                continue;
-            }
             let mut built = Vec::new();
             for spec in decl.sources {
                 match ConfigSource::new(spec, env.clone(), plugins.clone(), self.reader.clone()) {
@@ -269,10 +325,32 @@ impl ProviderRegistry {
             out.push((decl.name, built));
         }
         if errors.is_empty() {
-            Ok(out)
+            Ok(ConfigSources {
+                providers: out,
+                retunes,
+            })
         } else {
             Err(errors)
         }
+    }
+
+    /// Replace a registered built-in Source's metadata with `edit` of it. The
+    /// Source runs as before: only what the scheduler reads about it changes.
+    fn retune(&mut self, provider: &str, source: &str, edit: impl FnOnce(&mut SourceMetadata)) {
+        let key = (provider.to_string(), source.to_string());
+        let Some(inner) = self.sources.get(&key).cloned() else {
+            return;
+        };
+        let mut meta = inner.metadata().clone();
+        edit(&mut meta);
+        if let Some(listed) = self
+            .providers
+            .get_mut(provider)
+            .and_then(|p| p.sources.iter_mut().find(|s| s.name == source))
+        {
+            *listed = meta.clone();
+        }
+        self.sources.insert(key, Arc::new(Retuned { inner, meta }));
     }
 
     /// Register a provider only configuration names: it has zero
@@ -340,20 +418,6 @@ impl ProviderRegistry {
     /// Return the list of registered provider names (excluding static ones).
     pub fn provider_names(&self) -> Vec<String> {
         self.providers.keys().cloned().collect()
-    }
-
-    /// Every provider's declared source names, keyed by provider — the shape
-    /// `Config::validate_providers` takes.
-    pub fn source_names_by_provider(&self) -> HashMap<String, Vec<String>> {
-        self.providers
-            .iter()
-            .map(|(name, meta)| {
-                (
-                    name.clone(),
-                    meta.sources.iter().map(|s| s.name.clone()).collect(),
-                )
-            })
-            .collect()
     }
 
     // ── Static namespace support ─────────────────────────────────────────────
@@ -470,71 +534,29 @@ impl ProviderRegistry {
 
     /// The one loader: startup, the config watch's gate and `comb check
     /// config` all build the provider set here, so they agree on what loads.
-    /// Built-ins (minus the disabled), the config Sources
+    /// Built-ins, the config Sources
     /// (`[daemon.providers.<p>.sources.<s>]`, whose lines see `vars`, the
     /// daemon's own variables, and call `plugin()` on `[daemon.plugin] path`),
-    /// and the providers only the config names; then every check a config has:
-    /// the per-file ones, the old-form provider blocks, and the Sources against
-    /// the set built.
+    /// the built-in Sources a `return` retunes, and the providers only the
+    /// config names; then every check a config has: the per-file ones and the
+    /// Sources against the set built.
     ///
     /// Panics on built-in registration failure (programmer error).
     pub fn load(config: &Config, vars: &HashMap<String, String>) -> ConfigLoad {
         // Start from the full built-in set, then layer on config-defined providers.
-        // Built-ins that are explicitly disabled in config are not added.
-        let mut registry = Self::new();
+        let mut registry = Self::with_defaults();
 
-        macro_rules! add_builtin {
-            ($name:expr, $provider:expr) => {
-                if !config.is_provider_disabled($name) {
-                    registry.register(Box::new($provider)).expect($name);
-                }
-            };
-        }
-
-        add_builtin!("asdf", crate::provider::asdf::AsdfProvider);
-        add_builtin!("aws_profiles", crate::provider::aws::AwsProvider);
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        add_builtin!("battery", crate::provider::battery::BatteryProvider);
-        add_builtin!("direnv", crate::provider::direnv::DirenvProvider);
-        add_builtin!("gcloud_configs", crate::provider::gcloud::GcloudProvider);
-        add_builtin!("git", crate::provider::git::GitProvider);
-        add_builtin!("hostname", crate::provider::hostname::HostnameProvider);
-        add_builtin!("load", crate::provider::load::LoadProvider);
-        add_builtin!("mise", crate::provider::mise::MiseProvider);
-        add_builtin!("network", crate::provider::network::NetworkProvider);
-        add_builtin!("python", crate::provider::python::PythonProvider);
-        add_builtin!("sudo", crate::provider::sudo::SudoProvider);
-        add_builtin!("terraform", crate::provider::terraform::TerraformProvider);
-        add_builtin!("uname", crate::provider::uname::UnameProvider);
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        add_builtin!("uptime", crate::provider::uptime::UptimeProvider);
-        add_builtin!("user", crate::provider::user::UserProvider);
-
-        // ── Config Sources ────────────────────────────────────────────────────
+        // ── Config Sources, and the built-ins a return retunes ────────────────
         let mut errors = Vec::new();
+        let builtins: Vec<(String, String)> = registry.sources.keys().cloned().collect();
         match registry.config_sources(config, vars) {
-            Ok(providers) => {
+            Ok(ConfigSources { providers, retunes }) => {
                 for (name, sources) in providers {
-                    for source in &sources {
-                        let source = &source.metadata().name;
-                        // A knob block is a second way to set what `return` sets.
-                        if config
-                            .providers
-                            .get(&name)
-                            .and_then(|p| p.get(source))
-                            .is_some_and(toml::Value::is_table)
-                        {
-                            errors.push(format!(
-                                "[providers.{name}.{source}] sets knobs on a config Source: poll, \
-                                 watch and failback belong in the return line of \
-                                 [daemon.providers.{name}.sources.{source}]"
-                            ));
-                        }
-                    }
                     if let Err(e) = registry.register_config_sources(&name, sources) {
                         errors.push(e);
                     }
                 }
+                errors.extend(registry.retune_builtins(config, &builtins, &retunes));
             }
             Err(e) => errors.extend(e),
         }
@@ -543,27 +565,91 @@ impl ProviderRegistry {
         // A provider exists if either root names it. One named only in
         // `[client.providers]` or `[daemon.providers]` has no Source behind
         // it: it is registered with zero. `_`, the prototype's name, is never
-        // one (`Config::named_providers`). A provider the config disables is
-        // not brought back by a template naming it: until a provider's
-        // settings and its Sources are one table, registering it with zero
-        // Sources would leave `[providers.<p>.<source>]` matching nothing.
+        // one (`Config::named_providers`).
         for name in config.named_providers() {
-            if !config.is_provider_disabled(&name) {
-                registry.register_config_named(&name);
-            }
+            registry.register_config_named(&name);
         }
 
-        let (provider_warnings, provider_errors) = config.validate_providers(
-            &registry.provider_names(),
-            &registry.source_names_by_provider(),
-        );
-        errors.extend(provider_errors);
-        errors.extend(config.validate_seeded());
-        ConfigLoad {
-            registry,
-            warnings: provider_warnings,
-            errors,
+        errors.extend(config.errors());
+        ConfigLoad { registry, errors }
+    }
+
+    /// Every built-in Source runs on `[daemon] budget.execute`; one whose
+    /// `return` the files set takes its schedule, failback, decay and budget
+    /// from that line instead. A built-in with no `return` keeps the rest of
+    /// what it declares: the `_` lines apply to config Sources only.
+    fn retune_builtins(
+        &mut self,
+        config: &Config,
+        builtins: &[(String, String)],
+        retunes: &[Retune],
+    ) -> Vec<String> {
+        let budget = config.daemon().budget_execute();
+        let mut errors = Vec::new();
+        for (provider, source) in builtins {
+            let line = retunes
+                .iter()
+                .find(|r| &r.provider == provider && &r.source == source);
+            self.retune(provider, source, |meta| {
+                meta.budget_execute = budget;
+                if let Some(Retune { recorded, .. }) = line {
+                    meta.fsevents_reinstate =
+                        !matches!(recorded.invalidation, InvalidationStrategy::Poll { .. });
+                    meta.invalidation = recorded.invalidation.clone();
+                    meta.failback = recorded.failback;
+                    meta.decay = recorded.decay;
+                    meta.budget_execute = recorded.budget_execute;
+                }
+            });
+            if line.is_some()
+                && let Err(e) = self.check_retuned(provider, source)
+            {
+                errors.push(e);
+            }
         }
+        errors
+    }
+
+    /// A retuned built-in must still be a Source the registry would have
+    /// accepted from code: the checks `register` runs, and the one a `return`
+    /// can newly break. A Source with one instance has no directory to resolve
+    /// a relative watch path against, so only an absolute path is ever
+    /// watched; a relative one would silently watch nothing.
+    fn check_retuned(&self, provider: &str, source: &str) -> Result<(), String> {
+        let at = format!("[daemon.providers.{provider}.sources.{source}]");
+        let meta = self
+            .providers
+            .get(provider)
+            .and_then(|p| p.sources.iter().find(|s| s.name == source))
+            .expect("a retuned Source is registered");
+        let relative = match &meta.invalidation {
+            InvalidationStrategy::Watch { patterns, .. }
+            | InvalidationStrategy::WatchAndPoll { patterns, .. } => patterns.as_slice(),
+            InvalidationStrategy::Poll { .. } => &[],
+        };
+        if meta.scope == SourceScope::Global && !relative.is_empty() {
+            let listed: Vec<String> = relative.iter().map(|p| format!("'{p}'")).collect();
+            return Err(format!(
+                "{at} return: watch({}) is relative, but {provider}.{source} has one instance; \
+                 use an absolute path",
+                listed.join(", ")
+            ));
+        }
+        self.providers[provider]
+            .validate()
+            .map_err(|e| format!("{at} return: {e}"))
+    }
+}
+
+/// What a Source gets for a decorator its `return` does not name: every Source
+/// has a `failback` and a `budget`, with no off switch.
+fn engine_defaults(config: &Config) -> EngineDefaults {
+    EngineDefaults {
+        failback: FailbackConfig {
+            reattempts: DEFAULT_FAILBACK_COUNT,
+            interval_secs: DEFAULT_FAILBACK_INTERVAL_SECS,
+        },
+        budget_execute: config.daemon().budget_execute(),
     }
 }
 
@@ -788,12 +874,182 @@ result.x = "{{ data }}"
         );
     }
 
+    fn source_meta(reg: &ProviderRegistry, provider: &str, source: &str) -> SourceMetadata {
+        reg.provider_sources(provider)
+            .unwrap()
+            .iter()
+            .find(|s| s.name == source)
+            .unwrap_or_else(|| panic!("{provider}.{source} is registered"))
+            .clone()
+    }
+
     #[test]
-    fn a_disabled_provider_registers_no_config_sources() {
+    fn config_sources_are_counted_as_registered_not_as_written() {
         let reg = registry_from(
-            "[providers.demo]\nenabled = false\n[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ data }}\"\n",
+            r#"
+[daemon.providers.demo.sources._]
+data = "{{ 1 }}"
+result.x = "{{ data }}"
+
+[daemon.providers.demo.sources.s]
+return = "{{ result | poll('5s') }}"
+
+[daemon.providers.git.sources.diff]
+return = "{{ result | poll('15s') }}"
+"#,
         );
-        assert!(reg.source("demo", "s").is_none());
+        assert_eq!(
+            reg.config_source_count(),
+            1,
+            "demo.s takes its lines from `_`; the retuned built-in and `_` itself are not config Sources"
+        );
+        assert_eq!(registry_from("").config_source_count(), 0);
+    }
+
+    #[test]
+    fn a_builtin_source_is_retuned_by_its_return_line() {
+        let reg = registry_from(
+            "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('15s', 8) }}\"\n",
+        );
+        assert_eq!(
+            invalidation(&reg, "git", "diff"),
+            InvalidationStrategy::Poll {
+                interval_secs: 15,
+                count: 8
+            },
+            "the line replaces the schedule whole"
+        );
+        // The Source the scheduler holds says the same, and still runs.
+        let held = reg.source("git", "diff").unwrap();
+        assert_eq!(
+            held.metadata().invalidation,
+            invalidation(&reg, "git", "diff")
+        );
+        // The others keep theirs.
+        let stock = ProviderRegistry::with_defaults();
+        assert_eq!(
+            invalidation(&reg, "git", "refs"),
+            invalidation(&stock, "git", "refs")
+        );
+        let names =
+            |m: &SourceMetadata| m.fields.iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            names(held.metadata()),
+            names(&source_meta(&stock, "git", "diff")),
+            "same fields: only the schedule moved"
+        );
+    }
+
+    #[test]
+    fn a_builtin_source_without_a_return_keeps_its_rust_schedule() {
+        // The shipped abstract `_` says `poll('60s', 12)`; it applies to config
+        // Sources only, so watch-driven built-ins stay watch-driven.
+        let reg = registry_from("[daemon.providers.git.sources.diff]\n");
+        let stock = ProviderRegistry::with_defaults();
+        for (provider, source) in [("git", "diff"), ("git", "refs"), ("mise", "global")] {
+            let (got, want) = (
+                source_meta(&reg, provider, source),
+                source_meta(&stock, provider, source),
+            );
+            assert_eq!(got.invalidation, want.invalidation, "{provider}.{source}");
+            assert_eq!(got.failback, want.failback, "{provider}.{source}");
+            assert_eq!(got.decay, want.decay, "{provider}.{source}");
+        }
+        assert!(matches!(
+            invalidation(&reg, "git", "refs"),
+            InvalidationStrategy::Watch { .. }
+        ));
+    }
+
+    #[test]
+    fn a_builtin_source_takes_the_engine_failback_and_budget() {
+        // A return that names neither: the engine's failback, the daemon's budget.
+        let reg = registry_from(
+            "[daemon]\nbudget.execute = \"30ms\"\n\
+             [daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('15s') }}\"\n",
+        );
+        let diff = source_meta(&reg, "git", "diff");
+        assert_ne!(
+            ProviderRegistry::with_defaults()
+                .provider_sources("git")
+                .unwrap()
+                .iter()
+                .find(|s| s.name == "diff")
+                .unwrap()
+                .failback,
+            diff.failback,
+            "git.diff declares its own failback"
+        );
+        assert_eq!(
+            (diff.failback.reattempts, diff.failback.interval_secs),
+            (
+                crate::scheduler::lifecycle::DEFAULT_FAILBACK_COUNT,
+                crate::scheduler::lifecycle::DEFAULT_FAILBACK_INTERVAL_SECS
+            )
+        );
+        assert_eq!(diff.budget_execute, std::time::Duration::from_millis(30));
+        // Its own line wins when it names them.
+        let reg = registry_from(
+            "[daemon.providers.git.sources.diff]\n\
+             return = \"{{ result | failback(5, '2s') | budget('7ms') }}\"\n",
+        );
+        let diff = source_meta(&reg, "git", "diff");
+        assert_eq!(
+            (diff.failback.reattempts, diff.failback.interval_secs),
+            (5, 2)
+        );
+        assert_eq!(diff.budget_execute, std::time::Duration::from_millis(7));
+        // And the budget reaches the built-ins that have no return.
+        let reg = registry_from("[daemon]\nbudget.execute = \"30ms\"\n");
+        assert_eq!(
+            source_meta(&reg, "git", "refs").budget_execute,
+            std::time::Duration::from_millis(30)
+        );
+    }
+
+    #[test]
+    fn a_builtins_super_reaches_the_prototypes_like_a_config_sources() {
+        // own -> git's `_` -> the abstract `_` (the shipped poll('60s', 12)).
+        let reg = registry_from(
+            r#"
+[daemon.providers.git.sources._]
+return = "{{ result | failback(7, '3s') | super }}"
+
+[daemon.providers.git.sources.diff]
+return = "{{ result | super }}"
+"#,
+        );
+        let diff = source_meta(&reg, "git", "diff");
+        assert_eq!(
+            diff.invalidation,
+            InvalidationStrategy::Poll {
+                interval_secs: 60,
+                count: 12
+            },
+            "the abstract `_`, two levels up"
+        );
+        assert_eq!(
+            (diff.failback.reattempts, diff.failback.interval_secs),
+            (7, 3),
+            "git's `_`, one level up, beats the abstract failback(3, '1s')"
+        );
+        // A nearer call of a decorator beats the prototype's.
+        let reg = registry_from(
+            "[daemon.providers.git.sources.diff]\n\
+             return = \"{{ result | poll('9s', 2) | super }}\"\n",
+        );
+        assert_eq!(
+            invalidation(&reg, "git", "diff"),
+            InvalidationStrategy::Poll {
+                interval_secs: 9,
+                count: 2
+            }
+        );
+        // A sibling without a return of its own is untouched by the `_` lines.
+        assert!(matches!(
+            invalidation(&reg, "git", "refs"),
+            InvalidationStrategy::Watch { .. }
+        ));
     }
 
     #[test]

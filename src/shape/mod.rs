@@ -14,4 +14,4 @@ pub mod decorators;
 pub mod prototype;
 pub mod seeded;
 
-pub use build::{PrototypeLines, ProviderDecl, build, prototype_lines};
+pub use build::{Built, PrototypeLines, ProviderDecl, Retune, build, prototype_lines};

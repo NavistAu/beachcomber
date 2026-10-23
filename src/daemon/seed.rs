@@ -39,13 +39,13 @@ type Writes = Vec<(String, Value)>;
 
 /// Seed the config-seeded tables of `config`'s files and watch them for changes.
 ///
-/// Both halves are gated on `Config::config_path`, which only a
-/// `Config::load()` sets: a daemon handed a `Config` built in memory (an
+/// Both halves are gated on `Config::config_path`, which only
+/// `Config::load_from` sets: a daemon handed a `Config` built in memory (an
 /// embedder, every test that does not want a config file) corresponds to no
 /// file, so it reads and watches nothing rather than picking up the ambient
-/// `~/.config/beachcomber`. The layers are re-read from that path rather than
-/// taken from `config`, because composition deep-merges them into one value and
-/// the per-file provenance every seeded record carries would be gone.
+/// `~/.config/beachcomber`. The first seed is of the layers `config` was
+/// composed from, which are the ones startup validated; a change on disk is
+/// read afresh, validated, and re-seeded.
 ///
 /// `polling_watch` mirrors the scheduler's file-watch seam: an in-process
 /// daemon takes the mtime backstop on a short interval, because registering a
@@ -58,16 +58,10 @@ pub fn spawn_config_seeding(
     cancel: &CancellationToken,
     polling_watch: Option<Duration>,
 ) {
-    let Some(config_path) = config.config_path.clone() else {
+    let Some(config_path) = config.config_file().map(|p| p.to_path_buf()) else {
         return;
     };
-    let defaults_dir = Config::defaults_dir_for(&config_path);
-    let conf_d_dir = Config::conf_d_dir_for(&config_path);
-    seed_facets(
-        cache,
-        registry,
-        &Config::layers(Some(&defaults_dir), Some(&config_path), &conf_d_dir),
-    );
+    seed_facets(cache, registry, config.composed_layers());
 
     // The watch stops on the daemon's own shutdown token — its closure holds
     // the cache and the registry, so a watch outliving the daemon would keep
@@ -77,7 +71,6 @@ pub fn spawn_config_seeding(
     let restart = stop.clone();
     let cache = cache.clone();
     let registry = registry.clone();
-    let watched_path = config_path.clone();
     let (interval, fs_events) = match polling_watch {
         None => (super::config_watch::CONFIG_WATCH_POLL_INTERVAL, true),
         Some(_) => (Duration::from_millis(50), false),
@@ -87,10 +80,10 @@ pub fn spawn_config_seeding(
         interval,
         fs_events,
         stop,
-        move |kind| match kind {
+        move |kind, changed| match kind {
+            // What was compared and reseeded is what the gate validated.
             super::config_watch::ChangeKind::FacetsOnly => {
-                let layers = Config::layers(Some(&defaults_dir), Some(&watched_path), &conf_d_dir);
-                reseed_facets(&cache, &registry, &layers);
+                reseed_facets(&cache, &registry, changed.composed_layers());
             }
             super::config_watch::ChangeKind::Settings => {
                 tracing::info!("configuration settings changed; shutting down for restart");

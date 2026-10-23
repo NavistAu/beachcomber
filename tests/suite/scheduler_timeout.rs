@@ -128,8 +128,7 @@ async fn slow_provider_times_out() {
         .expect("slow");
     let registry = Arc::new(registry);
 
-    let mut config = Config::default();
-    config.daemon.provider_timeout_secs = Some(1);
+    let config = Config::from_toml("[daemon]\nprovider_timeout_secs = 1\n");
 
     let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
@@ -212,8 +211,7 @@ async fn fast_provider_completes_within_timeout() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
-    let mut config = Config::default();
-    config.daemon.provider_timeout_secs = Some(5);
+    let config = Config::from_toml("[daemon]\nprovider_timeout_secs = 5\n");
 
     let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
