@@ -893,7 +893,7 @@ library_path = "/usr/local/lib/beachcomber/libmy_provider.so"
 # invalidation = { poll = "30s" }
 ```
 
-If the library's `beachcomber_provider_metadata()` returns valid JSON, that metadata is used. Otherwise, metadata falls back to the TOML config fields (same as flat HTTP providers).
+If the library's `beachcomber_provider_metadata()` returns valid JSON, that metadata is used. Otherwise, metadata falls back to the TOML config fields (the same keys the flat library form takes).
 
 ### When to Use
 

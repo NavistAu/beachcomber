@@ -552,8 +552,7 @@ fn fsevent_lifespan_is_an_unknown_key_in_a_built_in_source_block() {
 
 #[test]
 fn fsevent_lifespan_is_an_unknown_key_in_an_external_source_block_parser() {
-    let table: toml::Table =
-        toml::from_str("url = \"https://x\"\nfsevent_lifespan = \"300s\"\n").unwrap();
+    let table: toml::Table = toml::from_str("fsevent_lifespan = \"300s\"\n").unwrap();
     assert_unknown_key(
         &crate::config::ExternalSourceConfig::from_toml_table("p.main", &table).unwrap_err(),
     );
@@ -734,31 +733,6 @@ fsevent_patterns = [".git"]
 // ── Phase 4 external backend TOML validation tests ──────────────────────────
 
 #[test]
-fn backend_http_source_blocks_accepted_in_validate() {
-    let toml_str = r#"
-[providers.myapi]
-backend = "http"
-default_timeout = "5s"
-
-[providers.myapi.stats]
-url = "https://api.example.com/stats"
-type = "poll"
-scope = "global"
-poll_interval = "60s"
-poll_count = 5
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers: Vec<String> = vec![];
-    let known_sources = std::collections::HashMap::new();
-    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        errors.is_empty(),
-        "backend = http provider must not produce validation errors: {:?}",
-        errors
-    );
-}
-
-#[test]
 fn backend_library_source_override_blocks_accepted_in_validate() {
     let toml_str = r#"
 [providers.mygpu]
@@ -783,15 +757,15 @@ poll_count = 6
 // ── Flat external backend TOML validation tests ──────────────────────
 
 #[test]
-fn flat_http_provider_fields_and_invalidation_accepted_in_validate() {
-    // Flat shape: `type = "http"`, no `backend` key. `fields`
+fn flat_library_provider_fields_and_invalidation_accepted_in_validate() {
+    // Flat shape: `type = "library"`, no `backend` key. `fields`
     // and `invalidation` are provider-level sub-tables in this shape (see
     // FlatProviderConfig::{fields, invalidation}), not per-source blocks —
     // validate_providers must not flag them as unrecognized source blocks.
     let toml_str = r#"
 [providers.chronoclaude]
-type = "http"
-url = "https://example.com/statusline"
+type = "library"
+library_path = "/x/libstatusline.dylib"
 fields = { value = "string" }
 
 [providers.chronoclaude.invalidation]
@@ -817,8 +791,8 @@ fn flat_provider_unknown_subtable_still_errors() {
     // everything.
     let toml_str = r#"
 [providers.chronoclaude]
-type = "http"
-url = "https://example.com/statusline"
+type = "library"
+library_path = "/x/libstatusline.dylib"
 
 [providers.chronoclaude.bogus]
 not_a_real_key = "junk"
@@ -1341,8 +1315,8 @@ fn a_script_provider_is_an_error() {
             &["unknown key 'command'"],
         ),
         (
-            "a provider-level output on an http provider",
-            "[providers.st]\ntype = \"http\"\nurl = \"https://x\"\noutput = \"kv\"\n",
+            "a provider-level output on a library provider",
+            "[providers.st]\ntype = \"library\"\nlibrary_path = \"/x\"\noutput = \"kv\"\n",
             &["unknown key 'output'"],
         ),
         (
@@ -1370,10 +1344,128 @@ fn a_script_provider_is_an_error() {
 }
 
 #[test]
-fn a_script_only_key_in_an_http_source_block_is_an_unknown_key() {
+fn an_http_provider_is_an_error() {
+    // (case, config, errors that must each be present)
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "flat type",
+            "[providers.p]\ntype = \"http\"\nurl = \"https://x\"\n",
+            &["type = \"http\"", "unknown key 'url'"],
+        ),
+        (
+            "a provider-level url",
+            "[providers.p]\nurl = \"https://x\"\n",
+            &["unknown key 'url'"],
+        ),
+        (
+            "multi-source backend",
+            "[providers.p]\nbackend = \"http\"\ndefault_timeout = \"5s\"\n\
+             [providers.p.s]\nurl = \"https://x\"\nextract = \"a.b\"\n",
+            &[
+                "backend = \"http\"",
+                "unknown key 'default_timeout'",
+                "[providers.p.s]: unknown key 'url'",
+                "[providers.p.s]: unknown key 'extract'",
+            ],
+        ),
+        (
+            "http-only keys at the provider level",
+            "[providers.p]\nextract = \"a\"\nmethod = \"POST\"\nbody = \"b\"\n\
+             [providers.p.headers]\nx = \"y\"\n",
+            &[
+                "unknown key 'extract'",
+                "unknown key 'method'",
+                "unknown key 'body'",
+                "unknown key 'headers'",
+            ],
+        ),
+    ];
+    for (name, toml_str, wants) in cases {
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let (_, errors) = config.validate_providers(&[], &Default::default());
+        for want in *wants {
+            assert!(
+                errors.iter().any(|e| e.contains(want)),
+                "{name}: expected an error naming {want:?}, got {errors:?}"
+            );
+        }
+        assert!(
+            errors
+                .iter()
+                .all(|e| e.contains("[daemon.providers.<p>.sources.<s>]") && e.contains("url(")),
+            "{name}: each error says where HTTP went: {errors:?}"
+        );
+    }
+}
+
+/// The errors `validate_providers` reports for `toml_str`, against no registered providers.
+fn provider_errors(toml_str: &str) -> Vec<String> {
+    let config: Config = toml::from_str(toml_str).unwrap();
+    config.validate_providers(&[], &Default::default()).1
+}
+
+#[test]
+fn a_library_fields_table_may_name_a_field_after_a_removed_key() {
+    for toml_str in [
+        "[providers.weather]\ntype = \"library\"\nlibrary_path = \"/x\"\n\
+         [providers.weather.fields]\nurl = \"string\"\nbody = \"string\"\n",
+        "[providers.weather]\ntype = \"library\"\nlibrary_path = \"/x\"\n\
+         fields = { url = \"string\", body = \"string\" }\n",
+        "[providers.weather]\nbackend = \"library\"\nlibrary_path = \"/x\"\n\
+         [providers.weather.now]\nfields = [{ name = \"url\", type = \"string\" }]\n",
+    ] {
+        assert_eq!(
+            provider_errors(toml_str),
+            Vec::<String>::new(),
+            "{toml_str}"
+        );
+    }
+}
+
+#[test]
+fn a_library_source_may_be_named_headers() {
+    let errors = provider_errors(
+        "[providers.p]\nbackend = \"library\"\nlibrary_path = \"/x\"\n\
+         [providers.p.headers]\npoll_interval = \"5s\"\n",
+    );
+    assert_eq!(errors, Vec::<String>::new());
+}
+
+#[test]
+fn a_virtual_block_gets_only_the_virtual_error() {
+    let errors = provider_errors("[providers.links.virtual]\nurl = \"{{ env.U }}\"\n");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("[providers.links.virtual]"),
+        "{errors:?}"
+    );
+    assert!(!errors[0].contains("url("), "{errors:?}");
+}
+
+#[test]
+fn every_removed_spelling_a_block_carries_is_reported() {
+    let errors = provider_errors(
+        "[providers.p]\ncommand = \"echo\"\nurl = \"https://x\"\n\
+         [providers.p.s]\nextract = \"a\"\n",
+    );
+    for want in [
+        "[providers.p]: unknown key 'command'",
+        "[providers.p]: unknown key 'url'",
+        "[providers.p.s]: unknown key 'extract'",
+    ] {
+        assert!(
+            errors.iter().any(|e| e.contains(want)),
+            "{want}: {errors:?}"
+        );
+    }
+    assert!(errors.iter().any(|e| e.contains("exec()")), "{errors:?}");
+    assert!(errors.iter().any(|e| e.contains("url(")), "{errors:?}");
+}
+
+#[test]
+fn a_script_only_key_in_a_library_source_block_is_an_unknown_key() {
     for key in ["command", "output"] {
-        let table: toml::Table =
-            toml::from_str(&format!("url = \"https://x\"\n{key} = \"y\"\n")).unwrap();
+        let table: toml::Table = toml::from_str(&format!("{key} = \"y\"\n")).unwrap();
         let err = crate::config::ExternalSourceConfig::from_toml_table("p.s", &table).unwrap_err();
         assert!(err.contains(&format!("unknown key '{key}'")), "{err}");
     }
@@ -1602,44 +1694,6 @@ fn every_loader_builds_the_same_provider_set() {
         );
         let load = ProviderRegistry::load(&config, &vars, libraries);
         assert!(load.errors.is_empty(), "{libraries}: {:?}", load.errors);
-
-        // An http provider's declared fields are known without any I/O.
-        let config = with_shipped_defaults(
-            "[providers.api]\nbackend = \"http\"\n\
-             [providers.api.stats]\nurl = \"https://x\"\ntype = \"fsevent\"\nfields = [{ name = \"up\", type = \"bool\" }]\n\
-             [daemon.providers.api.sources.mine]\ndata = \"{{ 1 }}\"\nresult.up = \"{{ data }}\"\n",
-        );
-        let load = ProviderRegistry::load(&config, &vars, libraries);
-        assert_eq!(load.errors.len(), 1, "{libraries}: {:?}", load.errors);
-        assert!(
-            load.errors[0].contains("'up'")
-                && load.errors[0].contains("'stats'")
-                && load.errors[0].contains("'mine'"),
-            "{:?}",
-            load.errors
-        );
-    }
-}
-
-#[test]
-fn a_provider_that_fails_to_register_is_a_warning_check_shows() {
-    // A multi-source http source on the default poll strategy declares
-    // `fsevents_reinstate` on a Poll strategy, which registration refuses.
-    let config = with_shipped_defaults(
-        "[providers.api]\nbackend = \"http\"\n\
-         [providers.api.stats]\nurl = \"https://x\"\nfields = [{ name = \"up\", type = \"bool\" }]\n",
-    );
-    for libraries in [true, false] {
-        let load = ProviderRegistry::load(&config, &Default::default(), libraries);
-        assert!(load.errors.is_empty(), "{:?}", load.errors);
-        assert!(
-            load.warnings.iter().any(|w| w
-                .contains("Failed to register multi-source HTTP provider 'api'")
-                && w.contains("fsevents_reinstate")),
-            "{:?}",
-            load.warnings
-        );
-        assert!(!load.registry.is_registered("api"));
     }
 }
 

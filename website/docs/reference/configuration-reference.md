@@ -32,7 +32,8 @@ provider_timeout_secs = 10
 
 # Path to an environment file loaded at daemon startup.
 # Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
-# These vars are available to ${VAR} expansion in HTTP headers, script commands, etc.
+# These vars reach a Source's lines as `env.VAR` (an unset one renders empty) and
+# the commands its exec() runs.
 # Default: ~/.config/beachcomber/env (loaded automatically if present)
 # env_file = "~/.config/beachcomber/env"
 
@@ -162,38 +163,27 @@ return = "{{ result | watch('Cargo.toml', 'Cargo.lock') | poll('120s') }}"
 enabled = false
 
 
-# ─── HTTP Providers ──────────────────────────────────────────────────────────
-# Fetch data directly from REST APIs — no curl fork, no shell spawning.
-# Uses in-process HTTP client with connection reuse.
+# ─── HTTP ─────────────────────────────────────────────────────────────────────
+# Fetch data from REST APIs with url() in a Source's data line — no curl fork,
+# no shell spawning. A non-2xx response fails the Source (its failback applies).
 
 # Basic: poll a status API
-[providers.service_status]
-type = "http"
-url = "https://status.anthropic.com/api/v2/summary.json"
-extract = "status"              # dot-path into the JSON response
-                                # e.g., response.status.indicator → provider field "indicator"
+[daemon.providers.service_status.sources.main]
+data = "{{ url('https://status.anthropic.com/api/v2/summary.json') | fromjson }}"
+result.indicator = "{{ data.status.indicator }}"   # response.status.indicator → field "indicator"
+return = "{{ result | poll('60s') }}"
 
-[providers.service_status.invalidation]
-poll = "60s"
-
-# With auth headers (env vars expanded at runtime)
-[providers.github_rate]
-type = "http"
-url = "https://api.github.com/rate_limit"
-headers = { Authorization = "Bearer ${GITHUB_TOKEN}" }
-extract = "rate"                # extracts { "limit": 5000, "remaining": 4999, ... }
-
-[providers.github_rate.invalidation]
-poll = "30s"
+# With auth headers (the daemon's environment is `env`)
+[daemon.providers.github_rate.sources.main]
+data = "{{ url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN}) | fromjson }}"
+result = "{{ data.rate }}"                          # { "limit": 5000, "remaining": 4999, ... }
+return = "{{ result | poll('30s') }}"
 
 # Infrequent poll (daily)
-[providers.exchange_rate]
-type = "http"
-url = "https://api.exchangerate-api.com/v4/latest/USD"
-extract = "rates.AUD"           # extracts a single nested value
-
-[providers.exchange_rate.invalidation]
-poll = "86400s"
+[daemon.providers.exchange_rate.sources.main]
+data = "{{ url('https://api.exchangerate-api.com/v4/latest/USD') | fromjson }}"
+result.value = "{{ data.rates.AUD }}"               # a single nested value
+return = "{{ result | poll('86400s') }}"
 ```
 
 ### Template facets
@@ -408,19 +398,6 @@ Only `enabled` is valid directly under `[providers.<name>]` for built-in provide
 | `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(count, interval)`, `budget(interval)`. Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback(3, '1s')`). `\| super` extends that line instead of replacing it. |
 
 A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources only: the Rust Sources of built-in providers keep their own schedules until they ship as config.
-
-**`[providers.<name>]` section (HTTP providers):**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `type` | string | yes | Must be `"http"` |
-| `url` | string | yes | URL to fetch. Supports `${ENV_VAR}` expansion. |
-| `method` | string | no | HTTP method: `"GET"` (default), `"POST"`, `"PUT"` |
-| `headers` | table | no | HTTP headers. Values support `${ENV_VAR}` expansion. |
-| `body` | string | no | Request body (for POST/PUT) |
-| `extract` | string | no | Dot-separated path into the JSON response (e.g., `"status.indicator"`, `"rates.AUD"`) |
-| `enabled` | bool | no | `false` to disable |
-| `invalidation.poll` | string | no | Poll interval (default `"60s"`) |
 
 **`[providers.<name>]` section (shared library providers):**
 

@@ -468,9 +468,9 @@ impl ProviderRegistry {
 
     /// The one loader: startup, the config watch's gate and `comb check
     /// config` all build the provider set here, so they agree on what loads.
-    /// Built-ins (minus the disabled), the HTTP providers (metadata only, no
-    /// I/O), the config Sources (`[daemon.providers.<p>.sources.<s>]`, whose
-    /// lines see `vars`, the daemon's own variables), and the providers only
+    /// Built-ins (minus the disabled), the library providers, the config
+    /// Sources (`[daemon.providers.<p>.sources.<s>]`, whose lines see `vars`,
+    /// the daemon's own variables), and the providers only
     /// the config names; then every check a config has: the per-file ones, the
     /// old-form provider blocks, and the Sources against the set built.
     ///
@@ -481,7 +481,6 @@ impl ProviderRegistry {
     ///
     /// Panics on built-in registration failure (programmer error).
     pub fn load(config: &Config, vars: &HashMap<String, String>, libraries: bool) -> ConfigLoad {
-        use crate::provider::http::HttpProvider;
         use crate::provider::library::LibraryProvider;
 
         // Start from the full built-in set, then layer on config-defined providers.
@@ -517,7 +516,7 @@ impl ProviderRegistry {
 
         // Registration failures are the user's to see: `comb check config` shows them.
         let mut warnings: Vec<String> = Vec::new();
-        // ── Single-source external backends (`type = "library" / "http"`) ──
+        // ── Single-source external backends (`type = "library"`) ──
         for (name, lib_config) in config.library_providers() {
             if libraries
                 && !config.is_provider_disabled(&name)
@@ -527,16 +526,9 @@ impl ProviderRegistry {
                 warnings.push(format!("Failed to register library provider '{name}': {e}"));
             }
         }
-        for (name, http_config) in config.http_providers() {
-            if !config.is_provider_disabled(&name)
-                && let Err(e) = registry.register(Box::new(HttpProvider::new(&name, http_config)))
-            {
-                warnings.push(format!("Failed to register http provider '{name}': {e}"));
-            }
-        }
 
         // ── Phase 4 multi-source external backends ────────────────────────────
-        // `backend = "library" / "http"` TOML shape.
+        // `backend = "library"` TOML shape.
 
         // Library
         match config.multi_library_providers() {
@@ -555,30 +547,6 @@ impl ProviderRegistry {
                 }
             }
             Err(e) => warnings.push(format!("Error reading multi-source library providers: {e}")),
-        }
-
-        // HTTP
-        match config.multi_http_providers() {
-            Ok(providers) => {
-                for (name, _default_timeout, sources) in providers {
-                    if !config.is_provider_disabled(&name) {
-                        if sources.is_empty() {
-                            warnings.push(format!(
-                                "HTTP provider '{name}' (backend = http) has no source blocks; skipping"
-                            ));
-                            continue;
-                        }
-                        if let Err(e) =
-                            registry.register(Box::new(HttpProvider::with_sources(&name, sources)))
-                        {
-                            warnings.push(format!(
-                                "Failed to register multi-source HTTP provider '{name}': {e}"
-                            ));
-                        }
-                    }
-                }
-            }
-            Err(e) => warnings.push(format!("Error reading multi-source HTTP providers: {e}")),
         }
 
         // ── Config Sources ────────────────────────────────────────────────────

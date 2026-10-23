@@ -7,7 +7,6 @@ pub mod external;
 pub mod gcloud;
 pub mod git;
 pub mod hostname;
-pub mod http;
 pub mod library;
 pub mod load;
 pub mod mise;
@@ -33,10 +32,6 @@ mod battery_seam_tests;
 mod gcloud_tests;
 #[cfg(test)]
 mod git_seam_tests;
-#[cfg(test)]
-mod http_seam_tests;
-#[cfg(test)]
-mod http_tests;
 #[cfg(test)]
 mod library_ffi_seam_tests;
 #[cfg(test)]
@@ -85,7 +80,7 @@ pub const MAX_JSON_DEPTH: usize = 10;
 impl Value {
     /// The single conversion from `serde_json::Value` into a provider [`Value`].
     ///
-    /// Every ingestion path — `put`, http, library — goes through this.
+    /// Every ingestion path — `put`, config Sources, library — goes through this.
     /// Do not pattern-match `serde_json::Value` to build a `Value` anywhere else;
     /// four copies of that match previously existed and all four failed to
     /// recurse, so nested objects were silently stringified despite

@@ -145,3 +145,75 @@ async fn repeated_failures_trigger_backoff() {
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;
 }
+
+/// A non-2xx response fails the `url()` call, so the Source's execute fails
+/// and the failback applies, even when the body would have produced the
+/// field: ten refreshes reach the server exactly `failback`'s count of times
+/// and nothing is cached.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_non_2xx_url_fails_the_source_and_backs_off() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("GET", "/summary.json")
+        .with_status(503)
+        .with_body(r#"{"status":{"indicator":"minor"}}"#)
+        .expect(3)
+        .create_async()
+        .await;
+    let config: Config = toml::from_str(&format!(
+        r#"
+[daemon.providers.claude.sources.summary]
+data = "{{{{ url('{}/summary.json') | fromjson }}}}"
+result.indicator = "{{{{ data.status.indicator }}}}"
+return = "{{{{ result | poll('60s') | failback(3, '60s') }}}}"
+"#,
+        server.url()
+    ))
+    .unwrap();
+
+    let cache = Arc::new(Cache::new());
+    let registry =
+        Arc::new(ProviderRegistry::with_config(&config, &Default::default()).expect("registry"));
+    let (handle, mut scheduler) = Scheduler::new(
+        cache.clone(),
+        registry,
+        config,
+        Arc::new(WatcherRegistry::new()),
+    );
+    scheduler.use_polling_watcher(Duration::from_millis(50));
+    let sched_task = tokio::spawn(async move { scheduler.run().await });
+
+    // Each refresh runs to completion before the next, as in the test above.
+    for _ in 0..10 {
+        handle
+            .send(SchedulerMessage::Refresh {
+                provider: "claude".to_string(),
+                path: None,
+                demand: SourceDemand::All,
+            })
+            .await;
+        poll_until_async(
+            "scheduler in_flight",
+            "empty",
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+            async || {
+                handle
+                    .get_status()
+                    .await
+                    .expect("status available")
+                    .in_flight
+            },
+            |f| f.is_empty(),
+        )
+        .await;
+    }
+
+    mock.assert_async().await;
+    assert!(
+        cache.get_entry("claude", None).is_none(),
+        "a failed fetch caches nothing"
+    );
+    handle.send(SchedulerMessage::Shutdown).await;
+    let _ = sched_task.await;
+}

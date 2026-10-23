@@ -365,3 +365,27 @@ result.cwd = "{{ data }}"
     let at_home = get_at(&d, &d.home, &["--global", "demo:cache.cwd"]).expect("record at ~");
     assert_eq!(at_home["source"], json!("source(s)"), "{at_home}");
 }
+
+#[test]
+fn a_url_source_serves_the_fetched_field() {
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/summary.json")
+        .with_status(200)
+        .with_body(r#"{"status":{"indicator":"minor"}}"#)
+        .create();
+    let setup = Setup::new(&[(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.claude.sources.summary]
+data = "{{{{ url('{}/summary.json') | fromjson }}}}"
+result.indicator = "{{{{ data.status.indicator }}}}"
+return = "{{{{ result | poll('60s') }}}}"
+"#,
+            server.url()
+        ),
+    )]);
+    let d = setup.daemon();
+    assert_eq!(get(&d, "claude.indicator"), Some(json!("minor")));
+}

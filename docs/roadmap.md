@@ -86,7 +86,7 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       countdown to next One Piece episode, ISS overhead pass, Hacker News top story, Spotify current track, Home
       Assistant entity state (front door lock, thermostat, lights via HA REST API). Weird/fun (not all committed, pick
       the best):
-  - Mercury Retrograde deploy guard — HTTP provider polling an astrology API, git pre-push hook refuses to push to
+  - Mercury Retrograde deploy guard — a Source polling an astrology API with `url()`, git pre-push hook refuses to push to
     production during retrograde. `mercury_yolo_mode = true` to override.
   - Don't Deploy On Friday — same pattern, simpler astrology. Block or warn on pushes to production branches after
     Thursday EOD.

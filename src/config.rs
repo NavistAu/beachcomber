@@ -88,9 +88,57 @@ const SOURCE_KNOB_KEYS: &[&str] = &[
     "poll_secs",
 ];
 
-/// Where a removed script provider went.
-const SCRIPT_REMOVED: &str = "Script providers are removed: write a Source whose data calls \
-                              exec(), in [daemon.providers.<p>.sources.<s>]";
+/// A provider backend that was removed in favour of a Source: how its config
+/// is recognised, and where it went.
+struct RemovedBackend {
+    /// The `type` / `backend` value that named it.
+    value: &'static str,
+    /// The keys only it read; a table of this name is a source block, not the key.
+    keys: &'static [&'static str],
+    /// Whether the keys are looked for in each source block too.
+    in_source_blocks: bool,
+    /// Where it went.
+    pointer: &'static str,
+}
+
+const REMOVED_BACKENDS: &[RemovedBackend] = &[
+    RemovedBackend {
+        value: "script",
+        keys: &["command", "output"],
+        in_source_blocks: false,
+        pointer: "Script providers are removed: write a Source whose data calls exec(), \
+                  in [daemon.providers.<p>.sources.<s>]",
+    },
+    RemovedBackend {
+        value: "http",
+        keys: &[
+            "url",
+            "method",
+            "headers",
+            "body",
+            "extract",
+            "default_timeout",
+        ],
+        in_source_blocks: true,
+        pointer: "HTTP providers are removed: write a Source whose data calls \
+                  url(...) | fromjson, in [daemon.providers.<p>.sources.<s>]",
+    },
+];
+
+/// The keys a library source block (or a built-in's) may carry.
+const SOURCE_BLOCK_KEYS: &[&str] = &[
+    "type",
+    "scope",
+    "enabled",
+    "fields",
+    "poll_interval",
+    "poll_count",
+    "fsevent_patterns",
+    "fsevent_abs_paths",
+    "fsevent_reinstates",
+    "failback_count",
+    "failback_interval",
+];
 
 /// Which resolution step supplied a socket path
 /// (canon singleton.md §"Canonical socket path resolution").
@@ -142,7 +190,8 @@ pub struct DaemonConfig {
     /// Path to an env file loaded at daemon startup.
     /// Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
     /// These vars are injected into the daemon's environment before any providers execute,
-    /// making them available to ${VAR} expansion in HTTP headers and the commands a Source's data runs.
+    /// making them reach a Source's lines as `env.VAR` (an unset one renders empty)
+    /// and the commands its `exec()` runs.
     /// Default: ~/.config/beachcomber/env
     pub env_file: Option<String>,
     /// How often the watchdog checks the scheduler heartbeat. Default: disabled (None).
@@ -460,12 +509,12 @@ impl SourceOverrideConfig {
     }
 }
 
-/// Per-source config for external backends (http / library).
+/// Per-source config for the library backend.
 ///
-/// Used when a provider is declared with `backend = "http"` (or `"library"`)
-/// and each source lives in its own `[providers.<name>.<source>]` sub-table.
+/// Used when a provider is declared with `backend = "library"` and each
+/// source lives in its own `[providers.<name>.<source>]` sub-table.
 ///
-/// Accepts both declaration keys (`url`, `fields`, …) and all knob keys
+/// Accepts the declaration key (`fields`) and all knob keys
 /// (`poll_interval`, `fsevent_patterns`, `failback_count`, …).
 #[derive(Debug, Clone, Default)]
 pub struct ExternalSourceConfig {
@@ -477,15 +526,6 @@ pub struct ExternalSourceConfig {
     pub scope: Option<String>,
     /// Whether the source is enabled. Default true.
     pub enabled: Option<bool>,
-
-    // ── HTTP-backend declaration keys ─────────────────────────────────────────
-    pub url: Option<String>,
-    pub method: Option<String>,
-    /// HTTP headers as key→value map.
-    pub headers: Option<HashMap<String, String>>,
-    pub body: Option<String>,
-    pub extract: Option<String>,
-    pub default_timeout: Option<String>,
 
     // ── Field declarations ────────────────────────────────────────────────────
     pub fields: Option<Vec<ExternalFieldDecl>>,
@@ -515,30 +555,10 @@ pub struct ExternalFieldDecl {
 /// and any per-source override tables.
 pub type LibraryProviderBlocks = Vec<(String, String, Vec<ExternalSourceConfig>)>;
 
-/// One `[providers.<name>]` block with `backend = "http"`, paired with the optional
-/// `default_timeout` and parsed sources.
-pub type HttpProviderBlocks = Vec<(String, Option<String>, Vec<ExternalSourceConfig>)>;
-
 impl ExternalSourceConfig {
     /// Parse from a TOML table. `block_name` is used in error messages.
     pub fn from_toml_table(block_name: &str, table: &toml::value::Table) -> Result<Self, String> {
         let mut out = ExternalSourceConfig::default();
-
-        // ── headers sub-table ─────────────────────────────────────────────────
-        // headers may appear as a sub-table; we collect it first before the
-        // scalar-key loop which skips tables.
-        if let Some(headers_val) = table.get("headers")
-            && let Some(headers_table) = headers_val.as_table()
-        {
-            let mut map = HashMap::new();
-            for (k, v) in headers_table {
-                let s = v
-                    .as_str()
-                    .ok_or_else(|| format!("{block_name}: headers.{k} must be a string"))?;
-                map.insert(k.clone(), s.to_string());
-            }
-            out.headers = Some(map);
-        }
 
         for (key, val) in table {
             match key.as_str() {
@@ -560,47 +580,6 @@ impl ExternalSourceConfig {
                     out.enabled = Some(
                         val.as_bool()
                             .ok_or_else(|| format!("{block_name}: 'enabled' must be a boolean"))?,
-                    );
-                }
-                // HTTP
-                "url" => {
-                    out.url = Some(
-                        val.as_str()
-                            .ok_or_else(|| format!("{block_name}: 'url' must be a string"))?
-                            .to_string(),
-                    );
-                }
-                "method" => {
-                    out.method = Some(
-                        val.as_str()
-                            .ok_or_else(|| format!("{block_name}: 'method' must be a string"))?
-                            .to_string(),
-                    );
-                }
-                "headers" => {
-                    // Already handled above; skip here.
-                }
-                "body" => {
-                    out.body = Some(
-                        val.as_str()
-                            .ok_or_else(|| format!("{block_name}: 'body' must be a string"))?
-                            .to_string(),
-                    );
-                }
-                "extract" => {
-                    out.extract = Some(
-                        val.as_str()
-                            .ok_or_else(|| format!("{block_name}: 'extract' must be a string"))?
-                            .to_string(),
-                    );
-                }
-                "default_timeout" => {
-                    out.default_timeout = Some(
-                        val.as_str()
-                            .ok_or_else(|| {
-                                format!("{block_name}: 'default_timeout' must be a duration string")
-                            })?
-                            .to_string(),
                     );
                 }
                 // Fields array
@@ -697,8 +676,7 @@ impl ExternalSourceConfig {
                 other => {
                     return Err(format!(
                         "{block_name}: unknown key '{other}'. \
-                         Valid external-source keys are: type, scope, enabled, \
-                         url, method, headers, body, extract, default_timeout, fields, \
+                         Valid external-source keys are: type, scope, enabled, fields, \
                          poll_interval, poll_count, fsevent_patterns, fsevent_abs_paths, \
                          fsevent_reinstates, failback_count, failback_interval"
                     ));
@@ -731,7 +709,7 @@ impl FieldSpec {
     }
 }
 
-/// Configuration for a library/http provider extracted from the raw providers map.
+/// Configuration for a library provider extracted from the raw providers map.
 /// This preserves backward compatibility for Phase 4 which will restructure external backends.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -743,12 +721,6 @@ pub struct FlatProviderConfig {
     pub scope: Option<String>,
     pub enabled: Option<bool>,
     pub poll_secs: Option<u64>,
-    // HTTP provider fields (used when type = "http")
-    pub url: Option<String>,
-    pub method: Option<String>,
-    pub headers: Option<HashMap<String, String>>,
-    pub body: Option<String>,
-    pub extract: Option<String>,
     // Library provider fields (used when type = "library")
     pub library_path: Option<String>,
     // New configurable backoff fields (override lifecycle defaults)
@@ -758,19 +730,6 @@ pub struct FlatProviderConfig {
     pub poll_interval: Option<String>,
     pub poll_live_count: Option<u32>,
     pub fsevents_reinstate: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct HttpProviderConfig {
-    #[serde(rename = "type")]
-    pub provider_type: Option<String>,
-    pub url: String,
-    pub method: Option<String>,
-    pub headers: Option<HashMap<String, String>>,
-    pub body: Option<String>,
-    pub extract: Option<String>,
-    pub invalidation: Option<FlatInvalidation>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -977,15 +936,14 @@ impl Config {
     // Two families of extraction:
     //
     // 1. Single-source: provider-level block carries all config. Used when
-    //    there is NO `backend` key. `library_providers()`, `http_providers()`.
+    //    there is NO `backend` key. `library_providers()`.
     //
     // 2. Multi-source: provider-level block has `backend = "..."` key; each
     //    source lives in a per-source sub-table. The provider-level block may
-    //    also carry `library_path` (library) or `default_timeout` (http).
-    //    `multi_library_providers()`, `multi_http_providers()`.
+    //    also carry `library_path`. `multi_library_providers()`.
 
     fn as_external_provider_config(val: &toml::Value) -> Option<FlatProviderConfig> {
-        // For external backends (library/http), deserialize the full provider-level
+        // For the library backend, deserialize the full provider-level
         // table as FlatProviderConfig. Sub-table entries like `fields` and `invalidation`
         // are part of the external backend config shape (Phase 4 will restructure these).
         let table = val.as_table()?.clone();
@@ -1015,35 +973,69 @@ impl Config {
             .collect()
     }
 
-    pub fn http_providers(&self) -> Vec<(String, HttpProviderConfig)> {
-        self.providers
-            .iter()
-            .filter_map(|(name, val)| {
-                // Skip Phase 4 multi-source style (has `backend` key).
-                if Self::backend_for(val).is_some() {
-                    return None;
-                }
-                let cfg = Self::as_external_provider_config(val)?;
-                if cfg.provider_type.as_deref() != Some("http") {
-                    return None;
-                }
-                Some((
-                    name.clone(),
-                    HttpProviderConfig {
-                        provider_type: cfg.provider_type,
-                        url: cfg.url.unwrap_or_default(),
-                        method: cfg.method,
-                        headers: cfg.headers,
-                        body: cfg.body,
-                        extract: cfg.extract,
-                        invalidation: cfg.invalidation,
-                    },
-                ))
-            })
-            .collect()
+    // ── Phase 4 multi-source external backend extraction ─────────────────────
+
+    /// Whether `[providers.<p>.<sub_key>]` is a source block. The others are
+    /// settings of the provider: `fields` and `invalidation` (the flat shape),
+    /// the removed `virtual` block, and a `headers` table of plain strings (the
+    /// removed http key), which a source block of that name is told from by
+    /// being empty or carrying a source key.
+    fn is_source_block(sub_key: &str, table: &toml::value::Table) -> bool {
+        match sub_key {
+            "fields" | "invalidation" | "virtual" => false,
+            "headers" => {
+                table.is_empty()
+                    || table
+                        .keys()
+                        .any(|k| SOURCE_BLOCK_KEYS.contains(&k.as_str()))
+            }
+            _ => true,
+        }
     }
 
-    // ── Phase 4 multi-source external backend extraction ─────────────────────
+    /// The errors a provider table carries for the backends that were removed.
+    fn removed_backend_errors(prov_name: &str, table: &toml::value::Table) -> Vec<String> {
+        let mut errors = Vec::new();
+        for backend in REMOVED_BACKENDS {
+            let mut found = Vec::new();
+            for key in ["type", "backend"] {
+                if table.get(key).and_then(|v| v.as_str()) == Some(backend.value) {
+                    found.push(format!(
+                        "[providers.{prov_name}] {key} = \"{}\": unknown value for '{key}'",
+                        backend.value
+                    ));
+                }
+            }
+            let is_key = |sub_key: &str, value: &toml::Value| match value.as_table() {
+                None => true,
+                Some(t) => !Self::is_source_block(sub_key, t),
+            };
+            for key in backend.keys {
+                if table.get(*key).is_some_and(|v| is_key(key, v)) {
+                    found.push(format!("[providers.{prov_name}]: unknown key '{key}'"));
+                }
+            }
+            if backend.in_source_blocks {
+                for (sub_key, sub) in table {
+                    let Some(sub) = sub.as_table() else { continue };
+                    if !Self::is_source_block(sub_key, sub) {
+                        continue;
+                    }
+                    for key in backend.keys.iter().filter(|k| sub.contains_key(**k)) {
+                        found.push(format!(
+                            "[providers.{prov_name}.{sub_key}]: unknown key '{key}'"
+                        ));
+                    }
+                }
+            }
+            errors.extend(
+                found
+                    .into_iter()
+                    .map(|e| format!("{e}. {}", backend.pointer)),
+            );
+        }
+        errors
+    }
 
     /// Parse the per-source sub-tables for a provider declared with `backend = "..."`.
     /// Returns `Err` if any sub-table is malformed, `Ok(vec)` otherwise (may be empty).
@@ -1062,14 +1054,8 @@ impl Config {
                 Some(t) => t,
                 None => continue,
             };
-            // Skip known provider-level-only sub-table names.
-            if matches!(sub_key.as_str(), "invalidation" | "fields") {
-                // "invalidation"/"fields" appear in legacy flat shape; in multi-source they
-                // live inside per-source blocks instead. Skip both at provider level.
-                continue;
-            }
-            // Not a source either; `validate_providers` owns the error for it.
-            if sub_key == "virtual" {
+            // Not a source: `validate_providers` owns the error for it, if any.
+            if !Self::is_source_block(sub_key, sub_table) {
                 continue;
             }
             let block_name = format!("[providers.{prov_name}.{sub_key}]");
@@ -1105,34 +1091,6 @@ impl Config {
         Ok(result)
     }
 
-    /// Multi-source HTTP providers: `backend = "http"` + per-source sub-tables.
-    /// Each source sub-table must contain `url`. Returns `(name, default_timeout, sources)`.
-    pub fn multi_http_providers(&self) -> Result<HttpProviderBlocks, String> {
-        let mut result = Vec::new();
-        for (name, val) in &self.providers {
-            if Self::backend_for(val) != Some("http") {
-                continue;
-            }
-            let default_timeout = val
-                .get("default_timeout")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let sources = Self::parse_external_sources(name, val)?;
-            // Validate: each source must have a url.
-            for src in &sources {
-                if src.url.is_none() {
-                    return Err(format!(
-                        "provider '{}' source '{}' (backend = http): \
-                         missing required key 'url'",
-                        name, src.name
-                    ));
-                }
-            }
-            result.push((name.clone(), default_timeout, sources));
-        }
-        Ok(result)
-    }
-
     // ── Startup validation ────────────────────────────────────────────────────
 
     /// Validate provider config blocks. Returns (warnings, errors).
@@ -1140,6 +1098,8 @@ impl Config {
     /// - Known provider, unknown source name → warn (cross-platform-config support).
     /// - Old flat source-knob keys at provider level → error.
     /// - Invalid strategy keys for declared type → error.
+    /// - A removed backend (`REMOVED_BACKENDS`: script, http) → an error for
+    ///   every spelling the provider carries, saying where it went.
     ///
     /// `known_providers` is the list of registered provider names.
     /// `known_sources` maps provider_name → list of source names.
@@ -1177,36 +1137,12 @@ impl Config {
                 ));
             }
 
-            // A script provider is a Source whose data calls exec(): the
-            // discriminators and the keys only it read are errors.
-            let removed = [
-                ("type", "type = \"script\""),
-                ("backend", "backend = \"script\""),
-            ]
-            .iter()
-            .filter(|(key, _)| table.get(*key).and_then(|v| v.as_str()) == Some("script"))
-            .map(|(key, shown)| {
-                format!("[providers.{prov_name}] {shown}: unknown value for '{key}'")
-            })
-            .chain(
-                table
-                    .contains_key("command")
-                    .then(|| format!("[providers.{prov_name}]: unknown key 'command'")),
-            )
-            .chain(
-                // A table named `output` is a Source block, not the key.
-                table
-                    .get("output")
-                    .is_some_and(|v| !v.is_table())
-                    .then(|| format!("[providers.{prov_name}]: unknown key 'output'")),
-            )
-            .collect::<Vec<_>>();
+            // A removed backend is a Source now: its discriminators and the
+            // keys only it read are errors, at the level they appear. Every
+            // spelling a block carries is reported.
+            let removed = Self::removed_backend_errors(prov_name, table);
             if !removed.is_empty() {
-                errors.extend(
-                    removed
-                        .into_iter()
-                        .map(|e| format!("{e}. {SCRIPT_REMOVED}")),
-                );
+                errors.extend(removed);
                 continue;
             }
 
@@ -1227,21 +1163,20 @@ impl Config {
 
             // Check for old flat source-knob keys at the provider level.
             // These are rejected for ALL providers (built-in and external).
-            // Exception: library/http providers still use some of these
+            // Exception: library providers still use some of these
             // keys (failure_reattempts, failure_backoff_interval, poll_interval,
             // poll_live_count, fsevents_reinstate, poll_secs) at provider level
             // until Phase 4. We detect if this looks like an external backend.
             let is_external_backend = table
                 .get("type")
                 .and_then(|v| v.as_str())
-                .map(|t| matches!(t, "library" | "http"))
+                .map(|t| t == "library")
                 .unwrap_or(false)
                 || table
                     .get("backend")
                     .and_then(|v| v.as_str())
-                    .map(|b| matches!(b, "library" | "http"))
+                    .map(|b| b == "library")
                     .unwrap_or(false)
-                || table.get("url").is_some()
                 || table.get("library_path").is_some();
 
             if !is_external_backend {
@@ -1280,27 +1215,24 @@ impl Config {
                     continue;
                 }
 
-                // Legacy flat external-backend shape (`type = "http"` or `"library"`, no
-                // `backend` key) uses `fields` and `invalidation` as provider-level sub-tables directly
-                // (see FlatProviderConfig::{fields, invalidation}) — they are not
-                // per-source blocks. Skip them here so they aren't flagged as
-                // unrecognized source blocks, mirroring parse_external_sources' skip
-                // logic. Scoped to the no-`backend`-key case so Phase 4 `backend = "..."`
-                // providers (which declare real sources, not these keys) are unaffected.
+                // Not a source block: the flat shape's `fields` and
+                // `invalidation`, or a `headers` table of plain strings (the
+                // removed http key, reported above). Scoped to external
+                // backends without a `backend` key, as the flat shape is.
+                let sub_table = sub_val.as_table().unwrap();
                 if is_external_backend
                     && table.get("backend").is_none()
-                    && matches!(sub_key.as_str(), "fields" | "invalidation")
+                    && !Self::is_source_block(sub_key, sub_table)
                 {
                     continue;
                 }
 
                 // sub_key is a potential source name.
-                let sub_table = sub_val.as_table().unwrap();
                 let block_name = format!("[providers.{prov_name}.{sub_key}]");
 
                 if is_external_backend {
                     // Phase 4 multi-source: validate using ExternalSourceConfig parser
-                    // (which accepts backend-specific declaration keys).
+                    // (which accepts the library declaration key, `fields`).
                     if let Err(e) = ExternalSourceConfig::from_toml_table(&block_name, sub_table) {
                         errors.push(e);
                     }
@@ -1658,8 +1590,8 @@ impl Config {
     }
 
     /// Load environment variables from the configured env file (or default path).
-    /// Sets them in the process environment so they're available to ${VAR} expansion
-    /// in HTTP headers and the commands a Source's data runs.
+    /// Sets them in the process environment, so they reach a Source's lines as
+    /// `env.VAR` (an unset one renders empty) and the commands its `exec()` runs.
     /// Returns the number of variables loaded.
     pub fn load_env_file(&self) -> usize {
         let path = match &self.daemon.env_file {

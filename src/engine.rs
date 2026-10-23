@@ -5,7 +5,7 @@
 //! `ureq` and `libloading` stay out of every SDK's native library; a client
 //! template calling either gets minijinja's unknown-function error.
 
-use crate::boundaries::http::{HttpFetcher, UreqHttpFetcher};
+use crate::boundaries::http;
 use crate::boundaries::library::{LibraryLoader, LoadedLibrary};
 use libbeachcomber::engine::{EngineCtx, build_engine_env, expand_home, op_error};
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
@@ -221,15 +221,14 @@ fn url(address: MjValue, kwargs: Kwargs) -> Result<MjValue, Error> {
         .unwrap_or(10_000);
     kwargs.assert_all_used()?;
 
-    let response = UreqHttpFetcher
-        .fetch(
-            method,
-            address.to_string(),
-            headers,
-            body,
-            Duration::from_millis(timeout_ms),
-        )
-        .map_err(|e| op_error(format!("url(): {shown}: {e}")))?;
+    let response = http::fetch(
+        &method,
+        address,
+        &headers,
+        body,
+        Duration::from_millis(timeout_ms),
+    )
+    .map_err(|e| op_error(format!("url(): {shown}: {e}")))?;
     if !(200..300).contains(&response.status) {
         return Err(op_error(format!(
             "url(): {shown}: status {}",

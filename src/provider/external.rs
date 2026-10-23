@@ -1,4 +1,4 @@
-//! Source metadata for the external backends (http, library), built from a
+//! Source metadata for the library backend, built from a
 //! `[providers.<p>.<s>]` table.
 
 use crate::config::{ExternalFieldDecl, ExternalSourceConfig};

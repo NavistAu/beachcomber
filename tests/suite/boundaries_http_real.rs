@@ -1,27 +1,18 @@
-//! Real-implementation tests for `UreqHttpFetcher` using a mockito HTTP server.
+//! Tests for `boundaries::http::fetch` against a mockito HTTP server: the
+//! real ureq-backed request, which `url()` is the only caller of.
 //!
-//! These tests exercise the actual ureq-backed implementation (not the `StubFetcher`
-//! used in `provider_http_seams.rs`) to push `src/boundaries/http.rs` coverage
-//! from 0% to 75%+.
-//!
-//! Coverage paths exercised:
-//!   - GET request happy path (200)
-//!   - GET request with 404 (returned as a response; the caller judges the status)
-//!   - POST with request body
-//!   - PUT with request body
-//!   - PATCH with request body
-//!   - Custom request headers propagated to server
-//!   - Response headers returned in HttpResponse
-//!   - Timeout: fetcher returns Err when server is slow
-//!   - Connection refused: fetcher returns Err
+//! Paths exercised:
+//!   - GET happy path (200)
+//!   - 4xx and 5xx returned as responses; the caller judges the status
+//!   - POST, PUT and PATCH with a request body
+//!   - Custom request headers propagated to the server
+//!   - A method outside GET, POST, PUT and PATCH is an error and sends nothing
+//!   - Timeout: an Err when the server is slow
+//!   - Connection refused: an Err
 
-use beachcomber::boundaries::http::{HttpFetcher, UreqHttpFetcher};
+use beachcomber::boundaries::http::fetch;
 use mockito::Server;
 use std::time::Duration;
-
-fn fetcher() -> UreqHttpFetcher {
-    UreqHttpFetcher
-}
 
 // ── GET 200 with text body ────────────────────────────────────────────────────
 
@@ -37,7 +28,7 @@ fn get_200_returns_ok_with_body() {
         .create();
 
     let url = format!("{}/hello", server.url());
-    let result = fetcher().fetch("GET".to_string(), url, vec![], None, Duration::from_secs(5));
+    let result = fetch("GET", &url, &[], None, Duration::from_secs(5));
 
     let resp = result.expect("GET 200 must succeed");
     assert_eq!(resp.status, 200);
@@ -58,9 +49,7 @@ fn get_404_returns_the_response() {
         .create();
 
     let url = format!("{}/missing", server.url());
-    let resp = fetcher()
-        .fetch("GET".to_string(), url, vec![], None, Duration::from_secs(5))
-        .expect("a 404 is a response");
+    let resp = fetch("GET", &url, &[], None, Duration::from_secs(5)).expect("a 404 is a response");
 
     assert_eq!(resp.status, 404);
     assert_eq!(resp.body, b"not found");
@@ -76,9 +65,7 @@ fn get_500_returns_the_response() {
         .create();
 
     let url = format!("{}/boom", server.url());
-    let resp = fetcher()
-        .fetch("GET".to_string(), url, vec![], None, Duration::from_secs(5))
-        .expect("a 500 is a response");
+    let resp = fetch("GET", &url, &[], None, Duration::from_secs(5)).expect("a 500 is a response");
 
     assert_eq!(resp.status, 500);
 }
@@ -98,10 +85,10 @@ fn post_with_body_sends_body() {
 
     let url = format!("{}/data", server.url());
     let body = br#"{"key":"value"}"#.to_vec();
-    let result = fetcher().fetch(
-        "POST".to_string(),
-        url,
-        vec![("content-type".to_string(), "application/json".to_string())],
+    let result = fetch(
+        "POST",
+        &url,
+        &[("content-type".to_string(), "application/json".to_string())],
         Some(body),
         Duration::from_secs(5),
     );
@@ -124,10 +111,10 @@ fn put_with_body_succeeds() {
         .create();
 
     let url = format!("{}/resource", server.url());
-    let result = fetcher().fetch(
-        "PUT".to_string(),
-        url,
-        vec![],
+    let result = fetch(
+        "PUT",
+        &url,
+        &[],
         Some(b"payload".to_vec()),
         Duration::from_secs(5),
     );
@@ -150,10 +137,10 @@ fn patch_with_body_succeeds() {
         .create();
 
     let url = format!("{}/resource", server.url());
-    let result = fetcher().fetch(
-        "PATCH".to_string(),
-        url,
-        vec![],
+    let result = fetch(
+        "PATCH",
+        &url,
+        &[],
         Some(b"delta".to_vec()),
         Duration::from_secs(5),
     );
@@ -177,44 +164,16 @@ fn custom_request_header_is_sent() {
         .create();
 
     let url = format!("{}/auth", server.url());
-    let result = fetcher().fetch(
-        "GET".to_string(),
-        url,
-        vec![("x-api-key".to_string(), "secret123".to_string())],
+    let result = fetch(
+        "GET",
+        &url,
+        &[("x-api-key".to_string(), "secret123".to_string())],
         None,
         Duration::from_secs(5),
     );
 
     let resp = result.expect("request with matching header must succeed");
     assert_eq!(resp.status, 200);
-}
-
-// ── Response headers returned in HttpResponse ─────────────────────────────────
-
-/// Response headers from the server must appear in `HttpResponse.headers`.
-#[test]
-fn response_headers_are_propagated() {
-    let mut server = Server::new();
-    let _mock = server
-        .mock("GET", "/headers")
-        .with_status(200)
-        .with_header("x-custom-header", "myvalue")
-        .with_body("")
-        .create();
-
-    let url = format!("{}/headers", server.url());
-    let result = fetcher().fetch("GET".to_string(), url, vec![], None, Duration::from_secs(5));
-
-    let resp = result.expect("GET must succeed");
-    let found = resp
-        .headers
-        .iter()
-        .any(|(k, v)| k.to_lowercase() == "x-custom-header" && v == "myvalue");
-    assert!(
-        found,
-        "response headers must include x-custom-header=myvalue, got: {:?}",
-        resp.headers
-    );
 }
 
 // ── Timeout ───────────────────────────────────────────────────────────────────
@@ -241,13 +200,7 @@ fn timeout_returns_err() {
         .create();
 
     let url = format!("{}/slow", server.url());
-    let result = fetcher().fetch(
-        "GET".to_string(),
-        url,
-        vec![],
-        None,
-        Duration::from_millis(100),
-    );
+    let result = fetch("GET", &url, &[], None, Duration::from_millis(100));
 
     // Unblock before asserting: an unwinding assert would otherwise drop the
     // server (which joins its handler) ahead of the sender.
@@ -272,11 +225,32 @@ fn connection_refused_returns_err() {
     drop(listener);
 
     let url = format!("http://127.0.0.1:{}/anything", port);
-    let result = fetcher().fetch("GET".to_string(), url, vec![], None, Duration::from_secs(2));
+    let result = fetch("GET", &url, &[], None, Duration::from_secs(2));
 
     assert!(
         result.is_err(),
         "connection refused must return Err, got: {:?}",
         result
     );
+}
+
+// ── Unknown method ───────────────────────────────────────────────────────────
+
+/// A method outside GET, POST, PUT and PATCH is an error; it is never sent as
+/// a GET.
+#[test]
+fn an_unknown_method_is_an_error() {
+    let mut server = Server::new();
+    let mock = server
+        .mock("GET", "/anything")
+        .with_status(200)
+        .expect(0)
+        .create();
+
+    let url = format!("{}/anything", server.url());
+    let err = fetch("DELETE", &url, &[], None, Duration::from_secs(5))
+        .expect_err("DELETE is not a supported method");
+
+    assert!(err.contains("DELETE"), "the error names the method: {err}");
+    mock.assert();
 }

@@ -358,3 +358,29 @@ fn plugin_failures_are_distinct_through_a_real_cdylib() {
         .to_string();
     assert!(bad.contains("returned invalid JSON"), "{bad}");
 }
+
+/// A library provider whose name a built-in already holds fails to register:
+/// a warning `comb check config` shows, not a load error, and the built-in
+/// stays.
+#[test]
+fn a_library_that_fails_to_register_is_a_warning_check_shows() {
+    use beachcomber::config::Config;
+    use beachcomber::provider::registry::ProviderRegistry;
+
+    let path = ensure_fixture_built().canonicalize().unwrap();
+    let config: Config = toml::from_str(&format!(
+        "[providers.git]\nbackend = \"library\"\nlibrary_path = {:?}\n",
+        path.to_str().unwrap()
+    ))
+    .unwrap();
+    let load = ProviderRegistry::load(&config, &Default::default(), true);
+    assert!(load.errors.is_empty(), "{:?}", load.errors);
+    assert!(
+        load.warnings.iter().any(|w| w
+            .contains("Failed to register multi-source library provider 'git'")
+            && w.contains("already registered")),
+        "{:?}",
+        load.warnings
+    );
+    assert!(load.registry.is_registered("git"));
+}

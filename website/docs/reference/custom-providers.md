@@ -175,93 +175,68 @@ return = "{{ result | poll('10s') }}"
 
 Query: `comb g vpn.active`
 
-## HTTP Providers
+## HTTP
 
-For providers that fetch data from REST APIs, beachcomber has a built-in HTTP provider type. This makes HTTP requests directly in the daemon process — no `curl` fork, no shell spawning, with connection reuse and proper timeout handling.
+A Source fetches over HTTP by calling `url()` in its `data` line. The request is made in the daemon process — no `curl` fork, no shell spawning, with proper timeout handling. `url(address, method='GET', headers={}, body=none, timeout_ms=10000)` returns the response body as text; pipe it through `fromjson` to get a value `result` can read. `method` is `GET`, `POST`, `PUT` or `PATCH`. A non-2xx status fails the render, so the Source's execute fails and its `failback` applies.
 
-> **Note:** You can also use a Source whose `data` calls `exec('curl …')` for quick-and-dirty HTTP queries. But for anything polling regularly, the `http` type is significantly more efficient — it avoids 2-6ms of process spawn overhead per request.
+> **Note:** `exec('curl …')` also works for a quick query, but for anything polling regularly `url()` avoids the 2-6ms process spawn per request.
 
 **Basic API status check:**
 
 ```toml
-[providers.claude_status]
-type = "http"
-url = "https://status.anthropic.com/api/v2/summary.json"
-extract = "status"
-invalidation = { poll = "60s" }
+[daemon.providers.claude_status.sources.summary]
+data = "{{ url('https://status.anthropic.com/api/v2/summary.json') | fromjson }}"
+result.indicator = "{{ data.status.indicator }}"
+return = "{{ result | poll('60s') }}"
 ```
 
 Query: `comb g claude_status.indicator` returns `"none"`, `"minor"`, `"major"`, etc.
 
-The `extract` field navigates into the JSON response using dot-separated paths. Without it, the entire response object becomes the provider's fields.
+`result.<field>` lines pick fields out of the parsed response; `result = "{{ data.status }}"` instead makes the whole `status` object the provider's node.
 
 **Authenticated API with headers:**
 
 ```toml
-[providers.github_rate]
-type = "http"
-url = "https://api.github.com/rate_limit"
-headers = { Authorization = "Bearer ${GITHUB_TOKEN}", Accept = "application/json" }
-extract = "rate"
-invalidation = { poll = "30s" }
+[daemon.providers.github_rate.sources.main]
+data = "{{ url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN, 'Accept': 'application/json'}) | fromjson }}"
+result = "{{ data.rate }}"
+return = "{{ result | poll('30s') }}"
 ```
 
 Query: `comb g github_rate.remaining`
 
-Header values support `${ENV_VAR}` expansion — secrets stay in your environment, not in config files.
+Secrets stay in the daemon's environment (`env.GITHUB_TOKEN`), not in config files.
 
 **Service health endpoint:**
 
 ```toml
-[providers.api_health]
-type = "http"
-url = "https://internal.example.com/health"
-invalidation = { poll = "10s" }
+[daemon.providers.api_health.sources.main]
+data = "{{ url('https://internal.example.com/health') | fromjson }}"
+result = "{{ data }}"
+return = "{{ result | poll('10s') }}"
 ```
 
-If the endpoint returns JSON, top-level keys become fields. If it returns non-JSON, the raw body is available as the `body` field.
+If the endpoint returns JSON, its top-level keys become fields. For a non-JSON body, leave out `fromjson` and set `result.body = "{{ data }}"`.
 
 **Exchange rate (infrequent poll):**
 
 ```toml
-[providers.exchange]
-type = "http"
-url = "https://api.exchangerate-api.com/v4/latest/USD"
-extract = "rates.AUD"
-invalidation = { poll = "86400s" }
+[daemon.providers.exchange.sources.main]
+data = "{{ url('https://api.exchangerate-api.com/v4/latest/USD') | fromjson }}"
+result.value = "{{ data.rates.AUD }}"
+return = "{{ result | poll('86400s') }}"
 ```
 
 Query: `comb g exchange.value` — returns the AUD rate, refreshed daily.
 
-**Comparison — `exec('curl')` vs HTTP for the same task:**
-
-Using a Source (forks `sh` + `curl` every poll):
-```toml
-[daemon.providers.api_status_script.sources.main]
-data = "{{ exec('curl -s https://status.anthropic.com/api/v2/summary.json') | fromjson }}"
-result = "{{ data }}"
-return = "{{ result | poll('60s') }}"
-```
-
-Using the HTTP provider (in-process, no fork):
-```toml
-[providers.api_status_http]
-type = "http"
-url = "https://status.anthropic.com/api/v2/summary.json"
-invalidation = { poll = "60s" }
-```
-
-Both produce the same result. The HTTP version skips the ~5ms process spawn overhead and handles connection failures more gracefully.
-
 ### Failure handling and timeouts
 
-HTTP providers share the same lifecycle as config Sources:
+A Source that calls `url()` has the same lifecycle as any config Source:
 
-- **`provider_timeout_secs`** (default `10`, set under `[daemon]`) — the maximum time a single request may take. Requests that exceed this are cancelled and the last good cached value is retained.
-- **`failback_count`** (default `3`) — the number of consecutive failures before the provider enters exponential backoff (up to 60s). Applies to any non-2xx response, connection error, or timeout.
-- **`failback_interval`** (default `"1s"`) — the wait between retry attempts before backoff kicks in.
+- **`provider_timeout_secs`** (default `10`, set under `[daemon]`) — the maximum time a single execute may take; `url()` also takes its own `timeout_ms=` (default `10000`). A request that exceeds the limit fails and the last good cached value is retained.
+- **`failback(count, interval)`** on the `return` line (the shipped default is `failback(3, '1s')`) — after `count` consecutive failures the Source backs off exponentially, the first step being `interval` and the cap 8× `interval` (8 s with the shipped default). Attempts before the count are not delayed. A non-2xx response, a connection error and a timeout all count.
 
-All three can be overridden per-source under `[providers.<name>.<source>]`. A transient 5xx or network error will not remove the last cached value — consumers will see `stale: true` on the wire (`comb g.j <provider>:cache.<field>` from the CLI) once the value is past its expected refresh time.
+A transient 5xx or network error will not remove the last cached value — consumers will see `stale: true` on the wire (`comb g.j <provider>:cache.<field>` from the CLI) once the value is past its expected refresh time.
 
 ## Shared Library Providers
 
@@ -283,7 +258,7 @@ See the [Provider Development Guide](/docs/internals/provider-development#8-shar
 
 ## Secrets and Environment Variables
 
-HTTP headers support `${VAR}` expansion, and a Source's `data` line sees the daemon's environment as `env` (a shell command run by `exec` inherits it), pulling values from the daemon's environment. But the daemon's environment depends on how it starts — socket activation inherits the env of whatever triggered it, which is unpredictable.
+A Source's `data` line sees the daemon's environment as `env` (a shell command run by `exec` inherits it), pulling values from the daemon's environment. But the daemon's environment depends on how it starts — socket activation inherits the env of whatever triggered it, which is unpredictable.
 
 The solution: **env files.** The daemon loads `~/.config/beachcomber/env` at startup before any providers execute, guaranteeing a consistent environment regardless of how the daemon was started.
 
@@ -304,17 +279,16 @@ EXCHANGE_API_KEY=abc123
 chmod 600 ~/.config/beachcomber/env
 ```
 
-Then reference these in provider configs:
+Then reference these in a Source's `data` line:
 
 ```toml
-[providers.github_rate]
-type = "http"
-url = "https://api.github.com/rate_limit"
-headers = { Authorization = "Bearer ${GITHUB_TOKEN}" }
-invalidation = { poll = "30s" }
+[daemon.providers.github_rate.sources.main]
+data = "{{ url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN}) | fromjson }}"
+result = "{{ data.rate }}"
+return = "{{ result | poll('30s') }}"
 ```
 
-The `${GITHUB_TOKEN}` is expanded at request time from the daemon's environment (which includes the env file values).
+`env.GITHUB_TOKEN` comes from the daemon's environment as it stood when the daemon started, after the env file loaded. An unset variable renders empty, so `'Bearer ' ~ env.GITHUB_TOKEN` sends `Bearer ` and the API refuses it.
 
 **Custom env file path:** If you keep secrets elsewhere:
 
