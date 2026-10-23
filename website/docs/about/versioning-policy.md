@@ -82,4 +82,4 @@ These may change in any release without a version bump:
 - Benchmark results and internal performance characteristics
 - Internal module structure and private APIs
 - Daemon process management details (PID file location, fork behavior)
-- Script provider execution internals (as long as the config contract is maintained)
+- Config Source execution internals (as long as the config contract is maintained)

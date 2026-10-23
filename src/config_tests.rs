@@ -472,28 +472,6 @@ failure_reattempts = 5
 }
 
 #[test]
-fn external_backend_flat_keys_accepted() {
-    // script/library/http providers still accept legacy flat keys until Phase 4.
-    let toml_str = r#"
-[providers.my_api]
-type = "script"
-command = "echo hi"
-failure_reattempts = 5
-poll_interval = "10s"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers: Vec<String> = vec![];
-    let known_sources = std::collections::HashMap::new();
-    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    // External backends (with type = "script") are exempt from old-shape rejection.
-    assert!(
-        errors.is_empty(),
-        "script provider flat keys should not produce errors: {:?}",
-        errors
-    );
-}
-
-#[test]
 fn unknown_source_on_known_provider_warns_not_errors() {
     // Known provider, unknown source name → warn (cross-platform support).
     let toml_str = r#"
@@ -575,7 +553,7 @@ fn fsevent_lifespan_is_an_unknown_key_in_a_built_in_source_block() {
 #[test]
 fn fsevent_lifespan_is_an_unknown_key_in_an_external_source_block_parser() {
     let table: toml::Table =
-        toml::from_str("command = \"true\"\nfsevent_lifespan = \"300s\"\n").unwrap();
+        toml::from_str("url = \"https://x\"\nfsevent_lifespan = \"300s\"\n").unwrap();
     assert_unknown_key(
         &crate::config::ExternalSourceConfig::from_toml_table("p.main", &table).unwrap_err(),
     );
@@ -711,81 +689,6 @@ failback_interval = "500ms"
 }
 
 #[test]
-fn script_provider_per_field_scope_overrides_provider_default() {
-    // Script providers still use flat provider-level keys for their backend config.
-    let toml = r#"
-[providers.example]
-type = "script"
-command = "echo hello"
-scope = "path"
-
-[providers.example.fields.branch]
-type = "string"
-
-[providers.example.fields.status]
-type = "string"
-scope = "global"
-"#;
-    let config: Config = toml::from_str(toml).unwrap();
-    let providers = config.script_providers();
-    let (_, p) = providers
-        .iter()
-        .find(|(n, _)| n == "example")
-        .expect("example present");
-
-    let branch_scope = crate::config::resolve_field_scope(p, "branch");
-    let status_scope = crate::config::resolve_field_scope(p, "status");
-
-    assert_eq!(branch_scope, crate::provider::FieldScope::PathScoped);
-    assert_eq!(status_scope, crate::provider::FieldScope::Global);
-}
-
-#[test]
-fn script_provider_legacy_simple_fields_inherit_provider_scope() {
-    let toml = r#"
-[providers.legacy]
-type = "script"
-command = "echo hi"
-scope = "path"
-fields = { branch = "string", dirty = "bool" }
-"#;
-    let config: Config = toml::from_str(toml).unwrap();
-    let providers = config.script_providers();
-    let (_, p) = providers
-        .iter()
-        .find(|(n, _)| n == "legacy")
-        .expect("legacy present");
-    assert_eq!(
-        crate::config::resolve_field_scope(p, "branch"),
-        crate::provider::FieldScope::PathScoped
-    );
-    assert_eq!(
-        crate::config::resolve_field_scope(p, "dirty"),
-        crate::provider::FieldScope::PathScoped
-    );
-}
-
-#[test]
-fn script_provider_default_scope_is_global_when_not_declared() {
-    let toml = r#"
-[providers.noscope]
-type = "script"
-command = "echo hi"
-fields = { branch = "string" }
-"#;
-    let config: Config = toml::from_str(toml).unwrap();
-    let providers = config.script_providers();
-    let (_, p) = providers
-        .iter()
-        .find(|(n, _)| n == "noscope")
-        .expect("noscope present");
-    assert_eq!(
-        crate::config::resolve_field_scope(p, "branch"),
-        crate::provider::FieldScope::Global
-    );
-}
-
-#[test]
 fn unknown_key_in_source_block_produces_error() {
     // [providers.git.refs] with an unknown key must error.
     let toml_str = r#"
@@ -829,36 +732,6 @@ fsevent_patterns = [".git"]
 }
 
 // ── Phase 4 external backend TOML validation tests ──────────────────────────
-
-#[test]
-fn backend_script_source_blocks_accepted_in_validate() {
-    // `backend = "script"` providers with per-source sub-tables should pass validate_providers.
-    let toml_str = r#"
-[providers.localdash]
-backend = "script"
-
-[providers.localdash.weather]
-command = "/usr/bin/weather"
-type = "poll"
-scope = "global"
-poll_interval = "10m"
-poll_count = 3
-
-[providers.localdash.disk]
-command = "/usr/bin/disk"
-type = "poll"
-scope = "global"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers: Vec<String> = vec![];
-    let known_sources = std::collections::HashMap::new();
-    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        errors.is_empty(),
-        "backend = script provider must not produce validation errors: {:?}",
-        errors
-    );
-}
 
 #[test]
 fn backend_http_source_blocks_accepted_in_validate() {
@@ -907,44 +780,18 @@ poll_count = 6
     );
 }
 
-#[test]
-fn backend_script_invalid_source_key_produces_error() {
-    // An unknown key in a source sub-table of an external backend must error.
-    let toml_str = r#"
-[providers.myprov]
-backend = "script"
-
-[providers.myprov.src]
-command = "/usr/bin/cmd"
-not_a_valid_key = "oops"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers: Vec<String> = vec![];
-    let known_sources = std::collections::HashMap::new();
-    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        !errors.is_empty(),
-        "unknown key in external source block must produce an error"
-    );
-    assert!(
-        errors[0].contains("not_a_valid_key"),
-        "error names the unknown key: {:?}",
-        errors
-    );
-}
-
-// ── Legacy flat external backend TOML validation tests ──────────────────────
+// ── Flat external backend TOML validation tests ──────────────────────
 
 #[test]
-fn legacy_flat_script_provider_fields_and_invalidation_accepted_in_validate() {
-    // Legacy flat shape: bare top-level `command`, no `backend` key. `fields`
+fn flat_http_provider_fields_and_invalidation_accepted_in_validate() {
+    // Flat shape: `type = "http"`, no `backend` key. `fields`
     // and `invalidation` are provider-level sub-tables in this shape (see
-    // ScriptProviderConfig::{fields, invalidation}), not per-source blocks —
+    // FlatProviderConfig::{fields, invalidation}), not per-source blocks —
     // validate_providers must not flag them as unrecognized source blocks.
     let toml_str = r#"
 [providers.chronoclaude]
-command = "comb eval '{{ scanline.stdin }}' | '/path/statusline'"
-output = "text"
+type = "http"
+url = "https://example.com/statusline"
 fields = { value = "string" }
 
 [providers.chronoclaude.invalidation]
@@ -964,14 +811,14 @@ poll = "1s"
 }
 
 #[test]
-fn legacy_flat_provider_unknown_subtable_still_errors() {
-    // A genuinely unrecognized sub-table on a legacy flat provider must still
+fn flat_provider_unknown_subtable_still_errors() {
+    // A genuinely unrecognized sub-table on a flat provider must still
     // be rejected — the fields/invalidation carve-out must not swallow
     // everything.
     let toml_str = r#"
 [providers.chronoclaude]
-command = "/path/statusline"
-output = "text"
+type = "http"
+url = "https://example.com/statusline"
 
 [providers.chronoclaude.bogus]
 not_a_real_key = "junk"
@@ -982,33 +829,7 @@ not_a_real_key = "junk"
     let (_, errors) = config.validate_providers(&known_providers, &known_sources);
     assert!(
         !errors.is_empty(),
-        "unknown sub-table on legacy flat provider must still produce an error"
-    );
-}
-
-#[test]
-fn backend_script_fields_subtable_still_errors() {
-    // A Phase 4 `backend = "script"` block does not use provider-level
-    // `fields`/`invalidation` sub-tables — the legacy-flat carve-out must not
-    // extend to explicit-backend providers, so this behaves exactly as it
-    // did before the fix (no scope creep onto Phase 4 validation).
-    let toml_str = r#"
-[providers.localdash]
-backend = "script"
-fields = { value = "string" }
-
-[providers.localdash.weather]
-command = "/usr/bin/weather"
-type = "poll"
-"#;
-    let config: Config = toml::from_str(toml_str).unwrap();
-    let known_providers: Vec<String> = vec![];
-    let known_sources = std::collections::HashMap::new();
-    let (_, errors) = config.validate_providers(&known_providers, &known_sources);
-    assert!(
-        !errors.is_empty(),
-        "backend = script provider with a stray provider-level 'fields' sub-table \
-         must still error, unchanged from pre-fix behavior"
+        "unknown sub-table on a flat provider must still produce an error"
     );
 }
 
@@ -1022,9 +843,8 @@ fn validate_providers_rejects_a_virtual_subtable_naming_the_template_facet() {
     // spelling of the same table. The check runs before the provider's kind
     // is consulted, so every kind gets the same error: a namespace no
     // provider stands behind (`conda`), a builtin with a real source block
-    // beside it (`git`), a `backend = "script"`, a `backend = "library"`,
-    // and a legacy bare-`command` provider. Nothing else in the file is
-    // wrong, so these five are the whole verdict.
+    // beside it (`git`), and a `backend = "library"`. Nothing else in the file
+    // is wrong, so these three are the whole verdict.
     let toml_str = r#"
 [providers.conda]
 virtual.env = "{{ env.CONDA_DEFAULT_ENV }}"
@@ -1037,14 +857,6 @@ type = "poll"
 poll_interval = "30s"
 poll_count = 12
 
-[providers.localdash]
-backend = "script"
-virtual.label = "{{ localdash.weather }}"
-
-[providers.localdash.weather]
-command = "/usr/bin/weather"
-type = "poll"
-
 [providers.mygpu]
 backend = "library"
 library_path = "/usr/local/lib/libgpu.dylib"
@@ -1052,11 +864,6 @@ virtual.label = "{{ mygpu.usage }}"
 
 [providers.mygpu.usage]
 poll_interval = "5s"
-
-[providers.chronoclaude]
-command = "/path/statusline"
-output = "text"
-virtual.label = "{{ chronoclaude.value }}"
 "#;
     let config: Config = toml::from_str(toml_str).expect("valid toml");
     let known_providers = vec!["git".to_string()];
@@ -1066,7 +873,7 @@ virtual.label = "{{ chronoclaude.value }}"
         vec!["diff".to_string(), "refs".to_string(), "status".to_string()],
     );
     let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
-    let expected: Vec<String> = ["chronoclaude", "conda", "git", "localdash", "mygpu"]
+    let expected: Vec<String> = ["conda", "git", "mygpu"]
         .iter()
         .map(|p| {
             format!(
@@ -1491,6 +1298,351 @@ fn settings_only_keeps_a_non_cache_sibling_as_a_setting() {
     );
 }
 
+// ── Script providers are gone; config Sources replace them ───────────────────
+
+/// A `Config` composed from the shipped `00-comb.toml` and then `user`, as the
+/// daemon composes defaults and `config.toml`.
+pub(crate) fn with_shipped_defaults(user: &str) -> Config {
+    let (_, shipped) = crate::daemon::defaults::SHIPPED
+        .iter()
+        .find(|(name, _)| *name == "00-comb.toml")
+        .expect("00-comb.toml is shipped");
+    let mut base: toml::Value = toml::from_str(shipped).unwrap();
+    crate::config::deep_merge_toml(&mut base, toml::from_str(user).expect("valid toml"));
+    use serde::Deserialize;
+    Config::deserialize(base).unwrap()
+}
+
+/// The load errors of `user` composed over the shipped defaults, against the
+/// built-in providers.
+fn source_errors(user: &str) -> Vec<String> {
+    let config = with_shipped_defaults(user);
+    ProviderRegistry::with_config(&config, &Default::default())
+        .err()
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_script_provider_is_an_error() {
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "flat type",
+            "[providers.p]\ntype = \"script\"\ncommand = \"echo hi\"\n",
+            &["type = \"script\"", "unknown key 'command'"],
+        ),
+        (
+            "multi-source backend",
+            "[providers.p]\nbackend = \"script\"\n[providers.p.s]\ncommand = \"echo\"\n",
+            &["backend = \"script\""],
+        ),
+        (
+            "a bare command",
+            "[providers.p]\ncommand = \"echo hi\"\noutput = \"text\"\n",
+            &["unknown key 'command'"],
+        ),
+        (
+            "a provider-level output on an http provider",
+            "[providers.st]\ntype = \"http\"\nurl = \"https://x\"\noutput = \"kv\"\n",
+            &["unknown key 'output'"],
+        ),
+        (
+            "a provider-level output on a built-in",
+            "[providers.git]\noutput = \"json\"\n",
+            &["unknown key 'output'"],
+        ),
+    ];
+    for (name, toml_str, wants) in cases {
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let (_, errors) = config.validate_providers(&[], &Default::default());
+        for want in *wants {
+            assert!(
+                errors.iter().any(|e| e.contains(want)),
+                "{name}: expected an error naming {want:?}, got {errors:?}"
+            );
+        }
+        assert!(
+            errors
+                .iter()
+                .all(|e| e.contains("[daemon.providers.<p>.sources.<s>]")),
+            "{name}: each error says where script providers went: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn a_script_only_key_in_an_http_source_block_is_an_unknown_key() {
+    for key in ["command", "output"] {
+        let table: toml::Table =
+            toml::from_str(&format!("url = \"https://x\"\n{key} = \"y\"\n")).unwrap();
+        let err = crate::config::ExternalSourceConfig::from_toml_table("p.s", &table).unwrap_err();
+        assert!(err.contains(&format!("unknown key '{key}'")), "{err}");
+    }
+}
+
+#[test]
+fn an_unknown_key_in_a_source_table_is_an_error() {
+    let errors = seeded_errors(
+        "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\ncommand = \"echo\"\npoll = 5\n",
+    );
+    assert_eq!(
+        errors,
+        vec![
+            "unknown key 'command' in [daemon.providers.demo.sources.s]".to_string(),
+            "unknown key 'poll' in [daemon.providers.demo.sources.s]".to_string(),
+        ]
+    );
+    // The provider table fences too: `template`, `result`, `return` arrive later.
+    assert_eq!(
+        seeded_errors("[daemon.providers.demo]\nreturn = \"x\"\n"),
+        vec!["unknown key 'return' in [daemon.providers.demo]".to_string()]
+    );
+}
+
+#[test]
+fn a_source_line_that_is_not_a_string_is_an_error() {
+    let errors = seeded_errors(
+        "[daemon.providers.demo.sources.s]\ndata = 5\nresult.a = true\nreturn = []\n",
+    );
+    assert_eq!(errors.len(), 3, "{errors:?}");
+    assert!(errors[0].contains("data must be a string"), "{errors:?}");
+}
+
+#[test]
+fn a_builtin_source_table_takes_no_keys_yet() {
+    let errors = source_errors(
+        "[daemon.providers.git.sources.diff]\ndata = \"{{ 1 }}\"\nresult.x = \"{{ 1 }}\"\n",
+    );
+    assert_eq!(
+        errors,
+        vec![
+            "git.diff is a built-in Source: only return can be set until it is shipped as config"
+                .to_string()
+        ]
+    );
+    let errors = source_errors(
+        "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('5s') }}\"\n",
+    );
+    assert_eq!(
+        errors,
+        vec!["unknown key 'return' in [daemon.providers.git.sources.diff]".to_string()]
+    );
+}
+
+#[test]
+fn duplicate_fields_under_the_default_merge_are_a_load_error() {
+    let errors = source_errors(
+        r#"
+[daemon.providers.demo.sources.a]
+data = "{{ 1 }}"
+result.same = "{{ data }}"
+[daemon.providers.demo.sources.b]
+data = "{{ 2 }}"
+result.same = "{{ data }}"
+"#,
+    );
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    for named in ["demo", "same", "'a'", "'b'"] {
+        assert!(errors[0].contains(named), "names {named}: {errors:?}");
+    }
+    // A new Source of a built-in provider may not take one of its fields.
+    let errors = source_errors(
+        "[daemon.providers.git.sources.mine]\ndata = \"{{ 1 }}\"\nresult.branch = \"{{ data }}\"\n",
+    );
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("'branch'") && errors[0].contains("'mine'"),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_broken_prototype_return_line_is_a_load_error_naming_its_table() {
+    // No Source uses it, and no `| super` reaches it.
+    let errors = source_errors(
+        "[daemon.providers._.sources._]\nreturn = \"{{ result | poll('banana') }}\"\n",
+    );
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].starts_with("[daemon.providers._.sources._] return: poll()"),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_return_failure_names_the_table_that_failed_not_the_sources() {
+    let errors = source_errors(
+        r#"
+[daemon.providers.demo.sources._]
+return = "{{ result | poll('banana') }}"
+[daemon.providers.demo.sources.s]
+data = "{{ 1 }}"
+result = "{{ data }}"
+return = "{{ result | super }}"
+"#,
+    );
+    assert_eq!(
+        errors.len(),
+        1,
+        "the prototype and the Source agree: {errors:?}"
+    );
+    assert!(
+        errors[0].starts_with("[daemon.providers.demo.sources._] return: poll()"),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_source_with_no_return_anywhere_is_watch_only_with_the_engine_defaults() {
+    // No shipped defaults here, so no `_` above the Source sets a return:
+    // poll and watch are opt-in, failback and budget are always on.
+    let config: Config = toml::from_str(
+        "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ data }}\"\n",
+    )
+    .unwrap();
+    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
+    let meta = &registry.provider_sources("demo").unwrap()[0];
+    assert_eq!(
+        meta.invalidation,
+        crate::provider::InvalidationStrategy::Watch {
+            patterns: vec![],
+            abs_paths: vec![]
+        }
+    );
+    assert_eq!(
+        (meta.failback.reattempts, meta.failback.interval_secs),
+        (
+            crate::scheduler::lifecycle::DEFAULT_FAILBACK_COUNT,
+            crate::scheduler::lifecycle::DEFAULT_FAILBACK_INTERVAL_SECS
+        )
+    );
+    assert_eq!(
+        meta.budget_execute,
+        crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE
+    );
+}
+
+#[test]
+fn a_per_field_scope_in_a_flat_library_fields_table_is_an_error() {
+    let config: Config = toml::from_str(
+        r#"
+[providers.mylib]
+type = "library"
+library_path = "/x/libx.dylib"
+fields = { x = { type = "string", scope = "path" } }
+"#,
+    )
+    .unwrap();
+    let (_, errors) = config.validate_providers(&[], &Default::default());
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("scope") && errors[0].contains("fields.x"),
+        "{errors:?}"
+    );
+    // The provider-level scope stays valid, and so does a type-only table.
+    let ok: Config = toml::from_str(
+        "[providers.mylib]\ntype = \"library\"\nlibrary_path = \"/x\"\nscope = \"path\"\nfields = { x = { type = \"string\" }, y = \"int\" }\n",
+    )
+    .unwrap();
+    let (_, errors) = ok.validate_providers(&[], &Default::default());
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_wrong_type_in_a_prototype_is_the_file_checks_alone() {
+    let user = "[daemon.providers.demo.sources._]\ndata = 5\n\
+                [daemon.providers.demo.sources.s]\nresult = \"{{ data }}\"\n";
+    let file = seeded_errors(user);
+    assert_eq!(file.len(), 1, "{file:?}");
+    assert!(
+        file[0].contains("[daemon.providers.demo.sources._]"),
+        "{file:?}"
+    );
+    assert_eq!(
+        source_errors(user),
+        Vec::<String>::new(),
+        "the build does not report it a second time, naming the Source's table"
+    );
+}
+
+#[test]
+fn a_prototypes_lines_are_checked_at_load() {
+    let errors = source_errors("[daemon.providers.git.sources._]\ndata = \"{{ nope_name }}\"\n");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("nope_name") && errors[0].contains("[daemon.providers.git.sources._]"),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn knobs_on_a_config_source_are_an_error() {
+    let errors = source_errors(
+        "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ data }}\"\n\
+         [providers.demo.s]\npoll_interval = \"5s\"\nfailback_count = 2\n",
+    );
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("[providers.demo.s]")
+            && errors[0].contains("config Source")
+            && errors[0].contains("return"),
+        "{errors:?}"
+    );
+}
+
+/// Startup, the config watch's gate and `comb check config` load through one
+/// function; the library switch is the only difference.
+#[test]
+fn every_loader_builds_the_same_provider_set() {
+    let vars = Default::default();
+    for libraries in [true, false] {
+        // A disabled built-in is not a provider, so its name is free.
+        let config = with_shipped_defaults(
+            "[providers.git]\nenabled = false\n\
+             [daemon.providers.git.sources.refs]\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
+        );
+        let load = ProviderRegistry::load(&config, &vars, libraries);
+        assert!(load.errors.is_empty(), "{libraries}: {:?}", load.errors);
+
+        // An http provider's declared fields are known without any I/O.
+        let config = with_shipped_defaults(
+            "[providers.api]\nbackend = \"http\"\n\
+             [providers.api.stats]\nurl = \"https://x\"\ntype = \"fsevent\"\nfields = [{ name = \"up\", type = \"bool\" }]\n\
+             [daemon.providers.api.sources.mine]\ndata = \"{{ 1 }}\"\nresult.up = \"{{ data }}\"\n",
+        );
+        let load = ProviderRegistry::load(&config, &vars, libraries);
+        assert_eq!(load.errors.len(), 1, "{libraries}: {:?}", load.errors);
+        assert!(
+            load.errors[0].contains("'up'")
+                && load.errors[0].contains("'stats'")
+                && load.errors[0].contains("'mine'"),
+            "{:?}",
+            load.errors
+        );
+    }
+}
+
+#[test]
+fn a_provider_that_fails_to_register_is_a_warning_check_shows() {
+    // A multi-source http source on the default poll strategy declares
+    // `fsevents_reinstate` on a Poll strategy, which registration refuses.
+    let config = with_shipped_defaults(
+        "[providers.api]\nbackend = \"http\"\n\
+         [providers.api.stats]\nurl = \"https://x\"\nfields = [{ name = \"up\", type = \"bool\" }]\n",
+    );
+    for libraries in [true, false] {
+        let load = ProviderRegistry::load(&config, &Default::default(), libraries);
+        assert!(load.errors.is_empty(), "{:?}", load.errors);
+        assert!(
+            load.warnings.iter().any(|w| w
+                .contains("Failed to register multi-source HTTP provider 'api'")
+                && w.contains("fsevents_reinstate")),
+            "{:?}",
+            load.warnings
+        );
+        assert!(!load.registry.is_registered("api"));
+    }
+}
+
 // ── from tests/suite/config_overrides.rs ──────────
 
 #[test]
@@ -1500,7 +1652,7 @@ fn disabled_provider_not_registered() {
 enabled = false
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    let registry = ProviderRegistry::with_config(&config);
+    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
     assert!(
         registry.provider_sources("battery").is_none(),
         "Disabled provider should not be registered"
@@ -1512,7 +1664,7 @@ enabled = false
 #[test]
 fn all_providers_registered_by_default() {
     let config = Config::default();
-    let registry = ProviderRegistry::with_config(&config);
+    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
     assert!(registry.provider_sources("hostname").is_some());
     assert!(registry.provider_sources("user").is_some());
     assert!(registry.provider_sources("git").is_some());

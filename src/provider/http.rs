@@ -1,6 +1,6 @@
 use crate::boundaries::http::{HttpFetcher, HttpResponse, UreqHttpFetcher};
 use crate::config::{ExternalSourceConfig, HttpProviderConfig};
-use crate::provider::script::build_source_meta_from_external;
+use crate::provider::external::build_source_meta_from_external;
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
     Source, SourceMetadata, SourceResult, SourceScope, Value,

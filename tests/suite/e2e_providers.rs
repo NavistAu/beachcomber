@@ -51,24 +51,22 @@ async fn e2e_all_builtin_providers_registered() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_script_provider_from_config() {
+async fn e2e_config_source_from_config() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
 
+    // An in-process daemon loads no managed defaults, so the Source says its
+    // own schedule.
     let mut config = Config::default();
-    // Insert a script provider using the toml::Value representation.
-    let mut table = toml::Table::new();
-    table.insert(
-        "type".to_string(),
-        toml::Value::String("script".to_string()),
-    );
-    table.insert(
-        "command".to_string(),
-        toml::Value::String(r#"echo '{"greeting":"hello"}'"#.to_string()),
-    );
-    config
-        .providers
-        .insert("test_echo".to_string(), toml::Value::Table(table));
+    config.daemon.providers = toml::from_str(
+        r#"
+[test_echo.sources.main]
+data = "{{ exec(['echo', '{\"greeting\":\"hello\"}']) | fromjson }}"
+result = "{{ data }}"
+return = "{{ result | poll('60s') }}"
+"#,
+    )
+    .unwrap();
 
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
@@ -76,7 +74,7 @@ async fn e2e_script_provider_from_config() {
     let client = Client::new(sock.clone());
 
     let refresh = client.refresh("test_echo", None).unwrap();
-    assert!(refresh.ok, "Refresh script provider should succeed");
+    assert!(refresh.ok, "Refresh config Source should succeed");
 
     poll_until_eq(
         "test_echo.greeting after refresh",
@@ -92,7 +90,7 @@ async fn e2e_script_provider_from_config() {
 
     let result = fetch(&sock, "test_echo.greeting", None)
         .unwrap()
-        .expect("Should get script provider result");
+        .expect("Should get config Source result");
     assert_eq!(result.data.unwrap(), serde_json::json!("hello"));
 
     handle.abort();

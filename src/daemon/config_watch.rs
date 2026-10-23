@@ -10,7 +10,9 @@
 //! `[client.providers]` or a `[daemon.providers.<p>.cache]` table is reported
 //! as [`ChangeKind::FacetsOnly`] and the daemon re-seeds them in place;
 //! anything else is [`ChangeKind::Settings`] and the daemon restarts, because
-//! settings are read once at startup. The classifier is the composed TOML with
+//! settings are read once at startup. That includes a
+//! `[daemon.providers.<p>.sources]` edit: Sources are built at startup, and
+//! reloading them in place is a later change. The classifier is the composed TOML with
 //! those tables removed (`Config::settings_only`), compared before and after.
 //! (Reload does not track provider registration, in either direction: a
 //! provider newly named only in `[client.providers]` or `[daemon.providers]`
@@ -401,6 +403,20 @@ fn try_fire<F: FnMut(ChangeKind)>(
         );
         return;
     }
+    // The checks startup runs, so a config the daemon would refuse to start on
+    // is never restarted into. The running daemon keeps its configuration.
+    let errors = composed_errors(config_path, defaults_dir, conf_d_dir);
+    if !errors.is_empty() {
+        for e in &errors {
+            tracing::error!("{e}");
+        }
+        tracing::warn!(
+            "config file changed but does not load ({} error(s)); keeping current config, \
+             not restarting",
+            errors.len()
+        );
+        return;
+    }
     let next = settings_snapshot(config_path, defaults_dir, conf_d_dir);
     let kind = if next == *settings {
         ChangeKind::FacetsOnly
@@ -410,6 +426,28 @@ fn try_fire<F: FnMut(ChangeKind)>(
     *settings = next;
     tracing::info!("config file changed and parses cleanly ({kind:?})");
     on_change(kind);
+}
+
+/// What startup would refuse the composed configuration for: the one loader's
+/// errors (`ProviderRegistry::load`), without its libraries, which the watch
+/// must not `dlopen` a second time.
+fn composed_errors(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path) -> Vec<String> {
+    let layers = Config::layers(Some(defaults_dir), Some(config_path), conf_d_dir);
+    let mut composed = toml::Value::Table(Default::default());
+    for (_, layer) in layers {
+        crate::config::deep_merge_toml(&mut composed, layer);
+    }
+    let mut config = match composed.try_into::<Config>() {
+        Ok(config) => config,
+        Err(e) => {
+            return vec![format!(
+                "config: the composed configuration does not load: {e}"
+            )];
+        }
+    };
+    config.config_path = Some(config_path.to_path_buf());
+    let vars = std::env::vars().collect();
+    crate::provider::registry::ProviderRegistry::load(&config, &vars, false).errors
 }
 
 /// The composed configuration with the seeded tables removed — the half a
@@ -443,4 +481,119 @@ fn mtime_to_unix_ms(mtime: SystemTime) -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SOURCE: &str = "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\n\
+                          result = \"{{ data }}\"\nreturn = \"{{ result | poll('5s') }}\"\n";
+
+    /// A config directory holding `main` as `config.toml`.
+    struct Dir {
+        _tmp: tempfile::TempDir,
+        config: PathBuf,
+        settings: toml::Value,
+    }
+
+    impl Dir {
+        fn new(main: &str) -> Dir {
+            let tmp = tempfile::tempdir().unwrap();
+            let config = tmp.path().join("config.toml");
+            std::fs::write(&config, main).unwrap();
+            std::fs::create_dir(tmp.path().join("conf.d")).unwrap();
+            let mut dir = Dir {
+                _tmp: tmp,
+                config,
+                settings: toml::Value::Table(Default::default()),
+            };
+            dir.settings = settings_snapshot(&dir.config, &dir.defaults(), &dir.conf_d());
+            dir
+        }
+
+        fn defaults(&self) -> PathBuf {
+            Config::defaults_dir_for(&self.config)
+        }
+
+        fn conf_d(&self) -> PathBuf {
+            Config::conf_d_dir_for(&self.config)
+        }
+
+        fn write(&self, rel: &str, body: &str) {
+            std::fs::write(self.config.parent().unwrap().join(rel), body).unwrap();
+        }
+
+        /// What `try_fire` reports for the files as they are now.
+        fn fire(&mut self) -> Vec<ChangeKind> {
+            let mut got = Vec::new();
+            try_fire(
+                &self.config,
+                &self.defaults(),
+                &self.conf_d(),
+                &mut self.settings,
+                &mut |kind| got.push(kind),
+            );
+            got
+        }
+    }
+
+    #[test]
+    fn a_bad_return_in_conf_d_reports_nothing_and_fixing_it_reports_a_restart() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write(
+            "conf.d/10-mine.toml",
+            "[daemon.providers.demo.sources.s]\nreturn = \"{{ result | poll('banana') }}\"\n",
+        );
+        assert_eq!(
+            dir.fire(),
+            vec![],
+            "a return that does not load is not a restart"
+        );
+
+        dir.write(
+            "conf.d/10-mine.toml",
+            "[daemon.providers.demo.sources.s]\nreturn = \"{{ result | poll('9s') }}\"\n",
+        );
+        assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
+    }
+
+    #[test]
+    fn a_per_file_error_in_a_source_table_reports_nothing() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write("config.toml", &format!("{SOURCE}command = \"echo\"\n"));
+        assert_eq!(dir.fire(), vec![]);
+    }
+
+    #[test]
+    fn a_name_collision_with_a_loaded_provider_reports_nothing() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write(
+            "conf.d/10-mine.toml",
+            "[daemon.providers.git.sources.mine]\ndata = \"{{ 1 }}\"\n\
+             result.branch = \"{{ data }}\"\n",
+        );
+        assert_eq!(dir.fire(), vec![], "git declares `branch` already");
+    }
+
+    #[test]
+    fn a_source_on_a_disabled_builtin_is_not_a_collision() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write(
+            "conf.d/10-mine.toml",
+            "[providers.git]\nenabled = false\n\
+             [daemon.providers.git.sources.refs]\ndata = \"{{ 1 }}\"\nresult.branch = \"{{ data }}\"\n",
+        );
+        assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
+    }
+
+    #[test]
+    fn a_valid_edit_reports_its_kind() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write(
+            "conf.d/10-t.toml",
+            "[client.providers.x]\ntemplate.a = \"1\"\n",
+        );
+        assert_eq!(dir.fire(), vec![ChangeKind::FacetsOnly]);
+    }
 }

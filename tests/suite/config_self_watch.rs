@@ -357,3 +357,35 @@ fn cancelling_the_stop_token_ends_the_watch_thread() {
         "a stopped watch must report nothing"
     );
 }
+
+// ── a Source that would not load ────────────────────────────────────────────
+
+/// The gate that keeps the daemon up on a bad edit is unit-tested in
+/// `config_watch.rs` (`try_fire` is synchronous); this is the positive event,
+/// through the real watch: a Source file that loads restarts.
+#[test]
+fn a_fixed_return_in_conf_d_restarts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    std::fs::write(
+        &cfg,
+        "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ data }}\"\n",
+    )
+    .unwrap();
+    let conf_d = tmp.path().join("conf.d");
+    std::fs::create_dir_all(&conf_d).unwrap();
+    let mine = conf_d.join("10-mine.toml");
+
+    let (_watch, rx) = watch(cfg.clone(), 50);
+
+    std::fs::write(
+        &mine,
+        "[daemon.providers.demo.sources.s]\nreturn = \"{{ result | poll('9s') }}\"\n",
+    )
+    .unwrap();
+    touch_future(&mine);
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)),
+        Ok(ChangeKind::Settings)
+    );
+}

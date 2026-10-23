@@ -1,3 +1,7 @@
 [daemon.providers._.cache._]
 # Decay steps a Source takes before eviction, for every provider without a prototype of its own.
 decay = 4
+
+[daemon.providers._.sources._]
+# What a config Source hands out: its result, polled every minute while queried, and backed off after repeated failures.
+return = "{{ result | poll('60s', 12) | failback(3, '1s') }}"

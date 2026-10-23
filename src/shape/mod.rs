@@ -5,8 +5,13 @@
 //!   filters, and turns the calls into a schedule.
 //! - [`prototype`] finds the line a table applies: its own, else the nearest
 //!   `_`'s, whole.
+//! - [`build`] composes the config Sources of `[daemon.providers]`: prototypes,
+//!   schedules and the rules between Sources.
 //! - [`seeded`] reads the two roots a configuration file seeds the cache from.
 
+mod build;
 pub mod decorators;
 pub mod prototype;
 pub mod seeded;
+
+pub use build::{PrototypeLines, ProviderDecl, build, prototype_lines};

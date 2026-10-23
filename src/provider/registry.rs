@@ -1,8 +1,51 @@
+use crate::boundaries::library::LibloadingLoader;
+use crate::cache::{Cache, Layers};
 use crate::config::Config;
-use crate::provider::{Provider, ProviderMetadata, Source, SourceMetadata, is_sentinel};
+use crate::engine::PluginSet;
+use crate::provider::config_source::{ConfigSource, DaemonRead, lint_lines};
+use crate::provider::{Provider, ProviderMetadata, Source, SourceMetadata, Value, is_sentinel};
 use dashmap::DashMap;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock, Weak};
+
+/// What [`ProviderRegistry::load`] made of a configuration.
+pub struct ConfigLoad {
+    /// The providers that did load; trustworthy only when `errors` is empty.
+    pub registry: ProviderRegistry,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+/// The daemon's own read of a provider node, for a config Source's
+/// `comb.<p>`: stored records only, put over source, up the directory chain.
+/// It reads through the registry and the cache, and the registry owns the
+/// Sources that hold it, so it is bound late and holds the registry weakly.
+#[derive(Default)]
+pub struct RegistryReader {
+    bound: OnceLock<(Weak<ProviderRegistry>, Arc<Cache>)>,
+}
+
+impl DaemonRead for RegistryReader {
+    /// Never executes a Source. `dir` is a directory; `$HOME` addresses the
+    /// global entry, as `QueryPlan` normalises it.
+    fn read(&self, provider: &str, dir: Option<&str>) -> Option<HashMap<String, Value>> {
+        let Some((registry, cache)) = self.bound.get() else {
+            debug_assert!(false, "a config Source read from a registry never shared");
+            return None;
+        };
+        let registry = registry.upgrade()?;
+        let plan = crate::query::QueryPlan::build(provider, dir, &registry).ok()?;
+        cache
+            .read_merged(
+                &plan.provider,
+                plan.requested_path.as_deref(),
+                plan.effective_path.as_deref(),
+                &registry,
+                Layers::All,
+            )
+            .map(|merged| merged.fields)
+    }
+}
 
 pub struct ProviderRegistry {
     /// (provider_name, source_name) → Arc-wrapped Source trait object.
@@ -17,6 +60,11 @@ pub struct ProviderRegistry {
     sentinel_sources: HashMap<String, Vec<String>>,
     /// Static namespace names registered via `comb put`. Orthogonal to the source model.
     static_names: DashMap<String, ()>,
+    /// Providers with a config Source whose `root` line is set: resolving a
+    /// request's path for one renders that line, which may run a command.
+    config_roots: HashSet<String>,
+    /// What every config Source reads `comb.<p>` through.
+    reader: Arc<RegistryReader>,
 }
 
 impl Default for ProviderRegistry {
@@ -33,7 +81,31 @@ impl ProviderRegistry {
             declared_sources: HashMap::new(),
             sentinel_sources: HashMap::new(),
             static_names: DashMap::new(),
+            config_roots: HashSet::new(),
+            reader: Arc::new(RegistryReader::default()),
         }
+    }
+
+    /// Share the registry the way a running daemon does: behind an `Arc`,
+    /// with its config Sources able to read `comb.<p>` from `cache`. The only
+    /// way to a registry whose config Sources can read; a registry never
+    /// shared this way reads nothing.
+    pub fn share(self, cache: &Arc<Cache>) -> Arc<Self> {
+        let shared = Arc::new(self);
+        shared.bind(cache);
+        shared
+    }
+
+    /// Let config Sources read `comb.<p>` from `cache`: [`Self::share`]'s half.
+    fn bind(self: &Arc<Self>, cache: &Arc<Cache>) {
+        let bound = self.reader.bound.set((Arc::downgrade(self), cache.clone()));
+        assert!(bound.is_ok(), "a registry is bound once");
+    }
+
+    /// Whether resolving a request's path for `provider` may run a `root`
+    /// line, and so must not hold an async worker.
+    pub fn renders_roots(&self, provider: &str) -> bool {
+        self.config_roots.contains(provider)
     }
 
     /// Register a provider. Validates metadata, builds the field→source and sentinel maps,
@@ -65,19 +137,8 @@ impl ProviderRegistry {
                 ));
             }
         }
-        // Populate the declared-field map and the sentinel list.
         for sm in &meta.sources {
-            for f in &sm.fields {
-                if is_sentinel(&f.name) {
-                    let list = self.sentinel_sources.entry(meta.name.clone()).or_default();
-                    if !list.contains(&sm.name) {
-                        list.push(sm.name.clone());
-                    }
-                } else {
-                    self.declared_sources
-                        .insert((meta.name.clone(), f.name.clone()), sm.name.clone());
-                }
-            }
+            self.index_fields(&meta.name, sm);
         }
         // Insert sources.
         for s in sources {
@@ -86,6 +147,130 @@ impl ProviderRegistry {
         }
         self.providers.insert(meta.name.clone(), meta);
         Ok(())
+    }
+
+    /// Fill the declared-field map and the sentinel list from one Source.
+    fn index_fields(&mut self, provider: &str, sm: &SourceMetadata) {
+        for f in &sm.fields {
+            if is_sentinel(&f.name) {
+                let list = self
+                    .sentinel_sources
+                    .entry(provider.to_string())
+                    .or_default();
+                if !list.contains(&sm.name) {
+                    list.push(sm.name.clone());
+                }
+            } else {
+                self.declared_sources
+                    .insert((provider.to_string(), f.name.clone()), sm.name.clone());
+            }
+        }
+    }
+
+    /// Add config Sources to `provider`, creating it when no code registered
+    /// it: a new Source of a built-in provider joins that provider.
+    pub fn register_config_sources(
+        &mut self,
+        provider: &str,
+        sources: Vec<ConfigSource>,
+    ) -> Result<(), String> {
+        let mut meta = self
+            .providers
+            .get(provider)
+            .cloned()
+            .unwrap_or_else(|| ProviderMetadata {
+                name: provider.to_string(),
+                sources: Vec::new(),
+            });
+        let first_new = meta.sources.len();
+        meta.sources
+            .extend(sources.iter().map(|s| s.metadata().clone()));
+        meta.validate()?;
+        for sm in &meta.sources[first_new..] {
+            self.index_fields(provider, sm);
+        }
+        if sources.iter().any(ConfigSource::has_root) {
+            self.config_roots.insert(provider.to_string());
+        }
+        for source in sources {
+            self.sources.insert(
+                (provider.to_string(), source.metadata().name.clone()),
+                Arc::new(source),
+            );
+        }
+        self.providers.insert(provider.to_string(), meta);
+        Ok(())
+    }
+
+    /// Every registered Source's metadata, by provider: what a config table
+    /// may not redefine.
+    pub fn registered_sources(&self) -> HashMap<String, Vec<SourceMetadata>> {
+        self.providers
+            .iter()
+            .map(|(name, meta)| (name.clone(), meta.sources.clone()))
+            .collect()
+    }
+
+    /// The config Sources `config` declares, built and linted against the
+    /// Sources already registered. Every error is a load error.
+    pub fn config_sources(
+        &self,
+        config: &Config,
+        env: &HashMap<String, String>,
+    ) -> Result<Vec<(String, Vec<ConfigSource>)>, Vec<String>> {
+        let Some(providers) = config.daemon.providers.as_table() else {
+            return Ok(Vec::new());
+        };
+        let search = config
+            .config_path
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .map(|dir| vec![dir.join("plugins")])
+            .unwrap_or_default();
+        let plugins = Arc::new(PluginSet::new(search, Arc::new(LibloadingLoader)));
+        let env = Arc::new(env.clone());
+
+        let mut errors = Vec::new();
+        // A `_` table's lines apply to Sources below it; they are compiled
+        // here as a Source's own are, so a broken prototype does not load.
+        for proto in crate::shape::prototype_lines(providers) {
+            if let Err(e) = lint_lines(
+                &proto.path,
+                proto.root.as_deref(),
+                proto.data.as_deref(),
+                proto.result.as_ref(),
+                &env,
+                &plugins,
+            ) {
+                errors.push(e);
+            }
+        }
+        let decls = match crate::shape::build(providers, &self.registered_sources()) {
+            Ok(decls) => decls,
+            Err(e) => {
+                errors.extend(e);
+                return Err(errors);
+            }
+        };
+        let mut out = Vec::new();
+        for decl in decls {
+            if config.is_provider_disabled(&decl.name) {
+                continue;
+            }
+            let mut built = Vec::new();
+            for spec in decl.sources {
+                match ConfigSource::new(spec, env.clone(), plugins.clone(), self.reader.clone()) {
+                    Ok(source) => built.push(source),
+                    Err(e) => errors.push(e),
+                }
+            }
+            out.push((decl.name, built));
+        }
+        if errors.is_empty() {
+            Ok(out)
+        } else {
+            Err(errors)
+        }
     }
 
     /// Register a provider only configuration names: it has zero
@@ -172,7 +357,7 @@ impl ProviderRegistry {
     // ── Static namespace support ─────────────────────────────────────────────
 
     /// Returns true if the provider name belongs to an already-registered
-    /// (builtin or script) provider.
+    /// (builtin or config) provider.
     pub fn is_registered(&self, name: &str) -> bool {
         self.providers.contains_key(name)
     }
@@ -268,14 +453,36 @@ impl ProviderRegistry {
         registry
     }
 
-    /// Build a registry with all built-in providers registered, applying config-level
-    /// disable flags. Also registers script/library/HTTP providers from config.
+    /// [`Self::load`] with libraries: the registry, or every error the config has.
+    pub fn with_config(
+        config: &Config,
+        vars: &HashMap<String, String>,
+    ) -> Result<Self, Vec<String>> {
+        let load = Self::load(config, vars, true);
+        if load.errors.is_empty() {
+            Ok(load.registry)
+        } else {
+            Err(load.errors)
+        }
+    }
+
+    /// The one loader: startup, the config watch's gate and `comb check
+    /// config` all build the provider set here, so they agree on what loads.
+    /// Built-ins (minus the disabled), the HTTP providers (metadata only, no
+    /// I/O), the config Sources (`[daemon.providers.<p>.sources.<s>]`, whose
+    /// lines see `vars`, the daemon's own variables), and the providers only
+    /// the config names; then every check a config has: the per-file ones, the
+    /// old-form provider blocks, and the Sources against the set built.
     ///
-    /// Panics on registration failure (programmer error, not runtime).
-    pub fn with_config(config: &Config) -> Self {
+    /// `libraries` loads library providers, which `dlopen` their file: the
+    /// daemon does, a check or the watch must not. Their fields are therefore
+    /// unknown to a check, and a config Source colliding with one is found at
+    /// startup only. (The gap closes when the flat library form goes.)
+    ///
+    /// Panics on built-in registration failure (programmer error).
+    pub fn load(config: &Config, vars: &HashMap<String, String>, libraries: bool) -> ConfigLoad {
         use crate::provider::http::HttpProvider;
         use crate::provider::library::LibraryProvider;
-        use crate::provider::script::ScriptProvider;
 
         // Start from the full built-in set, then layer on config-defined providers.
         // Built-ins that are explicitly disabled in config are not added.
@@ -308,85 +515,46 @@ impl ProviderRegistry {
         add_builtin!("uptime", crate::provider::uptime::UptimeProvider);
         add_builtin!("user", crate::provider::user::UserProvider);
 
-        // ── Legacy single-source external backends ────────────────────────────
-        // Old `type = "script" / "library" / "http"` TOML shape (no `backend` key).
-        for (name, script_config) in config.script_providers() {
-            if !config.is_provider_disabled(&name) {
-                registry
-                    .register(Box::new(ScriptProvider::new(&name, script_config)))
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("Failed to register script provider '{}': {}", name, e);
-                    });
-            }
-        }
+        // Registration failures are the user's to see: `comb check config` shows them.
+        let mut warnings: Vec<String> = Vec::new();
+        // ── Single-source external backends (`type = "library" / "http"`) ──
         for (name, lib_config) in config.library_providers() {
-            if !config.is_provider_disabled(&name)
+            if libraries
+                && !config.is_provider_disabled(&name)
                 && let Some(provider) = LibraryProvider::new(&name, lib_config)
+                && let Err(e) = registry.register(Box::new(provider))
             {
-                registry.register(Box::new(provider)).unwrap_or_else(|e| {
-                    tracing::warn!("Failed to register library provider '{}': {}", name, e);
-                });
+                warnings.push(format!("Failed to register library provider '{name}': {e}"));
             }
         }
         for (name, http_config) in config.http_providers() {
-            if !config.is_provider_disabled(&name) {
-                registry
-                    .register(Box::new(HttpProvider::new(&name, http_config)))
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("Failed to register http provider '{}': {}", name, e);
-                    });
+            if !config.is_provider_disabled(&name)
+                && let Err(e) = registry.register(Box::new(HttpProvider::new(&name, http_config)))
+            {
+                warnings.push(format!("Failed to register http provider '{name}': {e}"));
             }
         }
 
         // ── Phase 4 multi-source external backends ────────────────────────────
-        // `backend = "script" / "library" / "http"` TOML shape.
-
-        // Script
-        match config.multi_script_providers() {
-            Ok(providers) => {
-                for (name, sources) in providers {
-                    if !config.is_provider_disabled(&name) {
-                        if sources.is_empty() {
-                            tracing::warn!(
-                                "Script provider '{}' (backend = script) has no source blocks; skipping",
-                                name
-                            );
-                            continue;
-                        }
-                        registry
-                            .register(Box::new(ScriptProvider::with_sources(&name, sources)))
-                            .unwrap_or_else(|e| {
-                                tracing::warn!(
-                                    "Failed to register multi-source script provider '{}': {}",
-                                    name,
-                                    e
-                                );
-                            });
-                    }
-                }
-            }
-            Err(e) => tracing::warn!("Error reading multi-source script providers: {}", e),
-        }
+        // `backend = "library" / "http"` TOML shape.
 
         // Library
         match config.multi_library_providers() {
             Ok(providers) => {
                 for (name, lib_path, source_overrides) in providers {
-                    if !config.is_provider_disabled(&name)
+                    if libraries
+                        && !config.is_provider_disabled(&name)
                         && let Some(provider) =
                             LibraryProvider::with_sources(&name, &lib_path, source_overrides)
+                        && let Err(e) = registry.register(Box::new(provider))
                     {
-                        registry.register(Box::new(provider)).unwrap_or_else(|e| {
-                            tracing::warn!(
-                                "Failed to register multi-source library provider '{}': {}",
-                                name,
-                                e
-                            );
-                        });
+                        warnings.push(format!(
+                            "Failed to register multi-source library provider '{name}': {e}"
+                        ));
                     }
                 }
             }
-            Err(e) => tracing::warn!("Error reading multi-source library providers: {}", e),
+            Err(e) => warnings.push(format!("Error reading multi-source library providers: {e}")),
         }
 
         // HTTP
@@ -395,25 +563,51 @@ impl ProviderRegistry {
                 for (name, _default_timeout, sources) in providers {
                     if !config.is_provider_disabled(&name) {
                         if sources.is_empty() {
-                            tracing::warn!(
-                                "HTTP provider '{}' (backend = http) has no source blocks; skipping",
-                                name
-                            );
+                            warnings.push(format!(
+                                "HTTP provider '{name}' (backend = http) has no source blocks; skipping"
+                            ));
                             continue;
                         }
-                        registry
-                            .register(Box::new(HttpProvider::with_sources(&name, sources)))
-                            .unwrap_or_else(|e| {
-                                tracing::warn!(
-                                    "Failed to register multi-source HTTP provider '{}': {}",
-                                    name,
-                                    e
-                                );
-                            });
+                        if let Err(e) =
+                            registry.register(Box::new(HttpProvider::with_sources(&name, sources)))
+                        {
+                            warnings.push(format!(
+                                "Failed to register multi-source HTTP provider '{name}': {e}"
+                            ));
+                        }
                     }
                 }
             }
-            Err(e) => tracing::warn!("Error reading multi-source HTTP providers: {}", e),
+            Err(e) => warnings.push(format!("Error reading multi-source HTTP providers: {e}")),
+        }
+
+        // ── Config Sources ────────────────────────────────────────────────────
+        let mut errors = Vec::new();
+        match registry.config_sources(config, vars) {
+            Ok(providers) => {
+                for (name, sources) in providers {
+                    for source in &sources {
+                        let source = &source.metadata().name;
+                        // A knob block is a second way to set what `return` sets.
+                        if config
+                            .providers
+                            .get(&name)
+                            .and_then(|p| p.get(source))
+                            .is_some_and(toml::Value::is_table)
+                        {
+                            errors.push(format!(
+                                "[providers.{name}.{source}] sets knobs on a config Source: poll, \
+                                 watch and failback belong in the return line of \
+                                 [daemon.providers.{name}.sources.{source}]"
+                            ));
+                        }
+                    }
+                    if let Err(e) = registry.register_config_sources(&name, sources) {
+                        errors.push(e);
+                    }
+                }
+            }
+            Err(e) => errors.extend(e),
         }
 
         // ── Providers only the config names ───────────────────────────────────
@@ -430,7 +624,18 @@ impl ProviderRegistry {
             }
         }
 
-        registry
+        let (provider_warnings, provider_errors) = config.validate_providers(
+            &registry.provider_names(),
+            &registry.source_names_by_provider(),
+        );
+        warnings.extend(provider_warnings);
+        errors.extend(provider_errors);
+        errors.extend(config.validate_seeded());
+        ConfigLoad {
+            registry,
+            warnings,
+            errors,
+        }
     }
 }
 
@@ -573,13 +778,102 @@ mod tests {
             }))
             .unwrap_err();
         assert!(err.contains("declares no sources"), "{err}");
+    }
 
-        let err = reg
-            .register(Box::new(
-                crate::provider::script::ScriptProvider::with_sources("s", vec![]),
-            ))
-            .unwrap_err();
-        assert!(err.contains("declares no sources"), "{err}");
+    fn registry_from(user: &str) -> ProviderRegistry {
+        let config = crate::config_tests::with_shipped_defaults(user);
+        ProviderRegistry::with_config(&config, &Default::default()).unwrap()
+    }
+
+    fn invalidation(reg: &ProviderRegistry, provider: &str, source: &str) -> InvalidationStrategy {
+        reg.provider_sources(provider)
+            .unwrap()
+            .iter()
+            .find(|s| s.name == source)
+            .unwrap_or_else(|| panic!("{provider}.{source} is registered"))
+            .invalidation
+            .clone()
+    }
+
+    #[test]
+    fn an_added_source_inherits_the_providers_underscore() {
+        let reg = registry_from(
+            r#"
+[daemon.providers.git.sources._]
+return = "{{ result | poll('7s', 2) }}"
+
+[daemon.providers.git.sources.extra]
+data = "{{ 1 }}"
+result.extra = "{{ data }}"
+
+[daemon.providers.demo.sources.s]
+data = "{{ 1 }}"
+result.x = "{{ data }}"
+"#,
+        );
+        assert!(
+            reg.source("git", "extra").is_some(),
+            "joins the built-in provider"
+        );
+        assert!(reg.source("git", "refs").is_some(), "built-ins stay");
+        assert_eq!(
+            invalidation(&reg, "git", "extra"),
+            InvalidationStrategy::Poll {
+                interval_secs: 7,
+                count: 2
+            },
+            "git's own `_` beats the abstract one"
+        );
+        assert_eq!(
+            invalidation(&reg, "demo", "s"),
+            InvalidationStrategy::Poll {
+                interval_secs: 60,
+                count: 12
+            },
+            "another provider's `_` does not reach it"
+        );
+        assert_eq!(reg.sources_for_key("git", "extra"), vec!["extra"]);
+    }
+
+    #[test]
+    fn a_source_with_no_return_gets_the_abstract_schedule() {
+        let reg = registry_from(
+            "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ data }}\"\n",
+        );
+        let meta = &reg.provider_sources("demo").unwrap()[0];
+        assert_eq!(
+            meta.invalidation,
+            InvalidationStrategy::Poll {
+                interval_secs: 60,
+                count: 12
+            }
+        );
+        assert_eq!(
+            (meta.failback.reattempts, meta.failback.interval_secs),
+            (3, 1)
+        );
+        assert_eq!(meta.scope, SourceScope::PathScoped);
+        assert_eq!(
+            reg.sources_for_key("demo", "anything"),
+            vec!["s"],
+            "a whole-node Source"
+        );
+    }
+
+    #[test]
+    fn a_disabled_provider_registers_no_config_sources() {
+        let reg = registry_from(
+            "[providers.demo]\nenabled = false\n[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ data }}\"\n",
+        );
+        assert!(reg.source("demo", "s").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "bound once")]
+    fn a_second_bind_is_refused() {
+        let cache = Arc::new(Cache::new());
+        let registry = ProviderRegistry::with_defaults().share(&cache);
+        registry.bind(&cache);
     }
 
     #[test]

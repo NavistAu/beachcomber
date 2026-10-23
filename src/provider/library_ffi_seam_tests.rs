@@ -5,7 +5,7 @@
 //! boundary traits so the provider code is exercised without touching `libloading`.
 
 use crate::boundaries::library::{LibraryLoader, LoadedLibrary};
-use crate::config::ScriptProviderConfig;
+use crate::config::FlatProviderConfig;
 use crate::provider::Provider;
 use crate::provider::library::LibraryProvider;
 use std::sync::Arc;
@@ -90,7 +90,7 @@ impl LibraryLoader for StubLoader {
 fn make_provider(stub: StubLoadedLibrary) -> LibraryProvider {
     let lib: Arc<dyn LoadedLibrary> = Arc::new(stub);
     let loader: Arc<dyn LibraryLoader> = Arc::new(StubLoader { lib });
-    let config = ScriptProviderConfig {
+    let config = FlatProviderConfig {
         library_path: Some("/fake/libtest.dylib".to_string()),
         ..Default::default()
     };

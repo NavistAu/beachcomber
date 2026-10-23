@@ -12,6 +12,10 @@
 //!   1 to [`MAX_DECAY`]; the abstract provider `_` seeds `*:cache`, the
 //!   prototype every provider without its own falls back to.
 //!
+//! `[daemon.providers.<p>.sources.<s>]` is fenced here too (`root`, `data`,
+//! `result`, `return`, each a jinja line); what a Source means is
+//! [`crate::shape::build`]'s, from the composed tree.
+//!
 //! Every error is prefixed with the file's `config:<path>` label.
 
 use crate::config::Config;
@@ -181,8 +185,8 @@ impl Reader {
         }
     }
 
-    /// `[daemon.providers.<p>]` holds only `cache`, which holds only `_`,
-    /// which holds only `decay`.
+    /// `[daemon.providers.<p>]` holds `cache` (which holds only `_`, which
+    /// holds only `decay`) and `sources`.
     fn daemon_provider(&mut self, name: &str, value: &toml::Value) {
         let Some(table) = value.as_table() else {
             return self.err(format!("[daemon.providers.{name}] must be a table"));
@@ -193,6 +197,10 @@ impl Reader {
             format!("{name}:cache")
         };
         for (key, sub) in table {
+            if key == "sources" {
+                self.sources(name, sub);
+                continue;
+            }
             if key != "cache" {
                 self.err(format!("unknown key '{key}' in [daemon.providers.{name}]"));
                 continue;
@@ -230,6 +238,68 @@ impl Reader {
                         ));
                     }
                 }
+            }
+        }
+    }
+}
+
+impl Reader {
+    /// `[daemon.providers.<p>.sources]`: a table of Source tables, `_` the
+    /// prototype. The abstract provider has only the abstract Source.
+    fn sources(&mut self, provider: &str, value: &toml::Value) {
+        let at = format!("[daemon.providers.{provider}.sources]");
+        let Some(sources) = value.as_table() else {
+            return self.err(format!("{at} must be a table"));
+        };
+        for (name, source) in sources {
+            if provider == "_" && name != "_" {
+                self.err(format!(
+                    "{at} holds only '_' (the abstract Source): '{name}' would be a Source of \
+                     every provider"
+                ));
+                continue;
+            }
+            if name.is_empty() || name.contains(['.', ':', '*']) || name.starts_with('<') {
+                self.err(format!(
+                    "invalid Source name '{name}' in {at}: a name is non-empty, holds no '.', \
+                     ':' or '*' and does not start with '<'"
+                ));
+                continue;
+            }
+            self.source(provider, name, source);
+        }
+    }
+
+    /// `[daemon.providers.<p>.sources.<s>]` holds `root`, `data`, `result`
+    /// (a line, or a table of field lines) and `return`; each a string.
+    fn source(&mut self, provider: &str, name: &str, value: &toml::Value) {
+        let at = format!("[daemon.providers.{provider}.sources.{name}]");
+        let Some(table) = value.as_table() else {
+            return self.err(format!("{at} must be a table"));
+        };
+        for (key, line) in table {
+            match (key.as_str(), line) {
+                ("root" | "data" | "return", toml::Value::String(_)) => {}
+                ("result", toml::Value::String(_)) => {}
+                ("result", toml::Value::Table(fields)) => {
+                    for (field, line) in fields {
+                        if !line.is_str() {
+                            self.err(format!(
+                                "{at} result.{field} must be a string (a jinja line), not {}",
+                                line.type_str()
+                            ));
+                        }
+                    }
+                }
+                ("root" | "data" | "return", other) => self.err(format!(
+                    "{at} {key} must be a string (a jinja line), not {}",
+                    other.type_str()
+                )),
+                ("result", other) => self.err(format!(
+                    "{at} result must be a string or a table of field lines, not {}",
+                    other.type_str()
+                )),
+                _ => self.err(format!("unknown key '{key}' in {at}")),
             }
         }
     }

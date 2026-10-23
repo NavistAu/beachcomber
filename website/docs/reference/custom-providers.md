@@ -5,90 +5,77 @@ title: Custom Providers
 
 # Custom Providers
 
-Custom providers let you add any data source to beachcomber using any language. Your script runs on the configured schedule, and the results are cached and served to all consumers.
+A custom provider is a **Source**: a function with a body (`data`), the fields it returns (`result`), and a schedule (`return`). `data` runs on the daemon, on the Source's schedule; the results are cached and served to all consumers.
+
+```toml
+[daemon.providers.demo.sources.s]
+data = "{{ exec('cat ' ~ env.HOME ~ '/demo.json') | fromjson }}"
+result = "{{ data }}"
+```
+
+`exec('…')` runs a string under `sh -c` with the daemon's environment; `exec(['cmd', 'arg'])` runs one argument per element, with no shell. Without a `return` line, the Source takes the abstract Source's schedule: polled every 60 seconds while queried, backed off after repeated failures.
 
 ## Output Formats
 
-**JSON (default):** Stdout must be a JSON object. Top-level keys become provider fields.
+The shape of the output is the filter after `exec`.
 
-```sh
-# A provider that outputs JSON
-#!/bin/sh
-docker context show --format '{"context":"{{.Name}}","driver":"{{.Driver}}"}'
-```
+**JSON:** Stdout is a JSON object; `| fromjson` parses it. `result = "{{ data }}"` makes its top-level keys the provider's fields, or `result.<field>` lines pick them.
 
 ```toml
-[providers.docker_ctx]
-command = "~/.config/beachcomber/providers/docker-context.sh"
-output = "json"
+[daemon.providers.docker_ctx.sources.main]
+data = "{{ exec('~/.config/beachcomber/providers/docker-context.sh') | fromjson }}"
+result = "{{ data }}"
 ```
 
-**Key-value:** Stdout is `key=value` lines, one per field. Simpler for shell scripts.
-
-```sh
-# A provider using kv output
-#!/bin/sh
-context=$(docker context show 2>/dev/null || echo "default")
-echo "context=${context}"
-```
+**Key-value:** Stdout is `key=value` lines. `| fromini` reads them (keys before any `[section]` land under `''`).
 
 ```toml
-[providers.docker_ctx]
-command = "~/.config/beachcomber/providers/docker-context.sh"
-output = "kv"
+[daemon.providers.docker_ctx.sources.main]
+data = "{{ exec('~/.config/beachcomber/providers/docker-context.sh') | fromini }}"
+result.context = "{{ data[''].context }}"
 ```
 
-**Text:** Stdout is a single value, exposed as the `value` field. For commands that print one thing.
-
-```sh
-# Single-value output
-node --version 2>/dev/null | tr -d 'v'
-```
+**Text:** Stdout is a single value. `| trim` drops the trailing newline.
 
 ```toml
-[providers.node_version]
-command = "node --version | tr -d v"
-output = "text"
+[daemon.providers.node_version.sources.main]
+data = "{{ exec('node --version | tr -d v') | trim }}"
+result.value = "{{ data }}"
 ```
 
-Then query with `comb g node_version.value` (`g` = get, text is the default format).
+Then query with `comb g node_version.value`.
 
 ## Invalidation Strategies
+
+The decorators on `return` say when `data` runs again.
 
 **Poll only:** Re-run every N seconds. Use for data that changes independently of filesystem events.
 
 ```toml
-[providers.vpn_status]
-command = "~/.config/beachcomber/providers/vpn-check.sh"
-output = "kv"
-
-[providers.vpn_status.invalidation]
-poll = "10s"
+[daemon.providers.vpn_status.sources.main]
+data = "{{ exec('~/.config/beachcomber/providers/vpn-check.sh') | fromini }}"
+result.active = "{{ data[''].active }}"
+return = "{{ result | poll('10s') }}"
 ```
 
-**Watch only:** Re-run when specific files change. Use for data that's determined entirely by file content.
+**Watch only:** Re-run when specific files change. Use for data that's determined entirely by file content. Relative paths are relative to `root`; a path starting with `/` or `~` is absolute.
 
 ```toml
-[providers.ruby_version]
-command = "rbenv version-name"
-output = "text"
-scope = "path"
-
-[providers.ruby_version.invalidation]
-watch = [".ruby-version", "Gemfile", ".tool-versions"]
+[daemon.providers.ruby_version.sources.main]
+root = "{{ lup('.ruby-version') | dirname }}"
+data = "{{ exec('rbenv version-name') | trim }}"
+result.value = "{{ data }}"
+return = "{{ result | watch('.ruby-version', 'Gemfile', '.tool-versions') }}"
 ```
 
 **Watch with poll fallback (recommended):** FSEvents and inotify can occasionally drop events under heavy load. A poll fallback ensures eventual consistency even if an event is missed.
 
 ```toml
-[providers.cargo_meta]
-command = "cargo metadata --format-version=1 --no-deps --quiet"
-output = "json"
-scope = "path"
-
-[providers.cargo_meta.invalidation]
-watch = ["Cargo.toml", "Cargo.lock"]
-poll = "120s"
+[daemon.providers.cargo_meta.sources.main]
+root = "{{ lup('Cargo.toml') | dirname }}"
+data = "{{ exec('cargo metadata --format-version=1 --no-deps --quiet') | fromjson }}"
+result = "{{ data }}"
+return = "{{ result | watch('Cargo.toml', 'Cargo.lock') | poll('120s') }}"
 ```
 
 ## Real-World Examples
@@ -111,12 +98,10 @@ printf '{"context":"%s","remote":%s}\n' "$context" "$is_remote"
 ```
 
 ```toml
-[providers.docker_context]
-command = "~/.config/beachcomber/providers/docker-context.sh"
-output = "json"
-
-[providers.docker_context.invalidation]
-poll = "30s"
+[daemon.providers.docker_context.sources.main]
+data = "{{ exec('~/.config/beachcomber/providers/docker-context.sh') | fromjson }}"
+result = "{{ data }}"
+return = "{{ result | poll('30s') }}"
 ```
 
 Query: `comb g docker_context.context`
@@ -138,26 +123,22 @@ echo "version=${version:-unknown}"
 ```
 
 ```toml
-[providers.node_version]
-command = "~/.config/beachcomber/providers/node-version.sh"
-output = "kv"
-scope = "path"
-
-[providers.node_version.invalidation]
-watch = [".node-version", ".nvmrc", "package.json", ".mise.toml"]
-poll = "60s"
+[daemon.providers.node_version.sources.main]
+root = "{{ lup('package.json') | dirname }}"
+data = "{{ exec('~/.config/beachcomber/providers/node-version.sh') | fromini }}"
+result.version = "{{ data[''].version }}"
+return = "{{ result | watch('.node-version', '.nvmrc', 'package.json', '.mise.toml') | poll('60s') }}"
 ```
+
+`data` runs with the instance's `root` as its working directory.
 
 **Ruby version via rbenv:**
 ```toml
-[providers.ruby_version]
-command = "rbenv version-name 2>/dev/null || ruby --version | cut -d' ' -f2"
-output = "text"
-scope = "path"
-
-[providers.ruby_version.invalidation]
-watch = [".ruby-version", "Gemfile", ".tool-versions"]
-poll = "120s"
+[daemon.providers.ruby_version.sources.main]
+root = "{{ lup('.ruby-version') | dirname }}"
+data = '''{{ exec("rbenv version-name 2>/dev/null || ruby --version | cut -d' ' -f2") | trim }}'''
+result.value = "{{ data }}"
+return = "{{ result | watch('.ruby-version', 'Gemfile', '.tool-versions') | poll('120s') }}"
 ```
 
 Query: `comb g ruby_version.value`
@@ -185,12 +166,11 @@ echo "name="
 ```
 
 ```toml
-[providers.vpn]
-command = "~/.config/beachcomber/providers/vpn-status.sh"
-output = "kv"
-
-[providers.vpn.invalidation]
-poll = "10s"
+[daemon.providers.vpn.sources.main]
+data = "{{ exec('~/.config/beachcomber/providers/vpn-status.sh') | fromini }}"
+result.active = "{{ data[''].active }}"
+result.name = "{{ data[''].name }}"
+return = "{{ result | poll('10s') }}"
 ```
 
 Query: `comb g vpn.active`
@@ -199,7 +179,7 @@ Query: `comb g vpn.active`
 
 For providers that fetch data from REST APIs, beachcomber has a built-in HTTP provider type. This makes HTTP requests directly in the daemon process — no `curl` fork, no shell spawning, with connection reuse and proper timeout handling.
 
-> **Note:** You can also use script providers with `curl` for quick-and-dirty HTTP queries. But for anything polling regularly, the `http` type is significantly more efficient — it avoids 2-6ms of process spawn overhead per request.
+> **Note:** You can also use a Source whose `data` calls `exec('curl …')` for quick-and-dirty HTTP queries. But for anything polling regularly, the `http` type is significantly more efficient — it avoids 2-6ms of process spawn overhead per request.
 
 **Basic API status check:**
 
@@ -253,14 +233,14 @@ invalidation = { poll = "86400s" }
 
 Query: `comb g exchange.value` — returns the AUD rate, refreshed daily.
 
-**Comparison — script vs HTTP for the same task:**
+**Comparison — `exec('curl')` vs HTTP for the same task:**
 
-Using a script provider (forks `sh` + `curl` every poll):
+Using a Source (forks `sh` + `curl` every poll):
 ```toml
-[providers.api_status_script]
-type = "script"
-command = "curl -s https://status.anthropic.com/api/v2/summary.json"
-invalidation = { poll = "60s" }
+[daemon.providers.api_status_script.sources.main]
+data = "{{ exec('curl -s https://status.anthropic.com/api/v2/summary.json') | fromjson }}"
+result = "{{ data }}"
+return = "{{ result | poll('60s') }}"
 ```
 
 Using the HTTP provider (in-process, no fork):
@@ -275,7 +255,7 @@ Both produce the same result. The HTTP version skips the ~5ms process spawn over
 
 ### Failure handling and timeouts
 
-HTTP providers share the same lifecycle as script providers:
+HTTP providers share the same lifecycle as config Sources:
 
 - **`provider_timeout_secs`** (default `10`, set under `[daemon]`) — the maximum time a single request may take. Requests that exceed this are cancelled and the last good cached value is retained.
 - **`failback_count`** (default `3`) — the number of consecutive failures before the provider enters exponential backoff (up to 60s). Applies to any non-2xx response, connection error, or timeout.
@@ -303,7 +283,7 @@ See the [Provider Development Guide](/docs/internals/provider-development#8-shar
 
 ## Secrets and Environment Variables
 
-HTTP headers and script commands support `${VAR}` expansion, pulling values from the daemon's environment. But the daemon's environment depends on how it starts — socket activation inherits the env of whatever triggered it, which is unpredictable.
+HTTP headers support `${VAR}` expansion, and a Source's `data` line sees the daemon's environment as `env` (a shell command run by `exec` inherits it), pulling values from the daemon's environment. But the daemon's environment depends on how it starts — socket activation inherits the env of whatever triggered it, which is unpredictable.
 
 The solution: **env files.** The daemon loads `~/.config/beachcomber/env` at startup before any providers execute, guaranteeing a consistent environment regardless of how the daemon was started.
 
@@ -361,11 +341,11 @@ vault kv get -field=env secret/beachcomber > ~/.config/beachcomber/env
 
 Then `chmod 600` and restart the daemon (`comb kill` — it socket-activates on next query).
 
-## Script Provider Tips
+## Source Tips
 
-- **Exit codes:** A non-zero exit is treated as a failure. The last cached value is retained. After 3 consecutive failures, the provider enters exponential backoff (up to 60s).
-- **Stderr:** Stderr output from script providers is captured and logged at `debug` level. It does not affect the result.
-- **Timeouts:** Script providers are subject to `provider_timeout_secs` (default 10s). Long-running scripts are cancelled and retried on the next trigger.
-- **Shell:** Commands are executed via `sh -c`. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
-- **Path-scoped providers:** If `scope = "path"`, the script is called with the directory path as its working directory. Use `$PWD` inside the script to reference it.
-- **Performance:** Every process spawn costs 2-6ms minimum. For providers that poll frequently (< 30s), prefer reading config files over spawning CLI tools. See the design principles in `docs/performance.md`.
+- **Exit codes:** A non-zero exit from `exec` fails the refresh. The last cached value is retained. After repeated failures (the `failback(count, interval)` decorator; the abstract Source ships `failback(3, '1s')`), the Source enters exponential backoff from the interval (default 1s, 4 doubling levels).
+- **Stderr:** A command that succeeds has its stderr dropped. One that fails (a non-zero exit, a timeout) has the tail of its stderr in the error message the daemon logs for the refresh.
+- **Timeouts:** `exec` kills a command after `timeout_ms` (default 10000, 10 s): `exec('slow-tool', timeout_ms=30000)`. A timeout fails the refresh, and the next trigger retries it.
+- **Shell:** A string is executed via `sh -c`; a list (`exec(['cmd', 'arg'])`) is one argument per element with no shell. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
+- **Path-scoped Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`.
+- **Performance:** Every process spawn costs 2-6ms minimum. For Sources that poll frequently (< 30s), prefer `read` and `lup` over spawning CLI tools. See the design principles in `docs/performance.md`.

@@ -47,7 +47,7 @@ If you need per-project isolation (e.g., different config for work vs personal p
 
 ### How do I add a provider for a tool beachcomber doesn't know about?
 
-Write a script provider. See the Custom Providers Guide. If the provider would be useful to everyone (not just your specific setup), consider contributing it as a built-in — see [Contributing](./contributing).
+Write a Source. See the Custom Providers Guide. If the provider would be useful to everyone (not just your specific setup), consider contributing it as a built-in — see [Contributing](./contributing).
 
 ### How do I check what version is running?
 

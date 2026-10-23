@@ -3,6 +3,7 @@ pub mod aws;
 pub mod battery;
 pub mod config_source;
 pub mod direnv;
+pub mod external;
 pub mod gcloud;
 pub mod git;
 pub mod hostname;
@@ -13,7 +14,6 @@ pub mod mise;
 pub mod network;
 pub mod python;
 pub mod registry;
-pub mod script;
 pub mod sudo;
 pub mod terraform;
 pub mod uname;
@@ -57,8 +57,6 @@ mod providers_devtools_tests;
 mod providers_system_tests;
 #[cfg(test)]
 mod registry_tests;
-#[cfg(test)]
-mod script_tests;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -87,7 +85,7 @@ pub const MAX_JSON_DEPTH: usize = 10;
 impl Value {
     /// The single conversion from `serde_json::Value` into a provider [`Value`].
     ///
-    /// Every ingestion path — `put`, script, http, library — goes through this.
+    /// Every ingestion path — `put`, http, library — goes through this.
     /// Do not pattern-match `serde_json::Value` to build a `Value` anywhere else;
     /// four copies of that match previously existed and all four failed to
     /// recurse, so nested objects were silently stringified despite
@@ -351,14 +349,6 @@ impl ProviderResult {
     pub fn insert(&mut self, key: impl Into<String>, value: Value) {
         self.fields.insert(key.into(), value);
     }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum FieldScope {
-    Global,
-    #[serde(alias = "path")]
-    PathScoped,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,6 @@
 # Provider Development Guide
 
-Step-by-step reference for writing new built-in providers. Built-in providers live in `src/provider/` and are compiled into the daemon. For a lower-effort path using shell scripts, see §6.
+Step-by-step reference for writing new built-in providers. Built-in providers live in `src/provider/` and are compiled into the daemon. For a lower-effort path using a config Source, see §6.
 
 For the authoritative model of how consumer queries resolve against providers — field types, the `comb.*` namespace, value expressions, and env-driven selection — see **`docs/canon/field_resolution.md`**.
 
@@ -636,7 +636,7 @@ Provider execution happens on tokio's blocking thread pool. Slow providers delay
 | Nanosecond (<1µs) | `user`, `hostname`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
 | Microsecond (1-100µs) | `terraform`, `python`, `direnv` (no binary) | File existence checks + small reads |
 | Millisecond (1-10ms) | `git`, `network`, `battery` | At most one process spawn |
-| Slow (10-50ms) | `mise`, `direnv` (with binary), script providers | Multiple spawns or interpreted CLI |
+| Slow (10-50ms) | `mise`, `direnv` (with binary), config Sources that shell out | Multiple spawns or interpreted CLI |
 
 **Rule 1: Never fork a process when you can read a file.**
 
@@ -780,52 +780,47 @@ fn metadata_fields_match_execute_output() {
 
 ---
 
-## 6. Script Providers vs Built-in Providers
+## 6. Config Sources vs Built-in Providers
 
-### When to use a script provider
+### When to use a config Source
 
-Script providers are defined in `~/.config/beachcomber/config.toml` without writing any Rust. Use them when:
+A config Source is defined in `~/.config/beachcomber/config.toml` (or `conf.d/`) without writing any Rust. Use it when:
 
 - The logic is simple or already exists as a shell script
 - The tool does not have a file-based state representation (forced to shell out)
 - The data changes infrequently so the performance cost is acceptable
 - You need something working today and can write a built-in later
 
-### How script providers work
+### How config Sources work
 
-A script provider entry in config:
+A Source entry in config:
 
 ```toml
-[providers.my_vpn]
-command = "vpn-status --json"
-output = "json"
-
-[providers.my_vpn.invalidation]
-poll = "10s"
-watch = ["/etc/vpn/state"]
+[daemon.providers.my_vpn.sources.main]
+data = "{{ exec('vpn-status --json') | fromjson }}"
+result = "{{ data }}"
+return = "{{ result | watch('/etc/vpn/state') | poll('10s') }}"
 ```
 
-This creates a `ScriptProvider` instance (see `src/provider/script.rs`) that:
-1. Runs `sh -c "vpn-status --json"` when executed
-2. Parses stdout as JSON (field: `output = "json"`) or key=value pairs (`output = "kv"`)
-3. Returns the parsed fields as a `ProviderResult`
+This registers a `ConfigSource` (see `src/provider/config_source.rs`) that:
+1. Runs `sh -c "vpn-status --json"` on the daemon when `data` is evaluated
+2. Parses stdout as JSON (`| fromjson`); `| fromini` reads `key=value` lines
+3. Returns the fields `result` names, or the whole object for `result = "{{ data }}"`
 
-The `invalidation` config maps directly to `InvalidationStrategy`:
+The `return` line's decorators map onto `InvalidationStrategy` (see `src/shape/decorators.rs`):
 - `poll` only -> `Poll { interval_secs, count }`
-- `watch` only -> `Watch { patterns, fallback_poll_secs: Some(60) }`
-- Both -> `WatchAndPoll { patterns, interval_secs, count }`
-- Neither -> `Poll { interval_secs: 30, count: 2 }` (default)
+- `watch` only -> `Watch { patterns, abs_paths }`
+- Both -> `WatchAndPoll { patterns, abs_paths, interval_secs, count }`
+- A Source with no `return` takes the abstract Source's `poll('60s', 12) | failback(3, '1s')` from `defaults/00-comb.toml`
 
-Set `scope = "path"` to make the provider path-scoped (the script will be run with its working directory set to the queried path):
+Set `root` to make the Source path-scoped (`data` runs with the root as its working directory):
 
 ```toml
-[providers.project_version]
-command = "cat VERSION 2>/dev/null || echo unknown"
-output = "kv"   # stdout format: "version=1.2.3"
-scope = "path"
-
-[providers.project_version.invalidation]
-watch = ["."]
+[daemon.providers.project_version.sources.main]
+root = "{{ lup('VERSION') | dirname }}"
+data = "{{ exec('cat VERSION 2>/dev/null || echo unknown') | trim }}"
+result.version = "{{ data }}"
+return = "{{ result | watch('VERSION') }}"
 ```
 
 ### When to write a built-in
@@ -837,7 +832,7 @@ Prefer a built-in provider when:
 - **Cross-platform behaviour**: Shell semantics differ between sh and cmd.exe; Rust handles this uniformly
 - **The provider will be broadly useful**: If most beachcomber users would want it, it belongs in the binary
 
-The perf breakeven point: if direct file reading brings execution from >1ms to <100µs, write a built-in. If the tool must be shelled out anyway and the data changes slowly, a script provider is fine.
+The perf breakeven point: if direct file reading brings execution from >1ms to <100µs, write a built-in. If the tool must be shelled out anyway and the data changes slowly, a config Source is fine.
 
 ---
 
@@ -853,19 +848,19 @@ For testing, gate platform-specific tests with `#[cfg(target_os = "...")]`. Make
 
 ---
 
-### Migrating a script provider to built-in
+### Migrating a config Source to built-in
 
-1. Identify what the script does — which file does it read, or which binary does it call?
+1. Identify what the Source does — which file does it read, or which binary does it call?
 2. Check `docs/performance.md` to see if the tool has already been handled as a file read
 3. Write the built-in following §2 above, matching the field names your existing config consumers expect
-4. Remove the script entry from config and register the built-in in `registry.rs`
+4. Remove the Source from config and register the built-in in `registry.rs`
 5. Run `cargo bench --bench providers` before and after to verify the improvement
 
 ---
 
 ## 8. Shared Library Providers
 
-Shared library providers load a `.so` (Linux) or `.dylib` (macOS) at daemon startup and call into it via a C ABI. This avoids the per-execution process spawn cost of script providers while allowing provider logic to be written in any language that can produce a shared library with C-compatible exports.
+Shared library providers load a `.so` (Linux) or `.dylib` (macOS) at daemon startup and call into it via a C ABI. This avoids the per-execution process spawn cost of a Source that calls `exec()` while allowing provider logic to be written in any language that can produce a shared library with C-compatible exports.
 
 ### C ABI Contract
 
@@ -898,7 +893,7 @@ library_path = "/usr/local/lib/beachcomber/libmy_provider.so"
 # invalidation = { poll = "30s" }
 ```
 
-If the library's `beachcomber_provider_metadata()` returns valid JSON, that metadata is used. Otherwise, metadata falls back to the TOML config fields (same as script providers).
+If the library's `beachcomber_provider_metadata()` returns valid JSON, that metadata is used. Otherwise, metadata falls back to the TOML config fields (same as flat HTTP providers).
 
 ### When to Use
 

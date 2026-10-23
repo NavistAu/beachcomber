@@ -190,7 +190,7 @@ libc::getifaddrs(&mut ifaddrs);
 | **Nanosecond** (< 1µs) | 395ns - 749ns | user, load, hostname, uptime, gcloud_configs, aws_profiles | libc calls, file reads, env vars |
 | **Microsecond** (1-100µs) | ~1-50µs | terraform, python, asdf, direnv (no direnv binary) | File existence checks + reads |
 | **Millisecond** (1-10ms) | 2-6ms | network (2ms), git (5.6ms), battery (6ms) | 1 process spawn each |
-| **Slow** (10-50ms) | 10-50ms | mise, direnv (with direnv), script providers | Process spawn (user-defined) |
+| **Slow** (10-50ms) | 10-50ms | mise, direnv (with direnv), Sources that call `exec()` | Process spawn (user-defined) |
 
 ### Socket and Cache Latency
 
@@ -234,7 +234,7 @@ libc::getifaddrs(&mut ifaddrs);
 
 4. **Network SSID: CoreWLAN via objc.** Replace `airport -I` (2ms) with CoreWLAN framework call. Would bring network to sub-microsecond. Complexity: moderate (requires objc crate).
 
-5. **metadata() allocation.** Every `metadata()` call allocates Strings for provider name and field names. Use `Cow<'static, str>` to allow zero-allocation for built-in providers while supporting dynamic names for script providers.
+5. **metadata() allocation.** Every `metadata()` call allocates Strings for provider name and field names. Use `Cow<'static, str>` to allow zero-allocation for built-in providers while supporting dynamic names for config Sources.
 
 ### Low value / deferred
 

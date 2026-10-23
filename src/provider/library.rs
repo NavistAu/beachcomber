@@ -1,6 +1,6 @@
 use crate::boundaries::library::{LibloadingLoader, LibraryLoader, LoadedLibrary};
-use crate::config::{ExternalSourceConfig, ScriptProviderConfig};
-use crate::provider::script::build_source_meta_from_external;
+use crate::config::{ExternalSourceConfig, FlatProviderConfig};
+use crate::provider::external::build_source_meta_from_external;
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
     Source, SourceMetadata, SourceResult, SourceScope,
@@ -23,7 +23,7 @@ pub enum LibraryAbi {
 
 pub struct LibraryProvider {
     name: String,
-    config: ScriptProviderConfig,
+    config: FlatProviderConfig,
     /// User-supplied knob overrides from TOML sub-tables (Phase 4).
     source_overrides: Vec<ExternalSourceConfig>,
     /// The loader used to open the shared library.  Stored so `sources()` can
@@ -38,14 +38,14 @@ pub struct LibraryProvider {
 impl LibraryProvider {
     /// Single-source constructor (legacy `type = "library"` TOML path).
     /// Wires the real `LibloadingLoader`.
-    pub fn new(name: &str, config: ScriptProviderConfig) -> Option<Self> {
+    pub fn new(name: &str, config: FlatProviderConfig) -> Option<Self> {
         Self::with_loader(name, config, Arc::new(LibloadingLoader))
     }
 
     /// Single-source constructor with injected loader (for tests).
     pub fn with_loader(
         name: &str,
-        config: ScriptProviderConfig,
+        config: FlatProviderConfig,
         loader: Arc<dyn LibraryLoader>,
     ) -> Option<Self> {
         let lib_path = config.library_path.as_deref()?.to_string();
@@ -86,7 +86,7 @@ impl LibraryProvider {
         source_overrides: Vec<ExternalSourceConfig>,
         loader: Arc<dyn LibraryLoader>,
     ) -> Option<Self> {
-        let cfg = ScriptProviderConfig {
+        let cfg = FlatProviderConfig {
             library_path: Some(library_path.to_string()),
             ..Default::default()
         };
@@ -390,7 +390,7 @@ fn parse_invalidation(
     }
 }
 
-fn build_source_meta_from_config(_name: &str, config: &ScriptProviderConfig) -> SourceMetadata {
+fn build_source_meta_from_config(_name: &str, config: &FlatProviderConfig) -> SourceMetadata {
     let poll_secs = config
         .invalidation
         .as_ref()

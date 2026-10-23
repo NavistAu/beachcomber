@@ -224,7 +224,7 @@ Use `comb check daemon` for daemon health (pid, uptime, version, active watchers
 
 ## `comb p` (put) `<key> <json-data> [--ttl <duration>] [--path <path>] [--global]`
 
-Write static data into the cache. External processes use this to expose state to prompt/statusline consumers without writing a script provider.
+Write static data into the cache. External processes use this to expose state to prompt/statusline consumers without writing a Source.
 
 ```sh
 # Put application status into cache — scoped to the current directory

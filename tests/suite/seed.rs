@@ -501,7 +501,7 @@ fn a_disabled_builtin_named_by_a_template_is_not_registered() {
         "[providers.python]\nenabled = false\n\n[client.providers.python]\ntemplate.v = \"x\"\n",
     )
     .unwrap();
-    let registry = ProviderRegistry::with_config(&config);
+    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
     assert!(!registry.is_registered("python"));
 }
 
@@ -540,7 +540,7 @@ fn the_abstract_provider_is_never_registered() {
     )
     .unwrap();
     config.config_path = None;
-    let registry = ProviderRegistry::with_config(&config);
+    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
     assert!(registry.is_registered("aws"), "named in [client.providers]");
     assert!(
         !registry.is_registered("_"),
@@ -795,13 +795,9 @@ template.version = "v1"
 template.title = "t2"
 "#;
 
-/// The re-seed's reaction to an invalid edit is that *nothing happens*, and a
-/// daemon-level test can only chase that with a negative window — a wait long
-/// enough to be convincing and short enough to be fast, which is neither.
-///
-/// So drive the watch directly, with the closure production uses, and wait on
-/// the call itself: once `reseed_facets` has run and returned, "nothing
-/// happened" is a settled fact rather than a guess about timing.
+/// An invalid edit changes nothing: `reseed_facets` refuses the layers when
+/// called directly, which is settled once the call returns. (The watch's gate
+/// reports no such edit at all; `config_watch.rs` tests that.)
 #[test]
 fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
     let tmp = TempDir::new().unwrap();
@@ -843,11 +839,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
 
     std::fs::write(&drop_in, RESEED_INVALID).unwrap();
     crate::common::mtime::touch_future(&drop_in);
-    assert_eq!(
-        rx.recv_timeout(Duration::from_secs(3)),
-        Ok(beachcomber::daemon::config_watch::ChangeKind::FacetsOnly),
-        "the watch sees the edit"
-    );
+    beachcomber::daemon::seed::reseed_facets(&cache, &registry, &layers());
     assert_eq!(
         leaf("title"),
         Some(CacheValue::String("t1".into())),
@@ -862,7 +854,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
     std::fs::write(&drop_in, RESEED_V2).unwrap();
     crate::common::mtime::touch_future(&drop_in);
     rx.recv_timeout(Duration::from_secs(3))
-        .expect("the watch is still armed after rejecting an edit");
+        .expect("a valid edit after the invalid one is reported");
     assert_eq!(
         leaf("title"),
         Some(CacheValue::String("t2".into())),

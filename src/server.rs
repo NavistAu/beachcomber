@@ -252,20 +252,45 @@ async fn handle_connection(
     Ok(())
 }
 
+/// [`crate::query::QueryPlan::build`], off the async worker when resolving the
+/// path may render a config Source's `root` line: that line can run a command
+/// (`exec`, up to its timeout), fetch a URL or call a plugin, none of which may
+/// hold a worker. Everything else resolves in place.
+async fn plan_for(
+    key: &str,
+    requested: Option<&str>,
+    registry: &Arc<ProviderRegistry>,
+) -> Result<crate::query::QueryPlan, String> {
+    let blocks = crate::query::path_provider(key).is_some_and(|p| registry.renders_roots(&p));
+    if !blocks {
+        return crate::query::QueryPlan::build(key, requested, registry);
+    }
+    let (key, requested, registry) = (
+        key.to_string(),
+        requested.map(str::to_string),
+        Arc::clone(registry),
+    );
+    tokio::task::spawn_blocking(move || {
+        crate::query::QueryPlan::build(&key, requested.as_deref(), &registry)
+    })
+    .await
+    .map_err(|e| format!("resolving the path failed: {e}"))?
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_watch(
     key: String,
     path: Option<String>,
     context_path: &Option<String>,
     cache: &Cache,
-    registry: &ProviderRegistry,
+    registry: &Arc<ProviderRegistry>,
     scheduler: Option<&SchedulerHandle>,
     watchers: &Arc<WatcherRegistry>,
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) {
     let requested = path.as_deref().or(context_path.as_deref());
-    let plan = match crate::query::QueryPlan::build(&key, requested, registry) {
+    let plan = match plan_for(&key, requested, registry).await {
         Ok(plan) => plan,
         Err(msg) => {
             let _ = write_watch_line(writer, &Response::error(msg)).await;
@@ -991,7 +1016,7 @@ async fn write_watch_line(
 async fn handle_request(
     request: &Request,
     cache: &Cache,
-    registry: &ProviderRegistry,
+    registry: &Arc<ProviderRegistry>,
     scheduler: Option<&SchedulerHandle>,
     context_path: &mut Option<String>,
     start_instant: Instant,
@@ -1013,7 +1038,7 @@ async fn handle_request(
             // path, parsed target, and the warming demand. Get and Watch both
             // build this so they share identical key semantics.
             let requested = path.as_deref().or(context_path.as_deref());
-            let plan = match crate::query::QueryPlan::build(key, requested, registry) {
+            let plan = match plan_for(key, requested, registry).await {
                 Ok(plan) => plan,
                 Err(msg) => return Response::error(msg),
             };
@@ -1165,7 +1190,7 @@ async fn handle_request(
             // The same plan every other op builds, so the key is checked and
             // the path resolved exactly as for a `get`.
             let requested = path.as_deref().or(context_path.as_deref());
-            let plan = match crate::query::QueryPlan::build(key, requested, registry) {
+            let plan = match plan_for(key, requested, registry).await {
                 Ok(plan) => plan,
                 Err(msg) => return Response::error(msg),
             };

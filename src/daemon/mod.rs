@@ -132,30 +132,20 @@ async fn run_daemon_with_cancel(
 
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(ProviderRegistry::with_config(&config));
-
-    // Validate provider config blocks against registered sources.
-    // Errors → refuse to start. Warnings → log and continue.
-    {
-        let (warnings, mut errors) = config.validate_providers(
-            &registry.provider_names(),
-            &registry.source_names_by_provider(),
-        );
-        errors.extend(config.validate_seeded());
-        for w in &warnings {
-            tracing::warn!("{}", w);
-        }
-        if !errors.is_empty() {
-            for e in &errors {
-                tracing::error!("{}", e);
-            }
-            tracing::error!(
-                "Config validation failed with {} error(s). Daemon refusing to start.",
-                errors.len()
-            );
-            return;
-        }
+    // The daemon's own environment, after the env file: what every config
+    // Source's lines see as `env`, and what its commands inherit.
+    let vars: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let load = ProviderRegistry::load(&config, &vars, true);
+    // Every error the configuration has, at once. Warnings are logged and
+    // loading continues.
+    for w in &load.warnings {
+        tracing::warn!("{}", w);
     }
+    if !load.errors.is_empty() {
+        refuse_to_start(&load.errors);
+        return;
+    }
+    let registry = load.registry.share(&cache);
 
     // Facet tables seed their namespaces before the socket is served, so the
     // first `get` already sees them, and the same files are watched for changes:
@@ -224,6 +214,16 @@ async fn run_daemon_with_cancel(
     }
     let _ = scheduler_task.await;
     info!("Daemon shut down cleanly");
+}
+
+fn refuse_to_start(errors: &[String]) {
+    for e in errors {
+        tracing::error!("{}", e);
+    }
+    tracing::error!(
+        "Config validation failed with {} error(s). Daemon refusing to start.",
+        errors.len()
+    );
 }
 
 /// Spawn a watchdog task that monitors the scheduler heartbeat.

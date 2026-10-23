@@ -37,20 +37,12 @@ fn http_providers_from_config() {
 type = "http"
 url = "https://status.example.com/api/summary.json"
 invalidation = { poll = "60s" }
-
-[providers.my_script]
-type = "script"
-command = "echo hello"
 "#;
     let config: crate::config::Config = toml::from_str(toml_str).unwrap();
     let http = config.http_providers();
     assert_eq!(http.len(), 1);
     assert_eq!(http[0].0, "status_check");
     assert_eq!(http[0].1.url, "https://status.example.com/api/summary.json");
-
-    // Script providers should still work
-    let scripts = config.script_providers();
-    assert_eq!(scripts.len(), 1);
 }
 
 #[test]

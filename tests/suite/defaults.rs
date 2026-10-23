@@ -312,6 +312,33 @@ fn the_shipped_default_matches_default_decay() {
     );
 }
 
+/// `00-comb.toml` holds the two abstract tables: the decay prototype, then the
+/// abstract Source's schedule.
+#[test]
+fn the_shipped_comb_file_holds_the_decay_and_the_abstract_source() {
+    let (_, body) = SHIPPED
+        .iter()
+        .find(|(name, _)| *name == "00-comb.toml")
+        .expect("00-comb.toml is shipped");
+    let parsed: toml::Value = toml::from_str(body).unwrap();
+    let providers = parsed["daemon"]["providers"]["_"].as_table().unwrap();
+    assert_eq!(
+        providers.keys().collect::<Vec<_>>(),
+        vec!["cache", "sources"],
+        "only the abstract provider's two prototypes"
+    );
+    assert_eq!(
+        providers["sources"]["_"]["return"].as_str(),
+        Some("{{ result | poll('60s', 12) | failback(3, '1s') }}")
+    );
+    assert_eq!(providers["sources"]["_"].as_table().unwrap().len(), 1);
+    assert!(
+        body.find("[daemon.providers._.cache._]").unwrap()
+            < body.find("[daemon.providers._.sources._]").unwrap(),
+        "the Source's block is below the decay block"
+    );
+}
+
 /// Seeding the managed defaults stores the shipped `*:cache` prototype, labelled
 /// with the file it came from, and a provider with none of its own resolves
 /// decay 4 through it.

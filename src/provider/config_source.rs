@@ -83,6 +83,57 @@ fn stage_error(spec: &ConfigSourceSpec, stage: &str, message: impl std::fmt::Dis
     format!("{}.{}: {stage}: {message}", spec.provider, spec.name)
 }
 
+/// The load check of a Source's lines: every name a line reads is one its
+/// stage sees, and `data` reads `comb` the one way it can. `who` prefixes the
+/// error (`demo.s`, or a `_` table's path); any line may be absent, as in a
+/// prototype. Nothing is rendered.
+pub fn lint_lines(
+    who: &str,
+    root: Option<&str>,
+    data: Option<&str>,
+    result: Option<&ResultSpec>,
+    env: &Arc<HashMap<String, String>>,
+    plugins: &Arc<PluginSet>,
+) -> Result<(), String> {
+    let probe = engine(env, plugins, None);
+    let mut lines: Vec<(String, &str, &[&str])> = Vec::new();
+    if let Some(root) = root {
+        lines.push(("root".into(), root, ROOT_NAMES));
+    }
+    if let Some(data) = data {
+        lines.push(("data".into(), data, DATA_NAMES));
+    }
+    match result {
+        Some(ResultSpec::Whole(line)) => lines.push(("result".into(), line, RESULT_NAMES)),
+        Some(ResultSpec::Fields(pairs)) => lines.extend(
+            pairs
+                .iter()
+                .map(|(n, l)| (format!("result.{n}"), l.as_str(), RESULT_NAMES)),
+        ),
+        None => {}
+    }
+    for (stage, line, allowed) in lines {
+        let names =
+            undeclared_names(&probe, line, false).map_err(|e| format!("{who}: {stage}: {e}"))?;
+        if let Some(name) = names.iter().find(|n| !allowed.contains(&n.as_str())) {
+            return Err(format!(
+                "{who}: {stage}: unknown name '{name}' (this line sees {})",
+                allowed.join(", ")
+            ));
+        }
+    }
+    if let Some(data) = data {
+        let used = undeclared_names(&probe, data, true).map_err(|e| format!("{who}: data: {e}"))?;
+        if used.contains("comb") {
+            return Err(format!(
+                "{who}: data: comb is read as comb.<provider>[.<field>]; comb[...] and comb as \
+                 a whole are not supported"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// What a value is, for an error message that must not carry the value (a
 /// `url()` body can carry tokens).
 fn kind(value: &Json) -> &'static str {
@@ -137,45 +188,14 @@ impl ConfigSource {
             }
         };
 
-        let probe = engine(&env, &plugins, None);
-        let mut lines: Vec<(String, &str, &[&str])> = Vec::new();
-        if let Some(root) = &spec.root {
-            lines.push(("root".into(), root, ROOT_NAMES));
-        }
-        lines.push(("data".into(), &spec.data, DATA_NAMES));
-        match &spec.result {
-            ResultSpec::Whole(line) => lines.push(("result".into(), line, RESULT_NAMES)),
-            ResultSpec::Fields(pairs) => lines.extend(
-                pairs
-                    .iter()
-                    .map(|(n, l)| (format!("result.{n}"), l.as_str(), RESULT_NAMES)),
-            ),
-        }
-        for (stage, line, allowed) in lines {
-            let names =
-                undeclared_names(&probe, line, false).map_err(|e| stage_error(&spec, &stage, e))?;
-            if let Some(name) = names.iter().find(|n| !allowed.contains(&n.as_str())) {
-                return Err(stage_error(
-                    &spec,
-                    &stage,
-                    format!(
-                        "unknown name '{name}' (this line sees {})",
-                        allowed.join(", ")
-                    ),
-                ));
-            }
-        }
-
-        let used = undeclared_names(&probe, &spec.data, true)
-            .map_err(|e| stage_error(&spec, "data", e))?;
-        if used.contains("comb") {
-            return Err(stage_error(
-                &spec,
-                "data",
-                "comb is read as comb.<provider>[.<field>]; comb[...] and comb as a whole \
-                 are not supported",
-            ));
-        }
+        lint_lines(
+            &format!("{}.{}", spec.provider, spec.name),
+            spec.root.as_deref(),
+            Some(&spec.data),
+            Some(&spec.result),
+            &env,
+            &plugins,
+        )?;
 
         let comb_providers: Vec<String> = discover_refs(&spec.data)
             .into_iter()
@@ -206,6 +226,11 @@ impl ConfigSource {
             reader,
             comb_providers,
         })
+    }
+
+    /// Whether the Source has a `root` line to render.
+    pub fn has_root(&self) -> bool {
+        self.spec.root.is_some()
     }
 
     /// Render the root line with cwd = `dir`: `Ok(Some(directory))`, or

@@ -221,10 +221,12 @@ pub fn read_chain(requested: Option<&str>, provider_entry: Option<&str>) -> Vec<
 /// provider with a `PathScoped` source may narrow the path further through that
 /// source's `canonical_path` (walking to a project root, say).
 fn resolve_path(key: &str, requested: Option<&str>, registry: &ProviderRegistry) -> Option<String> {
-    let provider = key.split('.').next().unwrap_or(key);
     let raw = requested?;
+    let Some(provider) = path_provider(key) else {
+        return Some(raw.to_string());
+    };
 
-    let Some(sources) = registry.provider_sources(provider) else {
+    let Some(sources) = registry.provider_sources(&provider) else {
         return Some(raw.to_string());
     };
     if !sources.iter().any(|s| s.scope == SourceScope::PathScoped) {
@@ -232,7 +234,7 @@ fn resolve_path(key: &str, requested: Option<&str>, registry: &ProviderRegistry)
     }
     for sm in sources {
         if sm.scope == SourceScope::PathScoped
-            && let Some(src) = registry.source(provider, &sm.name)
+            && let Some(src) = registry.source(&provider, &sm.name)
             && let Some(canonical) = src.canonical_path(Some(raw))
         {
             // A walk that stayed put returns an already-canonical path. One
@@ -344,6 +346,16 @@ pub fn split_layer_facet(key: &str) -> (std::borrow::Cow<'_, str>, crate::cache:
         }
     }
     (key.into(), Layers::All)
+}
+
+/// The provider whose Sources resolve the path of a request for `raw_key`:
+/// the first segment once a layer facet (`:put`, `:source`, `:cache`) is split
+/// off. `None` for any other facet key (`git:template`), which names no
+/// provider's Sources and never reaches a `canonical_path`.
+pub fn path_provider(raw_key: &str) -> Option<String> {
+    let (key, _) = split_layer_facet(raw_key);
+    let segment = key.split('.').next().unwrap_or(&key);
+    (!segment.contains(':')).then(|| segment.to_string())
 }
 
 impl QueryPlan {

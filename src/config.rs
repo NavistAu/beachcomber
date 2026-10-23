@@ -1,4 +1,3 @@
-use crate::provider::FieldScope;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -89,6 +88,10 @@ const SOURCE_KNOB_KEYS: &[&str] = &[
     "poll_secs",
 ];
 
+/// Where a removed script provider went.
+const SCRIPT_REMOVED: &str = "Script providers are removed: write a Source whose data calls \
+                              exec(), in [daemon.providers.<p>.sources.<s>]";
+
 /// Which resolution step supplied a socket path
 /// (canon singleton.md §"Canonical socket path resolution").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,7 +142,7 @@ pub struct DaemonConfig {
     /// Path to an env file loaded at daemon startup.
     /// Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
     /// These vars are injected into the daemon's environment before any providers execute,
-    /// making them available to ${VAR} expansion in HTTP headers, script commands, etc.
+    /// making them available to ${VAR} expansion in HTTP headers and the commands a Source's data runs.
     /// Default: ~/.config/beachcomber/env
     pub env_file: Option<String>,
     /// How often the watchdog checks the scheduler heartbeat. Default: disabled (None).
@@ -149,9 +152,10 @@ pub struct DaemonConfig {
     /// Default: 3x watchdog_interval.
     /// Example: "90s", "3m".
     pub watchdog_threshold: Option<String>,
-    /// `[daemon.providers.<p>]`: what the daemon holds about a provider; so
-    /// far only `cache` (`[daemon.providers.<p>.cache._] decay = N`, seeded as
-    /// `<p>:cache._.decay`, and `*:cache` for `<p> = _`). A `toml::Value` for
+    /// `[daemon.providers.<p>]`: what the daemon holds about a provider:
+    /// `cache` (`[daemon.providers.<p>.cache._] decay = N`, seeded as
+    /// `<p>:cache._.decay`, and `*:cache` for `<p> = _`) and `sources`
+    /// (`[daemon.providers.<p>.sources.<s>]`, built by `crate::shape::build`). A `toml::Value` for
     /// the reason `Config::client` is one; the per-file check is
     /// `Config::validate_seeded`.
     #[serde(default = "empty_table")]
@@ -456,12 +460,12 @@ impl SourceOverrideConfig {
     }
 }
 
-/// Per-source config for external backends (script / http / library).
+/// Per-source config for external backends (http / library).
 ///
-/// Used when a provider is declared with `backend = "script"` (or `"http"`, `"library"`)
+/// Used when a provider is declared with `backend = "http"` (or `"library"`)
 /// and each source lives in its own `[providers.<name>.<source>]` sub-table.
 ///
-/// Accepts both declaration keys (`command`, `url`, `fields`, …) and all knob keys
+/// Accepts both declaration keys (`url`, `fields`, …) and all knob keys
 /// (`poll_interval`, `fsevent_patterns`, `failback_count`, …).
 #[derive(Debug, Clone, Default)]
 pub struct ExternalSourceConfig {
@@ -473,10 +477,6 @@ pub struct ExternalSourceConfig {
     pub scope: Option<String>,
     /// Whether the source is enabled. Default true.
     pub enabled: Option<bool>,
-
-    // ── Script-backend declaration keys ──────────────────────────────────────
-    pub command: Option<String>,
-    pub output: Option<String>,
 
     // ── HTTP-backend declaration keys ─────────────────────────────────────────
     pub url: Option<String>,
@@ -510,9 +510,6 @@ pub struct ExternalFieldDecl {
     pub name: String,
     pub field_type: String,
 }
-
-/// One `[providers.<name>]` block with `backend = "script"`, paired with its parsed sources.
-pub type ScriptProviderBlocks = Vec<(String, Vec<ExternalSourceConfig>)>;
 
 /// One `[providers.<name>]` block with `backend = "library"`, paired with `library_path`
 /// and any per-source override tables.
@@ -563,21 +560,6 @@ impl ExternalSourceConfig {
                     out.enabled = Some(
                         val.as_bool()
                             .ok_or_else(|| format!("{block_name}: 'enabled' must be a boolean"))?,
-                    );
-                }
-                // Script
-                "command" => {
-                    out.command = Some(
-                        val.as_str()
-                            .ok_or_else(|| format!("{block_name}: 'command' must be a string"))?
-                            .to_string(),
-                    );
-                }
-                "output" => {
-                    out.output = Some(
-                        val.as_str()
-                            .ok_or_else(|| format!("{block_name}: 'output' must be a string"))?
-                            .to_string(),
                     );
                 }
                 // HTTP
@@ -715,7 +697,7 @@ impl ExternalSourceConfig {
                 other => {
                     return Err(format!(
                         "{block_name}: unknown key '{other}'. \
-                         Valid external-source keys are: type, scope, enabled, command, output, \
+                         Valid external-source keys are: type, scope, enabled, \
                          url, method, headers, body, extract, default_timeout, fields, \
                          poll_interval, poll_count, fsevent_patterns, fsevent_abs_paths, \
                          fsevent_reinstates, failback_count, failback_interval"
@@ -728,17 +710,15 @@ impl ExternalSourceConfig {
     }
 }
 
-/// A script/library field declaration. Either a bare type string (legacy:
-/// inherits provider-level scope) or a table with explicit type + optional
-/// per-field scope override.
+/// A library field declaration: either a bare type string or a table with
+/// the type.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum FieldSpec {
     Simple(String),
     Detailed {
         #[serde(rename = "type")]
         field_type: String,
-        scope: Option<String>,
     },
 }
 
@@ -746,51 +726,20 @@ impl FieldSpec {
     pub fn field_type(&self) -> &str {
         match self {
             FieldSpec::Simple(t) => t,
-            FieldSpec::Detailed { field_type, .. } => field_type,
-        }
-    }
-
-    pub fn explicit_scope(&self) -> Option<FieldScope> {
-        match self {
-            FieldSpec::Simple(_) => None,
-            FieldSpec::Detailed { scope, .. } => scope.as_deref().and_then(|s| match s {
-                "global" => Some(FieldScope::Global),
-                "path" | "pathscoped" => Some(FieldScope::PathScoped),
-                _ => None,
-            }),
+            FieldSpec::Detailed { field_type } => field_type,
         }
     }
 }
 
-/// Resolve the effective FieldScope for a named field under a script/library
-/// provider: use the field's explicit scope if declared, else the
-/// provider-level default (`scope = "path"` → PathScoped, otherwise Global).
-pub fn resolve_field_scope(config: &ScriptProviderConfig, field: &str) -> FieldScope {
-    let explicit = config
-        .fields
-        .as_ref()
-        .and_then(|fields| fields.get(field))
-        .and_then(|spec| spec.explicit_scope());
-    if let Some(s) = explicit {
-        return s;
-    }
-    match config.scope.as_deref() {
-        Some("path") | Some("pathscoped") => FieldScope::PathScoped,
-        _ => FieldScope::Global,
-    }
-}
-
-/// Configuration for a script/library/http provider extracted from the raw providers map.
+/// Configuration for a library/http provider extracted from the raw providers map.
 /// This preserves backward compatibility for Phase 4 which will restructure external backends.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-pub struct ScriptProviderConfig {
+pub struct FlatProviderConfig {
     #[serde(rename = "type")]
     pub provider_type: Option<String>,
-    pub command: String,
-    pub invalidation: Option<ScriptInvalidation>,
+    pub invalidation: Option<FlatInvalidation>,
     pub fields: Option<HashMap<String, FieldSpec>>,
-    pub output: Option<String>,
     pub scope: Option<String>,
     pub enabled: Option<bool>,
     pub poll_secs: Option<u64>,
@@ -821,12 +770,12 @@ pub struct HttpProviderConfig {
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<String>,
     pub extract: Option<String>,
-    pub invalidation: Option<ScriptInvalidation>,
+    pub invalidation: Option<FlatInvalidation>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-pub struct ScriptInvalidation {
+pub struct FlatInvalidation {
     pub poll: Option<String>,
     pub watch: Option<Vec<String>>,
 }
@@ -1027,18 +976,17 @@ impl Config {
     //
     // Two families of extraction:
     //
-    // 1. Legacy single-source (backward compat): provider-level block carries all
-    //    config. Used when there is NO `backend` key (old `type = "script"` shape).
-    //    `script_providers()`, `library_providers()`, `http_providers()`.
+    // 1. Single-source: provider-level block carries all config. Used when
+    //    there is NO `backend` key. `library_providers()`, `http_providers()`.
     //
-    // 2. Phase 4 multi-source: provider-level block has `backend = "..."` key;
-    //    each source lives in a per-source sub-table. The provider-level block may
+    // 2. Multi-source: provider-level block has `backend = "..."` key; each
+    //    source lives in a per-source sub-table. The provider-level block may
     //    also carry `library_path` (library) or `default_timeout` (http).
-    //    `multi_script_providers()`, `multi_library_providers()`, `multi_http_providers()`.
+    //    `multi_library_providers()`, `multi_http_providers()`.
 
-    fn as_script_provider_config(val: &toml::Value) -> Option<ScriptProviderConfig> {
-        // For external backends (script/library/http), deserialize the full provider-level
-        // table as ScriptProviderConfig. Sub-table entries like `fields` and `invalidation`
+    fn as_external_provider_config(val: &toml::Value) -> Option<FlatProviderConfig> {
+        // For external backends (library/http), deserialize the full provider-level
+        // table as FlatProviderConfig. Sub-table entries like `fields` and `invalidation`
         // are part of the external backend config shape (Phase 4 will restructure these).
         let table = val.as_table()?.clone();
         table.try_into().ok()
@@ -1049,7 +997,7 @@ impl Config {
         val.get("backend").and_then(|v| v.as_str())
     }
 
-    pub fn script_providers(&self) -> Vec<(String, ScriptProviderConfig)> {
+    pub fn library_providers(&self) -> Vec<(String, FlatProviderConfig)> {
         self.providers
             .iter()
             .filter_map(|(name, val)| {
@@ -1057,27 +1005,7 @@ impl Config {
                 if Self::backend_for(val).is_some() {
                     return None;
                 }
-                let cfg = Self::as_script_provider_config(val)?;
-                let is_script = cfg.provider_type.as_deref() == Some("script")
-                    || (!cfg.command.is_empty() && cfg.provider_type.is_none());
-                if is_script {
-                    Some((name.clone(), cfg))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    pub fn library_providers(&self) -> Vec<(String, ScriptProviderConfig)> {
-        self.providers
-            .iter()
-            .filter_map(|(name, val)| {
-                // Skip Phase 4 multi-source style (has `backend` key).
-                if Self::backend_for(val).is_some() {
-                    return None;
-                }
-                let cfg = Self::as_script_provider_config(val)?;
+                let cfg = Self::as_external_provider_config(val)?;
                 if cfg.provider_type.as_deref() == Some("library") {
                     Some((name.clone(), cfg))
                 } else {
@@ -1095,7 +1023,7 @@ impl Config {
                 if Self::backend_for(val).is_some() {
                     return None;
                 }
-                let cfg = Self::as_script_provider_config(val)?;
+                let cfg = Self::as_external_provider_config(val)?;
                 if cfg.provider_type.as_deref() != Some("http") {
                     return None;
                 }
@@ -1150,30 +1078,6 @@ impl Config {
             sources.push(src);
         }
         Ok(sources)
-    }
-
-    /// Multi-source script providers: `backend = "script"` + per-source sub-tables.
-    /// Each source sub-table must contain `command`.
-    pub fn multi_script_providers(&self) -> Result<ScriptProviderBlocks, String> {
-        let mut result = Vec::new();
-        for (name, val) in &self.providers {
-            if Self::backend_for(val) != Some("script") {
-                continue;
-            }
-            let sources = Self::parse_external_sources(name, val)?;
-            // Validate: each source must have a command.
-            for src in &sources {
-                if src.command.is_none() {
-                    return Err(format!(
-                        "provider '{}' source '{}' (backend = script): \
-                         missing required key 'command'",
-                        name, src.name
-                    ));
-                }
-            }
-            result.push((name.clone(), sources));
-        }
-        Ok(result)
     }
 
     /// Multi-source library providers: `backend = "library"` + `library_path`.
@@ -1273,23 +1177,70 @@ impl Config {
                 ));
             }
 
+            // A script provider is a Source whose data calls exec(): the
+            // discriminators and the keys only it read are errors.
+            let removed = [
+                ("type", "type = \"script\""),
+                ("backend", "backend = \"script\""),
+            ]
+            .iter()
+            .filter(|(key, _)| table.get(*key).and_then(|v| v.as_str()) == Some("script"))
+            .map(|(key, shown)| {
+                format!("[providers.{prov_name}] {shown}: unknown value for '{key}'")
+            })
+            .chain(
+                table
+                    .contains_key("command")
+                    .then(|| format!("[providers.{prov_name}]: unknown key 'command'")),
+            )
+            .chain(
+                // A table named `output` is a Source block, not the key.
+                table
+                    .get("output")
+                    .is_some_and(|v| !v.is_table())
+                    .then(|| format!("[providers.{prov_name}]: unknown key 'output'")),
+            )
+            .collect::<Vec<_>>();
+            if !removed.is_empty() {
+                errors.extend(
+                    removed
+                        .into_iter()
+                        .map(|e| format!("{e}. {SCRIPT_REMOVED}")),
+                );
+                continue;
+            }
+
+            // A flat provider's `fields` table maps a name to a type, bare or
+            // as `{ type = … }`; a per-field `scope` is not a key.
+            if let Some(fields) = table.get("fields").and_then(|f| f.as_table()) {
+                for (field, spec) in fields {
+                    if let Some(spec) = spec.as_table() {
+                        for key in spec.keys().filter(|k| *k != "type") {
+                            errors.push(format!(
+                                "[providers.{prov_name}] fields.{field}: unknown key '{key}' \
+                                 (a field holds only its type)"
+                            ));
+                        }
+                    }
+                }
+            }
+
             // Check for old flat source-knob keys at the provider level.
             // These are rejected for ALL providers (built-in and external).
-            // Exception: script/library/http providers still use some of these
+            // Exception: library/http providers still use some of these
             // keys (failure_reattempts, failure_backoff_interval, poll_interval,
             // poll_live_count, fsevents_reinstate, poll_secs) at provider level
             // until Phase 4. We detect if this looks like an external backend.
             let is_external_backend = table
                 .get("type")
                 .and_then(|v| v.as_str())
-                .map(|t| matches!(t, "script" | "library" | "http"))
+                .map(|t| matches!(t, "library" | "http"))
                 .unwrap_or(false)
                 || table
                     .get("backend")
                     .and_then(|v| v.as_str())
-                    .map(|b| matches!(b, "script" | "library" | "http"))
+                    .map(|b| matches!(b, "library" | "http"))
                     .unwrap_or(false)
-                || table.get("command").is_some()
                 || table.get("url").is_some()
                 || table.get("library_path").is_some();
 
@@ -1329,9 +1280,9 @@ impl Config {
                     continue;
                 }
 
-                // Legacy flat external-backend shape (bare `command`, no `backend` key)
-                // uses `fields` and `invalidation` as provider-level sub-tables directly
-                // (see ScriptProviderConfig::{fields, invalidation}) — they are not
+                // Legacy flat external-backend shape (`type = "http"` or `"library"`, no
+                // `backend` key) uses `fields` and `invalidation` as provider-level sub-tables directly
+                // (see FlatProviderConfig::{fields, invalidation}) — they are not
                 // per-source blocks. Skip them here so they aren't flagged as
                 // unrecognized source blocks, mirroring parse_external_sources' skip
                 // logic. Scoped to the no-`backend`-key case so Phase 4 `backend = "..."`
@@ -1708,7 +1659,7 @@ impl Config {
 
     /// Load environment variables from the configured env file (or default path).
     /// Sets them in the process environment so they're available to ${VAR} expansion
-    /// in HTTP headers, script commands, etc.
+    /// in HTTP headers and the commands a Source's data runs.
     /// Returns the number of variables loaded.
     pub fn load_env_file(&self) -> usize {
         let path = match &self.daemon.env_file {

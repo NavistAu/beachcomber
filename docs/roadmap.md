@@ -81,7 +81,7 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 - [ ] We should do a llm/agent md page in the website that gives a compact token efficient summary of the tool for llm
       purposes. this is different to llm.txt which is more for training datasets and marketing.
   - [ ] Is there any possible utility in making a beachcomber skill/plugin?
-- [ ] Fun examples — copy-paste script provider recipes for the website. Show beachcomber as a general-purpose cached
+- [ ] Fun examples — copy-paste config Source recipes for the website. Show beachcomber as a general-purpose cached
       data layer, not just a devtools daemon. Practical: local weather, quote of the day, today's Wordle number,
       countdown to next One Piece episode, ISS overhead pass, Hacker News top story, Spotify current track, Home
       Assistant entity state (front door lock, thermostat, lights via HA REST API). Weird/fun (not all committed, pick
@@ -101,7 +101,7 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
     height ÷ 17.78cm). Display as a literal string of 🍌 emoji. Utterly useless, deeply satisfying.
   - Claude token odometer — `wc -l` of Claude Code conversation history from the last 24 hours. Show in tmux/prompt as a
     rolling count of how much you've been talking to your AI pair programmer today.
-  - Magic 8-Ball deploy oracle — script provider that caches a random 8-ball response ("Outlook not so good", "Signs
+  - Magic 8-Ball deploy oracle — config Source that caches a random 8-ball response ("Outlook not so good", "Signs
     point to yes", etc.) and reshakes at random intervals. Git pre-push hook checks `comb get 8ball.sentiment` and
     blocks deploys on negative readings. Show the current reading in tmux. The universe has opinions about your release
     schedule.

@@ -133,42 +133,32 @@ poll_count = 4
 poll_interval = "30s"         # default: "10s"
 
 
-# ─── Custom Script Providers ───────────────────────────────────────────────────
-# Define your own providers backed by any executable.
+# ─── Config Sources ────────────────────────────────────────────────────────────
+# Define your own providers as Sources: `data` runs a command, `result` shapes
+# its output into fields, `return` says when it runs again.
 
 # Minimal: a global provider that polls every 30 seconds
-[providers.docker_context]
-command = "docker context show"
-output = "text"         # single-line output becomes { "value": "<output>" }
-# or use output = "json" for structured output: { "key": value, ... }
-# or use output = "kv" for key=value line format
+[daemon.providers.docker_context.sources.main]
+data = "{{ exec('docker context show') | trim }}"
+result.value = "{{ data }}"            # one field, `docker_context.value`
+return = "{{ result | poll('30s') }}"
 
-[providers.docker_context.invalidation]
-poll = "30s"
+# A path-scoped provider that watches files and has a poll fallback
+[daemon.providers.node_version.sources.main]
+root = "{{ lup('package.json') | dirname }}"   # the directory an instance answers for
+data = "{{ exec('node --version') | trim }}"
+result.value = "{{ data }}"
+return = "{{ result | watch('.node-version', '.nvmrc', 'package.json') | poll('60s') }}"
 
-# A path-scoped provider that watches a file and has a poll fallback
-[providers.node_version]
-command = "node --version"
-output = "text"
-scope = "path"          # scoped to a directory; path argument required
-
-[providers.node_version.invalidation]
-watch = [".node-version", ".nvmrc", "package.json"]
-poll = "60s"            # safety-net poll in case filesystem events are missed
-
-# A provider with structured JSON output
-[providers.cargo_meta]
-command = "cargo metadata --format-version=1 --no-deps --quiet"
-output = "json"         # parse stdout as JSON object; top-level keys become fields
-scope = "path"
-
-[providers.cargo_meta.invalidation]
-watch = ["Cargo.toml", "Cargo.lock"]
-poll = "120s"
+# A Source with structured JSON output: `result = "{{ data }}"` owns the whole node
+[daemon.providers.cargo_meta.sources.main]
+root = "{{ lup('Cargo.toml') | dirname }}"
+data = "{{ exec('cargo metadata --format-version=1 --no-deps --quiet') | fromjson }}"
+result = "{{ data }}"
+return = "{{ result | watch('Cargo.toml', 'Cargo.lock') | poll('120s') }}"
 
 # Explicitly disable a custom provider without removing its config
-[providers.my_slow_thing]
-command = "my-slow-script"
+[providers.cargo_meta]
 enabled = false
 
 
@@ -204,41 +194,6 @@ extract = "rates.AUD"           # extracts a single nested value
 
 [providers.exchange_rate.invalidation]
 poll = "86400s"
-```
-
-### Per-field scope
-
-Script and library providers can declare scope per field. The provider-level
-`scope` acts as the default; individual fields can override.
-
-```toml
-[providers.mixed]
-type = "script"
-command = "/usr/bin/myscript --json"
-scope = "path"
-
-[providers.mixed.fields.branch]
-type = "string"
-# inherits provider-level "path"
-
-[providers.mixed.fields.status]
-type = "string"
-scope = "global"   # override — always cached globally
-```
-
-Back-compat: `fields = { branch = "string" }` continues to parse. All fields
-inherit the provider-level `scope`.
-
-Library providers (.so / .dylib) use the same per-field scope model in their
-JSON metadata:
-
-```json
-{
-  "fields": {
-    "branch": {"type": "string", "scope": "path"},
-    "system": {"type": "string", "scope": "global"}
-  }
-}
 ```
 
 ### Template facets
@@ -443,16 +398,16 @@ Only `enabled` is valid directly under `[providers.<name>]` for built-in provide
 | `failback_count` | int | inherited from `[failback]` | Consecutive failures before suppression |
 | `failback_interval` | duration | inherited from `[failback]` | Suppression duration after failback_count hit |
 
-**`[providers.<name>]` section (custom script providers):**
+**`[daemon.providers.<name>.sources.<source>]` section (config Sources):**
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `command` | string | yes | Shell command to execute |
-| `output` | string | no | `"json"` (default), `"kv"`, or `"text"` |
-| `scope` | string | no | `"global"` (default) or `"path"` |
-| `enabled` | bool | no | `false` to disable |
-| `invalidation.poll` | string | no | Poll interval as duration string (`"30s"`, `"2m"`) |
-| `invalidation.watch` | array of strings | no | File/directory patterns to watch |
+| `data` | string | yes | The body: a jinja line that runs on the daemon, usually `exec('command')`. Sees `env` (the daemon's own), `comb.<provider>` and `_`. |
+| `result` | string, or table of strings | yes | `result = "{{ data }}"` owns the whole provider node; `result.<field> = "{{ … }}"` lines declare fields, each over `data`. |
+| `root` | string | no | The directory an instance answers for, e.g. `{{ lup('.git') \| dirname }}`. Empty (the default) is the one instance at `~`. |
+| `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(count, interval)`, `budget(interval)`. Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback(3, '1s')`). `\| super` extends that line instead of replacing it. |
+
+A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources only: the Rust Sources of built-in providers keep their own schedules until they ship as config.
 
 **`[providers.<name>]` section (HTTP providers):**
 
