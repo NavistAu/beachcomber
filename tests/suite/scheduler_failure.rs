@@ -31,6 +31,8 @@ fn failing_source_meta() -> SourceMetadata {
             interval_secs: 30,
         },
         fsevents_reinstate: false,
+        decay: None,
+        budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 

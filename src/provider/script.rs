@@ -228,6 +228,8 @@ fn build_source_meta_from_legacy(_name: &str, config: &ScriptProviderConfig) -> 
             interval_secs: 60,
         },
         fsevents_reinstate: false,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 
@@ -290,6 +292,8 @@ pub(crate) fn build_source_meta_from_external(cfg: &ExternalSourceConfig) -> Sou
             interval_secs: failback_secs,
         },
         fsevents_reinstate: cfg.fsevent_reinstates.unwrap_or(true),
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 

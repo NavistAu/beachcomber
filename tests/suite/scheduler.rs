@@ -151,6 +151,8 @@ fn path_source(name: &str, invalidation: InvalidationStrategy) -> SourceMetadata
             interval_secs: 30,
         },
         fsevents_reinstate,
+        decay: None,
+        budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 

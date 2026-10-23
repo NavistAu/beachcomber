@@ -161,6 +161,18 @@ async fn put_with_an_invalid_ttl_is_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sub_second_put_ttl_is_still_refused() {
+    let (_tmp, _sock, client, handle) = setup_daemon().await;
+    let r = client
+        .put("build.status", serde_json::json!("x"), Some("500ms"), None)
+        .unwrap();
+    assert!(!r.ok);
+    assert_eq!(r.error.as_deref(), Some("invalid ttl: 500ms"));
+    assert!(put_rows(&client, "build").is_empty(), "nothing was written");
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_null_put_with_a_ttl_is_refused() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
     client

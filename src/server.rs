@@ -502,7 +502,7 @@ async fn inline_execute_source(
         SourceScope::Global => None,
         SourceScope::PathScoped => path.map(|s| s.to_string()),
     };
-    let schedule = crate::cache::Schedule::from_strategy(&source.metadata().invalidation);
+    let schedule = crate::cache::Schedule::of(source.metadata());
     let dir = crate::query::source_dir(scope, address.as_deref());
     let src_clone = std::sync::Arc::clone(&source);
     let result = match tokio::task::spawn_blocking(move || src_clone.execute(dir.as_deref())).await

@@ -31,8 +31,10 @@ pub fn deep_merge_toml(base: &mut toml::Value, overlay: toml::Value) {
     }
 }
 
-/// Parse a duration string like "30s", "5m", "1h", or whole-second "ms" values (e.g. "2000ms")
-/// into a Duration. Returns None for sub-second `ms` values and non-whole-second multiples.
+/// Parse a duration string like "30s", "5m", "1h" or "50ms" into a Duration.
+/// An `ms` suffix takes any whole number of milliseconds of at least 1
+/// (`"1500ms"` is 1.5 s); `"0ms"` is `None`. Consumers that can only act on
+/// whole seconds use [`parse_whole_seconds`].
 pub fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim();
     if s.is_empty() {
@@ -40,10 +42,10 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
     }
     if let Some(stripped) = s.strip_suffix("ms") {
         let n = stripped.trim().parse::<u64>().ok()?;
-        if n < 1000 || n % 1000 != 0 {
+        if n < 1 {
             return None;
         }
-        return Some(Duration::from_secs(n / 1000));
+        return Some(Duration::from_millis(n));
     }
     let (num_str, multiplier) = if let Some(stripped) = s.strip_suffix('s') {
         (stripped, 1u64)
@@ -58,7 +60,14 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
         .trim()
         .parse::<u64>()
         .ok()
-        .map(|n| Duration::from_secs(n * multiplier))
+        .and_then(|n| n.checked_mul(multiplier))
+        .map(Duration::from_secs)
+}
+
+/// [`parse_duration`], but `None` unless the duration is a whole number of
+/// seconds: what every seconds-only consumer (intervals, `put --ttl`) accepts.
+pub fn parse_whole_seconds(s: &str) -> Option<Duration> {
+    parse_duration(s).filter(|d| d.subsec_nanos() == 0)
 }
 
 // ── Source-knob keys that are ONLY valid inside [providers.<name>.<source>] blocks,
@@ -247,12 +256,12 @@ impl DaemonConfig {
     pub fn watchdog_interval_duration(&self) -> Option<Duration> {
         self.watchdog_interval
             .as_ref()
-            .and_then(|s| parse_duration(s))
+            .and_then(|s| parse_whole_seconds(s))
     }
 
     pub fn watchdog_threshold_duration(&self) -> Option<Duration> {
         if let Some(ref s) = self.watchdog_threshold {
-            parse_duration(s)
+            parse_whole_seconds(s)
         } else {
             // Default: 3x the watchdog interval
             self.watchdog_interval_duration().map(|d| d * 3)
@@ -320,7 +329,7 @@ impl Default for FailbackGlobalConfig {
 
 impl FailbackGlobalConfig {
     pub fn interval_duration(&self) -> Duration {
-        parse_duration(&self.interval).unwrap_or(Duration::from_secs(1))
+        parse_whole_seconds(&self.interval).unwrap_or(Duration::from_secs(1))
     }
 }
 
@@ -978,7 +987,7 @@ impl Config {
         if let Some(src) = source_name
             && let Ok(Some(cfg)) = self.source_override(provider_name, src)
             && let Some(ref s) = cfg.failback_interval
-            && let Some(d) = parse_duration(s)
+            && let Some(d) = parse_whole_seconds(s)
         {
             return d;
         }
@@ -1006,7 +1015,7 @@ impl Config {
         if let Some(src) = source_name
             && let Ok(Some(cfg)) = self.source_override(provider_name, src)
             && let Some(ref s) = cfg.poll_interval
-            && let Some(d) = parse_duration(s)
+            && let Some(d) = parse_whole_seconds(s)
         {
             return d;
         }
@@ -1015,7 +1024,7 @@ impl Config {
             return d;
         }
         // 3. [lifecycle] global then compile-time default
-        parse_duration(&self.lifecycle.poll_interval).unwrap_or(Duration::from_secs(60))
+        parse_whole_seconds(&self.lifecycle.poll_interval).unwrap_or(Duration::from_secs(60))
     }
 
     /// Resolve the polls in the Active window for a (provider, source) pair.

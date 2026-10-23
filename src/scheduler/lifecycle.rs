@@ -19,6 +19,15 @@ pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 60;
 /// Polls in the Active window unless a strategy says otherwise.
 pub const DEFAULT_POLL_COUNT: u32 = 12;
 
+/// Failed executions before a Source backs off, unless it says otherwise.
+pub const DEFAULT_FAILBACK_COUNT: u32 = 3;
+
+/// Seconds between a failing Source's reattempts, unless it says otherwise.
+pub const DEFAULT_FAILBACK_INTERVAL_SECS: u64 = 1;
+
+/// How long one `execute` may take before the engine reports it slow.
+pub const DEFAULT_BUDGET_EXECUTE: Duration = Duration::from_millis(50);
+
 /// Lifecycle key. `path` is None for Global sources; Some(canonical_path) for
 /// PathScoped. `node` is the put address a lifecycle belongs to (`source` is
 /// `"put"` then) and `""` for every Source instance.

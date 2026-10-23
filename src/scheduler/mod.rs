@@ -151,9 +151,10 @@ pub(crate) struct Subscription {
     pub(crate) patterns: Vec<String>,
 }
 
-/// Public wrapper for parse_duration, used by script provider.
+/// Whole seconds of a duration string, for the seconds-only consumers; `None`
+/// when it is not a whole number of seconds (`500ms`).
 pub fn parse_duration_secs_pub(s: &str) -> Option<u64> {
-    crate::config::parse_duration(s).map(|d| d.as_secs())
+    crate::config::parse_whole_seconds(s).map(|d| d.as_secs())
 }
 
 /// Handle for sending messages to the scheduler.
@@ -595,7 +596,7 @@ impl Scheduler {
         let source_name_owned = source_name.to_string();
         let key_for_cleanup = key.clone();
 
-        let schedule = crate::cache::Schedule::from_strategy(&source.metadata().invalidation);
+        let schedule = crate::cache::Schedule::of(source.metadata());
 
         let failure_threshold = self.config.resolve_failure_reattempts_for_source(
             provider_name,
@@ -1382,8 +1383,8 @@ fn apply_put_written(
 }
 
 /// The lifecycle a Source of `provider` runs under: its own strategy, with the
-/// decay depth its provider's `_` prototype gives at `path`
-/// (`Cache::resolve_decay`).
+/// decay depth it sets itself, else the one its provider's `_` prototype gives
+/// at `path` (`Cache::resolve_decay`).
 fn source_lifecycle_config(
     cache: &Cache,
     provider: &str,
@@ -1393,7 +1394,8 @@ fn source_lifecycle_config(
     SourceLifecycleConfig::from_strategy(
         &sm.invalidation,
         sm.fsevents_reinstate,
-        cache.resolve_decay(provider, path),
+        sm.decay
+            .unwrap_or_else(|| cache.resolve_decay(provider, path)),
     )
 }
 
@@ -1477,6 +1479,29 @@ mod tests {
         let mut keys: Vec<String> = lifecycle.iter().map(|(k, _)| k.node.clone()).collect();
         keys.sort();
         keys
+    }
+
+    /// A Source that sets its own decay (`ttl(...)` sets 1) keeps it over its
+    /// provider's `_.decay`; one that sets none takes the prototype's.
+    #[test]
+    fn a_source_decay_beats_the_prototype() {
+        let registry = crate::provider::registry::ProviderRegistry::with_defaults();
+        let mut sm = registry.provider_sources("git").unwrap()[0].clone();
+        let cache = crate::cache::Cache::new();
+        cache
+            .write_static(
+                "git:cache",
+                None,
+                crate::cache::PUT_SOURCE,
+                "_.decay",
+                crate::provider::Value::Int(6),
+                None,
+            )
+            .unwrap();
+        assert_eq!(sm.decay, None);
+        assert_eq!(source_lifecycle_config(&cache, "git", None, &sm).decay, 6);
+        sm.decay = Some(1);
+        assert_eq!(source_lifecycle_config(&cache, "git", None, &sm).decay, 1);
     }
 
     #[test]

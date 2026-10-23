@@ -382,7 +382,7 @@ pub enum SourceScope {
     PathScoped,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InvalidationStrategy {
     Poll {
         interval_secs: u64,
@@ -401,7 +401,7 @@ pub enum InvalidationStrategy {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailbackConfig {
     pub reattempts: u32,
     pub interval_secs: u64,
@@ -500,6 +500,11 @@ pub struct SourceMetadata {
     /// Whether watches survive decay. Default `true` for Watch/WatchAndPoll
     /// per canon §"fsevents_reinstate default". Meaningless for Poll.
     pub fsevents_reinstate: bool,
+    /// Decay steps before eviction, when the Source sets its own (`ttl(...)`
+    /// sets 1). `None` takes the provider's `_.decay` prototype.
+    pub decay: Option<u8>,
+    /// How long one `execute` may take before the engine reports it slow.
+    pub budget_execute: std::time::Duration,
 }
 
 /// What a Source produces on a successful execute. Disjoint with sibling
@@ -719,6 +724,8 @@ mod tests {
                 interval_secs: 30,
             },
             fsevents_reinstate: false,
+            decay: None,
+            budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
         }
     }
 

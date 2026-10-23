@@ -131,6 +131,8 @@ fn head_meta() -> SourceMetadata {
             interval_secs: 60,
         },
         fsevents_reinstate: true,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 
@@ -201,6 +203,8 @@ fn refs_meta() -> SourceMetadata {
             interval_secs: 60,
         },
         fsevents_reinstate: true,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 
@@ -235,6 +239,8 @@ fn diff_meta() -> SourceMetadata {
             interval_secs: 60,
         },
         fsevents_reinstate: false,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 
@@ -281,6 +287,8 @@ fn lineage_meta() -> SourceMetadata {
             interval_secs: 60,
         },
         fsevents_reinstate: false,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 
@@ -321,6 +329,8 @@ fn status_meta() -> SourceMetadata {
             interval_secs: 30,
         },
         fsevents_reinstate: true,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 

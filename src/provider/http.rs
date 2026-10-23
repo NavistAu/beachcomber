@@ -188,6 +188,8 @@ fn build_source_meta_legacy(_name: &str, config: &HttpProviderConfig) -> SourceM
             interval_secs: 60,
         },
         fsevents_reinstate: false,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 

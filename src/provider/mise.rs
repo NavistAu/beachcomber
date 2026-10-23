@@ -86,6 +86,8 @@ fn global_meta() -> SourceMetadata {
             interval_secs: 60,
         },
         fsevents_reinstate: true,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 
@@ -106,6 +108,8 @@ fn project_meta() -> SourceMetadata {
             interval_secs: 60,
         },
         fsevents_reinstate: true,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 

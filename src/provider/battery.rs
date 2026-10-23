@@ -41,6 +41,8 @@ fn state_meta() -> SourceMetadata {
             interval_secs: 60,
         },
         fsevents_reinstate: false,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 
@@ -198,6 +200,8 @@ fn level_meta() -> SourceMetadata {
             interval_secs: 60,
         },
         fsevents_reinstate: false,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 
@@ -225,6 +229,8 @@ fn upower_meta() -> SourceMetadata {
             interval_secs: 60,
         },
         fsevents_reinstate: false,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 

@@ -306,6 +306,8 @@ fn parse_library_source_meta(_name: &str, json_str: &str) -> Option<SourceMetada
             interval_secs: 60,
         },
         fsevents_reinstate: false,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     })
 }
 
@@ -464,6 +466,8 @@ fn build_source_meta_from_config(_name: &str, config: &ScriptProviderConfig) -> 
             interval_secs: 60,
         },
         fsevents_reinstate: false,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 
@@ -493,6 +497,8 @@ fn fallback_source_meta(provider_name: &str, idx: usize) -> SourceMetadata {
             interval_secs: 60,
         },
         fsevents_reinstate: false,
+        decay: None,
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 

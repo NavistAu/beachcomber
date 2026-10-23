@@ -27,15 +27,17 @@ pub fn is_static_label(source_name: &str) -> bool {
 }
 
 /// What a Source's records carry into the `<p>:cache` facet beside them: the
-/// schedule that keeps them fresh. Built from the Source's invalidation
-/// strategy, so a record and its schedule are written together and removed
-/// together.
+/// schedule that keeps them fresh. Built from the Source's metadata
+/// ([`Schedule::of`]), so a record and its schedule are written together and
+/// removed together.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Schedule {
     /// `(interval_secs, count)` for a Source that polls.
     pub poll: Option<(u64, u32)>,
     /// The watch patterns, then the absolute paths, for a Source that watches.
     pub watch: Vec<String>,
+    /// The Source's own decay depth (`ttl(...)` sets 1), stored as `decay`.
+    pub decay: Option<u8>,
 }
 
 impl Schedule {
@@ -43,6 +45,16 @@ impl Schedule {
         Self {
             poll: Some((interval_secs, count)),
             watch: Vec::new(),
+            decay: None,
+        }
+    }
+
+    /// The schedule of a Source: its invalidation strategy and, when it sets
+    /// one, its own decay depth.
+    pub fn of(source: &crate::provider::SourceMetadata) -> Self {
+        Self {
+            decay: source.decay,
+            ..Self::from_strategy(&source.invalidation)
         }
     }
 
@@ -59,6 +71,7 @@ impl Schedule {
             } => Self {
                 poll: None,
                 watch: patterns.iter().chain(abs_paths).cloned().collect(),
+                decay: None,
             },
             WatchAndPoll {
                 patterns,
@@ -68,15 +81,19 @@ impl Schedule {
             } => Self {
                 poll: Some((*interval_secs, *count)),
                 watch: patterns.iter().chain(abs_paths).cloned().collect(),
+                decay: None,
             },
         }
     }
 
-    /// The stored `:cache` keys of one record: `poll` and `watch`.
+    /// The stored `:cache` keys of one record: `poll`, `watch` and `decay`.
     fn stored_keys(&self) -> HashMap<String, Value> {
         let mut keys = HashMap::new();
         if let Some((interval_secs, count)) = self.poll {
             keys.insert("poll".to_string(), poll_key(interval_secs, count));
+        }
+        if let Some(decay) = self.decay {
+            keys.insert("decay".to_string(), Value::Int(i64::from(decay)));
         }
         if !self.watch.is_empty() {
             // An array is an object keyed by decimal index (`Value::from_json`).
@@ -2418,6 +2435,26 @@ mod tests {
             .stored_keys("git", Some("/repo"), "status", "dirty")
             .unwrap();
         assert!(stored_keys.contains_key("poll") && stored_keys.contains_key("watch"));
+    }
+
+    #[test]
+    fn a_sources_own_decay_is_stored_beside_its_poll() {
+        let cache = Cache::new();
+        cache.put_source(
+            "build",
+            None,
+            "status",
+            make_fields(&[("state", "ok")]),
+            Schedule {
+                decay: Some(1),
+                ..Schedule::poll(30, 1)
+            },
+        );
+        let keys = cache.stored_keys("build", None, "status", "state").unwrap();
+        assert_eq!(
+            json(&Value::Object(keys)),
+            serde_json::json!({"poll": {"interval": "30s", "count": 1}, "decay": 1})
+        );
     }
 
     #[test]

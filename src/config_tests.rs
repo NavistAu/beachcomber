@@ -294,7 +294,7 @@ fn log_path_resolves_xdg() {
 
 #[test]
 fn parse_duration_variants() {
-    assert_eq!(parse_duration("500ms"), None);
+    assert_eq!(parse_duration("500ms"), Some(Duration::from_millis(500)));
     assert_eq!(parse_duration("5s"), Some(Duration::from_secs(5)));
     assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
     assert_eq!(parse_duration("1h"), Some(Duration::from_secs(3600)));
@@ -1476,17 +1476,48 @@ fn accepts_ms_that_are_whole_seconds() {
 }
 
 #[test]
-fn rejects_sub_second_ms() {
+fn parse_duration_accepts_milliseconds() {
+    assert_eq!(parse_duration("50ms"), Some(Duration::from_millis(50)));
+    assert_eq!(parse_duration("1ms"), Some(Duration::from_millis(1)));
+    assert_eq!(parse_duration("1500ms"), Some(Duration::from_millis(1500)));
+    assert_eq!(parse_duration("2000ms"), Some(Duration::from_secs(2)));
     assert_eq!(parse_duration("0ms"), None);
-    assert_eq!(parse_duration("500ms"), None);
-    assert_eq!(parse_duration("1ms"), None);
-    assert_eq!(parse_duration("999ms"), None);
 }
 
 #[test]
-fn rejects_non_whole_second_ms() {
-    assert_eq!(parse_duration("1500ms"), None);
-    assert_eq!(parse_duration("2500ms"), None);
+fn parse_duration_overflow_is_none_not_a_panic() {
+    assert_eq!(parse_duration("999999999999999999h"), None);
+    assert_eq!(parse_duration("18446744073709551615m"), None);
+}
+
+#[test]
+fn the_watchdog_keys_refuse_sub_second_values() {
+    let config: Config = toml::from_str(
+        "[daemon]\nwatchdog_interval = \"500ms\"\nwatchdog_threshold = \"1500ms\"\n",
+    )
+    .unwrap();
+    assert_eq!(config.daemon.watchdog_interval_duration(), None);
+    assert_eq!(config.daemon.watchdog_threshold_duration(), None);
+    let config: Config =
+        toml::from_str("[daemon]\nwatchdog_interval = \"2s\"\nwatchdog_threshold = \"2000ms\"\n")
+            .unwrap();
+    assert_eq!(
+        config.daemon.watchdog_interval_duration(),
+        Some(Duration::from_secs(2))
+    );
+    assert_eq!(
+        config.daemon.watchdog_threshold_duration(),
+        Some(Duration::from_secs(2))
+    );
+}
+
+#[test]
+fn whole_second_consumers_reject_sub_second_values() {
+    use crate::scheduler::parse_duration_secs_pub as secs;
+    assert_eq!(secs("500ms"), None);
+    assert_eq!(secs("1500ms"), None);
+    assert_eq!(secs("2000ms"), Some(2));
+    assert_eq!(secs("5s"), Some(5));
 }
 
 #[test]
