@@ -186,6 +186,22 @@ impl LifecycleRegistry {
         }
     }
 
+    /// [`Self::on_demand`] for a demand that has no word on the configuration:
+    /// an entry that exists keeps its own, and `config` is only called to make
+    /// the one a new entry starts with (a lookup a read should not pay for).
+    pub fn demand(
+        &mut self,
+        key: Key,
+        config: impl FnOnce() -> SourceLifecycleConfig,
+        now: Instant,
+    ) -> DemandOutcome {
+        let config = match self.entries.get(&key) {
+            Some(entry) => entry.config.clone(),
+            None => config(),
+        };
+        self.on_demand(key, config, now)
+    }
+
     pub fn on_demand(
         &mut self,
         key: Key,

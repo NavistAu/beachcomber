@@ -980,8 +980,11 @@ impl Scheduler {
                                     source: sm.name.clone(),
                                     node: String::new(),
                                 };
-                                let cfg = source_lifecycle_config(&self.cache, provider, root.as_deref(), sm);
-                                let outcome = lifecycle.on_demand(key.clone(), cfg, now);
+                                let outcome = lifecycle.demand(
+                                    key.clone(),
+                                    || source_lifecycle_config(&self.cache, provider, root.as_deref(), sm),
+                                    now,
+                                );
 
                                 // The instance's schedule registers when it is
                                 // first requested (and again when decay dropped
