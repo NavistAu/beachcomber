@@ -697,6 +697,11 @@ impl ProviderRegistry {
         if let Err(msg) = &found
             && self.renders_root(provider, source)
         {
+            // Lapsed answers are never read again: sweep them as new ones come
+            // in, so a long-lived daemon does not hold one per directory ever
+            // asked about.
+            self.root_errors
+                .retain(|_, (at, _)| at.elapsed() < ROOT_RETRY_TTL);
             self.root_errors
                 .insert(error_key, (tokio::time::Instant::now(), msg.clone()));
         }
@@ -1770,6 +1775,31 @@ result.x = "{{ data }}"
             reg.roots.len(),
             2,
             "the lapsed answer for b went when c's was kept"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lapsed_root_errors_are_swept_when_another_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let reg = registry_from(
+            "[daemon.providers.demo.sources.s]\nroot = \"{{ exec('false') }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
+        );
+        let ask = |name: &str| {
+            let d = base.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            reg.instance_root("demo", "s", d.to_str().unwrap())
+        };
+
+        assert!(ask("a").is_err());
+        assert!(ask("b").is_err());
+        assert_eq!(reg.root_errors.len(), 2);
+        tokio::time::advance(ROOT_RETRY_TTL).await;
+        assert!(ask("c").is_err());
+        assert_eq!(
+            reg.root_errors.len(),
+            1,
+            "the lapsed answers for a and b went when c's was kept"
         );
     }
 
