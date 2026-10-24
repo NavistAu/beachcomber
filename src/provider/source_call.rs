@@ -162,33 +162,42 @@ pub fn record_outcome(
     // A reload that retired this Source since the registry was taken makes the
     // result stale: neither it nor its failure counts, and nothing is written.
     registry
-        .unless_retired(provider, source_name, || {
-            let mut failures = registry.failures.lock().unwrap();
-            let state = failures
-                .entry(instance_key(provider, source_name, root))
-                .or_insert_with(|| {
-                    crate::scheduler::FailureState::new(
-                        meta.failback.reattempts,
-                        std::time::Duration::from_secs(meta.failback.interval_secs),
-                    )
-                });
-            match outcome {
-                Ok(result) => {
-                    state.record_success();
-                    drop(failures);
-                    cache.put_source(
-                        provider,
-                        root,
-                        source_name,
-                        result.fields,
-                        crate::cache::Schedule::of(meta),
-                    );
-                    Ok(())
+        .unless_retired(provider, source_name, || match outcome {
+            Ok(result) => {
+                // A success ends a streak of failures; an instance that never
+                // failed has no state to end (the common read).
+                {
+                    let mut failures = registry.failures.lock().unwrap();
+                    if !failures.is_empty()
+                        && let Some(state) =
+                            failures.get_mut(&instance_key(provider, source_name, root))
+                    {
+                        state.record_success();
+                    }
                 }
-                Err(e) => {
-                    state.record_failure();
-                    Err(e)
-                }
+                cache.put_source(
+                    provider,
+                    root,
+                    source_name,
+                    result.fields,
+                    crate::cache::Schedule::of(meta),
+                );
+                Ok(())
+            }
+            Err(e) => {
+                registry
+                    .failures
+                    .lock()
+                    .unwrap()
+                    .entry(instance_key(provider, source_name, root))
+                    .or_insert_with(|| {
+                        crate::scheduler::FailureState::new(
+                            meta.failback.reattempts,
+                            std::time::Duration::from_secs(meta.failback.interval_secs),
+                        )
+                    })
+                    .record_failure();
+                Err(e)
             }
         })
         .unwrap_or(Ok(()))
